@@ -1476,6 +1476,11 @@ describe("E2B sandbox lease lifecycle", () => {
           e2b_phase: "connect",
           e2b_error_category: "unknown",
           e2b_http_status: 504,
+          e2b_connect_error_context_version: 1,
+          e2b_connect_error_matches_sdk_rejection: true,
+          e2b_connect_error_kind: "other_error",
+          // `status` is not the SDK's reported statusCode.
+          e2b_connect_reported_status: "none",
         });
         expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
           event: "e2b_sandbox_acquisition_failed",
@@ -1870,6 +1875,10 @@ describe("E2B sandbox lease lifecycle", () => {
       e2b_http_status: 409,
       e2b_connect_conflict_message_signal_version: 1,
       e2b_connect_conflict_message_signal: "pausing",
+      e2b_connect_error_context_version: 1,
+      e2b_connect_error_matches_sdk_rejection: true,
+      e2b_connect_error_kind: "other_error",
+      e2b_connect_reported_status: 409,
     };
     try {
       const failure = await ensureSandboxConnection(
@@ -1997,6 +2006,339 @@ describe("E2B sandbox lease lifecycle", () => {
           "e2b_connect_conflict_message_signal_version",
         );
       }
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  const CONNECT_ERROR_CONTEXT_FIELDS = [
+    "e2b_connect_error_context_version",
+    "e2b_connect_error_matches_sdk_rejection",
+    "e2b_connect_error_kind",
+    "e2b_connect_reported_status",
+    "e2b_connect_type_error_signal",
+    "e2b_connect_transport_code",
+  ];
+  const throwValue = (value: unknown): never => {
+    throw value;
+  };
+  it.each<
+    [
+      string,
+      () => {
+        setSandbox?: (sandbox: Sandbox) => void;
+        onBoot?: () => void;
+        reportStage?: (stage: string) => void;
+      } | void,
+      Record<string, unknown>,
+      number,
+    ]
+  >([
+    [
+      "an SDK fetch failure with a first-cause transport code",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(
+          new TypeError("fetch failed", {
+            cause: Object.assign(new Error("private-cause-text"), {
+              code: "ECONNRESET",
+            }),
+          }),
+        );
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "other_error",
+        e2b_connect_reported_status: "none",
+        e2b_connect_type_error_signal: "fetch_failed",
+        e2b_connect_transport_code: "ECONNRESET",
+      },
+      1,
+    ],
+    [
+      "an SDK type error with a direct transport code and reported status",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(
+          Object.assign(new TypeError("private-type-error-text"), {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+            statusCode: 502,
+          }),
+        );
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "other_error",
+        e2b_connect_reported_status: 502,
+        e2b_connect_type_error_signal: "other_type_error",
+        e2b_connect_transport_code: "UND_ERR_CONNECT_TIMEOUT",
+      },
+      1,
+    ],
+    [
+      "an SDK rejection with undefined",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(undefined);
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "thrown_value",
+        e2b_connect_reported_status: "none",
+      },
+      1,
+    ],
+    [
+      "an SDK rejection with NaN",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(NaN);
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "thrown_value",
+        e2b_connect_reported_status: "none",
+      },
+      1,
+    ],
+    [
+      "the connect stage callback throwing undefined before any SDK call",
+      () => {
+        listSandbox({ state: "paused" });
+        return {
+          reportStage: (stage) => {
+            if (stage === "connect") throwValue(undefined);
+          },
+        };
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: false,
+        e2b_connect_error_kind: "thrown_value",
+        e2b_connect_reported_status: "none",
+      },
+      0,
+    ],
+    [
+      "a boot callback failure after SDK success",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockResolvedValueOnce({ sandboxId: "sandbox-1" });
+        return {
+          onBoot: () => throwValue(new TypeError("fetch failed")),
+        };
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: false,
+        e2b_connect_error_kind: "other_error",
+        e2b_connect_reported_status: "none",
+        e2b_connect_type_error_signal: "fetch_failed",
+        e2b_connect_transport_code: "none",
+      },
+      1,
+    ],
+    [
+      "an earlier SDK rejection rethrown after a retried connect succeeds",
+      () => {
+        listSandbox({ state: "running" });
+        const stale = Object.assign(new SandboxError("private-stale-text"), {
+          name: "SandboxError",
+          statusCode: 503,
+        });
+        sandboxApi.connect
+          .mockRejectedValueOnce(stale)
+          .mockResolvedValueOnce({ sandboxId: "sandbox-1" });
+        return { setSandbox: () => throwValue(stale) };
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: false,
+        e2b_connect_error_kind: "sandbox_error",
+        e2b_connect_reported_status: 503,
+      },
+      2,
+    ],
+    [
+      "an SDK error whose fields are accessors",
+      () => {
+        listSandbox({ state: "paused" });
+        const accessorError = new TypeError();
+        // Values that would change every projected field if a getter ran.
+        for (const [key, value] of [
+          ["name", "private-accessor-name"],
+          ["message", "fetch failed"],
+          ["statusCode", 502],
+          ["code", "ECONNRESET"],
+        ] as const)
+          Object.defineProperty(accessorError, key, { get: () => value });
+        sandboxApi.connect.mockRejectedValueOnce(accessorError);
+      },
+      {
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "other_error",
+        e2b_connect_reported_status: "none",
+        e2b_connect_type_error_signal: "unreadable",
+        e2b_connect_transport_code: "unreadable",
+      },
+      1,
+    ],
+  ])(
+    "retains bounded connect error context for %s",
+    async (_label, arrange, expected, connectCalls) => {
+      jest.useFakeTimers();
+      const errorLog = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { setSandbox = jest.fn(), onBoot, reportStage } = arrange() ?? {};
+      try {
+        const result = ensureSandboxConnection(
+          { userID: "user-1", setSandbox, onBoot },
+          { reportStage, acquisitionId: "acq-1" },
+        ).catch((error) => error);
+        await jest.runAllTimersAsync();
+        const failure = await result;
+        expect(failure.name).toBe("E2BAcquisitionError");
+        expect(errorLog).toHaveBeenCalledTimes(1);
+        const logged = JSON.parse(String(errorLog.mock.calls[0][0]));
+        expect(logged).toMatchObject({
+          event: "e2b_sandbox_acquisition_failed",
+          acquisition_id: "acq-1",
+          ...failure.diagnostics,
+        });
+        for (const diagnostics of [failure.diagnostics, logged]) {
+          expect(diagnostics).toMatchObject({
+            e2b_phase: "connect",
+            e2b_connect_error_context_version: 1,
+            ...expected,
+          });
+          for (const field of [
+            "e2b_connect_type_error_signal",
+            "e2b_connect_transport_code",
+          ])
+            if (!(field in expected))
+              expect(diagnostics).not.toHaveProperty(field);
+          expect(diagnostics).not.toHaveProperty(
+            "e2b_workspace_identity_operation",
+          );
+        }
+        expect(JSON.stringify([errorLog.mock.calls, failure])).not.toMatch(
+          /private-/,
+        );
+        expect(sandboxApi.connect).toHaveBeenCalledTimes(connectCalls);
+        expect(sandboxApi.create).not.toHaveBeenCalled();
+        expect(sandboxApi.kill).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
+
+  it("snapshots connect error context before awaiting resume bookkeeping", async () => {
+    process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    listSandbox({
+      state: "paused",
+      metadata: {
+        userID: "user-1",
+        sandboxVersion: "v12",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+      },
+    });
+    const original = Object.assign(new TypeError("fetch failed"), {
+      code: "ECONNRESET",
+    });
+    sandboxApi.connect.mockRejectedValueOnce(original);
+    // Every mutation would change a projected field if read after this await.
+    jest.mocked(recordResumeFailure).mockImplementationOnce(async () => {
+      Object.assign(original, {
+        name: "SandboxError",
+        message: "other text",
+        code: "ETIMEDOUT",
+        statusCode: 504,
+      });
+    });
+    try {
+      const failure = await ensureSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        {
+          acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+          triggerRegion: "us-east-1",
+        },
+      ).catch((error) => error);
+      expect(recordResumeFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ uncertain: true, timeoutOnly: false }),
+      );
+      expect(failure.diagnostics).toMatchObject({
+        e2b_connect_error_context_version: 1,
+        e2b_connect_error_matches_sdk_rejection: true,
+        e2b_connect_error_kind: "other_error",
+        e2b_connect_reported_status: "none",
+        e2b_connect_type_error_signal: "fetch_failed",
+        e2b_connect_transport_code: "ECONNRESET",
+      });
+      expect(sandboxApi.connect).toHaveBeenCalledTimes(1);
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it.each<[string, () => { destinationId?: string } | void, string]>([
+    [
+      "a discovery failure",
+      () => {
+        sandboxApi.list.mockReturnValue({
+          nextItems: jest.fn(async () =>
+            throwValue(new NotFoundError("private-provider-response")),
+          ),
+        });
+      },
+      "discovery",
+    ],
+    [
+      "a create failure",
+      () => {
+        sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+        sandboxApi.create.mockRejectedValueOnce(new TypeError("fetch failed"));
+      },
+      "create",
+    ],
+    [
+      "a pinned get_info failure",
+      () => {
+        sandboxApi.getInfo.mockRejectedValueOnce(new TypeError("fetch failed"));
+        return { destinationId: "private-workspace-id" };
+      },
+      "connect",
+    ],
+    [
+      "a pinned identity validation failure",
+      () => {
+        sandboxApi.getInfo.mockResolvedValueOnce({
+          sandboxId: "private-other-workspace",
+          state: "paused",
+          metadata: { userID: "private-owner" },
+        });
+        return { destinationId: "private-workspace-id" };
+      },
+      "connect",
+    ],
+  ])("omits connect error context for %s", async (_label, arrange, phase) => {
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { destinationId } = arrange() ?? {};
+    try {
+      const failure = await ensureSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { destinationId },
+      ).catch((error) => error);
+      expect(failure.diagnostics.e2b_phase).toBe(phase);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      const logged = JSON.parse(String(errorLog.mock.calls[0][0]));
+      for (const diagnostics of [failure.diagnostics, logged])
+        for (const field of CONNECT_ERROR_CONTEXT_FIELDS)
+          expect(diagnostics).not.toHaveProperty(field);
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
       expect(sandboxApi.kill).not.toHaveBeenCalled();
     } finally {
       errorLog.mockRestore();
