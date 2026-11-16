@@ -62,6 +62,7 @@ import {
 } from "@/lib/utils/sandbox-file-utils";
 import { getLocalCopyFailureContext } from "../local-copy-failure-context";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 import {
   DesktopFileBridgeError,
   desktopFileUnavailableMessage,
@@ -1908,7 +1909,15 @@ describe("CentrifugoSandbox", () => {
       { path: "success", record: { outcome: "recovered" } },
       {
         path: "timeout",
-        record: { outcome: "unavailable", failure: "timeout" },
+        record: {
+          outcome: "unavailable",
+          failure: "timeout",
+          sender_phase_version: 1,
+          sender_phase: "response_wait",
+          sender_file_request_id: FIXED_UUID,
+          sender_dispatch_entered: true,
+          sender_publication_started: true,
+        },
       },
       {
         path: "subscription_error",
@@ -2143,6 +2152,11 @@ describe("CentrifugoSandbox", () => {
           outcome: "unavailable",
           failure: "timeout",
           file_failure: "unknown",
+          sender_phase_version: 1,
+          sender_phase: "response_received",
+          sender_file_request_id: FIXED_UUID,
+          sender_dispatch_entered: true,
+          sender_publication_started: true,
         },
       ]);
     });
@@ -2203,6 +2217,408 @@ describe("CentrifugoSandbox", () => {
       expect(sandbox.supportsCommandStdin()).toBe(false);
       expect(mockClients[0].disconnect).toHaveBeenCalled();
       expect(jest.getTimerCount()).toBe(0);
+    });
+
+    describe("sender phase at the overall probe deadline", () => {
+      const deferred = <T>() => {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((done) => (resolve = done));
+        return { promise, resolve };
+      };
+      // Canary paths/tokens must never reach the probe record.
+      const probeDesktop = (isolated: boolean, platform?: string) =>
+        new CentrifugoSandbox(
+          "user-1",
+          {
+            ...defaultConnection,
+            isDesktop: true,
+            capabilities: isolated
+              ? { commands: true, files: false, operationChannels: true }
+              : { commands: true },
+            ...(platform && {
+              osInfo: {
+                platform,
+                arch: "x64",
+                release: "10.0.22631",
+                hostname: "PRIVATE_HOST",
+              },
+            }),
+          },
+          defaultConfig,
+          "/PRIVATE_PROJECT",
+        );
+      const stalledControl = (
+        stall: (control: MockSubscription) => void,
+      ): void => {
+        mockClients[0].newSubscription.mockImplementationOnce(() => {
+          const control = new MockSubscription();
+          stall(control);
+          mockSubscriptions.push(control);
+          return control;
+        });
+      };
+      const fileStatPublishes = () =>
+        mockSubscriptions.flatMap((sub) =>
+          sub.publish.mock.calls.filter(
+            ([value]) => value.type === "file_stat",
+          ),
+        ).length;
+
+      // Each case stalls one sender step past the unchanged 3000ms deadline,
+      // then releases it late to prove no phase regression, replay, or extra
+      // record. dispatchEntered also selects whether the reply subscribes.
+      const cases: Array<{
+        name: string;
+        expected: {
+          phase: string;
+          requestAllocated: boolean;
+          dispatchEntered: boolean;
+          publicationStarted: boolean;
+        };
+        start: () => Promise<{
+          sandbox: CentrifugoSandbox;
+          late: () => Promise<void> | void;
+          stall?: () => void;
+          ready?: boolean;
+        }>;
+      }> = [
+        {
+          name: "a Windows path lookup",
+          expected: {
+            phase: "path_resolution",
+            requestAllocated: false,
+            dispatchEntered: false,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const sandbox = probeDesktop(true, "win32");
+            (sandbox as any).shellKind = "bash";
+            const lookup = deferred<{
+              stdout: string;
+              stderr: string;
+              exitCode: number;
+            }>();
+            jest.spyOn(sandbox.commands, "run").mockReturnValue(lookup.promise);
+            return {
+              sandbox,
+              late: () =>
+                lookup.resolve({
+                  stdout: "C:\\PRIVATE_PROJECT\n",
+                  stderr: "",
+                  exitCode: 0,
+                }),
+            };
+          },
+        },
+        {
+          name: "token minting",
+          expected: {
+            phase: "token",
+            requestAllocated: true,
+            dispatchEntered: false,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const token = deferred<string>();
+            jest
+              .mocked(generateCentrifugoToken)
+              .mockReturnValueOnce(token.promise);
+            return {
+              sandbox: probeDesktop(true),
+              late: () => token.resolve("PRIVATE_TOKEN"),
+            };
+          },
+        },
+        {
+          name: "the reply subscription",
+          expected: {
+            phase: "reply_subscription",
+            requestAllocated: true,
+            dispatchEntered: false,
+            publicationStarted: false,
+          },
+          start: async () => ({
+            sandbox: probeDesktop(true),
+            late: () => mockSubscriptions[0].emit("subscribed"),
+          }),
+        },
+        {
+          name: "isolated control readiness",
+          expected: {
+            phase: "control_ready",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const ready = deferred<void>();
+            return {
+              sandbox: probeDesktop(true),
+              late: () => ready.resolve(),
+              stall: () =>
+                stalledControl((control) =>
+                  control.ready.mockReturnValue(ready.promise),
+                ),
+            };
+          },
+        },
+        {
+          name: "isolated presence",
+          expected: {
+            phase: "presence",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const presence = deferred<unknown>();
+            return {
+              sandbox: probeDesktop(true),
+              late: () =>
+                presence.resolve({
+                  clients: { c: { connInfo: { connectionId: "conn-1" } } },
+                }),
+              stall: () =>
+                stalledControl((control) =>
+                  control.presence.mockReturnValue(presence.promise as any),
+                ),
+            };
+          },
+        },
+        {
+          // "publish" begins before authorization; nothing was published yet.
+          name: "operation authorization",
+          expected: {
+            phase: "publish",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const authorization = deferred<string>();
+            jest
+              .mocked(authorizeDesktopOperation)
+              .mockReturnValueOnce(authorization.promise);
+            return {
+              sandbox: probeDesktop(true),
+              late: () => authorization.resolve("b".repeat(64)),
+            };
+          },
+        },
+        {
+          name: "the operation readiness reply",
+          expected: {
+            phase: "operation_ready",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: true,
+          },
+          start: async () => ({
+            sandbox: probeDesktop(true),
+            // The existing 5s readiness timer is released after the probe.
+            late: () => jest.advanceTimersByTimeAsync(5000),
+          }),
+        },
+        {
+          name: "a matched isolated response",
+          expected: {
+            phase: "response_wait",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: true,
+          },
+          start: async () => ({
+            sandbox: probeDesktop(true),
+            late: () =>
+              mockSubscriptions[0].emit("publication", {
+                data: {
+                  type: "file_stat_result",
+                  requestId: FIXED_UUID,
+                  kind: "not_file",
+                  path: "/PRIVATE_PROJECT",
+                },
+              }),
+            ready: true,
+          }),
+        },
+        {
+          name: "shared presence",
+          expected: {
+            phase: "shared_presence",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: false,
+          },
+          start: async () => {
+            const presence = deferred<unknown>();
+            return {
+              sandbox: probeDesktop(false),
+              late: () =>
+                presence.resolve({
+                  clients: { c: { connInfo: { connectionId: "conn-1" } } },
+                }),
+              stall: () =>
+                mockSubscriptions[0].presence.mockReturnValue(
+                  presence.promise as any,
+                ),
+            };
+          },
+        },
+        {
+          name: "a shared publish",
+          expected: {
+            phase: "shared_publish",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: true,
+          },
+          start: async () => {
+            const publish = deferred<void>();
+            return {
+              sandbox: probeDesktop(false),
+              late: () => publish.resolve(),
+              stall: () =>
+                mockSubscriptions[0].publish.mockReturnValueOnce(
+                  publish.promise,
+                ),
+            };
+          },
+        },
+        {
+          name: "a matched shared response",
+          expected: {
+            phase: "response_wait",
+            requestAllocated: true,
+            dispatchEntered: true,
+            publicationStarted: true,
+          },
+          start: async () => ({
+            sandbox: probeDesktop(false),
+            late: () =>
+              mockSubscriptions[0].emit("publication", {
+                data: {
+                  type: "file_stat_result",
+                  requestId: FIXED_UUID,
+                  kind: "not_file",
+                  path: "/PRIVATE_PROJECT",
+                },
+              }),
+          }),
+        },
+      ];
+
+      it.each(cases)(
+        "records the last sender phase when the deadline expires during $name",
+        async ({ expected, start }) => {
+          const { sandbox, late, stall, ready } = await start();
+          // Concurrent callers share one probe, one request, and one record.
+          const first = sandbox.confirmNativeFileRelay().catch((e) => e);
+          const second = sandbox.confirmNativeFileRelay().catch((e) => e);
+          let settled = false;
+          void first.then(() => (settled = true));
+          await jest.advanceTimersByTimeAsync(0);
+          const reply = mockSubscriptions[0];
+          if (reply && expected.dispatchEntered) {
+            stall?.();
+            reply.emit("subscribed");
+            await jest.advanceTimersByTimeAsync(0);
+          }
+          if (ready)
+            reply.emit("publication", {
+              data: { type: "operation_ready", requestId: FIXED_UUID },
+            });
+          // Another request's response must not settle or advance this probe.
+          reply?.emit("publication", {
+            data: {
+              type: "file_stat_result",
+              requestId: "other-request",
+              kind: "not_file",
+              path: "/PRIVATE_OTHER",
+            },
+          });
+          await jest.advanceTimersByTimeAsync(2999);
+          expect(settled).toBe(false);
+          expect(probeRecords()).toEqual([]);
+          await jest.advanceTimersByTimeAsync(1);
+          await late();
+          await jest.advanceTimersByTimeAsync(0);
+          const error = await first;
+
+          expect(await second).toBe(error);
+          expect(error).toBeInstanceOf(DesktopFileBridgeError);
+          expect(error).toMatchObject({
+            fileFailure: "unknown",
+            message: desktopFileUnavailableMessage("unknown"),
+          });
+          expect(probeRecords()).toEqual([
+            {
+              ...probeRecord,
+              outcome: "unavailable",
+              failure: "timeout",
+              sender_phase_version: 1,
+              sender_phase: expected.phase,
+              sender_file_request_id: expected.requestAllocated
+                ? FIXED_UUID
+                : null,
+              sender_dispatch_entered: expected.dispatchEntered,
+              sender_publication_started: expected.publicationStarted,
+            },
+          ]);
+          // The boolean reflects actual publish attempts; nothing is replayed.
+          expect(fileStatPublishes()).toBe(expected.publicationStarted ? 1 : 0);
+          expect(sandbox.supportsNativeFileRelay()).toBe(false);
+          await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+          expect(probeRecords()).toHaveLength(1);
+          expect(mockClients.length).toBeLessThanOrEqual(1);
+          for (const client of mockClients)
+            expect(client.disconnect).toHaveBeenCalled();
+          expect(jest.getTimerCount()).toBe(0);
+          expect(JSON.stringify(receiverLog.mock.calls)).not.toContain(
+            "PRIVATE",
+          );
+        },
+      );
+
+      it("keeps the matched response phase when dispatch completes after it", async () => {
+        const sandbox = probeDesktop(true);
+        const pending = sandbox.confirmNativeFileRelay().catch((e) => e);
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[0];
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        // The ACK never settles, so the reply is finalized after the deadline.
+        reply.publish.mockReturnValueOnce(new Promise(() => {}));
+        await jest.advanceTimersByTimeAsync(2500);
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message: "PRIVATE_NATIVE_FAILURE",
+          },
+        });
+        // Readiness arriving after the response must not move the phase back.
+        reply.emit("publication", {
+          data: { type: "operation_ready", requestId: FIXED_UUID },
+        });
+        await jest.advanceTimersByTimeAsync(1000);
+        await pending;
+
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "timeout",
+            file_failure: "unknown",
+            sender_phase_version: 1,
+            sender_phase: "response_received",
+            sender_file_request_id: FIXED_UUID,
+            sender_dispatch_entered: true,
+            sender_publication_started: true,
+          },
+        ]);
+        expect(JSON.stringify(receiverLog.mock.calls)).not.toContain("PRIVATE");
+        expect(jest.getTimerCount()).toBe(0);
+      });
     });
   });
 

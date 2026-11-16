@@ -30,6 +30,7 @@ import { sandboxOperationChannel } from "@/packages/local/src/operation-channels
 import {
   dispatchIsolatedOperation,
   RelayOperationReadinessTimeout,
+  type IsolatedOperationPhase,
 } from "@/lib/centrifugo/dispatch-operation";
 import {
   runAttachmentCommand,
@@ -181,6 +182,51 @@ const NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
   ["Desktop operation was not authorized", "authorization_denied"],
   ["Invalid Desktop authorization response", "authorization_response_invalid"],
 ]);
+
+/**
+ * Version 1 of the last sender step the read-only capability probe entered.
+ * Each phase means only that the server began that step. None implies that a
+ * request reached the Desktop, that native code ran, or that a step finished.
+ * - path_resolution: resolving the probe path (Windows may run a shell lookup).
+ * - token: minting the reply-channel token.
+ * - reply_subscription: reply client created; waiting for its subscription.
+ * - shared_presence / shared_publish: connection-channel presence check and
+ *   publish call (Desktop without operation channels).
+ * - control_ready ... ready_received: the existing isolated dispatch phases;
+ *   "publish" begins before operation authorization.
+ * - response_wait: dispatch returned; awaiting the matched native response.
+ * - response_received: matched response accepted; ACK and cleanup pending.
+ */
+type FileProbeSenderPhase =
+  | "path_resolution"
+  | "token"
+  | "reply_subscription"
+  | "shared_presence"
+  | "shared_publish"
+  | IsolatedOperationPhase
+  | "response_wait"
+  | "response_received";
+
+/**
+ * Observation-only probe state. It must never drive request behavior.
+ * dispatchEntered: the reply subscription's dispatch handler ran (not delivery).
+ * publicationStarted: a request publish was attempted (not delivery/execution).
+ * Once frozen at the deadline or settlement, late callbacks cannot rewrite it.
+ */
+interface FileProbeSenderState {
+  phase: FileProbeSenderPhase;
+  fileRequestId: string | null;
+  dispatchEntered: boolean;
+  publicationStarted: boolean;
+  frozen: boolean;
+}
+
+function noteFileProbe(
+  probe: FileProbeSenderState | undefined,
+  update: Partial<Omit<FileProbeSenderState, "frozen">>,
+): void {
+  if (probe && !probe.frozen) Object.assign(probe, update);
+}
 
 type HttpClient = "curl" | "wget" | "powershell";
 
@@ -476,7 +522,18 @@ export class CentrifugoSandbox extends EventEmitter {
     // Confirm on that same connection before choosing artifact paths/transport.
     // Do not grant commandStdin or bypass Local's private-storage preparation.
     const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(), 3000);
+    // Dispatch begins with path resolution; the deadline covers every phase.
+    const sender: FileProbeSenderState = {
+      phase: "path_resolution",
+      fileRequestId: null,
+      dispatchEntered: false,
+      publicationStarted: false,
+      frozen: false,
+    };
+    const deadline = setTimeout(() => {
+      sender.frozen = true;
+      controller.abort();
+    }, 3000);
     let failure: string | undefined;
     let fileFailure: DesktopFileFailure | undefined;
     let receiverErrorClass: NativeReceiverErrorClass | undefined;
@@ -487,6 +544,8 @@ export class CentrifugoSandbox extends EventEmitter {
         new Set(["file_stat_result"]),
         3000,
         controller.signal,
+        undefined,
+        sender,
       );
       this.nativeFileRelayConfirmed = true;
     } catch (error) {
@@ -508,6 +567,7 @@ export class CentrifugoSandbox extends EventEmitter {
         receiverDiagnostic = error.receiverDiagnostic;
     } finally {
       clearTimeout(deadline);
+      sender.frozen = true;
     }
     console.info(
       JSON.stringify({
@@ -523,6 +583,14 @@ export class CentrifugoSandbox extends EventEmitter {
         receiver_stage: receiverDiagnostic?.stage,
         receiver_adapter: receiverDiagnostic?.adapter,
         receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
+        // Overall-deadline failures only: where the sender was when it expired.
+        ...(failure === "timeout" && {
+          sender_phase_version: 1,
+          sender_phase: sender.phase,
+          sender_file_request_id: sender.fileRequestId,
+          sender_dispatch_entered: sender.dispatchEntered,
+          sender_publication_started: sender.publicationStarted,
+        }),
       }),
     );
     if (!this.nativeFileRelayConfirmed) {
@@ -663,6 +731,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     timeoutMs: number,
     signal?: AbortSignal,
     nativePaths?: Map<string, string>,
+    probe?: FileProbeSenderState,
   ): Promise<T> {
     signal?.throwIfAborted();
     // Resolve before subscribing so a failed/cancelled shell lookup cannot
@@ -679,6 +748,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         : undefined;
     signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
+    noteFileProbe(probe, { phase: "token", fileRequestId: requestId });
     const isolated = this.supportsOperationChannels();
     const channel = isolated
       ? sandboxOperationChannel(
@@ -691,6 +761,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
     signal?.throwIfAborted();
+    noteFileProbe(probe, { phase: "reply_subscription" });
     const client = new Centrifuge(this.config.wsUrl, { token });
     this.activeClients.push(client);
 
@@ -748,6 +819,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        if (probe) probe.frozen = true;
         cleanup();
         reject(error);
       };
@@ -790,6 +862,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           return;
 
         settled = true;
+        noteFileProbe(probe, { phase: "response_received" });
+        if (probe) probe.frozen = true;
         // Receipt is final even if the broker never acknowledges our ACK.
         // Keep the subscription briefly for delivery, but bound caller cleanup.
         let finished = false;
@@ -850,6 +924,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         // File writes and appends are not safe to replay after a reconnect.
         if (requestDispatchStarted) return;
         requestDispatchStarted = true;
+        noteFileProbe(probe, {
+          dispatchEntered: true,
+          ...(!isolated && { phase: "shared_presence" }),
+        });
 
         void (async () => {
           try {
@@ -905,13 +983,19 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 subscription!,
                 () => {
                   requestPublicationStarted = true;
+                  noteFileProbe(probe, { publicationStarted: true });
                 },
-                undefined,
+                probe && ((phase) => noteFileProbe(probe, { phase })),
                 this.connectionInfo.isDesktop === true,
               );
             } else {
+              noteFileProbe(probe, {
+                phase: "shared_publish",
+                publicationStarted: true,
+              });
               await subscription.publish(request);
             }
+            noteFileProbe(probe, { phase: "response_wait" });
           } catch (error) {
             if (
               isolated &&
