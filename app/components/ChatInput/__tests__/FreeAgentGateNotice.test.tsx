@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { FreeAgentActivationStatus } from "@/lib/activation/free-agent-activation";
@@ -88,6 +88,33 @@ describe("FreeAgentGateNotice", () => {
     expect(mockCaptureQueued).toHaveBeenCalledWith(
       expect.objectContaining({ event: "free_agent_activation_gate_shown" }),
     );
+  });
+
+  it("records the gate only once it is visible in the foreground tab", () => {
+    const setVisibility = (state: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => state,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+    const gateShownCalls = () =>
+      mockCaptureQueued.mock.calls.filter(
+        ([input]) => input.event === "free_agent_activation_gate_shown",
+      );
+    setVisibility("hidden");
+    try {
+      renderNotice();
+      expect(gateShownCalls()).toHaveLength(0);
+
+      act(() => setVisibility("visible"));
+      act(() => setVisibility("hidden"));
+      act(() => setVisibility("visible"));
+
+      expect(gateShownCalls()).toHaveLength(1);
+    } finally {
+      setVisibility("visible");
+    }
   });
 
   it("hides the card once a computer is selected", () => {

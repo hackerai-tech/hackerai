@@ -12,19 +12,33 @@ jest.mock("@/lib/auth/get-user-id", () => ({
 
 const mockGetFeatureFlagResult = jest.fn();
 const mockCapture = jest.fn();
+const errorListeners = new Set<(error: unknown) => void>();
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
   default: () => ({
     getFeatureFlagResult: mockGetFeatureFlagResult,
     capture: mockCapture,
+    on: (event: string, listener: (error: unknown) => void) => {
+      if (event !== "error") return () => {};
+      errorListeners.add(listener);
+      return () => errorListeners.delete(listener);
+    },
     shutdown: jest.fn(async () => undefined),
   }),
 }));
 
 const stored = new Map<string, number>();
 const mockScard = jest.fn(async (key: string) => stored.get(key) ?? 0);
+// First-assignment marker get-or-set (telemetry only).
+const markers = new Map<string, number>();
+const mockEval = jest.fn(
+  async (_script: string, [key]: string[], [now]: string[]) => {
+    if (!markers.has(key)) markers.set(key, Number(now));
+    return markers.get(key);
+  },
+);
 jest.mock("@/lib/rate-limit/redis", () => ({
-  createRedisClient: () => ({ scard: mockScard }),
+  createRedisClient: () => ({ scard: mockScard, eval: mockEval }),
 }));
 
 const SUBJECT = "free_quota:v2:private-subject";
@@ -53,6 +67,8 @@ describe("GET /api/experiments/free-agent-activation", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     stored.clear();
+    markers.clear();
+    errorListeners.clear();
     stored.set(`free_agent_activation:v1:${SUBJECT}`, 3);
     mockGetUserIDAndPro.mockResolvedValue(eligibleIdentity);
     mockGetFeatureFlagResult.mockResolvedValue({
@@ -116,6 +132,47 @@ describe("GET /api/experiments/free-agent-activation", () => {
     const response = await GET(request());
     await expect(response.json()).resolves.toEqual({ status: null });
     expect(stored.get(`free_agent_activation:v1:${SUBJECT}`)).toBe(3);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      "the flag service request fails",
+      () =>
+        mockGetFeatureFlagResult.mockImplementation(async () => {
+          for (const listener of errorListeners) listener(new Error("network"));
+          return undefined;
+        }),
+    ],
+    [
+      "the flag lookup rejects",
+      () => mockGetFeatureFlagResult.mockRejectedValue(new Error("network")),
+    ],
+    [
+      "the stored count cannot be read",
+      () => mockScard.mockRejectedValueOnce(new Error("redis down")),
+    ],
+  ])(
+    "returns an uncached 503 (unknown, not unenrolled) when %s",
+    async (_, arrange) => {
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      arrange();
+      const response = await GET(request());
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      await expect(response.json()).resolves.toEqual({ status: null });
+    },
+  );
+
+  it("recovers from an unknown status to the gated status once storage answers", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockScard.mockRejectedValueOnce(new Error("redis down"));
+    expect((await GET(request())).status).toBe(503);
+
+    const response = await GET(request());
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: expect.objectContaining({ requiresAgent: true }),
+    });
   });
 
   it("requires authentication", async () => {

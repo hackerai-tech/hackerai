@@ -33,6 +33,7 @@ import type {
   AgentToolApprovalPendingRequest,
   SubscriptionTier,
   NoteCategory,
+  Todo,
 } from "@/types";
 import type {
   UpdateVulnerabilityReportInput,
@@ -941,6 +942,57 @@ export async function deleteChatForBackend({
     });
   } catch (error) {
     throw databaseError("chats.deleteChatForBackend", error, {
+      chat_id: chatId,
+      user_id: userId,
+    });
+  }
+}
+
+/** Must match convex/messages.ts deleteRegenerateChainForBackend. */
+const REGENERATE_CHAIN_MISMATCH_CODE = "REGENERATE_CHAIN_MISMATCH";
+
+/**
+ * Deletes the exact trailing assistant chain a deferred free Ask regeneration
+ * replaces. Called only after admission; Convex verifies ownership, history
+ * access and the expected IDs in the same transaction. A changed chain is a
+ * definitive refusal the client recovers from by restoring its snapshot.
+ */
+export async function deleteFreeAskRegenerateChain({
+  chatId,
+  userId,
+  expectedAssistantIds,
+  todos,
+}: {
+  chatId: string;
+  userId: string;
+  expectedAssistantIds: string[];
+  todos?: Todo[];
+}): Promise<void> {
+  try {
+    await getConvexClient().mutation(
+      api.messages.deleteRegenerateChainForBackend,
+      {
+        serviceKey,
+        chatId,
+        userId,
+        expectedAssistantIds,
+        // Same intent as the client regenerate path: the replaced answer
+        // must not survive in a summary of the conversation.
+        resetSummary: true,
+        ...(todos !== undefined && { todos }),
+      },
+    );
+  } catch (error) {
+    if (
+      hasDatabaseErrorCode(getErrorData(error), REGENERATE_CHAIN_MISMATCH_CODE)
+    ) {
+      throw new ChatSDKError(
+        "bad_request:chat",
+        "This conversation changed before the answer could be replaced. Reload and try again.",
+        { regenerate_chain_mismatch: true },
+      );
+    }
+    throw databaseError("messages.deleteRegenerateChainForBackend", error, {
       chat_id: chatId,
       user_id: userId,
     });

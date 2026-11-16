@@ -422,6 +422,48 @@ describe("Messages virtualized row invalidation", () => {
     log.mockRestore();
   });
 
+  it("keeps the editor open with the specific instruction when the activation gate blocks an edit", async () => {
+    const blocked = new Error(
+      "Send this revision as a new message to keep your saved answer.",
+    );
+    blocked.name = "FreeAskEditBlockedError";
+    const onEditMessage = jest.fn().mockRejectedValue(blocked);
+    const toastInfo = jest.spyOn(toast, "info");
+    const toastError = jest.spyOn(toast, "error");
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-1"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={onEditMessage}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+        />
+      </DataStreamProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save edit" }));
+    });
+
+    // The editor (and its buffer) stays mounted; no generic retry message.
+    expect(screen.getByTestId("message-editor")).toHaveTextContent(
+      "Editing user-1",
+    );
+    expect(toastInfo).toHaveBeenCalledWith(
+      "Send this revision as a new message to keep your saved answer.",
+    );
+    expect(toastError).not.toHaveBeenCalled();
+    toastInfo.mockRestore();
+    toastError.mockRestore();
+  });
+
   it("invalidates the virtualized row when editing starts", () => {
     render(
       <DataStreamProvider>

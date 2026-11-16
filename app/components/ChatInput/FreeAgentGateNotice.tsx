@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Infinity as InfinityIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -12,6 +18,14 @@ import {
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
 
 const SURFACE = "chat_input_free_agent_gate";
+
+// A background tab has not shown the gate; record it once it is on screen.
+const subscribePageVisibility = (onChange: () => void) => {
+  document.addEventListener("visibilitychange", onChange);
+  return () => document.removeEventListener("visibilitychange", onChange);
+};
+const getPageVisible = () => document.visibilityState !== "hidden";
+const getServerPageVisible = () => false;
 
 export interface FreeAgentGateNoticeProps {
   status: FreeAgentActivationStatus;
@@ -32,11 +46,16 @@ export function FreeAgentGateNotice({
   const [setupOpen, setSetupOpen] = useState(false);
   const titleId = useId();
   const shownRef = useRef(false);
+  const pageVisible = useSyncExternalStore(
+    subscribePageVisibility,
+    getPageVisible,
+    getServerPageVisible,
+  );
 
   useEffect(() => {
-    if (!needsComputer || shownRef.current) return;
+    if (!needsComputer || !pageVisible || shownRef.current) return;
     shownRef.current = captureFreeAgentGateShown(status, SURFACE);
-  }, [needsComputer, status]);
+  }, [needsComputer, pageVisible, status]);
 
   return (
     <>

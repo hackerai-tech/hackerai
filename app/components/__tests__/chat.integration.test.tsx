@@ -2000,6 +2000,65 @@ describe("Chat Component Integration", () => {
       expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
     });
 
+    it("never auto-sends a fork once the activation gate held it, even after a computer connects", async () => {
+      mockUseRealChatHandlers = true;
+      mockRouteParams = { id: "gated-fork" };
+      mockRestoredChat = {
+        id: "gated-fork",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockLocalConnections = [];
+      mockDesktopState = { freeAgentGateActive: true };
+      sessionStorage.setItem("autoSendChatId", "gated-fork");
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "original",
+            role: "user",
+            parts: [{ type: "text", text: "original task" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      const view = () => (
+        <TestWrapper>
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+          <RecoveryDraftProbe />
+        </TestWrapper>
+      );
+      try {
+        const { rerender } = render(view());
+        expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
+
+        // Connecting, and even the gate lifting, must not release the intent.
+        mockLocalConnections = [
+          {
+            connectionId: "desktop-row",
+            isDesktop: true,
+            lastSeen: Date.now(),
+          },
+        ];
+        await act(async () => rerender(view()));
+        mockDesktopState = {};
+        await act(async () => rerender(view()));
+
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("recovery-draft")).toHaveTextContent(
+          "continue",
+        );
+      } finally {
+        sessionStorage.removeItem("autoSendChatId");
+      }
+    });
+
     it("holds queued sends and rejects direct dispatch until the selected computer reconnects", async () => {
       mockLocalConnections = [];
       const view = () => (
@@ -2748,6 +2807,111 @@ describe("Chat Component Integration", () => {
           { id: "saved-message" },
         ]);
       });
+
+      it.each([
+        ["admits at HTTP OK", 200, false],
+        ["admits even if its cleanup throws", 200, true],
+        ["rejects a gate refusal", 403, false],
+        ["reports a definite non-gate refusal", 429, false],
+      ] as const)(
+        "regeneration %s by matching its request ID",
+        async (_, status, cleanupThrows) => {
+          const log = jest.spyOn(console, "error").mockImplementation(() => {});
+          const refreshFreeAgentActivation = jest.fn();
+          const onAdmitted = jest.fn(() => {
+            if (cleanupThrows) throw new Error("cleanup failed");
+          });
+          let cleanedBeforeResponseRead: boolean | undefined;
+          let sdkOptions: unknown;
+          mockDesktopState = {
+            chatMode: "ask",
+            subscription: "free",
+            refreshFreeAgentActivation,
+          };
+          global.fetch = jest.fn(async () =>
+            status === 200
+              ? { ok: true, status }
+              : {
+                  ok: false,
+                  status,
+                  clone: () => ({
+                    json: async () =>
+                      status === 403
+                        ? {
+                            code: "forbidden:chat",
+                            cause: "Continue with Agent to keep going.",
+                            metadata: { free_agent_activation_required: true },
+                          }
+                        : { code: "rate_limit:chat", cause: "Limit reached" },
+                  }),
+                },
+          ) as unknown as typeof fetch;
+          let finish!: () => void;
+          mockRegenerate.mockImplementationOnce(
+            async (options: { body: Record<string, unknown> }) => {
+              sdkOptions = options;
+              try {
+                await askTransport().transport.fetch("/api/chat", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    chatId: "queued-message-id",
+                    messages: [],
+                    ...options.body,
+                  }),
+                });
+              } catch (error) {
+                askTransport().onError(error as Error);
+                return;
+              }
+              // The SDK reads the response only after fetch returns it.
+              cleanedBeforeResponseRead = onAdmitted.mock.calls.length === 1;
+              // An admitted reply keeps streaming after HTTP OK.
+              await new Promise<void>((resolve) => {
+                finish = resolve;
+              });
+            },
+          );
+          render(
+            <TestWrapper>
+              <Chat autoResume={false} />
+            </TestWrapper>,
+          );
+          const body = {
+            regenerate: true,
+            agentRunRequestId: "regenerate-request-1",
+            deferredRegenerateAssistantIds: ["assistant-1"],
+          };
+          const regenerating = mockChatHandlerArgs.regenerateAdmitted!({
+            body,
+            onAdmitted,
+          });
+          try {
+            await act(async () => {
+              if (status === 200)
+                await expect(regenerating).resolves.toBe("admitted");
+              else if (status === 403)
+                await expect(regenerating).rejects.toThrow(
+                  "Continue with Agent to keep going.",
+                );
+              else await expect(regenerating).resolves.toBe("refused");
+            });
+            // The callback never reaches the SDK or the serialized request.
+            expect(sdkOptions).toEqual({ body });
+            if (status === 200) {
+              expect(cleanedBeforeResponseRead).toBe(true);
+            } else {
+              expect(onAdmitted).not.toHaveBeenCalled();
+            }
+            if (status === 403) {
+              expect(refreshFreeAgentActivation).toHaveBeenCalled();
+              expect(mockClearError).toHaveBeenCalled();
+            }
+          } finally {
+            await act(async () => finish?.());
+            log.mockRestore();
+          }
+        },
+      );
 
       it("leaves other Ask failures on their existing in-thread handling", async () => {
         mockDesktopState = { chatMode: "ask", subscription: "free" };

@@ -20,6 +20,7 @@ import {
   enforceFreeAgentActivationAskAdmission,
   evaluateFreeAgentActivation,
   isFinalAssistantSaveReceipt,
+  parseDeferredRegenerateAssistantIds,
   persistThenRecordFreeAgentAskResponse,
   type FreeAgentActivationEnrollment,
 } from "@/lib/activation/free-agent-activation.server";
@@ -145,6 +146,7 @@ import { geolocation } from "@vercel/functions";
 import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { NextRequest } from "next/server";
 import {
+  deleteFreeAskRegenerateChain,
   getMessagesByChatId,
   getNotes,
   getUserCustomization,
@@ -351,6 +353,7 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate,
         limitRescue: rawLimitRescue,
         projectId: rawProjectId,
+        deferredRegenerateAssistantIds: rawDeferredRegenerateAssistantIds,
       } = rawRequestBody as {
         messages: unknown;
         mode: unknown;
@@ -364,9 +367,14 @@ export const createChatHandler = () => {
         useClientMessagesForRegenerate?: boolean;
         limitRescue?: unknown;
         projectId?: unknown;
+        deferredRegenerateAssistantIds?: unknown;
       };
       const mode = requireVercelChatMode(rawMode);
       const chatId = requireChatId(rawChatId);
+      const deferredRegenerateAssistantIds =
+        parseDeferredRegenerateAssistantIds(rawDeferredRegenerateAssistantIds, {
+          regenerate: regenerate === true,
+        });
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
@@ -423,6 +431,16 @@ export const createChatHandler = () => {
       });
       usageRefundTracker.setUser(userId, subscription, organizationId);
       assertChatModeAccess({ mode, subscription });
+      if (deferredRegenerateAssistantIds && subscription !== "free") {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Deferred regeneration is only available for free Ask requests.",
+          {
+            invalid_request_field: "deferredRegenerateAssistantIds",
+            invalid_request_field_reason: "free_ask_only",
+          },
+        );
+      }
       let freeAgentActivation: FreeAgentActivationEnrollment | undefined;
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
@@ -529,7 +547,7 @@ export const createChatHandler = () => {
           ? stripImageAttachments(fetched.truncatedMessages)
           : fetched.truncatedMessages;
 
-      const baseTodos: Todo[] = getBaseTodosForRequest(
+      let baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
         { regenerate },
       );
@@ -907,6 +925,23 @@ export const createChatHandler = () => {
       );
 
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
+
+      // A potentially gated free Ask regeneration keeps the old answer until
+      // every admission and preflight check has passed and the quota deduction
+      // is tracked for refund. The backend deletes only the exact chain the
+      // client replaced, transactionally, so a refused or raced request never
+      // loses a saved answer. Regenerate history already excludes that chain.
+      if (deferredRegenerateAssistantIds) {
+        await deleteFreeAskRegenerateChain({
+          chatId,
+          userId,
+          expectedAssistantIds: deferredRegenerateAssistantIds,
+          todos,
+        });
+        if (todos !== undefined) {
+          baseTodos = getBaseTodosForRequest(todos, { regenerate });
+        }
+      }
 
       // Start cancellation subscriber (Redis pub/sub with fallback to polling)
       let subscriberStopped = false;
@@ -1662,13 +1697,10 @@ export const createChatHandler = () => {
                 // Settlement outcome is unknown here; report known costs only.
                 await reportIncompleteAskUsageCost?.("settlement");
                 throw error;
-              } finally {
-                await observeFinish(
-                  "release_run_lock",
-                  () => releaseFreeRunLockOnce(),
-                  finishPhase,
-                );
               }
+              // The free run lock is released by each caller's finally, after
+              // the final assistant save and activation counting, so another
+              // tab cannot pass Ask admission before this response is counted.
             };
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =

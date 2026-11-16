@@ -324,7 +324,9 @@ it("attributes the first title wait separately from settlement in every finishin
     });
     sandbox.resolve({ totalCostDollars: 0 });
     await expect(pending).resolves.toBeUndefined();
-    expect(releaseFreeRunLockOnce).toHaveBeenCalledTimes(1);
+    // Usage settlement no longer releases the free run lock: both finalizers
+    // hold it until the final persist and activation count complete.
+    expect(releaseFreeRunLockOnce).not.toHaveBeenCalled();
     expect(reportIncompleteAskUsageCost).toHaveBeenCalledWith("settlement");
     expect(jest.getTimerCount()).toBe(0);
   }

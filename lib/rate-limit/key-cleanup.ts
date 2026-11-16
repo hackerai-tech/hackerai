@@ -16,8 +16,18 @@ export const isFreeQuotaSubjectRateLimitKey = (
   );
 };
 
+/** `free_agent_activation_assignment:v<version>:<userId>`, exact owner only. */
+const isFreeAgentActivationAssignmentKey = (
+  key: string,
+  userId: string,
+): boolean => {
+  const match = /^free_agent_activation_assignment:v\d+:(.+)$/.exec(key);
+  return match?.[1] === userId;
+};
+
 export const isUserRateLimitKey = (key: string, userId: string): boolean => {
   return (
+    isFreeAgentActivationAssignmentKey(key, userId) ||
     key.startsWith(`usage:monthly:${userId}:`) ||
     key === `upgrade:carryover:${userId}` ||
     key.startsWith(`upgrade:carryover:${userId}:`) ||

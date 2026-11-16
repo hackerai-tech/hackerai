@@ -16,6 +16,7 @@ import {
   ConvexError,
   getConvexSize,
   getDocumentSize,
+  type Infer,
   type Value,
 } from "convex/values";
 import { internal } from "./_generated/api";
@@ -1491,6 +1492,150 @@ export const saveAssistantMessage = mutation({
   },
 });
 
+const regenerateTodosValidator = v.optional(
+  v.array(
+    v.object({
+      id: v.string(),
+      content: v.string(),
+      status: v.union(
+        v.literal("pending"),
+        v.literal("in_progress"),
+        v.literal("completed"),
+        v.literal("cancelled"),
+      ),
+      sourceMessageId: v.optional(v.string()),
+    }),
+  ),
+);
+
+type RegenerateTodos = NonNullable<Infer<typeof regenerateTodosValidator>>;
+
+// Matched by lib/db/actions.ts to refuse a raced regeneration.
+const REGENERATE_CHAIN_MISMATCH_CODE = "REGENERATE_CHAIN_MISMATCH";
+const MAX_EXPECTED_REGENERATE_IDS = 256;
+const MAX_EXPECTED_REGENERATE_ID_LENGTH = 128;
+// Service-path tail walk bound (assistant + hidden continuation records).
+const MAX_REGENERATE_TAIL_RECORDS = 1024;
+
+/**
+ * Walk backwards from the newest message and collect the entire trailing
+ * chain: assistant messages + hidden (auto-continue) user messages. Stop at
+ * the first non-hidden user message so regenerate targets the original
+ * request. Do not load the rest of a long conversation for its tail.
+ */
+function readTrailingResponseChain(
+  ctx: MutationCtx,
+  chatId: string,
+): Promise<Doc<"messages">[]>;
+function readTrailingResponseChain(
+  ctx: MutationCtx,
+  chatId: string,
+  maxRecords: number,
+): Promise<Doc<"messages">[] | "over_bound">;
+async function readTrailingResponseChain(
+  ctx: MutationCtx,
+  chatId: string,
+  maxRecords = Number.POSITIVE_INFINITY,
+): Promise<Doc<"messages">[] | "over_bound"> {
+  const trailingMessages = ctx.db
+    .query("messages")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
+    .order("desc");
+  const chain: Doc<"messages">[] = [];
+  for await (const msg of trailingMessages) {
+    if (msg.role === "assistant") {
+      chain.push(msg);
+    } else if (msg.role === "user" && msg.is_hidden) {
+      chain.push(msg);
+    } else {
+      break;
+    }
+    if (chain.length > maxRecords) return "over_bound";
+  }
+  return chain;
+}
+
+/**
+ * Shared deletion for a verified trailing chain: model-history and summary
+ * invalidation, then file, feedback and message cleanup.
+ */
+async function deleteTrailingResponseChain(
+  ctx: MutationCtx,
+  chatId: string,
+  messagesToDelete: Doc<"messages">[],
+  resetSummary: boolean | undefined,
+): Promise<void> {
+  await invalidateModelHistory(ctx, chatId);
+  if (resetSummary) {
+    await clearChatSummaries(ctx, chatId);
+  } else {
+    // Check summary invalidation for all messages being deleted
+    await checkAndInvalidateSummary(
+      ctx,
+      chatId,
+      messagesToDelete.map((m) => ({
+        id: m.id,
+        creationTime: m._creationTime,
+      })),
+    );
+  }
+
+  // Delete files and messages
+  for (const msg of messagesToDelete) {
+    if (msg.file_ids && msg.file_ids.length > 0) {
+      for (const fileId of msg.file_ids) {
+        try {
+          const file = await ctx.db.get(fileId);
+          if (file) {
+            if (file.s3_key) {
+              await ctx.scheduler.runAfter(
+                0,
+                internal.s3Cleanup.deleteS3ObjectAction,
+                {
+                  s3Key: file.s3_key,
+                  ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                  ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                },
+              );
+            }
+            await fileCountAggregate.deleteIfExists(ctx, file);
+            await ctx.db.delete(file._id);
+          }
+        } catch (error) {
+          console.error(`Failed to delete file ${fileId}:`, error);
+        }
+      }
+    }
+    if (msg.feedback_id) {
+      try {
+        await ctx.db.delete(msg.feedback_id);
+      } catch (error) {
+        console.error(`Failed to delete feedback ${msg.feedback_id}:`, error);
+      }
+    }
+    await ctx.db.delete(msg._id);
+  }
+}
+
+/** Update todos in the same transaction, only for the chat's owner. */
+async function patchOwnedChatTodos(
+  ctx: MutationCtx,
+  chatId: string,
+  userId: string,
+  todos: RegenerateTodos,
+): Promise<void> {
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
+    .first();
+
+  if (chat && chat.user_id === userId) {
+    await ctx.db.patch(chat._id, {
+      todos,
+    });
+  }
+}
+
 /**
  * Delete the last assistant message from a chat
  */
@@ -1498,21 +1643,7 @@ export const deleteLastAssistantMessage = mutation({
   args: {
     chatId: v.string(),
     resetSummary: v.optional(v.boolean()),
-    todos: v.optional(
-      v.array(
-        v.object({
-          id: v.string(),
-          content: v.string(),
-          status: v.union(
-            v.literal("pending"),
-            v.literal("in_progress"),
-            v.literal("completed"),
-            v.literal("cancelled"),
-          ),
-          sourceMessageId: v.optional(v.string()),
-        }),
-      ),
-    ),
+    todos: regenerateTodosValidator,
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1524,25 +1655,11 @@ export const deleteLastAssistantMessage = mutation({
     await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
-      // Walk backwards from newest message and collect the entire trailing chain:
-      // assistant messages + hidden (auto-continue) user messages.
-      // Stop at the first non-hidden user message so regenerate targets the original request.
-      const trailingMessages = ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("desc");
-
-      // Do not load the rest of a long conversation just to regenerate its tail.
-      const messagesToDelete: Doc<"messages">[] = [];
-      for await (const msg of trailingMessages) {
-        if (msg.role === "assistant") {
-          messagesToDelete.push(msg);
-        } else if (msg.role === "user" && msg.is_hidden) {
-          messagesToDelete.push(msg);
-        } else {
-          break;
-        }
-      }
+      // The legacy client path keeps its walk to the first visible user turn.
+      const messagesToDelete = await readTrailingResponseChain(
+        ctx,
+        args.chatId,
+      );
 
       if (messagesToDelete.length > 0) {
         const firstMsg = messagesToDelete[0];
@@ -1565,73 +1682,16 @@ export const deleteLastAssistantMessage = mutation({
           }
         }
 
-        await invalidateModelHistory(ctx, args.chatId);
-        if (args.resetSummary) {
-          await clearChatSummaries(ctx, args.chatId);
-        } else {
-          // Check summary invalidation for all messages being deleted
-          await checkAndInvalidateSummary(
-            ctx,
-            args.chatId,
-            messagesToDelete.map((m) => ({
-              id: m.id,
-              creationTime: m._creationTime,
-            })),
-          );
-        }
-
-        // Delete files and messages
-        for (const msg of messagesToDelete) {
-          if (msg.file_ids && msg.file_ids.length > 0) {
-            for (const fileId of msg.file_ids) {
-              try {
-                const file = await ctx.db.get(fileId);
-                if (file) {
-                  if (file.s3_key) {
-                    await ctx.scheduler.runAfter(
-                      0,
-                      internal.s3Cleanup.deleteS3ObjectAction,
-                      {
-                        s3Key: file.s3_key,
-                        ...(file.s3_region ? { s3Region: file.s3_region } : {}),
-                        ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
-                      },
-                    );
-                  }
-                  await fileCountAggregate.deleteIfExists(ctx, file);
-                  await ctx.db.delete(file._id);
-                }
-              } catch (error) {
-                console.error(`Failed to delete file ${fileId}:`, error);
-              }
-            }
-          }
-          if (msg.feedback_id) {
-            try {
-              await ctx.db.delete(msg.feedback_id);
-            } catch (error) {
-              console.error(
-                `Failed to delete feedback ${msg.feedback_id}:`,
-                error,
-              );
-            }
-          }
-          await ctx.db.delete(msg._id);
-        }
+        await deleteTrailingResponseChain(
+          ctx,
+          args.chatId,
+          messagesToDelete,
+          args.resetSummary,
+        );
       }
 
-      // Update todos in the same transaction if provided
       if (args.todos !== undefined) {
-        const chat = await ctx.db
-          .query("chats")
-          .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-          .first();
-
-        if (chat && chat.user_id === user.subject) {
-          await ctx.db.patch(chat._id, {
-            todos: args.todos,
-          });
-        }
+        await patchOwnedChatTodos(ctx, args.chatId, user.subject, args.todos);
       }
 
       return null;
@@ -1639,6 +1699,94 @@ export const deleteLastAssistantMessage = mutation({
       console.error("Failed to delete last assistant message:", error);
       throw error;
     }
+  },
+});
+
+/**
+ * Server-side replacement for a deferred free Ask regeneration. Runs only
+ * after the web route admitted the request. In one transaction it verifies
+ * chat ownership and history access, then deletes the trailing chain only if
+ * its assistant IDs are exactly the ones the client replaced. A newer saved
+ * answer (or any other mismatch) is left intact and the request is refused.
+ */
+export const deleteRegenerateChainForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    expectedAssistantIds: v.array(v.string()),
+    resetSummary: v.optional(v.boolean()),
+    todos: regenerateTodosValidator,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const expected = new Set(args.expectedAssistantIds);
+    if (
+      args.expectedAssistantIds.length === 0 ||
+      args.expectedAssistantIds.length > MAX_EXPECTED_REGENERATE_IDS ||
+      expected.size !== args.expectedAssistantIds.length ||
+      args.expectedAssistantIds.some(
+        (id) =>
+          id.trim().length === 0 ||
+          id.length > MAX_EXPECTED_REGENERATE_ID_LENGTH,
+      )
+    ) {
+      throw new ConvexError({
+        code: REGENERATE_CHAIN_MISMATCH_CODE,
+        message: "Invalid regeneration chain",
+      });
+    }
+
+    const chat = await loadOwnedChat(ctx, args.chatId, args.userId);
+    if (
+      chat.deletion_started_at !== undefined ||
+      (await isUserDeletionFenced(ctx.db, args.userId))
+    ) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "This chat doesn't exist",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+
+    const messagesToDelete = await readTrailingResponseChain(
+      ctx,
+      args.chatId,
+      MAX_REGENERATE_TAIL_RECORDS,
+    );
+    if (messagesToDelete === "over_bound") {
+      throw new ConvexError({
+        code: REGENERATE_CHAIN_MISMATCH_CODE,
+        message: "This conversation's latest answer is too long to replace",
+      });
+    }
+    const assistantIds = messagesToDelete
+      .filter((msg) => msg.role === "assistant")
+      .map((msg) => msg.id);
+    if (
+      messagesToDelete.some(
+        (msg) => msg.user_id !== undefined && msg.user_id !== args.userId,
+      ) ||
+      assistantIds.length !== expected.size ||
+      !assistantIds.every((id) => expected.has(id))
+    ) {
+      throw new ConvexError({
+        code: REGENERATE_CHAIN_MISMATCH_CODE,
+        message: "This conversation changed before the answer was replaced",
+      });
+    }
+
+    await deleteTrailingResponseChain(
+      ctx,
+      args.chatId,
+      messagesToDelete,
+      args.resetSummary,
+    );
+    if (args.todos !== undefined) {
+      await patchOwnedChatTodos(ctx, args.chatId, args.userId, args.todos);
+    }
+    return null;
   },
 });
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage } from "ai";
 import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 
@@ -53,6 +53,7 @@ const loadSaveMessageWithMocks = async () => {
   const {
     deleteAllChatsForBackend,
     deleteChatForBackend,
+    deleteFreeAskRegenerateChain,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getProjectById,
@@ -68,6 +69,7 @@ const loadSaveMessageWithMocks = async () => {
   return {
     deleteAllChatsForBackend,
     deleteChatForBackend,
+    deleteFreeAskRegenerateChain,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getProjectById,
@@ -86,6 +88,131 @@ const loadSaveMessageWithMocks = async () => {
     updateChatTitle,
   };
 };
+
+describe("deleteFreeAskRegenerateChain", () => {
+  const originalServiceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  afterEach(() => {
+    if (originalServiceKey === undefined)
+      delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = originalServiceKey;
+  });
+  const load = async () => {
+    process.env.CONVEX_SERVICE_ROLE_KEY = "server-only-service-key";
+    return loadSaveMessageWithMocks();
+  };
+
+  it("sends the server's own service key, the trusted user and the exact chain", async () => {
+    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockResolvedValueOnce(null as never);
+    const todos = [{ id: "t1", content: "Retest", status: "pending" as const }];
+
+    await deleteFreeAskRegenerateChain({
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1", "a2"],
+      todos,
+    });
+
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation.mock.calls[0][1]).toEqual({
+      serviceKey: "server-only-service-key",
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1", "a2"],
+      // Matches the client regenerate path so the replaced answer is not
+      // kept in a conversation summary.
+      resetSummary: true,
+      todos,
+    });
+  });
+
+  it("omits todos when the client did not send them", async () => {
+    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockResolvedValueOnce(null as never);
+    await deleteFreeAskRegenerateChain({
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1"],
+    });
+    expect(mockMutation.mock.calls[0][1]).not.toHaveProperty("todos");
+  });
+
+  it("turns a changed chain into a definitive, recoverable chat refusal", async () => {
+    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockRejectedValueOnce(
+      Object.assign(new Error("ConvexError"), {
+        data: { code: "REGENERATE_CHAIN_MISMATCH", message: "changed" },
+      }) as never,
+    );
+
+    await expect(
+      deleteFreeAskRegenerateChain({
+        chatId: "chat-1",
+        userId: "user-1",
+        expectedAssistantIds: ["a1"],
+      }),
+    ).rejects.toMatchObject({
+      type: "bad_request",
+      surface: "chat",
+      metadata: { regenerate_chain_mismatch: true },
+    });
+  });
+
+  it("maps an ownership refusal to forbidden, not a chain mismatch", async () => {
+    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    mockMutation.mockRejectedValueOnce(
+      Object.assign(new Error("ConvexError"), {
+        data: { code: "CHAT_UNAUTHORIZED", message: "no" },
+      }) as never,
+    );
+
+    const error = await deleteFreeAskRegenerateChain({
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1"],
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ type: "forbidden", surface: "chat" });
+    expect(error).not.toMatchObject({
+      metadata: { regenerate_chain_mismatch: true },
+    });
+  });
+
+  it("never exposes the service key in a refusal or its logs", async () => {
+    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    const logged: string[] = [];
+    for (const method of ["warn", "error", "info", "log"] as const)
+      jest.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      });
+    mockMutation.mockRejectedValueOnce(
+      Object.assign(new Error("ConvexError"), {
+        data: { code: "REGENERATE_CHAIN_MISMATCH", message: "changed" },
+      }) as never,
+    );
+    mockMutation.mockRejectedValueOnce(new Error("upstream 500") as never);
+
+    const errors = await Promise.all(
+      [["a1"], ["a2"]].map((expectedAssistantIds) =>
+        deleteFreeAskRegenerateChain({
+          chatId: "chat-1",
+          userId: "user-1",
+          expectedAssistantIds,
+        }).catch((caught: unknown) => caught),
+      ),
+    );
+    const visible = JSON.stringify(
+      errors.map((error) => ({
+        message: (error as Error).message,
+        cause: (error as { cause?: unknown }).cause,
+        metadata: (error as { metadata?: unknown }).metadata,
+      })),
+    );
+    expect(visible).not.toContain("server-only-service-key");
+    expect(logged.join("\n")).not.toContain("server-only-service-key");
+    jest.restoreAllMocks();
+  });
+});
 
 describe("getChatById retry result diagnostics", () => {
   it.each([

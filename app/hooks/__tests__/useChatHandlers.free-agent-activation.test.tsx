@@ -20,13 +20,24 @@ jest.mock("@/convex/_generated/api", () => ({
   },
 }));
 
+// Every Convex mutation (including deleteLastAssistantMessage) lands here.
+const mockMutation = jest.fn(async (_args?: unknown) => null);
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(async () => null),
+  useMutation: () => mockMutation,
 }));
 
 const mockSendMessage = jest.fn(async () => undefined);
 const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
+const mockSetTodos = jest.fn();
+const savedTodos = [
+  {
+    id: "todo-1",
+    content: "Saved todo",
+    status: "completed",
+    sourceMessageId: "assistant-1",
+  },
+];
 let mockInput = "";
 let mockUploadedFiles: unknown[] = [];
 // GlobalState sets this for the test variant and for an unknown status.
@@ -40,8 +51,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     chatMode: "ask",
     clearInput: mockClearInput,
     clearUploadedFiles: mockClearUploadedFiles,
-    todos: [],
-    setTodos: jest.fn(),
+    todos: savedTodos,
+    setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "free",
     queueMessage: jest.fn(),
@@ -215,5 +226,433 @@ describe("useChatHandlers free Agent activation admission", () => {
     expect(sendAdmittedMessage).not.toHaveBeenCalled();
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
     expect(mockClearInput).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useChatHandlers free Ask regeneration under the activation gate", () => {
+  const savedTranscript = [
+    {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "Explain SSRF" }],
+    },
+    {
+      id: "assistant-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "Saved answer" }],
+    },
+  ] as ChatMessage[];
+
+  type RegenerateAdmitted = (options: {
+    body: Record<string, unknown> & { agentRunRequestId: string };
+    onAdmitted?: () => void;
+  }) => Promise<"admitted" | "refused" | "settled">;
+
+  // A live transcript so functional updates are applied like React would.
+  let transcript: ChatMessage[];
+  const sdkRemovesLastAssistant = () => {
+    if (transcript.at(-1)?.role === "assistant")
+      transcript = transcript.slice(0, -1);
+  };
+  const newUserMessage = {
+    id: "user-new",
+    role: "user",
+    parts: [{ type: "text", text: "A newer question" }],
+  } as ChatMessage;
+  const newAssistant = {
+    id: "assistant-new",
+    role: "assistant",
+    parts: [{ type: "text", text: "New streamed answer" }],
+  } as ChatMessage;
+
+  const renderRegeneration = (
+    regenerateAdmitted: RegenerateAdmitted,
+    {
+      persisted = true,
+      chatId = "chat-1",
+      messages = savedTranscript,
+    }: { persisted?: boolean; chatId?: string; messages?: ChatMessage[] } = {},
+  ) => {
+    transcript = messages;
+    const setMessages = jest.fn(
+      (update: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) => {
+        transcript = typeof update === "function" ? update(transcript) : update;
+      },
+    );
+    const regenerate = jest.fn(async () => undefined);
+    const hook = renderHook(
+      ({ id }) =>
+        useChatHandlers({
+          chatId: id,
+          messages,
+          sendMessage: mockSendMessage,
+          regenerateAdmitted,
+          stop: jest.fn(),
+          regenerate,
+          setMessages,
+          isExistingChat: true,
+          isUserMessagePersisted: async () => persisted,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      { initialProps: { id: chatId } },
+    );
+    return { ...hook, setMessages, regenerate };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAwaitsAdmission = true;
+  });
+
+  it.each(["handleRegenerate", "handleRetry"] as const)(
+    "%s changes nothing before admission and restores the saved answer on a gate refusal",
+    async (handler) => {
+      const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+      let setMessagesBeforeRequest = -1;
+      const regenerateAdmitted = jest.fn<RegenerateAdmitted>(async () => {
+        // While the request is pending, nothing local has been cleaned up.
+        setMessagesBeforeRequest = setMessages.mock.calls.length;
+        expect(mockSetTodos).not.toHaveBeenCalled();
+        sdkRemovesLastAssistant();
+        throw new Error("Continue with Agent to keep going.");
+      });
+      const { result, setMessages, regenerate } =
+        renderRegeneration(regenerateAdmitted);
+
+      await act(async () => {
+        await result.current[handler]();
+      });
+
+      expect(setMessagesBeforeRequest).toBe(0);
+      // No client deletion, no ordinary regenerate: nothing destructive ran.
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(regenerate).not.toHaveBeenCalled();
+      expect(regenerateAdmitted).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          regenerate: true,
+          deferredRegenerateAssistantIds: ["assistant-1"],
+          agentRunRequestId: expect.any(String),
+        }),
+        onAdmitted: expect.any(Function),
+      });
+      // Only the SDK's optimistic removal is undone; todos were never touched.
+      expect(transcript).toEqual(savedTranscript);
+      expect(mockSetTodos).not.toHaveBeenCalled();
+      expect(errorToast).toHaveBeenCalledWith(
+        "Continue with Agent to keep going.",
+      );
+      errorToast.mockRestore();
+    },
+  );
+
+  it("restores the saved answer after a definite non-gate refusal", async () => {
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(async () => {
+      sdkRemovesLastAssistant();
+      return "refused";
+    });
+    const { result } = renderRegeneration(regenerateAdmitted);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(transcript).toEqual(savedTranscript);
+  });
+
+  it("leaves an uncertain outcome to the existing in-thread handling", async () => {
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(async () => {
+      sdkRemovesLastAssistant();
+      return "settled";
+    });
+    const { result } = renderRegeneration(regenerateAdmitted);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(transcript).toEqual([savedTranscript[0]]);
+  });
+
+  it("never overwrites a newer message when the gate refuses", async () => {
+    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(async () => {
+      sdkRemovesLastAssistant();
+      transcript = [...transcript, newUserMessage];
+      throw new Error("Continue with Agent to keep going.");
+    });
+    const { result } = renderRegeneration(regenerateAdmitted);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(transcript).toEqual([savedTranscript[0], newUserMessage]);
+    errorToast.mockRestore();
+  });
+
+  it("never overwrites a same-ID revision of text or attachments when the gate refuses", async () => {
+    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+    const revisedUser = {
+      ...savedTranscript[0],
+      parts: [
+        { type: "text", text: "Explain blind SSRF instead" },
+        {
+          type: "file",
+          mediaType: "text/plain",
+          filename: "scope.txt",
+          url: "",
+          fileId: "file-2",
+        },
+      ],
+    } as ChatMessage;
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(async () => {
+      sdkRemovesLastAssistant();
+      // Same IDs as the expected post-removal state, different content.
+      transcript = [revisedUser];
+      throw new Error("Continue with Agent to keep going.");
+    });
+    const { result } = renderRegeneration(regenerateAdmitted);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(transcript).toEqual([revisedUser]);
+    errorToast.mockRestore();
+  });
+
+  it("cleans up at admission by exact old IDs, keeping the new streamed answer", async () => {
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(
+      async ({ onAdmitted }) => {
+        sdkRemovesLastAssistant();
+        // Even a reply that is already visible must survive the cleanup.
+        transcript = [...transcript, newAssistant];
+        expect(mockSetTodos).not.toHaveBeenCalled();
+        onAdmitted?.();
+        return "admitted";
+      },
+    );
+    const { result } = renderRegeneration(regenerateAdmitted, {
+      messages: [
+        ...savedTranscript,
+        {
+          id: "continue-1",
+          role: "user",
+          metadata: { isAutoContinue: true },
+          parts: [{ type: "text", text: "continue" }],
+        },
+        {
+          id: "assistant-2",
+          role: "assistant",
+          parts: [{ type: "text", text: "Saved continuation" }],
+        },
+      ] as ChatMessage[],
+    });
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(transcript).toEqual([savedTranscript[0], newAssistant]);
+    // Todos from the old chain are removed only at admission.
+    expect(mockSetTodos).toHaveBeenCalledTimes(1);
+    expect(mockSetTodos).toHaveBeenCalledWith([]);
+  });
+
+  it("does not clean up or restore a chat the user has left", async () => {
+    let settle!: (outcome: "admitted") => void;
+    let admit: (() => void) | undefined;
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(
+      ({ onAdmitted }) =>
+        new Promise((resolve) => {
+          admit = onAdmitted;
+          settle = resolve;
+        }),
+    );
+    const { result, rerender, setMessages } =
+      renderRegeneration(regenerateAdmitted);
+
+    let regenerating!: Promise<void>;
+    await act(async () => {
+      regenerating = result.current.handleRegenerate();
+    });
+    rerender({ id: "chat-2" });
+    await act(async () => {
+      admit?.();
+      settle("admitted");
+      await regenerating;
+    });
+
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it("keeps saved progress after an unconfirmed request instead of retrying", async () => {
+    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(
+      async () => "admitted",
+    );
+    const { result, setMessages, regenerate } = renderRegeneration(
+      regenerateAdmitted,
+      { persisted: false },
+    );
+
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+
+    expect(regenerateAdmitted).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(errorToast).toHaveBeenCalledWith(
+      "Could not retry yet. Your saved answer is unchanged.",
+      expect.anything(),
+    );
+    errorToast.mockRestore();
+  });
+
+  it("keeps the existing client deletion when the status is known not to gate", async () => {
+    mockAwaitsAdmission = false;
+    const regenerateAdmitted = jest.fn<RegenerateAdmitted>(
+      async () => "admitted",
+    );
+    const { result, regenerate } = renderRegeneration(regenerateAdmitted);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(regenerateAdmitted).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "chat-1", resetSummary: true }),
+    );
+    expect(regenerate).toHaveBeenCalledWith({
+      body: expect.not.objectContaining({
+        deferredRegenerateAssistantIds: expect.anything(),
+      }),
+    });
+  });
+
+  it.each(["handleRegenerate", "handleRetry"] as const)(
+    "%s refuses a chain beyond the deferred bound without touching anything",
+    async (handler) => {
+      const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+      const longChain = [
+        savedTranscript[0],
+        ...Array.from({ length: 257 }, (_, index) => ({
+          id: `assistant-${index}`,
+          role: "assistant",
+          parts: [{ type: "text", text: `Part ${index}` }],
+        })),
+      ] as ChatMessage[];
+      const regenerateAdmitted = jest.fn<RegenerateAdmitted>(
+        async () => "admitted",
+      );
+      const { result, setMessages, regenerate } = renderRegeneration(
+        regenerateAdmitted,
+        { messages: longChain },
+      );
+
+      await act(async () => {
+        await result.current[handler]();
+      });
+
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(regenerate).not.toHaveBeenCalled();
+      expect(regenerateAdmitted).not.toHaveBeenCalled();
+      expect(setMessages).not.toHaveBeenCalled();
+      expect(mockSetTodos).not.toHaveBeenCalled();
+      expect(errorToast).toHaveBeenCalledWith(
+        "This answer is too long to rerun. It is unchanged.",
+        expect.objectContaining({
+          description: "Send a new message to continue.",
+        }),
+      );
+      errorToast.mockRestore();
+    },
+  );
+});
+
+describe("useChatHandlers free Ask history edits under the activation gate", () => {
+  const transcript = [
+    {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "Explain SSRF" }],
+    },
+    {
+      id: "assistant-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "Saved answer" }],
+    },
+  ] as ChatMessage[];
+
+  const renderEdit = () => {
+    const setMessages = jest.fn();
+    const regenerate = jest.fn(async () => undefined);
+    const stop = jest.fn();
+    const hook = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: transcript,
+        sendMessage: mockSendMessage,
+        stop,
+        regenerate,
+        setMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    return { ...hook, setMessages, regenerate, stop };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAwaitsAdmission = true;
+  });
+
+  it("refuses the edit before stopping, mutating or streaming anything", async () => {
+    const { result, setMessages, regenerate, stop } = renderEdit();
+
+    await act(async () => {
+      await expect(
+        result.current.handleEditMessage("user-1", "Revised question", [
+          "file-1",
+        ]),
+      ).rejects.toMatchObject({
+        name: "FreeAskEditBlockedError",
+        message:
+          "Send this revision as a new message to keep your saved answer.",
+      });
+    });
+
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(setMessages).not.toHaveBeenCalled();
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    // The composer draft is never overwritten with the revision.
+    expect(mockClearInput).not.toHaveBeenCalled();
+  });
+
+  it("keeps the existing edit when the status is known not to gate", async () => {
+    mockAwaitsAdmission = false;
+    const { result, regenerate } = renderEdit();
+
+    await act(async () => {
+      await result.current.handleEditMessage("user-1", "Revised question");
+    });
+
+    expect(mockMutation).toHaveBeenCalled();
+    expect(regenerate).toHaveBeenCalledWith({
+      body: expect.objectContaining({ regenerate: true }),
+    });
   });
 });

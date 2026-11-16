@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import type { PostHog } from "posthog-node";
+import { v5 as uuidv5 } from "uuid";
 import PostHogClient from "@/app/posthog";
 import { ChatSDKError } from "@/lib/errors";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
@@ -52,10 +53,37 @@ redis.call("SADD", key, responseId)
 return count + 1
 `;
 
+/**
+ * First assignment time per trusted user and definition version. Telemetry
+ * only: it never affects access. Keyed by userId (not the shared quota
+ * subject) so each account owns and deletes its own marker.
+ */
+export const FREE_AGENT_ACTIVATION_ASSIGNMENT_PREFIX =
+  "free_agent_activation_assignment:";
+export const freeAgentActivationAssignmentKey = (userId: string) =>
+  `${FREE_AGENT_ACTIVATION_ASSIGNMENT_PREFIX}v${FREE_AGENT_ACTIVATION_DEFINITION_VERSION}:${userId}`;
+
+/** Atomic get-or-set; returns the stored first-assignment epoch ms. */
+const FIRST_ASSIGNMENT_SCRIPT = `
+local existing = redis.call("GET", KEYS[1])
+if existing then
+  return existing
+end
+redis.call("SET", KEYS[1], ARGV[1])
+return ARGV[1]
+`;
+
 export type FreeAgentActivationEnrollment = {
   variant: FreeAgentActivationVariant;
   quotaSubject: string;
 };
+
+/**
+ * `null` is a known exclusion (ineligible, flag off or not configured);
+ * `undefined` means the flag service could not answer.
+ */
+type FreeAgentActivationAssessment =
+  FreeAgentActivationEnrollment | null | undefined;
 
 /** Authenticated session fields; never request-body values. */
 export type FreeAgentActivationIdentity = {
@@ -73,7 +101,7 @@ export type FreeAgentActivationRequest = {
 };
 
 type FlagClient = Pick<PostHog, "getFeatureFlagResult"> &
-  Partial<Pick<PostHog, "capture">>;
+  Partial<Pick<PostHog, "capture" | "on">>;
 
 const STRICT_TIMESTAMP =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
@@ -113,9 +141,12 @@ export function parseStrictTimestamp(value: unknown): number | undefined {
 }
 
 const NON_DESKTOP_USER_AGENT =
-  /Mobi|Android|iPhone|iPad|iPod|Tablet|Silk|Kindle|PlayBook|BlackBerry|BB10|Opera Mini|IEMobile|webOS|HackerAI-Desktop|Electron|Tauri|HeadlessChrome|bot|crawler|spider/i;
+  /Mobi|Android|iPhone|iPad|iPod|Tablet|Silk|Kindle|PlayBook|BlackBerry|BB10|Opera Mini|IEMobile|webOS|CriOS|FxiOS|EdgiOS|OPiOS|HackerAI-Desktop|Electron|Tauri|HeadlessChrome|bot|crawler|spider/i;
 const DESKTOP_OS = /Windows NT|Macintosh|X11|CrOS|Linux x86_64/;
-const DESKTOP_BROWSER = /(?:Chrome|Firefox|Safari|Edg)\/\d/;
+// Chromium-family and Firefox only. iPadOS requests desktop sites with a
+// user agent identical to macOS Safari, so Safari-only agents are excluded
+// rather than risk gating Ask on a tablet.
+const DESKTOP_BROWSER = /(?:Chrome|Chromium|Firefox|Edg)\/\d/;
 
 /**
  * Desktop OS browser only: phones, tablets and the native app are excluded
@@ -154,39 +185,52 @@ function newUsersFromPayload(payload: unknown): number | undefined {
   );
 }
 
-/**
- * Server-owned enrollment. Every exclusion, an unavailable or inactive flag,
- * or a malformed payload returns undefined: no experiment and no gate.
- * Evaluation is assignment only; it never records exposure.
- */
-export async function evaluateFreeAgentActivation({
-  request,
-  identity,
-  posthog = PostHogClient(),
-}: {
+type EvaluationArgs = {
   request: FreeAgentActivationRequest;
   identity: FreeAgentActivationIdentity;
   posthog?: FlagClient | null;
-}): Promise<FreeAgentActivationEnrollment | undefined> {
+};
+
+/**
+ * Server-owned enrollment shared by Ask admission and the status API.
+ * Evaluation is assignment only; it never records exposure.
+ */
+async function assessFreeAgentActivation({
+  request,
+  identity,
+  posthog = PostHogClient(),
+}: EvaluationArgs): Promise<FreeAgentActivationAssessment> {
   if (
     !identity.userId ||
     identity.subscription !== "free" ||
     identity.organizationId
   )
-    return;
+    return null;
   const accountCreatedAtMs = parseStrictTimestamp(identity.accountCreatedAt);
-  if (accountCreatedAtMs === undefined) return;
-  if (!isSupportedDesktopBrowserRequest(request.headers)) return;
+  if (accountCreatedAtMs === undefined) return null;
+  if (!isSupportedDesktopBrowserRequest(request.headers)) return null;
   const country = countryCodeFromHeaders(request.headers);
   // Exclude every subscription-first country so the experiments never overlap.
-  if (isSubscriptionFirstCountry(country)) return;
+  if (isSubscriptionFirstCountry(country)) return null;
   const { analyticsAllowed } = getAnalyticsConsentDecision({
     cookieValue: request.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
     countryCode: country,
     failClosed: true,
   });
-  if (!analyticsAllowed || !posthog) return;
+  // No configured client means the experiment is off here, not unavailable.
+  if (!analyticsAllowed || !posthog) return null;
 
+  // posthog-node resolves `undefined` both for an absent/inactive flag and for
+  // a failed /flags request; only the latter emits the client's error event.
+  let flagRequestFailed = false;
+  let unsubscribe: (() => void) | undefined;
+  try {
+    unsubscribe = posthog.on?.("error", () => {
+      flagRequestFailed = true;
+    });
+  } catch {
+    // Without failure events, an undefined result stays a known exclusion.
+  }
   let variant: FreeAgentActivationVariant;
   try {
     const result = await withRemoteTimeout(
@@ -195,38 +239,97 @@ export async function evaluateFreeAgentActivation({
         personProperties: { subscription: "free" },
       }),
     );
-    if (!result || result.enabled !== true) return;
-    if (result.variant !== "control" && result.variant !== "test") return;
+    if (!result) return flagRequestFailed ? undefined : null;
+    if (result.enabled !== true) return null;
+    if (result.variant !== "control" && result.variant !== "test") return null;
     const newUsersFrom = newUsersFromPayload(result.payload);
-    if (newUsersFrom === undefined || accountCreatedAtMs < newUsersFrom) return;
+    if (newUsersFrom === undefined || accountCreatedAtMs < newUsersFrom)
+      return null;
     variant = result.variant;
   } catch {
-    // An unavailable or slow experiment must not change an account's access.
-    return;
+    return undefined;
+  } finally {
+    try {
+      unsubscribe?.();
+    } catch {
+      // Listener cleanup cannot change the evaluation.
+    }
   }
-  captureAssignment(posthog, identity.userId, variant);
+  await captureAssignment(posthog, identity.userId, variant);
   return { variant, quotaSubject: quotaSubjectFor(identity) };
 }
 
 /**
- * All-assigned denominator, independent of UI rendering. Not exposure: no
- * $feature_flag_called or $experiment_exposure. The deterministic insert ID
- * lets repeated lookups collapse to the first assignment.
+ * Ask admission: every exclusion and every operational failure yields no
+ * enrollment, so an unavailable experiment never changes access.
  */
-function captureAssignment(
+export async function evaluateFreeAgentActivation(
+  args: EvaluationArgs,
+): Promise<FreeAgentActivationEnrollment | undefined> {
+  return (await assessFreeAgentActivation(args)) ?? undefined;
+}
+
+/**
+ * Status API: `null` is a known exclusion; `undefined` means the flag service
+ * could not answer, which the caller reports as unavailable.
+ */
+export async function evaluateFreeAgentActivationForStatus(
+  args: EvaluationArgs,
+): Promise<FreeAgentActivationEnrollment | null | undefined> {
+  return assessFreeAgentActivation(args);
+}
+
+async function readOrSetFirstAssignmentMs(
+  userId: string,
+): Promise<number | undefined> {
+  const redis = createRedisClient();
+  if (!redis) return;
+  try {
+    const stored = await withRemoteTimeout(
+      redis.eval<string[], unknown>(
+        FIRST_ASSIGNMENT_SCRIPT,
+        [freeAgentActivationAssignmentKey(userId)],
+        [String(Date.now())],
+      ),
+    );
+    const firstAssignedAtMs = Number(stored);
+    return Number.isSafeInteger(firstAssignedAtMs) && firstAssignedAtMs > 0
+      ? firstAssignedAtMs
+      : undefined;
+  } catch (error) {
+    logStorageFailure("assignment", error);
+  }
+}
+
+/**
+ * All-assigned denominator, independent of UI rendering. Not exposure: no
+ * $feature_flag_called or $experiment_exposure. Every lookup re-sends this
+ * event with one stable UUID and the stored first-assignment time per user
+ * and definition version, so storage can eventually merge repeats. Raw event
+ * counts are still not a participant count; readouts use unique assigned
+ * users and their earliest assignment. Without the marker, nothing is sent.
+ */
+async function captureAssignment(
   posthog: FlagClient,
   userId: string,
   variant: FreeAgentActivationVariant,
 ) {
+  if (!posthog.capture) return;
   try {
-    posthog.capture?.({
+    const firstAssignedAtMs = await readOrSetFirstAssignmentMs(userId);
+    if (firstAssignedAtMs === undefined) return;
+    posthog.capture({
       distinctId: userId,
       event: FREE_AGENT_ACTIVATION_ASSIGNED_EVENT,
+      uuid: uuidv5(
+        `${FREE_AGENT_ACTIVATION_KEY}:v${FREE_AGENT_ACTIVATION_DEFINITION_VERSION}:assigned:${userId}`,
+        uuidv5.URL,
+      ),
+      timestamp: new Date(firstAssignedAtMs),
       properties: {
         variant,
         definition_version: FREE_AGENT_ACTIVATION_DEFINITION_VERSION,
         [`$feature/${FREE_AGENT_ACTIVATION_KEY}`]: variant,
-        $insert_id: `${FREE_AGENT_ACTIVATION_KEY}:${userId}:assigned`,
         $process_person_profile: false,
         $geoip_disable: true,
       },
@@ -249,7 +352,10 @@ function withRemoteTimeout<T>(operation: Promise<T>): Promise<T> {
   ]).finally(() => clearTimeout(timer));
 }
 
-function logStorageFailure(operation: "read" | "record", error: unknown) {
+function logStorageFailure(
+  operation: "read" | "record" | "assignment",
+  error: unknown,
+) {
   console.warn(
     JSON.stringify({
       level: "warn",
@@ -282,13 +388,16 @@ export async function readCompletedAskResponses(
   }
 }
 
-/** Shared by the status API and Ask admission. Unavailable storage => null. */
+/**
+ * Shared by the status API and Ask admission. `null` means not enrolled;
+ * `undefined` means the stored count could not be read (unknown, not zero).
+ */
 export async function getFreeAgentActivationStatus(
-  enrollment: FreeAgentActivationEnrollment | undefined,
-): Promise<FreeAgentActivationStatus | null> {
+  enrollment: FreeAgentActivationEnrollment | null | undefined,
+): Promise<FreeAgentActivationStatus | null | undefined> {
   if (!enrollment) return null;
   const completed = await readCompletedAskResponses(enrollment.quotaSubject);
-  if (completed === undefined) return null;
+  if (completed === undefined) return undefined;
   return createFreeAgentActivationStatus(enrollment.variant, completed);
 }
 
@@ -326,6 +435,47 @@ async function recordCompletedAskResponse(
   } catch (error) {
     logStorageFailure("record", error);
   }
+}
+
+const MAX_DEFERRED_REGENERATE_IDS = 256;
+
+/**
+ * Validates the optional `deferredRegenerateAssistantIds` request field: the
+ * exact assistant chain a free Ask regeneration replaces, deleted by the
+ * server only after admission. Absent => existing behavior (undefined).
+ */
+export function parseDeferredRegenerateAssistantIds(
+  value: unknown,
+  { regenerate }: { regenerate: boolean },
+): string[] | undefined {
+  if (value === undefined) return;
+  const invalid = (reason: string) =>
+    new ChatSDKError(
+      "bad_request:api",
+      "Invalid deferred regeneration request.",
+      {
+        invalid_request_field: "deferredRegenerateAssistantIds",
+        invalid_request_field_reason: reason,
+      },
+    );
+  if (!regenerate) throw invalid("requires_regenerate");
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_DEFERRED_REGENERATE_IDS
+  )
+    throw invalid("invalid_length");
+  if (
+    !value.every(
+      (id): id is string =>
+        typeof id === "string" &&
+        id.trim().length > 0 &&
+        id.length <= MAX_RESPONSE_ID_LENGTH,
+    )
+  )
+    throw invalid("invalid_id");
+  if (new Set(value).size !== value.length) throw invalid("duplicate_id");
+  return value;
 }
 
 /**

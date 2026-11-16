@@ -5,6 +5,8 @@ import type { UIMessage } from "ai";
 import {
   enforceFreeAgentActivationAskAdmission,
   evaluateFreeAgentActivation,
+  evaluateFreeAgentActivationForStatus,
+  freeAgentActivationAssignmentKey,
   freeAgentActivationStorageKey,
   getFreeAgentActivationStatus,
   isFinalAssistantSaveReceipt,
@@ -36,16 +38,39 @@ const mockEval = jest.fn(
     return members.size;
   },
 );
+/** Same contract for the first-assignment get-or-set script. */
+const assignmentStore = new Map<string, string>();
+const mockAssignmentEval = jest.fn(
+  async (_script: string, keys: string[], args: string[]) => {
+    const [key] = keys;
+    if (!assignmentStore.has(key)) assignmentStore.set(key, args[0]);
+    // Upstash deserializes numeric-looking replies, so return a number.
+    return Number(assignmentStore.get(key));
+  },
+);
 let mockRedisAvailable = true;
 jest.mock("@/lib/rate-limit/redis", () => ({
   createRedisClient: () =>
-    mockRedisAvailable ? { scard: mockScard, eval: mockEval } : null,
+    mockRedisAvailable
+      ? {
+          scard: mockScard,
+          eval: (script: string, keys: string[], args: string[]) =>
+            keys[0].startsWith("free_agent_activation_assignment:")
+              ? mockAssignmentEval(script, keys, args)
+              : mockEval(script, keys, args),
+        }
+      : null,
 }));
 jest.mock("@/app/posthog", () => ({ __esModule: true, default: () => null }));
 
 const CUTOFF = "2026-11-15T00:00:00.000Z";
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DESKTOP_CHROME =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+// Sent by both macOS Safari and iPadOS Safari requesting the desktop site.
+const SAFARI_DESKTOP =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
 
 const flagResult = (
   overrides: Partial<{
@@ -62,9 +87,19 @@ const flagResult = (
 });
 const mockGetFeatureFlagResult = jest.fn();
 const mockCapture = jest.fn();
+/** posthog-node reports a failed /flags request only via its error event. */
+const errorListeners = new Set<(error: unknown) => void>();
+const emitPostHogError = (error: unknown) => {
+  for (const listener of errorListeners) listener(error);
+};
 const posthog = {
   getFeatureFlagResult: mockGetFeatureFlagResult,
   capture: mockCapture,
+  on: (event: string, listener: (error: unknown) => void) => {
+    if (event !== "error") return () => {};
+    errorListeners.add(listener);
+    return () => errorListeners.delete(listener);
+  },
 } as never;
 
 const identity = (
@@ -171,6 +206,8 @@ const record = (
 let consoleWarn: jest.SpyInstance;
 beforeEach(() => {
   store.clear();
+  assignmentStore.clear();
+  errorListeners.clear();
   evalScripts.length = 0;
   mockRedisAvailable = true;
   jest.clearAllMocks();
@@ -210,11 +247,12 @@ describe("free Agent activation eligibility", () => {
       expect(event).toEqual({
         distinctId: "user_new",
         event: "free_agent_activation_assigned",
+        uuid: expect.stringMatching(UUID),
+        timestamp: expect.any(Date),
         properties: {
           variant,
           definition_version: 1,
           "$feature/free_agent_activation_gate_v1": variant,
-          $insert_id: "free_agent_activation_gate_v1:user_new:assigned",
           $process_person_profile: false,
           $geoip_disable: true,
         },
@@ -232,13 +270,65 @@ describe("free Agent activation eligibility", () => {
     },
   );
 
-  it("records the same insert ID on repeated lookups so readouts keep the first assignment", async () => {
+  it("sends one stable event UUID per user across repeated lookups and variants, distinct between users", async () => {
     await evaluate();
     await evaluate();
-    const insertIds = mockCapture.mock.calls.map(
-      ([event]) => event.properties.$insert_id,
+    mockGetFeatureFlagResult.mockResolvedValue(
+      flagResult({ variant: "control" }),
     );
-    expect(new Set(insertIds).size).toBe(1);
+    await evaluate();
+    await evaluate({ id: identity({ userId: "user_other" }) });
+    const uuids = mockCapture.mock.calls.map(([event]) => event.uuid);
+
+    expect(uuids).toHaveLength(4);
+    for (const uuid of uuids) expect(uuid).toMatch(UUID);
+    expect(new Set(uuids.slice(0, 3)).size).toBe(1);
+    expect(uuids[3]).not.toBe(uuids[0]);
+    // The SDK only honors the envelope UUID; no property-level insert ID.
+    for (const [event] of mockCapture.mock.calls) {
+      expect(event.properties).not.toHaveProperty("$insert_id");
+    }
+  });
+
+  it("stamps every repeat with the stored first-assignment time, per user", async () => {
+    jest.useFakeTimers({ now: new Date("2026-11-15T10:00:00.000Z") });
+    await evaluate();
+    jest.setSystemTime(new Date("2026-11-18T08:00:00.000Z"));
+    await evaluate();
+    await evaluate({ id: identity({ userId: "user_other" }) });
+
+    const stamps = mockCapture.mock.calls.map(([event]) =>
+      (event.timestamp as Date).toISOString(),
+    );
+    expect(stamps).toEqual([
+      "2026-11-15T10:00:00.000Z",
+      "2026-11-15T10:00:00.000Z",
+      "2026-11-18T08:00:00.000Z",
+    ]);
+    expect([...assignmentStore.keys()]).toEqual([
+      freeAgentActivationAssignmentKey("user_new"),
+      freeAgentActivationAssignmentKey("user_other"),
+    ]);
+    expect(
+      isUserRateLimitKey(assignmentStore.keys().next().value!, "user_new"),
+    ).toBe(true);
+  });
+
+  it("skips the assignment event but keeps enrollment when the marker is unavailable", async () => {
+    mockRedisAvailable = false;
+    await expect(evaluate()).resolves.toMatchObject({ variant: "test" });
+
+    mockRedisAvailable = true;
+    mockAssignmentEval.mockRejectedValueOnce(new Error("redis down"));
+    await expect(evaluate()).resolves.toMatchObject({ variant: "test" });
+
+    mockAssignmentEval.mockImplementationOnce(() => new Promise(() => {}));
+    jest.useFakeTimers();
+    const pending = evaluate();
+    await jest.advanceTimersByTimeAsync(750);
+    await expect(pending).resolves.toMatchObject({ variant: "test" });
+
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it("keeps the enrollment when assignment capture throws", async () => {
@@ -365,6 +455,22 @@ describe("free Agent activation eligibility", () => {
       "native Desktop app",
       `${DESKTOP_CHROME.replace("Chrome/141.0.0.0 ", "")} HackerAI-Desktop/1.0`,
     ],
+    [
+      "macOS Safari (identical to an iPad requesting the desktop site)",
+      SAFARI_DESKTOP,
+    ],
+    [
+      "Chrome on iOS in desktop mode",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/141.0.0.0 Safari/605.1.15",
+    ],
+    [
+      "Firefox on iOS in desktop mode",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/133.0 Safari/605.1.15",
+    ],
+    [
+      "Edge on iOS in desktop mode",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 EdgiOS/141.0.0.0 Safari/605.1.15",
+    ],
     ["missing user agent", null],
     ["non-browser client", "curl/8.7.1"],
   ])("excludes a %s", async (_, userAgent) => {
@@ -383,9 +489,12 @@ describe("free Agent activation eligibility", () => {
   });
 
   it.each([
+    DESKTOP_CHROME,
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
     "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
   ])("accepts a supported desktop browser: %s", async (userAgent) => {
     await expect(evaluate({ req: request({ userAgent }) })).resolves.toEqual(
       expect.objectContaining({ variant: "test" }),
@@ -447,6 +556,92 @@ describe("free Agent activation eligibility", () => {
     mockGetFeatureFlagResult.mockRejectedValue(new Error("network"));
     await expect(evaluate()).resolves.toBeUndefined();
   });
+
+  describe("status mode separates known exclusions from an unavailable flag", () => {
+    const evaluateStatus = (args: { id?: FreeAgentActivationIdentity } = {}) =>
+      evaluateFreeAgentActivationForStatus({
+        request: request(),
+        identity: args.id ?? identity(),
+        posthog,
+      });
+
+    it.each<[string, () => void]>([
+      [
+        "a failed /flags request (SDK error event, undefined result)",
+        () =>
+          mockGetFeatureFlagResult.mockImplementation(async () => {
+            emitPostHogError(new Error("PostHogFetchNetworkError"));
+            return undefined;
+          }),
+      ],
+      [
+        "a rejected lookup",
+        () => mockGetFeatureFlagResult.mockRejectedValue(new Error("boom")),
+      ],
+    ])("is unknown for %s, while Ask stays open", async (_, arrange) => {
+      arrange();
+      await expect(evaluateStatus()).resolves.toBeUndefined();
+      await expect(evaluate()).resolves.toBeUndefined();
+      expect(mockCapture).not.toHaveBeenCalled();
+      expect(errorListeners.size).toBe(0);
+    });
+
+    it("is unknown for a stalled lookup", async () => {
+      jest.useFakeTimers();
+      mockGetFeatureFlagResult.mockImplementation(() => new Promise(() => {}));
+      const pending = evaluateStatus();
+      await jest.advanceTimersByTimeAsync(750);
+      await expect(pending).resolves.toBeUndefined();
+    });
+
+    it.each<
+      [string, { arrange?: () => void; id?: FreeAgentActivationIdentity }]
+    >([
+      [
+        "an inactive or absent flag",
+        {
+          arrange: () => mockGetFeatureFlagResult.mockResolvedValue(undefined),
+        },
+      ],
+      [
+        "a disabled flag result",
+        {
+          arrange: () =>
+            mockGetFeatureFlagResult.mockResolvedValue(
+              flagResult({ enabled: false, variant: undefined }),
+            ),
+        },
+      ],
+      [
+        "a missing cutoff payload",
+        {
+          arrange: () =>
+            mockGetFeatureFlagResult.mockResolvedValue(
+              flagResult({ payload: undefined }),
+            ),
+        },
+      ],
+      ["a paid account", { id: identity({ subscription: "pro" }) }],
+    ])("is a known exclusion for %s", async (_, { arrange, id }) => {
+      arrange?.();
+      await expect(evaluateStatus({ id })).resolves.toBeNull();
+    });
+
+    it("recovers from an unavailable flag to a refused Ask once both stores answer", async () => {
+      for (const responseId of ["r1", "r2", "r3"]) await record(responseId);
+      mockGetFeatureFlagResult.mockRejectedValueOnce(new Error("flags down"));
+      await expect(evaluateStatus()).resolves.toBeUndefined();
+
+      const recovered = await evaluateStatus();
+      expect(recovered).toEqual(enrollment);
+      await expect(getFreeAgentActivationStatus(recovered)).resolves.toEqual(
+        expect.objectContaining({ requiresAgent: true }),
+      );
+      await expect(
+        enforceFreeAgentActivationAskAdmission(await evaluate()),
+      ).rejects.toMatchObject({ statusCode: 403 });
+    });
+  });
 });
 
 describe("free Agent activation status and Ask admission", () => {
@@ -504,17 +699,28 @@ describe("free Agent activation status and Ask admission", () => {
     expect(mockScard).not.toHaveBeenCalled();
   });
 
-  it("distinguishes unavailable storage from zero and fails open without resetting progress", async () => {
+  it("reports an unreadable count as unknown (not unenrolled), fails Ask open, then recovers to refuse", async () => {
     for (const id of ["r1", "r2", "r3"]) await record(id);
     mockRedisAvailable = false;
-    await expect(getFreeAgentActivationStatus(enrollment)).resolves.toBeNull();
+    await expect(
+      getFreeAgentActivationStatus(enrollment),
+    ).resolves.toBeUndefined();
     await expect(
       enforceFreeAgentActivationAskAdmission(enrollment),
     ).resolves.toBeUndefined();
 
     mockRedisAvailable = true;
     mockScard.mockRejectedValueOnce(new Error("redis down"));
-    await expect(getFreeAgentActivationStatus(enrollment)).resolves.toBeNull();
+    await expect(
+      getFreeAgentActivationStatus(enrollment),
+    ).resolves.toBeUndefined();
+    // Stored progress survived the outage; the next read refuses Ask.
+    await expect(getFreeAgentActivationStatus(enrollment)).resolves.toEqual(
+      expect.objectContaining({
+        completedAskResponses: 3,
+        requiresAgent: true,
+      }),
+    );
     await expect(
       enforceFreeAgentActivationAskAdmission(enrollment),
     ).rejects.toMatchObject({ statusCode: 403 });

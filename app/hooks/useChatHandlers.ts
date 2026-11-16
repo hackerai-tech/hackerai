@@ -104,6 +104,15 @@ interface UseChatHandlersProps {
     options?: { body?: any },
     kind?: "goal" | "ask",
   ) => Promise<void>;
+  /**
+   * Gate-eligible free Ask regeneration that the server admits before it
+   * deletes the saved answer. Rejects on a definitive gate refusal.
+   */
+  regenerateAdmitted?: (options: {
+    body: Record<string, unknown> & { agentRunRequestId: string };
+    /** Runs synchronously at HTTP admission, before the reply is read. */
+    onAdmitted?: () => void;
+  }) => Promise<"admitted" | "refused" | "settled">;
   sendQueuedMessage?: (
     id: string,
     body: Record<string, unknown>,
@@ -131,6 +140,20 @@ interface UseChatHandlersProps {
   resetAutoContinueCount?: () => void;
 }
 
+/** Server bound for `deferredRegenerateAssistantIds` (exact chain IDs). */
+const MAX_DEFERRED_REGENERATE_ASSISTANT_IDS = 256;
+
+/**
+ * Editing a free Ask message that the activation gate may refuse would rewrite
+ * saved history first. Messages matches this `name` to keep the editor open.
+ */
+export class FreeAskEditBlockedError extends Error {
+  constructor() {
+    super("Send this revision as a new message to keep your saved answer.");
+    this.name = "FreeAskEditBlockedError";
+  }
+}
+
 export type RetryOptions = {
   limitRescue?: LimitRescueRequest;
   /** Override the model for this retry, e.g. Auto for the daily allowance. */
@@ -156,6 +179,7 @@ export const useChatHandlers = ({
   messages,
   sendMessage,
   sendAdmittedMessage,
+  regenerateAdmitted,
   sendQueuedMessage,
   stop,
   regenerate,
@@ -223,6 +247,7 @@ export const useChatHandlers = ({
   const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
+  const freeAskAwaitsAdmissionRef = useLatestRef(freeAskAwaitsAdmission);
   const goalGenerationRef = useLatestRef(goalGeneration);
   const goalStateRef = useLatestRef(goalState);
   const recoveryPendingRef = useRef(false);
@@ -1433,8 +1458,105 @@ export const useChatHandlers = ({
     }
   };
 
+  // The activation gate can refuse a free Ask (test variant or unknown status)
+  // before the server saves anything, so saved history must not change first.
+  const mayRefuseFreeAsk = () =>
+    chatModeRef.current === "ask" &&
+    subscriptionRef.current === "free" &&
+    freeAskAwaitsAdmissionRef.current === true;
+  // Let the server delete the saved chain only after admission.
+  const shouldDeferRegenerateDeletion = (chainAssistantIds: string[]) =>
+    chainAssistantIds.length > 0 &&
+    chainAssistantIds.length <= MAX_DEFERRED_REGENERATE_ASSISTANT_IDS &&
+    mayRefuseFreeAsk() &&
+    !!regenerateAdmitted;
+  // Beyond the deferred protocol bound there is no safe rerun: refuse it
+  // rather than deleting saved work before admission.
+  const refuseUnboundedFreeAskRerun = (chainAssistantIds: string[]) => {
+    if (
+      chainAssistantIds.length <= MAX_DEFERRED_REGENERATE_ASSISTANT_IDS ||
+      !mayRefuseFreeAsk()
+    )
+      return false;
+    toast.error("This answer is too long to rerun. It is unchanged.", {
+      description: "Send a new message to continue.",
+    });
+    return true;
+  };
+
+  /**
+   * Nothing changes locally before admission. At HTTP OK the intended cleanup
+   * removes only the old chain's exact IDs, so a new streamed response or a
+   * later user edit is never overwritten. A definite refusal puts back only
+   * the saved response the SDK removed optimistically.
+   */
+  const regenerateWithDeferredDeletion = async (
+    body: Record<string, unknown> & { agentRunRequestId: string },
+    {
+      snapshot,
+      trimmedMessages,
+      cleanTodos,
+    }: {
+      snapshot: ChatMessage[];
+      trimmedMessages: ChatMessage[];
+      cleanTodos: (current: typeof todos) => typeof todos;
+    },
+  ) => {
+    // The trailing chain: old assistant replies and hidden continuations.
+    const oldChainIds = new Set(
+      snapshot.slice(trimmedMessages.length).map((message) => message.id),
+    );
+    // Compare saved content, not just IDs: a same-ID revision of text or
+    // attachments must never be replaced by the old snapshot.
+    const sameMessage = (a: ChatMessage, b: ChatMessage) =>
+      a === b ||
+      (a.id === b.id &&
+        a.role === b.role &&
+        JSON.stringify(a.parts) === JSON.stringify(b.parts) &&
+        JSON.stringify(a.metadata) === JSON.stringify(b.metadata));
+    const sameMessages = (a: ChatMessage[], b: ChatMessage[]) =>
+      a.length === b.length &&
+      a.every((message, i) => sameMessage(message, b[i]));
+    const restoreSavedResponse = () => {
+      if (currentChatIdRef.current !== chatId) return;
+      setMessages((current) => {
+        if (sameMessages(current, snapshot)) return current;
+        // Only the SDK's own optimistic removal is undone.
+        return sameMessages(current, snapshot.slice(0, -1))
+          ? snapshot
+          : current;
+      });
+    };
+    try {
+      const outcome = await regenerateAdmitted!({
+        body,
+        onAdmitted: () => {
+          if (currentChatIdRef.current !== chatId) return;
+          const currentTodos = todosRef.current;
+          const nextTodos = cleanTodos(currentTodos);
+          if (nextTodos !== currentTodos) setTodos(nextTodos);
+          reconcileSidebar(trimmedMessages);
+          setMessages((current) =>
+            current.filter((message) => !oldChainIds.has(message.id)),
+          );
+        },
+      });
+      // A definite non-gate refusal deleted nothing; its error stays in-thread.
+      if (outcome === "refused") restoreSavedResponse();
+    } catch (error) {
+      restoreSavedResponse();
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "Your saved answer is unchanged. Try again later.",
+      );
+    }
+  };
+
   const handleRegenerate = async () => {
     if (sendDisabledReasonRef.current) return;
+    if (refuseUnboundedFreeAskRerun(getAutoContinueChainAssistantIds(messages)))
+      return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -1447,6 +1569,7 @@ export const useChatHandlers = ({
 
     // Remove todos from all assistant messages in the auto-continue chain.
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
+    const deferDeletion = shouldDeferRegenerateDeletion(chainAssistantIds);
     captureAuthenticatedEvent("chat_response_regeneration_requested", {
       chat_id: chatId,
       message_id: messages
@@ -1460,22 +1583,49 @@ export const useChatHandlers = ({
       chainAssistantIds.length > 0
         ? removeTodosBySourceMessages(todos, chainAssistantIds)
         : todos;
-    if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
     // Trim client-side message state to the last real user message.
     // Without this, the SDK's regenerate() only removes the last assistant,
     // leaving old auto-continue chain messages visible in the UI.
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
 
-    reconcileSidebar(trimmedMessages);
-
-    setMessages(trimmedMessages);
+    // The deferred path cleans up only once the server admits the request.
+    if (!deferDeletion) {
+      if (cleanedTodos !== todos) setTodos(cleanedTodos);
+      reconcileSidebar(trimmedMessages);
+      setMessages(trimmedMessages);
+    }
 
     const shouldSendClientMessagesForRegenerate =
       hasRestageableLocalDesktopAttachments(trimmedMessages);
     const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
       ? trimmedMessages
       : [];
+
+    const body = {
+      mode: chatModeRef.current,
+      messages: persistentRegenerateMessages,
+      todos: cleanedTodos,
+      regenerate: true,
+      agentRunRequestId,
+      useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
+      sandboxPreference,
+      agentPermissionMode: agentPermissionModeRef.current,
+      selectedModel: requestSelectedModelRef.current,
+    };
+    if (deferDeletion) {
+      if (sendDisabledReasonRef.current) return;
+      await regenerateWithDeferredDeletion(
+        { ...body, deferredRegenerateAssistantIds: chainAssistantIds },
+        {
+          snapshot: messages,
+          trimmedMessages,
+          cleanTodos: (current) =>
+            removeTodosBySourceMessages(current, chainAssistantIds),
+        },
+      );
+      return;
+    }
 
     // Delete the trailing response chain and clear summaries that may include
     // that deleted work, so regeneration starts from the original request.
@@ -1487,21 +1637,7 @@ export const useChatHandlers = ({
       });
     }
     if (sendDisabledReasonRef.current) return;
-    runChatAction("regenerate response", () =>
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: persistentRegenerateMessages,
-          todos: cleanedTodos,
-          regenerate: true,
-          agentRunRequestId,
-          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModelRef.current,
-        },
-      }),
-    );
+    runChatAction("regenerate response", () => regenerate({ body }));
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
@@ -1532,6 +1668,10 @@ export const useChatHandlers = ({
         }
         return;
       }
+      if (
+        refuseUnboundedFreeAskRerun(getAutoContinueChainAssistantIds(messages))
+      )
+        return;
       // Read authoritative state before mutating the transcript. A failed or
       // unavailable check must not turn a saved request into a new submission.
       let retryUnpersistedMessage = false;
@@ -1557,17 +1697,31 @@ export const useChatHandlers = ({
       const agentRunRequestId = uuidv4();
 
       const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
-      const cleanedTodos = removeTodosBySourceMessages(
-        todos,
-        todos
-          .filter((t) => t.sourceMessageId)
-          .map((t) => t.sourceMessageId as string),
-      );
-      if (cleanedTodos !== todos) setTodos(cleanedTodos);
+      const deferDeletion = shouldDeferRegenerateDeletion(chainAssistantIds);
+      if (deferDeletion && retryUnpersistedMessage) {
+        // Saved progress follows a request this tab cannot confirm. Never
+        // delete it or regenerate from a missing user turn; keep both.
+        toast.error("Could not retry yet. Your saved answer is unchanged.", {
+          description: "Reload this chat, then try again.",
+        });
+        return;
+      }
+      const removeSourcedTodos = (current: typeof todos) =>
+        removeTodosBySourceMessages(
+          current,
+          current
+            .filter((t) => t.sourceMessageId)
+            .map((t) => t.sourceMessageId as string),
+        );
+      const cleanedTodos = removeSourcedTodos(todos);
 
       const messagesToLastUser = getMessagesUpToLastRealUser(messages);
-      reconcileSidebar(messagesToLastUser);
-      setMessages(messagesToLastUser);
+      // The deferred path cleans up only once the server admits the request.
+      if (!deferDeletion) {
+        if (cleanedTodos !== todos) setTodos(cleanedTodos);
+        reconcileSidebar(messagesToLastUser);
+        setMessages(messagesToLastUser);
+      }
 
       // Admission may fail before the user message is persisted. Retrying that
       // turn must save the same message ID instead of regenerating absent history.
@@ -1577,6 +1731,31 @@ export const useChatHandlers = ({
       const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
         ? messagesToLastUser
         : [];
+
+      const body = {
+        mode: chatModeRef.current,
+        messages: persistentRegenerateMessages,
+        todos: cleanedTodos,
+        regenerate: !retryUnpersistedMessage,
+        agentRunRequestId,
+        useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
+        sandboxPreference,
+        agentPermissionMode: agentPermissionModeRef.current,
+        selectedModel: options.selectedModel ?? requestSelectedModel,
+        ...(options.limitRescue && { limitRescue: options.limitRescue }),
+      };
+      if (deferDeletion) {
+        if (sendDisabledReasonRef.current) return;
+        await regenerateWithDeferredDeletion(
+          { ...body, deferredRegenerateAssistantIds: chainAssistantIds },
+          {
+            snapshot: messages,
+            trimmedMessages: messagesToLastUser,
+            cleanTodos: removeSourcedTodos,
+          },
+        );
+        return;
+      }
 
       // Delete any persisted partial/error response before retrying. The backend
       // otherwise fetches that stale trailing chain when client messages are not
@@ -1590,23 +1769,7 @@ export const useChatHandlers = ({
       }
 
       if (sendDisabledReasonRef.current) return;
-      await runChatAction("retry response", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: persistentRegenerateMessages,
-            todos: cleanedTodos,
-            regenerate: !retryUnpersistedMessage,
-            agentRunRequestId,
-            useClientMessagesForRegenerate:
-              shouldSendClientMessagesForRegenerate,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: options.selectedModel ?? requestSelectedModel,
-            ...(options.limitRescue && { limitRescue: options.limitRescue }),
-          },
-        }),
-      );
+      await runChatAction("retry response", () => regenerate({ body }));
     } finally {
       retryPendingRef.current = false;
     }
@@ -1626,6 +1789,9 @@ export const useChatHandlers = ({
       toast.error("Only the latest user message can be edited.");
       return;
     }
+    // Editing rewrites saved history before the server can refuse a free Ask.
+    // Refuse before stopping runs or mutating; the editor keeps the revision.
+    if (mayRefuseFreeAsk()) throw new FreeAskEditBlockedError();
 
     const expectedGoalGeneration = goalGenerationRef.current;
     const editsGoal =

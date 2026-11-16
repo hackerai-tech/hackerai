@@ -471,6 +471,16 @@ export const Messages = ({
           await onEditMessage(editingMessageId, newContent, remainingFileIds);
           setEditingMessageId(null);
         } catch (error) {
+          // The free Agent activation gate cannot accept a history edit; a
+          // retry cannot succeed, so give the one action that works instead.
+          // Matches FreeAskEditBlockedError in useChatHandlers by name.
+          if (
+            error instanceof Error &&
+            error.name === "FreeAskEditBlockedError"
+          ) {
+            toast.info(error.message);
+            return;
+          }
           console.error("Failed to edit message:", error);
           toast.error(
             "Could not save your edit. Your draft is kept; please try again.",
