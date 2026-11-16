@@ -252,6 +252,21 @@ test.each([
   expect(parsePredictedNextAction(output)).toEqual([]);
 });
 
+test.each(["null", "NULL", " Null ", "\tnull "])(
+  "treats a standalone string null as abstention: %p",
+  (suggestion) => {
+    expect(parsePredictedNextAction({ suggestion })).toEqual([]);
+  },
+);
+
+test.each([
+  "why is the response null?",
+  "null byte injection next",
+  "nullable fields too",
+])("keeps real text that mentions null: %p", (suggestion) => {
+  expect(parsePredictedNextAction({ suggestion })).toEqual([suggestion]);
+});
+
 test("trims a single bounded prediction and preserves ordinary paths", () => {
   expect(
     parsePredictedNextAction({
