@@ -3,6 +3,11 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const mockRedirectToBillingPortal = jest.fn();
 const mockOpenRenewalInvoice = jest.fn();
+const mockAfter = jest.fn<(callback: () => Promise<void>) => void>();
+const mockFlush = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { flush: mockFlush },
+}));
 jest.mock("@/lib/actions/renewal-invoice", () => ({
   __esModule: true,
   default: mockOpenRenewalInvoice,
@@ -32,6 +37,7 @@ jest.mock("@/lib/actions/cancel-subscription", () => ({
 }));
 
 jest.mock("next/server", () => ({
+  after: (callback: () => Promise<void>) => mockAfter(callback),
   NextResponse: {
     json: (body: unknown, init?: ResponseInit) => ({
       status: init?.status ?? 200,
@@ -135,27 +141,61 @@ describe("billing API routes", () => {
     },
   );
 
-  it("accepts pricing as an authorized portal recovery surface", async () => {
-    mockRedirectToBillingPortal.mockResolvedValue(
-      "https://billing.stripe.com/session" as never,
-    );
-    const { POST } = await import("../portal/route");
-    expect(
-      (
-        await POST(
-          request({
-            flow: "payment_method",
-            surface: "pricing_dialog",
-            returnPath: "/c/test",
-          }) as never,
-        )
-      ).status,
-    ).toBe(200);
-    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith("payment_method", {
-      surface: "pricing_dialog",
-      returnPath: "/c/test",
-    });
-  });
+  it.each(["pricing_dialog", "chat_notice"])(
+    "accepts %s as an authorized portal recovery surface",
+    async (surface) => {
+      mockRedirectToBillingPortal.mockResolvedValue(
+        "https://billing.stripe.com/session" as never,
+      );
+      const { POST } = await import("../portal/route");
+      expect(
+        (
+          await POST(
+            request({
+              flow: "payment_method",
+              surface,
+              returnPath: "/c/test",
+            }) as never,
+          )
+        ).status,
+      ).toBe(200);
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
+        "payment_method",
+        {
+          surface,
+          returnPath: "/c/test",
+        },
+      );
+    },
+  );
+
+  it.each(["portal", "renewal-invoice"] as const)(
+    "flushes %s handoff telemetry after successful and failed responses",
+    async (route) => {
+      const action =
+        route === "portal"
+          ? mockRedirectToBillingPortal
+          : mockOpenRenewalInvoice;
+      const { POST } =
+        route === "portal"
+          ? await import("../portal/route")
+          : await import("../renewal-invoice/route");
+      action.mockResolvedValue("https://billing.example/test" as never);
+      expect((await POST(request(null) as never)).status).toBe(200);
+      expect(mockFlush).not.toHaveBeenCalled();
+      await mockAfter.mock.calls[0][0]();
+      expect(mockFlush).toHaveBeenCalledTimes(1);
+
+      jest.clearAllMocks();
+      action.mockRejectedValue(
+        new Error("Only admins or owners can manage billing") as never,
+      );
+      expect((await POST(request(null) as never)).status).toBe(403);
+      expect(mockFlush).not.toHaveBeenCalled();
+      await mockAfter.mock.calls[0][0]();
+      expect(mockFlush).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("returns a billing portal URL", async () => {
     mockRedirectToBillingPortal.mockResolvedValue(
