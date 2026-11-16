@@ -772,6 +772,50 @@ describe("ChatInput - Integration Tests", () => {
       await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
     });
 
+    it("keeps setup open through the connection, then hands back the draft", async () => {
+      const { rerender } = render(ui());
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Scan my lab host" } });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Continue with Agent" }),
+      );
+      expect(
+        screen.getByRole("dialog", { name: "Continue with Agent" }),
+      ).toBeInTheDocument();
+
+      mockSandboxState = {
+        ...mockSandboxState,
+        sandboxPreference: "runner-kali",
+        localConnections: [
+          {
+            connectionId: "runner-kali",
+            name: "kali-vm",
+            isDesktop: false,
+            capabilities: { commands: true, pty: true },
+          },
+        ],
+        hasLocalSandbox: true,
+      };
+      rerender(ui());
+
+      // The tab is gone, but setup finishes on the genuine connected state.
+      expect(
+        screen.queryByTestId("free-agent-gate-notice"),
+      ).not.toBeInTheDocument();
+      const connected = screen.getByRole("dialog", {
+        name: "Your computer is connected",
+      });
+      fireEvent.click(
+        within(connected).getByRole("button", { name: "Use Agent" }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(textarea).toHaveValue("Scan my lab host");
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
     it("does not fall back to Ask when the gated user's computer disconnects", async () => {
       const setChatMode = jest.fn();
       mockSandboxState = {

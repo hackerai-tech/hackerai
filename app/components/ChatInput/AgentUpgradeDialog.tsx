@@ -17,9 +17,7 @@ import {
   Download,
   Laptop,
   LoaderCircle,
-  Monitor,
   RefreshCw,
-  SquareTerminal,
 } from "lucide-react";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -78,7 +76,7 @@ export function AgentUpgradeDialog({
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="sm:max-w-[460px]"
+          className="gap-0 rounded-xl sm:max-w-[420px]"
           data-testid="agent-upgrade-dialog"
         >
           <ActivationSetup
@@ -254,11 +252,40 @@ const DESKTOP_SETUP_STEPS = [
   "Keep the app open while it connects",
 ];
 
-function SetupIcon({ children }: { children: React.ReactNode }) {
+const DESKTOP_PLATFORM_NAMES = {
+  macos: "macOS",
+  windows: "Windows",
+  linux: "Linux",
+} as const;
+
+/** Quiet secondary choice: a plain row, not a card. */
+function SetupRow({
+  label,
+  hint,
+  onClick,
+  testId,
+}: {
+  label: string;
+  hint: string;
+  onClick: () => void;
+  testId: string;
+}) {
   return (
-    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-background [&_svg]:size-4">
-      {children}
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className="-mx-2 flex h-10 items-center gap-3 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+      data-testid={testId}
+    >
+      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+      <span className="hidden shrink-0 text-[13px] text-muted-foreground sm:inline">
+        {hint}
+      </span>
+      <ChevronRight
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
+    </button>
   );
 }
 
@@ -283,30 +310,36 @@ function ActivationSetup({
       : null;
   const downloadHref = directDownload?.downloadUrl || "/download";
   const downloadLabel = directDownload
-    ? `Download for ${directDownload.displayName}`
+    ? `Download HackerAI Desktop for ${directDownload.displayName}`
     : "Download HackerAI Desktop";
+  const otherPlatforms = directDownload
+    ? Object.entries(DESKTOP_PLATFORM_NAMES)
+        .filter(([platform]) => platform !== directDownload.platform)
+        .map(([, name]) => name)
+    : [];
   const track = (action: FreeAgentSetupAction) =>
     captureFreeAgentSetupAction(status, action, ACTIVATION_SURFACE);
 
   if (connectedComputerName) {
     return (
       <>
-        <DialogHeader>
-          <DialogTitle>{connectedComputerName} is connected</DialogTitle>
+        <DialogHeader className="pr-6 text-left">
+          <DialogTitle>Your computer is connected</DialogTitle>
           <DialogDescription className="sr-only">
-            Agent will run on this computer.
+            Agent will run on {connectedComputerName}.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex items-center gap-3 rounded-lg border p-3">
-          <SetupIcon>
-            <Check className="text-emerald-600 dark:text-emerald-400" />
-          </SetupIcon>
-          <div className="min-w-0 flex-1 truncate text-sm font-medium">
+        <div className="flex min-w-0 items-center gap-2.5 pt-4 pb-6 text-sm">
+          <span
+            className="size-2 shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate font-mono">
             {connectedComputerName}
-          </div>
+          </span>
         </div>
         <Button
-          className="w-full"
+          className="h-10 w-full"
           onClick={() => {
             track("use_connected");
             onClose();
@@ -322,17 +355,20 @@ function ActivationSetup({
   if (step === "waiting") {
     return (
       <>
-        <DialogHeader>
-          <DialogTitle>Set up HackerAI Desktop</DialogTitle>
+        <DialogHeader className="pr-6 text-left">
+          <DialogTitle>Finish setup in HackerAI Desktop</DialogTitle>
           <DialogDescription className="sr-only">
             Install HackerAI Desktop and sign in with this account to connect
             it.
           </DialogDescription>
         </DialogHeader>
-        <ol className="space-y-3">
+        <ol className="space-y-3.5 pt-5 pb-5">
           {DESKTOP_SETUP_STEPS.map((text, index) => (
-            <li key={text} className="flex items-center gap-3 text-sm">
-              <span className="flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-medium">
+            <li key={text} className="flex items-baseline gap-3 text-sm">
+              <span
+                className="w-4 shrink-0 font-mono text-[13px] text-muted-foreground"
+                aria-hidden="true"
+              >
                 {index + 1}
               </span>
               {text}
@@ -341,25 +377,31 @@ function ActivationSetup({
         </ol>
         <div
           role="status"
-          className="flex items-center gap-2.5 rounded-lg bg-muted px-3 py-3 text-sm text-muted-foreground"
+          className="flex items-center gap-2.5 border-t pt-4 text-sm text-foreground/80"
         >
           <LoaderCircle
-            className="size-4 shrink-0 animate-spin motion-reduce:animate-none"
+            className="size-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
             aria-hidden="true"
           />
           Waiting for HackerAI Desktop to connect…
         </div>
-        <div className="flex items-center justify-between gap-2">
+        <div className="-mx-2 flex items-center justify-between gap-2 pt-3">
           <Button
             type="button"
             variant="ghost"
             size="sm"
+            className="text-muted-foreground"
             onClick={() => setStep("choose")}
           >
             <ChevronLeft aria-hidden="true" />
             Other options
           </Button>
-          <Button variant="ghost" size="sm" asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            asChild
+          >
             <a
               href={downloadHref}
               target="_blank"
@@ -376,7 +418,7 @@ function ActivationSetup({
 
   return (
     <>
-      <DialogHeader>
+      <DialogHeader className="pr-6 text-left">
         <DialogTitle>Continue with Agent</DialogTitle>
         <DialogDescription>
           Agent runs terminal commands and works with files on the computer you
@@ -384,77 +426,62 @@ function ActivationSetup({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="flex flex-col gap-3 pt-1">
-        <div className="space-y-1 rounded-lg border p-1">
-          <div className="space-y-3 rounded-md bg-muted/60 p-3">
-            <div className="flex items-center gap-3">
-              <SetupIcon>
-                <Monitor />
-              </SetupIcon>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium" translate="no">
-                  HackerAI Desktop
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Free · macOS, Windows and Linux
-                </div>
-              </div>
-            </div>
-            <Button asChild className="w-full">
-              <a
-                href={downloadHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => {
-                  track("download_desktop");
-                  setStep("waiting");
-                }}
-                data-testid="free-agent-download-desktop"
-              >
-                <Download aria-hidden="true" />
-                {downloadLabel}
-              </a>
-            </Button>
-          </div>
-          <button
-            type="button"
+      <div className="flex flex-col gap-2.5 pt-6 pb-5">
+        <Button asChild className="h-10 w-full">
+          <a
+            href={downloadHref}
+            target="_blank"
+            rel="noopener noreferrer"
             onClick={() => {
-              track("connect_existing");
-              onClose();
-              openSettingsDialog("Remote Control");
+              track("download_desktop");
+              setStep("waiting");
             }}
-            className="flex w-full items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50"
-            data-testid="free-agent-connect-existing"
+            aria-label={downloadLabel}
+            data-testid="free-agent-download-desktop"
           >
-            <SetupIcon>
-              <SquareTerminal />
-            </SetupIcon>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">
-                Connect an existing computer
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Run one connect command in its terminal
-              </div>
-            </div>
-            <ChevronRight
-              className="size-4 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-          </button>
-        </div>
+            <Download aria-hidden="true" />
+            {directDownload ? (
+              // Narrow widths drop the product name so the OS stays readable.
+              <span className="truncate">
+                Download{" "}
+                <span className="hidden sm:inline">HackerAI Desktop </span>
+                for {directDownload.displayName}
+              </span>
+            ) : (
+              <span className="truncate">{downloadLabel}</span>
+            )}
+          </a>
+        </Button>
+        {otherPlatforms.length > 0 && (
+          <p className="text-center text-[13px] text-muted-foreground">
+            Also for{" "}
+            <a
+              href="/download"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-foreground/80 underline decoration-muted-foreground/50 underline-offset-2 hover:text-foreground"
+            >
+              {otherPlatforms.join(" and ")}
+            </a>
+          </p>
+        )}
+      </div>
 
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <span className="w-full border-t" />
-          </div>
-          <div className="relative flex justify-center text-xs uppercase">
-            <span className="bg-background px-2 text-muted-foreground">or</span>
-          </div>
-        </div>
-
-        <button
-          type="button"
+      <div className="flex flex-col border-t pt-2">
+        <SetupRow
+          label="Connect an existing computer"
+          hint="Run one command"
+          testId="free-agent-connect-existing"
+          onClick={() => {
+            track("connect_existing");
+            onClose();
+            openSettingsDialog("Remote Control");
+          }}
+        />
+        <SetupRow
+          label="Upgrade for Cloud Agent"
+          hint="Paid plans"
+          testId="free-agent-upgrade"
           onClick={() => {
             track("upgrade");
             onClose();
@@ -465,23 +492,7 @@ function ActivationSetup({
               cta_text: "Upgrade for Cloud Agent",
             });
           }}
-          className="flex w-full items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors hover:bg-muted/50"
-          data-testid="free-agent-upgrade"
-        >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
-            <Cloud className="size-4" aria-hidden="true" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium">Upgrade for Cloud Agent</div>
-            <div className="text-xs text-muted-foreground">
-              No setup, stronger models, higher limits
-            </div>
-          </div>
-          <ChevronRight
-            className="size-4 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-        </button>
+        />
       </div>
     </>
   );

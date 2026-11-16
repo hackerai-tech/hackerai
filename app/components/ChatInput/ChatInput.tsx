@@ -484,6 +484,13 @@ const ChatInputContent = ({
     hasFilePreviews
       ? "detached"
       : "attached";
+  const freeAgentGatePlacement =
+    showAgentApprovalPrompt ||
+    hasJoinedComposerPanels ||
+    hasFilePreviews ||
+    hasQuestionPanel
+      ? "detached"
+      : "attached";
 
   useEffect(() => {
     const releasePointer = (delay: number) => {
@@ -1411,13 +1418,6 @@ const ChatInputContent = ({
           className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
-          {user && freeAgentGateActive && freeAgentActivationStatus && (
-            <FreeAgentGateNotice
-              status={freeAgentActivationStatus}
-              needsComputer={freeAgentGateNeedsComputer}
-              connectedComputerName={freeAgentGateComputerName}
-            />
-          )}
           {isOffline && (
             <div
               role="status"
@@ -1603,6 +1603,21 @@ const ChatInputContent = ({
             onRetryConnection={onReconnect}
             onStop={() => void handleAgentStop()}
           />
+        )}
+        {/* One stable mount keeps setup open across placement changes. The tab
+            tucks behind the composer unless another panel already joins it. */}
+        {user && freeAgentGateActive && freeAgentActivationStatus && (
+          <div
+            className={`min-w-0 shrink-0 ${freeAgentGatePlacement === "attached" ? "order-2" : "order-first"}`}
+            data-testid="chat-input-free-agent-gate-slot"
+          >
+            <FreeAgentGateNotice
+              status={freeAgentActivationStatus}
+              needsComputer={freeAgentGateNeedsComputer}
+              connectedComputerName={freeAgentGateComputerName}
+              placement={freeAgentGatePlacement}
+            />
+          </div>
         )}
         <div
           hidden={showAgentApprovalPrompt}

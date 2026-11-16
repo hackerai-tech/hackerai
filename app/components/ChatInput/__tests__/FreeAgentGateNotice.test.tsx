@@ -73,17 +73,16 @@ describe("FreeAgentGateNotice", () => {
     jest.clearAllMocks();
   });
 
-  it("offers setup and upgrade once the introductory replies are used", () => {
+  it("offers one setup action once the introductory replies are used", () => {
     renderNotice();
 
     const notice = screen.getByRole("region", {
       name: "You've used your 3 free Ask replies",
     });
+    // Upgrade lives in setup; the gate itself has a single action.
+    expect(within(notice).getAllByRole("button")).toHaveLength(1);
     expect(
       within(notice).getByRole("button", { name: "Continue with Agent" }),
-    ).toBeInTheDocument();
-    expect(
-      within(notice).getByRole("button", { name: "Upgrade" }),
     ).toBeInTheDocument();
     expect(mockCaptureQueued).toHaveBeenCalledWith(
       expect.objectContaining({ event: "free_agent_activation_gate_shown" }),
@@ -139,9 +138,18 @@ describe("FreeAgentGateNotice", () => {
         "Agent runs terminal commands and works with files on the computer you connect.",
       ),
     ).toBeInTheDocument();
+    const download = within(dialog).getByRole("link", {
+      name: "Download HackerAI Desktop for macOS",
+    });
+    expect(download).toHaveAttribute(
+      "href",
+      "https://downloads.example.test/HackerAI.dmg",
+    );
+    // The visible label always ends with the detected platform.
+    expect(download).toHaveTextContent(/^Download .*for macOS$/);
     expect(
-      within(dialog).getByRole("link", { name: "Download for macOS" }),
-    ).toHaveAttribute("href", "https://downloads.example.test/HackerAI.dmg");
+      within(dialog).getByRole("link", { name: "Windows and Linux" }),
+    ).toHaveAttribute("href", "/download");
     expect(
       within(dialog).getByRole("button", {
         name: /Connect an existing computer/,
@@ -159,7 +167,9 @@ describe("FreeAgentGateNotice", () => {
       screen.getByRole("button", { name: "Continue with Agent" }),
     );
 
-    await user.click(screen.getByRole("link", { name: "Download for macOS" }));
+    await user.click(
+      screen.getByRole("link", { name: "Download HackerAI Desktop for macOS" }),
+    );
 
     expect(screen.getByRole("status")).toHaveTextContent(
       "Waiting for HackerAI Desktop to connect…",
@@ -177,9 +187,10 @@ describe("FreeAgentGateNotice", () => {
         connectedComputerName="MacBook Pro"
       />,
     );
-    expect(
-      screen.getByRole("dialog", { name: "MacBook Pro is connected" }),
-    ).toBeInTheDocument();
+    const connected = screen.getByRole("dialog", {
+      name: "Your computer is connected",
+    });
+    expect(within(connected).getByText("MacBook Pro")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Use Agent" }));
 
@@ -192,7 +203,9 @@ describe("FreeAgentGateNotice", () => {
     await user.click(
       screen.getByRole("button", { name: "Continue with Agent" }),
     );
-    await user.click(screen.getByRole("link", { name: "Download for macOS" }));
+    await user.click(
+      screen.getByRole("link", { name: "Download HackerAI Desktop for macOS" }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Other options" }));
 
@@ -216,11 +229,10 @@ describe("FreeAgentGateNotice", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("routes both upgrade actions to pricing with the gate source", async () => {
+  it("routes the setup upgrade to pricing with the gate source", async () => {
     const user = userEvent.setup();
     renderNotice();
 
-    await user.click(screen.getByRole("button", { name: "Upgrade" }));
     await user.click(
       screen.getByRole("button", { name: "Continue with Agent" }),
     );
@@ -228,11 +240,17 @@ describe("FreeAgentGateNotice", () => {
       screen.getByRole("button", { name: /Upgrade for Cloud Agent/ }),
     );
 
-    expect(mockRedirectToPricing).toHaveBeenCalledTimes(2);
-    for (const [properties] of mockRedirectToPricing.mock.calls) {
-      expect(properties).toEqual(
-        expect.objectContaining({ source: "free_agent_activation_gate" }),
-      );
-    }
+    expect(mockRedirectToPricing).toHaveBeenCalledTimes(1);
+    expect(mockRedirectToPricing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "free_agent_activation_gate",
+        cta_text: "Upgrade for Cloud Agent",
+      }),
+    );
+    expect(mockCaptureEvent).toHaveBeenCalledWith(
+      "free_agent_activation_setup_action",
+      expect.objectContaining({ action: "upgrade" }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

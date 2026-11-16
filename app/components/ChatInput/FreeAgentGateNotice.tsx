@@ -1,15 +1,8 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import { Infinity as InfinityIcon } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import type { FreeAgentActivationStatus } from "@/lib/activation/free-agent-activation";
 import {
   captureFreeAgentGateShown,
@@ -32,20 +25,26 @@ export interface FreeAgentGateNoticeProps {
   /** True until a computer is selected; the card is the only way forward. */
   needsComputer: boolean;
   connectedComputerName: string | null;
+  /**
+   * "attached" tucks the tab behind the composer's top edge, like the attached
+   * goal panel. "detached" stands alone when other panels join the composer.
+   */
+  placement?: "attached" | "detached";
 }
 
 /**
  * Persistent choice shown after the introductory Ask replies are used. It also
- * owns the setup dialog so setup can finish after the card itself disappears.
+ * owns the setup dialog so setup can finish after the tab itself disappears.
  */
 export function FreeAgentGateNotice({
   status,
   needsComputer,
   connectedComputerName,
+  placement = "detached",
 }: FreeAgentGateNoticeProps) {
   const [setupOpen, setSetupOpen] = useState(false);
-  const titleId = useId();
   const shownRef = useRef(false);
+  const attached = placement === "attached";
   const pageVisible = useSyncExternalStore(
     subscribePageVisibility,
     getPageVisible,
@@ -61,51 +60,37 @@ export function FreeAgentGateNotice({
     <>
       {needsComputer && (
         <section
-          aria-labelledby={titleId}
-          className="mb-2 flex flex-col gap-3 rounded-xl border bg-card px-4 py-3.5 text-sm sm:flex-row sm:items-center sm:gap-4"
+          aria-label={`You've used your ${status.introLimit} free Ask replies`}
+          className={`relative z-0 flex min-w-0 shrink-0 items-center gap-3 border border-black/8 bg-muted py-2 pr-2 pl-4 text-[13px] leading-[18px] dark:border-border ${attached ? "mx-3 -mb-5 rounded-t-[22px] border-b-0 pb-7" : "mb-2 rounded-[22px]"}`}
           data-testid="free-agent-gate-notice"
+          data-placement={placement}
         >
-          <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-background">
-              <InfinityIcon className="size-4" aria-hidden="true" />
-            </div>
-            <div className="min-w-0 space-y-0.5">
-              <h2 id={titleId} className="text-sm font-medium">
-                You&apos;ve used your {status.introLimit} free Ask replies
-              </h2>
-              <p className="text-[13px] leading-[18px] text-muted-foreground">
-                Use Agent free on your own computer, or upgrade for Cloud Agent.
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                captureFreeAgentSetupAction(status, "upgrade", SURFACE);
-                redirectToPricing({
-                  surface: SURFACE,
-                  source: "free_agent_activation_gate",
-                  from_tier: "free",
-                  cta_text: "Upgrade",
-                });
-              }}
-            >
-              Upgrade
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => {
-                captureFreeAgentSetupAction(status, "open_setup", SURFACE);
-                setSetupOpen(true);
-              }}
-            >
-              Continue with Agent
-            </Button>
-          </div>
+          <Terminal
+            className="hidden size-4 shrink-0 text-muted-foreground sm:block"
+            aria-hidden="true"
+          />
+          <p className="min-w-0 flex-1 truncate sm:whitespace-normal">
+            <span className="sm:hidden">
+              {status.introLimit} free Ask replies used
+            </span>
+            <span className="hidden sm:inline">
+              You&apos;ve used your {status.introLimit} free Ask replies.{" "}
+              <span className="text-muted-foreground">
+                Agent runs on your computer.
+              </span>
+            </span>
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="h-7 shrink-0 rounded-lg px-3 text-[13px]"
+            onClick={() => {
+              captureFreeAgentSetupAction(status, "open_setup", SURFACE);
+              setSetupOpen(true);
+            }}
+          >
+            Continue with Agent
+          </Button>
         </section>
       )}
       <AgentUpgradeDialog
