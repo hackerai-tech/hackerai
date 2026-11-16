@@ -1,19 +1,32 @@
 import { act, renderHook } from "@testing-library/react";
 import { jest } from "@jest/globals";
-import type { ChatMessage, SelectedModel } from "@/types";
+import type {
+  AgentPermissionMode,
+  ChatMessage,
+  ChatMode,
+  SandboxPreference,
+  SelectedModel,
+} from "@/types";
 
 const mockRegenerate = jest.fn();
 const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
+const mockSetTodos = jest.fn();
 const mockSetIsAutoResuming = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureCancellationEvent = jest.fn();
 const mockToastInfo = jest.fn();
+const mockMutation = jest.fn(
+  async (_args: Record<string, unknown>): Promise<unknown> => undefined,
+);
 let mockSelectedModel: SelectedModel = "hackerai-standard";
+let mockChatMode: ChatMode = "ask";
+let mockSandboxPreference: SandboxPreference = "e2b";
+let mockAgentPermissionMode: AgentPermissionMode = "ask_approval";
 const originalFetch = globalThis.fetch;
 
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(async () => undefined),
+  useMutation: () => mockMutation,
 }));
 
 const mockUploadedFiles: never[] = [];
@@ -23,18 +36,19 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     getInput: () => "",
     uploadedFiles: mockUploadedFiles,
     getUploadedFiles: () => mockUploadedFiles,
-    chatMode: "ask",
+    chatMode: mockChatMode,
     clearInput: jest.fn(),
     clearUploadedFiles: jest.fn(),
     todos: [],
-    setTodos: jest.fn(),
+    setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
     queueMessage: jest.fn(),
     messageQueue: [],
     removeQueuedMessage: jest.fn(),
     queueBehavior: "queue",
-    sandboxPreference: "e2b",
+    sandboxPreference: mockSandboxPreference,
+    agentPermissionMode: mockAgentPermissionMode,
     selectedModel: mockSelectedModel,
   }),
 }));
@@ -110,6 +124,7 @@ describe("useChatHandlers regenerate model", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSelectedModel = "hackerai-standard";
+    mockChatMode = "ask";
   });
 
   afterEach(() => {
@@ -787,6 +802,255 @@ describe("useChatHandlers regenerate model", () => {
         cancellation_applied: false,
       },
     );
+  });
+});
+
+describe("replacement request ownership across awaited work", () => {
+  type MutationArgs = Record<string, unknown>;
+  type Handlers = ReturnType<typeof useChatHandlers>;
+
+  const replacements = {
+    Regenerate: (handlers: Handlers) => handlers.handleRegenerate(),
+    Retry: (handlers: Handlers) => handlers.handleRetry(),
+    Edit: (handlers: Handlers) =>
+      handlers.handleEditMessage("user-1", "Edited question"),
+  };
+  const awaitedSteps = {
+    "the saved-request check": { status: "ready" },
+    "stream cancellation": {
+      status: "streaming",
+      matches: (args: MutationArgs) => args.skipSave === true,
+    },
+    "response deletion": {
+      status: "ready",
+      matches: (args: MutationArgs) => args.resetSummary === true,
+    },
+    "the edit save": {
+      status: "ready",
+      matches: (args: MutationArgs) => args.newContent !== undefined,
+    },
+  } as const;
+  type AwaitedStep = keyof typeof awaitedSteps;
+
+  const resetSelection = () => {
+    mockSelectedModel = "hackerai-standard";
+    mockChatMode = "ask";
+    mockSandboxPreference = "e2b";
+    mockAgentPermissionMode = "ask_approval";
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetSelection();
+    mockMutation.mockImplementation(async () => undefined);
+  });
+  afterEach(resetSelection);
+
+  /** Renders chat-1 with one awaited step held open until `release`. */
+  const renderHeldChat = (step: AwaitedStep) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const awaited = awaitedSteps[step];
+    const isUserMessagePersisted = jest.fn(async (_messageId: string) => {
+      if (step === "the saved-request check") await held;
+      return true;
+    });
+    if ("matches" in awaited) {
+      mockMutation.mockImplementation(async (args) => {
+        if (awaited.matches(args)) await held;
+        return undefined;
+      });
+    }
+    const view = renderHook(
+      ({ chatId }: { chatId: string }) =>
+        useChatHandlers({
+          chatId,
+          messages: chatId === "chat-1" ? messages : [],
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          isUserMessagePersisted,
+          status: awaited.status,
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      { initialProps: { chatId: "chat-1" } },
+    );
+    const isHeld = () =>
+      "matches" in awaited
+        ? mockMutation.mock.calls.some(([args]) => awaited.matches(args))
+        : isUserMessagePersisted.mock.calls.length > 0;
+    return { ...view, release, isHeld };
+  };
+
+  it.each([
+    ["Regenerate", "stream cancellation"],
+    ["Retry", "the saved-request check"],
+    ["Edit", "stream cancellation"],
+  ] as const)(
+    "%s from an older rendered message keeps the settings at invocation through %s",
+    async (replacement, step) => {
+      const chat = renderHeldChat(step);
+      const renderedMessageHandlers = chat.result.current;
+      mockSelectedModel = "hackerai-max";
+      mockSandboxPreference = "desktop";
+      mockAgentPermissionMode = "full_access";
+      chat.rerender({ chatId: "chat-1" });
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](renderedMessageHandlers);
+      });
+      expect(chat.isHeld()).toBe(true);
+      expect(mockRegenerate).not.toHaveBeenCalled();
+
+      // A later selection belongs to the next request, not this one.
+      mockSelectedModel = "hackerai-pro";
+      mockChatMode = "agent";
+      mockSandboxPreference = "e2b";
+      mockAgentPermissionMode = "auto_review";
+      chat.rerender({ chatId: "chat-1" });
+      await act(async () => {
+        chat.release();
+        await action;
+      });
+
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+      expect(mockRegenerate).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          mode: "ask",
+          selectedModel: "hackerai-max",
+          sandboxPreference: "desktop",
+          agentPermissionMode: "full_access",
+        }),
+      });
+    },
+  );
+
+  it("keeps an explicit Retry model ahead of the current selection", async () => {
+    const chat = renderHeldChat("the saved-request check");
+    chat.release();
+    mockSelectedModel = "hackerai-max";
+    chat.rerender({ chatId: "chat-1" });
+
+    await act(async () => {
+      await chat.result.current.handleRetry({ selectedModel: "auto" });
+    });
+
+    expect(mockRegenerate).toHaveBeenCalledWith({
+      body: expect.objectContaining({ selectedModel: "auto" }),
+    });
+  });
+
+  it.each([
+    ["Regenerate", "stream cancellation", "is left and reopened"],
+    ["Regenerate", "response deletion", "is left and reopened"],
+    ["Regenerate", "response deletion", "unmounts"],
+    ["Retry", "the saved-request check", "is left and reopened"],
+    ["Retry", "stream cancellation", "is left and reopened"],
+    ["Retry", "response deletion", "is left and reopened"],
+    ["Edit", "stream cancellation", "is left and reopened"],
+    ["Edit", "the edit save", "is left and reopened"],
+  ] as const)(
+    "%s abandons later work held at %s when the chat %s",
+    async (replacement, step, departure) => {
+      const chat = renderHeldChat(step);
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](chat.result.current);
+      });
+      expect(chat.isHeld()).toBe(true);
+      const mutationsIssued = mockMutation.mock.calls.length;
+      const transcriptWrites = mockSetMessages.mock.calls.length;
+      const todoWrites = mockSetTodos.mock.calls.length;
+
+      if (departure === "unmounts") {
+        chat.unmount();
+      } else {
+        // Returning to the same chat must not revive the earlier visit's action.
+        chat.rerender({ chatId: "chat-2" });
+        chat.rerender({ chatId: "chat-1" });
+      }
+      await act(async () => {
+        chat.release();
+        await action;
+      });
+
+      // Work already issued for the original chat is not rolled back, but no
+      // new mutation, transcript/todo write or generation follows it.
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledTimes(mutationsIssued);
+      expect(mockSetMessages).toHaveBeenCalledTimes(transcriptWrites);
+      expect(mockSetTodos).toHaveBeenCalledTimes(todoWrites);
+    },
+  );
+
+  it("Edit does not stop the stream after sending is disabled during a goal pause", async () => {
+    mockChatMode = "agent";
+    let releasePause!: () => void;
+    const pauseHeld = new Promise<void>((resolve) => {
+      releasePause = resolve;
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") await pauseHeld;
+        return {
+          ok: true,
+          json: async () =>
+            init?.method === "POST"
+              ? { state: "paused" }
+              : { goal: { generation: 4 } },
+        } as Response;
+      }),
+    });
+    const goalMessages = messages.map((message) =>
+      message.id === "user-1"
+        ? { ...message, metadata: { goal: { sent: true } } }
+        : message,
+    ) as ChatMessage[];
+    const { result, rerender } = renderHook(
+      ({ sendDisabledReason }: { sendDisabledReason?: string }) =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: goalMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          goalState: "running",
+          goalGeneration: 4,
+          sendDisabledReason,
+        }),
+      { initialProps: {} },
+    );
+
+    let action!: Promise<void>;
+    await act(async () => {
+      action = result.current.handleEditMessage("user-1", "Updated goal");
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    rerender({ sendDisabledReason: "Computer disconnected" });
+    await act(async () => {
+      releasePause();
+      await action;
+    });
+
+    expect(mockSetIsAutoResuming).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockRegenerate).not.toHaveBeenCalled();
   });
 });
 

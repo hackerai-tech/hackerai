@@ -231,11 +231,15 @@ export const useChatHandlers = ({
   const recoveryPendingRef = useRef(false);
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
+  // Ends with each chat visit, so returning to a chat cannot revive an action
+  // that started during an earlier visit.
+  const chatVisitRef = useRef(0);
   useEffect(() => {
     currentChatIdRef.current = chatId;
     return () => {
       // Pending reply requests may resolve after this chat unmounts.
       currentChatIdRef.current = "";
+      chatVisitRef.current += 1;
     };
   }, [chatId, currentChatIdRef]);
   const todosRef = useLatestRef(todos);
@@ -1448,8 +1452,28 @@ export const useChatHandlers = ({
     }
   };
 
+  /**
+   * Captures a response replacement when the user acts. A rendered message can
+   * hold an older handler, so read the latest settings now and keep them for
+   * this request; changes made while the old response is stopped or deleted
+   * belong to the next request. Navigation can reuse this hook for another
+   * chat during those awaits, after which the action must not continue.
+   */
+  const captureReplacementAction = () => {
+    const visit = chatVisitRef.current;
+    return {
+      mode: chatModeRef.current,
+      selectedModel: requestSelectedModelRef.current,
+      sandboxPreference: sandboxPreferenceRef.current,
+      agentPermissionMode: agentPermissionModeRef.current,
+      ownsChat: () =>
+        currentChatIdRef.current === chatId && chatVisitRef.current === visit,
+    };
+  };
+
   const handleRegenerate = async () => {
     if (sendDisabledReasonRef.current) return;
+    const action = captureReplacementAction();
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -1457,7 +1481,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement("regenerate"))) return;
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
@@ -1468,8 +1492,8 @@ export const useChatHandlers = ({
         .slice()
         .reverse()
         .find((message) => message.role === "assistant")?.id,
-      mode: chatModeRef.current,
-      selected_model: requestSelectedModelRef.current ?? "auto",
+      mode: action.mode,
+      selected_model: action.selectedModel ?? "auto",
     });
     const cleanedTodos =
       chainAssistantIds.length > 0
@@ -1501,19 +1525,19 @@ export const useChatHandlers = ({
         todos: cleanedTodos,
       });
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     runChatAction("regenerate response", () =>
       regenerate({
         body: {
-          mode: chatModeRef.current,
+          mode: action.mode,
           messages: persistentRegenerateMessages,
           todos: cleanedTodos,
           regenerate: true,
           agentRunRequestId,
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModelRef.current,
+          sandboxPreference: action.sandboxPreference,
+          agentPermissionMode: action.agentPermissionMode,
+          selectedModel: action.selectedModel,
         },
       }),
     );
@@ -1522,6 +1546,7 @@ export const useChatHandlers = ({
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current || retryPendingRef.current) return;
     retryPendingRef.current = true;
+    const action = captureReplacementAction();
     try {
       const lastUserId = messages
         .slice()
@@ -1560,7 +1585,7 @@ export const useChatHandlers = ({
           return;
         }
       }
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       setIsAutoResuming(false);
       resetAutoContinueCount?.();
 
@@ -1568,7 +1593,7 @@ export const useChatHandlers = ({
       if (hasActiveRunToReplace()) {
         if (!(await stopActiveRunForReplacement("retry"))) return;
       }
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       const agentRunRequestId = uuidv4();
 
       const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -1604,20 +1629,20 @@ export const useChatHandlers = ({
         });
       }
 
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       await runChatAction("retry response", () =>
         regenerate({
           body: {
-            mode: chatModeRef.current,
+            mode: action.mode,
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: !retryUnpersistedMessage,
             agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: options.selectedModel ?? requestSelectedModel,
+            sandboxPreference: action.sandboxPreference,
+            agentPermissionMode: action.agentPermissionMode,
+            selectedModel: options.selectedModel ?? action.selectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
         }),
@@ -1633,6 +1658,7 @@ export const useChatHandlers = ({
     remainingFileIds?: string[],
   ) => {
     if (sendDisabledReasonRef.current) return;
+    const action = captureReplacementAction();
     const lastUserMessageIndex = findLastUserMessageIndex(messages);
     if (
       lastUserMessageIndex === undefined ||
@@ -1662,6 +1688,7 @@ export const useChatHandlers = ({
       )
     ) {
       stoppedGoalRun = (await controlSavedGoal("pause")).stoppedRun;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     }
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
@@ -1670,7 +1697,7 @@ export const useChatHandlers = ({
     if (!stoppedGoalRun && hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement("edit"))) return;
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     const agentRunRequestId = uuidv4();
     let savedGoal:
       | {
@@ -1708,7 +1735,7 @@ export const useChatHandlers = ({
           );
         }
         if (
-          currentChatIdRef.current !== chatId ||
+          !action.ownsChat() ||
           stopGenerationRef.current !== editStopGeneration
         )
           throw new Error("The task changed. Your edit has not been sent.");
@@ -1760,7 +1787,7 @@ export const useChatHandlers = ({
 
     if (
       sendDisabledReasonRef.current ||
-      currentChatIdRef.current !== chatId ||
+      !action.ownsChat() ||
       stopGenerationRef.current !== editStopGeneration
     )
       return;
@@ -1811,14 +1838,14 @@ export const useChatHandlers = ({
     runChatAction("regenerate edited message", () =>
       regenerate({
         body: {
-          mode: chatModeRef.current,
+          mode: action.mode,
           messages: [],
           todos: cleanedTodosForEdit,
           regenerate: true,
           agentRunRequestId,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModel,
+          sandboxPreference: action.sandboxPreference,
+          agentPermissionMode: action.agentPermissionMode,
+          selectedModel: action.selectedModel,
           ...(savedGoal && editedGoalGeneration !== undefined
             ? {
                 sandboxPreference: savedGoal.sandboxPreference,
