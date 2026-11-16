@@ -1,29 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import useSWR from "swr";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useChatBillingRecoveryStatus } from "@/app/hooks/useBillingRecoveryStatus";
+import {
+  parseEntitlements,
+  resolveSubscriptionTier,
+} from "@/lib/auth/entitlements";
 import { getEarlyRenewalNotice } from "@/lib/billing/early-renewal-notice";
 import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
 
 /** Checks billing at most once per five minutes, on entry or focus only. */
 const STATUS_MIN_INTERVAL_MS = 5 * 60_000;
 const HIDDEN_KEY_PREFIX = "hackerai:early-renewal-notice:hidden:";
-
-async function getEarlyRenewalNoticeEnabled() {
-  try {
-    const response = await fetch("/api/experiments/early-renewal-notice", {
-      cache: "no-store",
-    });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { enabled?: unknown };
-    return body.enabled === true;
-  } catch {
-    return false;
-  }
-}
 
 function isHidden(key: string) {
   try {
@@ -47,35 +37,27 @@ export function EarlyRenewalPaymentNotice({
   /** A blocking recovery surface already owns the same action. */
   suppressed: boolean;
 }) {
-  const { user, loading } = useAuth();
-  const { subscription } = useGlobalState();
-  const { data: enabled } = useSWR(
-    user && !loading && subscription !== "team"
-      ? ["early-renewal-notice-flag", user.id]
-      : null,
-    getEarlyRenewalNoticeEnabled,
-    {
-      dedupingInterval: STATUS_MIN_INTERVAL_MS,
-      revalidateIfStale: false,
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      shouldRetryOnError: false,
-    },
-  );
-  // No billing status request at all unless the server enabled the flag.
-  const { data, mutate, scopeKey } = useChatBillingRecoveryStatus(
-    enabled === true && subscription !== "team",
-    { minIntervalMs: STATUS_MIN_INTERVAL_MS },
-  );
+  const { subscription, chatModeAccessResolved } = useGlobalState();
+  const { entitlements } = useAuth();
+  // Team billing has its own administrators. The plan starts as "free" until
+  // entitlements resolve, so wait for them before any billing lookup. Free is
+  // not excluded: a past-due subscriber's entitlement can already be free.
+  // The current token is checked too: global state copies a team entitlement
+  // into `subscription` one render after it reports access as resolved.
+  // The shared hook adds the signed-in user and organization scope.
+  const personal =
+    chatModeAccessResolved &&
+    subscription !== "team" &&
+    resolveSubscriptionTier(parseEntitlements(entitlements)) !== "team";
+  const { data, mutate, scopeKey } = useChatBillingRecoveryStatus(personal, {
+    minIntervalMs: STATUS_MIN_INTERVAL_MS,
+  });
   // Hidden in memory even when session storage is unavailable or throws.
   const [hiddenKeys, setHiddenKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
 
-  const notice =
-    enabled === true && subscription !== "team"
-      ? getEarlyRenewalNotice(data)
-      : null;
+  const notice = personal ? getEarlyRenewalNotice(data) : null;
   if (!notice || !data || !scopeKey || suppressed) return null;
   const hiddenKey = `${HIDDEN_KEY_PREFIX}${scopeKey}:${notice.invoiceId}`;
   if (hiddenKeys.has(hiddenKey) || isHidden(hiddenKey)) return null;
