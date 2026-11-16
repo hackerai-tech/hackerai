@@ -5,12 +5,80 @@ import { convexToJson, type Value } from "convex/values";
 const VERSION = "hmac1";
 const MAX_AGE_MS = 60_000;
 const CLOCK_SKEW_MS = 10_000;
+// Anchored without the m flag, so any match is exactly PROOF_LENGTH characters.
+const PROOF_PATTERN = /^hmac1\.(\d{13})\.([a-f0-9]{64})$/;
+const PROOF_LENGTH = 84;
 const encoder = new TextEncoder();
+
+const isExpired = (issuedAt: number, now: number) =>
+  now - issuedAt > MAX_AGE_MS;
+const isFuture = (issuedAt: number, now: number) =>
+  issuedAt - now > CLOCK_SKEW_MS;
 
 export type ServiceScope = {
   deployment: string;
   name: string;
   type: "query" | "mutation" | "action";
+};
+
+/**
+ * What the caller-supplied credential looks like at rejection time. This is an
+ * observation of public input, not the predicate that rejected it: it never
+ * depends on the secret, its presence, the scope or the other arguments, so it
+ * cannot reveal key configuration or whether a raw credential is correct.
+ * `verification_failed` covers every well-formed, fresh proof that was
+ * rejected for any reason.
+ */
+export type ServiceProofObservation =
+  | "credential_not_string"
+  | "proof_malformed"
+  | "proof_expired"
+  | "proof_future"
+  | "verification_failed";
+
+export type ServiceProofRejectObserver = (
+  observation: ServiceProofObservation,
+) => void;
+
+// The length gate bounds diagnostic regex work on arbitrary input, including
+// when verification short-circuited before parsing (no secret configured).
+const observePublicProof = (
+  proof: string,
+  now: number,
+): ServiceProofObservation => {
+  if (proof.length !== PROOF_LENGTH) return "proof_malformed";
+  const match = PROOF_PATTERN.exec(proof);
+  if (!match) return "proof_malformed";
+  const issuedAt = Number(match[1]);
+  if (isExpired(issuedAt, now)) return "proof_expired";
+  if (isFuture(issuedAt, now)) return "proof_future";
+  return "verification_failed";
+};
+
+// Every verification false return goes through here. Without an observer it
+// does no extra work. Diagnostic failures never change the false result.
+const rejected = (
+  args: Record<string, unknown>,
+  now: number,
+  onReject: ServiceProofRejectObserver | undefined,
+): false => {
+  if (!onReject) return false;
+  let observation: ServiceProofObservation = "verification_failed";
+  try {
+    const credential = args.serviceKey;
+    observation =
+      typeof credential === "string"
+        ? observePublicProof(credential, now)
+        : "credential_not_string";
+  } catch {
+    // Keep the generic observation; never report the thrown value.
+  }
+  try {
+    onReject(observation);
+  } catch {
+    // Observation is best-effort and must not affect authorization.
+  }
+  return false;
 };
 
 const stableJson = (value: unknown): string => {
@@ -89,20 +157,24 @@ export async function verifyServiceArgs(
   args: Record<string, unknown>,
   secret: string | undefined,
   now = Date.now(),
+  onReject?: ServiceProofRejectObserver,
 ): Promise<boolean> {
-  if (!secret || typeof args.serviceKey !== "string") return false;
-  const match = /^hmac1\.(\d{13})\.([a-f0-9]{64})$/.exec(args.serviceKey);
-  if (!match) return false;
+  if (!secret || typeof args.serviceKey !== "string")
+    return rejected(args, now, onReject);
+  const match = PROOF_PATTERN.exec(args.serviceKey);
+  if (!match) return rejected(args, now, onReject);
   const issuedAt = Number(match[1]);
-  if (now - issuedAt > MAX_AGE_MS || issuedAt - now > CLOCK_SKEW_MS)
-    return false;
+  if (isExpired(issuedAt, now) || isFuture(issuedAt, now))
+    return rejected(args, now, onReject);
   const signature = Uint8Array.from(match[2].match(/../g)!, (byte) =>
     Number.parseInt(byte, 16),
   );
-  return crypto.subtle.verify(
+  // Cryptographic and payload exceptions propagate unchanged and unobserved.
+  const verified = await crypto.subtle.verify(
     "HMAC",
     await importKey(secret),
     signature,
     payload(scope, args, issuedAt),
   );
+  return verified || rejected(args, now, onReject);
 }

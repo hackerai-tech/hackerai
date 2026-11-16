@@ -3,10 +3,12 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import {
   signServiceArgs,
   verifyServiceArgs,
+  type ServiceProofObservation,
   type ServiceScope,
 } from "../../lib/db/service-proof";
 import { ConvexError } from "convex/values";
 import { redactSensitiveErrorMessage } from "../../lib/utils/error-redaction";
+import { convexLogger } from "./logger";
 export type {
   QueryCtx,
   MutationCtx,
@@ -61,6 +63,21 @@ export function serviceContext<T extends Context>(ctx: T): T {
   return wrapped;
 }
 
+// Log lines may be visible to the caller. Report only the public-input
+// observation, never the proof, key configuration, scope or arguments.
+function warnServiceProofRejected(
+  observation: ServiceProofObservation | undefined,
+) {
+  try {
+    convexLogger.warn("service_proof_rejected", {
+      diagnostic_version: 1,
+      public_input_observation: observation ?? "verification_failed",
+    });
+  } catch {
+    // Diagnostics must never replace the authorization failure.
+  }
+}
+
 function wrapBuilder<T>(builder: T): T {
   return ((definition: Definition) => {
     const handler = async (ctx: Context, args: Record<string, unknown>) => {
@@ -89,7 +106,14 @@ function wrapBuilder<T>(builder: T): T {
           args.serviceKey === secret &&
           Number.isFinite(legacyUntil) &&
           Date.now() < legacyUntil;
-        if (!legacyAllowed && !(await verifyServiceArgs(scope, args, secret))) {
+        let observation: ServiceProofObservation | undefined;
+        if (
+          !legacyAllowed &&
+          !(await verifyServiceArgs(scope, args, secret, undefined, (seen) => {
+            observation = seen;
+          }))
+        ) {
+          warnServiceProofRejected(observation);
           throw new Error("Unauthorized: Invalid service request");
         }
         authorizedArgs = { ...args, serviceKey: secret };
