@@ -6,6 +6,10 @@ import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { signServiceArgs, type ServiceScope } from "./service-proof";
 import { redactSensitiveErrorMessage } from "../utils/error-redaction";
 import { observeServiceTransport } from "./service-transport-observation";
+import {
+  classifyPublicBackendError,
+  observeServiceError,
+} from "./service-error-observation";
 
 const safeFunctionName = (name: unknown, secrets: string[]) =>
   typeof name === "string" &&
@@ -68,7 +72,7 @@ export function createServiceFetch(
         ? clientInstanceId
         : undefined;
     // Browser safety reads also report rejections the SDK only surfaces as a
-    // generic Error. Every other RPC keeps the 5xx/transport-only contract.
+    // generic Error, including errors without the native receipt used below.
     const browserHandoffRead =
       type === "query" &&
       (functionName === "browserHandoffs:getForBackend" ||
@@ -141,7 +145,10 @@ export function createServiceFetch(
               ? { backend_request_id: requestId }
               : {}),
             ...(applicationError
-              ? { error_data_present: applicationError.errorData !== undefined }
+              ? {
+                  error_data_present: applicationError.errorData !== undefined,
+                  ...observeServiceError(applicationError),
+                }
               : {}),
             transport_elapsed_ms: Math.max(0, Date.now() - startedAt),
           }),
@@ -321,7 +328,13 @@ export function createServiceFetch(
         return value;
       };
       if (result.status === "error") {
-        if (browserHandoffRead && response.status === 200)
+        // Any RPC's native backend error (SDK request receipt, no ConvexError
+        // data) also gets this one receipt, read from its unscrubbed body
+        // before the SDK sees the copy. An HTTP 560 keeps its earlier 5xx one.
+        if (
+          response.status === 200 &&
+          (browserHandoffRead || classifyPublicBackendError(result))
+        )
           reportFailure("application_error", undefined, result);
         result = scrub(result);
       } else result.logLines = scrub(result.logLines);

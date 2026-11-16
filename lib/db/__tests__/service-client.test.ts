@@ -722,6 +722,219 @@ describe("bounded RPC failure diagnostics", () => {
     );
   });
 
+  describe("public backend error receipts", () => {
+    const receipt = "[Request ID: 0123456789abcdef] Server Error\n";
+    const guard = `${receipt}Uncaught Error: Unauthorized: Invalid service request\n    at handler (PRIVATE_STACK)`;
+    const readLimit = `${receipt}Uncaught Error: Too many bytes read in a single function execution (limit: 16777216 bytes). PRIVATE_HINT`;
+    // The backend producer's caller-visible line (convex/lib/serviceFunctions.ts).
+    const rejection = (label: string) =>
+      `[WARN] '{"level":"warn","event":"service_proof_rejected","timestamp":"2026-11-16T16:04:34.714Z","diagnostic_version":1,"public_input_observation":"${label}"}'`;
+    const body = (overrides: Record<string, unknown> = {}) => ({
+      status: "error",
+      errorMessage: guard,
+      logLines: [
+        `[WARN] '{"level":"warn","event":"other","detail":"PRIVATE_LOG"}'`,
+        rejection("proof_expired"),
+      ],
+      ...overrides,
+    });
+    const expectPrivate = () => {
+      const logged = JSON.stringify(warning.mock.calls);
+      for (const canary of [secret, "PRIVATE", deployment])
+        expect(logged).not.toContain(canary);
+    };
+
+    it.each(["query", "query_at_ts", "mutation", "action"])(
+      "adds one closed label to a %s guard rejection without changing its response",
+      async (kind) => {
+        const transport = jest.fn(
+          async () => new Response(JSON.stringify(body())),
+        );
+        const response = await createServiceFetch(deployment, transport)(
+          `${deployment}/api/${kind}`,
+          request(),
+        );
+        expect(response.status).toBe(200);
+        expect(JSON.parse(await response.text())).toEqual(body());
+        expect(transport).toHaveBeenCalledTimes(1);
+        expect(diagnostics()).toEqual([
+          expect.objectContaining({
+            rpc_kind: kind === "query_at_ts" ? "query" : kind,
+            function_name: "fixture:accept",
+            reason: "application_error",
+            status_code: 200,
+            backend_request_id: "0123456789abcdef",
+            service_error_diagnostic_version: 1,
+            public_backend_error_kind: "invalid_service_request",
+            service_proof_log_lines: "recognized",
+            service_proof_rejection_lines: 1,
+            public_input_observation: "proof_expired",
+          }),
+        ]);
+        expect(diagnostics()[0]).not.toHaveProperty(
+          "browser_handoff_read_diagnostic_version",
+        );
+        expectPrivate();
+      },
+    );
+
+    it("keeps the real SDK guard error and reports an unavailable receipt", async () => {
+      globalThis.fetch = jest.fn(
+        async () => new Response(JSON.stringify(body({ logLines: undefined }))),
+      );
+      const failure = await createServiceConvexClient(deployment)
+        .mutation(makeFunctionReference<"mutation">("fixture:accept"), {
+          serviceKey: secret,
+          target: "PRIVATE_TARGET",
+        })
+        .catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toBe(guard);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({
+          service_proof_log_lines: "unavailable",
+          client_instance_id: expect.stringMatching(/^[a-f0-9-]{36}$/),
+        }),
+      ]);
+      expect(diagnostics()[0]).not.toHaveProperty("public_input_observation");
+      expectPrivate();
+    });
+
+    it("attributes a real SDK read-limit error without copying its text", async () => {
+      globalThis.fetch = jest.fn(
+        async () =>
+          new Response(JSON.stringify(body({ errorMessage: readLimit }))),
+      );
+      const failure = await createServiceConvexClient(deployment)
+        .query(makeFunctionReference<"query">("fixture:accept"), {
+          serviceKey: secret,
+          target: "PRIVATE_TARGET",
+        })
+        .catch((error: Error) => error);
+      expect(failure.message).toBe(readLimit);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({
+          rpc_kind: "query",
+          function_name: "fixture:accept",
+          reason: "application_error",
+          backend_request_id: "0123456789abcdef",
+          service_error_diagnostic_version: 1,
+          public_backend_error_kind: "read_byte_limit",
+        }),
+      ]);
+      // A read limit is not a proof rejection; its log lines stay unread.
+      expect(diagnostics()[0]).not.toHaveProperty("service_proof_log_lines");
+      expect(JSON.stringify(warning.mock.calls)).not.toContain("16777216");
+      expectPrivate();
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("enriches the existing browser safety-read receipt instead of adding one", async () => {
+      await createServiceFetch(
+        deployment,
+        jest.fn(async () => new Response(JSON.stringify(body()))),
+      )(`${deployment}/api/query`, request("browserHandoffs:getForBackend"));
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({
+          browser_handoff_read_diagnostic_version: 1,
+          public_input_observation: "proof_expired",
+        }),
+      ]);
+    });
+
+    it.each([
+      ["a redacted", receipt.trim()],
+      ["a private-payload", `${receipt}Uncaught Error: PRIVATE_MESSAGE`],
+      [
+        "a guard-like",
+        `${receipt}Uncaught Error: PRIVATE Unauthorized: Invalid service request`,
+      ],
+    ])(
+      "attributes a real SDK %s native error as unclassified with caller metadata",
+      async (_name, errorMessage) => {
+        globalThis.fetch = jest.fn(
+          async () => new Response(JSON.stringify(body({ errorMessage }))),
+        );
+        const failure = await createServiceConvexClient(deployment)
+          .mutation(makeFunctionReference<"mutation">("fixture:accept"), {
+            serviceKey: secret,
+            target: "PRIVATE_TARGET",
+          })
+          .catch((error: Error) => error);
+        expect(failure.message).toBe(errorMessage);
+        expect(diagnostics()).toEqual([
+          expect.objectContaining({
+            client_instance_id: expect.stringMatching(/^[a-f0-9-]{36}$/),
+            rpc_kind: "mutation",
+            function_name: "fixture:accept",
+            reason: "application_error",
+            backend_request_id: "0123456789abcdef",
+            service_error_diagnostic_version: 1,
+            public_backend_error_kind: "unclassified",
+            // A received public line, not this unknown error's cause.
+            public_input_observation: "proof_expired",
+          }),
+        ]);
+        expectPrivate();
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
+      [
+        "an application error without a native receipt",
+        body({ errorMessage: "PRIVATE Unauthorized: Invalid service request" }),
+        200,
+      ],
+      [
+        "a typed ConvexError with a native receipt",
+        body({ errorData: { reason: "PRIVATE_DATA" } }),
+        200,
+      ],
+      [
+        "a success carrying a rejection line",
+        {
+          status: "success",
+          value: null,
+          logLines: [rejection("proof_expired")],
+        },
+        200,
+      ],
+      ["an HTTP 4xx guard response", body(), 403],
+    ])("stays quiet for %s", async (_name, payload, status) => {
+      const response = await createServiceFetch(
+        deployment,
+        jest.fn(async () => new Response(JSON.stringify(payload), { status })),
+      )(`${deployment}/api/action`, request());
+      expect(response.status).toBe(status);
+      expect(warning).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["guard", guard],
+      ["read-limit", readLimit],
+    ])(
+      "preserves the real SDK %s error when the logger throws",
+      async (_name, errorMessage) => {
+        warning.mockImplementation(() => {
+          throw new Error("logger unavailable");
+        });
+        globalThis.fetch = jest.fn(
+          async () => new Response(JSON.stringify(body({ errorMessage }))),
+        );
+        const failure = await createServiceConvexClient(deployment)
+          .action(makeFunctionReference<"action">("fixture:accept"), {
+            serviceKey: secret,
+          })
+          .catch((error: Error) => error);
+        expect(failure.message).toBe(errorMessage);
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   describe("pending RPC diagnostics", () => {
     const pending = () => diagnostics("convex_service_rpc_pending");
     const deferred = <T>() => {
