@@ -4030,6 +4030,328 @@ describe("POST /api/subscription/webhook", () => {
       }),
     );
   });
+
+  describe("subscription_deleted failure step", () => {
+    const requestId = "iad1::delqa-1794168000000-abcdef123456";
+    const build = "b".repeat(40);
+
+    // clearAllMocks keeps implementations; do not leak a throwing event fake.
+    afterEach(() => mockPostHogEvent.mockReset());
+
+    /** Payment-failed paused deletion whose success path enters every boundary. */
+    function mockPaymentFailedDeletion({
+      priceId = "price_PRIVATE_deleted",
+      latestInvoice = "in_PRIVATE_deleted",
+      failedMutation,
+      failure,
+    }: {
+      priceId?: string;
+      latestInvoice?: string | null;
+      failedMutation?: string;
+      failure?: Error;
+    } = {}) {
+      jest.replaceProperty(process, "env", {
+        ...process.env,
+        VERCEL_GIT_COMMIT_SHA: build,
+      });
+      mockGetReferralRewardConfig.mockReturnValue({
+        enabled: true,
+        referrerRewardDollars: 10,
+      });
+      mockConstructEvent.mockReturnValue({
+        id: "evt_PRIVATE_deleted",
+        type: "customer.subscription.deleted",
+        created: 1_790_000_000,
+        data: {
+          object: {
+            id: "sub_PRIVATE_deleted",
+            customer: "cus_PRIVATE_deleted",
+            status: "canceled",
+            latest_invoice: latestInvoice,
+            cancellation_details: { reason: "payment_failed" },
+            metadata: {
+              hackeraiPauseId: "pause_PRIVATE",
+              hackeraiPauseMonths: "2",
+              hackeraiPauseResumeAt: "1795000000000",
+            },
+            items: {
+              data: [
+                {
+                  id: "si_PRIVATE_deleted",
+                  quantity: 1,
+                  price: {
+                    id: priceId,
+                    lookup_key: null,
+                    recurring: {
+                      interval: "month",
+                      interval_count: 1,
+                      usage_type: "licensed",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+      mockRetrieveSubscription.mockResolvedValue({
+        id: "sub_PRIVATE_deleted",
+        metadata: {},
+        items: {
+          data: [
+            {
+              quantity: 1,
+              price: {
+                id: "price_PRIVATE_resolved",
+                lookup_key: "pro-monthly-plan",
+                unit_amount: 2500,
+                recurring: { interval: "month", interval_count: 1 },
+                product: { id: "prod_PRIVATE", name: "HackerAI Pro" },
+              },
+            },
+          ],
+        },
+      } as never);
+      mockRetrieveCustomer.mockResolvedValue({
+        deleted: false,
+        id: "cus_PRIVATE_deleted",
+        metadata: { workOSOrganizationId: "org_PRIVATE_deleted" },
+      } as never);
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest
+          .fn()
+          .mockResolvedValue([{ userId: "user_PRIVATE_deleted" }]),
+      } as never);
+      mockRetrieveInvoice.mockResolvedValue({
+        id: "in_PRIVATE_deleted",
+        customer: "cus_PRIVATE_deleted",
+        amount_due: 2500,
+        amount_remaining: 2500,
+        currency: "usd",
+        status: "open",
+        collection_method: "charge_automatically",
+        billing_reason: "subscription_cycle",
+        attempt_count: 4,
+        parent: {
+          subscription_details: { subscription: "sub_PRIVATE_deleted" },
+        },
+        payments: {
+          data: [
+            {
+              is_default: true,
+              payment: {
+                type: "payment_intent",
+                payment_intent: hydratedPaymentIntent(),
+              },
+            },
+          ],
+        },
+      } as never);
+      mockConvexMutation.mockImplementation((mutation) => {
+        if (mutation === failedMutation) return Promise.reject(failure);
+        return Promise.resolve(
+          mutation === "cancellationReasons.markCancellationCompleted"
+            ? { matchedCount: 1, updatedCount: 1 }
+            : mutation === "subscriptionPauses.markPauseEffective"
+              ? { updatedCount: 1 }
+              : mutation === "involuntaryChurn.recordEvent"
+                ? { inserted: true, priorFailureSeen: false }
+                : { alreadyProcessed: false },
+        );
+      });
+    }
+
+    const mutationCalls = (name: string) =>
+      mockConvexMutation.mock.calls.filter(([mutation]) => mutation === name)
+        .length;
+
+    /** Count each external effect so a failed request cannot hide a replay. */
+    const deletionProgress = () => ({
+      subscriptionLookups: mockRetrieveSubscription.mock.calls.length,
+      customerLookups: mockRetrieveCustomer.mock.calls.length,
+      cancellationCompletions: mutationCalls(
+        "cancellationReasons.markCancellationCompleted",
+      ),
+      pauseUpdates: mutationCalls("subscriptionPauses.markPauseEffective"),
+      referralUpdates: mutationCalls(
+        "referrals.setReferralCodesPaidEligibility",
+      ),
+      invoiceReads: mockRetrieveInvoice.mock.calls.length,
+      churnRecords: mutationCalls("involuntaryChurn.recordEvent"),
+      paymentFailedEvents: mockPostHogEvent.mock.calls.filter(
+        ([event]) => event === PAID_FUNNEL_EVENTS.billingPaymentFailed,
+      ).length,
+      invoiceVoids: mockVoidInvoice.mock.calls.length,
+      idempotencyChecks: mutationCalls("extraUsage.checkAndMarkWebhook"),
+    });
+
+    const failureContexts = () =>
+      mockPostHogWarn.mock.calls.filter(
+        ([event]) => event === "subscription_webhook_failure_context",
+      );
+
+    const noProgress = {
+      subscriptionLookups: 0,
+      customerLookups: 0,
+      cancellationCompletions: 0,
+      pauseUpdates: 0,
+      referralUpdates: 0,
+      invoiceReads: 0,
+      churnRecords: 0,
+      paymentFailedEvents: 0,
+      invoiceVoids: 0,
+      // Only the check-only read; a failure must never mark the event processed.
+      idempotencyChecks: 1,
+    };
+    const throughReferral = {
+      ...noProgress,
+      subscriptionLookups: 1,
+      customerLookups: 1,
+      cancellationCompletions: 1,
+      pauseUpdates: 1,
+      referralUpdates: 1,
+    };
+
+    it.each([
+      {
+        step: "void_unpaid_canceled_renewal_invoice",
+        arrange: (failure: Error) => {
+          mockPaymentFailedDeletion({
+            priceId: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+          });
+          mockRetrieveInvoice.mockRejectedValueOnce(failure as never);
+        },
+        thrown: "original",
+        progress: { ...noProgress, invoiceReads: 1 },
+      },
+      {
+        step: "record_cancellation_completed",
+        arrange: (failure: Error) =>
+          mockPaymentFailedDeletion({
+            failedMutation: "cancellationReasons.markCancellationCompleted",
+            failure,
+          }),
+        thrown: "original",
+        progress: {
+          ...noProgress,
+          subscriptionLookups: 1,
+          customerLookups: 1,
+          cancellationCompletions: 1,
+        },
+      },
+      {
+        // The handler's own hydration throw follows this boundary's null result.
+        step: "retrieve_invoice_for_failure_analytics",
+        arrange: (failure: Error) => {
+          mockPaymentFailedDeletion();
+          mockRetrieveInvoice.mockRejectedValueOnce(failure as never);
+        },
+        thrown: "Failed to hydrate payment-failed invoice",
+        progress: { ...throughReferral, invoiceReads: 1 },
+      },
+      {
+        step: "record_involuntary_churn_event",
+        arrange: (failure: Error) =>
+          mockPaymentFailedDeletion({
+            failedMutation: "involuntaryChurn.recordEvent",
+            failure,
+          }),
+        thrown: "original",
+        progress: { ...throughReferral, invoiceReads: 1, churnRecords: 1 },
+      },
+      {
+        step: "emit_billing_payment_failed",
+        arrange: (failure: Error) => {
+          mockPaymentFailedDeletion();
+          mockPostHogEvent.mockImplementation((event) => {
+            if (event === PAID_FUNNEL_EVENTS.billingPaymentFailed)
+              throw failure;
+          });
+        },
+        thrown: "original",
+        progress: {
+          ...throughReferral,
+          invoiceReads: 1,
+          churnRecords: 1,
+          paymentFailedEvents: 1,
+        },
+      },
+      {
+        // A synchronous throw after the referral update must not blame it.
+        step: "require_payment_failed_invoice_id",
+        arrange: () => mockPaymentFailedDeletion({ latestInvoice: null }),
+        thrown: "is missing its latest invoice",
+        progress: throughReferral,
+      },
+    ])(
+      "records $step as the last entered deletion step",
+      async ({ step, arrange, thrown, progress }) => {
+        const failure = new Error("PRIVATE_FAILURE");
+        arrange(failure);
+        const { POST } = await import("../route");
+        const rejection = expect(
+          POST(makeWebhookRequest({ requestId })),
+        ).rejects;
+        if (thrown === "original") await rejection.toBe(failure);
+        else await rejection.toThrow(thrown);
+
+        expect(deletionProgress()).toEqual(progress);
+        expect(failureContexts()).toEqual([
+          [
+            "subscription_webhook_failure_context",
+            {
+              diagnostic_version: 1,
+              webhook_phase: "subscription_deleted",
+              subscription_deleted_step: step,
+              request_id: requestId,
+              web_build_commit: build,
+            },
+          ],
+        ]);
+        expect(JSON.stringify(failureContexts())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("keeps the deletion step request-local and omits it in other phases", async () => {
+      const deletionFailure = new Error("PRIVATE_DELETION");
+      mockPaymentFailedDeletion({
+        failedMutation: "cancellationReasons.markCancellationCompleted",
+        failure: deletionFailure,
+      });
+      const { POST } = await import("../route");
+      await expect(POST(makeWebhookRequest({ requestId }))).rejects.toBe(
+        deletionFailure,
+      );
+
+      const { subscription } = mockLateRenewal();
+      subscription.cancellation_details.reason = "cancellation_requested";
+      const invoiceFailure = new Error("PRIVATE_INVOICE");
+      mockUpdateInvoice.mockRejectedValueOnce(invoiceFailure as never);
+      await expect(POST(makeWebhookRequest({ requestId }))).rejects.toBe(
+        invoiceFailure,
+      );
+
+      expect(failureContexts()).toEqual([
+        [
+          "subscription_webhook_failure_context",
+          expect.objectContaining({
+            webhook_phase: "subscription_deleted",
+            subscription_deleted_step: "record_cancellation_completed",
+          }),
+        ],
+        [
+          "subscription_webhook_failure_context",
+          {
+            diagnostic_version: 1,
+            webhook_phase: "invoice_paid",
+            request_id: requestId,
+            web_build_commit: build,
+          },
+        ],
+      ]);
+    });
+  });
+
   it("records reversals against the event's attempt and occurrence time", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_reversed",
