@@ -163,6 +163,9 @@ jobs:
       - name: Verify build compiler isolation and failure gate
         run: node --test scripts/build.test.mjs
 
+      - name: Verify Debian post-install helpers cannot hang installation
+        run: node --test packages/desktop/src-tauri/scripts/deb-postinstall.test.mjs
+
       - name: Test Linux AppImage child library isolation
         run: |
           rustc --edition 2021 --test packages/desktop/src-tauri/src/child_environment.rs -o "$RUNNER_TEMP/appimage-child-environment-tests"
