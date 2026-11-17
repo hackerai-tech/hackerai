@@ -2463,6 +2463,8 @@ export async function getFindingDedupeContext(args: {
   userId: string;
   chatId: string;
   dedupeKey: string;
+  /** Lets the backend prove a strict match; omitted, no exact match is claimed. */
+  report?: CreateVulnerabilityReportInput;
 }) {
   return getConvexClient().query(
     api.findings.getFindingDedupeContextForBackend,

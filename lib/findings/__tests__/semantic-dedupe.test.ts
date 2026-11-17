@@ -87,6 +87,16 @@ it("skips the model for empty chats and exact matches", async () => {
   ).toBeUndefined();
   expect(model).not.toHaveBeenCalled();
 });
+it("sends the report so the backend can prove a strict match", async () => {
+  model.mockResolvedValue(result(null));
+  await createFindingWithDedupe(args);
+  expect(load).toHaveBeenCalledWith({
+    userId: "u",
+    chatId: "c",
+    dedupeKey: expect.any(String),
+    report,
+  });
+});
 it.each([
   { success: false, error: "duplicate", duplicate_of: "older-match" },
   { success: true, finding_id: "new" },
