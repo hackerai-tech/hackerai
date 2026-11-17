@@ -28,6 +28,31 @@ const auth = (userId: string) => ({
   serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
 });
 const checked = new WeakMap<Sandbox, number>();
+
+/** Closed acquisition-verification steps; never carries policy or settings. */
+const CLOUD_NETWORK_SUBOPERATIONS = [
+  "settings_read",
+  "ready_cache_check",
+  "provider_info_read",
+  "policy_compare",
+  "settings_recheck",
+  "policy_apply",
+  "post_check",
+] as const;
+export type CloudNetworkSuboperation =
+  (typeof CLOUD_NETWORK_SUBOPERATIONS)[number];
+export type ReportCloudNetworkSuboperation = (
+  suboperation: CloudNetworkSuboperation,
+) => void;
+export function parseCloudNetworkSuboperation(
+  value: unknown,
+): CloudNetworkSuboperation | undefined {
+  return typeof value === "string" &&
+    (CLOUD_NETWORK_SUBOPERATIONS as readonly string[]).includes(value)
+    ? (value as CloudNetworkSuboperation)
+    : undefined;
+}
+
 export async function readNetworkSettings(
   userId: string,
 ): Promise<NetworkSettings | null> {
@@ -43,8 +68,11 @@ async function matchesSandboxPolicy(
   userId: string,
   policy: NetworkPolicy,
   signal: AbortSignal,
+  report?: ReportCloudNetworkSuboperation,
 ) {
+  report?.("provider_info_read");
   const info = await sandbox.getInfo({ signal, requestTimeoutMs: 15_000 });
+  report?.("policy_compare");
   if (info.metadata?.userID !== userId)
     throw new Error("Workspace ownership mismatch");
   // Replacing egress must not clear an externally managed proxy or transform.
@@ -194,8 +222,20 @@ export async function ensureCloudNetwork(
   sandbox: Sandbox,
   userId: string,
   signal?: AbortSignal,
+  onSuboperation?: ReportCloudNetworkSuboperation,
 ) {
+  // Names the step entered next for failure diagnostics. A reporter failure
+  // must never change network policy, provider calls or the original error.
+  const report: ReportCloudNetworkSuboperation = (suboperation) => {
+    try {
+      onSuboperation?.(suboperation);
+    } catch {
+      /* Best-effort diagnostics only. */
+    }
+  };
+  report("settings_read");
   const saved = await readNetworkSettings(userId);
+  report("ready_cache_check");
   // An unsaved setting still promises Internet access in the UI; it must not
   // silently inherit stale provider restrictions from a reused workspace.
   const settings = saved ?? defaultNetworkSettings();
@@ -213,20 +253,25 @@ export async function ensureCloudNetwork(
         userId,
         settings.policy,
         verificationSignal,
+        report,
       )
     ) {
+      report("settings_recheck");
       const current =
         (await readNetworkSettings(userId)) ?? defaultNetworkSettings();
       if (
         current.status === "ready" &&
         current.revision === settings.revision
       ) {
+        report("post_check");
         verificationSignal.throwIfAborted();
         checked.set(sandbox, settings.revision);
         return;
       }
     }
   }
+  // applyNetwork rewraps its internal failures, so one umbrella step suffices.
+  report("policy_apply");
   await applyNetwork(
     userId,
     saved ? undefined : { policy: DEFAULT_NETWORK_POLICY, expectedRevision: 0 },
