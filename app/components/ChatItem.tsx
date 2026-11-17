@@ -405,8 +405,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Don't save if title is empty, untouched since opening, or already current
     if (
       !trimmedTitle ||
-      trimmedTitle === renameBaselineRef.current ||
-      trimmedTitle === taskTitle
+      trimmedTitle === renameBaselineRef.current.trim() ||
+      trimmedTitle === taskTitle.trim()
     ) {
       setShowRenameDialog(false);
       setEditTitle(taskTitle); // Reset to original title

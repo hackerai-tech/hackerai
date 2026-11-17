@@ -350,32 +350,38 @@ describe("ChatItem project actions", () => {
     return screen.findByLabelText("Task name");
   }
 
-  it("keeps a newer incoming title when the opened draft was left untouched", async () => {
-    const user = userEvent.setup();
-    const { rerender } = render(<ChatItem id="chat-1" title="Recon notes" />);
-    expect(await openRenameDialog(user)).toHaveValue("Recon notes");
+  it.each(["Recon notes", " Recon notes "])(
+    "keeps a newer incoming title when the opened draft was left untouched (%j)",
+    async (openingTitle) => {
+      const user = userEvent.setup();
+      const { rerender } = render(
+        <ChatItem id="chat-1" title={openingTitle} />,
+      );
+      expect(await openRenameDialog(user)).toHaveValue(openingTitle);
 
-    rerender(<ChatItem id="chat-1" title="Staging API recon" />);
-    await user.click(screen.getByRole("button", { name: "Save" }));
+      rerender(<ChatItem id="chat-1" title="Staging API recon" />);
+      await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(mockRenameChat).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("dialog", { name: "Rename Task" }),
-      ).not.toBeInTheDocument(),
-    );
-  });
+      expect(mockRenameChat).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
 
   it.each([
-    ["  Exploit chain  ", "Exploit chain"],
-    ["Staging API recon", null],
+    ["  Exploit chain  ", "Staging API recon", "Exploit chain"],
+    ["Staging API recon", "Staging API recon", null],
+    ["Staging API recon", " Staging API recon ", null],
   ])(
-    "saves only a draft that differs from the incoming title (%j)",
-    async (draft, expectedTitle) => {
+    "saves only a draft that differs from the incoming title (%j over %j)",
+    async (draft, incomingTitle, expectedTitle) => {
       const user = userEvent.setup();
       const { rerender } = render(<ChatItem id="chat-1" title="Recon notes" />);
       const input = await openRenameDialog(user);
-      rerender(<ChatItem id="chat-1" title="Staging API recon" />);
+      rerender(<ChatItem id="chat-1" title={incomingTitle} />);
 
       await user.clear(input);
       await user.type(input, draft);
