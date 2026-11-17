@@ -15,6 +15,7 @@ function expectPacketBudgets(text: string) {
     dv: _daemonVersion,
     r1: _responseValidation,
     o1: _openInfo,
+    l1: _wrapperResult,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -2372,7 +2373,12 @@ it("preserves exit5 when the refusal packet cannot be written", () => {
 });
 
 /** Every maximal optional context field beside a connected daemon response. */
-const maximalResponse = (line?: string, chargedBytes?: number, o1?: number) => {
+const maximalResponse = (
+  line?: string,
+  chargedBytes?: number,
+  o1?: number,
+  lr?: unknown,
+) => {
   const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
   const d = daemon({
     chargedBytes,
@@ -2391,6 +2397,7 @@ const maximalResponse = (line?: string, chargedBytes?: number, o1?: number) => {
       close_receipt_support: 1,
       history: [1, true, true],
       k1: 6,
+      lr,
     },
     openReceipt: {
       ...longest,
@@ -2457,4 +2464,95 @@ it("drops the OPEN informational-token code first, before the refusal code or an
   // One byte over the cap drops only o1; r1 and every existing field remain.
   const justOver = maximalResponse(line, 545 - Buffer.byteLength(complete), 3);
   expect(JSON.parse(justOver)).toEqual(JSON.parse(maximalResponse(line)));
+});
+
+it.each<[number[]]>([[[1, 0, 0]], [[1, 1, 3]], [[1, 2, 5]], [[1, 3, 0]]])(
+  "exports the selected wrapper's result tuple %j unchanged beside a COMPLETED or STARTED receipt",
+  (lr) => {
+    for (const phase of ["completed", "started"]) {
+      const d = daemon({
+        receipt: {
+          ...receipt,
+          action: "other",
+          phase,
+          exit: phase === "started" ? null : 0,
+          lr: [...lr],
+        },
+      });
+      d.socket.emit("connect");
+      d.timeout();
+      expect(d.exit).toHaveBeenCalledWith(3);
+      const text = d.output.mock.calls[0][0];
+      expect(JSON.parse(text)).toMatchObject({
+        deadline: [1, "awaiting_response"],
+        wrapper_phase: phase,
+        wrapper_session_matches: true,
+        l1: lr,
+      });
+      expectPacketBudgets(text);
+      expect(text).not.toMatch(/PRIVATE|"lr"/);
+    }
+  },
+);
+
+it.each<[string, Record<string, unknown>]>([
+  ["a legacy writer", {}],
+  ["another session", { session_key: "a".repeat(64), lr: [1, 0, 0] }],
+  ["an unknown result", { lr: [1, 4, 0] }],
+  ["an unknown elapsed bucket", { lr: [1, 0, 6] }],
+  ["a negative code", { lr: [1, 0, -1] }],
+  ["another version", { lr: [2, 0, 0] }],
+  ["a fractional code", { lr: [1, 0.5, 0] }],
+  ["a string code", { lr: [1, "0", 0] }],
+  ["a short tuple", { lr: [1, 0] }],
+  ["a long tuple", { lr: [1, 0, 0, 0] }],
+  ["an array-like object", { lr: { 0: 1, 1: 0, 2: 0, length: 3 } }],
+  ["a string", { lr: "PRIVATE" }],
+])(
+  "keeps the wrapper result unmeasured for %s without changing the failure",
+  (_case, override) => {
+    const d = daemon({
+      ...missingSocket,
+      receipt: { ...receipt, ...override },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      wrapper_receipt_version: 1,
+    });
+    expect(value).not.toHaveProperty("l1");
+    expect(JSON.stringify(value)).not.toContain("PRIVATE");
+  },
+);
+
+it("neither reads receipts nor adds the wrapper result to a successful response", () => {
+  const d = daemon({ receipt: { ...receipt, lr: [1, 1, 3] } });
+  const response = { id: "hackerai-preview", success: true, data: {} };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.readReceipt).not.toHaveBeenCalled();
+});
+
+it("drops the wrapper result first, before the declaration, refusal code or any existing field", () => {
+  const line = '{"id":"PRIVATE","success":true}';
+  const resultBytes = Buffer.byteLength(',"l1":[1,3,5]');
+  const withResult = maximalResponse(line, undefined, undefined, [1, 3, 5]);
+  expectPacketBudgets(withResult);
+  expect(JSON.parse(withResult)).toEqual({
+    ...JSON.parse(maximalResponse(line)),
+    l1: [1, 3, 5],
+  });
+  // One byte over the cap drops only l1; o1, r1 and every existing field remain.
+  const declared = maximalResponse(line, undefined, 3);
+  const justOver = maximalResponse(
+    line,
+    545 - Buffer.byteLength(declared) - resultBytes,
+    3,
+    [1, 3, 5],
+  );
+  expect(JSON.parse(justOver)).toEqual(JSON.parse(declared));
+  expect(JSON.parse(declared)).toMatchObject({ o1: 3, r1: [1, 2] });
 });
