@@ -1110,6 +1110,100 @@ describe("desktop capability registration", () => {
     },
   );
 
+  it("reports only validated native lifecycle fields and keeps the registration OS shape", async () => {
+    const original = mockInvokeHandler;
+    const valid = {
+      launchId: "0123456789abcdef0123456789abcdef",
+      previousExit: "unclean",
+      previousWebProcessTermination: "memory_limit",
+      pageGeneration: 2,
+      webProcessTermination: "crashed",
+    };
+    let lifecycle: unknown = valid;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "plugin:app|version") return "0.0.81";
+      if (cmd === "get_desktop_os_info")
+        return {
+          platform: "linux",
+          arch: "x64",
+          release: "6.8.0",
+          hostname: "qa-host",
+          ...(lifecycle === undefined ? {} : { lifecycle }),
+        };
+      return original(cmd, args);
+    };
+    // A fresh bridge per case keeps its relay telemetry's first event immediate.
+    const relayPropertiesAfterStart = async () => {
+      jest.mocked(captureAuthenticatedEvent).mockClear();
+      mockSubscription.on.mockClear();
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        // The backend validator accepts exactly these four OS fields.
+        expect(config.connectDesktop).toHaveBeenCalledWith(
+          expect.objectContaining({
+            osInfo: {
+              platform: "linux",
+              arch: "x64",
+              release: "6.8.0",
+              hostname: "qa-host",
+            },
+          }),
+        );
+        getSubscriptionHandler("subscribed")({
+          recovered: false,
+          wasRecovering: false,
+        });
+        const relay = jest
+          .mocked(captureAuthenticatedEvent)
+          .mock.calls.find(
+            ([event, properties]) =>
+              event === "desktop_bridge_relay_state_changed" &&
+              properties?.source === "subscription",
+          );
+        expect(relay).toBeDefined();
+        return relay![1] as Record<string, unknown>;
+      } finally {
+        await bridge.stop();
+      }
+    };
+    try {
+      expect(await relayPropertiesAfterStart()).toEqual(
+        expect.objectContaining({
+          native_launch_id: valid.launchId,
+          native_previous_exit: "unclean",
+          native_previous_web_process_termination: "memory_limit",
+          native_page_generation: 2,
+          native_web_process_termination: "crashed",
+        }),
+      );
+      for (const invalid of [
+        undefined, // older native binaries
+        null,
+        { ...valid, launchId: "/home/user/project" },
+        { ...valid, previousExit: "crash" },
+        { ...valid, previousWebProcessTermination: "/home/user/project" },
+        { ...valid, previousWebProcessTermination: undefined },
+        { ...valid, pageGeneration: -1 },
+        { ...valid, pageGeneration: 1.5 },
+        { ...valid, webProcessTermination: "https://target.example/" },
+      ]) {
+        lifecycle = invalid;
+        const properties = await relayPropertiesAfterStart();
+        expect(
+          Object.keys(properties).filter((key) =>
+            /^native_(launch_id|previous_exit|previous_web_process_termination|page_generation|web_process_termination)$/.test(
+              key,
+            ),
+          ),
+        ).toEqual([]);
+      }
+    } finally {
+      mockInvokeHandler = original;
+    }
+  });
+
   it("records Windows native diagnostics without trusting the browser user agent", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {

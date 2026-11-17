@@ -51,6 +51,11 @@ cap-fs-ext = "3.4.5"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Already linked through wry at this exact version; used directly only to
+# observe web process termination. Keep it pinned with Tauri's wry.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }

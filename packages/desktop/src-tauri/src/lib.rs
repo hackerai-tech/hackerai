@@ -1,21 +1,23 @@
 mod authorization_connector_diagnostics;
 mod authorization_response_diagnostics;
 mod authorization_send_diagnostics;
-mod platform;
-mod update_safety;
-#[cfg(test)]
-mod update_safety_tests;
 mod child_environment;
 mod command_stdin;
 mod environment_identity;
-mod file_save;
-mod pty;
-#[cfg(test)]
-mod updater_tests;
 #[cfg(test)]
 mod file_acl_tests;
 #[cfg(test)]
 mod file_read_tests;
+mod file_save;
+mod lifecycle_diagnostics;
+mod platform;
+mod pty;
+mod stream_lifecycle;
+mod update_safety;
+#[cfg(test)]
+mod update_safety_tests;
+#[cfg(test)]
+mod updater_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -29,9 +31,9 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 #[cfg(any(debug_assertions, test))]
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -1246,67 +1248,13 @@ async fn probe_desktop_file_bridge() -> Result<serde_json::Value, String> {
     dispatch_desktop_file_request(serde_json::json!({ "type": "file_stat", "path": "." })).await
 }
 
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
-enum StreamEvent {
-    Stdout {
-        data: String,
-    },
-    Stderr {
-        data: String,
-    },
-    Exit {
-        // Explicit rename needed: Tauri 2's Channel<T> does not apply
-        // rename_all to fields inside internally-tagged enum variants.
-        #[serde(rename = "exitCode")]
-        exit_code: i32,
-    },
-    Error {
-        message: String,
-    },
-}
+use stream_lifecycle::StreamEvent;
 
-#[derive(Default)]
-struct StreamCommandRegistry {
-    running: HashMap<String, u32>,
-    // Keep cancellation until app exit, including IPCs that arrive before launch.
-    canceled: HashSet<String>,
-}
+type StreamCommandState = std::sync::Arc<stream_lifecycle::StreamLifecycle>;
 
-type StreamCommandState = std::sync::Arc<std::sync::Mutex<StreamCommandRegistry>>;
+/// Bounds app exit's wait for streamed command owners to stop their trees.
+const EXIT_STREAM_CLEANUP_WAIT: Duration = Duration::from_secs(3);
 
-fn spawn_stream_command(
-    state: &StreamCommandState,
-    command_id: &str,
-    cmd: &mut tokio::process::Command,
-) -> Result<Option<tokio::process::Child>, String> {
-    // Spawn and PID registration must be atomic with respect to cancellation.
-    let mut commands = state
-        .lock()
-        .map_err(|_| "stream command state lock poisoned")?;
-    if commands.canceled.contains(command_id) {
-        return Ok(None);
-    }
-    if commands.running.contains_key(command_id) {
-        return Err("Command is already running".to_string());
-    }
-    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
-    if let Some(pid) = child.id() {
-        commands.running.insert(command_id.to_string(), pid);
-    }
-    Ok(Some(child))
-}
-
-fn request_stream_command_cancel(
-    state: &StreamCommandState,
-    command_id: &str,
-) -> Result<Option<u32>, String> {
-    let mut commands = state
-        .lock()
-        .map_err(|_| "stream command state lock poisoned")?;
-    commands.canceled.insert(command_id.to_string());
-    Ok(commands.running.get(command_id).copied())
-}
 #[cfg(test)]
 #[tauri::command]
 async fn execute_command(
@@ -1360,26 +1308,37 @@ struct DesktopOsInfo {
     arch: String,
     release: String,
     hostname: String,
+    // Older frontends ignore this; current ones validate it before telemetry
+    // and never send it with the registration's fixed OS shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle: Option<lifecycle_diagnostics::LifecycleSnapshot>,
 }
 
 #[tauri::command]
-fn get_desktop_os_info() -> DesktopOsInfo {
+fn get_desktop_os_info<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> DesktopOsInfo {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
         other => other,
     };
+    let page_generation = app
+        .try_state::<StreamCommandState>()
+        .map_or(0, |streams| streams.generation());
     DesktopOsInfo {
         platform: std::env::consts::OS.to_string(),
         arch: arch.to_string(),
         release: os_info::get().version().to_string(),
         hostname: gethostname::gethostname().to_string_lossy().into_owned(),
+        lifecycle: app
+            .try_state::<lifecycle_diagnostics::LifecycleDiagnostics>()
+            .map(|diagnostics| diagnostics.snapshot(page_generation)),
     }
 }
 
-#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn execute_stream_command(
-    state: tauri::State<'_, StreamCommandState>,
+    state: &StreamCommandState,
+    admission: stream_lifecycle::Admission,
     command_id: String,
     command: String,
     cwd: Option<String>,
@@ -1395,80 +1354,15 @@ async fn execute_stream_command(
     if input.is_some() {
         cmd.stdin(std::process::Stdio::piped());
     }
-    let Some(mut child) = spawn_stream_command(&state, &command_id, &mut cmd)? else {
-        let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
-        return Ok(());
+    let owned = match state.launch(admission, &command_id, &mut cmd).await? {
+        stream_lifecycle::Launch::Started(owned) => owned,
+        stream_lifecycle::Launch::Canceled => {
+            let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
+            return Ok(());
+        }
     };
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let child_stdin = child.stdin.take();
-    let mut write_input = Box::pin(command_stdin::write(child_stdin, input));
-
-    let result = tokio::time::timeout(timeout, async {
-        let mut stdout_buf = [0u8; 4096];
-        let mut stderr_buf = [0u8; 4096];
-        let mut stdout_done = false;
-        let mut stderr_done = false;
-        let mut input_done = false;
-
-        loop {
-            if stdout_done && stderr_done && input_done {
-                break;
-            }
-            tokio::select! {
-                result = &mut write_input, if !input_done => {
-                    input_done = true;
-                    result?;
-                }
-                result = stdout.read(&mut stdout_buf), if !stdout_done => {
-                    match result {
-                        Ok(0) => stdout_done = true,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&stdout_buf[..n]).to_string();
-                            let _ = on_event.send(StreamEvent::Stdout { data });
-                        }
-                        Err(_) => stdout_done = true,
-                    }
-                }
-                result = stderr.read(&mut stderr_buf), if !stderr_done => {
-                    match result {
-                        Ok(0) => stderr_done = true,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&stderr_buf[..n]).to_string();
-                            let _ = on_event.send(StreamEvent::Stderr { data });
-                        }
-                        Err(_) => stderr_done = true,
-                    }
-                }
-            }
-        }
-        child.wait().await
-    })
-    .await;
-
-    match result {
-        Ok(Ok(status)) => {
-            let _ = on_event.send(StreamEvent::Exit {
-                exit_code: status.code().unwrap_or(-1),
-            });
-        }
-        Ok(Err(e)) => {
-            platform::graceful_kill(&mut child).await;
-            let _ = on_event.send(StreamEvent::Error {
-                message: format!("Process error: {}", e),
-            });
-        }
-        Err(_) => {
-            platform::graceful_kill(&mut child).await;
-            let _ = on_event.send(StreamEvent::Error {
-                message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)),
-            });
-        }
-    }
-    if let Ok(mut commands) = state.lock() {
-        commands.running.remove(&command_id);
-    }
+    stream_lifecycle::run(owned, input, timeout, &on_event).await;
     Ok(())
 }
 
@@ -1515,6 +1409,9 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     use authorization_send_diagnostics::{
         SendFailureCause, SendFailureReceipt, SendIoSupplement, SendTransportDetail,
     };
+    // Bind the request to the document that sent it before awaiting
+    // redemption; a replaced document's request must never launch.
+    let admission = state.admit();
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
         authorization_diagnostic_channel_id(on_authorization_response_diagnostic)
@@ -1584,7 +1481,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     let command: AuthorizedCommandMessage =
         serde_json::from_value(message).map_err(|_| "Invalid authorized command".to_string())?;
     execute_stream_command(
-        state,
+        &state,
+        admission,
         command.command_id,
         command.command,
         command.cwd,
@@ -1602,14 +1500,69 @@ async fn cancel_stream_command(
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
 ) -> Result<bool, String> {
-    let pid = request_stream_command_cancel(&state, &command_id)?;
+    // The owner signals its own unreaped tree; never a PID that may be stale.
+    Ok(state.cancel(&command_id).await)
+}
 
-    if let Some(pid) = pid {
-        Ok(platform::cancel_process_tree(pid).await)
-    } else {
-        // Either it already exited, or its future launch is now fenced. A
-        // concurrent launch cannot pass the fence before registering its PID.
-        Ok(true)
+/// The admitting document is gone: stop the streamed commands it owns.
+fn invalidate_page_generation<R: tauri::Runtime>(app: &tauri::AppHandle<R>, cause: &str) {
+    if let Some(streams) = app.try_state::<StreamCommandState>() {
+        let (generation, stopping) = streams.invalidate();
+        log::info!(
+            "Desktop page generation {generation} after {cause}; stopping {} streamed command(s) from the previous page",
+            stopping.len()
+        );
+    }
+}
+
+/// Normal exit: stop streamed command trees and PTYs, then mark the exit clean.
+/// Abrupt native death (SIGKILL, abort, power loss) cannot run this.
+fn stop_native_work_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    // Signal stream owners first so their cleanup overlaps the PTY wait.
+    let streams = app
+        .try_state::<StreamCommandState>()
+        .map(|streams| streams.invalidate().1);
+    if let Some(pty_state) = app.try_state::<PtyState>() {
+        if let Ok(mut manager) = pty_state.lock() {
+            manager.stop_all();
+        }
+    }
+    if let Some(cleanups) = streams {
+        if !stream_lifecycle::resolved_blocking(&cleanups, EXIT_STREAM_CLEANUP_WAIT) {
+            log::warn!("Desktop could not confirm streamed commands stopped before exit");
+        }
+    }
+    if let Some(diagnostics) = app.try_state::<lifecycle_diagnostics::LifecycleDiagnostics>() {
+        diagnostics.record_clean_exit();
+    }
+}
+
+/// WebKitGTK does not reload after losing its web process; the document and
+/// its output channels are gone, so its commands must stop.
+#[cfg(target_os = "linux")]
+fn watch_linux_web_process(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("Main window unavailable; web process termination is not observed");
+        return;
+    };
+    let handle = app.handle().clone();
+    let observed = window.with_webview(move |webview| {
+        use webkit2gtk::WebViewExt;
+        webview
+            .inner()
+            .connect_web_process_terminated(move |_, reason| {
+                let reason = lifecycle_diagnostics::WebProcessTermination::from(reason);
+                log::warn!("Desktop web process terminated: {reason:?}");
+                if let Some(diagnostics) =
+                    handle.try_state::<lifecycle_diagnostics::LifecycleDiagnostics>()
+                {
+                    diagnostics.record_web_process_termination(reason);
+                }
+                invalidate_page_generation(&handle, "web process termination");
+            });
+    });
+    if observed.is_err() {
+        log::warn!("Web process termination is not observed");
     }
 }
 
@@ -1968,7 +1921,9 @@ fn update_dialog(
 }
 
 async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
-    let Some(_check) = update_safety::CheckGuard::acquire() else { return; };
+    let Some(_check) = update_safety::CheckGuard::acquire() else {
+        return;
+    };
     use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
 
     match check_update(
@@ -1995,7 +1950,9 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 let bytes = match update.download(|_, _| {}, || {}).await {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        log::warn!("Desktop update download or signature verification failed: {error}");
+                        log::warn!(
+                            "Desktop update download or signature verification failed: {error}"
+                        );
                         update_dialog(&app, "The update could not be downloaded or verified. Your current app has not been changed. Choose Help > Check for Updates to try again.")
                             .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
                         return;
@@ -2046,10 +2003,19 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                         Err(message) if download.is_some() => {
                             // A busy gate or receipt failure never handed bytes to
                             // the installer. Keep the verified download for retry.
-                            let retry = update_dialog(&app, format!("{}\n\nChoose Install now to try again. Desktop will close.", message))
-                                .title("Update not started")
-                                .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
-                                .blocking_show();
+                            let retry = update_dialog(
+                                &app,
+                                format!(
+                                    "{}\n\nChoose Install now to try again. Desktop will close.",
+                                    message
+                                ),
+                            )
+                            .title("Update not started")
+                            .buttons(MessageDialogButtons::OkCancelCustom(
+                                "Install now".into(),
+                                "Later".into(),
+                            ))
+                            .blocking_show();
                             if !retry {
                                 return;
                             }
@@ -2603,49 +2569,61 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn stream_cancel_before_launch_prevents_a_native_process() {
-        let state = StreamCommandState::default();
-        assert_eq!(
-            request_stream_command_cancel(&state, "stopped").unwrap(),
-            None
-        );
-        let mut cmd = platform::build_command("echo should-not-run", None, None);
-        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
-            .unwrap()
-            .is_none());
-        // A duplicate late delivery must remain canceled as well.
-        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
-            .unwrap()
-            .is_none());
-        let mut replacement = platform::build_command("echo replacement", None, None);
-        let mut child = spawn_stream_command(&state, "replacement", &mut replacement)
-            .unwrap()
-            .unwrap();
-        assert!(child.wait().await.unwrap().success());
-    }
-
     #[cfg(unix)]
     #[tokio::test]
-    async fn stream_cancel_after_launch_stops_the_registered_process_group() {
+    async fn execute_stream_command_keeps_stdin_output_and_exit_contracts_per_page() {
         let state = StreamCommandState::default();
-        let mut cmd = platform::build_command("sleep 30", None, None);
-        cmd.kill_on_drop(true);
-        let mut child = spawn_stream_command(&state, "running", &mut cmd)
-            .unwrap()
-            .unwrap();
-        let pid = request_stream_command_cancel(&state, "running")
-            .unwrap()
-            .unwrap();
-        assert_eq!(Some(pid), child.id());
-        // Reap concurrently: an unreaped shell can keep its process group alive.
-        let (canceled, exited) = tokio::join!(platform::cancel_process_tree(pid), child.wait());
-        assert!(canceled);
-        assert!(!exited.unwrap().success());
-        state.lock().unwrap().running.remove("running");
-        assert!(spawn_stream_command(&state, "running", &mut cmd)
-            .unwrap()
-            .is_none());
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = events.clone();
+        let channel = tauri::ipc::Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                sink.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        execute_stream_command(
+            &state,
+            state.admit(),
+            "contract".into(),
+            "cat; printf 'err\\n' >&2; exit 3".into(),
+            None,
+            None,
+            Some("aGVsbG8=".into()),
+            Some("base64".into()),
+            Some(30_000),
+            channel.clone(),
+        )
+        .await
+        .unwrap();
+        let received = events.lock().unwrap().clone();
+        assert!(received.contains(&r#"{"type":"stdout","data":"hello"}"#.to_string()));
+        assert!(received.contains(&r#"{"type":"stderr","data":"err\n"}"#.to_string()));
+        assert_eq!(
+            received.last().map(String::as_str),
+            Some(r#"{"type":"exit","exitCode":3}"#)
+        );
+
+        // A request admitted by a replaced page fails without any output.
+        let stale = state.admit();
+        state.invalidate();
+        events.lock().unwrap().clear();
+        assert_eq!(
+            execute_stream_command(
+                &state,
+                stale,
+                "stale".into(),
+                "echo should-not-run".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                channel,
+            )
+            .await,
+            Err(stream_lifecycle::PAGE_REPLACED.to_string())
+        );
+        assert!(events.lock().unwrap().is_empty());
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
@@ -2940,15 +2918,27 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
-        .manage(
-            std::sync::Arc::new(std::sync::Mutex::new(StreamCommandRegistry::default()))
-                as StreamCommandState,
-        )
+        .manage(StreamCommandState::default())
+        // Started is emitted when a main-frame document commits, not for
+        // same-document route changes, so client navigation keeps its commands.
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                invalidate_page_generation(webview.app_handle(), "main page load");
+            }
+        })
         .manage(PendingDesktopAuthStates(std::sync::Mutex::new(
             HashMap::new(),
         )))
         .manage(SelectedLocalFiles(std::sync::Mutex::new(HashSet::new())))
         .setup(|app| {
+            // Never fails: unavailable app data degrades evidence to `unknown`.
+            app.manage(lifecycle_diagnostics::LifecycleDiagnostics::start(
+                app.path().app_data_dir().ok(),
+            ));
+            #[cfg(target_os = "linux")]
+            watch_linux_web_process(app);
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -3028,11 +3018,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Some(pty_state) = app.try_state::<PtyState>() {
-                    if let Ok(mut manager) = pty_state.lock() {
-                        manager.stop_all();
-                    }
-                }
+                stop_native_work_on_exit(app);
             }
         });
 }
