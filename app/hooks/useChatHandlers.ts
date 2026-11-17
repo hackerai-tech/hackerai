@@ -126,18 +126,6 @@ interface UseChatHandlersProps {
   resetAutoContinueCount?: () => void;
 }
 
-/**
- * Optional attribution for an ordinary submission. The ID applies only when
- * this exact message is handed to the chat transport; queued, goal and wait
- * replies keep their existing IDs and never call `onUserMessageSent`.
- */
-export type SubmitAttribution = {
-  userMessageId: string;
-  onUserMessageSent?: (sent: { chatId: string; userMessageId: string }) => void;
-};
-
-const ATTRIBUTED_MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
-
 export type RetryOptions = {
   limitRescue?: LimitRescueRequest;
   /** Override the model for this retry, e.g. Auto for the daily allowance. */
@@ -807,7 +795,6 @@ export const useChatHandlers = ({
     e: React.FormEvent,
     inputOverride?: string,
     structuredReply = false,
-    attribution?: SubmitAttribution,
   ): Promise<boolean> => {
     e.preventDefault();
     // Completing a durable wait does not require this computer. Keep the
@@ -1319,40 +1306,9 @@ export const useChatHandlers = ({
         return false;
       }
     } else {
-      const attributedId =
-        !structuredReply &&
-        attribution &&
-        ATTRIBUTED_MESSAGE_ID.test(attribution.userMessageId)
-          ? attribution.userMessageId
-          : undefined;
-      // The SDK ignores IDs on text-form sends; explicit parts keep this exact
-      // ID through persistence. Other submissions keep the generated ID.
-      const message = attributedId
-        ? {
-            id: attributedId,
-            role: "user" as const,
-            parts: [
-              ...validFiles,
-              ...(outgoingText
-                ? [{ type: "text" as const, text: outgoingText }]
-                : []),
-            ],
-            metadata: outgoingMetadata,
-          }
-        : outgoingMessage;
       void runChatAction("send message", () =>
-        sendMessage(message, outgoingOptions),
+        sendMessage(outgoingMessage, outgoingOptions),
       );
-      if (attributedId) {
-        try {
-          attribution?.onUserMessageSent?.({
-            chatId,
-            userMessageId: attributedId,
-          });
-        } catch {
-          // Optional attribution can never change an accepted send.
-        }
-      }
     }
 
     captureAuthenticatedEvent("chat_user_submission", {

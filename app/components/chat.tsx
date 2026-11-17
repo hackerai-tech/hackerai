@@ -1,6 +1,5 @@
 "use client";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
-import { getStarterPersistedTurn } from "@/lib/analytics/chat-starters";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import {
@@ -950,12 +949,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages = useServerMessages(paginatedMessageResults);
-  // IDs and completion fields only, from the subscriptions above.
-  const starterPersistedTurn = useMemo(
-    () =>
-      getStarterPersistedTurn(chatId, chatDataForCurrentChat, serverMessages),
-    [chatId, chatDataForCurrentChat, serverMessages],
-  );
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
@@ -3217,7 +3210,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     }
 
                     onSubmit={handleSubmit}
-                    starterPersistedTurn={starterPersistedTurn}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}

@@ -89,12 +89,6 @@ import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-san
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { useChatStarters } from "@/app/contexts/ChatStartersContext";
-import type { ChatStarter } from "@/lib/chat/starter-prompts";
-import { ChatStarterSuggestions } from "./ChatStarterSuggestions";
-import { useChatStarterAttribution } from "@/app/hooks/useChatStarterAttribution";
-import type { StarterPersistedTurn } from "@/lib/analytics/chat-starters";
-import type { SubmitAttribution } from "@/app/hooks/useChatHandlers";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -109,10 +103,7 @@ interface ChatInputProps {
     e: React.FormEvent,
     inputOverride?: string,
     structuredReply?: boolean,
-    attribution?: SubmitAttribution,
   ) => void | boolean | Promise<void | boolean>;
-  /** Persisted state of this chat's latest turn, for starter attribution. */
-  starterPersistedTurn?: StarterPersistedTurn | null;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
@@ -316,7 +307,6 @@ const ChatInputContent = ({
   hasActiveGoalRun = false,
   pauseGoalOnSend = false,
   onSubmit,
-  starterPersistedTurn,
   onStop,
   onReconnect,
   onSendNow,
@@ -374,7 +364,6 @@ const ChatInputContent = ({
   const { user } = useAuth();
   const input = useComposerInput();
   const { setInput, getInput } = useComposerActions();
-  const chatStarters = useChatStarters();
   const isOnline = useOnlineStatus();
   const isOffline = offlineProtection && !isOnline;
   const {
@@ -1224,74 +1213,6 @@ const ChatInputContent = ({
       messageQueue.length > 0,
   });
 
-  // Starters only fill an idle, empty first composer. Any draft, attachment,
-  // notice, pending work or unresolved state hides them without remounting it.
-  const starterMode = chatMode === "agent" ? "agent" : "ask";
-  const starterPresentation =
-    chatStarters?.enabled && user && chatStarters.userId === user.id
-      ? chatStarters.presentation
-      : null;
-  const showChatStarters =
-    starterPresentation !== null &&
-    isMobile !== undefined &&
-    isEmptyNewChat &&
-    !landingAppearance &&
-    chatModeAccessResolved &&
-    !isCheckingProPlan &&
-    status === "ready" &&
-    !isGenerating &&
-    input === "" &&
-    uploadedFiles.length === 0 &&
-    !isUploadingFiles &&
-    !submissionPending &&
-    !isStoppingAgent &&
-    !isOffline &&
-    !isReconnecting &&
-    !effectiveSendDisabledReason &&
-    !selectedComputerUnavailable &&
-    !computerConnectionPending &&
-    !approvalRequest &&
-    !isWaitingForReply &&
-    !questionKey &&
-    !goalMode &&
-    !showGoalSuggestion &&
-    !hasActiveGoalRun &&
-    !pauseGoalOnSend &&
-    !rateLimitWarning &&
-    messageQueue.length === 0 &&
-    !editingQueuedMessageId;
-
-  const starterAttribution = useChatStarterAttribution({
-    userId: user?.id,
-    draftId,
-    chatMode: starterMode,
-    input,
-    getInput,
-    persistedTurn: starterPersistedTurn,
-  });
-
-  const selectChatStarter = (starter: ChatStarter) => {
-    // Read the latest composer and saved draft, not this render's snapshot,
-    // so a fast edit or restored draft is never replaced.
-    if (
-      getInput() !== "" ||
-      getUploadedFiles().length > 0 ||
-      (getDraftContentById(draftId) ?? "") !== "" ||
-      getDraftAttachmentsById(draftId).length > 0
-    )
-      return;
-    // Each accepted selection is its own event with a stable selection ID.
-    if (starterPresentation)
-      starterAttribution.recordSelection(starter, starterPresentation);
-    setInput(starter.prompt);
-    requestAnimationFrame(() => {
-      const textarea = composerTextareaRef.current;
-      if (!textarea) return;
-      textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
@@ -1383,25 +1304,11 @@ const ChatInputContent = ({
       const submittedDraftAttachments = JSON.stringify(
         getDraftAttachmentsById(draftId),
       );
-      // Only an ordinary send from an idle composer can carry a starter's
-      // attribution; queued, goal and reply submissions end it instead.
-      const starterSubmission = starterAttribution.prepareSubmission({
-        ordinary:
-          !isGoalSubmission &&
-          !isWaitingForReply &&
-          !hasActiveGoalRun &&
-          !pauseGoalOnSend &&
-          status === "ready",
-        text: submittedInput,
-      });
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
         const goalInput = isGoalSubmission ? `/goal start ${input}` : undefined;
-        const accepted = await (starterSubmission.attribution
-          ? onSubmit(e, goalInput, false, starterSubmission.attribution)
-          : onSubmit(e, goalInput));
-        starterSubmission.settle(accepted === false ? "refused" : "accepted");
+        const accepted = await onSubmit(e, goalInput);
         if (isGoalSubmission)
           captureGoalComposerAction(
             accepted === false ? "submit_refused" : "submit_accepted",
@@ -1409,8 +1316,6 @@ const ChatInputContent = ({
         finishPredictionSubmission(accepted !== false);
         if (accepted !== false && isMountedRef.current)
           clearWorkspaceRecovery(submittedScope);
-        // Keep starters collapsed before the history list reflects this chat.
-        if (accepted !== false) chatStarters?.markFirstSubmission();
         if (accepted !== false && isGoalSubmission) setGoalMode(false);
         const unchanged =
           getInput() === submittedInput &&
@@ -1453,7 +1358,6 @@ const ChatInputContent = ({
         }
       } catch (error) {
         const workspaceRefusal = isGoalWorkspaceSelectionRefusal(error);
-        starterSubmission.settle(workspaceRefusal ? "refused" : "error");
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         if (workspaceRefusal) {
@@ -1976,21 +1880,6 @@ const ChatInputContent = ({
             />
           </div>
         </div>
-
-        {showChatStarters && chatStarters && starterPresentation && (
-          <div
-            className={`min-w-0 shrink-0 ${isMobile ? "order-1" : "order-3"}`}
-          >
-            <ChatStarterSuggestions
-              key={chatStarters.userId}
-              mode={starterMode}
-              presentation={starterPresentation}
-              layout={isMobile ? "mobile" : "desktop"}
-              onSelect={selectChatStarter}
-              onExposed={chatStarters.recordExposure}
-            />
-          </div>
-        )}
       </div>
     </div>
   );
