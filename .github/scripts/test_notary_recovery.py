@@ -55,9 +55,15 @@ class NotaryRecoveryTests(unittest.TestCase):
                 sys.exit(1 if os.environ["FIXTURE_MODE"] == "rejected" else 0)
             if command == "notarytool log":
                 print(os.environ["APPLE_PASSWORD"], file=sys.stderr, flush=True)
-            if command == "stapler staple" and os.environ["FIXTURE_MODE"] == "staple-failed":
-                sys.exit(1)
+            if command == "stapler staple":
+                if os.environ["FIXTURE_MODE"] == "staple-failed":
+                    sys.exit(68)
+                if os.environ["FIXTURE_MODE"] == "staple-transient" and Path(os.environ["FIXTURE_ACTIONS"]).read_text().splitlines().count(command) == 1:
+                    sys.exit(68)
+            if command == "stapler validate" and os.environ["FIXTURE_MODE"] == "invalid-ticket":
+                sys.exit(65)
         """)
+        self.tool("sleep", "pass")
         self.tool("spctl", """
             import os
             from pathlib import Path
@@ -87,7 +93,7 @@ class NotaryRecoveryTests(unittest.TestCase):
         self.assertIn(SUBMISSION_ID, result.stdout)
         self.assert_redacted(result.stdout + result.stderr + self.log.read_text())
         self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(self.actions.read_text().splitlines(), ["notarytool submit", "stapler staple", "assess"])
+        self.assertEqual(self.actions.read_text().splitlines(), ["notarytool submit", "stapler staple", "stapler validate", "assess"])
 
     def test_rejected_submission_cannot_staple(self):
         result = self.notarize("rejected")
@@ -98,7 +104,21 @@ class NotaryRecoveryTests(unittest.TestCase):
     def test_stapling_failure_is_fatal(self):
         result = self.notarize("staple-failed")
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("assess", self.actions.read_text())
+        actions = self.actions.read_text().splitlines()
+        self.assertEqual(actions.count("stapler staple"), 3)
+        self.assertNotIn("assess", actions)
+        self.assertNotIn("stapler validate", actions)
+
+    def test_delayed_apple_ticket_recovers_without_resubmitting(self):
+        result = self.notarize("staple-transient")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actions = self.actions.read_text().splitlines()
+        self.assertEqual(actions, ["notarytool submit", "stapler staple", "stapler staple", "stapler validate", "assess"])
+
+    def test_invalid_stapled_ticket_blocks_success(self):
+        result = self.notarize("invalid-ticket")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.actions.read_text().splitlines(), ["notarytool submit", "stapler staple", "stapler validate"])
 
     def test_zero_exit_without_explicit_acceptance_cannot_staple(self):
         for mode in ("invalid-zero", "missing-status"):

@@ -44,6 +44,7 @@ jobs:
             .github/scripts/prepare-desktop-release.sh \
             '.github/scripts/*universal-dmg.sh' \
             .github/scripts/redact-notary-output.py \
+            .github/scripts/staple-notarization.sh \
             .github/scripts/prefer-ubuntu-apt-mirror.sh > changed-desktop-paths.txt
             if [[ -s changed-desktop-paths.txt ]]; then
               echo 'desktop=true' >> "$GITHUB_OUTPUT"

@@ -34,6 +34,6 @@ if ! xcrun notarytool submit "$DMG" \
 fi
 
 echo "Stapling notarization ticket to DMG..."
-xcrun stapler staple "$DMG"
+bash "$SCRIPT_DIR/staple-notarization.sh" "$DMG"
 echo "Verifying notarization..."
 spctl --assess --type open --context context:primary-signature -v "$DMG" || true
