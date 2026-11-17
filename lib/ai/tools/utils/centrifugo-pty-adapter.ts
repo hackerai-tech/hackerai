@@ -178,11 +178,11 @@ export async function createCentrifugoPtyHandle(
     ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
     : sandboxConnectionChannel(userId, connectionId);
 
-  // Long-lived token: PTY sessions can last minutes.
+  // PTY sessions can outlive one token. The SDK renews the connection token
+  // before it expires (same lifetime each time) so the live session keeps its
+  // connection; a renewal failure is a transport failure like any client error.
   const tokenExpSeconds = 600;
   const token = await sandbox.issueToken(tokenExpSeconds);
-
-  const client = new Centrifuge(sandbox.getWsUrl(), { token });
 
   const listeners = new Set<(bytes: Uint8Array) => void>();
   const encoder = new TextEncoder();
@@ -199,6 +199,15 @@ export async function createCentrifugoPtyHandle(
   let recordedPayloadBytesEstimate = 0;
   let recordedUnmatchedPayloadBytesEstimate = 0;
   const reassembler = new CentrifugoMessageReassembler();
+
+  const client = new Centrifuge(sandbox.getWsUrl(), {
+    token,
+    getToken: async () => {
+      // Never mint a credential for a session that has been torn down.
+      if (cleanedUp) throw new Error(`${LOG_PREFIX} session closed`);
+      return sandbox.issueToken(tokenExpSeconds);
+    },
+  });
 
   const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
@@ -474,6 +483,10 @@ export async function createCentrifugoPtyHandle(
 
     client.on("error", (ctx) => {
       failTransport(`client error: ${ctx.error?.message ?? "unknown"}`);
+    });
+
+    client.on("disconnected", (ctx) => {
+      if (!cleanedUp) failTransport(`client disconnected (code ${ctx.code})`);
     });
   });
 }
