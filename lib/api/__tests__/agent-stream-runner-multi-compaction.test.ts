@@ -7034,6 +7034,118 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
 
+  it.each([-5, 1.5])(
+    "uses the recovery estimate when compacted steps report malformed input %p",
+    async (inputTokens) => {
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [uiMessage("small-summary", "Keep the objective.")],
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const state = initAgentStreamState(
+        [uiMessage("original", "old context ".repeat(2_000))],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          tools: {
+            large_tool: {
+              description: "Inspect local state.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  input: {
+                    type: "string",
+                    description: "schema overhead ".repeat(50_000),
+                  },
+                },
+              },
+            },
+          },
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+          usageTracker: {
+            accumulateStep: jest.fn(() => 0),
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const malformedStep = {
+        usage: { inputTokens, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      };
+
+      const initial: ModelMessage[] = [
+        { role: "user", content: "old context ".repeat(2_000) },
+      ];
+      await stream.prepareStep({ steps: [], messages: initial });
+      await stream.onStepFinish(malformedStep);
+      const next: ModelMessage = { role: "assistant", content: "new work" };
+      await stream.prepareStep({
+        steps: [{ toolResults: [], response: { messages: [next] } }],
+        messages: [...initial, next],
+      });
+      await stream.onStepFinish(malformedStep);
+
+      // A malformed count must not confirm that compaction recovered context.
+      expect(state.lastStepInputTokens).toBe(0);
+      expect(state.ctxUsage.usedTokens).toBeGreaterThan(0);
+      state.lastStepInputTokens = 300_000;
+      expect(stream.stopWhen[1]()).toBe(true);
+      expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    },
+  );
+
+  it("keeps reported context usage when a later step reports malformed input", async () => {
+    const { UsageTracker } = jest.requireActual("@/lib/usage-tracker");
+    const usageTracker = new UsageTracker();
+    const state = initAgentStreamState(
+      [uiMessage("context", "verified context")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        usageTracker,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+      }) as any,
+      state,
+    )) as any;
+    const finishStep = (inputTokens: number) =>
+      stream.onStepFinish({
+        usage: { inputTokens, outputTokens: 2 },
+        response: { modelId: "test-model", messages: [] },
+      });
+
+    await finishStep(120_000);
+    expect(state.ctxUsage.usedTokens).toBe(120_000);
+    expect(state.lastStepInputTokens).toBe(120_000);
+    for (const malformed of [-5, 1.5]) {
+      await finishStep(malformed);
+      expect(state.ctxUsage.usedTokens).toBe(120_000);
+      expect(state.lastStepInputTokens).toBe(0);
+    }
+    expect(usageTracker.inputTokens).toBe(120_000);
+    expect(usageTracker.outputTokens).toBe(6);
+  });
+
   it("allows compaction after provider rejection recovery without usage", async () => {
     const sdk = jest.requireActual("ai");
     const wrap = jest.mocked(require("ai").wrapLanguageModel);

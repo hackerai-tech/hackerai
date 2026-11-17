@@ -169,6 +169,111 @@ describe("UsageTracker", () => {
       expect(tracker.outputTokens).toBe(0);
       expect(tracker.providerCost).toBe(0);
     });
+
+    it.each([
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+      "100",
+      null,
+    ])(
+      "ignores malformed %p token counts without reducing earlier usage",
+      (malformed) => {
+        const value = malformed as unknown as number;
+        tracker.accumulateStep({
+          inputTokens: 100,
+          outputTokens: 50,
+          totalTokens: 150,
+        });
+        tracker.accumulateStep({
+          inputTokens: value,
+          outputTokens: value,
+          totalTokens: value,
+          inputTokenDetails: {
+            cacheReadTokens: value,
+            cacheWriteTokens: value,
+          },
+        });
+
+        expect(tracker.inputTokens).toBe(100);
+        expect(tracker.outputTokens).toBe(50);
+        expect(tracker.totalTokens).toBe(150);
+        expect(tracker.cacheReadTokens).toBe(0);
+        expect(tracker.cacheWriteTokens).toBe(0);
+        expect(tracker.lastStepInputTokens).toBe(0);
+        expect(tracker.hasCacheData).toBe(false);
+      },
+    );
+
+    it("keeps valid fields when another field in the receipt is malformed", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        outputTokens: -1,
+        totalTokens: 1.5,
+      });
+      tracker.accumulateStep({
+        inputTokens: "7" as unknown as number,
+        outputTokens: 3,
+      });
+
+      expect(tracker.inputTokens).toBe(100);
+      expect(tracker.outputTokens).toBe(3);
+      // Each invalid or missing total falls back to its valid components.
+      expect(tracker.totalTokens).toBe(103);
+    });
+
+    it("keeps a valid provider total that differs from its components", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        outputTokens: 50,
+        totalTokens: 175,
+      });
+
+      expect(tracker.totalTokens).toBe(175);
+    });
+
+    it("does not discount cache counts without a valid input to bound them", () => {
+      tracker.accumulateStep(
+        { inputTokenDetails: { cacheReadTokens: 10, cacheWriteTokens: 10 } },
+        "anthropic/claude-4.6-opus-20260205",
+      );
+      tracker.accumulateStep(
+        {
+          inputTokens: 1.5,
+          outputTokens: 0,
+          inputTokenDetails: { cacheReadTokens: 0 },
+        },
+        "anthropic/claude-4.6-opus-20260205",
+      );
+
+      expect(tracker.cacheReadTokens).toBe(0);
+      expect(tracker.cacheWriteTokens).toBe(0);
+      expect(tracker.hasCacheData).toBe(false);
+    });
+
+    it("leaves bounded read and write overlap to the existing pricing caps", () => {
+      tracker.accumulateStep(
+        {
+          inputTokens: 100_000,
+          outputTokens: 0,
+          inputTokenDetails: {
+            cacheReadTokens: 80_000,
+            cacheWriteTokens: 50_000,
+          },
+        },
+        "anthropic/claude-4.6-opus-20260205",
+      );
+
+      expect(tracker.cacheReadTokens).toBe(80_000);
+      expect(tracker.cacheWriteTokens).toBe(50_000);
+      // 80k reads ($0.04) plus the remaining 20k input as writes ($0.125).
+      expect(tracker.computeModelCostDollars("model-default")).toBeCloseTo(
+        0.165,
+        10,
+      );
+    });
   });
 
   describe("streamOutputTokens", () => {

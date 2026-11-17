@@ -180,6 +180,7 @@ import {
   getMaxTokensForSubscription,
   safeCountTokens,
 } from "@/lib/token-utils";
+import { isValidTokenCount } from "@/lib/token-usage";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import {
@@ -3309,6 +3310,11 @@ export async function createAgentStream(
         getOpenRouterFileAnnotations(providerMetadata) ??
         openRouterFileAnnotations;
       let stepUsageCostIndex: number | undefined;
+      // A malformed count is unknown: it must not lower context usage or
+      // confirm that an earlier compaction recovered the context.
+      const reportedInputTokens = isValidTokenCount(usage?.inputTokens)
+        ? usage.inputTokens
+        : undefined;
       if (usage) {
         const stepAccountingModel = resolveServedModelForCostAccounting({
           modelName: activeStepModelName,
@@ -3322,15 +3328,15 @@ export async function createAgentStream(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
           stepAccountingModel,
         );
-        state.lastStepInputTokens = usage.inputTokens || 0;
-        if (usage.inputTokens) {
+        state.lastStepInputTokens = reportedInputTokens ?? 0;
+        if (reportedInputTokens) {
           state.ctxUsage = {
             ...state.ctxUsage,
-            usedTokens: usage.inputTokens,
+            usedTokens: reportedInputTokens,
           };
         }
       }
-      compactionAttempts.confirm(usage?.inputTokens, summarizationThreshold);
+      compactionAttempts.confirm(reportedInputTokens, summarizationThreshold);
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({
