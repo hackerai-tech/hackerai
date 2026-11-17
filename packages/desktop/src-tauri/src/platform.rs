@@ -214,8 +214,9 @@ pub fn build_command(
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
 /// On Windows: stops the process tree before killing/reaping the shell.
-/// Reaps the process with a bounded wait() afterward. True only when the tree
-/// was confirmed stopped and the shell reaped; anything else is unknown.
+/// Reaps the process with a bounded wait() afterward. True only when the tree,
+/// as `cancel_process_tree` defines it, was confirmed stopped and the shell
+/// reaped; anything else is unknown.
 pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
     use std::time::Duration;
     #[cfg(unix)]
@@ -276,7 +277,9 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 }
 
 /// Cancel a streaming command and report success only after the OS confirms
-/// that the process tree is no longer running.
+/// that its tree is no longer running: on Unix, the command's process group;
+/// on Windows, `taskkill /T` from the shell. On Unix, descendants that left the
+/// group (`setsid`, `setpgid`, daemonizing) are neither signaled nor counted.
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
 pub async fn cancel_process_tree(pid: u32) -> bool {

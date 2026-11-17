@@ -1,16 +1,25 @@
 //! Native ownership of streamed commands across page documents.
 //!
-//! A command belongs to the main-page generation that admitted it, captured
+//! A command belongs to the main-page generation current when its IPC was
+//! dispatched, captured synchronously before Tauri spawns the command and
 //! before asynchronous authorization. Committing a replacement document or
 //! losing the Linux web process invalidates that generation and asks every
-//! owner to stop and reap its tree. A new document's commands wait until that
-//! cleanup resolves. Only the owner signals its process group, and only while
-//! its child is unreaped, so a recycled PID is never targeted. Same-document
-//! route changes do not commit a document and leave commands running.
+//! in-flight owner to stop and reap its process group. A new document's
+//! commands wait until that cleanup resolves. Only the owner signals its
+//! group, and only while its shell is unreaped, so a recycled PID is never
+//! targeted. Same-document route changes do not commit a document and leave
+//! commands running.
 //!
-//! Admission fails closed: once any owner cannot confirm its tree stopped,
-//! descendants may still be running, so no further streamed command starts in
-//! this native process.
+//! Scope: an owner is responsible for its in-flight command's process group.
+//! A command that completes normally releases ownership even if it left an
+//! intentional background job (for example `server > log 2>&1 &`); those jobs
+//! keep running, as they always have. Descendants that leave the group
+//! (`setsid`, `setpgid`, daemonizing) are outside any owner's reach, and abrupt
+//! native death runs no cleanup at all.
+//!
+//! Admission fails closed: once any owner cannot confirm its group stopped,
+//! members may still be running, so no further streamed command starts in this
+//! native process.
 
 use std::collections::{HashMap, HashSet};
 use std::process::ExitStatus;
@@ -156,7 +165,9 @@ impl StreamLifecycle {
         self.update_gate.block_for_unconfirmed_command();
     }
 
-    /// Capture before any asynchronous work, such as authorization redemption.
+    /// Capture synchronously while the IPC is dispatched. An async command body
+    /// runs only at its spawned task's first poll, which can follow a page
+    /// replacement, so it must receive this value rather than call it.
     pub(crate) fn admit(&self) -> Admission {
         Admission(self.state().generation)
     }
@@ -908,5 +919,51 @@ mod unix_tests {
             "an unrelated process with the stale PID was signaled"
         );
         unrelated.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_normal_completion_keeps_an_intentional_background_job() {
+        let scratch = Scratch::new();
+        let lifecycle = Arc::new(StreamLifecycle::default());
+        // The established detached pattern: redirect the job's output so the
+        // shell can exit and the command completes.
+        let command = format!(
+            "sleep 60 > /dev/null 2>&1 & echo $! > {}",
+            quoted(&scratch.path("background"))
+        );
+        let mut cmd = platform::build_command(&command, None, None);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "detached", &mut cmd)
+                .await,
+        );
+        let leader = owned.child.id().unwrap();
+        let (channel, events) = collecting_channel();
+        run(owned, None, Duration::from_secs(30), &channel).await;
+        let background: libc::pid_t = std::fs::read_to_string(scratch.path("background"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some(r#"{"type":"exit","exitCode":0}"#)
+        );
+        // Ownership ended with the shell; the job outlives it in that group.
+        assert!(lifecycle.state().running.is_empty());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            process_alive(background),
+            "normal completion killed the job"
+        );
+        assert!(group_alive(leader));
+
+        // Later page replacement and app exit do not reach it either.
+        let (_, cleanups) = lifecycle.invalidate();
+        assert!(cleanups.is_empty());
+        assert!(process_alive(background));
+
+        // Clean up exactly the job this test started.
+        assert_eq!(unsafe { libc::kill(background, libc::SIGKILL) }, 0);
     }
 }

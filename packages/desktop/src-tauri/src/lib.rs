@@ -1378,9 +1378,15 @@ struct AuthorizedCommandMessage {
     timeout: Option<u64>,
 }
 
-#[tauri::command]
-async fn execute_authorized_stream_command<R: tauri::Runtime>(
-    state: tauri::State<'_, StreamCommandState>,
+const AUTHORIZED_STREAM_COMMAND: &str = "execute_authorized_stream_command";
+
+/// One `execute_authorized_stream_command` IPC, parsed while it is dispatched.
+struct AuthorizedStreamRequest<R: tauri::Runtime> {
+    state: StreamCommandState,
+    // The page that sent this IPC. A Tauri-generated async command would only
+    // read state at its spawned task's first poll, which can follow a page
+    // replacement and so capture the replacement page instead.
+    admission: stream_lifecycle::Admission,
     window: tauri::WebviewWindow<R>,
     authorization_id: String,
     message: serde_json::Value,
@@ -1403,15 +1409,128 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     // The send failure's connector phase, on its own channel so every send
     // receipt's shape is frozen. Without it the client keeps no connector layer.
     on_authorization_connector_diagnostic: Option<serde_json::Value>,
+}
+
+impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
+    /// Extract arguments with Tauri's own `CommandArg` implementations, in the
+    /// order the generated handler used, so argument errors and optional
+    /// diagnostic-channel handling are unchanged.
+    fn from_invoke(
+        message: &tauri::ipc::InvokeMessage<R>,
+        acl: &Option<Vec<tauri::utils::acl::resolved::ResolvedCommand>>,
+    ) -> Result<Self, tauri::ipc::InvokeError> {
+        use tauri::ipc::{CommandArg, CommandItem};
+        let item = |key: &'static str| CommandItem {
+            plugin: None,
+            name: AUTHORIZED_STREAM_COMMAND,
+            key,
+            message,
+            acl,
+        };
+        let state = tauri::State::<StreamCommandState>::from_command(item("state"))?
+            .inner()
+            .clone();
+        let admission = state.admit();
+        Ok(Self {
+            state,
+            admission,
+            window: CommandArg::from_command(item("window"))?,
+            authorization_id: CommandArg::from_command(item("authorizationId"))?,
+            message: CommandArg::from_command(item("message"))?,
+            on_event: CommandArg::from_command(item("onEvent"))?,
+            on_authorization_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationDiagnostic",
+            ))?,
+            on_authorization_cause_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationCauseDiagnostic",
+            ))?,
+            on_authorization_response_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationResponseDiagnostic",
+            ))?,
+            on_authorization_mitigation_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationMitigationDiagnostic",
+            ))?,
+            on_authorization_transport_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationTransportDiagnostic",
+            ))?,
+            on_authorization_io_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationIoDiagnostic",
+            ))?,
+            on_authorization_connector_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationConnectorDiagnostic",
+            ))?,
+        })
+    }
+}
+
+/// Route `execute_authorized_stream_command` to its synchronous dispatcher and
+/// every other command to the generated handler. Tauri has already applied
+/// the ACL in `Webview::on_message` before any invoke handler runs.
+fn with_authorized_stream_dispatch<R: tauri::Runtime>(
+    generated: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        if invoke.message.command() == AUTHORIZED_STREAM_COMMAND {
+            dispatch_authorized_stream_command(invoke)
+        } else {
+            generated(invoke)
+        }
+    }
+}
+
+/// Runs synchronously while the IPC is dispatched, so the admission is the
+/// sending page's even if the spawned work first runs after a replacement.
+fn dispatch_authorized_stream_command<R: tauri::Runtime>(invoke: tauri::ipc::Invoke<R>) -> bool {
+    let tauri::ipc::Invoke {
+        message,
+        resolver,
+        acl,
+    } = invoke;
+    match AuthorizedStreamRequest::from_invoke(&message, &acl) {
+        Ok(request) => respond_authorized_stream_command(resolver, request),
+        Err(error) => resolver.invoke_error(error),
+    }
+    true
+}
+
+/// The same response conversion the generated async wrapper performs.
+fn respond_authorized_stream_command<R: tauri::Runtime>(
+    resolver: tauri::ipc::InvokeResolver<R>,
+    request: AuthorizedStreamRequest<R>,
+) {
+    resolver.respond_async_serialized(async move {
+        use tauri::ipc::{InvokeError, IpcResponse};
+        execute_authorized_stream_command(request)
+            .await
+            .map_err(InvokeError::from)?
+            .body()
+            .map_err(InvokeError::from)
+    });
+}
+
+async fn execute_authorized_stream_command<R: tauri::Runtime>(
+    request: AuthorizedStreamRequest<R>,
 ) -> Result<(), String> {
     use authorization_connector_diagnostics::ConnectorPhaseSnapshot;
     use authorization_response_diagnostics::{ResponseMitigationReceipt, ResponseRejectionReceipt};
     use authorization_send_diagnostics::{
         SendFailureCause, SendFailureReceipt, SendIoSupplement, SendTransportDetail,
     };
-    // Bind the request to the document that sent it before awaiting
-    // redemption; a replaced document's request must never launch.
-    let admission = state.admit();
+    let AuthorizedStreamRequest {
+        state,
+        admission,
+        window,
+        authorization_id,
+        message,
+        on_event,
+        on_authorization_diagnostic,
+        on_authorization_cause_diagnostic,
+        on_authorization_response_diagnostic,
+        on_authorization_mitigation_diagnostic,
+        on_authorization_transport_diagnostic,
+        on_authorization_io_diagnostic,
+        on_authorization_connector_diagnostic,
+    } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
         authorization_diagnostic_channel_id(on_authorization_response_diagnostic)
@@ -2429,7 +2548,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_diagnostics_optional_arguments_keep_original_command_errors() {
+    fn authorized_stream_command_optional_diagnostics_keep_original_command_errors() {
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
         // The compiled ACL admits the trusted IPC origin, while the loaded page
         // is untrusted for authorization: no POST can be attempted.
@@ -2460,8 +2579,8 @@ mod tests {
                 "io" => {
                     builder.invoke_handler(tauri::generate_handler![io_authorized_command_fixture])
                 }
-                _ => builder
-                    .invoke_handler(tauri::generate_handler![execute_authorized_stream_command]),
+                // The production synchronous dispatcher.
+                _ => builder.invoke_handler(with_authorized_stream_dispatch(|_| false)),
             };
             let app = builder.build(app_context()).unwrap();
             let untrusted_page =
@@ -2567,6 +2686,148 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Approves `count` authorization requests, as the production endpoint
+    /// would, and counts them.
+    fn approve_authorizations(
+        count: usize,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let approvals = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = approvals.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(count) {
+                let Ok(mut stream) = stream else { return };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                // Read the headers and the declared JSON body before replying.
+                loop {
+                    let Ok(n) = stream.read(&mut buf) else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = br#"{"approved":true}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(body);
+            }
+        });
+        (port, approvals)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_stream_command_keeps_dispatching_page_when_first_poll_follows_replacement() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
+
+        type Held = Option<(
+            tauri::ipc::InvokeResolver<MockRuntime>,
+            AuthorizedStreamRequest<MockRuntime>,
+        )>;
+        let scratch = unique_test_dir("dispatch-race");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let (port, approvals) = approve_authorizations(2);
+        let hold_next = Arc::new(AtomicBool::new(true));
+        let held: Arc<Mutex<Held>> = Arc::default();
+        let app = mock_builder()
+            .manage(StreamCommandState::default())
+            .invoke_handler({
+                let (hold_next, held) = (hold_next.clone(), held.clone());
+                move |invoke: tauri::ipc::Invoke<MockRuntime>| {
+                    if !hold_next.swap(false, Ordering::SeqCst) {
+                        return dispatch_authorized_stream_command(invoke);
+                    }
+                    // The dispatcher's synchronous half, with its spawn held
+                    // back so the first poll deterministically follows a
+                    // replacement, as it can when the runtime is busy.
+                    let tauri::ipc::Invoke {
+                        message,
+                        resolver,
+                        acl,
+                    } = invoke;
+                    let request = AuthorizedStreamRequest::from_invoke(&message, &acl).unwrap();
+                    *held.lock().unwrap() = Some((resolver, request));
+                    true
+                }
+            })
+            .build(app_context())
+            .unwrap();
+        let page =
+            tauri::WebviewUrl::External(format!("http://localhost:{port}/").parse().unwrap());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
+            .build()
+            .unwrap();
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        let request = |authorization: &str, command_id: &str| tauri::webview::InvokeRequest {
+            cmd: AUTHORIZED_STREAM_COMMAND.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "https://hackerai.co/".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(serde_json::json!({
+                "authorizationId": authorization.repeat(64),
+                "message": { "type": "command", "commandId": command_id, "command": command },
+                "onEvent": "__CHANNEL__:1",
+            })),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+
+        // The old page's IPC is dispatched (ACL, then the handler) ...
+        let streams = app.state::<StreamCommandState>().inner().clone();
+        let old_page = streams.admit();
+        let (responded, response) = std::sync::mpsc::channel();
+        window.clone().on_message(
+            request("a", "from-replaced-page"),
+            Box::new(move |_, _, result, _, _| {
+                let _ = responded.send(result);
+            }),
+        );
+        let (resolver, held_request) = held.lock().unwrap().take().expect("dispatched");
+        assert_eq!(held_request.admission, old_page);
+        // ... then the page commits a replacement before the work first runs.
+        invalidate_page_generation(app.handle(), "test replacement");
+        respond_authorized_stream_command(resolver, held_request);
+        match response.recv_timeout(Duration::from_secs(30)).unwrap() {
+            tauri::ipc::InvokeResponse::Err(tauri::ipc::InvokeError(error)) => {
+                assert_eq!(error, serde_json::json!(stream_lifecycle::PAGE_REPLACED))
+            }
+            other => panic!("the replaced page's command was not fenced: {other:?}"),
+        }
+        // Redemption is unchanged and still happened; only the launch is fenced.
+        assert_eq!(approvals.load(Ordering::SeqCst), 1);
+        assert!(!marker.exists(), "the replaced page's command ran");
+
+        // The current page's request runs once through the production dispatcher.
+        assert_eq!(
+            get_ipc_response(&window, request("b", "from-current-page")).map(|_| ()),
+            Ok(())
+        );
+        assert_eq!(approvals.load(Ordering::SeqCst), 2);
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "ran\n");
+        let _ = fs::remove_dir_all(&scratch);
     }
 
     #[cfg(unix)]
@@ -2862,7 +3123,9 @@ pub fn run() {
                 tauri::async_runtime::spawn(check_for_updates(app.clone(), false));
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        // `execute_authorized_stream_command` is dispatched synchronously by
+        // `with_authorized_stream_dispatch`, not generated.
+        .invoke_handler(with_authorized_stream_dispatch(tauri::generate_handler![
             environment_identity::get_environment_id,
             get_dev_auth_port,
             prepare_desktop_auth_state,
@@ -2880,14 +3143,13 @@ pub fn run() {
             read_local_preview_file,
             get_desktop_os_info,
             get_command_stdin_support,
-            execute_authorized_stream_command,
             cancel_stream_command,
             execute_authorized_pty_create,
             execute_authorized_pty_input,
             execute_authorized_pty_resize,
             execute_authorized_pty_kill,
             execute_pty_kill
-        ])
+        ]))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
