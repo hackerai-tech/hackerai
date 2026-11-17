@@ -96,6 +96,13 @@ type Challenge = {
 export type LocalRunConnectionWatch = DesktopDispatchGate & {
   /** Normal completion, or the owner's own stop with its cause. Idempotent. */
   stop(cause?: Error): void;
+  /**
+   * Settles only after a verification that starts now: a fresh presence
+   * lookup, plus a fresh session proof once a Desktop baseline exists. A
+   * cached ready state never satisfies it. Shares the fixed recovery window;
+   * rejects with the loss, a monitoring stop, or the signal's reason.
+   */
+  confirmReady(signal?: AbortSignal): Promise<void>;
 };
 
 /** Desktop hosts only: the run's published commands, read when reconciling. */
@@ -584,6 +591,23 @@ export function watchLocalRunConnection({
     stop,
     isReady: () => ready,
     waitUntilReady,
+    confirmReady: (signal?: AbortSignal) => {
+      if (terminal !== undefined) return Promise.reject(terminal);
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      // Already unverified: the next readiness is itself a fresh one.
+      if (ready) {
+        // With a proven session, require a new proof inside the same fixed
+        // window as any interruption; a departure meanwhile keeps it. Without
+        // one, a fresh lookup only, never host grace.
+        if (baseline) interrupt();
+        else {
+          ready = false;
+          clearTimeout(timer);
+        }
+        void check();
+      }
+      return waitUntilReady(signal);
+    },
     // Only a Desktop host can recover; a forgotten uncertain execution must
     // never let it, or later dispatch, proceed.
     ...(desktopSession && {

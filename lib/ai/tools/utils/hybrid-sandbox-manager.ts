@@ -383,6 +383,24 @@ export class HybridSandboxManager implements SandboxManager {
     };
   }
 
+  /**
+   * Completion boundary: a fresh lookup (and Desktop session proof) of the
+   * watched connection, never a cached readiness. Unwatched runs (Cloud, or
+   * after the run's own monitoring ended) have nothing to confirm.
+   */
+  async confirmLocalConnection(signal?: AbortSignal): Promise<void> {
+    if (this.localConnectionLost) throw this.localConnectionLost;
+    const watch = this.localConnectionWatch;
+    if (!watch || !this.onLocalConnectionLost) return;
+    try {
+      await watch.confirmReady(signal);
+    } catch (error) {
+      // The watch's own loss is recorded here first; prefer that instance.
+      throw this.localConnectionLost ?? error;
+    }
+    if (this.localConnectionLost) throw this.localConnectionLost;
+  }
+
   private loseRunConnection(
     reason: LocalConnectionLostError | LocalStopReason,
   ): LocalConnectionLostError {

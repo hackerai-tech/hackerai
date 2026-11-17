@@ -19,6 +19,7 @@ const mockWatchLocalRunConnection = jest.fn(() => ({
   stop: jest.fn(),
   isReady: jest.fn(() => true),
   waitUntilReady: jest.fn(async () => {}),
+  confirmReady: jest.fn(async (_signal?: AbortSignal) => {}),
 }));
 jest.mock("@/lib/centrifugo/watch-local-run-connection", () => ({
   watchLocalRunConnection: (...args: unknown[]) =>
@@ -2091,6 +2092,54 @@ describe("Agent connection interruption", () => {
       const thrown = await manager.getSandbox().catch((error) => error);
       expect(onLost).toHaveBeenCalledWith(thrown);
       expect(watch.stop).toHaveBeenCalledWith(thrown);
+      dispose();
+    });
+
+    it("confirms completion through a fresh watch verification, never cached state", async () => {
+      const { manager, dispose } = await acquire(true);
+      const { watch } = lastWatch() as unknown as {
+        watch: { confirmReady: jest.Mock };
+      };
+      const signal = new AbortController().signal;
+      await manager.confirmLocalConnection(signal);
+      expect(watch.confirmReady).toHaveBeenCalledWith(signal);
+      // After the run's own monitoring ends there is nothing to confirm.
+      dispose();
+      await manager.confirmLocalConnection();
+      expect(watch.confirmReady).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports a loss observed during confirmation as the run's own cause", async () => {
+      const { manager, onLost, dispose } = await acquire(true);
+      const call = mockWatchLocalRunConnection.mock.calls.at(-1) as unknown as [
+        { onLost: (error: LocalConnectionLostError) => void },
+      ];
+      const { watch } = lastWatch() as unknown as {
+        watch: { confirmReady: jest.Mock };
+      };
+      const loss = new LocalConnectionLostError("desktop_session_replaced");
+      watch.confirmReady.mockImplementationOnce(async () => {
+        // As the watcher does: reject the wait, then report the loss.
+        call[0].onLost(loss);
+        throw loss;
+      });
+      await expect(manager.confirmLocalConnection()).rejects.toBe(loss);
+      expect(onLost).toHaveBeenCalledWith(loss);
+      await expect(manager.confirmLocalConnection()).rejects.toBe(loss);
+      dispose();
+    });
+
+    it("has nothing to confirm for a Cloud run", async () => {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        "e2b",
+        "key",
+        null,
+        "pro",
+      );
+      const dispose = manager.stopOnLocalDisconnect(jest.fn());
+      await expect(manager.confirmLocalConnection()).resolves.toBeUndefined();
       dispose();
     });
   });

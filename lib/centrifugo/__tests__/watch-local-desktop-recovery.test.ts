@@ -846,3 +846,102 @@ describe("a published execution whose outcome becomes unknown", () => {
     expect(run.onLost).not.toHaveBeenCalled();
   });
 });
+
+describe("completion confirmation after the model finished", () => {
+  const track = (promise: Promise<void>) => {
+    const outcome = { done: false, error: undefined as unknown };
+    promise.then(
+      () => (outcome.done = true),
+      (error) => Object.assign(outcome, { done: true, error }),
+    );
+    return outcome;
+  };
+
+  test("a healthy host is confirmed by a fresh proof, never the cached readiness", async () => {
+    const run = await startRun();
+    expect(run.watch.isReady()).toBe(true);
+    const confirmed = track(run.watch.confirmReady());
+    // The cached state is dropped at once; only a new proof restores it.
+    expect(run.watch.isReady()).toBe(false);
+    await until(() => confirmed.done);
+    expect(confirmed.error).toBeUndefined();
+    expect(relay.published("desktop_session_proof")).toHaveLength(2);
+    expect(run.watch.isReady()).toBe(true);
+    expect(run.onLost).not.toHaveBeenCalled();
+  });
+
+  test("cached readiness cannot win a departure whose leave is still pending, and the same session completes once it returns", async () => {
+    const run = await startRun();
+    const { commandId, outcome, done } = await runCommand(run);
+    run.host.output(commandId).append({ type: "exit", exitCode: 0 });
+    await until(() => outcome.result !== undefined);
+    await done;
+    // The host leaves; the observer has not processed the leave yet.
+    relay.dropHost();
+    expect(run.watch.isReady()).toBe(true);
+    const confirmed = track(run.watch.confirmReady());
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(confirmed.done).toBe(false);
+    expect(run.watch.isReady()).toBe(false);
+
+    relay.refused.clear();
+    await until(() => confirmed.done);
+    expect(confirmed.error).toBeUndefined();
+    expect(run.host.executions).toEqual([commandId]);
+    expect(commandsPublished()).toBe(1);
+    expect(run.onLost).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      "a replaced page",
+      { ...SESSION, pageGeneration: SESSION.pageGeneration + 1 },
+      "desktop_session_replaced",
+    ],
+    ["a host that never returns", undefined, "selected_host_recovery_expired"],
+  ])(
+    "%s ends the confirmation with the run's loss",
+    async (_name, successor, reason) => {
+      const run = await startRun();
+      const interruptedAt = jest.now();
+      relay.dropHost();
+      const confirmed = track(run.watch.confirmReady());
+      if (successor) {
+        run.host.stop();
+        stops.push(startHost({ startup: successor }).stop);
+        relay.refused.clear();
+      }
+      await until(() => confirmed.done);
+      expect(confirmed.error).toBeInstanceOf(LocalConnectionLostError);
+      expect(confirmed.error).toBe(run.onLost.mock.calls[0][0]);
+      expect(run.cause()?.reason).toBe(reason);
+      // Confirmation shares the fixed window; it never extends an outage.
+      expect(jest.now() - interruptedAt).toBeLessThanOrEqual(15_100);
+      await expect(run.watch.confirmReady()).rejects.toBe(confirmed.error);
+    },
+  );
+
+  test("a host without session identity is confirmed by fresh presence only, never granted grace", async () => {
+    const run = await startRun(startHost({ startup: null }));
+    await run.watch.confirmReady();
+    relay.dropHost();
+    const confirmed = track(run.watch.confirmReady());
+    await until(() => confirmed.done);
+    expect(confirmed.error).toBeInstanceOf(LocalConnectionLostError);
+    expect(run.cause()?.reason).toMatch(
+      /^(selected_host_left|selected_presence_absent)$/,
+    );
+  });
+
+  test("a Stop during confirmation ends it at once without a local loss", async () => {
+    const run = await startRun();
+    relay.dropHost();
+    const stop = new AbortController();
+    const confirmed = track(run.watch.confirmReady(stop.signal));
+    await jest.advanceTimersByTimeAsync(1_000);
+    stop.abort(new Error("Stopped by user"));
+    await settle();
+    expect(confirmed.error).toEqual(new Error("Stopped by user"));
+    expect(run.onLost).not.toHaveBeenCalled();
+  });
+});
