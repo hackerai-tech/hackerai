@@ -34,8 +34,8 @@ export async function compareFindingDuplicate(
   { abortSignal, onCost }: ComparisonOptions,
 ): Promise<string | undefined> {
   abortSignal?.throwIfAborted();
-  // Exact matches are rechecked atomically by the mutation, including matches
-  // outside the recent candidate window that may change before the write.
+  // The backend sets this only for a strict report match, which the mutation
+  // rechecks atomically against the same candidates before writing.
   if (context.exact_duplicate_id) return undefined;
   if (!context.candidates.length) return undefined;
   const started = Date.now();
@@ -111,6 +111,7 @@ export async function createFindingWithDedupe(
       userId: args.userId,
       chatId: args.chatId,
       dedupeKey: createFindingDedupeKey(args.report),
+      report: args.report,
     });
     const duplicateId = await compareFindingDuplicate(
       args.report,

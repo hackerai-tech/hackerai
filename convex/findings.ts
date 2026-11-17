@@ -1,8 +1,14 @@
 import {
+  FINDING_DEDUPE_GROUP_LIMIT,
+  FINDING_DEDUPE_GROUP_MAX_BYTES,
   FINDING_DEDUPE_LIMIT,
+  FINDING_DEDUPE_RECENT_MAX_BYTES,
   findingComparisonSummary,
   findingDedupeVersions,
+  mergeFindingDedupeCandidates,
   sameFindingDedupeVersions,
+  sameFindingIdentity,
+  type FindingIdentitySource,
 } from "../lib/findings/dedupe-context";
 import {
   findingRevisionValidator,
@@ -15,7 +21,7 @@ import { EVIDENCE_BASIS_FIELDS } from "../lib/findings/evidence-status";
 import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import type { QueryCtx } from "./lib/serviceFunctions";
 import { paginationOptsValidator } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, getConvexSize, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { calculateCvss31 } from "../lib/findings/cvss31";
@@ -420,10 +426,63 @@ async function recentDedupeFindings(
     .paginate({
       numItems: FINDING_DEDUPE_LIMIT,
       cursor: null,
-      maximumBytesRead: 2_000_000,
+      maximumBytesRead: FINDING_DEDUPE_RECENT_MAX_BYTES,
     });
   return result.page;
 }
+
+/**
+ * The stored dedupe_key is a coarse lookup group, not proof of identity: it
+ * case-folds paths and ignores code locations and evidence. A partial group is
+ * incomplete evidence, so callers only reject on a strict match in loaded rows.
+ *
+ * Convex allows one paginated query per query function, and the recent window
+ * uses it. Bound this indexed read manually instead: stop at the row limit or
+ * once accumulated size reaches the soft byte cap, so at most one document can
+ * cross that cap.
+ */
+async function dedupeGroupFindings(
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+  dedupeKey: string,
+) {
+  const group: Doc<"findings">[] = [];
+  let bytes = 0;
+  for await (const finding of ctx.db
+    .query("findings")
+    .withIndex("by_user_chat_dedupe", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId).eq("dedupe_key", dedupeKey),
+    )) {
+    group.push(finding);
+    bytes += getConvexSize(finding);
+    if (
+      group.length >= FINDING_DEDUPE_GROUP_LIMIT ||
+      bytes >= FINDING_DEDUPE_GROUP_MAX_BYTES
+    )
+      break;
+  }
+  return group;
+}
+
+/** Shared by the context query and create mutation so their snapshots agree. */
+async function dedupeCandidates(
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+  dedupeKey: string,
+) {
+  const [recent, group] = await Promise.all([
+    recentDedupeFindings(ctx, userId, chatId),
+    dedupeGroupFindings(ctx, userId, chatId, dedupeKey),
+  ]);
+  return mergeFindingDedupeCandidates(recent, group);
+}
+
+const findStrictDuplicate = (
+  report: FindingIdentitySource,
+  candidates: Doc<"findings">[],
+) => candidates.find((finding) => sameFindingIdentity(report, finding));
 
 export const getFindingDedupeContextForBackend = query({
   args: {
@@ -431,6 +490,9 @@ export const getFindingDedupeContextForBackend = query({
     userId: v.string(),
     chatId: v.string(),
     dedupeKey: v.string(),
+    // Optional for older callers. Without a valid report, no exact match is
+    // claimed and every candidate goes to semantic comparison.
+    report: v.optional(v.any()),
   },
   returns: v.object({
     exact_duplicate_id: v.union(v.string(), v.null()),
@@ -454,16 +516,20 @@ export const getFindingDedupeContextForBackend = query({
       throw new ConvexError("The source chat is no longer available.");
     }
     await assertUserCanAccessChatHistory(ctx, args.userId);
-    const exact = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", args.dedupeKey),
-      )
-      .first();
-    const findings = await recentDedupeFindings(ctx, args.userId, args.chatId);
+    const parsed =
+      args.report === undefined
+        ? undefined
+        : createVulnerabilityReportInputSchema.safeParse(args.report);
+    const report = parsed?.success ? parsed.data : undefined;
+    // Derive the group from the validated report exactly as the create mutation
+    // does, so both read the same candidates for the comparison snapshot.
+    const findings = await dedupeCandidates(
+      ctx,
+      args.userId,
+      args.chatId,
+      report ? createFindingDedupeKey(report) : args.dedupeKey,
+    );
+    const exact = report ? findStrictDuplicate(report, findings) : undefined;
     return {
       exact_duplicate_id: exact?.finding_id ?? null,
       candidates: findings.map((finding) => ({
@@ -552,15 +618,15 @@ export const createFindingForBackend = mutation({
       : undefined;
     const input = parsed.data;
     const dedupeKey = createFindingDedupeKey(input);
-    const duplicate = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", dedupeKey),
-      )
-      .first();
+    // These indexed reads participate in Convex OCC: a concurrent create,
+    // correction or deletion invalidates the model's comparison before commit.
+    const current = await dedupeCandidates(
+      ctx,
+      args.userId,
+      args.chatId,
+      dedupeKey,
+    );
+    const duplicate = findStrictDuplicate(input, current);
 
     if (duplicate) {
       return {
@@ -573,9 +639,6 @@ export const createFindingForBackend = mutation({
     }
 
     if (args.comparisonSnapshot) {
-      const current = await recentDedupeFindings(ctx, args.userId, args.chatId);
-      // This indexed read participates in Convex OCC: a concurrent create,
-      // correction or deletion invalidates the model's comparison before commit.
       if (
         !sameFindingDedupeVersions(
           args.comparisonSnapshot,
@@ -1293,16 +1356,18 @@ export const updateFindingForBackend = mutation({
       };
     const input = report.data;
     const dedupeKey = createFindingDedupeKey(input);
-    const matches = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", dedupeKey),
+    const group = await dedupeGroupFindings(
+      ctx,
+      args.userId,
+      args.chatId,
+      dedupeKey,
+    );
+    if (
+      findStrictDuplicate(
+        input,
+        group.filter((f) => f._id !== finding._id),
       )
-      .take(2);
-    if (matches.some((f) => f._id !== finding._id))
+    )
       return {
         success: false as const,
         error: "duplicate" as const,
