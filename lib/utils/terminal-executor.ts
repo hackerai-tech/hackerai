@@ -23,6 +23,26 @@ const MAX_FULL_OUTPUT_CHARS = 5 * 1024 * 1024;
 // Bound its input independently of the larger buffer saved to the sandbox.
 const MAX_TOKENIZER_INPUT_CHARS = 128 * 1024;
 
+/** True when `index` falls between the two halves of a well-formed surrogate pair. */
+const splitsSurrogatePair = (text: string, index: number): boolean => {
+  if (index <= 0 || index >= text.length) return false;
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return (
+    before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+  );
+};
+
+// Character caps drop a pair they would split, so the result stays within the
+// cap and never gains a lone surrogate. Existing lone surrogates pass through.
+const sliceHead = (text: string, chars: number): string =>
+  text.slice(0, splitsSurrogatePair(text, chars) ? chars - 1 : chars);
+
+const sliceTail = (text: string, chars: number): string => {
+  const start = text.length - chars;
+  return text.slice(splitsSurrogatePair(text, start) ? start + 1 : start);
+};
+
 /**
  * Simple terminal output handler with token limits and timeout.
  * If onOutput returns a Promise, it is awaited so the run yields (e.g. for real-time stream delivery).
@@ -63,8 +83,9 @@ export const createTerminalHandler = (
     // Accumulate output in chronological order, up to the memory cap
     if (!fullOutputCapped) {
       if (totalChars + output.length > MAX_FULL_OUTPUT_CHARS) {
-        outputChunks.push(output.slice(0, MAX_FULL_OUTPUT_CHARS - totalChars));
-        totalChars = MAX_FULL_OUTPUT_CHARS;
+        const kept = sliceHead(output, MAX_FULL_OUTPUT_CHARS - totalChars);
+        outputChunks.push(kept);
+        totalChars += kept.length;
         fullOutputCapped = true;
       } else {
         outputChunks.push(output);
@@ -75,7 +96,7 @@ export const createTerminalHandler = (
     // Don't stream if truncated
     if (truncated) return;
 
-    const preview = output.slice(0, MAX_TOKENIZER_INPUT_CHARS);
+    const preview = sliceHead(output, MAX_TOKENIZER_INPUT_CHARS);
     const tokens = safeCountTokens(preview);
     if (preview.length < output.length || totalTokens + tokens > maxTokens) {
       truncated = true;
@@ -151,9 +172,9 @@ export function truncateTerminalOutput(output: string): TerminalResult {
     const headChars = Math.floor(contentChars * 0.25);
     const tailChars = contentChars - headChars;
     preview =
-      output.slice(0, headChars) +
+      sliceHead(output, headChars) +
       TRUNCATION_MESSAGE +
-      output.slice(-tailChars);
+      sliceTail(output, tailChars);
   }
   if (safeCountTokens(preview) <= TOOL_DEFAULT_MAX_TOKENS) {
     return { output: preview };

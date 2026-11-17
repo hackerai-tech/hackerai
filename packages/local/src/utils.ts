@@ -14,9 +14,20 @@ export const MAX_OUTPUT_SIZE = 12288;
 export const TRUNCATION_MARKER =
   "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
 
+/** True when `index` falls between the two halves of a well-formed surrogate pair. */
+const splitsSurrogatePair = (text: string, index: number): boolean => {
+  if (index <= 0 || index >= text.length) return false;
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return (
+    before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+  );
+};
+
 /**
  * Truncates output using 25% head + 75% tail strategy.
  * This preserves both the command start (context) and the end (final results/errors).
+ * A character cut never splits a surrogate pair; the pair is dropped instead.
  */
 export function truncateOutput(
   content: string,
@@ -30,9 +41,15 @@ export function truncateOutput(
   // 25% head + 75% tail strategy
   const headBudget = Math.floor(budgetForContent * 0.25);
   const tailBudget = budgetForContent - headBudget;
+  const tailStart = content.length - tailBudget;
 
-  const head = content.slice(0, headBudget);
-  const tail = content.slice(-tailBudget);
+  const head = content.slice(
+    0,
+    splitsSurrogatePair(content, headBudget) ? headBudget - 1 : headBudget,
+  );
+  const tail = content.slice(
+    splitsSurrogatePair(content, tailStart) ? tailStart + 1 : -tailBudget,
+  );
 
   return head + TRUNCATION_MARKER + tail;
 }
