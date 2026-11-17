@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
-import {
+import { syncBuiltinESMExports } from "node:module";
+import fsPromises, {
   chmod,
   mkdir,
   mkdtemp,
@@ -554,6 +555,108 @@ test("concurrent starts publish one complete retry identity and converge on the 
   assert.equal(
     JSON.parse(await readFile(f.handlePath, "utf8")).runId,
     "run_shared",
+  );
+});
+
+// Pauses a start after its request-copy link fails and before it reads the
+// existing copy: the window where a concurrent start can finish and remove it.
+function onRequestCopyConflict(t, handlePath, pause) {
+  const link = fsPromises.link;
+  fsPromises.link = async (from, to) => {
+    try {
+      return await link(from, to);
+    } catch (error) {
+      if (error.code === "EEXIST" && to === `${handlePath}.request.json`)
+        await pause();
+      throw error;
+    }
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    fsPromises.link = link;
+    syncBuiltinESMExports();
+  });
+}
+
+test("a concurrent start that finds another start's request copy converges after that start saves the accepted run", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);
+  let conflictSeen;
+  const conflict = new Promise((resolve) => (conflictSeen = resolve));
+  let firstSaved;
+  const firstFinished = new Promise((resolve) => (firstSaved = resolve));
+  onRequestCopyConflict(t, f.handlePath, () => {
+    conflictSeen();
+    return firstFinished;
+  });
+  const posts = [];
+  let second;
+  const first = await runResearch(args, {
+    ...quiet,
+    request: async (url, key, init) => {
+      posts.push(init.headers["idempotency-key"]);
+      second = runResearch(args, {
+        ...quiet,
+        request: async (url, key, init) => {
+          posts.push(init.headers["idempotency-key"]);
+          return { runId: "run_duplicate" };
+        },
+      });
+      await Promise.race([conflict, second]);
+      return { runId: "run_shared" };
+    },
+  });
+  firstSaved();
+  const saved = JSON.parse(await readFile(f.handlePath, "utf8"));
+  assert.equal(first.runId, "run_shared");
+  assert.deepEqual(await second, { runId: "run_shared", status: "submitted" });
+  assert.deepEqual(posts, [saved.idempotencyKey]);
+  assert.deepEqual(JSON.parse(await readFile(f.handlePath, "utf8")), saved);
+  await assert.rejects(stat(`${f.handlePath}.request.json`), {
+    code: "ENOENT",
+  });
+});
+
+test("a concurrent start fails closed when the request copy disappears without a saved run or matching handle", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);
+  const pending = `${f.handlePath}.request.json`;
+  await assert.rejects(
+    runResearch(args, {
+      ...quiet,
+      request: async () => {
+        throw new Error("start response lost");
+      },
+    }),
+  );
+  const original = await readFile(f.handlePath, "utf8");
+  let interfere;
+  onRequestCopyConflict(t, f.handlePath, () => interfere());
+  const request = async () =>
+    assert.fail("an unknown submission must not reach the gateway");
+
+  interfere = () => rm(pending);
+  await assert.rejects(
+    runResearch(args, { ...quiet, request }),
+    /outcome is unknown and no saved request exists; retry the original payload with this handle/,
+  );
+  assert.equal(await readFile(f.handlePath, "utf8"), original);
+
+  await writeFile(pending, await readFile(f.payloadPath), { mode: 0o600 });
+  interfere = async () => {
+    await rm(pending);
+    await writeFile(
+      f.handlePath,
+      JSON.stringify({
+        ...JSON.parse(original),
+        idempotencyKey: "00000000-0000-4000-8000-000000000000",
+        runId: "run_other",
+      }),
+    );
+  };
+  await assert.rejects(
+    runResearch(args, { ...quiet, request }),
+    /changed during submission/,
   );
 });
 
