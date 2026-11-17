@@ -179,6 +179,61 @@ function usesPublishedLegacyDesktopCommands(version: string): boolean {
 /** Distinguishes the 500ms deadline from a native lookup resolving undefined. */
 const NATIVE_VERSION_LOOKUP_TIMED_OUT = Symbol("native version lookup timeout");
 
+const NATIVE_PREVIOUS_EXITS = new Set(["clean", "unclean", "none", "unknown"]);
+const NATIVE_WEB_PROCESS_TERMINATIONS = new Set([
+  "none",
+  "crashed",
+  "memory_limit",
+  "api",
+  "unknown",
+]);
+
+type NativeLifecycleTelemetry = {
+  native_launch_id?: string;
+  native_previous_exit?: string;
+  native_previous_web_process_termination?: string;
+  native_page_generation?: number;
+  native_web_process_termination?: string;
+};
+
+/**
+ * Native lifecycle evidence from get_desktop_os_info, kept only when every
+ * fixed field validates. Older binaries omit it. An unclean previous exit is
+ * not a crash: forced quit and installer restarts look the same. The previous
+ * web process termination is the prior native process's last WebKit reason.
+ */
+function nativeLifecycleTelemetry(value: unknown): NativeLifecycleTelemetry {
+  if (typeof value !== "object" || value === null) return {};
+  const {
+    launchId,
+    previousExit,
+    previousWebProcessTermination,
+    pageGeneration,
+    webProcessTermination,
+  } = value as Record<string, unknown>;
+  if (
+    typeof launchId !== "string" ||
+    !/^[0-9a-f]{32}$/.test(launchId) ||
+    typeof previousExit !== "string" ||
+    !NATIVE_PREVIOUS_EXITS.has(previousExit) ||
+    typeof previousWebProcessTermination !== "string" ||
+    !NATIVE_WEB_PROCESS_TERMINATIONS.has(previousWebProcessTermination) ||
+    typeof pageGeneration !== "number" ||
+    !Number.isSafeInteger(pageGeneration) ||
+    pageGeneration < 0 ||
+    typeof webProcessTermination !== "string" ||
+    !NATIVE_WEB_PROCESS_TERMINATIONS.has(webProcessTermination)
+  )
+    return {};
+  return {
+    native_launch_id: launchId,
+    native_previous_exit: previousExit,
+    native_previous_web_process_termination: previousWebProcessTermination,
+    native_page_generation: pageGeneration,
+    native_web_process_termination: webProcessTermination,
+  };
+}
+
 /**
  * One file_stat invocation's last attempted boundary and selected adapter, with
  * the version lookup outcome read alongside that selection.
@@ -531,6 +586,7 @@ export class DesktopSandboxBridge {
   // Always assigned together with nativeAppVersion.
   private nativeVersionLookup: DesktopNativeVersionLookup = "unobserved";
   private nativePlatform = "unknown";
+  private nativeLifecycle: NativeLifecycleTelemetry = {};
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -561,6 +617,7 @@ export class DesktopSandboxBridge {
       clientSurface: "desktop_bridge",
       state,
       reconnectAttempt: Math.max(0, this.successfulRelayConnections - 1),
+      ...this.nativeLifecycle,
       ...details,
     };
     const message = JSON.stringify({
@@ -786,6 +843,7 @@ export class DesktopSandboxBridge {
     this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
     this.nativeFileIpcFailure = undefined;
+    this.nativeLifecycle = {};
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1338,10 +1396,15 @@ export class DesktopSandboxBridge {
             arch: string;
             release: string;
             hostname: string;
+            lifecycle?: unknown;
           }>("get_desktop_os_info");
+          this.nativeLifecycle = nativeLifecycleTelemetry(native.lifecycle);
+          // Registration validates exactly these fields; never forward extras.
           return {
-            ...native,
             platform: normalizeSandboxPlatform(native.platform),
+            arch: native.arch,
+            release: native.release,
+            hostname: native.hostname,
           };
         } catch (error) {
           if (!nativeCommandMissing(error, "get_desktop_os_info")) throw error;

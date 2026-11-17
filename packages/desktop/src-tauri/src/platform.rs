@@ -214,11 +214,13 @@ pub fn build_command(
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
 /// On Windows: stops the process tree before killing/reaping the shell.
-/// Always reaps the process with wait() afterward.
-pub async fn graceful_kill(child: &mut tokio::process::Child) {
+/// Reaps the process with a bounded wait() afterward. True only when the tree,
+/// as `cancel_process_tree` defines it, was confirmed stopped and the shell
+/// reaped; anything else is unknown.
+pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
+    use std::time::Duration;
     #[cfg(unix)]
-    {
-        use std::time::Duration;
+    let stopped = {
         if let Some(pid) = child.id() {
             // Send SIGTERM first for graceful shutdown
             terminate_process_group(pid, libc::SIGTERM);
@@ -233,42 +235,51 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
             }
             // A reaped shell does not prove its descendants stopped. Verify
             // the group and escalate survivors before releasing update admission.
-            let _ = cancel_process_tree(pid).await;
+            cancel_process_tree(pid).await
         } else {
-            // No PID available (already exited), just try kill
-            let _ = child.kill().await;
+            // Already reaped by this owner: no live PID remains to signal.
+            true
         }
-    }
+    };
 
     #[cfg(not(unix))]
-    {
-        if let Some(pid) = child.id() {
-            // Killing only bash/cmd can leave its native descendants writing
-            // files after the caller releases update admission.
-            let _ = cancel_process_tree(pid).await;
-        }
+    let stopped = {
+        // Killing only bash/cmd can leave its native descendants writing
+        // files after the caller releases update admission.
+        let stopped = match child.id() {
+            Some(pid) => cancel_process_tree(pid).await,
+            None => true,
+        };
         let _ = child.kill().await;
-    }
+        stopped
+    };
 
-    // Reap the process to avoid zombies
-    let _ = child.wait().await;
+    // Reap the process to avoid zombies, without waiting forever on a shell
+    // that cannot be stopped.
+    let reaped = matches!(
+        tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
+        Ok(Ok(_))
+    );
+    stopped && reaped
 }
 
 #[cfg(unix)]
 fn terminate_process_group(pid: u32, signal: libc::c_int) {
     let pid = pid as libc::pid_t;
+    // build_command places each command in a fresh session (spawn fails if
+    // setsid fails), making the child pid also the process-group id. Kill the
+    // group so pipelines and shell grandchildren stop together. A missing group
+    // means the tree is gone; never fall back to the positive PID, which may
+    // since name an unrelated process.
     unsafe {
-        // build_command places each command in a fresh session, making the
-        // child pid also the process-group id. Kill the group so pipelines and
-        // shell grandchildren stop together.
-        if libc::kill(-pid, signal) == -1 {
-            let _ = libc::kill(pid, signal);
-        }
+        let _ = libc::kill(-pid, signal);
     }
 }
 
 /// Cancel a streaming command and report success only after the OS confirms
-/// that the process tree is no longer running.
+/// that its tree is no longer running: on Unix, the command's process group;
+/// on Windows, `taskkill /T` from the shell. On Unix, descendants that left the
+/// group (`setsid`, `setpgid`, daemonizing) are neither signaled nor counted.
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
 pub async fn cancel_process_tree(pid: u32) -> bool {
