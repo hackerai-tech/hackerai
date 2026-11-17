@@ -4,6 +4,7 @@ import {
   recordAttachmentCommandReceiver,
   recordAttachmentCommandSetupAttempt,
   type AttachmentDownloadBoundary,
+  type AttachmentDownloadShellContextObservation,
 } from "./attachment-download-diagnostics";
 import {
   DesktopFileBridgeError,
@@ -2227,11 +2228,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    * returns escaping helpers for paths and arbitrary shell values.
    *
    * Centralizes the branching that used to be duplicated across every
-   * `files.*` method and `ensureDirectory`.
+   * `files.*` method and `ensureDirectory`. A caller-owned `observation`
+   * receives the call last entered; it never affects this context.
    */
   private async shellContext(
     rawPath: string,
     signal?: AbortSignal,
+    observation?: AttachmentDownloadShellContextObservation,
   ): Promise<{
     useBash: boolean;
     path: string;
@@ -2239,9 +2242,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     escapePath: (value: string) => string;
     escapeValue: (value: string) => string;
   }> {
+    if (observation) observation.stage = "detect_shell";
     const shell = await this.detectShell(signal);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
+    if (observation) observation.stage = "native_path_conversion";
     const nativePath = await this.toNativePath(
       this.resolveWorkingPath(rawPath),
       signal,
@@ -3135,6 +3140,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       let diagnosticAttempt = 0;
       let resultState: AttachmentDownloadBoundary["resultState"] =
         "not_observed";
+      const shellContextObservation: AttachmentDownloadShellContextObservation =
+        {};
       try {
         const signal = options?.signal;
         signal?.throwIfAborted();
@@ -3146,7 +3153,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         // causing curl to fail with the Windows "invalid filename syntax" error.
         phase = "shell_context";
         const { useBash, path, nativePath, escapePath, escapeValue } =
-          await this.shellContext(rawPath, signal);
+          await this.shellContext(rawPath, signal, shellContextObservation);
         phase = "http_client";
         const httpClient = await this.detectHttpClient(signal);
         phase = "prepare_command";
@@ -3354,6 +3361,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           phase,
           attempt: diagnosticAttempt,
           resultState,
+          shellContextStage: shellContextObservation.stage,
         });
         throw error;
       }

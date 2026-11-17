@@ -1305,6 +1305,96 @@ it("retains receiver and setup context through the later existing boundary", () 
   expect(Object.keys(error)).toEqual([]);
 });
 
+const shellStageKeys = [
+  "attachment_download_shell_context_diagnostic_version",
+  "attachment_download_shell_context_stage",
+];
+const shellStageFields = (error: unknown) =>
+  Object.fromEntries(
+    Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+      ([key]) => shellStageKeys.includes(key),
+    ),
+  );
+
+it.each([
+  ["shell_context", "detect_shell", true],
+  ["shell_context", "native_path_conversion", true],
+  ["shell_context", undefined, false],
+  ["shell_context", "PRIVATE_PATH_CANARY", false],
+  ["shell_context", new String("detect_shell"), false],
+  ["http_client", "detect_shell", false],
+  ["download_command", "native_path_conversion", false],
+] as const)(
+  "binds the %s/%s shell-context stage only to its own closed phase",
+  (phase, stage, recorded) => {
+    const error = Object.freeze(new Error("private original"));
+    recordAttachmentCommandSetupAttempt(error, 1);
+    recordAttachmentDownloadBoundary(error, {
+      phase,
+      attempt: 0,
+      resultState: "not_observed",
+      shellContextStage: stage as never,
+    });
+    expect(shellStageFields(error)).toEqual(
+      recorded
+        ? {
+            attachment_download_shell_context_diagnostic_version: 1,
+            attachment_download_shell_context_stage: stage,
+          }
+        : {},
+    );
+    expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+      attachment_command_setup_attempt: 1,
+      attachment_download_phase: phase,
+    });
+    expect(
+      JSON.stringify(getAttachmentDownloadFailureContext(error)),
+    ).not.toMatch(/PRIVATE|private/);
+    expect(Object.keys(error)).toEqual([]);
+  },
+);
+
+it("clears an earlier shell-context stage when the same rejection reaches a later boundary", () => {
+  const reused = Object.freeze(new Error("private reused"));
+  recordAttachmentDownloadBoundary(reused, {
+    phase: "shell_context",
+    attempt: 0,
+    resultState: "not_observed",
+    shellContextStage: "native_path_conversion",
+  });
+  const copy = copyAttachmentDownloadFailureContext(reused, new Error());
+  expect(shellStageFields(copy)).toEqual({
+    attachment_download_shell_context_diagnostic_version: 1,
+    attachment_download_shell_context_stage: "native_path_conversion",
+  });
+  recordAttachmentCommandSetupAttempt(reused, 2);
+  recordAttachmentDownloadBoundary(reused, {
+    phase: "download_command",
+    attempt: 1,
+    resultState: "not_observed",
+    // A later caller's stale observation is not this phase's evidence.
+    shellContextStage: "detect_shell",
+  });
+  expect(shellStageFields(reused)).toEqual({});
+  expect(getAttachmentDownloadFailureContext(reused)).toMatchObject({
+    attachment_command_setup_attempt: 2,
+    attachment_download_phase: "download_command",
+    attachment_download_attempt: 1,
+  });
+  // A later shell-context failure without an observed stage is not guessed.
+  recordAttachmentDownloadBoundary(reused, {
+    phase: "shell_context",
+    attempt: 0,
+    resultState: "not_observed",
+  });
+  expect(shellStageFields(reused)).toEqual({});
+  // The earlier copy keeps its own finite evidence.
+  expect(shellStageFields(copy)).toEqual({
+    attachment_download_shell_context_diagnostic_version: 1,
+    attachment_download_shell_context_stage: "native_path_conversion",
+  });
+});
+
 it("keeps setup attempts bounded and primitives unrecorded", () => {
   for (const attempt of [0, 3, 1.5, NaN]) {
     const error = new Error();
