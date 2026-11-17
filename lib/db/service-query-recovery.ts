@@ -35,6 +35,8 @@ const recoverableQueries = new Set([
   "browserHandoffs:getForBackend",
   "browserHandoffs:getExitNotesForBackend",
   "userSuspensions:getActiveByUser",
+  "findingHunts:getHistoryForBackend",
+  "findingAgentRetests:getHistoryForBackend",
 ]);
 
 export function reserveServiceQueryRecovery(
