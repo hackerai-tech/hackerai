@@ -870,6 +870,49 @@ describe("completion confirmation after the model finished", () => {
     expect(run.onLost).not.toHaveBeenCalled();
   });
 
+  test("confirmation during recovery rejects a proof issued before the completion boundary", async () => {
+    const run = await startRun();
+    const observer = relay.observer()!;
+    const deliver = observer.push.bind(observer);
+    const held: Frame[] = [];
+    jest.spyOn(observer, "push").mockImplementation((frame) => {
+      const push = frame.push as { pub?: { data?: Frame } } | undefined;
+      if (push?.pub?.data?.type === "desktop_session_proof") held.push(frame);
+      else deliver(frame);
+    });
+    relay.dropHost();
+    await until(() => !run.watch.isReady());
+    relay.refused.clear();
+    await until(() => held.length === 1);
+    const confirmed = track(run.watch.confirmReady());
+    deliver(held[0]);
+    await settle();
+    expect(confirmed.done).toBe(false);
+    expect(run.watch.isReady()).toBe(false);
+
+    await until(() => held.length === 2);
+    deliver(held[1]);
+    await until(() => confirmed.done);
+    expect(confirmed.error).toBeUndefined();
+    expect(run.watch.isReady()).toBe(true);
+    expect(run.onLost).not.toHaveBeenCalled();
+    expect(commandsPublished()).toBe(0);
+  });
+
+  test("fresh completion verification never extends an outage already in progress", async () => {
+    const run = await startRun();
+    relay.dropHost();
+    await until(() => !run.watch.isReady());
+    const interruptedAt = jest.now();
+    await jest.advanceTimersByTimeAsync(10_000);
+    const confirmed = track(run.watch.confirmReady());
+    await jest.advanceTimersByTimeAsync(5_100);
+    expect(confirmed.error).toBeInstanceOf(LocalConnectionLostError);
+    expect(run.cause()?.reason).toBe("selected_host_recovery_expired");
+    expect(jest.now() - interruptedAt).toBeLessThanOrEqual(15_100);
+    expect(run.onLost).toHaveBeenCalledTimes(1);
+  });
+
   test("cached readiness cannot win a departure whose leave is still pending, and the same session completes once it returns", async () => {
     const run = await startRun();
     const { commandId, outcome, done } = await runCommand(run);

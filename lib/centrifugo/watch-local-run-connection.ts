@@ -594,18 +594,17 @@ export function watchLocalRunConnection({
     confirmReady: (signal?: AbortSignal) => {
       if (terminal !== undefined) return Promise.reject(terminal);
       if (signal?.aborted) return Promise.reject(signal.reason);
-      // Already unverified: the next readiness is itself a fresh one.
-      if (ready) {
-        // With a proven session, require a new proof inside the same fixed
-        // window as any interruption; a departure meanwhile keeps it. Without
-        // one, a fresh lookup only, never host grace.
-        if (baseline) interrupt();
-        else {
-          ready = false;
-          clearTimeout(timer);
-        }
-        void check();
+      // Invalidate even an unready lookup/proof: it may have started before
+      // this completion boundary. interrupt preserves an existing deadline.
+      if (baseline) interrupt();
+      else {
+        generation++;
+        epoch++;
+        ready = false;
+        clearChallenge();
+        clearTimeout(timer);
       }
+      void check();
       return waitUntilReady(signal);
     },
     // Only a Desktop host can recover; a forgotten uncertain execution must
