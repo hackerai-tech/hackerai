@@ -108,9 +108,42 @@ const MESSAGE_REASONS: ReadonlyMap<string, DesktopInvocationRejectionReason> =
     ),
   ]);
 
-// lib.rs spawn_stream_command; the OS error text after it is never read.
+// Native stream spawn rejection; the OS error text after it is never
+// interpreted. Only its final suffix is compared, below.
 const SPAWN_PREFIX = "Failed to spawn: ";
 const MAX_MESSAGE_LENGTH = 1024;
+
+/** Reviewed numeric codes a spawn failure's Rust io::Error Display can end
+ * with, as ` (os error N)`. A code's meaning is platform-specific: the hint is
+ * the parsed message suffix, never an IO kind or a physical cause. */
+const SPAWN_OS_CODES = [2, 3, 5, 32, 87, 193, 206, 267, 740, 1260] as const;
+
+const SPAWN_OS_CODE_HINTS = [
+  ...SPAWN_OS_CODES.map((code) => `code_${code}` as const),
+  // Any other bounded spawn message: a delivered hint naming no code.
+  "unrecognized",
+] as const;
+
+export type DesktopInvocationSpawnOsCodeHint =
+  (typeof SPAWN_OS_CODE_HINTS)[number];
+
+const SPAWN_OS_CODE_SUFFIXES: ReadonlyMap<
+  string,
+  DesktopInvocationSpawnOsCodeHint
+> = new Map(
+  SPAWN_OS_CODES.map(
+    (code) => [` (os error ${code})`, `code_${code}` as const] as const,
+  ),
+);
+
+/** The reviewed code that exactly ends the OS text after the spawn prefix, or
+ * `unrecognized`; literal comparisons only, so no other text or number is
+ * ever returned. */
+function spawnOsCodeHint(osText: string): DesktopInvocationSpawnOsCodeHint {
+  for (const [suffix, hint] of SPAWN_OS_CODE_SUFFIXES)
+    if (osText.endsWith(suffix)) return hint;
+  return "unrecognized";
+}
 
 export interface DesktopInvocationRejectionDiagnostic {
   readonly desktop_invocation_rejection_version: 1;
@@ -148,21 +181,28 @@ export interface NativeInvocationRejectionClass {
   readonly reason: DesktopInvocationRejectionReason;
   /** Set only for an `execution_admission` reason. */
   readonly admission: DesktopInvocationAdmissionReason | null;
+  /** Set only for a `spawn_failed` reason. */
+  readonly spawnOsCodeHint: DesktopInvocationSpawnOsCodeHint | null;
 }
 
-/** Both classes from one read of the message. Never throws; anything but a
- * listed message is `unknown`, with no admission class. */
+/** Every class from one read of the message. Never throws; anything but a
+ * listed message is `unknown`, with no refinement. */
 export function classifyNativeInvocationRejectionMessage(
   error: unknown,
 ): NativeInvocationRejectionClass {
   const message = rejectionMessage(error);
   if (message === null || message.length > MAX_MESSAGE_LENGTH)
-    return { reason: "unknown", admission: null };
+    return { reason: "unknown", admission: null, spawnOsCodeHint: null };
+  const reason =
+    MESSAGE_REASONS.get(message) ??
+    (message.startsWith(SPAWN_PREFIX) ? "spawn_failed" : "unknown");
   return {
-    reason:
-      MESSAGE_REASONS.get(message) ??
-      (message.startsWith(SPAWN_PREFIX) ? "spawn_failed" : "unknown"),
+    reason,
     admission: ADMISSION_MESSAGES.get(message) ?? null,
+    spawnOsCodeHint:
+      reason === "spawn_failed"
+        ? spawnOsCodeHint(message.slice(SPAWN_PREFIX.length))
+        : null,
   };
 }
 
@@ -258,6 +298,73 @@ export function readDesktopInvocationAdmissionDiagnostic(
     });
     return version === 1
       ? desktopInvocationAdmissionDiagnostic(rejection, reason)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DesktopInvocationSpawnHintDiagnostic {
+  readonly desktop_invocation_spawn_hint_version: 1;
+  readonly desktop_invocation_spawn_os_code_hint: DesktopInvocationSpawnOsCodeHint;
+}
+
+const SPAWN_HINT_PROPERTIES = [
+  "desktop_invocation_spawn_hint_version",
+  "desktop_invocation_spawn_os_code_hint",
+] as const satisfies readonly (keyof DesktopInvocationSpawnHintDiagnostic)[];
+
+export const DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES: ReadonlySet<string> =
+  new Set(SPAWN_HINT_PROPERTIES);
+
+/** Only a validated `spawn_failed` group, which a selected native command set
+ * reported, can carry a hint. */
+function refinesSpawnFailure(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): boolean {
+  return (
+    rejection?.desktop_invocation_rejection_reason === "spawn_failed" &&
+    rejection.desktop_invocation_rejection_adapter !== "not_selected"
+  );
+}
+
+/** The complete hint group, or null unless it refines a complete
+ * `spawn_failed` group with a listed hint. */
+export function desktopInvocationSpawnHintDiagnostic(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  hint: unknown,
+): DesktopInvocationSpawnHintDiagnostic | null {
+  if (!refinesSpawnFailure(rejection)) return null;
+  const known = SPAWN_OS_CODE_HINTS.find((value) => value === hint);
+  return known
+    ? Object.freeze({
+        desktop_invocation_spawn_hint_version: 1,
+        desktop_invocation_spawn_os_code_hint: known,
+      })
+    : null;
+}
+
+/** Read the complete hint group from any property bag's own data properties,
+ * joined to an already validated `spawn_failed` group, or nothing at all. No
+ * property is read without that group. A getter never runs; a throwing proxy
+ * reads as nothing. */
+export function readDesktopInvocationSpawnHintDiagnostic(
+  source: unknown,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): DesktopInvocationSpawnHintDiagnostic | null {
+  if (
+    !refinesSpawnFailure(rejection) ||
+    typeof source !== "object" ||
+    source === null
+  )
+    return null;
+  try {
+    const [version, hint] = SPAWN_HINT_PROPERTIES.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    return version === 1
+      ? desktopInvocationSpawnHintDiagnostic(rejection, hint)
       : null;
   } catch {
     return null;

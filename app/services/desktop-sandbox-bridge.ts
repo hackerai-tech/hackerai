@@ -58,8 +58,10 @@ import {
   classifyNativeInvocationRejectionMessage,
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
+  desktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationSpawnHintDiagnostic,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -1533,11 +1535,13 @@ export class DesktopSandboxBridge {
       terminalErrorKind = errorKind;
       return true;
     };
-    // The rejection's message class joins only that recorded kind. The trace
-    // reports the command set the existing adapter selected.
+    // The rejection's message class, and its admission or spawn refinement,
+    // join only that recorded kind. The trace reports the command set the
+    // existing adapter selected.
     const invocationTrace: FileStatReceiverTrace = {};
     let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
     let invocationAdmission: DesktopInvocationAdmissionDiagnostic | null = null;
+    let invocationSpawnHint: DesktopInvocationSpawnHintDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1573,6 +1577,7 @@ export class DesktopSandboxBridge {
               invocationRejection && {
                 invocationRejection,
                 ...(invocationAdmission && { invocationAdmission }),
+                ...(invocationSpawnHint && { invocationSpawnHint }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1820,7 +1825,7 @@ export class DesktopSandboxBridge {
         // native message.
         if (latchTerminal("invocation_rejected")) {
           if (invocationTrace.adapter) {
-            // One read of the message yields both classes.
+            // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);
             invocationRejection = desktopInvocationRejectionDiagnostic(
               rejection.reason,
@@ -1829,6 +1834,10 @@ export class DesktopSandboxBridge {
             invocationAdmission = desktopInvocationAdmissionDiagnostic(
               invocationRejection,
               rejection.admission,
+            );
+            invocationSpawnHint = desktopInvocationSpawnHintDiagnostic(
+              invocationRejection,
+              rejection.spawnOsCodeHint,
             );
           } else
             invocationRejection = desktopInvocationRejectionDiagnostic(

@@ -36,8 +36,10 @@ import {
 import {
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
+  readDesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationSpawnHintDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -76,6 +78,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** The same message's admission class; only joined to a valid
    * `execution_admission` rejection class. */
   invocationAdmission?: DesktopInvocationAdmissionDiagnostic;
+  /** The same message's OS code hint; only joined to a valid `spawn_failed`
+   * rejection class from a selected native command set. */
+  invocationSpawnHint?: DesktopInvocationSpawnHintDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -349,6 +354,10 @@ export class DesktopAckTelemetry {
         result.invocationAdmission,
         invocationRejection,
       );
+      const invocationSpawnHint = readDesktopInvocationSpawnHintDiagnostic(
+        result.invocationSpawnHint,
+        invocationRejection,
+      );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -393,6 +402,7 @@ export class DesktopAckTelemetry {
           ...terminalError,
           ...invocationRejection,
           ...invocationAdmission,
+          ...invocationSpawnHint,
         },
         dedupeKey,
       );

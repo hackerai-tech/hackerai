@@ -3,11 +3,18 @@ import {
   classifyNativeInvocationRejectionMessage,
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
+  desktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
+  readDesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationRejectionDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
-const unclassified = { reason: "unknown", admission: null };
+const unclassified = {
+  reason: "unknown",
+  admission: null,
+  spawnOsCodeHint: null,
+};
 
 describe("classifyNativeInvocationRejection", () => {
   // The native apps' fixed rejection messages and their message classes.
@@ -74,19 +81,75 @@ describe("classifyNativeInvocationRejection", () => {
       "execution_admission",
       "command_already_running",
     ],
-    ["Failed to spawn: PRIVATE (os error 2)", "spawn_failed", null],
-    ["Failed to spawn: ", "spawn_failed", null],
   ])("classifies %p as %s and %s", (message, reason, admission) => {
+    const expected = { reason, admission, spawnOsCodeHint: null };
     expect(classifyNativeInvocationRejection(message)).toBe(reason);
-    expect(classifyNativeInvocationRejectionMessage(message)).toEqual({
-      reason,
-      admission,
-    });
+    expect(classifyNativeInvocationRejectionMessage(message)).toEqual(expected);
     // A real Error's own message is read the same way.
     expect(classifyNativeInvocationRejection(new Error(message))).toBe(reason);
     expect(
       classifyNativeInvocationRejectionMessage(new Error(message)),
-    ).toEqual({ reason, admission });
+    ).toEqual(expected);
+  });
+
+  // Rust's io::Error Display ends an OS error with " (os error N)". Only that
+  // exact final suffix for a reviewed code is a hint; the text before it is
+  // never interpreted.
+  it.each<[string, string]>([
+    ["Failed to spawn: PRIVATE (os error 2)", "code_2"],
+    ["Failed to spawn: PRIVATE (os error 3)", "code_3"],
+    ["Failed to spawn: PRIVATE (os error 5)", "code_5"],
+    ["Failed to spawn: PRIVATE (os error 32)", "code_32"],
+    ["Failed to spawn: PRIVATE (os error 87)", "code_87"],
+    ["Failed to spawn: PRIVATE (os error 193)", "code_193"],
+    ["Failed to spawn: PRIVATE (os error 206)", "code_206"],
+    ["Failed to spawn: PRIVATE (os error 267)", "code_267"],
+    ["Failed to spawn: PRIVATE (os error 740)", "code_740"],
+    ["Failed to spawn: PRIVATE (os error 1260)", "code_1260"],
+    // Only the final suffix counts, not one earlier in the OS text.
+    ["Failed to spawn: PRIVATE (os error 5) (os error 2)", "code_2"],
+    // Every other bounded spawn message is the noncausal `unrecognized`.
+    ["Failed to spawn: ", "unrecognized"],
+    ["Failed to spawn: PRIVATE", "unrecognized"],
+    ["Failed to spawn: (os error 2)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 4)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 12)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 02)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error -2)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 2) ", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 2)\n", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 2).", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 2) PRIVATE", "unrecognized"],
+    ["Failed to spawn: PRIVATE (OS error 2)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error 2", "unrecognized"],
+    ["Failed to spawn: PRIVATE(os error 2)", "unrecognized"],
+    ["Failed to spawn: PRIVATE (os error ２)", "unrecognized"],
+    // Exactly the 1024-character bound.
+    [`Failed to spawn: ${"x".repeat(994)} (os error 2)`, "code_2"],
+  ])("hints spawn message %p as %s", (message, hint) => {
+    const expected = {
+      reason: "spawn_failed",
+      admission: null,
+      spawnOsCodeHint: hint,
+    };
+    expect(classifyNativeInvocationRejectionMessage(message)).toEqual(expected);
+    expect(
+      classifyNativeInvocationRejectionMessage(new Error(message)),
+    ).toEqual(expected);
+  });
+
+  it("hints nothing for a spawn suffix outside a bounded spawn message", () => {
+    for (const message of [
+      // One character over the bound.
+      `Failed to spawn: ${"x".repeat(995)} (os error 2)`,
+      "PRIVATE Failed to spawn: x (os error 2)",
+      "failed to spawn: x (os error 2)",
+      "Process error: x (os error 2)",
+      "Desktop operation was not authorized (os error 2)",
+    ])
+      expect(classifyNativeInvocationRejectionMessage(message)).toEqual(
+        unclassified,
+      );
   });
 
   it.each<[string, unknown]>([
@@ -172,12 +235,26 @@ describe("classifyNativeInvocationRejection", () => {
       reads++;
       return "Command is already running";
     };
+    const spawnGetter = new Error("Failed to spawn: x (os error 2)");
+    Object.defineProperty(spawnGetter, "message", {
+      get() {
+        reads++;
+        return "Failed to spawn: x (os error 5)";
+      },
+    });
     const fail = () => {
       throw new Error("PRIVATE");
     };
     for (const error of [
       new GetterError(),
       stringified,
+      spawnGetter,
+      {
+        toString() {
+          reads++;
+          return "Failed to spawn: x (os error 2)";
+        },
+      },
       new Proxy(new Error("Command is already running"), {
         get: fail,
         getOwnPropertyDescriptor: fail,
@@ -358,6 +435,193 @@ describe("readDesktopInvocationAdmissionDiagnostic", () => {
           { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
         ),
         rejection,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("spawn OS code hint group", () => {
+  const nativeAdapters = [
+    "authorized_native",
+    "compatibility_native",
+    "published_legacy_native",
+  ];
+  const spawnFailed = desktopInvocationRejectionDiagnostic(
+    "spawn_failed",
+    "authorized_native",
+  );
+  const group = {
+    desktop_invocation_spawn_hint_version: 1,
+    desktop_invocation_spawn_os_code_hint: "code_267",
+  };
+
+  it("refines spawn_failed from every native command set", () => {
+    for (const adapter of nativeAdapters)
+      for (const hint of ["code_2", "unrecognized"]) {
+        const built = desktopInvocationSpawnHintDiagnostic(
+          desktopInvocationRejectionDiagnostic("spawn_failed", adapter),
+          hint,
+        );
+        expect(built).toEqual({
+          desktop_invocation_spawn_hint_version: 1,
+          desktop_invocation_spawn_os_code_hint: hint,
+        });
+        expect(Object.isFrozen(built)).toBe(true);
+      }
+  });
+
+  it.each<[string, unknown, unknown]>([
+    ["no class", null, "code_2"],
+    [
+      "an admission class",
+      desktopInvocationRejectionDiagnostic(
+        "execution_admission",
+        "authorized_native",
+      ),
+      "code_2",
+    ],
+    [
+      "an unknown class",
+      desktopInvocationRejectionDiagnostic("unknown", "authorized_native"),
+      "unrecognized",
+    ],
+    [
+      "an unselected class",
+      desktopInvocationRejectionDiagnostic("unknown", "not_selected"),
+      "unrecognized",
+    ],
+    // A forged spawn class without a selected command set never qualifies.
+    [
+      "an unvalidated unselected spawn class",
+      {
+        desktop_invocation_rejection_version: 1,
+        desktop_invocation_rejection_reason: "spawn_failed",
+        desktop_invocation_rejection_adapter: "not_selected",
+      },
+      "code_2",
+    ],
+    ["no hint", spawnFailed, null],
+    ["an arbitrary code", spawnFailed, "code_4"],
+    ["a numeric code", spawnFailed, 2],
+    ["a raw suffix", spawnFailed, "(os error 2)"],
+    ["a private value", spawnFailed, "PRIVATE"],
+  ])("builds nothing for %s", (_case, rejection, hint) => {
+    expect(
+      desktopInvocationSpawnHintDiagnostic(
+        rejection as DesktopInvocationRejectionDiagnostic | null,
+        hint,
+      ),
+    ).toBeNull();
+  });
+
+  it("reads only the complete group's data values", () => {
+    const read = readDesktopInvocationSpawnHintDiagnostic(
+      { ...group, message: "PRIVATE", cwd: "PRIVATE" },
+      spawnFailed,
+    );
+    expect(read).toEqual(group);
+    expect(Object.isFrozen(read)).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    ["no source", undefined],
+    ["a string source", "PRIVATE"],
+    ["an empty bag", {}],
+    [
+      "a missing hint",
+      { ...group, desktop_invocation_spawn_os_code_hint: undefined },
+    ],
+    [
+      "a missing version",
+      { ...group, desktop_invocation_spawn_hint_version: undefined },
+    ],
+    [
+      "a string version",
+      { ...group, desktop_invocation_spawn_hint_version: "1" },
+    ],
+    [
+      "an unsupported version",
+      { ...group, desktop_invocation_spawn_hint_version: 2 },
+    ],
+    [
+      "an unlisted code",
+      { ...group, desktop_invocation_spawn_os_code_hint: "code_1" },
+    ],
+    [
+      "a raw suffix",
+      { ...group, desktop_invocation_spawn_os_code_hint: " (os error 267)" },
+    ],
+    [
+      "an inherited group",
+      Object.create(group as object) as Record<string, unknown>,
+    ],
+  ])("reads nothing for %s", (_case, source) => {
+    expect(
+      readDesktopInvocationSpawnHintDiagnostic(source, spawnFailed),
+    ).toBeNull();
+  });
+
+  it("never reads a source without a validated selected spawn_failed class", () => {
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    // Any descriptor read would throw; the gate must come first.
+    const hostile = new Proxy(
+      { ...group },
+      { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+    );
+    let reads = 0;
+    const counted = new Proxy(
+      { ...group },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          reads++;
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    for (const other of [
+      null,
+      desktopInvocationRejectionDiagnostic(
+        "execution_admission",
+        "authorized_native",
+      ),
+      desktopInvocationRejectionDiagnostic("unknown", "not_selected"),
+    ]) {
+      expect(
+        readDesktopInvocationSpawnHintDiagnostic(hostile, other),
+      ).toBeNull();
+      expect(
+        readDesktopInvocationSpawnHintDiagnostic(counted, other),
+      ).toBeNull();
+    }
+    expect(reads).toBe(0);
+  });
+
+  it("never runs an accessor and survives a throwing proxy", () => {
+    let reads = 0;
+    const accessor = { ...group };
+    Object.defineProperty(accessor, "desktop_invocation_spawn_os_code_hint", {
+      enumerable: true,
+      get() {
+        reads++;
+        return "code_2";
+      },
+    });
+    expect(
+      readDesktopInvocationSpawnHintDiagnostic(accessor, spawnFailed),
+    ).toBeNull();
+    expect(reads).toBe(0);
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    expect(
+      readDesktopInvocationSpawnHintDiagnostic(
+        new Proxy(
+          { ...group },
+          { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+        ),
+        spawnFailed,
       ),
     ).toBeNull();
   });

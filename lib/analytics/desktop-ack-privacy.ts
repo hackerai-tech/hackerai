@@ -23,8 +23,10 @@ import {
 import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
+  readDesktopInvocationSpawnHintDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
@@ -221,6 +223,13 @@ export function sanitizeDesktopAckEvent<
       event.properties,
       invocationRejection,
     );
+    // The OS code hint joins only a validated spawn_failed class from a
+    // selected native command set; no hint property is read without one. It
+    // likewise survives only as the validated data copy and drops alone.
+    const invocationSpawnHint = readDesktopInvocationSpawnHintDiagnostic(
+      event.properties,
+      invocationRejection,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -236,7 +245,8 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key) &&
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
-            !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key),
+            !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) &&
+            !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -277,6 +287,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, invocationRejection);
     if (invocationAdmission)
       Object.assign(event.properties, invocationAdmission);
+    if (invocationSpawnHint)
+      Object.assign(event.properties, invocationSpawnHint);
   }
   delete event.$set;
   delete event.$set_once;
