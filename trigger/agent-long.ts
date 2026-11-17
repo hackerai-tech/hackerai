@@ -3168,6 +3168,7 @@ export const agentLongTask = task({
                 stopSignal.abort("auto_review_circuit_breaker"),
               onPostWaitAuthorizationDenied: () =>
                 stopSignal.abort("post_wait_authorization_denied"),
+              onApprovalExpired: () => stopSignal.abort("approval_timeout"),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {

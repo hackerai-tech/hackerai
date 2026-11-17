@@ -1207,6 +1207,7 @@ export const subagentTask = task({
               },
               onAutoReviewCircuitBreaker: () => activeAbort.abort(),
               onPostWaitAuthorizationDenied: () => activeAbort.abort(),
+              onApprovalExpired: () => activeAbort.abort(),
             });
             const allowedToolNames =
               resolveSubagentAllowedToolNamesForPermissionMode(

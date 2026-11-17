@@ -1,6 +1,10 @@
 import { generateId, type UIMessageStreamWriter } from "ai";
-import { logger as triggerLogger, metadata, wait } from "@trigger.dev/sdk";
-import * as triggerSdk from "@trigger.dev/sdk";
+import {
+  logger as triggerLogger,
+  metadata,
+  sessions as triggerSessions,
+  wait,
+} from "@trigger.dev/sdk";
 
 import { setActiveAgentApprovalPending } from "@/lib/db/actions";
 import { phLogger } from "@/lib/posthog/server";
@@ -25,10 +29,10 @@ import {
   type PersistedAgentApprovalTargetGrant,
 } from "@/lib/chat/agent-approval-grants";
 import type { ActiveRuntimeBudget } from "@/lib/chat/active-runtime-budget";
-import type {
-  AgentApprovalSessionWaitOutcome,
-  AgentApprovalSessionWaitResult,
-  AgentApprovalSessionWaits,
+import {
+  AGENT_APPROVAL_WAIT_TIMEOUT_MS,
+  type AgentApprovalSessionWaitOutcome,
+  type AgentApprovalSessionWaits,
 } from "@/lib/chat/agent-approval-session-waits";
 import { AgentApprovalAuthorizationError } from "@/lib/chat/agent-approval-authorization";
 import {
@@ -37,19 +41,6 @@ import {
   shouldAutoReviewAgentToolAction,
   type AgentAutoReviewDecision,
 } from "@/lib/chat/agent-auto-review";
-
-type TriggerSessionsApi = {
-  open(idOrExternalId: string): {
-    in: {
-      wait<T>(): Promise<AgentApprovalSessionWaitResult<T>>;
-      send(value: unknown): Promise<void>;
-    };
-  };
-};
-
-const triggerSessions = (
-  triggerSdk as unknown as { sessions?: TriggerSessionsApi }
-).sessions;
 
 type ApprovalUiStreamPart = Parameters<UIMessageStreamWriter["write"]>[0];
 
@@ -103,6 +94,8 @@ const APPROVAL_SESSION_CLOSED_REASON =
   "The approval session closed before the tool could run.";
 const APPROVAL_AUTHORIZATION_DENIED_REASON =
   "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
+const APPROVAL_EXPIRED_REASON =
+  "This approval request expired before a response arrived. The operation was not run, and this Agent run was stopped. Start a new Agent request to try again.";
 
 export class AgentAutoReviewEntitlementRevalidationUnavailableError extends Error {
   constructor() {
@@ -230,6 +223,7 @@ export const buildAgentToolApprovalRequester = ({
   onAutoReviewCost,
   onAutoReviewCircuitBreaker,
   onPostWaitAuthorizationDenied,
+  onApprovalExpired,
   onApprovalWait,
 }: {
   agentPermissionMode: AgentPermissionMode;
@@ -264,6 +258,11 @@ export const buildAgentToolApprovalRequester = ({
   onAutoReviewCost?: (costDollars: number) => void;
   onAutoReviewCircuitBreaker: () => void;
   onPostWaitAuthorizationDenied: () => void;
+  /**
+   * Stops the run after an unanswered approval expires, so the model cannot
+   * retry the denied operation.
+   */
+  onApprovalExpired: () => void;
   onApprovalWait?: (durationMs: number, incrementCount: boolean) => void;
 }): AgentToolApprovalRequester | undefined => {
   if (
@@ -278,13 +277,16 @@ export const buildAgentToolApprovalRequester = ({
   const approvedTargetGrants: SandboxScopedAgentApprovalTargetGrant[] = [];
   const claimApprovalSlot = async (
     request: AgentToolApprovalPendingRequest,
-  ): Promise<boolean> => {
-    if (!approvalSessionId) return false;
+    deadline: number,
+  ): Promise<"acquired" | "unavailable" | "expired"> => {
+    if (!approvalSessionId) return "unavailable";
     // The parent and its children share one durable Session inbox. Convex owns
     // the compare-and-set slot so only the action shown in the composer can
     // consume the next approval response.
     let retryDelaySeconds = 1;
     while (!signal.aborted && !approvalSessionWaits.isFinished()) {
+      // Waiting behind another approval counts toward this request's deadline.
+      if (Date.now() >= deadline) return "expired";
       try {
         const outcome = await setActiveAgentApprovalPending({
           chatId,
@@ -293,8 +295,8 @@ export const buildAgentToolApprovalRequester = ({
           expectedRunId: runId,
           expectedApprovalSessionId: approvalSessionId,
         });
-        if (outcome === "acquired") return true;
-        if (outcome !== "busy") return false;
+        if (outcome === "acquired") return "acquired";
+        if (outcome !== "busy") return "unavailable";
       } catch (error) {
         triggerLogger.error("[agent-approval] failed to claim approval slot", {
           chat_id: chatId,
@@ -302,7 +304,7 @@ export const buildAgentToolApprovalRequester = ({
           source_run_id: source.runId,
           error_name: error instanceof Error ? error.name : "UnknownError",
         });
-        return false;
+        return "unavailable";
       }
 
       activeRuntimeBudget.pause();
@@ -316,10 +318,10 @@ export const buildAgentToolApprovalRequester = ({
       } finally {
         activeRuntimeBudget.resume();
       }
-      if (!delayed) return false;
+      if (!delayed) return "unavailable";
       retryDelaySeconds = Math.min(5, retryDelaySeconds * 2);
     }
-    return false;
+    return "unavailable";
   };
   const releaseApprovalSlot = async (approvalId: string): Promise<void> => {
     if (!approvalSessionId) return;
@@ -374,6 +376,28 @@ export const buildAgentToolApprovalRequester = ({
         status,
         startedAt: autoReviewStartedAt,
       });
+    };
+    const expireApproval = () => {
+      completeAutoReviewLifecycle("dismissed");
+      metadata.set("approvalStatus", "expired");
+      triggerLogger.warn("[agent-long] tool approval expired", {
+        event: "agent_tool_approval_expired",
+        service: "agent-long",
+        runId,
+        source_run_id: source.runId,
+        source_agent_id: source.agentId,
+        approvalId,
+        tool_call_id: request.toolCallId,
+        tool_name: request.toolName,
+        operation: request.operation,
+        slot_acquired: approvalPendingMarked,
+      });
+      onApprovalExpired();
+      return {
+        approved: false as const,
+        approvalId,
+        reason: APPROVAL_EXPIRED_REASON,
+      };
     };
     try {
       const sandboxIdentity = await resolveSandboxIdentity();
@@ -645,14 +669,19 @@ export const buildAgentToolApprovalRequester = ({
         }
       }
 
-      approvalPendingMarked = await claimApprovalSlot(
+      // One absolute deadline per request; durable waits never restart it.
+      const approvalDeadline = Date.now() + AGENT_APPROVAL_WAIT_TIMEOUT_MS;
+      const slotClaim = await claimApprovalSlot(
         buildPendingApprovalRequest({
           approvalId,
           request,
           autoReview: autoReviewDecision,
           source,
         }),
+        approvalDeadline,
       );
+      approvalPendingMarked = slotClaim === "acquired";
+      if (slotClaim === "expired") return expireApproval();
       if (!approvalPendingMarked) {
         completeAutoReviewLifecycle("dismissed");
         metadata.set("approvalStatus", "approval_slot_unavailable");
@@ -717,7 +746,8 @@ export const buildAgentToolApprovalRequester = ({
 
       const sessionInput = triggerSessions.open(approvalSessionId).in;
       const approvalInput = {
-        wait: () => sessionInput.wait<AgentToolApprovalInputRecord>(),
+        wait: (options: { timeout: string }) =>
+          sessionInput.wait<AgentToolApprovalInputRecord>(options),
         send: (record: unknown) => sessionInput.send(record),
       };
       let approvalWaitCounted = false;
@@ -726,7 +756,11 @@ export const buildAgentToolApprovalRequester = ({
         activeRuntimeBudget.pause();
         let waitOutcome: AgentApprovalSessionWaitOutcome<AgentToolApprovalInputRecord>;
         try {
-          waitOutcome = await waitForApprovalInput(approvalInput, signal);
+          waitOutcome = await waitForApprovalInput(
+            approvalInput,
+            signal,
+            approvalDeadline,
+          );
         } finally {
           activeRuntimeBudget.resume();
           onApprovalWait?.(
@@ -736,8 +770,9 @@ export const buildAgentToolApprovalRequester = ({
           approvalWaitCounted = true;
         }
         if (waitOutcome.status === "aborted") break;
+        if (waitOutcome.status === "expired") return expireApproval();
 
-        if (waitOutcome.status === "closed" || !waitOutcome.result.ok) {
+        if (waitOutcome.status === "closed") {
           metadata.set("approvalStatus", "session_closed");
           return {
             approved: false,
@@ -745,7 +780,7 @@ export const buildAgentToolApprovalRequester = ({
             reason: APPROVAL_SESSION_CLOSED_REASON,
           };
         }
-        const next = waitOutcome.result;
+        const next = waitOutcome;
 
         if (!isAgentToolApprovalInputRecord(next.output)) {
           if (

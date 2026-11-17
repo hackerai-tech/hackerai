@@ -1,6 +1,13 @@
 export type AgentApprovalSessionWaitResult<T> =
   { ok: true; output: T } | { ok: false; error?: unknown };
 
+/**
+ * Wall-clock limit for one approval request, matching wait_for_user's policy.
+ * Trigger's maxDuration counts compute rather than suspended time, so this
+ * deadline, not maxDuration, is what ends an abandoned approval wait.
+ */
+export const AGENT_APPROVAL_WAIT_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+
 // Wakes this task's own pending wait after Stop or task cleanup. It carries no
 // approval identity or authorization, so it can never satisfy an approval.
 export const AGENT_APPROVAL_WAIT_CANCELLATION_RECORD = Object.freeze({
@@ -12,19 +19,29 @@ export type AgentApprovalWaitCancellationRecord =
 
 /** The subset of a Trigger Session `.in` channel used by approval waits. */
 export type AgentApprovalSessionInput<T> = {
-  wait(): PromiseLike<AgentApprovalSessionWaitResult<T>>;
+  // SDK 4.7.7 accepts only a period string here, not a Date.
+  wait(options: {
+    timeout: string;
+  }): PromiseLike<AgentApprovalSessionWaitResult<T>>;
   send(record: AgentApprovalWaitCancellationRecord): Promise<unknown>;
 };
 
 export type AgentApprovalSessionWaitOutcome<T> =
-  | { status: "input"; result: AgentApprovalSessionWaitResult<T> }
+  | { status: "input"; output: T }
+  | { status: "expired" }
   | { status: "closed" }
   | { status: "aborted" };
 
 export type AgentApprovalSessionWaits = {
+  /**
+   * Waits for the next Session record until the request's absolute deadline.
+   * Each wait's waitpoint times out at that deadline, so an unrelated record
+   * never extends it.
+   */
   waitForApprovalInput<T>(
     input: AgentApprovalSessionInput<T>,
     signal: AbortSignal,
+    deadline: number,
   ): Promise<AgentApprovalSessionWaitOutcome<T>>;
   /**
    * Runs one busy-slot retry delay (a durable `wait.for`). Returns false
@@ -96,9 +113,13 @@ export const createAgentApprovalSessionWaits =
     const waitForApprovalInput = async <T>(
       input: AgentApprovalSessionInput<T>,
       signal: AbortSignal,
+      deadline: number,
     ): Promise<AgentApprovalSessionWaitOutcome<T>> => {
       if (sessionClosed) return { status: "closed" };
       if (signal.aborted || scope.signal.aborted) return { status: "aborted" };
+      const remainingMs = deadline - Date.now();
+      if (!(remainingMs > 0)) return { status: "expired" };
+      const timeout = `${Math.ceil(remainingMs / 1000)}s`;
 
       let aborted = false;
       const abort = () => {
@@ -121,7 +142,7 @@ export const createAgentApprovalSessionWaits =
       scope.signal.addEventListener("abort", abort, { once: true });
 
       const settlement = new Promise<AgentApprovalSessionWaitResult<T>>(
-        (resolve) => resolve(input.wait()),
+        (resolve) => resolve(input.wait({ timeout })),
       ).then(
         (result) => ({ rejected: false as const, result }),
         (error: unknown) => ({ rejected: true as const, error }),
@@ -141,7 +162,13 @@ export const createAgentApprovalSessionWaits =
         }
         if (settled.rejected) throw settled.error;
         if (closed) return { status: "closed" };
-        return { status: "input", result: settled.result };
+        // The SDK returns `ok: false` only when the waitpoint timed out or its
+        // record could not be read. Either way, no response can be trusted.
+        // A record read at or after the deadline is also too late: the period
+        // is rounded up to whole seconds and a resume can be delayed.
+        if (!settled.result.ok || Date.now() >= deadline)
+          return { status: "expired" };
+        return { status: "input", output: settled.result.output };
       } finally {
         signal.removeEventListener("abort", abort);
         scope.signal.removeEventListener("abort", abort);

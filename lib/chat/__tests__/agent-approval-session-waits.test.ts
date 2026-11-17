@@ -4,12 +4,16 @@
 import { verifyAgentToolApprovalInputAuthorization } from "@/lib/chat/agent-approval-authorization";
 import {
   AGENT_APPROVAL_WAIT_CANCELLATION_RECORD,
+  AGENT_APPROVAL_WAIT_TIMEOUT_MS,
   createAgentApprovalSessionWaits,
   type AgentApprovalSessionWaitResult,
 } from "@/lib/chat/agent-approval-session-waits";
 import type { AgentToolApprovalInputRecord } from "@/types";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+const NOW = Date.UTC(2026, 10, 16, 12);
+const deadline = NOW + AGENT_APPROVAL_WAIT_TIMEOUT_MS;
 
 const track = <T>(promise: Promise<T>) => {
   const state: { settled: boolean; value?: T; error?: unknown } = {
@@ -38,7 +42,7 @@ const createControlledInput = ({
   let resolveWait!: (result: AgentApprovalSessionWaitResult<unknown>) => void;
   let rejectWait!: (error: unknown) => void;
   const input = {
-    wait: jest.fn(() => {
+    wait: jest.fn((_options: { timeout: string }) => {
       onWait?.();
       return new Promise<AgentApprovalSessionWaitResult<unknown>>(
         (resolve, reject) => {
@@ -65,9 +69,11 @@ describe("createAgentApprovalSessionWaits", () => {
   beforeEach(() => {
     unhandledRejections.length = 0;
     process.on("unhandledRejection", onUnhandledRejection);
+    jest.spyOn(Date, "now").mockReturnValue(NOW);
   });
   afterEach(() => {
     process.off("unhandledRejection", onUnhandledRejection);
+    jest.restoreAllMocks();
   });
 
   it("neither waits nor sends when the request is already stopped", async () => {
@@ -77,7 +83,7 @@ describe("createAgentApprovalSessionWaits", () => {
     const { input } = createControlledInput();
 
     await expect(
-      waits.waitForApprovalInput(input, stop.signal),
+      waits.waitForApprovalInput(input, stop.signal, deadline),
     ).resolves.toEqual({ status: "aborted" });
     expect(input.wait).not.toHaveBeenCalled();
     expect(input.send).not.toHaveBeenCalled();
@@ -89,7 +95,7 @@ describe("createAgentApprovalSessionWaits", () => {
     const { input } = createControlledInput();
 
     await expect(
-      waits.waitForApprovalInput(input, new AbortController().signal),
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
     ).resolves.toEqual({ status: "aborted" });
     expect(waits.finish()).toBe(finished);
     await expect(finished).resolves.toBeUndefined();
@@ -104,7 +110,9 @@ describe("createAgentApprovalSessionWaits", () => {
       onWait: () => stop.abort(),
     });
 
-    const outcome = track(waits.waitForApprovalInput(input, stop.signal));
+    const outcome = track(
+      waits.waitForApprovalInput(input, stop.signal, deadline),
+    );
     expect(input.send).toHaveBeenCalledTimes(1);
     await flush();
 
@@ -122,7 +130,9 @@ describe("createAgentApprovalSessionWaits", () => {
     // The send never settles, as when appending to a closed Session retries.
     const { input, resolveWait } = createControlledInput();
 
-    const outcome = track(waits.waitForApprovalInput(input, stop.signal));
+    const outcome = track(
+      waits.waitForApprovalInput(input, stop.signal, deadline),
+    );
     stop.abort();
     // Dispatched before any microtask: a snapshot may follow immediately.
     expect(input.send).toHaveBeenCalledTimes(1);
@@ -151,7 +161,7 @@ describe("createAgentApprovalSessionWaits", () => {
     });
 
     const outcome = track(
-      waits.waitForApprovalInput(input, new AbortController().signal),
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
     );
     const finished = track(waits.finish());
     expect(waits.isFinished()).toBe(true);
@@ -175,7 +185,7 @@ describe("createAgentApprovalSessionWaits", () => {
     });
 
     const outcome = track(
-      waits.waitForApprovalInput(input, new AbortController().signal),
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
     );
     const finished = track(waits.finish());
     await flush();
@@ -198,7 +208,7 @@ describe("createAgentApprovalSessionWaits", () => {
     const { input, rejectWait } = createControlledInput();
 
     const outcome = track(
-      waits.waitForApprovalInput(input, new AbortController().signal),
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
     );
     rejectWait(failure);
     await flush();
@@ -227,15 +237,15 @@ describe("createAgentApprovalSessionWaits", () => {
     const { input, resolveWait } = createControlledInput();
     const signal = new AbortController().signal;
 
-    const first = track(waits.waitForApprovalInput(input, signal));
+    const first = track(waits.waitForApprovalInput(input, signal, deadline));
     resolveWait({ ok: true, output: record });
     await flush();
 
     expect(first.value).toEqual({ status: "closed" });
     expect(waits.isSessionClosed()).toBe(true);
-    await expect(waits.waitForApprovalInput(input, signal)).resolves.toEqual({
-      status: "closed",
-    });
+    await expect(
+      waits.waitForApprovalInput(input, signal, deadline),
+    ).resolves.toEqual({ status: "closed" });
     expect(input.wait).toHaveBeenCalledTimes(1);
     expect(input.send).not.toHaveBeenCalled();
   });
@@ -265,16 +275,101 @@ describe("createAgentApprovalSessionWaits", () => {
     const { input, resolveWait } = createControlledInput();
 
     const outcome = track(
-      waits.waitForApprovalInput(input, new AbortController().signal),
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
     );
     resolveWait({ ok: true, output: record });
     await flush();
 
-    expect(outcome.value).toEqual({
-      status: "input",
-      result: { ok: true, output: record },
-    });
+    expect(outcome.value).toEqual({ status: "input", output: record });
     expect(waits.isSessionClosed()).toBe(false);
+  });
+
+  it("bounds every wait by the remaining time of one absolute deadline", async () => {
+    const waits = createAgentApprovalSessionWaits();
+    const { input, resolveWait } = createControlledInput();
+    const signal = new AbortController().signal;
+
+    const first = track(waits.waitForApprovalInput(input, signal, deadline));
+    expect(input.wait).toHaveBeenLastCalledWith({ timeout: "10800s" });
+    // Unrelated input after two hours returns to the caller.
+    jest.mocked(Date.now).mockReturnValue(NOW + 2 * 60 * 60 * 1000);
+    resolveWait({ ok: true, output: { type: "unrelated" } });
+    await flush();
+    expect(first.value).toEqual({
+      status: "input",
+      output: { type: "unrelated" },
+    });
+
+    // The next wait keeps the original deadline instead of restarting it.
+    jest.mocked(Date.now).mockReturnValue(NOW + 2 * 60 * 60 * 1000 + 500);
+    const second = track(waits.waitForApprovalInput(input, signal, deadline));
+    expect(input.wait).toHaveBeenLastCalledWith({ timeout: "3600s" });
+    resolveWait({ ok: false, error: new Error("Timed out") });
+    await flush();
+
+    expect(second.value).toEqual({ status: "expired" });
+    expect(input.send).not.toHaveBeenCalled();
+    await expect(waits.finish()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["at the deadline", 0],
+    ["after a delayed resume", 60_000],
+  ])("expires a valid record read %s", async (_label, lateMs) => {
+    const waits = createAgentApprovalSessionWaits();
+    const { input, resolveWait } = createControlledInput();
+    jest.mocked(Date.now).mockReturnValue(deadline - 500);
+
+    const outcome = track(
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
+    );
+    // Half a second remaining is rounded up to a one-second waitpoint.
+    expect(input.wait).toHaveBeenLastCalledWith({ timeout: "1s" });
+    jest.mocked(Date.now).mockReturnValue(deadline + lateMs);
+    resolveWait({ ok: true, output: { type: "agent-tool-approval" } });
+    await flush();
+
+    expect(outcome.value).toEqual({ status: "expired" });
+  });
+
+  it("keeps Session close precedence over a late record", async () => {
+    const waits = createAgentApprovalSessionWaits();
+    const { input, resolveWait } = createControlledInput();
+
+    const outcome = track(
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
+    );
+    jest.mocked(Date.now).mockReturnValue(deadline);
+    resolveWait({ ok: true, output: { trigger: "close" } });
+    await flush();
+
+    expect(outcome.value).toEqual({ status: "closed" });
+  });
+
+  it("expires without starting a waitpoint once the deadline has passed", async () => {
+    const waits = createAgentApprovalSessionWaits();
+    const { input } = createControlledInput();
+    jest.mocked(Date.now).mockReturnValue(deadline);
+
+    await expect(
+      waits.waitForApprovalInput(input, new AbortController().signal, deadline),
+    ).resolves.toEqual({ status: "expired" });
+    expect(input.wait).not.toHaveBeenCalled();
+  });
+
+  it("reports Stop rather than expiry when a stopped wait times out", async () => {
+    const waits = createAgentApprovalSessionWaits();
+    const stop = new AbortController();
+    const { input, resolveWait } = createControlledInput();
+
+    const outcome = track(
+      waits.waitForApprovalInput(input, stop.signal, deadline),
+    );
+    stop.abort();
+    resolveWait({ ok: false, error: new Error("Timed out") });
+    await flush();
+
+    expect(outcome.value).toEqual({ status: "aborted" });
   });
 
   it("starts no slot delay once stopped or finished", async () => {

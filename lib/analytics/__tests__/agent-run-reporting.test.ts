@@ -237,7 +237,7 @@ describe("Agent run reporting", () => {
     },
   );
 
-  it.each(["user_wait_timeout", "user_wait_failed"])(
+  it.each(["user_wait_timeout", "user_wait_failed", "approval_timeout"])(
     "retains %s when terminal capture fails before later cancellation",
     (abortSource) => {
       const { reporter, events } = setup();

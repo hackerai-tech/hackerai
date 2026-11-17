@@ -1,8 +1,7 @@
 import { createHmac } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
+import { reconcileActiveAgentRuns } from "@/lib/api/agent-run-reconciliation";
 import { createRedisClient } from "@/lib/rate-limit/redis";
-import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
-import { listActiveSubagentsForUser } from "@/lib/db/subagents";
 import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
 import { isRecoverableE2BSandboxVersion } from "./e2b-sandbox-version";
 import {
@@ -57,16 +56,7 @@ async function inspectSelection(userId: string) {
     };
   }
   if (saved !== null) throw new WorkspaceSelectionUnavailable();
-  const [parents, children] = await Promise.all([
-    getActiveTriggerRunsForUser({ userId }),
-    listActiveSubagentsForUser(userId),
-  ]);
-  if (
-    parents.hasMore ||
-    children.hasMore ||
-    parents.runs.length ||
-    children.runs.length
-  )
+  if ((await reconcileActiveAgentRuns(userId)) === "active")
     throw new WorkspaceSelectionUnavailable();
   const clusters = getConfiguredE2BClustersForCleanup();
   if (

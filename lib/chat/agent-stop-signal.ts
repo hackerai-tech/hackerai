@@ -7,6 +7,7 @@ type DirectStopSource =
   | "active_runtime_budget"
   | "auto_review_circuit_breaker"
   | "post_wait_authorization_denied"
+  | "approval_timeout"
   | "usage_settlement_uncovered";
 
 type StreamStopSource = "agent_run_spend_cap" | "budget_monitor";

@@ -897,6 +897,7 @@ describe("resolveAgentAbortSource", () => {
       { stopSource: "wait_for_user_timeout", requestCancelled: true },
     ],
     ["user_wait_failed", { stopSource: "wait_for_user" }],
+    ["approval_timeout", { stopSource: "approval_timeout" }],
     ["user_stop", { userStopRequested: true }],
     ["request_cancel", { requestCancelled: true }],
     ["unknown", {}],
