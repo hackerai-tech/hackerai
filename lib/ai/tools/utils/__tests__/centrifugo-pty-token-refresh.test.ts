@@ -479,8 +479,37 @@ describe("run readiness for interactive terminals", () => {
     expect(server.publications("pty_input")).toHaveLength(0);
     expect(server.publications("pty_create")).toHaveLength(1);
     expect(sandbox.getPublishedCommands()).toEqual([]);
-    // The held input never left, and the kill was confirmed by an exit.
-    expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+    // The held input never left. The kill's exit arrived while the host was
+    // unverified, so earlier unsequenced output may be missing: the run stops.
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the run when a session's exit arrives while the host is unverified", async () => {
+    runPtyRunner();
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const handle = await within(
+      createCentrifugoPtyHandle(sandbox, {
+        command: "bounded-shell",
+        cols: 80,
+        rows: 24,
+      }),
+      "pty_ready",
+    );
+    const [create] = server.publications("pty_create");
+    readiness.close();
+    server.push(channelOf(create), {
+      type: "pty_exit",
+      sessionId: create.sessionId,
+      exitCode: 0,
+    });
+    await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
+      exitCode: 0,
+    });
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    expect(sandbox.getPublishedCommands()).toEqual([]);
   });
 
   it("stops the run when input delivery fails after publication began", async () => {

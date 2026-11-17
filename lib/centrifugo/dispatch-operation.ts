@@ -87,13 +87,15 @@ export async function dispatchIsolatedOperation(
       ...(authorizationId ? { authorizationId } : {}),
       operationChannel: true,
     });
-    // Readiness may have lapsed during authorization. Admit again, with no
-    // await between this final read and the first fragment's publication.
     const gate = readiness?.gate;
-    while (gate && !gate.isReady())
-      await gate.waitUntilReady(readiness?.signal);
-    readiness?.signal?.throwIfAborted();
     for (const fragment of fragments) {
+      // Readiness may lapse during authorization or a prior fragment's
+      // publish. Admit each fragment with no await between this final read
+      // and its publication. A partly published request is never restarted
+      // or resent; its caller treats it as an uncertain execution.
+      while (gate && !gate.isReady())
+        await gate.waitUntilReady(readiness?.signal);
+      readiness?.signal?.throwIfAborted();
       if (!isActive())
         throw new Error("Relay operation ended before dispatch completed");
       onBeforePublish?.();

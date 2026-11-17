@@ -98,10 +98,18 @@ export class AcknowledgedCommandOutput {
   /**
    * Whether this window can still replay output from a receiver's cursor.
    * False once closed for any reason (terminal ACK, cancellation, overflow,
-   * deadline, lost ownership or stop), even while native execution continues.
+   * deadline, lost ownership or stop), even while native execution continues,
+   * and as soon as it is inactive or past its deadline.
    */
   get resumable(): boolean {
-    return !this.closed;
+    if (this.closed) return false;
+    // The pump closes an inactive or expired window only on its next tick;
+    // read the same conditions now, without closing anything here.
+    try {
+      return this.isActive() && Date.now() < this.deadline;
+    } catch {
+      return false;
+    }
   }
 
   append(chunk: CommandOutputChunk): void {

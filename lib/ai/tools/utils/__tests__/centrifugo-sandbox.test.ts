@@ -500,6 +500,128 @@ describe("CentrifugoSandbox", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  describe("a fragmented command whose host becomes unverified mid-publication", () => {
+    /** The run's live readiness, opened, closed and failed by the test. */
+    function controllableGate() {
+      let ready = true;
+      const waiters = new Set<{
+        resolve: () => void;
+        reject: (error: unknown) => void;
+      }>();
+      return {
+        gate: {
+          isReady: () => ready,
+          waitUntilReady: (signal?: AbortSignal) =>
+            new Promise<void>((resolve, reject) => {
+              const waiter = { resolve, reject };
+              waiters.add(waiter);
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waiters.delete(waiter);
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            }),
+          failUncertainExecution: jest.fn(),
+        },
+        close: () => {
+          ready = false;
+        },
+        open: () => {
+          ready = true;
+          for (const waiter of [...waiters]) waiter.resolve();
+          waiters.clear();
+        },
+        fail: (error: Error) => {
+          for (const waiter of [...waiters]) waiter.reject(error);
+          waiters.clear();
+        },
+      };
+    }
+
+    /** Starts a large Desktop command and holds its first fragment's publish. */
+    async function publishFirstFragment() {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const readiness = controllableGate();
+      sandbox.setDispatchGate(readiness.gate);
+      // Large enough for several actual transport fragments.
+      const result = sandbox.commands.run(`printf '${"x".repeat(80_000)}'`);
+      void result.catch(() => {});
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      let releaseFirst!: () => void;
+      control.publish = jest
+        .fn()
+        .mockImplementationOnce(
+          () => new Promise<void>((resolve) => (releaseFirst = resolve)),
+        )
+        .mockResolvedValue(undefined);
+      mockClients[0].newSubscription.mockImplementationOnce(() => {
+        mockSubscriptions.push(control);
+        return control;
+      });
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      // The host becomes unverified while the first fragment is in flight.
+      readiness.close();
+      releaseFirst();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      const indexes = () =>
+        control.publish.mock.calls.map(([fragment]) => fragment.index);
+      return { result, readiness, mockClient: mockClients[0], indexes };
+    }
+
+    it("continues only once verified, each fragment exactly once", async () => {
+      const { readiness, indexes, mockClient } = await publishFirstFragment();
+      readiness.open();
+      await jest.advanceTimersByTimeAsync(0);
+      const sent = indexes();
+      expect(sent.length).toBeGreaterThan(2);
+      expect(sent).toEqual([...sent.keys()]);
+      expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+      mockClient.emit("disconnected", { reason: "test teardown" });
+    });
+
+    it.each([
+      [
+        "the host is lost",
+        ({ readiness }: Awaited<ReturnType<typeof publishFirstFragment>>) =>
+          readiness.fail(new Error("local connection lost")),
+      ],
+      [
+        "the receiver ends",
+        ({ mockClient }: Awaited<ReturnType<typeof publishFirstFragment>>) =>
+          mockClient.emit("disconnected", { reason: "relay closed" }),
+      ],
+    ])(
+      "never sends the rest when %s, and stops the run for the partial request",
+      async (_name, end) => {
+        const started = await publishFirstFragment();
+        end(started);
+        await expect(started.result).rejects.toBeDefined();
+        started.readiness.open();
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(started.indexes()).toEqual([0]);
+        expect(
+          started.readiness.gate.failUncertainExecution,
+        ).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   it.each(["setup timeout", "publish denied"])(
     "does not retain a Desktop receiver for %s",
     async (failure) => {

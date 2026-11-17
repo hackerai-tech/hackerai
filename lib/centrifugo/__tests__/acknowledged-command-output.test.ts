@@ -258,6 +258,29 @@ describe("resumability for a returning host's session proof", () => {
     expect(sender.resumable).toBe(false);
   });
 
+  it("reads expiry and lost ownership at once, before the pump's next tick", () => {
+    let active = true;
+    const sender = new AcknowledgedCommandOutput(
+      "proof-now",
+      Date.now() + 5_000,
+      jest.fn().mockResolvedValue(undefined),
+      () => active,
+    );
+    void sender.delivered.catch(() => {});
+    expect(sender.resumable).toBe(true);
+    // The wall clock passes the deadline; no timer has run yet.
+    jest.setSystemTime(Date.now() + 5_000);
+    expect(sender.resumable).toBe(false);
+    jest.setSystemTime(Date.now() - 5_000);
+    expect(sender.resumable).toBe(true);
+    active = false;
+    expect(sender.resumable).toBe(false);
+    // Reading never closes the window itself.
+    active = true;
+    expect(sender.resumable).toBe(true);
+    sender.stop();
+  });
+
   it("is not resumable after its delivery deadline", async () => {
     const sender = open(1_000);
     sender.append({ type: "stdout", data: "partial" });

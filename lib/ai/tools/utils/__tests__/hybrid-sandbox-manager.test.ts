@@ -2129,6 +2129,52 @@ describe("Agent connection interruption", () => {
       dispose();
     });
 
+    it("never publishes a local sandbox whose acquisition outlived the run's monitoring", async () => {
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "u",
+        setSandbox,
+        "desktop-environment:machine",
+        "key",
+        null,
+        "pro",
+      );
+      const dispose = manager.stopOnLocalDisconnect(jest.fn());
+      jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          connectionId: "selected",
+          environmentId: "machine",
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, files: true },
+        }),
+      ]);
+      let confirm!: () => void;
+      jest
+        .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+        .mockImplementation(
+          () => new Promise<void>((resolve) => (confirm = resolve)),
+        );
+      const closed = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const gate = jest.spyOn(CentrifugoSandbox.prototype, "setDispatchGate");
+      const pending = manager.getSandbox();
+      void pending.catch(() => {});
+      for (let i = 0; i < 20 && !confirm; i++) await Promise.resolve();
+      expect(confirm).toBeDefined();
+
+      dispose();
+      confirm();
+      await expect(pending).rejects.toThrow("Sandbox selection changed");
+      // Only its own unpublished instance is closed; nothing is exposed.
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(gate).not.toHaveBeenCalled();
+      // And no later acquisition starts for this ended run.
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "ended its local connection monitoring",
+      );
+      expect(setSandbox).not.toHaveBeenCalled();
+    });
+
     it("has nothing to confirm for a Cloud run", async () => {
       const manager = new HybridSandboxManager(
         "u",

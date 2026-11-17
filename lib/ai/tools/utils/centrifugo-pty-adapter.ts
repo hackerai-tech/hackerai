@@ -245,8 +245,11 @@ export async function createCentrifugoPtyHandle(
     if (cleanedUp) return;
     cleanedUp = true;
     dispatchAbort.abort();
-    // The shell may still run: stop the run before forgetting the session.
-    if (unregisterPublished && !outcomeKnown) gate?.failUncertainExecution?.();
+    // The shell may still run, or (with an exit seen while the host is
+    // unverified) unsequenced output may be missing: stop the run before
+    // forgetting the session. A verified host's exit stays a normal end.
+    if (unregisterPublished && (!outcomeKnown || (gate && !gate.isReady())))
+      gate?.failUncertainExecution?.();
     unregisterPublished?.();
     recordTraffic();
     if (subscription) {

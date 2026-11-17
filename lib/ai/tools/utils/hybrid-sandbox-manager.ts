@@ -354,6 +354,8 @@ export class HybridSandboxManager implements SandboxManager {
   private watchedConnectionId?: string;
   /** Sandboxes admitted by this run's watch; their commands are reconciled. */
   private readonly gatedSandboxes = new Set<CentrifugoSandbox>();
+  /** Set when this run's local monitoring is disposed; no new local sandbox. */
+  private localMonitoringEnded = false;
   /** The first loss; every later access rethrows it with its original cause. */
   private localConnectionLost?: LocalConnectionLostError;
 
@@ -380,6 +382,10 @@ export class HybridSandboxManager implements SandboxManager {
       this.localConnectionWatch?.stop();
       this.gatedSandboxes.clear();
       this.onLocalConnectionLost = undefined;
+      // A local acquisition still pending must not publish its sandbox, and
+      // none may start: a new run owns a new manager.
+      this.localMonitoringEnded = true;
+      this.localAcquisitionGeneration++;
     };
   }
 
@@ -1089,6 +1095,10 @@ export class HybridSandboxManager implements SandboxManager {
     connection: ConnectionInfo,
     generation: number,
   ): Promise<void> {
+    if (this.localMonitoringEnded)
+      throw new Error(
+        "This run has ended its local connection monitoring. Start a new run to use this computer.",
+      );
     this.watchRunConnection(connection);
     await this.closeCurrentSandbox();
     this.assertLocalAcquisitionCurrent(generation);
