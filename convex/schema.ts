@@ -7,7 +7,6 @@ import {
 } from "./lib/settlementReceiptValidators";
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
-import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -325,34 +324,6 @@ export default defineSchema({
 
   agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
 
-  // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
-  // Normal chat/account deletion still cleans these records. No bulk migration.
-  engagement_scopes: defineTable({
-    chat_id: v.string(),
-    user_id: v.string(),
-    active: v.boolean(),
-    revision: v.number(),
-    rules: v.array(scopeRule),
-    restrictions: v.array(v.string()),
-    status: v.union(
-      v.literal("ready"),
-      v.literal("processing"),
-      v.literal("unavailable"),
-      v.literal("ambiguous"),
-    ),
-    clarification: v.string(),
-    clarificationRequested: v.boolean(),
-    source_id: v.string(),
-  }).index("by_chat_id", ["chat_id"]),
-  engagement_scope_events: defineTable({
-    chat_id: v.string(),
-    source_id: v.string(),
-    source_text: v.string(),
-    source_kind: v.union(v.literal("user_message"), v.literal("user_edit")),
-    status: v.union(v.literal("pending"), v.literal("applied")),
-    revision: v.number(),
-    policy: v.optional(scopePolicy),
-  }).index("by_chat_source", ["chat_id", "source_id"]),
   chat_history_access: defineTable({
     chat_id: v.string(),
     user_id: v.string(),
@@ -447,40 +418,6 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["user_id"],
     }),
-
-  // Historical provider expense audit for the retired CAPTCHA solver, not a
-  // customer wallet ledger. Retained for audit and account deletion;
-  // no new attempts are admitted. No URLs, widget keys, cookies, API
-  // credentials or solutions are retained here.
-  captcha_attempts: defineTable({
-    user_id: v.string(),
-    chat_id: v.string(),
-    run_id: v.string(),
-    kind: v.union(
-      v.literal("recaptcha_v2"),
-      v.literal("hcaptcha"),
-      v.literal("turnstile"),
-    ),
-    state: v.union(
-      v.literal("creating"),
-      v.literal("processing"),
-      v.literal("ready"),
-      v.literal("unsolvable"),
-      v.literal("unknown"),
-    ),
-    task_id: v.optional(v.number()),
-    cost_dollars: v.optional(v.number()),
-    created_at: v.number(),
-    updated_at: v.number(),
-    reconciliation_polls: v.number(),
-  })
-    .index("by_run_id", ["run_id"])
-    .index("by_user_id", ["user_id"]),
-  captcha_daily_limits: defineTable({
-    bucket: v.string(),
-    day: v.string(),
-    attempts: v.number(),
-  }).index("by_bucket_and_day", ["bucket", "day"]),
 
   // One private cloud Chromium owner per Agent tool factory. Browser paths and
   // sandbox identifiers are returned only to service-authenticated functions.

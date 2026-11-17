@@ -17,7 +17,6 @@ jest.mock("../lib/utils", () => ({ validateServiceKey: jest.fn() }));
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn(),
 }));
-import { deleteScopeBatch } from "../lib/legacyEngagementScope";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 function database() {
@@ -66,33 +65,6 @@ function database() {
   };
   return { ctx, rows, insert };
 }
-
-it("cleans legacy scope records only for the deleted chat, in bounded batches", async () => {
-  const db = database();
-  await db.insert("engagement_scopes", { chat_id: "chat" });
-  await db.insert("engagement_scopes", { chat_id: "other" });
-  for (let i = 0; i < 101; i++) {
-    await db.insert("engagement_scope_events", {
-      chat_id: "chat",
-      source_id: String(i),
-    });
-  }
-  await db.insert("engagement_scope_events", {
-    chat_id: "other",
-    source_id: "keep",
-  });
-  expect(await deleteScopeBatch(db.ctx, "chat")).toBe(true);
-  expect(
-    [...db.rows.values()].filter((r) => r.chat_id === "chat"),
-  ).toHaveLength(2);
-  expect(await deleteScopeBatch(db.ctx, "chat")).toBe(false);
-  expect(
-    [...db.rows.values()].filter((r) => r.chat_id === "chat"),
-  ).toHaveLength(0);
-  expect(
-    [...db.rows.values()].filter((r) => r.chat_id === "other"),
-  ).toHaveLength(2);
-});
 
 it("lets old workers/admission finish without loading or changing saved scope", async () => {
   const db = database();
