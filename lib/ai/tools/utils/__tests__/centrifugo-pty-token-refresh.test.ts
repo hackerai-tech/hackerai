@@ -64,6 +64,8 @@ class LoopbackCentrifugo {
   /** Runner-side reaction to a client publication on the PTY channel. */
   onPublish: (data: Record<string, any>, channel: string) => void = () => {};
 
+  refreshError?: { code: number; message: string };
+
   next(match: (frame: Frame) => boolean): Promise<Frame> {
     const existing = this.frames.find(match);
     if (existing) return Promise.resolve(existing);
@@ -105,7 +107,9 @@ class LoopbackCentrifugo {
       const frame = { socket: index, command };
       this.frames.push(frame);
       const { id } = command;
-      if (command.connect || command.refresh) {
+      if (command.refresh && this.refreshError) {
+        this.send(index, { id, error: this.refreshError });
+      } else if (command.connect || command.refresh) {
         // Centrifugo reports the token's remaining lifetime; the SDK schedules
         // its refresh from this TTL.
         const result = {
@@ -298,6 +302,27 @@ describe("local relay PTY connection token refresh", () => {
     expect(server.publications("pty_create")).toHaveLength(1);
     expect(server.sockets).toHaveLength(1);
   });
+
+  it("settles a failed observation when the relay permanently rejects renewal", async () => {
+    const handle = await openPty();
+    server.refreshError = { code: 101, message: "unauthorized" };
+
+    await jest.advanceTimersByTimeAsync(PTY_TOKEN_TTL_SECONDS * 1000);
+    await within(server.next(isRefresh), "replacement token sent");
+    await within(server.socketClosed(0), "SDK terminal disconnect");
+    await expect(
+      within(handle.exited, "rejected renewal exit"),
+    ).resolves.toEqual({
+      exitCode: null,
+      observationFailed: true,
+    });
+
+    await jest.advanceTimersByTimeAsync(PTY_TOKEN_TTL_SECONDS * 1000 * 2);
+    expect(issueToken).toHaveBeenCalledTimes(2);
+    expect(server.frames.filter(isRefresh)).toHaveLength(1);
+    expect(server.publications("pty_create")).toHaveLength(1);
+    expect(server.sockets).toHaveLength(1);
+  }, 10_000);
 
   it("issues no token after kill tears the session down", async () => {
     const handle = await openPty();

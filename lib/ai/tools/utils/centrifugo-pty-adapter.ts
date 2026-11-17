@@ -484,5 +484,9 @@ export async function createCentrifugoPtyHandle(
     client.on("error", (ctx) => {
       failTransport(`client error: ${ctx.error?.message ?? "unknown"}`);
     });
+
+    client.on("disconnected", (ctx) => {
+      if (!cleanedUp) failTransport(`client disconnected (code ${ctx.code})`);
+    });
   });
 }
