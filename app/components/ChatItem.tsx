@@ -144,6 +144,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [editTitle, setEditTitle] = useState(taskTitle);
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Title shown when the rename dialog opened, so an untouched draft cannot
+  // overwrite a newer title that arrived while the dialog was open.
+  const renameBaselineRef = useRef(taskTitle);
   const renameInputId = useId();
 
   const {
@@ -337,6 +340,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
     setEditTitle(taskTitle); // Set the current title when opening dialog
+    renameBaselineRef.current = taskTitle;
 
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
@@ -398,8 +402,12 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleSaveRename = async () => {
     const trimmedTitle = editTitle.trim();
 
-    // Don't save if title is empty or unchanged
-    if (!trimmedTitle || trimmedTitle === taskTitle) {
+    // Don't save if title is empty, untouched since opening, or already current
+    if (
+      !trimmedTitle ||
+      trimmedTitle === renameBaselineRef.current ||
+      trimmedTitle === taskTitle
+    ) {
       setShowRenameDialog(false);
       setEditTitle(taskTitle); // Reset to original title
       return;
@@ -421,6 +429,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
             : "Failed to rename task";
       toast.error(formatTaskUiCopy(errorMessage));
       setEditTitle(taskTitle); // Reset to original title on error
+      renameBaselineRef.current = taskTitle;
     } finally {
       setIsRenaming(false);
     }
@@ -433,6 +442,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
+      // Enter that confirms an IME candidate must not submit the rename.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       e.preventDefault();
       handleSaveRename();
     } else if (e.key === "Escape") {
