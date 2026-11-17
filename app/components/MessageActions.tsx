@@ -8,7 +8,8 @@ import {
   ThumbsDown,
   Split,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,9 @@ export const MessageActions = ({
     null,
   );
   const mountedRef = useRef(true);
+  const copyFailureShownRef = useRef(false);
+  // Per-message so one message's success cannot dismiss another's retry.
+  const copyFailedToastId = `message-copy-failed-${useId()}`;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -149,20 +153,49 @@ export const MessageActions = ({
     };
   }, []);
 
+  const clearCopyResetTimeout = () => {
+    if (copyResetTimeoutRef.current) {
+      clearTimeout(copyResetTimeoutRef.current);
+      copyResetTimeoutRef.current = null;
+    }
+  };
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(messageText);
-      setCopied(true);
-      if (copyResetTimeoutRef.current) {
-        clearTimeout(copyResetTimeoutRef.current);
-      }
-      copyResetTimeoutRef.current = setTimeout(() => {
-        copyResetTimeoutRef.current = null;
-        if (mountedRef.current) setCopied(false);
-      }, 2000);
     } catch (error) {
       console.error("Failed to copy message:", error);
+      if (mountedRef.current) {
+        clearCopyResetTimeout();
+        setCopied(false);
+      }
+      // The toast can outlive this message; retry still copies the same text.
+      copyFailureShownRef.current = true;
+      toast.error("Could not copy message", {
+        id: copyFailedToastId,
+        action: {
+          label: "Try again",
+          onClick: (event) => {
+            // Keep the notice until the retry settles; success dismisses it.
+            event.preventDefault();
+            void handleCopy();
+          },
+        },
+      });
+      return;
     }
+
+    if (copyFailureShownRef.current) {
+      copyFailureShownRef.current = false;
+      toast.dismiss(copyFailedToastId);
+    }
+    if (!mountedRef.current) return;
+    setCopied(true);
+    clearCopyResetTimeout();
+    copyResetTimeoutRef.current = setTimeout(() => {
+      copyResetTimeoutRef.current = null;
+      if (mountedRef.current) setCopied(false);
+    }, 2000);
   };
 
   const handleFeedback = (type: "positive" | "negative") => {
