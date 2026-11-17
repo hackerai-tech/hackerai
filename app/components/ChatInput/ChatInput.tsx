@@ -1572,7 +1572,12 @@ const ChatInputContent = ({
                     preventDefault: () => {},
                   } as React.FormEvent)
                 }
-                onCancel={() => clearWorkspaceRecovery(workspaceRecoveryScope)}
+                onCancel={() => {
+                  // Dismissing also invalidates a pending Retry's refusal so
+                  // it cannot reopen the card. The request itself continues.
+                  workspaceRecoveryGenerationRef.current += 1;
+                  clearWorkspaceRecovery(workspaceRecoveryScope);
+                }}
               />
             </div>
           )}

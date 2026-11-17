@@ -4795,6 +4795,56 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it("keeps a workspace card dismissed when Cancel precedes a late Retry refusal", async () => {
+      let refuseRetry!: () => void;
+      mockOnSubmit
+        .mockRejectedValueOnce(refusal())
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              refuseRetry = () => reject(refusal());
+            }),
+        )
+        .mockRejectedValueOnce(refusal());
+      renderGoalComposer();
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      const selector = await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      fireEvent.click(
+        await within(selector).findByRole("radio", { name: /US workspace/ }),
+      );
+      fireEvent.click(
+        within(selector).getByRole("button", { name: "Use this workspace" }),
+      );
+      fireEvent.click(
+        await within(selector).findByRole("button", { name: "Retry" }),
+      );
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
+      // Cancel only dismisses; the pending request keeps running.
+      fireEvent.click(within(selector).getByRole("button", { name: "Cancel" }));
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      await act(async () => refuseRetry());
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      expect(input).toHaveValue("Map the lab app");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+
+      // A later deliberate submission can offer recovery again.
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      expect(mockOnSubmit).toHaveBeenCalledTimes(3);
+    });
+
     it("discards a late refusal after leaving and returning to the same chat", async () => {
       let refuseLate!: () => void;
       mockOnSubmit.mockImplementationOnce(
