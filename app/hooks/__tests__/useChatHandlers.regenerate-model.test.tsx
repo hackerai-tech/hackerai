@@ -5,6 +5,7 @@ import type {
   AgentPermissionMode,
   ChatMessage,
   ChatMode,
+  QueuedMessage,
   SandboxPreference,
   SelectedModel,
 } from "@/types";
@@ -25,6 +26,7 @@ let mockChatMode: ChatMode = "ask";
 let mockSandboxPreference: SandboxPreference = "e2b";
 let mockAgentPermissionMode: AgentPermissionMode = "ask_approval";
 let mockDesktopEnvironmentId: string | undefined;
+let mockMessageQueue: QueuedMessage[] = [];
 const originalFetch = globalThis.fetch;
 
 jest.mock("convex/react", () => ({
@@ -46,7 +48,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     isUploadingFiles: false,
     subscription: "pro",
     queueMessage: jest.fn(),
-    messageQueue: [],
+    messageQueue: mockMessageQueue,
     removeQueuedMessage: jest.fn(),
     queueBehavior: "queue",
     sandboxPreference: mockSandboxPreference,
@@ -841,6 +843,7 @@ describe("replacement request ownership across awaited work", () => {
     mockSandboxPreference = "e2b";
     mockAgentPermissionMode = "ask_approval";
     mockDesktopEnvironmentId = undefined;
+    mockMessageQueue = [];
   };
 
   beforeEach(() => {
@@ -1175,6 +1178,166 @@ describe("replacement request ownership across awaited work", () => {
       },
     );
   });
+
+  it.each([
+    ["Regenerate", "stays open", true],
+    ["Regenerate", "is left and reopened", false],
+    ["Retry", "is left and reopened", false],
+    ["Edit", "is left and reopened", false],
+  ] as const)(
+    "%s reconnects to a changed Agent run only while its chat %s",
+    async (replacement, departure, recovers) => {
+      let releaseCancel!: () => void;
+      const cancelHeld = new Promise<void>((resolve) => {
+        releaseCancel = resolve;
+      });
+      const cancelRequest = jest.fn(async () => {
+        await cancelHeld;
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            canceled: false,
+            reason: "stale_run",
+            activeTriggerRunId: "run-2",
+          }),
+        } as unknown as Response;
+      });
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: cancelRequest,
+      });
+      const activeTriggerRunRef: { current: string | undefined } = {
+        current: "run-1",
+      };
+      const resumeActiveRun = jest.fn(async () => undefined);
+      const { result, rerender } = renderHook(
+        ({ chatId }: { chatId: string }) =>
+          useChatHandlers({
+            chatId,
+            messages,
+            sendMessage: mockSendMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+            activeTriggerRunRef,
+            resumeActiveRun,
+          }),
+        { initialProps: { chatId: "chat-1" } },
+      );
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](result.current);
+      });
+      expect(cancelRequest).toHaveBeenCalledWith(
+        "/api/agent/cancel",
+        expect.anything(),
+      );
+      if (departure === "is left and reopened") {
+        rerender({ chatId: "chat-2" });
+        rerender({ chatId: "chat-1" });
+      }
+      await act(async () => {
+        releaseCancel();
+        await action;
+      });
+
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      if (recovers) {
+        expect(activeTriggerRunRef.current).toBe("run-2");
+        expect(resumeActiveRun).toHaveBeenCalledTimes(1);
+        expect(mockToastInfo).toHaveBeenCalledWith(
+          "Agent run changed",
+          expect.anything(),
+        );
+      } else {
+        expect(activeTriggerRunRef.current).toBe("run-1");
+        expect(resumeActiveRun).not.toHaveBeenCalled();
+        expect(mockToastInfo).not.toHaveBeenCalled();
+        expect(mockSetIsAutoResuming).not.toHaveBeenCalledWith(true);
+      }
+    },
+  );
+
+  it.each([
+    ["now", "the selected model", {}, "hackerai-max"],
+    [
+      "now",
+      "an explicit Retry model",
+      { selectedModel: "auto" as const },
+      "auto",
+    ],
+    ["after compaction", "the selected model", {}, "hackerai-max"],
+  ] as const)(
+    "a queued Retry from an older rendered message sent %s uses the committed computer with %s",
+    async (timing, _model, retryOptions, expectedModel) => {
+      const deferred = timing === "after compaction";
+      mockMessageQueue = [
+        {
+          id: "user-1",
+          text: "Question",
+          timestamp: 1,
+          deliveryStatus: "failed",
+        },
+      ];
+      const sendQueuedMessage = jest.fn(async () => undefined);
+      const { result, rerender } = renderHook(
+        ({ isSummarizing }: { isSummarizing: boolean }) =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages,
+            sendMessage: mockSendMessage,
+            sendQueuedMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "error",
+            isSummarizing,
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        { initialProps: { isSummarizing: deferred } },
+      );
+      const renderedMessageHandlers = result.current;
+      mockSelectedModel = "hackerai-max";
+      mockSandboxPreference = "desktop-environment:env-2";
+      mockAgentPermissionMode = "full_access";
+      rerender({ isSummarizing: deferred });
+
+      await act(async () => {
+        await renderedMessageHandlers.handleRetry(retryOptions);
+      });
+      if (deferred) {
+        expect(sendQueuedMessage).not.toHaveBeenCalled();
+        // A later selection belongs to the next request, not this Retry.
+        mockSelectedModel = "hackerai-pro";
+        mockChatMode = "agent";
+        mockSandboxPreference = "e2b";
+        mockAgentPermissionMode = "auto_review";
+        await act(async () => {
+          rerender({ isSummarizing: false });
+        });
+      }
+
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      expect(sendQueuedMessage).toHaveBeenCalledTimes(1);
+      expect(sendQueuedMessage).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({
+          mode: "ask",
+          sandboxPreference: "desktop-environment:env-2",
+          agentPermissionMode: "full_access",
+          selectedModel: expectedModel,
+        }),
+      );
+    },
+  );
 
   describe("Agent Retry delegated to saved-task recovery", () => {
     type RecoveryStep = "the run check" | "the recovery save";
