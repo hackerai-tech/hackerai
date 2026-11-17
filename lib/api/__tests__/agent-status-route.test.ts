@@ -403,6 +403,15 @@ describe("agent status route", () => {
       terminal: false,
     });
     expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
+    // Exactly one read of the owned active run, with only the body callback.
+    expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+    const [readRunId, readOptions] = mockRunsRetrieve.mock.calls[0] as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(readRunId).toBe("run-1");
+    expect(Object.keys(readOptions)).toEqual(["onResponseBody"]);
+    expect(readOptions.onResponseBody).toEqual(expect.any(Function));
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 

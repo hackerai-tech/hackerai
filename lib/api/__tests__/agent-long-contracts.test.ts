@@ -403,7 +403,9 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/method:\s*"POST"/);
     expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
     expect(transportSrc).toMatch(/statusEndpoint/);
-    expect(statusSrc).toMatch(/runs\.retrieve\(\s*runId\s*[,)]/);
+    // The server reads the run itself; agent-status-route.test.ts verifies it
+    // retrieves exactly the chat's owned active run with unchanged options.
+    expect(statusSrc).toMatch(/runs\.retrieve\(/);
     expect(statusSrc).toMatch(/ApiError/);
     expect(statusSrc).toMatch(/MISSING_RUN_STATUSES/);
     expect(statusSrc).toMatch(/Run not found/);
