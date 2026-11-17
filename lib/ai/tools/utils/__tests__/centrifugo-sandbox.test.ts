@@ -5749,6 +5749,11 @@ describe("CentrifugoSandbox", () => {
           attachment_download_result_context_present: false,
         });
         expect(context).not.toHaveProperty("attachment_download_exit_code");
+        // An unobserved shell-context stage, or one a later phase passed, is
+        // never reported.
+        expect(context).not.toHaveProperty(
+          "attachment_download_shell_context_stage",
+        );
         expect(JSON.stringify(context)).not.toMatch(
           /private|secret|hidden|token/,
         );
@@ -5977,6 +5982,272 @@ describe("CentrifugoSandbox", () => {
         expect.anything(),
       );
     });
+  });
+
+  describe("Windows file download shell-context stage diagnostics", () => {
+    const SHELL_PROBE = "echo $BASH_VERSION";
+    const URL = "https://private.example/object?X-Amz-Signature=PRIVATE_TOKEN";
+    const DEST = "/tmp/hackerai-upload/PRIVATE_DEST.pdf";
+    const cygpath = (path: string) => `/usr/bin/cygpath -w -- '${path}'`;
+    const bash = { stdout: "5.2.37(1)-release\n", stderr: "", exitCode: 0 };
+    const stageFields = (error: unknown) =>
+      Object.fromEntries(
+        Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+          ([key]) => key.startsWith("attachment_download_shell_context_"),
+        ),
+      );
+    const stage = (value: string) => ({
+      attachment_download_shell_context_diagnostic_version: 1,
+      attachment_download_shell_context_stage: value,
+    });
+    // No cached shell, mount or HTTP client: every setup call is actually run.
+    function windowsSandbox(
+      run: (command: string) => Promise<unknown> | unknown,
+    ) {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      const commands: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (command: string) => {
+        commands.push(command);
+        return run(command);
+      });
+      return { sandbox, commands };
+    }
+
+    it.each([
+      ["detect_shell", "rejects"],
+      ["detect_shell", "exits"],
+      ["native_path_conversion", "rejects"],
+      ["native_path_conversion", "exits"],
+    ] as const)(
+      "records the actual %s call when its command %s, without later setup",
+      async (expectedStage, outcome) => {
+        const original = Object.freeze(new Error("PRIVATE_SETUP_REJECTION"));
+        const failing =
+          expectedStage === "detect_shell" ? SHELL_PROBE : cygpath(DEST);
+        const { sandbox, commands } = windowsSandbox((command) => {
+          if (command === failing) {
+            if (outcome === "rejects") throw original;
+            return {
+              stdout: "PRIVATE_STDOUT",
+              stderr: "bash: /usr/bin/cygpath: command not found",
+              exitCode: 127,
+            };
+          }
+          if (command === SHELL_PROBE) return bash;
+          throw new Error("unexpected later command");
+        });
+        const failure = await sandbox.files
+          .downloadFromUrl(URL, DEST)
+          .catch((error: unknown) => error);
+
+        if (outcome === "rejects") expect(failure).toBe(original);
+        else if (expectedStage === "detect_shell")
+          expect(checkpointCommandContext(failure)).toMatchObject({
+            command_stage: "detect_shell",
+            command_exit_code: 127,
+          });
+        else
+          expect(checkpointFailureOrigin(failure)).toBe(
+            "windows_path_missing_utility",
+          );
+        // Shell and path setup keep their order; no HTTP client or transfer runs.
+        expect(commands).toEqual(
+          expectedStage === "detect_shell"
+            ? [SHELL_PROBE]
+            : [SHELL_PROBE, cygpath(DEST)],
+        );
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: "shell_context",
+          attachment_download_attempt: 0,
+          attachment_download_result_state: "not_observed",
+          attachment_download_error_kind: "error",
+          ...stage(expectedStage),
+        });
+        expect(JSON.stringify(context)).not.toMatch(
+          /PRIVATE|private|cygpath|hackerai-upload|command not found/,
+        );
+      },
+    );
+
+    it("drops an earlier stage when the same rejection fails a later download phase", async () => {
+      const reused = Object.freeze(new Error("PRIVATE_REUSED_REJECTION"));
+      let shellAvailable = false;
+      const { sandbox, commands } = windowsSandbox((command) => {
+        if (command === SHELL_PROBE) {
+          if (!shellAvailable) throw reused;
+          return bash;
+        }
+        if (command.startsWith("/usr/bin/cygpath "))
+          return gitBashMountResult(command);
+        throw reused;
+      });
+      expect(
+        await sandbox.files.downloadFromUrl(URL, DEST).catch((e) => e),
+      ).toBe(reused);
+      expect(stageFields(reused)).toEqual(stage("detect_shell"));
+
+      shellAvailable = true;
+      expect(
+        await sandbox.files.downloadFromUrl(URL, DEST).catch((e) => e),
+      ).toBe(reused);
+      expect(commands).toEqual([
+        SHELL_PROBE,
+        SHELL_PROBE,
+        cygpath(DEST),
+        "command -v curl || true",
+      ]);
+      expect(getAttachmentDownloadFailureContext(reused)).toMatchObject({
+        attachment_download_phase: "http_client",
+        attachment_download_attempt: 0,
+      });
+      expect(stageFields(reused)).toEqual({});
+    });
+
+    it("keeps concurrent downloads' stages owned by each call", async () => {
+      const shellFailure = Object.freeze(new Error("PRIVATE_SHELL_FAILURE"));
+      const pathFailure = Object.freeze(new Error("PRIVATE_PATH_FAILURE"));
+      let rejectShell!: (error: unknown) => void;
+      let rejectPath!: (error: unknown) => void;
+      let probes = 0;
+      const { sandbox, commands } = windowsSandbox((command) => {
+        if (command === SHELL_PROBE)
+          return ++probes === 1
+            ? new Promise((_, reject) => (rejectShell = reject))
+            : bash;
+        if (command === cygpath("/tmp/hackerai-upload/second.pdf"))
+          return new Promise((_, reject) => (rejectPath = reject));
+        throw new Error("unexpected command");
+      });
+      const first = sandbox.files
+        .downloadFromUrl(URL, "/tmp/hackerai-upload/first.pdf")
+        .catch((error: unknown) => error);
+      const second = sandbox.files
+        .downloadFromUrl(URL, "/tmp/hackerai-upload/second.pdf")
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      // The second call entered path conversion while the first still awaits
+      // its shell probe; the first then fails with its own stage.
+      expect(commands).toEqual([
+        SHELL_PROBE,
+        SHELL_PROBE,
+        cygpath("/tmp/hackerai-upload/second.pdf"),
+      ]);
+      rejectShell(shellFailure);
+      expect(await first).toBe(shellFailure);
+      rejectPath(pathFailure);
+      expect(await second).toBe(pathFailure);
+      expect(stageFields(shellFailure)).toEqual(stage("detect_shell"));
+      expect(stageFields(pathFailure)).toEqual(stage("native_path_conversion"));
+    });
+
+    it.each([
+      ["detect_shell", "direct"],
+      ["native_path_conversion", "fallback"],
+    ] as const)(
+      "forwards the %s stage of the %s transfer to existing staging sinks",
+      async (expectedStage, transfer) => {
+        const original = Object.freeze(new Error("PRIVATE_SETUP_REJECTION"));
+        const fallbackDest =
+          "/tmp/hackerai-upload/fallback-PRIVATE/PRIVATE_DEST.pdf";
+        const { sandbox, commands } = windowsSandbox((command) => {
+          if (command === SHELL_PROBE) {
+            if (transfer === "direct") throw original;
+            return bash;
+          }
+          if (command === cygpath(fallbackDest)) throw original;
+          const mount = gitBashMountResult(command);
+          if (mount) return mount;
+          if (command.includes("for base in"))
+            return { stdout: fallbackDest, stderr: "", exitCode: 0 };
+          if (command.includes("curl -fsSL"))
+            return {
+              stdout: "",
+              stderr: "Permission denied PRIVATE_STDERR",
+              exitCode: 1,
+            };
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).curlCaps = {
+          retryAllErrors: false,
+          retryConnrefused: false,
+          sslNoRevoke: false,
+        };
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const result = await uploadSandboxFiles(
+            [{ kind: "url", url: URL, localPath: DEST }],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "agent-long",
+                requestId: "run-shell-context",
+                userId: "user-1",
+                chatId: "chat-shell-context",
+              },
+            },
+          );
+          expect(result.failedCount).toBe(1);
+          // Only the fallback path reached a transfer; its shell was cached.
+          expect(commands.filter((c) => c === SHELL_PROBE)).toHaveLength(1);
+          expect(commands.filter((c) => c.includes("curl -fsSL"))).toHaveLength(
+            transfer === "direct" ? 0 : 1,
+          );
+          const consoleRecords = (spy: jest.SpyInstance, name: string) =>
+            spy.mock.calls
+              .map(([value]) => {
+                try {
+                  return JSON.parse(value);
+                } catch {
+                  return {};
+                }
+              })
+              .filter((record) => record.event === name);
+          const sinks = [
+            ...event.mock.calls
+              .filter(([name]) => name === "sandbox_attachment_staging_failed")
+              .map(([, fields]) => fields),
+            ...consoleRecords(error, "sandbox_attachment_staging_failed"),
+            getSandboxUploadFailureMetadata(result),
+          ];
+          expect(sinks).toHaveLength(3);
+          for (const sink of sinks) {
+            const fields = Object.fromEntries(
+              Object.entries(sink ?? {}).filter(([key]) =>
+                key.startsWith("attachment_download_"),
+              ),
+            );
+            expect(fields).toMatchObject({
+              attachment_download_route: "native_method",
+              attachment_download_boundary_present: true,
+              attachment_download_phase: "shell_context",
+              attachment_download_attempt: 0,
+              ...stage(expectedStage),
+            });
+            expect(JSON.stringify(fields)).not.toMatch(
+              /PRIVATE|private\.example|cygpath|hackerai-upload|Permission/,
+            );
+          }
+        } finally {
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
   });
 
   describe("command receiver rejection diagnostics", () => {

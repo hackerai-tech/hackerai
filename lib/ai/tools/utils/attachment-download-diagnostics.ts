@@ -351,6 +351,20 @@ export type AttachmentDownloadBoundary = {
     | "failure_diagnostics";
   attempt: number;
   resultState: "not_observed" | "success" | "nonzero";
+  /** Last shell-context call this download entered; kept only for its phase. */
+  shellContextStage?: AttachmentDownloadShellContextStage;
+};
+
+/** The awaited call last entered inside the shared shell context, not the
+ * native cause, delivery result or recovery. Owned by one download call. */
+export type AttachmentDownloadShellContextStage =
+  "detect_shell" | "native_path_conversion";
+export type AttachmentDownloadShellContextObservation = {
+  stage?: AttachmentDownloadShellContextStage;
+};
+type ShellContextStageContext = {
+  attachment_download_shell_context_diagnostic_version: 1;
+  attachment_download_shell_context_stage: AttachmentDownloadShellContextStage;
 };
 
 type BoundaryContext = {
@@ -408,14 +422,16 @@ type DnsFallbackContext = {
   attachment_download_dns_fallback_network_version?: 1;
   attachment_download_dns_fallback_network_reason?: CloudAttachmentNetworkRefusal;
 };
-export type AttachmentDownloadFailureContext = Partial<
+type AnyFailureContext = Partial<
   ResultContext &
     BoundaryContext &
+    ShellContextStageContext &
     RouteContext &
     ReceiverContext &
     SetupContext &
     DnsFallbackContext
-> &
+>;
+export type AttachmentDownloadFailureContext = AnyFailureContext &
   (
     | ResultContext
     | BoundaryContext
@@ -524,7 +540,11 @@ export function recordAttachmentDownloadBoundary(
     } catch {
       kind = "unreadable";
     }
-    const previous = contexts.get(error);
+    const previous: AnyFailureContext = { ...contexts.get(error) };
+    // A reused rejection must not keep an earlier call's shell-context stage.
+    delete previous.attachment_download_shell_context_diagnostic_version;
+    delete previous.attachment_download_shell_context_stage;
+    const stage = input.shellContextStage;
     contexts.set(error, {
       ...previous,
       attachment_download_boundary_version: 1,
@@ -533,7 +553,15 @@ export function recordAttachmentDownloadBoundary(
       attachment_download_result_state: input.resultState,
       attachment_download_error_kind: kind,
       attachment_download_result_context_present:
-        previous?.attachment_download_diagnostic_version === 1,
+        previous.attachment_download_diagnostic_version === 1,
+      // Missing or unrecognized stages stay absent rather than guessed.
+      ...(input.phase === "shell_context" &&
+      (stage === "detect_shell" || stage === "native_path_conversion")
+        ? {
+            attachment_download_shell_context_diagnostic_version: 1 as const,
+            attachment_download_shell_context_stage: stage,
+          }
+        : {}),
     });
   } catch {
     // Optional diagnostics must preserve the original rejection.
