@@ -4547,16 +4547,22 @@ export const agentLongTask = task({
                 retryAborted = true;
                 state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
               }
-              const finalization = classifyAgentRetryFinalization({
-                messages: retryMessages.map((message) =>
-                  message.role === "assistant"
-                    ? stripAgentLongHeartbeatParts(message)
-                    : message,
-                ),
-                finishReason: state.streamFinishReason,
-                finishContinuationAttempted,
-                aborted: retryAborted || userStopSignal.signal.aborted,
-              });
+              // A failed local safety read already ended this leg; it is
+              // neither a provider empty answer nor a finished continuation.
+              const finalization = isTrustedBrowserHandoffReadFailure(
+                state.providerError,
+              )
+                ? undefined
+                : classifyAgentRetryFinalization({
+                    messages: retryMessages.map((message) =>
+                      message.role === "assistant"
+                        ? stripAgentLongHeartbeatParts(message)
+                        : message,
+                    ),
+                    finishReason: state.streamFinishReason,
+                    finishContinuationAttempted,
+                    aborted: retryAborted || userStopSignal.signal.aborted,
+                  });
               if (finalization === "finish_continuation_limit") {
                 appendAgentFinishContinuationLimit(
                   retryMessages,
@@ -5896,10 +5902,13 @@ export const agentLongTask = task({
                         state.streamFinishReason =
                           LOCAL_CONNECTION_LOST_FINISH_REASON;
                       }
+                      // A failed local safety read is the terminal error; a
+                      // stale "stop" must not replace it with a provider empty answer.
                       if (
                         terminalEmptyResponse &&
                         !isAborted &&
-                        !userStopSignal.signal.aborted
+                        !userStopSignal.signal.aborted &&
+                        !isTrustedBrowserHandoffReadFailure(state.providerError)
                       ) {
                         state.streamFinishReason = "error";
                         state.providerError = new Error(

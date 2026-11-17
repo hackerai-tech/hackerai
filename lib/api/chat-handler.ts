@@ -2619,9 +2619,14 @@ export const createChatHandler = () => {
                                 const retryAssistant = retryMessages.findLast(
                                   (message) => message.role === "assistant",
                                 );
+                                // A failed local safety read is the terminal
+                                // error; never replace it with a provider empty answer.
                                 const retryEmptyResponse =
                                   !retryAborted &&
                                   !userStopSignal.signal.aborted &&
+                                  !isTrustedBrowserHandoffReadFailure(
+                                    state.providerError,
+                                  ) &&
                                   isTerminalEmptyAssistantResponse(
                                     retryAssistant?.parts ?? [],
                                     state.streamFinishReason,
@@ -2951,10 +2956,13 @@ export const createChatHandler = () => {
                       }
                     }
 
+                    // A failed local safety read is the terminal error; a
+                    // stale "stop" must not replace it with a provider empty answer.
                     if (
                       terminalEmptyResponse &&
                       !isAborted &&
-                      !userStopSignal.signal.aborted
+                      !userStopSignal.signal.aborted &&
+                      !isTrustedBrowserHandoffReadFailure(state.providerError)
                     ) {
                       state.streamFinishReason = "error";
                       state.providerError = new Error(

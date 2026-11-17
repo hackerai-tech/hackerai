@@ -31,10 +31,17 @@ import {
   isRetriableProviderStreamDisconnectError,
 } from "@/lib/utils/error-utils";
 import {
+  AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+  appendAgentFinishContinuationLimit,
+  appendProviderEmptyResponseFailure,
+  classifyAgentRetryFinalization,
   decideProviderRecovery,
   hasUncertainProviderToolOutcome,
+  isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
+  PROVIDER_EMPTY_RESPONSE_MESSAGE,
 } from "../agent-long-provider-retry";
+import { stripAgentLongHeartbeatParts } from "../agent-long-heartbeat";
 
 jest.mock("@/lib/db/actions", () => ({ getNotes: jest.fn() }));
 
@@ -690,6 +697,10 @@ type UiRunMode =
   | "local"
   | "local_wrapped"
   | "local_after_tool"
+  // A completed tool step whose provider finish reason is "stop": the SDK still
+  // runs another step, so Ask/Agent later see stale "stop" and tool-only parts.
+  | "local_after_tool_stop"
+  | "empty_after_tool_stop"
   | "provider_disconnect"
   | "success";
 
@@ -710,6 +721,7 @@ const runThroughUi = async (mode: UiRunMode, priorFinishReason?: string) => {
     sdkFinishCalled: boolean;
     ui?: { isAborted: boolean };
   } = { modelCalls: 0, sdkFinishCalled: false };
+  let messages: UIMessage[] = [];
   const parts = (...chunks: unknown[]) => ({
     stream: new ReadableStream({
       start(controller) {
@@ -730,16 +742,20 @@ const runThroughUi = async (mode: UiRunMode, priorFinishReason?: string) => {
     record.modelCalls++;
     if (mode === "provider_disconnect")
       return parts({ type: "error", error: disconnect() });
-    if (mode === "local_after_tool")
-      return parts(
+    const toolStep = (reason: string) =>
+      parts(
         {
           type: "tool-call",
           toolCallId: "saved-once",
           toolName: "save",
           input: "{}",
         },
-        finish("tool-calls"),
+        finish(reason),
       );
+    if (mode === "local_after_tool") return toolStep("tool-calls");
+    if (mode === "local_after_tool_stop") return toolStep("stop");
+    if (mode === "empty_after_tool_stop")
+      return record.modelCalls === 1 ? toolStep("stop") : parts(finish("stop"));
     return parts(
       { type: "text-start", id: "answer" },
       { type: "text-delta", id: "answer", delta: "Done." },
@@ -759,7 +775,7 @@ const runThroughUi = async (mode: UiRunMode, priorFinishReason?: string) => {
       const failingStep =
         mode === "local" || mode === "local_wrapped"
           ? 0
-          : mode === "local_after_tool"
+          : mode === "local_after_tool" || mode === "local_after_tool_stop"
             ? 1
             : -1;
       if (stepNumber !== failingStep) return undefined;
@@ -783,149 +799,370 @@ const runThroughUi = async (mode: UiRunMode, priorFinishReason?: string) => {
   let chunks = 0;
   for await (const message of readUIMessageStream({
     stream: result.toUIMessageStream({
-      onFinish: ({ isAborted }) => {
+      generateMessageId: () => "assistant",
+      onFinish: ({ isAborted, messages: finished }) => {
         record.ui = { isAborted };
+        messages = finished;
       },
     }),
     onError: () => {},
   }))
     chunks += message ? 1 : 0;
-  return { state, record, read, chunks };
+  return { state, record, read, chunks, messages };
 };
 
-describe.each([
+const askLegs = {
   // Primary leg: Stop normally clears the finish reason before settlement.
-  ["primary", askSettlement("isAborted", "finalProviderContentBlocked")],
+  primary: askSettlement("isAborted", "finalProviderContentBlocked"),
   // Fallback leg: a genuine provider failure was admitted and the fallback's
   // own safety read then failed; Stop keeps the finish reason here.
-  ["fallback", askSettlement("retryAborted", "providerContentBlocked")],
-] as const)("Ask %s outcome after a local read", (leg, settlement) => {
-  const settle = (
-    providerError: unknown,
-    streamFinishReason: string | undefined,
-    aborted = false,
-  ) => {
-    const chatLogger = {
-      emitUnexpectedError: jest.fn(),
-      emitSuccess: jest.fn(),
-    };
-    const scope = {
-      state: { providerError, streamFinishReason },
-      isProviderContentFilterFinishReason,
-      isTrustedBrowserHandoffReadFailure,
-      createProviderContentBlockedFinishReasonError,
-      isAborted: leg === "primary" && aborted,
-      retryAborted: leg === "fallback" && aborted,
-      visionSummaryRecoveryFailure: undefined,
-      terminalEmptyResponse: false,
-      retryEmptyResponse: false,
-      isPreemptiveAbort: false,
-      summarizationTracker: { hasSummarized: false },
-      chatLogger,
-    };
-    const outcome = new Function(...Object.keys(scope), settlement)(
-      ...Object.values(scope),
-    );
-    return { outcome, chatLogger };
-  };
+  fallback: askSettlement("retryAborted", "providerContentBlocked"),
+};
+type AskLeg = keyof typeof askLegs;
 
-  // [case, mode, state before the attempt, provider calls, SDK onFinish,
-  //  finish reason Ask observes]. None is "error": a first-step failure never
-  // reaches the SDK onFinish, and a later one reports the completed step's.
-  it.each([
-    ["a first-step", "local", undefined, 0, false, undefined],
-    ["a wrapped first-step", "local_wrapped", undefined, 0, false, undefined],
-    ["a stale-reason first-step", "local", "stop", 0, false, "stop"],
-    ["a post-tool", "local_after_tool", undefined, 1, true, "tool-calls"],
-  ] as const)(
-    "reports %s local read delivered by the SDK UI stream as an error",
-    async (
-      _kind,
-      mode,
-      priorFinishReason,
-      modelCalls,
-      sdkFinishCalled,
-      observedFinishReason,
-    ) => {
-      const { state, record, read } = await runThroughUi(
+/** Execute one leg's actual settlement statements against observed state. */
+const settleAsk = (
+  leg: AskLeg,
+  providerError: unknown,
+  streamFinishReason: string | undefined,
+  aborted = false,
+  emptyResponse = false,
+) => {
+  const chatLogger = {
+    emitUnexpectedError: jest.fn(),
+    emitSuccess: jest.fn(),
+  };
+  const scope = {
+    state: { providerError, streamFinishReason },
+    isProviderContentFilterFinishReason,
+    isTrustedBrowserHandoffReadFailure,
+    createProviderContentBlockedFinishReasonError,
+    isAborted: leg === "primary" && aborted,
+    retryAborted: leg === "fallback" && aborted,
+    visionSummaryRecoveryFailure: undefined,
+    terminalEmptyResponse: leg === "primary" && emptyResponse,
+    retryEmptyResponse: leg === "fallback" && emptyResponse,
+    isPreemptiveAbort: false,
+    summarizationTracker: { hasSummarized: false },
+    chatLogger,
+  };
+  const outcome = new Function(...Object.keys(scope), askLegs[leg])(
+    ...Object.values(scope),
+  );
+  return { outcome, chatLogger };
+};
+
+describe.each(["primary", "fallback"] as const)(
+  "Ask %s outcome after a local read",
+  (leg) => {
+    const settle = (
+      providerError: unknown,
+      streamFinishReason: string | undefined,
+      aborted = false,
+    ) => settleAsk(leg, providerError, streamFinishReason, aborted);
+
+    // [case, mode, state before the attempt, provider calls, SDK onFinish,
+    //  finish reason Ask observes]. None is "error": a first-step failure never
+    // reaches the SDK onFinish, and a later one reports the completed step's.
+    it.each([
+      ["a first-step", "local", undefined, 0, false, undefined],
+      ["a wrapped first-step", "local_wrapped", undefined, 0, false, undefined],
+      ["a stale-reason first-step", "local", "stop", 0, false, "stop"],
+      ["a post-tool", "local_after_tool", undefined, 1, true, "tool-calls"],
+    ] as const)(
+      "reports %s local read delivered by the SDK UI stream as an error",
+      async (
+        _kind,
         mode,
         priorFinishReason,
-      );
-      // No provider call for the failed step and a non-aborted UI finish.
-      expect(record).toEqual({
         modelCalls,
         sdkFinishCalled,
-        ui: { isAborted: false },
-      });
-      expect(state.streamFinishReason).toBe(observedFinishReason);
-      expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
-        true,
-      );
-      if (mode !== "local_wrapped") expect(state.providerError).toBe(read);
+        observedFinishReason,
+      ) => {
+        const { state, record, read } = await runThroughUi(
+          mode,
+          priorFinishReason,
+        );
+        // No provider call for the failed step and a non-aborted UI finish.
+        expect(record).toEqual({
+          modelCalls,
+          sdkFinishCalled,
+          ui: { isAborted: false },
+        });
+        expect(state.streamFinishReason).toBe(observedFinishReason);
+        expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+          true,
+        );
+        if (mode !== "local_wrapped") expect(state.providerError).toBe(read);
 
-      const { outcome, chatLogger } = settle(
-        state.providerError,
-        state.streamFinishReason,
-        record.ui!.isAborted,
-      );
-      expect(outcome).toBe("error");
-      expect(chatLogger.emitSuccess).not.toHaveBeenCalled();
-      expect(chatLogger.emitUnexpectedError).toHaveBeenCalledTimes(1);
-      expect(chatLogger.emitUnexpectedError.mock.calls[0][0]).toBe(
-        state.providerError,
-      );
-    },
-  );
-
-  it.each([
-    ["an ordinary answer", "success"],
-    ["a genuine provider disconnect", "provider_disconnect"],
-  ] as const)(
-    "keeps %s from the SDK UI stream on its existing accounting",
-    async (_kind, mode) => {
-      const { state, record } = await runThroughUi(mode);
-      expect(record.modelCalls).toBe(1);
-      expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
-        false,
-      );
-      const { outcome, chatLogger } = settle(
-        state.providerError,
-        state.streamFinishReason,
-        record.ui!.isAborted,
-      );
-      expect(outcome).toBe("success");
-      expect(chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
-      expect(chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it("keeps Stop, ordinary success, content filters and other provider errors unchanged", () => {
-    // Stop takes precedence whether or not the finish reason was cleared.
-    for (const finishReason of [undefined, "error"]) {
-      const stopped = settle(local, finishReason, true);
-      expect(stopped.outcome).toBe("aborted");
-      expect(stopped.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
-      expect(stopped.chatLogger.emitSuccess).toHaveBeenCalledWith(
-        expect.objectContaining({ wasAborted: true }),
-      );
-    }
-
-    const ordinary = settle(undefined, "stop");
-    expect(ordinary.outcome).toBe("success");
-    expect(ordinary.chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
-
-    const filtered = settle(undefined, "content-filter");
-    expect(filtered.outcome).toBe("error");
-    expect(filtered.chatLogger.emitUnexpectedError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "ProviderContentBlockedFinishReasonError",
-      }),
+        const { outcome, chatLogger } = settle(
+          state.providerError,
+          state.streamFinishReason,
+          record.ui!.isAborted,
+        );
+        expect(outcome).toBe("error");
+        expect(chatLogger.emitSuccess).not.toHaveBeenCalled();
+        expect(chatLogger.emitUnexpectedError).toHaveBeenCalledTimes(1);
+        expect(chatLogger.emitUnexpectedError.mock.calls[0][0]).toBe(
+          state.providerError,
+        );
+      },
     );
 
-    // Out of scope here: other terminal provider errors keep their existing
-    // accounting rather than being widened by this local-read correction.
-    const genuine = settle(providerFailures.provider_503, "error");
-    expect(genuine.outcome).toBe("success");
-    expect(genuine.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+    it.each([
+      ["an ordinary answer", "success"],
+      ["a genuine provider disconnect", "provider_disconnect"],
+    ] as const)(
+      "keeps %s from the SDK UI stream on its existing accounting",
+      async (_kind, mode) => {
+        const { state, record } = await runThroughUi(mode);
+        expect(record.modelCalls).toBe(1);
+        expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+          false,
+        );
+        const { outcome, chatLogger } = settle(
+          state.providerError,
+          state.streamFinishReason,
+          record.ui!.isAborted,
+        );
+        expect(outcome).toBe("success");
+        expect(chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+        expect(chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("keeps Stop, ordinary success, content filters and other provider errors unchanged", () => {
+      // Stop takes precedence whether or not the finish reason was cleared.
+      for (const finishReason of [undefined, "error"]) {
+        const stopped = settle(local, finishReason, true);
+        expect(stopped.outcome).toBe("aborted");
+        expect(stopped.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+        expect(stopped.chatLogger.emitSuccess).toHaveBeenCalledWith(
+          expect.objectContaining({ wasAborted: true }),
+        );
+      }
+
+      const ordinary = settle(undefined, "stop");
+      expect(ordinary.outcome).toBe("success");
+      expect(ordinary.chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
+
+      const filtered = settle(undefined, "content-filter");
+      expect(filtered.outcome).toBe("error");
+      expect(filtered.chatLogger.emitUnexpectedError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "ProviderContentBlockedFinishReasonError",
+        }),
+      );
+
+      // Out of scope here: other terminal provider errors keep their existing
+      // accounting rather than being widened by this local-read correction.
+      const genuine = settle(providerFailures.provider_503, "error");
+      expect(genuine.outcome).toBe("success");
+      expect(genuine.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+    });
+  },
+);
+
+// --- Provider empty-answer synthesis before settlement ---------------------
+
+/**
+ * One site's actual statements: the declarations it reads (wherever they sit
+ * in the owning callback) followed by the `if` that may synthesize a provider
+ * empty answer or a finish-continuation limit.
+ */
+const synthesisSite = (
+  source: ts.SourceFile,
+  declared: string[],
+  isSiteIf: (condition: string) => boolean,
+) => {
+  const declarations = declared.map((name) =>
+    declaration(source, name).parent.parent.getText(source),
+  );
+  const site = only(
+    collect(
+      source,
+      (node): node is ts.IfStatement =>
+        ts.isIfStatement(node) && isSiteIf(node.expression.getText(source)),
+    ),
+    `synthesis ${declared.join(",")}`,
+  );
+  const code = ts.transpileModule(
+    [...declarations, site.getText(source)].join("\n"),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  return (scope: Record<string, unknown>) =>
+    new Function(...Object.keys(scope), code)(...Object.values(scope));
+};
+
+const synthesisSites = {
+  "Ask primary": synthesisSite(ask, ["terminalEmptyResponse"], (condition) =>
+    condition.startsWith("terminalEmptyResponse &&"),
+  ),
+  "Ask fallback": synthesisSite(
+    ask,
+    ["retryAssistant", "retryEmptyResponse"],
+    (condition) => condition === "retryEmptyResponse",
+  ),
+  "Agent primary": synthesisSite(
+    agent,
+    ["terminalEmptyResponse"],
+    (condition) => condition.startsWith("terminalEmptyResponse &&"),
+  ),
+  "Agent fallback": synthesisSite(
+    agent,
+    ["finalization"],
+    (condition) => condition === 'finalization === "finish_continuation_limit"',
+  ),
+};
+type SynthesisSite = keyof typeof synthesisSites;
+
+const synthesize = (
+  site: SynthesisSite,
+  run: Awaited<ReturnType<typeof runThroughUi>>,
+  { aborted = false, finishContinuationAttempted = false } = {},
+) => {
+  const writer = { write: jest.fn() };
+  const messages = run.messages;
+  const lastAssistantMessageParts =
+    messages.findLast((message) => message.role === "assistant")?.parts ?? [];
+  // Ask primary settles with its earlier, pre-synthesis empty-answer flag.
+  const terminalEmptyResponse = isTerminalEmptyAssistantResponse(
+    lastAssistantMessageParts,
+    run.state.streamFinishReason,
+  );
+  synthesisSites[site]({
+    isTrustedBrowserHandoffReadFailure,
+    isTerminalEmptyAssistantResponse,
+    appendProviderEmptyResponseFailure,
+    classifyAgentRetryFinalization,
+    appendAgentFinishContinuationLimit,
+    stripAgentLongHeartbeatParts,
+    state: run.state,
+    writer,
+    userStopSignal: running,
+    isAborted: aborted,
+    retryAborted: aborted,
+    finishContinuationAttempted,
+    lastAssistantMessageParts,
+    messages,
+    finishedMessages: messages,
+    retryMessages: messages,
+    assistantMessageId: "assistant",
+    retryMessageId: "assistant",
   });
-});
+  const text = JSON.stringify(messages);
+  const appendedEmpty = text.includes(PROVIDER_EMPTY_RESPONSE_MESSAGE);
+  return {
+    writer,
+    appendedEmpty,
+    appendedLimit: text.includes(
+      JSON.stringify(AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE).slice(1, -1),
+    ),
+    // Ask fallback settles with its site's own retryEmptyResponse.
+    emptyResponse:
+      site === "Ask primary" ? terminalEmptyResponse : appendedEmpty,
+  };
+};
+
+/** Ask settles the synthesized state; Agent's existing outcome is its error state. */
+const outcomeAfter = (
+  site: SynthesisSite,
+  run: Awaited<ReturnType<typeof runThroughUi>>,
+  emptyResponse: boolean,
+  aborted = false,
+) => {
+  if (site.startsWith("Ask"))
+    return settleAsk(
+      site === "Ask primary" ? "primary" : "fallback",
+      run.state.providerError,
+      run.state.streamFinishReason,
+      aborted,
+      emptyResponse,
+    );
+  return {
+    outcome: aborted
+      ? "aborted"
+      : isTerminalProviderStreamError(run.state)
+        ? "error"
+        : "success",
+  };
+};
+
+describe.each(Object.keys(synthesisSites) as SynthesisSite[])(
+  "%s empty-answer synthesis",
+  (site) => {
+    const continuationAttempts =
+      site === "Agent fallback" ? [false, true] : [false];
+
+    it.each(continuationAttempts)(
+      "keeps a local read after a stale-stop tool step as the terminal error (continuation attempted: %s)",
+      async (finishContinuationAttempted) => {
+        const run = await runThroughUi("local_after_tool_stop");
+        // The hazard the SDK actually produces: a completed tool step finished
+        // "stop", the next prepareStep failed, and only tool parts remain.
+        expect(run.record).toEqual({
+          modelCalls: 1,
+          sdkFinishCalled: true,
+          ui: { isAborted: false },
+        });
+        expect(run.state.streamFinishReason).toBe("stop");
+        expect(run.state.providerError).toBe(run.read);
+        const parts = run.messages.at(-1)?.parts ?? [];
+        expect(isTerminalEmptyAssistantResponse(parts, "stop")).toBe(true);
+        const before = JSON.stringify(run.messages);
+
+        const result = synthesize(site, run, { finishContinuationAttempted });
+        expect(run.state.providerError).toBe(run.read);
+        expect(run.state.streamFinishReason).toBe("stop");
+        expect(result.writer.write).not.toHaveBeenCalled();
+        expect(JSON.stringify(run.messages)).toBe(before);
+
+        const settled = outcomeAfter(site, run, result.emptyResponse);
+        expect(settled.outcome).toBe("error");
+        if ("chatLogger" in settled) {
+          expect(settled.chatLogger.emitSuccess).not.toHaveBeenCalled();
+          expect(settled.chatLogger.emitUnexpectedError.mock.calls).toEqual([
+            [run.read],
+          ]);
+        }
+      },
+    );
+
+    it.each(continuationAttempts)(
+      "keeps the existing diagnosis for an ordinary empty answer (continuation attempted: %s)",
+      async (finishContinuationAttempted) => {
+        const run = await runThroughUi("empty_after_tool_stop");
+        expect(run.record.modelCalls).toBe(2);
+        expect(run.state).toEqual({
+          providerError: undefined,
+          streamFinishReason: "stop",
+        });
+        const result = synthesize(site, run, { finishContinuationAttempted });
+        if (finishContinuationAttempted) {
+          // Agent's genuine bounded finish still reports its limit.
+          expect(result.appendedLimit).toBe(true);
+          expect(run.state.providerError).toBeUndefined();
+          return;
+        }
+        expect(result.appendedEmpty).toBe(true);
+        expect(run.state.streamFinishReason).toBe("error");
+        expect(run.state.providerError).toEqual(
+          new Error("Provider completed without a usable answer"),
+        );
+        expect(outcomeAfter(site, run, result.emptyResponse).outcome).toBe(
+          "error",
+        );
+      },
+    );
+
+    it("leaves a stopped empty answer to the existing Stop path", async () => {
+      const run = await runThroughUi("empty_after_tool_stop");
+      const result = synthesize(site, run, { aborted: true });
+      expect(result.writer.write).not.toHaveBeenCalled();
+      expect(run.state.providerError).toBeUndefined();
+      expect(outcomeAfter(site, run, result.emptyResponse, true).outcome).toBe(
+        "aborted",
+      );
+    });
+  },
+);
