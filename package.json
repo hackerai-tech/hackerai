@@ -139,7 +139,7 @@
     "isbinaryfile": "^6.0.0",
     "jose": "^6.2.17",
     "jszip": "^3.10.2",
-    "langchain": "1.6.6",
+    "langchain": "1.5.9",
     "lucide-react": "1.73.0",
     "mammoth": "^1.13.0",
     "marked": "^18.2.1",
