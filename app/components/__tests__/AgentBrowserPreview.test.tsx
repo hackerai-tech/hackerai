@@ -20,6 +20,10 @@ const frame = {
 const response = (data: unknown, ok = true, status = ok ? 200 : 503) =>
   ({ ok, status, json: async () => data }) as Response;
 const originalFetch = global.fetch;
+const captureUrl = (url: unknown) => new URL(String(url), "https://app.test");
+// Optional diagnostic keys may follow fresh=1; classify by its parsed value.
+const isFreshCapture = (url: unknown) =>
+  captureUrl(url).searchParams.get("fresh") === "1";
 let actions: Array<Record<string, unknown>>;
 let handleAction: (body: Record<string, unknown>) => Promise<Response>;
 
@@ -1206,7 +1210,7 @@ it.each(["changed", "unchanged", "failed", "transient"])(
           }),
         };
       if (url === "https://relay.example/input") return response({ ok: true });
-      if (String(url).endsWith("?fresh=1")) {
+      if (isFreshCapture(url)) {
         if (capture === "transient" && transientAttempts++ === 0)
           return response({ state: "disconnected" }, false);
         if (capture === "transient" && transientAttempts === 2)
@@ -1241,7 +1245,7 @@ it.each(["changed", "unchanged", "failed", "transient"])(
       // Fast persistent failures must not hammer the sandbox every second.
       expect(
         (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
-          String(url).endsWith("?fresh=1"),
+          isFreshCapture(url),
         ).length,
       ).toBeLessThan(10);
       expect(
@@ -1309,7 +1313,7 @@ it("does not overwrite a newer streamed image with a delayed refresh", async () 
           },
         }),
       };
-    if (String(url).endsWith("?fresh=1"))
+    if (isFreshCapture(url))
       return new Promise<Response>((resolve) => {
         finish = resolve;
       });
@@ -1342,7 +1346,7 @@ it("does not overwrite a newer streamed image with a delayed refresh", async () 
   // Normal streaming stays live without paying for fallback screenshots.
   const refreshes = () =>
     (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
-      String(url).endsWith("?fresh=1"),
+      isFreshCapture(url),
     ).length;
   const before = refreshes();
   for (let second = 0; second < 12; second++) {
@@ -1438,14 +1442,14 @@ it("discards the old session's pending preview retry when the session changes", 
   });
   expect(global.fetch).toHaveBeenCalledTimes(5);
   for (const [url] of (global.fetch as jest.Mock).mock.calls)
-    expect(url).toBe("/api/agent/browser/session-b");
+    expect(captureUrl(url).pathname).toBe("/api/agent/browser/session-b");
 });
 
 it("refreshes repeatedly cached passive frames with an authoritative screenshot", async () => {
   const updated = { ...frame, image: "data:image/png;base64,updated" };
   const defaultFetch = (global.fetch as jest.Mock).getMockImplementation()!;
   global.fetch = jest.fn(async (url, options) =>
-    String(url).endsWith("?fresh=1")
+    isFreshCapture(url)
       ? response({ frame: updated })
       : defaultFetch(url, options),
   );
@@ -2711,4 +2715,223 @@ it("isolates a reconnected grant from an old timed-out input and its cleanup", a
     expect.objectContaining({ kind: "text", text: "c" }),
     expect.objectContaining({ kind: "text", text: "d" }),
   ]);
+});
+
+describe("capture GET activation diagnostics", () => {
+  const BUILD = "ABCDEF0123".repeat(4);
+  const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = BUILD;
+  });
+  afterEach(() => {
+    if (originalBuild === undefined)
+      delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+  });
+
+  const captureGets = () =>
+    (global.fetch as jest.Mock).mock.calls.filter(
+      ([url, options]) =>
+        captureUrl(url).pathname.startsWith("/api/agent/browser/") &&
+        !options?.body,
+    );
+  const reported = (url: unknown) => {
+    const params = captureUrl(url).searchParams;
+    return {
+      version: params.getAll("preview_diag_v"),
+      activation: params.getAll("preview_activation"),
+      reader: params.getAll("preview_reader"),
+    };
+  };
+  const activation = (url: unknown) => reported(url).activation.join(",");
+  const renderPreview = (props: { browserRequested?: boolean } = {}) =>
+    render(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        {...props}
+      />,
+    );
+
+  it.each([
+    ["waiting", "8"],
+    ["claiming", "16"],
+    ["human", "32"],
+    ["recovery", "64"],
+    ["resuming", "128"],
+  ])(
+    "reports the %s handoff state that keeps terminal history polling",
+    async (state, mask) => {
+      mockSession = {
+        sessionId: "session-a",
+        state,
+        grantExpiresAt: Date.now() + 30_000,
+        updatedAt: Date.now(),
+        controlledSessionName: "PRIVATE_SESSION_NAME",
+      };
+      renderPreview();
+      await act(async () => {});
+      const [[url]] = captureGets();
+      expect(reported(url)).toEqual({
+        version: ["1"],
+        activation: [mask],
+        reader: [BUILD.toLowerCase()],
+      });
+      expect(String(url)).not.toMatch(/PRIVATE|default/);
+    },
+  );
+
+  it("reports a takeover restored from a saved exit request", async () => {
+    sessionStorage.setItem(
+      "hackerai:browser-handoff-note:chat:parent:session-a",
+      "PRIVATE_NOTE",
+    );
+    sessionStorage.setItem(
+      "hackerai:browser-handoff-note:chat:parent:session-a:request",
+      "11111111-1111-4111-8111-111111111111",
+    );
+    renderPreview();
+    await act(async () => {});
+    const gets = captureGets();
+    expect(gets.length).toBeGreaterThan(0);
+    expect(gets.map(([url]) => activation(url))).toEqual(gets.map(() => "4"));
+    expect(JSON.stringify(gets)).not.toMatch(/PRIVATE|1111-4111/);
+  });
+
+  it("reports full screen, taken control and the live handoff state together", async () => {
+    const view = await mount();
+    expect(captureGets().map(([url]) => activation(url))).toEqual(["1"]);
+    await takeControl();
+    mockSession = { sessionId: "session-a", state: "human" };
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    // Browser tool (1), full screen (2), taken control (4) and human (32).
+    expect(activation(captureGets().at(-1)![0])).toBe("39");
+  });
+
+  it.each([
+    ["the loaded commit, normalized", BUILD, BUILD.toLowerCase()],
+    ["unknown for an invalid build value", "not-a-commit", "unknown"],
+    ["unknown for a missing build value", undefined, "unknown"],
+  ])(
+    "keeps normal and fresh request options while reporting %s",
+    async (_name, build, reader) => {
+      if (build === undefined)
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = build;
+      mockSession = {
+        sessionId: "session-a",
+        state: "agent",
+        controlledSessionName: "PRIVATE_SESSION_NAME",
+      };
+      await mount();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(8000);
+      });
+      const gets = captureGets();
+      const normal = gets.find(([url]) => !isFreshCapture(url))!;
+      const fresh = gets.find(([url]) => isFreshCapture(url))!;
+      for (const [url, options] of [normal, fresh]) {
+        expect(captureUrl(url).pathname).toBe("/api/agent/browser/session-a");
+        expect(options).toEqual({
+          cache: "no-store",
+          credentials: "same-origin",
+          signal: expect.any(AbortSignal),
+        });
+        expect(reported(url)).toEqual({
+          version: ["1"],
+          activation: ["1"],
+          reader: [reader],
+        });
+        expect(String(url)).not.toMatch(/PRIVATE|default/);
+      }
+      expect(captureUrl(normal[0]).searchParams.has("fresh")).toBe(false);
+      expect(captureUrl(fresh[0]).searchParams.getAll("fresh")).toEqual(["1"]);
+    },
+  );
+
+  it("sends the latest committed flags on the scheduled retry without resetting backoff", async () => {
+    const requestedAt: number[] = [];
+    const masks: string[] = [];
+    global.fetch = jest.fn(async (url) => {
+      requestedAt.push(Date.now());
+      masks.push(activation(url));
+      return response({ state: "waiting" }, false);
+    });
+    const view = await mount();
+    const startedAt = requestedAt[0];
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2000);
+    });
+    // The handoff now waits for the user while the browser tool stays selected.
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+    await act(async () => {});
+    expect(requestedAt).toHaveLength(2);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(21_000);
+    });
+    // The selection moves to a terminal command; the waiting state keeps it open.
+    view.rerender(
+      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    );
+    await act(async () => {});
+    expect(requestedAt).toHaveLength(6);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
+    });
+    expect(requestedAt.map((time) => time - startedAt)).toEqual([
+      0, 1000, 3000, 7000, 15_000, 23_000, 31_000,
+    ]);
+    expect(masks).toEqual(["1", "1", "9", "9", "9", "9", "8"]);
+  });
+
+  it("keeps an in-flight capture and its result when flags change", async () => {
+    const signals: AbortSignal[] = [];
+    const pending: Array<(value: Response) => void> = [];
+    const urls: unknown[] = [];
+    global.fetch = jest.fn((url, options) => {
+      urls.push(url);
+      signals.push(options?.signal as AbortSignal);
+      return new Promise<Response>((resolve) => {
+        pending.push(resolve);
+      });
+    });
+    const view = await mount();
+    expect(urls).toHaveLength(1);
+    mockSession = { sessionId: "session-a", state: "recovery" };
+    view.rerender(
+      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    );
+    await act(async () => {});
+    expect(signals[0].aborted).toBe(false);
+    expect(urls).toHaveLength(1);
+    await act(async () => {
+      pending[0](response({ frame }));
+    });
+    expect(
+      screen.getByAltText("Current Agent browser viewport"),
+    ).toHaveAttribute("src", frame.image);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(urls.map(activation)).toEqual(["1", "64"]);
+  });
 });
