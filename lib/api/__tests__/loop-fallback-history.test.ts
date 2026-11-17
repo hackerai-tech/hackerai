@@ -43,8 +43,9 @@ function recoveryCode(file: string) {
     }
     if (
       ts.isIfStatement(node) &&
-      node.expression.getText(source).replace(/\s+/g, " ") ===
-        "finishContinuation || loopContinuation || providerDisconnectContinuation"
+      /^finishContinuation \|\| loopContinuation \|\| providerDisconnectContinuation(?: \|\| refusalContinuation)?$/.test(
+        node.expression.getText(source).replace(/\s+/g, " "),
+      )
     )
       backgroundSave = node.getText(source);
     if (
@@ -143,6 +144,7 @@ it.each([
       loopContinuation,
       finishContinuation: undefined,
       providerDisconnectContinuation: undefined,
+      refusalContinuation: undefined,
       retryMessageId: "replacement",
       markLoopRecoveryCheckpoint,
       messages: completed,

@@ -1730,19 +1730,78 @@ describe("resolveServedModelForCostAccounting", () => {
 
 describe("Agent Max explicit provider recovery", () => {
   const snapshot = "model-deepseek-v4.1-flash-1017-pro";
-  it("selects DeepSeek 1017 without admitting an unchecked Grok attempt or changing Ask and non-Max recovery", () => {
-    expect(
-      getRetryFallbackModel("model-glm-5.3", "agent", "hackerai-max"),
-    ).toBe(snapshot);
-    expect(getRetryFallbackModel(snapshot, "agent", "hackerai-max")).toBe(
-      snapshot,
+  it.each([
+    ["Grok text", "model-grok-4.6", false],
+    ["Grok with images", "model-grok-4.6", true],
+    ["legacy GLM", "model-glm-5.3", false],
+    ["DeepSeek control", snapshot, false],
+    ["Abliteration", "model-abliterated", false],
+  ] as const)(
+    "recovers %s on DeepSeek 1017, never GLM first",
+    (_name, model, hasImageInputs) => {
+      expect(
+        getRetryFallbackModel(model, "agent", "hackerai-max", {
+          hasImageInputs,
+        }),
+      ).toBe(snapshot);
+    },
+  );
+  it("keeps Ask Max and non-Max Agent recovery unchanged", () => {
+    expect(getRetryFallbackModel("model-grok-4.6", "ask", "hackerai-max")).toBe(
+      "model-glm-5.3",
     );
     expect(getRetryFallbackModel("model-glm-5.3", "ask", "hackerai-max")).toBe(
       "model-kimi-k3",
     );
+    expect(getRetryFallbackModel("model-grok-4.6", "agent")).toBe(
+      "model-glm-5.3",
+    );
     expect(getRetryFallbackModel("model-glm-5.3", "agent")).toBe(
       "model-kimi-k3",
     );
+    expect(getRetryFallbackModel(snapshot, "agent", "hackerai-pro")).not.toBe(
+      snapshot,
+    );
+  });
+  it("sends literal max reasoning on the Max DeepSeek recovery request through the installed adapter", async () => {
+    const {
+      Response,
+    } = require("next/dist/compiled/@edge-runtime/primitives/fetch");
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("data: [DONE]\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const retryModel = getRetryFallbackModel(
+      "model-grok-4.6",
+      "agent",
+      "hackerai-max",
+    );
+    // A lower override from the original route (e.g. Kimi experiment) or an
+    // excluded refusing model cannot weaken reasoning or add a fallback.
+    const options = buildProviderOptions(true, "user-1", retryModel, "agent", {
+      selectedModelOverride: "hackerai-max",
+      reasoningOverride: { enabled: true, effort: "high" },
+      excludedModelSlugs: ["x-ai/grok-4.6"],
+    });
+    const originalTextDecoderStream = globalThis.TextDecoderStream;
+    globalThis.TextDecoderStream = require("node:stream/web").TextDecoderStream;
+    try {
+      await createOpenRouter({ apiKey: "test-only", fetch: fetchMock })
+        .chat(DEEPSEEK_1017_SLUG)
+        .doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "Say hello" }] },
+          ],
+          providerOptions: options,
+        });
+    } finally {
+      globalThis.TextDecoderStream = originalTextDecoderStream;
+    }
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.reasoning).toEqual({ enabled: true, effort: "max" });
+    expect(body).not.toHaveProperty("models");
   });
   it("sends maximum reasoning only on the explicit Max DeepSeek attempt", () => {
     const options = buildProviderOptions(true, "user", snapshot, "agent", {

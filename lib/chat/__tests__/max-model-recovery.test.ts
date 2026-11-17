@@ -8,7 +8,7 @@ import { getNextProviderDisconnectRetryModel } from "../agent-long-provider-retr
 jest.mock("@/lib/db/actions", () => ({ getNotes: jest.fn() }));
 
 describe("Max model recovery policy", () => {
-  it("uses GLM for Grok text recovery and DeepSeek max when images reach the provider", () => {
+  it("recovers Grok text and images on DeepSeek max and never returns to Grok", () => {
     const text = getRetryFallbackModel(
       "model-grok-4.6",
       "agent",
@@ -20,7 +20,7 @@ describe("Max model recovery policy", () => {
       "hackerai-max",
       { hasImageInputs: true },
     );
-    expect(text).toBe("model-glm-5.3");
+    expect(text).toBe(DEEPSEEK_1017_MODEL_KEY);
     expect(image).toBe(DEEPSEEK_1017_MODEL_KEY);
     expect(
       buildProviderOptions(true, "user", image, "agent", {
@@ -45,11 +45,12 @@ describe("Max model recovery policy", () => {
           ...recovery,
           requiredContextTokens: 10_000,
         }),
-      ).toBe("model-grok-4.6");
+      ).toBe(DEEPSEEK_1017_MODEL_KEY);
+      // Beyond DeepSeek's 488,288-token compaction threshold.
       expect(
         getNextProviderDisconnectRetryModel({
           ...recovery,
-          requiredContextTokens: 400_000,
+          requiredContextTokens: 500_000,
         }),
       ).toBeUndefined();
       expect(

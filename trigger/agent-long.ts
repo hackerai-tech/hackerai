@@ -2048,6 +2048,9 @@ export const agentLongTask = task({
       isAutoContinue: !!isAutoContinue,
       getFailureSignalContext: (error) =>
         agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
+      setRunMetadata: (key, value) => {
+        metadata.set(key, value);
+      },
     });
     let taskOutcomeSurvey: Awaited<ReturnType<typeof selectTaskOutcomeSurvey>>;
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
@@ -3607,7 +3610,7 @@ export const agentLongTask = task({
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            let fallbackModel =
+            const fallbackModel =
               !(mode === "agent" && selectedModelOverride === "hackerai-max") &&
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
@@ -3616,9 +3619,6 @@ export const agentLongTask = task({
                     maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
-                    {
-                      hasImageInputs: requestHasImages,
-                    },
                   );
             let activeModelName = selectedModel;
 
@@ -4260,17 +4260,6 @@ export const agentLongTask = task({
               onProviderRequestStart: (configuredModel, hasImageInputs) => {
                 recordFlashRoutingExposure(configuredModel);
                 requestHasImages ||= Boolean(hasImageInputs);
-                if (
-                  selectedModelOverride === "hackerai-max" &&
-                  requestHasImages
-                ) {
-                  fallbackModel = getRetryFallbackModel(
-                    maxBaselineModel ?? selectedModel,
-                    mode,
-                    selectedModelOverride,
-                    { hasImageInputs: true },
-                  );
-                }
               },
               trackedProvider,
               currentSystemPrompt,
@@ -4413,6 +4402,14 @@ export const agentLongTask = task({
               return createAgentStream(modelName, streamCtx, state);
             };
 
+            // Envelope for the current leg's failure, attributed to the model
+            // that leg requested.
+            const wrapCurrentLegFailure = (cause: unknown) =>
+              wrapProviderTerminalError(cause, {
+                model: terminalRequestedModelSlug,
+                openRouterMetadata: state.providerErrorMetadata,
+              });
+
             const getProviderRecoveryAnalytics = (
               outcome: "success" | "error" | "aborted",
             ) => {
@@ -4421,10 +4418,7 @@ export const agentLongTask = task({
                 userStopSignal.signal.aborted,
               );
               const providerError = terminalError
-                ? wrapProviderTerminalError(terminalError, {
-                    model: terminalRequestedModelSlug,
-                    openRouterMetadata: state.providerErrorMetadata,
-                  })
+                ? wrapCurrentLegFailure(terminalError)
                 : lastProviderRecoveryError;
 
               return {
@@ -4439,6 +4433,33 @@ export const agentLongTask = task({
                 providerRecoverySucceeded:
                   providerRecoveryAttempts > 0 && outcome === "success",
               };
+            };
+
+            // Call before resetAgentStreamStateForRetry: it reads the failed
+            // leg's terminal error, or the thrown provider API error.
+            const recordModelRecovery = (
+              reason: string,
+              retryModel: string,
+              thrownError?: unknown,
+            ) => {
+              try {
+                const cause =
+                  thrownError ??
+                  getTerminalProviderStreamError(
+                    state,
+                    userStopSignal.signal.aborted,
+                  );
+                runReporting.recordModelRecovery({
+                  reason,
+                  retryModel,
+                  failure:
+                    cause === undefined
+                      ? undefined
+                      : wrapCurrentLegFailure(cause),
+                });
+              } catch {
+                // Attribution cannot change whether the retry starts.
+              }
             };
 
             const recordProviderDisconnectRecoveryAttempt = ({
@@ -4809,6 +4830,15 @@ export const agentLongTask = task({
                     trigger_run_id: ctx.run.id,
                   },
                 );
+                recordModelRecovery(
+                  shouldRecoverAbliterationApiError
+                    ? "abliteration_api_error"
+                    : shouldRecoverVisionApiError
+                      ? "vision_api_error"
+                      : "provider_api_error",
+                  apiRetryModel,
+                  error,
+                );
                 isRetryWithFallback = true;
                 retryUsedFallbackModel = retryUsesDifferentModel(
                   selectedModel,
@@ -5041,10 +5071,18 @@ export const agentLongTask = task({
                                 loopRecoveryMessages ?? finishedMessages,
                               omittedCount: 0,
                             };
+                      // A Max refusal recovers on DeepSeek for the rest of
+                      // this response, never by retrying the refusing model.
+                      const maxProviderRefusal =
+                        providerContentBlocked &&
+                        mode === "agent" &&
+                        selectedModelOverride === "hackerai-max" &&
+                        !shouldRecoverAbliterationStreamError;
                       const shouldRetryWithoutImageToolResults =
                         imageRecovery.omittedCount > 0 &&
                         !isAborted &&
-                        !shouldRecoverAbliterationStreamError;
+                        !shouldRecoverAbliterationStreamError &&
+                        !maxProviderRefusal;
                       const hasImageAttachmentForRecovery =
                         countFileAttachments(
                           loopRecoveryMessages ?? state.finalMessages,
@@ -5114,6 +5152,23 @@ export const agentLongTask = task({
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
+                      // Keep completed steps and tool results from before the
+                      // refusal so the recovery model does not repeat them.
+                      // Without durable output, the existing full retry applies.
+                      const refusalCheckpoint =
+                        maxProviderRefusal &&
+                        !uncertainToolOutcome &&
+                        !isAborted
+                          ? prepareProviderDisconnectContinuation(
+                              normalizedFinishedMessages,
+                            )
+                          : undefined;
+                      const refusalContinuation =
+                        refusalCheckpoint?.messages.some(
+                          (message) => message.role === "assistant",
+                        )
+                          ? refusalCheckpoint
+                          : undefined;
                       const providerRecoveryDecision = decideProviderRecovery({
                         userCancelled: userStopSignal.signal.aborted,
                         unrecoverableVision:
@@ -5382,6 +5437,7 @@ export const agentLongTask = task({
                             continuation: providerDisconnectContinuation,
                           });
                         }
+                        recordModelRecovery(retryReason, retryModel);
                         isRetryWithFallback = true;
                         finishContinuationAttempted =
                           Boolean(finishContinuation);
@@ -5450,6 +5506,27 @@ export const agentLongTask = task({
                               ],
                             },
                           ];
+                        } else if (refusalContinuation) {
+                          state.finalMessages = [
+                            ...state.finalMessages,
+                            ...refusalContinuation.messages,
+                            {
+                              id: generateId(),
+                              role: "user",
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          // Keep the refusal billing policy of a full retry:
+                          // the transcript avoids repeating side effects, but
+                          // the refused leg's model usage is not billed.
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
                             .map((message) =>
@@ -5474,14 +5551,16 @@ export const agentLongTask = task({
                         if (
                           finishContinuation ||
                           loopContinuation ||
-                          providerDisconnectContinuation
+                          providerDisconnectContinuation ||
+                          refusalContinuation
                         ) {
                           const preservedFileIds = getFileAccumulator()
                             .getAll()
                             .map((file) => file.fileId);
                           for (const message of (finishContinuation ??
                             loopContinuation ??
-                            providerDisconnectContinuation)!.messages) {
+                            providerDisconnectContinuation ??
+                            refusalContinuation)!.messages) {
                             if (message.role !== "assistant") continue;
                             await saveMessage({
                               chatId,
@@ -5666,6 +5745,10 @@ export const agentLongTask = task({
                                       retryModel: finalRetryModel,
                                       continuation: nextContinuation,
                                     });
+                                    recordModelRecovery(
+                                      "provider_disconnect_continuation",
+                                      finalRetryModel,
+                                    );
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;

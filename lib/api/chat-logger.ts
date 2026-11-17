@@ -11,7 +11,10 @@ import {
   PAID_DEEPSEEK_1017_KEY,
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
-import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  agentRunEventUuid,
+  modelRecoveryAnalyticsProperties,
+} from "@/lib/analytics/agent-run-reporting";
 import { localStopAnalyticsProperties } from "@/lib/chat/local-connection-stop";
 import {
   FREE_ASK_DEEPSEEK_1017_KEY,
@@ -1447,6 +1450,8 @@ type AgentCompletionAnalyticsArgs = {
   providerRecoverySucceeded?: boolean;
   /** First abort reason; only a constructed error contributes closed fields. */
   localConnectionLostError?: unknown;
+  /** Added by run reporting; only its own history contributes closed fields. */
+  modelRecoveryHistory?: unknown;
 };
 
 export function captureAgentRun({
@@ -1510,6 +1515,7 @@ export function captureAgentRun({
   providerRecoveryModels,
   providerRecoverySucceeded,
   localConnectionLostError,
+  modelRecoveryHistory,
 }: Omit<
   AgentCompletionAnalyticsArgs,
   | "endpoint"
@@ -1823,6 +1829,7 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...localStopAnalyticsProperties(localConnectionLostError),
+      ...modelRecoveryAnalyticsProperties(modelRecoveryHistory, outcome),
       ...getExperimentAnalyticsProperties(experiment),
     },
   });
@@ -2055,6 +2062,7 @@ export function captureAgentCompletionAnalytics(
     providerRecoveryModels: args.providerRecoveryModels,
     providerRecoverySucceeded: args.providerRecoverySucceeded,
     localConnectionLostError: args.localConnectionLostError,
+    modelRecoveryHistory: args.modelRecoveryHistory,
   });
 }
 

@@ -120,6 +120,119 @@ const knownAmount = (value: number | undefined) =>
     ? value
     : null;
 
+const TERMINAL_FINISH_REASONS = [
+  "stop",
+  "length",
+  "content-filter",
+  "tool-calls",
+  "error",
+  "other",
+  "unknown",
+  LOCAL_CONNECTION_LOST_FINISH_REASON,
+];
+const TERMINAL_ABORT_SOURCES = [
+  "budget_exhausted",
+  "agent_spend_cap",
+  "elapsed_timeout",
+  "user_wait_timeout",
+  "user_wait_failed",
+  "approval_timeout",
+  "user_stop",
+  "request_cancel",
+  "unknown",
+];
+/** Retry legs started by the Agent orchestrator after its first model stream. */
+const MODEL_RECOVERY_REASONS = [
+  "provider_api_error",
+  "vision_api_error",
+  "abliteration_api_error",
+  "content_filter",
+  "provider_disconnect_continuation",
+  "empty_answer",
+  "empty_answer_continuation",
+  "vision_summary_recovery",
+  "image_tool_result_rejection",
+  "assistant_content_loop",
+  "doom_loop",
+  "interrupted_tool_input",
+  "non_durable_output_limit",
+  "reasoning_only_provider_error",
+  "incomplete_stream",
+  "agent_finish_empty_after_tools",
+  "agent_finish_announced_next_action",
+];
+const PROVIDER_FAILURE_CATEGORIES = [
+  "rate_limited",
+  "content_blocked",
+  "provider_5xx",
+  "provider_4xx",
+  "stream_terminated",
+  "timeout",
+  "unknown",
+];
+// Recovery is bounded by the orchestrator; this cap only bounds the record.
+const MAX_RECORDED_RECOVERIES = 4;
+// Registry keys and provider slugs only; anything else is reported as unknown.
+const MODEL_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/;
+
+const allowed = (value: unknown, values: readonly string[]) =>
+  typeof value === "string" && values.includes(value) ? value : undefined;
+const modelIdentifier = (value: unknown) =>
+  typeof value === "string" && MODEL_IDENTIFIER.test(value) ? value : undefined;
+const httpStatus = (value: unknown) =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 100 &&
+  value <= 599
+    ? value
+    : undefined;
+
+type ModelRecoveryHistory = Readonly<{
+  attempts: number;
+  models: readonly string[];
+  reasons: readonly string[];
+  initialFailure?: Readonly<{
+    category: string;
+    model?: string;
+    statusCode?: number;
+  }>;
+}>;
+// Only histories built by a reporter produce properties, never caller objects.
+const modelRecoveryHistories = new WeakSet<object>();
+
+/** Closed fields describing which failure started recovery and where it went. */
+export function modelRecoveryAnalyticsProperties(
+  history: unknown,
+  outcome: unknown,
+) {
+  if (
+    history === null ||
+    typeof history !== "object" ||
+    !modelRecoveryHistories.has(history)
+  )
+    return undefined;
+  const { attempts, models, reasons, initialFailure } =
+    history as ModelRecoveryHistory;
+  return {
+    model_recovery_version: 1,
+    model_recovery_attempts: attempts,
+    model_recovery_models: [...models],
+    model_recovery_reasons: [...reasons],
+    model_recovery_succeeded: outcome === "success",
+    ...(initialFailure && {
+      initial_provider_failure_category: initialFailure.category,
+      ...(initialFailure.model && {
+        initial_provider_failure_model: initialFailure.model,
+      }),
+      ...(initialFailure.statusCode !== undefined && {
+        initial_provider_failure_status_code: initialFailure.statusCode,
+      }),
+    }),
+  } as const;
+}
+
+export type AgentRunMetadataValue = string | number | boolean;
+
 /**
  * Owns reporting only. It must never retry settlement, issue refunds, or start
  * work to recover a cost. Independent guards retain a successful cost capture
@@ -136,6 +249,11 @@ export function createAgentRunReporting(context: {
   getFailureSignalContext?: (
     error: unknown,
   ) => FailureSignalContext | undefined;
+  /**
+   * Trigger run metadata sink for closed agent* outcome fields. Runtime
+   * COMPLETED only means orchestration settled; these describe the Agent.
+   */
+  setRunMetadata?: (key: string, value: AgentRunMetadataValue) => void;
 }) {
   let stage: FailureStage = "setup";
   let agentModelContextFlag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG;
@@ -155,6 +273,12 @@ export function createAgentRunReporting(context: {
   let terminalStepLimitReached: boolean | undefined;
   // Holds only a constructed LocalConnectionLostError from the first abort.
   let localStop: object | undefined;
+  // Run-scoped: stream state resets before each retry and must not erase
+  // which provider failure started recovery.
+  let recoveryAttempts = 0;
+  const recoveryModels: string[] = [];
+  const recoveryReasons: string[] = [];
+  let initialProviderFailure: ModelRecoveryHistory["initialFailure"];
 
   function once<T>(event: RunEvent, capture: (args: T) => void, args: T) {
     if (captured.has(event)) return;
@@ -165,6 +289,49 @@ export function createAgentRunReporting(context: {
       // A failed analytics enqueue must not turn a settled run into a failure.
       // Leave this event eligible for the outer fallback.
     }
+  }
+
+  function setMetadata(
+    entries: Record<string, AgentRunMetadataValue | undefined>,
+  ) {
+    if (!context.setRunMetadata) return;
+    for (const [key, value] of Object.entries(entries)) {
+      if (value === undefined) continue;
+      try {
+        context.setRunMetadata(key, value);
+      } catch {
+        // Metadata is diagnostic; it cannot change the run's outcome.
+      }
+    }
+  }
+
+  function recoveryHistory(): ModelRecoveryHistory | undefined {
+    if (recoveryAttempts === 0) return undefined;
+    const history = Object.freeze({
+      attempts: recoveryAttempts,
+      models: Object.freeze([...recoveryModels]),
+      reasons: Object.freeze([...recoveryReasons]),
+      initialFailure: initialProviderFailure,
+    });
+    modelRecoveryHistories.add(history);
+    return history;
+  }
+
+  function setTerminalMetadata(
+    source: "completion" | "run_finally",
+    outcome: "success" | "error" | "aborted",
+    finishReason: string | undefined,
+    abortSource: string | undefined,
+  ) {
+    setMetadata({
+      agentOutcome: outcome,
+      agentOutcomeSource: source,
+      agentFinishReason: finishReason,
+      agentAbortSource: outcome === "aborted" ? abortSource : undefined,
+      agentLocalStopReason: getLocalStopDiagnostic(localStop)?.reason,
+      agentRecoverySucceeded:
+        recoveryAttempts > 0 ? outcome === "success" : undefined,
+    });
   }
 
   return {
@@ -228,6 +395,45 @@ export function createAgentRunReporting(context: {
       }
       failure ??= { stage, kind, category: agentFailureCategory(error) };
     },
+    /**
+     * Call once per retry leg, before stream state is reset. `failure` is read
+     * only through its category/model/statusCode fields.
+     */
+    recordModelRecovery(attempt: {
+      reason: string;
+      retryModel: string;
+      failure?: unknown;
+    }) {
+      // A retry cannot explain a terminal outcome already recorded.
+      if (terminalOutcome) return;
+      recoveryAttempts += 1;
+      const reason = allowed(attempt.reason, MODEL_RECOVERY_REASONS) ?? "other";
+      const retryModel = modelIdentifier(attempt.retryModel) ?? "unknown";
+      if (recoveryModels.length < MAX_RECORDED_RECOVERIES) {
+        recoveryModels.push(retryModel);
+        recoveryReasons.push(reason);
+      }
+      if (!initialProviderFailure && attempt.failure) {
+        const category = allowed(
+          field(attempt.failure, "category"),
+          PROVIDER_FAILURE_CATEGORIES,
+        );
+        if (category)
+          initialProviderFailure = Object.freeze({
+            category,
+            model: modelIdentifier(field(attempt.failure, "model")),
+            statusCode: httpStatus(field(attempt.failure, "statusCode")),
+          });
+      }
+      setMetadata({
+        agentRecoveryAttempts: recoveryAttempts,
+        agentRecoveryModel: retryModel,
+        agentRecoveryReason: reason,
+        agentProviderFailureCategory: initialProviderFailure?.category,
+        agentProviderFailureModel: initialProviderFailure?.model,
+        agentProviderFailureStatusCode: initialProviderFailure?.statusCode,
+      });
+    },
     captureTerminal<T>(capture: (args: T) => void, args: T) {
       const outcome = field(args, "outcome");
       if (
@@ -235,52 +441,42 @@ export function createAgentRunReporting(context: {
         outcome === "error" ||
         outcome === "aborted"
       ) {
+        const firstOutcome = terminalOutcome === undefined;
         terminalOutcome ??= outcome;
         // A failed enqueue must retain observed stream metadata, without
         // accepting arbitrary strings or inventing a natural completion.
-        const finishReason = field(args, "finishReason");
-        if (
-          typeof finishReason === "string" &&
-          [
-            "stop",
-            "length",
-            "content-filter",
-            "tool-calls",
-            "error",
-            "other",
-            "unknown",
-            LOCAL_CONNECTION_LOST_FINISH_REASON,
-          ].includes(finishReason)
-        )
-          terminalFinishReason ??= finishReason;
+        const finishReason = allowed(
+          field(args, "finishReason"),
+          TERMINAL_FINISH_REASONS,
+        );
+        if (finishReason) terminalFinishReason ??= finishReason;
         const stepLimitReached = field(
           field(args, "stepLimitTelemetry"),
           "stepLimitReached",
         );
         if (typeof stepLimitReached === "boolean")
           terminalStepLimitReached ??= stepLimitReached;
-        const abortSource = field(args, "abortSource");
-        if (
-          typeof abortSource === "string" &&
-          [
-            "budget_exhausted",
-            "agent_spend_cap",
-            "elapsed_timeout",
-            "user_wait_timeout",
-            "user_wait_failed",
-            "approval_timeout",
-            "user_stop",
-            "request_cancel",
-            "unknown",
-          ].includes(abortSource)
-        ) {
-          terminalAbortSource ??= abortSource;
-        }
+        const abortSource = allowed(
+          field(args, "abortSource"),
+          TERMINAL_ABORT_SOURCES,
+        );
+        if (abortSource) terminalAbortSource ??= abortSource;
+        if (firstOutcome)
+          setTerminalMetadata(
+            "completion",
+            terminalOutcome,
+            terminalFinishReason,
+            terminalAbortSource,
+          );
       }
+      const modelRecoveryHistory = recoveryHistory();
       once(
         "hackerai-agent_run",
         capture,
-        agentModelContextVariant || localStop || paidAgentContext
+        agentModelContextVariant ||
+          localStop ||
+          paidAgentContext ||
+          modelRecoveryHistory
           ? {
               ...args,
               ...(agentModelContextVariant && {
@@ -289,6 +485,7 @@ export function createAgentRunReporting(context: {
               }),
               ...(localStop && { localConnectionLostError: localStop }),
               ...(paidAgentContext && { paidAgentContext }),
+              ...(modelRecoveryHistory && { modelRecoveryHistory }),
             }
           : args,
       );
@@ -316,6 +513,32 @@ export function createAgentRunReporting(context: {
         usage_trigger_run_cost_dollars?: number;
       } & Record<string, unknown>;
     }) {
+      // A first local stop ends the run like a cancellation, not a failure.
+      const kind =
+        failure?.kind ??
+        (snapshot.canceled || localStop ? "canceled" : "error");
+      const outcome =
+        terminalOutcome ?? (kind === "error" ? "error" : "aborted");
+      // Never relabel an authoritative error as the local stop's finish.
+      const finishReason =
+        terminalFinishReason ??
+        (localStop && outcome === "aborted"
+          ? LOCAL_CONNECTION_LOST_FINISH_REASON
+          : "unknown");
+      const abortSource =
+        outcome === "aborted"
+          ? (terminalAbortSource ??
+            (kind === "usage_limit"
+              ? "budget_exhausted"
+              : kind === "elapsed_timeout"
+                ? "elapsed_timeout"
+                : // Match resolveAgentAbortSource for a local stop.
+                  localStop && !snapshot.canceled
+                  ? "unknown"
+                  : "request_cancel"))
+          : undefined;
+      if (!terminalOutcome)
+        setTerminalMetadata("run_finally", outcome, finishReason, abortSource);
       if (!context.posthog) return;
       const costRecorded = settlementCostCaptured;
       const latestTriggerCost = knownAmount(snapshot.triggerCostDollars);
@@ -359,12 +582,6 @@ export function createAgentRunReporting(context: {
           undefined,
         );
       }
-      // A first local stop ends the run like a cancellation, not a failure.
-      const kind =
-        failure?.kind ??
-        (snapshot.canceled || localStop ? "canceled" : "error");
-      const outcome =
-        terminalOutcome ?? (kind === "error" ? "error" : "aborted");
       const properties = {
         ...(agentModelContextVariant && {
           [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
@@ -394,27 +611,15 @@ export function createAgentRunReporting(context: {
           finalization_trigger_aborted: snapshot.canceled === true,
         }),
         outcome,
-        // Never relabel an authoritative error as the local stop's finish.
-        finish_reason:
-          terminalFinishReason ??
-          (localStop && outcome === "aborted"
-            ? LOCAL_CONNECTION_LOST_FINISH_REASON
-            : "unknown"),
+        finish_reason: finishReason,
         step_limit_reached: terminalStepLimitReached ?? null,
-        ...(outcome === "aborted" && {
-          abort_source:
-            terminalAbortSource ??
-            (kind === "usage_limit"
-              ? "budget_exhausted"
-              : kind === "elapsed_timeout"
-                ? "elapsed_timeout"
-                : // Match resolveAgentAbortSource for a local stop.
-                  localStop && !snapshot.canceled
-                  ? "unknown"
-                  : "request_cancel"),
-        }),
+        ...(abortSource && { abort_source: abortSource }),
         $process_person_profile: false,
       };
+      const modelRecoveryProperties = modelRecoveryAnalyticsProperties(
+        recoveryHistory(),
+        outcome,
+      );
       for (const event of [
         "hackerai-agent_run",
         "hackerai-usage_cost",
@@ -428,8 +633,10 @@ export function createAgentRunReporting(context: {
               event,
               properties: {
                 ...properties,
-                ...(event === "hackerai-agent_run" &&
-                  localStopAnalyticsProperties(localStop)),
+                ...(event === "hackerai-agent_run" && {
+                  ...localStopAnalyticsProperties(localStop),
+                  ...modelRecoveryProperties,
+                }),
                 ...(event === "hackerai-usage_cost"
                   ? {
                       ...snapshot.usageMeasurement,

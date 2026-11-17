@@ -791,19 +791,20 @@ const getFallbackKeys = (
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
-/** Returns the first app-side retry model for a failed provider route. */
+/**
+ * Returns the first app-side retry model for a failed provider route.
+ * `_media` is accepted for existing callers; it no longer changes any route.
+ */
 export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
   selectedModelOverride?: SelectedModel,
-  options: { hasImageInputs?: boolean } = {},
+  _media: { hasImageInputs?: boolean } = {},
 ): ModelName {
-  if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    if (modelName === "model-grok-4.6" && !options.hasImageInputs)
-      return "model-glm-5.3";
-    // Images and the control route retain DeepSeek recovery.
+  // Every Max Agent route, including Grok text, recovers on DeepSeek 1017 with
+  // its own literal max reasoning rather than a lower-reasoning GLM attempt.
+  if (mode === "agent" && selectedModelOverride === "hackerai-max")
     return DEEPSEEK_1017_MODEL_KEY;
-  }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
     return "model-deepseek-v4-pro-0813";
   }
