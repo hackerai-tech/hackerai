@@ -100,9 +100,12 @@ function started(value: string | null) {
 
 export function CloudWorkspaceRegionChoice({
   onRetry,
+  onCancel,
   manage = false,
 }: {
   onRetry?: () => void;
+  /** Dismisses this card only; it never changes the saved selection. */
+  onCancel?: () => void;
   manage?: boolean;
 }) {
   const titleId = useId();
@@ -540,6 +543,16 @@ export function CloudWorkspaceRegionChoice({
               {checking ? "Checking status…" : "Check status"}
             </Button>
           )}
+        {onCancel && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-h-11"
+            onClick={onCancel}
+          >
+            Cancel
+          </Button>
+        )}
       </div>
     </div>
   );

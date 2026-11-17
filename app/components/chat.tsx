@@ -69,6 +69,7 @@ import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
   GoalSubmissionUnconfirmedError,
   isGoalAdmissionRefused,
+  isGoalWorkspaceSelectionRefusal,
 } from "@/lib/chat/goal-submission";
 import {
   cancelAgentLongRealtimeStreams,
@@ -1561,8 +1562,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ) {
         goalAdmissionRef.current.rejected =
           isGoalAdmissionRefused(displayError);
-        goalAdmissionRef.current.error =
-          displayError instanceof ChatSDKError
+        // Keep the structured refusal so the composer can offer the selector.
+        goalAdmissionRef.current.error = isGoalWorkspaceSelectionRefusal(
+          displayError,
+        )
+          ? displayError
+          : displayError instanceof ChatSDKError
             ? new Error(
                 formatTaskUiCopy(
                   typeof displayError.cause === "string"
