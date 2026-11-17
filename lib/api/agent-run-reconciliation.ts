@@ -10,7 +10,7 @@ import { listActiveSubagentsForUser } from "@/lib/db/subagents";
 
 /** Provider reads one request may spend; larger sets stay blocked. */
 const MAX_RECONCILED_PARENT_RUNS = 5;
-const PROVIDER_TIMEOUT_MS = 3_000;
+const OPERATION_TIMEOUT_MS = 3_000;
 
 // CRASHED is deliberately absent: the status route owns its output replay, and
 // clearing the reference here would lose that recoverable progress.
@@ -34,8 +34,8 @@ const withTimeout = async <T>(operation: Promise<T>): Promise<T> => {
       operation,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Error("Trigger request deadline")),
-          PROVIDER_TIMEOUT_MS,
+          () => reject(new Error("Agent reconciliation operation deadline")),
+          OPERATION_TIMEOUT_MS,
         );
       }),
     ]);
@@ -86,7 +86,7 @@ const clearTerminalParentReference = async (
       return false;
 
     // A successor may have replaced the reference since the list was read.
-    const chat = await getChatById({ id: chatId });
+    const chat = await withTimeout(getChatById({ id: chatId }));
     if (
       !chat ||
       chat.user_id !== userId ||
@@ -98,16 +98,18 @@ const clearTerminalParentReference = async (
     await withTimeout(
       closeAgentApprovalSession(approvalSessionId, "agent-run-terminal"),
     );
-    const outcome = await setActiveTriggerRun({
-      chatId,
-      triggerRunId: null,
-      approvalSessionId: null,
-      expectedRunId: triggerRunId,
-      ...(approvalSessionId
-        ? { expectedApprovalSessionId: approvalSessionId }
-        : {}),
-      clearApprovalPending: true,
-    });
+    const outcome = await withTimeout(
+      setActiveTriggerRun({
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: triggerRunId,
+        ...(approvalSessionId
+          ? { expectedApprovalSessionId: approvalSessionId }
+          : {}),
+        clearApprovalPending: true,
+      }),
+    );
     if (outcome !== "updated") return false;
     console.info(
       JSON.stringify({
@@ -134,7 +136,7 @@ const clearTerminalParentReference = async (
 export async function reconcileActiveAgentRuns(
   userId: string,
 ): Promise<"idle" | "active"> {
-  const initial = await readAgentRuns(userId);
+  const initial = await withTimeout(readAgentRuns(userId));
   if (isIdle(initial)) return "idle";
   const { parents, children } = initial;
   // Clearing parents cannot unblock active children or an unbounded set.
@@ -152,5 +154,5 @@ export async function reconcileActiveAgentRuns(
     ),
   );
   if (!cleared.every(Boolean)) return "active";
-  return isIdle(await readAgentRuns(userId)) ? "idle" : "active";
+  return isIdle(await withTimeout(readAgentRuns(userId))) ? "idle" : "active";
 }

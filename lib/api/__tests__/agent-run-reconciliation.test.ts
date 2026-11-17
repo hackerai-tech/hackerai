@@ -16,6 +16,10 @@ type MockRun = { status: string; metadata?: unknown };
 const mockChats = new Map<string, MockChat>();
 const mockActiveChildren: unknown[] = [];
 const mockRuns = new Map<string, MockRun>();
+const mockGetChat = jest.fn(async ({ id }: { id: string }) => {
+  const chat = mockChats.get(id);
+  return chat ? { ...chat } : null;
+});
 const mockRetrieve = jest.fn(async (runId: string): Promise<MockRun> => {
   const run = mockRuns.get(runId);
   if (!run) throw new MockApiError(404);
@@ -85,10 +89,7 @@ jest.mock("@/lib/db/actions", () => ({
       }));
     return { runs: runs.slice(0, 100), hasMore: runs.length > 100 };
   },
-  getChatById: async ({ id }: { id: string }) => {
-    const chat = mockChats.get(id);
-    return chat ? { ...chat } : null;
-  },
+  getChatById: (args: { id: string }) => mockGetChat(args),
   setActiveTriggerRun: (args: Parameters<typeof mockSetActiveTriggerRun>[0]) =>
     mockSetActiveTriggerRun(args),
 }));
@@ -246,6 +247,28 @@ describe("reconcileActiveAgentRuns", () => {
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     expect(mockChats.get("chat-1")?.active_trigger_run_id).toBe("run-old");
   });
+
+  it.each(["read", "write"])(
+    "bounds a stalled database %s and keeps the outcome active",
+    async (operation) => {
+      jest.useFakeTimers();
+      attach("chat-1", "run-old", "session-old");
+      mockRuns.set("run-old", ownedRun("chat-1", "CANCELED"));
+      if (operation === "read")
+        mockGetChat.mockImplementationOnce(() => new Promise(() => {}));
+      else
+        mockSetActiveTriggerRun.mockImplementationOnce(
+          () => new Promise(() => {}),
+        );
+
+      const outcome = reconcileActiveAgentRuns(USER);
+      await jest.advanceTimersByTimeAsync(3_000);
+
+      await expect(outcome).resolves.toBe("active");
+      expect(mockChats.get("chat-1")?.active_trigger_run_id).toBe("run-old");
+      if (operation === "read") expect(mockSessionClose).not.toHaveBeenCalled();
+    },
+  );
 
   it("leaves a successor attached during the status read untouched", async () => {
     attach("chat-1", "run-old", "session-old");
