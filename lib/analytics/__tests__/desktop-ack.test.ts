@@ -47,8 +47,10 @@ import {
 import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationSpawnHintDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
 jest.mock("../client", () => ({
@@ -2877,6 +2879,247 @@ describe("invocation rejection message class", () => {
         ...rejectedKind,
         ...executionAdmission,
       });
+    });
+  });
+
+  describe("spawn OS code hint", () => {
+    const spawnFailed: DesktopInvocationRejectionDiagnostic = {
+      ...rejection,
+      desktop_invocation_rejection_reason: "spawn_failed",
+      desktop_invocation_rejection_adapter: "published_legacy_native",
+    };
+    const hint: DesktopInvocationSpawnHintDiagnostic = {
+      desktop_invocation_spawn_hint_version: 1,
+      desktop_invocation_spawn_os_code_hint: "code_193",
+    };
+    const hintKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
+      );
+
+    it("keeps the pair beside the class and kind through capture and before_send", () => {
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: spawnFailed,
+        invocationSpawnHint: { ...hint, message: "PRIVATE (os error 193)" },
+      });
+      const expected = { ...rejectedKind, ...spawnFailed, ...hint };
+      expect(final?.properties).toMatchObject(expected);
+      const enriched = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties: { ...final!.properties, $current_url: "PRIVATE URL" },
+        $set: { email: "PRIVATE" },
+        $set_once: { email: "PRIVATE" },
+      });
+      expect(enriched.properties).toMatchObject(expected);
+      expect(hintKeys(enriched.properties)).toHaveLength(2);
+      expect(enriched).not.toHaveProperty("$set");
+      expect(enriched).not.toHaveProperty("$set_once");
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    it("keeps an unsampled spawn hint at the diagnostic rate under the same key", () => {
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: spawnFailed,
+        invocationSpawnHint: hint,
+      });
+      expect(final).toMatchObject({
+        dedupeKey: JSON.stringify(["connection", "command"]),
+        properties: {
+          ...spawnFailed,
+          ...hint,
+          telemetry_sampled: false,
+          telemetry_sample_rate: 1,
+        },
+      });
+      expect(capture.mock.calls.map(([event]) => event.event)).not.toContain(
+        "desktop_ack_command_started",
+      );
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "a missing version",
+        { desktop_invocation_spawn_hint_version: undefined },
+      ],
+      ["a string version", { desktop_invocation_spawn_hint_version: "1" }],
+      ["an unsupported version", { desktop_invocation_spawn_hint_version: 2 }],
+      ["a missing hint", { desktop_invocation_spawn_os_code_hint: undefined }],
+      ["an unlisted code", { desktop_invocation_spawn_os_code_hint: "code_4" }],
+      [
+        "a raw suffix",
+        { desktop_invocation_spawn_os_code_hint: "PRIVATE (os error 2)" },
+      ],
+    ])("drops only the hint pair for %s", (_case, change) => {
+      const invalid = { ...hint, ...change };
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: spawnFailed,
+        invocationSpawnHint: invalid,
+      });
+      expect(final?.properties).toMatchObject({
+        ...rejectedKind,
+        ...spawnFailed,
+      });
+      expect(hintKeys(final!.properties)).toEqual([]);
+      expect(
+        sanitize({
+          terminalType: "error",
+          ...rejectedKind,
+          ...spawnFailed,
+          ...invalid,
+        }),
+      ).toEqual({ terminalType: "error", ...rejectedKind, ...spawnFailed });
+      expect(JSON.stringify(final)).not.toContain("PRIVATE");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["another class", { invocationRejection: rejection }],
+      [
+        "an admission class",
+        {
+          invocationRejection: {
+            ...spawnFailed,
+            desktop_invocation_rejection_reason: "execution_admission",
+          },
+        },
+      ],
+      [
+        "an unselected class",
+        {
+          invocationRejection: {
+            ...spawnFailed,
+            desktop_invocation_rejection_reason: "unknown",
+            desktop_invocation_rejection_adapter: "not_selected",
+          },
+        },
+      ],
+      [
+        "an invalid class",
+        {
+          invocationRejection: {
+            ...spawnFailed,
+            desktop_invocation_rejection_adapter: "not_selected",
+          },
+        },
+      ],
+      ["no class", { invocationRejection: undefined }],
+      [
+        "a native process kind",
+        {
+          terminalError: {
+            ...rejectedKind,
+            desktop_terminal_error_kind: "native_process_error",
+          },
+        },
+      ],
+      ["a nonzero exit", { terminalType: "exit", terminalExitCode: 127 }],
+    ])("never attaches the pair to %s", (_case, change) => {
+      const settlement = {
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: spawnFailed,
+        invocationSpawnHint: hint,
+        ...change,
+      };
+      const final = settle(settlement);
+      expect(hintKeys(final!.properties)).toEqual([]);
+      const {
+        terminalError: kind,
+        invocationRejection,
+        invocationSpawnHint,
+        ...rest
+      } = settlement;
+      const sanitized = sanitize({
+        ...rest,
+        ...(kind as object),
+        ...(invocationRejection as object),
+        ...(invocationSpawnHint as object),
+      });
+      expect(hintKeys(sanitized)).toEqual([]);
+      // The coarse class is unaffected by the pair it did not admit.
+      expect(rejectionKeys(sanitized)).toEqual(
+        rejectionKeys(final!.properties),
+      );
+    });
+
+    it("never attaches the pair to a start or summary", () => {
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          hintKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: {
+                terminalType: "error",
+                ...rejectedKind,
+                ...spawnFailed,
+                ...hint,
+              },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("strips hostile hint keys before any value access at capture or before_send", () => {
+      let reads = 0;
+      const withAccessors = (target: Record<string, unknown>) => {
+        for (const key of DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES)
+          Object.defineProperty(target, key, {
+            enumerable: true,
+            get() {
+              reads++;
+              return key.endsWith("version") ? 1 : "code_2";
+            },
+          });
+        return target;
+      };
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: spawnFailed,
+        invocationSpawnHint: withAccessors({}),
+      });
+      expect(final?.properties).toMatchObject(spawnFailed);
+      expect(hintKeys(final!.properties)).toEqual([]);
+      // Both inside and outside the gate, a raw key is never read or kept.
+      for (const coarse of [spawnFailed, rejection]) {
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: withAccessors({
+            terminalType: "error",
+            ...rejectedKind,
+            ...coarse,
+          }),
+        }).properties!;
+        expect(sanitized).toEqual({
+          terminalType: "error",
+          ...rejectedKind,
+          ...coarse,
+        });
+      }
+      // An inherited pair is not the event's own data.
+      const inherited = Object.assign(Object.create(hint as object), {
+        terminalType: "error",
+        ...rejectedKind,
+        ...spawnFailed,
+      }) as Record<string, unknown>;
+      expect(
+        hintKeys(
+          sanitizeDesktopAckEvent({
+            event: "desktop_ack_command_settled",
+            properties: inherited,
+          }).properties,
+        ),
+      ).toEqual([]);
+      expect(reads).toBe(0);
     });
   });
 });

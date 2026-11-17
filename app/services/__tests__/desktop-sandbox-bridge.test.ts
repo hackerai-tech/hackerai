@@ -22,6 +22,7 @@ import { DESKTOP_TERMINAL_ERROR_PROPERTIES } from "@/lib/analytics/desktop-termi
 import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
@@ -9650,8 +9651,18 @@ describe("native authorization send receipt", () => {
         (key) =>
           DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) ||
           DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) ||
+          DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key) ||
           DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
       );
+    const spawnHintOf = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).some((key) =>
+        DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
+      )
+        ? {
+            version: properties.desktop_invocation_spawn_hint_version,
+            hint: properties.desktop_invocation_spawn_os_code_hint,
+          }
+        : null;
     const rejectionOf = (properties: Record<string, unknown> = {}) =>
       Object.keys(properties).some((key) =>
         DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
@@ -9672,13 +9683,17 @@ describe("native authorization send receipt", () => {
           }
         : null;
 
-    it.each<[string, string, unknown, string, string, string | null]>([
+    // Every row names its hint: a shorter row would make Jest pass `done`.
+    it.each<
+      [string, string, unknown, string, string, string | null, string | null]
+    >([
       [
         "a reported 0.0.73 approval rejection",
         "0.0.73",
         "Desktop operation was not authorized",
         "authorization_not_approved",
         "authorized_native",
+        null,
         null,
       ],
       [
@@ -9688,6 +9703,7 @@ describe("native authorization send receipt", () => {
         "authorization_id_invalid",
         "authorized_native",
         null,
+        null,
       ],
       [
         "a current spawn failure",
@@ -9696,6 +9712,25 @@ describe("native authorization send receipt", () => {
         "spawn_failed",
         "authorized_native",
         null,
+        "code_2",
+      ],
+      [
+        "a spawn failure with an unlisted OS code",
+        "0.0.80",
+        "Failed to spawn: PRIVATE (os error 4)",
+        "spawn_failed",
+        "authorized_native",
+        null,
+        "unrecognized",
+      ],
+      [
+        "a spawn failure without an OS code",
+        "0.0.80",
+        new Error("Failed to spawn: PRIVATE"),
+        "spawn_failed",
+        "authorized_native",
+        null,
+        "unrecognized",
       ],
       [
         "an unlisted rejection",
@@ -9704,14 +9739,16 @@ describe("native authorization send receipt", () => {
         "unknown",
         "authorized_native",
         null,
+        null,
       ],
       [
         "a published legacy spawn failure",
         "0.0.72",
-        spawn,
+        "Failed to spawn: PRIVATE (os error 193)",
         "spawn_failed",
         "published_legacy_native",
         null,
+        "code_193",
       ],
       // The six fixed execution admission templates, as Tauri rejects them.
       [
@@ -9721,6 +9758,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "update_state_unavailable",
+        null,
       ],
       [
         "an update installing rejection",
@@ -9729,6 +9767,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "update_installing",
+        null,
       ],
       [
         "a stdin limit rejection",
@@ -9737,6 +9776,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "stdin_size_limit",
+        null,
       ],
       [
         "a stdin encoding rejection",
@@ -9745,6 +9785,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "stdin_encoding_invalid",
+        null,
       ],
       [
         "a poisoned command state rejection",
@@ -9753,6 +9794,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "command_state_lock_poisoned",
+        null,
       ],
       [
         "a duplicate command rejection",
@@ -9761,6 +9803,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "command_already_running",
+        null,
       ],
       [
         "a published legacy Error admission rejection",
@@ -9769,6 +9812,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "published_legacy_native",
         "stdin_size_limit",
+        null,
       ],
       [
         "a changed admission template",
@@ -9777,10 +9821,11 @@ describe("native authorization send receipt", () => {
         "unknown",
         "authorized_native",
         null,
+        null,
       ],
     ])(
       "classifies %s without changing the product frame",
-      async (_case, version, rejection, reason, adapter, admission) => {
+      async (_case, version, rejection, reason, adapter, admission, hint) => {
         const message =
           rejection instanceof Error ? rejection.message : String(rejection);
         const { calls, replies } = await run(() => Promise.reject(rejection), {
@@ -9815,6 +9860,9 @@ describe("native authorization send receipt", () => {
         expect(admissionOf(final.properties)).toEqual(
           admission && { version: 1, reason: admission },
         );
+        expect(spawnHintOf(final.properties)).toEqual(
+          hint ? { version: 1, hint } : null,
+        );
         const enriched = sanitizeDesktopAckEvent({
           ...final,
           properties: { ...final.properties, $current_url: "PRIVATE" },
@@ -9825,85 +9873,137 @@ describe("native authorization send receipt", () => {
         expect(admissionOf(enriched.properties)).toEqual(
           admissionOf(final.properties),
         );
+        expect(spawnHintOf(enriched.properties)).toEqual(
+          spawnHintOf(final.properties),
+        );
         const serialized = JSON.stringify([captures(), enriched]);
         expect(serialized).not.toContain("PRIVATE");
         expect(serialized).not.toContain(message);
       },
     );
 
-    it("reads the rejection's own message once for both classes", async () => {
-      const message = "Invalid command stdin encoding";
-      let descriptorReads = 0;
-      const rejection = new Proxy(new Error(message), {
-        getOwnPropertyDescriptor(target, key) {
-          if (key === "message") descriptorReads++;
-          return Reflect.getOwnPropertyDescriptor(target, key);
-        },
+    it.each<[string, string, object | null, object | null]>([
+      [
+        "Invalid command stdin encoding",
+        "execution_admission",
+        { version: 1, reason: "stdin_encoding_invalid" },
+        null,
+      ],
+      [
+        "Failed to spawn: PRIVATE (os error 267)",
+        "spawn_failed",
+        null,
+        { version: 1, hint: "code_267" },
+      ],
+    ])(
+      "reads the rejection's own message %p once for every class",
+      async (message, reason, admission, hint) => {
+        let descriptorReads = 0;
+        const rejection = new Proxy(new Error(message), {
+          getOwnPropertyDescriptor(target, key) {
+            if (key === "message") descriptorReads++;
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        });
+        const { replies } = await run(() => Promise.reject(rejection));
+        // The product frame still takes the existing message read.
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message }),
+        ]);
+        expect(descriptorReads).toBe(1);
+        expect(rejectionOf(finals()[0].properties)).toEqual({
+          version: 1,
+          reason,
+          adapter: "authorized_native",
+        });
+        expect(admissionOf(finals()[0].properties)).toEqual(admission);
+        expect(spawnHintOf(finals()[0].properties)).toEqual(hint);
+      },
+    );
+
+    it("keeps an unsampled first spawn rejection at the diagnostic rate", async () => {
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+      try {
+        await run(() => reject(spawn));
+      } finally {
+        jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
+      }
+      expect(
+        captures().filter(
+          (event) => event.event === "desktop_ack_command_started",
+        ),
+      ).toEqual([]);
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0]).toMatchObject({
+        dedupeKey: JSON.stringify(["conn-123", "auth-send"]),
+        properties: { telemetry_sampled: false, telemetry_sample_rate: 1 },
       });
-      const { replies } = await run(() => Promise.reject(rejection));
-      // The product frame still takes the existing message read.
-      expect(sequencedFrames(replies[0])).toEqual([
-        expect.objectContaining({ type: "error", message }),
-      ]);
-      expect(descriptorReads).toBe(1);
-      expect(rejectionOf(finals()[0].properties)).toEqual({
+      expect(spawnHintOf(finals()[0].properties)).toEqual({
         version: 1,
-        reason: "execution_admission",
-        adapter: "authorized_native",
-      });
-      expect(admissionOf(finals()[0].properties)).toEqual({
-        version: 1,
-        reason: "stdin_encoding_invalid",
+        hint: "code_2",
       });
     });
 
-    it("reports the compatibility command set when only the legacy command rejects", async () => {
-      const { calls } = await run(async (call) => {
-        if (call.cmd === "execute_authorized_stream_command")
-          throw "Command execute_authorized_stream_command not found";
-        return reject(running);
-      });
-      expect(calls.map((call) => call.cmd)).toEqual([
-        "execute_authorized_stream_command",
-        "execute_stream_command",
-      ]);
-      expect(rejectionOf(finals()[0].properties)).toEqual({
-        version: 1,
-        reason: "execution_admission",
-        adapter: "compatibility_native",
-      });
-      expect(admissionOf(finals()[0].properties)).toEqual({
-        version: 1,
-        reason: "command_already_running",
-      });
-    });
+    it.each<[string, string, object | null, object | null]>([
+      [
+        running,
+        "execution_admission",
+        { version: 1, reason: "command_already_running" },
+        null,
+      ],
+      [spawn, "spawn_failed", null, { version: 1, hint: "code_2" }],
+    ])(
+      "reports the compatibility command set when only the legacy command rejects with %p",
+      async (message, reason, admission, hint) => {
+        const { calls } = await run(async (call) => {
+          if (call.cmd === "execute_authorized_stream_command")
+            throw "Command execute_authorized_stream_command not found";
+          return reject(message);
+        });
+        expect(calls.map((call) => call.cmd)).toEqual([
+          "execute_authorized_stream_command",
+          "execute_stream_command",
+        ]);
+        expect(rejectionOf(finals()[0].properties)).toEqual({
+          version: 1,
+          reason,
+          adapter: "compatibility_native",
+        });
+        expect(admissionOf(finals()[0].properties)).toEqual(admission);
+        expect(spawnHintOf(finals()[0].properties)).toEqual(hint);
+      },
+    );
 
-    it("never reads an admission class before a command set is selected", async () => {
-      const { calls, replies } = await run(
-        async () => {
-          throw new Error("native command must not be invoked");
-        },
-        {
-          afterStart: (bridge) =>
-            Object.defineProperty(bridge, "nativeVersionLookup", {
-              configurable: true,
-              get() {
-                throw new Error(running);
-              },
-            }),
-        },
-      );
-      expect(calls).toEqual([]);
-      expect(sequencedFrames(replies[0])).toEqual([
-        expect.objectContaining({ type: "error", message: running }),
-      ]);
-      expect(rejectionOf(finals()[0].properties)).toEqual({
-        version: 1,
-        reason: "unknown",
-        adapter: "not_selected",
-      });
-      expect(admissionOf(finals()[0].properties)).toBeNull();
-    });
+    it.each([running, spawn])(
+      "never reads a refinement of %p before a command set is selected",
+      async (message) => {
+        const { calls, replies } = await run(
+          async () => {
+            throw new Error("native command must not be invoked");
+          },
+          {
+            afterStart: (bridge) =>
+              Object.defineProperty(bridge, "nativeVersionLookup", {
+                configurable: true,
+                get() {
+                  throw new Error(message);
+                },
+              }),
+          },
+        );
+        expect(calls).toEqual([]);
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message }),
+        ]);
+        expect(rejectionOf(finals()[0].properties)).toEqual({
+          version: 1,
+          reason: "unknown",
+          adapter: "not_selected",
+        });
+        expect(admissionOf(finals()[0].properties)).toBeNull();
+        expect(spawnHintOf(finals()[0].properties)).toBeNull();
+      },
+    );
 
     it("reports unknown and not_selected when the helper fails before selecting a command set", async () => {
       const lookupFailure = "PRIVATE pre-selection failure";
@@ -9997,83 +10097,120 @@ describe("native authorization send receipt", () => {
       },
     );
 
-    it.each<[string, (call: NativeCall) => void, Record<string, unknown>]>([
+    it.each<
+      [string, (call: NativeCall) => void, string, Record<string, unknown>]
+    >([
       [
         "a native exit",
         (call) => emit(call, { type: "exit", exitCode: 0 }),
+        running,
         { terminalType: "exit", terminalExitCode: 0 },
       ],
       [
         "a native timeout event",
         (call) => emit(call, { type: "error", message: timeout }),
+        running,
         {
           terminalType: "error",
           desktop_terminal_error_kind: "native_command_timeout",
         },
       ],
+      // A missing command still spawns its shell, which exits nonzero.
+      [
+        "a nonzero native exit",
+        (call) => emit(call, { type: "exit", exitCode: 127 }),
+        spawn,
+        { terminalType: "exit", terminalExitCode: 127 },
+      ],
+      [
+        "a native process error",
+        (call) => emit(call, { type: "error", message: "Process error: x" }),
+        spawn,
+        {
+          terminalType: "error",
+          desktop_terminal_error_kind: "native_process_error",
+        },
+      ],
     ])(
       "never attaches a rejection that follows %s",
-      async (_case, first, expected) => {
-        // An attachable class and admission pair, were it the first terminal.
+      async (_case, first, message, expected) => {
+        // An attachable class and refinement, were it the first terminal.
         await run(async (call) => {
           first(call);
-          return reject(running);
+          return reject(message);
         });
         expect(finals()).toHaveLength(1);
         expect(finals()[0].properties).toMatchObject(expected);
         expect(rejectionOf(finals()[0].properties)).toBeNull();
         expect(admissionOf(finals()[0].properties)).toBeNull();
+        expect(spawnHintOf(finals()[0].properties)).toBeNull();
       },
     );
 
-    it("drops a rejection observed under another analytics owner", async () => {
-      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
-      try {
+    it.each([running, spawn])(
+      "drops a rejection %p observed under another analytics owner",
+      async (message) => {
+        const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+        try {
+          await run(
+            async () => {
+              identity.mockReturnValue("another-user");
+              return reject(message);
+            },
+            {
+              beforeAck: async () => {
+                identity.mockReturnValue("user-456");
+              },
+            },
+          );
+          // The existing ACK owner gate still emits the original owner's final.
+          expect(finals()).toHaveLength(1);
+          expect(finals()[0].properties).toMatchObject({
+            terminalType: "error",
+          });
+          expect(groupKeys(finals()[0].properties)).toEqual([]);
+        } finally {
+          identity.mockReturnValue("user-456");
+        }
+      },
+    );
+
+    it.each<[string, string]>([
+      ["bridge stop", running],
+      ["bridge stop", spawn],
+      ["transport disconnect", spawn],
+      ["replacement connection", spawn],
+    ])(
+      "never attaches a rejection that arrives after %s (%p)",
+      async (mode, message) => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
         await run(
           async () => {
-            identity.mockReturnValue("another-user");
-            return reject(running);
+            await pending;
+            return reject(message);
           },
           {
-            beforeAck: async () => {
-              identity.mockReturnValue("user-456");
+            beforeAck: async (bridge) => {
+              if (mode === "transport disconnect")
+                getClientHandler("disconnected")({ code: 1, reason: "closed" });
+              else await bridge.stop();
+              if (mode === "replacement connection") await bridge.start();
+              release();
+              await jest.advanceTimersByTimeAsync(0);
             },
           },
         );
-        // The existing ACK owner gate still emits the original owner's final.
         expect(finals()).toHaveLength(1);
-        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(finals()[0].properties).toMatchObject({
+          outcome: "incomplete",
+          reason: "stopped",
+        });
         expect(groupKeys(finals()[0].properties)).toEqual([]);
-      } finally {
-        identity.mockReturnValue("user-456");
-      }
-    });
-
-    it("never attaches a rejection that arrives after bridge stop", async () => {
-      let release!: () => void;
-      const pending = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      await run(
-        async () => {
-          await pending;
-          return reject(running);
-        },
-        {
-          beforeAck: async (bridge) => {
-            await bridge.stop();
-            release();
-            await jest.advanceTimersByTimeAsync(0);
-          },
-        },
-      );
-      expect(finals()).toHaveLength(1);
-      expect(finals()[0].properties).toMatchObject({
-        outcome: "incomplete",
-        reason: "stopped",
-      });
-      expect(groupKeys(finals()[0].properties)).toEqual([]);
-    });
+      },
+    );
   });
 
   it.each<
