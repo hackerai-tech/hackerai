@@ -24,6 +24,7 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
+  isDraftGoalModeById,
   upsertDraft,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
@@ -4673,11 +4674,13 @@ describe("ChatInput - Integration Tests", () => {
       ).not.toBeInTheDocument();
     });
 
-    it.each(["refused", "accepted"] as const)(
+    it.each(["refused", "accepted", "unconfirmed"] as const)(
       "keeps a new-chat goal draft through a transient optimistic message that is %s",
       async (outcome) => {
         // Mirrors chat.tsx: the optimistic user message makes the new chat
-        // non-empty while admission is pending, then a refusal removes it.
+        // non-empty while admission is pending. A refusal removes it; an
+        // unconfirmed start keeps it because the turn may have been saved.
+        const toastInfo = jest.spyOn(toast, "info").mockReturnValue(0);
         let settle!: () => void;
         const OptimisticNewChat = () => {
           const { clearUploadedFiles } = useGlobalState();
@@ -4704,8 +4707,17 @@ describe("ChatInput - Integration Tests", () => {
                         resolve(true);
                         return;
                       }
-                      setHasMessages(false);
                       setStatus("ready");
+                      if (outcome === "unconfirmed") {
+                        reject(
+                          new GoalSubmissionUnconfirmedError(
+                            true,
+                            "fresh-goal-chat",
+                          ),
+                        );
+                        return;
+                      }
+                      setHasMessages(false);
                       reject(refusal());
                     };
                   })
@@ -4740,17 +4752,72 @@ describe("ChatInput - Integration Tests", () => {
           ).toBeVisible();
           expect(getDraftContentById("new")).toBe("Map the lab app");
           expect(getDraftAttachmentsById("new")).toHaveLength(1);
+        } else if (outcome === "unconfirmed") {
+          // The draft now belongs to the possibly-started chat. It keeps its
+          // text, files and Goal mode, and offers no workspace Retry.
+          await waitFor(() =>
+            expect(toastInfo).toHaveBeenCalledWith(
+              expect.stringContaining("Your draft is kept."),
+              expect.any(Object),
+            ),
+          );
+          expect(input).toHaveValue("Map the lab app");
+          expect(screen.getByText("scope-lab.txt")).toBeVisible();
+          expect(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          ).toBeVisible();
+          expect(
+            screen.queryByRole("group", {
+              name: "Choose your cloud workspace",
+            }),
+          ).not.toBeInTheDocument();
+          expect(getDraftContentById("fresh-goal-chat")).toBe(
+            "Map the lab app",
+          );
+          expect(getDraftAttachmentsById("fresh-goal-chat")).toHaveLength(1);
+          expect(isDraftGoalModeById("fresh-goal-chat")).toBe(true);
+          expect(isDraftGoalModeById("new")).toBe(false);
         } else {
-          // An admitted start still leaves no stale new-chat draft behind.
+          // An admitted start still leaves no stale new-chat draft behind,
+          // and does not carry Goal mode into the started chat's composer.
           await waitFor(() => expect(input).toHaveValue(""));
           expect(screen.queryByText("scope-lab.txt")).not.toBeInTheDocument();
+          expect(
+            screen.queryByRole("button", { name: "Exit goal mode" }),
+          ).not.toBeInTheDocument();
           expect(getDraftContentById("new")).toBeNull();
           expect(getDraftAttachmentsById("new")).toEqual([]);
           expect(getDraftContentById("fresh-goal-chat")).toBeNull();
           expect(getDraftAttachmentsById("fresh-goal-chat")).toEqual([]);
+          expect(isDraftGoalModeById("new")).toBe(false);
+          expect(isDraftGoalModeById("fresh-goal-chat")).toBe(false);
         }
       },
     );
+
+    it("discards a late refusal after leaving and returning to the same chat", async () => {
+      let refuseLate!: () => void;
+      mockOnSubmit.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            refuseLate = () => reject(refusal());
+          }),
+      );
+      const view = renderGoalComposer("round-trip-chat");
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      // Same chat, mode and environment again, but a different visit.
+      view.switchChat("other-chat");
+      view.switchChat("round-trip-chat");
+      expect(
+        await screen.findByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+      await act(async () => refuseLate());
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+    });
 
     it("dismisses the workspace retry when Goal mode is exited, keeping the draft", async () => {
       mockOnSubmit.mockRejectedValueOnce(refusal());

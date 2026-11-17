@@ -32,8 +32,10 @@ import {
 import {
   getDraftAttachmentsById,
   getDraftContentById,
+  isDraftGoalModeById,
   removeDraft,
   removeDraftAttachments,
+  setDraftGoalMode,
   upsertDraftAttachments,
   type ConversationDraftAttachment,
 } from "@/lib/utils/client-storage";
@@ -592,6 +594,9 @@ const ChatInputContent = ({
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);
+  // A new chat whose unconfirmed goal start kept its message; its Goal mode
+  // moves with the draft when the composer adopts that chat.
+  const goalCarryChatIdRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
@@ -815,6 +820,14 @@ const ChatInputContent = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      // Runs before useComposerGoalMode reads the adopted draft's flag.
+      if (goalCarryChatIdRef.current === draftId) {
+        goalCarryChatIdRef.current = null;
+        if (isDraftGoalModeById("new")) {
+          setDraftGoalMode(draftId, true);
+          setDraftGoalMode("new", false);
+        }
+      }
       if (isSubmittingAttachmentsRef.current) {
         uploadedFilesRef.current = [];
         removeDraft("new");
@@ -991,11 +1004,16 @@ const ChatInputContent = ({
     goalMode,
   ]);
   const workspaceRecoveryScopeRef = useRef(workspaceRecoveryScope);
+  // Counts scope changes, so leaving and returning to an identical scope still
+  // invalidates a refusal that arrives late from the earlier visit.
+  const workspaceRecoveryGenerationRef = useRef(0);
   const [workspaceRecovery, setWorkspaceRecovery] = useState<{
     scope: string;
     attempt: number;
   } | null>(null);
   useEffect(() => {
+    if (workspaceRecoveryScopeRef.current !== workspaceRecoveryScope)
+      workspaceRecoveryGenerationRef.current += 1;
     workspaceRecoveryScopeRef.current = workspaceRecoveryScope;
     setWorkspaceRecovery((current) =>
       current && current.scope !== workspaceRecoveryScope ? null : current,
@@ -1360,6 +1378,8 @@ const ChatInputContent = ({
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
       const submittedScope = workspaceRecoveryScope;
+      const submittedGeneration = workspaceRecoveryGenerationRef.current;
+      goalCarryChatIdRef.current = null;
       const submittedDraftAttachments = JSON.stringify(
         getDraftAttachmentsById(draftId),
       );
@@ -1442,7 +1462,8 @@ const ChatInputContent = ({
           // only where this request came from.
           if (
             isMountedRef.current &&
-            workspaceRecoveryScopeRef.current === submittedScope
+            workspaceRecoveryScopeRef.current === submittedScope &&
+            workspaceRecoveryGenerationRef.current === submittedGeneration
           )
             setWorkspaceRecovery((current) => ({
               scope: submittedScope,
@@ -1468,6 +1489,10 @@ const ChatInputContent = ({
           setSubmissionPending(false);
           // An admitted chat now moves to its own draft; the existing
           // new-chat transition clears the submitted draft at that point.
+          // If Goal mode is still on (the start was not confirmed and its
+          // message stays), that draft keeps Goal mode as it moves too.
+          if (draftId === "new" && chatId && isDraftGoalModeById("new"))
+            goalCarryChatIdRef.current = chatId;
           setPendingNewChatSubmission(null);
         }
       }
