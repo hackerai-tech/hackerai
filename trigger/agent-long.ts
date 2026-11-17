@@ -47,6 +47,7 @@ import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -3634,9 +3635,12 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
+                // A failed local safety read ended this leg; a stale step
+                // finish reason must not admit it to completion judging.
                 if (
                   activeGoal &&
                   !userStopSignal.signal.aborted &&
+                  !isTrustedBrowserHandoffReadFailure(state.providerError) &&
                   ["stop", "tool-calls"].includes(
                     state.streamFinishReason ?? "",
                   )
@@ -4546,16 +4550,22 @@ export const agentLongTask = task({
                 retryAborted = true;
                 state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
               }
-              const finalization = classifyAgentRetryFinalization({
-                messages: retryMessages.map((message) =>
-                  message.role === "assistant"
-                    ? stripAgentLongHeartbeatParts(message)
-                    : message,
-                ),
-                finishReason: state.streamFinishReason,
-                finishContinuationAttempted,
-                aborted: retryAborted || userStopSignal.signal.aborted,
-              });
+              // A failed local safety read already ended this leg; it is
+              // neither a provider empty answer nor a finished continuation.
+              const finalization = isTrustedBrowserHandoffReadFailure(
+                state.providerError,
+              )
+                ? undefined
+                : classifyAgentRetryFinalization({
+                    messages: retryMessages.map((message) =>
+                      message.role === "assistant"
+                        ? stripAgentLongHeartbeatParts(message)
+                        : message,
+                    ),
+                    finishReason: state.streamFinishReason,
+                    finishContinuationAttempted,
+                    aborted: retryAborted || userStopSignal.signal.aborted,
+                  });
               if (finalization === "finish_continuation_limit") {
                 appendAgentFinishContinuationLimit(
                   retryMessages,
@@ -4793,6 +4803,7 @@ export const agentLongTask = task({
               if (
                 !isRetryWithFallback &&
                 !userStopSignal.signal.aborted &&
+                !isTrustedBrowserHandoffReadFailure(error) &&
                 (shouldRecoverAbliterationApiError ||
                   (isProviderApiError(error) &&
                     !isInvalidImageInputError(error) &&
@@ -4899,6 +4910,9 @@ export const agentLongTask = task({
                   createRecoverableProviderErrorFilter(
                     () =>
                       !isRetryWithFallback &&
+                      !isTrustedBrowserHandoffReadFailure(
+                        state.providerError,
+                      ) &&
                       shouldRetryAbliterationError(
                         activeAbliteratedExperiment,
                         activeModelName,
@@ -5178,7 +5192,13 @@ export const agentLongTask = task({
                         alreadyRetried: isRetryWithFallback,
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
+                        // Provider recovery cannot repair a failed local
+                        // browser safety read, whichever error recorded it.
                         hasCandidate:
+                          !isTrustedBrowserHandoffReadFailure(
+                            streamError,
+                            state.providerError,
+                          ) &&
                           !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
                           (!loopTriggeredRetry ||
@@ -5648,6 +5668,10 @@ export const agentLongTask = task({
                                         (message.parts?.length ?? 0) > 0,
                                     );
                                   const nextContinuation =
+                                    !isTrustedBrowserHandoffReadFailure(
+                                      streamError,
+                                      state.providerError,
+                                    ) &&
                                     isTerminalProviderStreamError(state) &&
                                     isRetriableProviderStreamDisconnectError(
                                       state.providerError,
@@ -5881,10 +5905,13 @@ export const agentLongTask = task({
                         state.streamFinishReason =
                           LOCAL_CONNECTION_LOST_FINISH_REASON;
                       }
+                      // A failed local safety read is the terminal error; a
+                      // stale "stop" must not replace it with a provider empty answer.
                       if (
                         terminalEmptyResponse &&
                         !isAborted &&
-                        !userStopSignal.signal.aborted
+                        !userStopSignal.signal.aborted &&
+                        !isTrustedBrowserHandoffReadFailure(state.providerError)
                       ) {
                         state.streamFinishReason = "error";
                         state.providerError = new Error(
