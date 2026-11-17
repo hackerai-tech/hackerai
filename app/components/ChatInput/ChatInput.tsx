@@ -43,7 +43,11 @@ import {
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
+import { CloudWorkspaceRegionChoice } from "../CloudWorkspaceRegionChoice";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
@@ -965,6 +969,30 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
+  // A workspace-selection refusal belongs to the chat, environment and Goal
+  // mode that sent it. Any change there makes its Retry unsafe (for example,
+  // a goal Retry becoming an ordinary send), so drop the selector.
+  const workspaceRecoveryScope = JSON.stringify([
+    chatId ?? null,
+    chatMode,
+    sandboxPreference ?? null,
+    goalMode,
+  ]);
+  const workspaceRecoveryScopeRef = useRef(workspaceRecoveryScope);
+  const [workspaceRecovery, setWorkspaceRecovery] = useState<{
+    scope: string;
+    attempt: number;
+  } | null>(null);
+  useEffect(() => {
+    workspaceRecoveryScopeRef.current = workspaceRecoveryScope;
+    setWorkspaceRecovery((current) =>
+      current && current.scope !== workspaceRecoveryScope ? null : current,
+    );
+  }, [workspaceRecoveryScope]);
+  const clearWorkspaceRecovery = (scope: string) =>
+    setWorkspaceRecovery((current) =>
+      current?.scope === scope ? null : current,
+    );
   const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
   const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
     useState<string | null>(null);
@@ -1318,6 +1346,7 @@ const ChatInputContent = ({
       setSubmissionPending(true);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
+      const submittedScope = workspaceRecoveryScope;
       const submittedDraftAttachments = JSON.stringify(
         getDraftAttachmentsById(draftId),
       );
@@ -1345,6 +1374,8 @@ const ChatInputContent = ({
             accepted === false ? "submit_refused" : "submit_accepted",
           );
         finishPredictionSubmission(accepted !== false);
+        if (accepted !== false && isMountedRef.current)
+          clearWorkspaceRecovery(submittedScope);
         // Keep starters collapsed before the history list reflects this chat.
         if (accepted !== false) chatStarters?.markFirstSubmission();
         if (accepted !== false && isGoalSubmission) setGoalMode(false);
@@ -1388,9 +1419,26 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
-        starterSubmission.settle("error");
+        const workspaceRefusal = isGoalWorkspaceSelectionRefusal(error);
+        starterSubmission.settle(workspaceRefusal ? "refused" : "error");
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
+        if (workspaceRefusal) {
+          if (isGoalSubmission) captureGoalComposerAction("submit_refused");
+          // Nothing was admitted: keep the draft and offer the selector, but
+          // only where this request came from.
+          if (
+            isMountedRef.current &&
+            workspaceRecoveryScopeRef.current === submittedScope
+          )
+            setWorkspaceRecovery((current) => ({
+              scope: submittedScope,
+              attempt: (current?.attempt ?? 0) + 1,
+            }));
+          return;
+        }
+        // An unconfirmed or failed retry must not keep inviting another one.
+        if (isMountedRef.current) clearWorkspaceRecovery(submittedScope);
         if (error instanceof GoalSubmissionUnconfirmedError) {
           reportUnconfirmedGoalSubmission(error);
           return;
@@ -1471,6 +1519,20 @@ const ChatInputContent = ({
           className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
+          {workspaceRecovery?.scope === workspaceRecoveryScope && (
+            <div className="mb-2 bg-background">
+              <CloudWorkspaceRegionChoice
+                // Each refusal reloads the options with a fresh token.
+                key={workspaceRecovery.attempt}
+                onRetry={() =>
+                  void handleSubmit({
+                    preventDefault: () => {},
+                  } as React.FormEvent)
+                }
+                onCancel={() => clearWorkspaceRecovery(workspaceRecoveryScope)}
+              />
+            </div>
+          )}
           {isOffline && (
             <div
               role="status"
