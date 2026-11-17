@@ -33,8 +33,9 @@ const linuxOnly =
         skip: "requires Linux /proc and coreutils timeout; CI runs this on Linux",
       };
 
-// Helper budget is 5s plus a 1s SIGKILL grace. The watchdog leaves headroom for
-// slow runners while still failing a hung installation well before CI limits.
+// Each helper has a hard 5s deadline; its whole process group is killed then.
+// The watchdog leaves headroom for slow runners while still failing a hung
+// installation well before CI limits.
 const watchdogMs = 15_000;
 const helperBudgetMs = 5_000;
 
@@ -277,8 +278,8 @@ for (const stalled of ["update-desktop-database", "xdg-mime"]) {
 
       const pids = fixture.recordedPids();
       assert.equal(pids.length, 2, "stalled helper and its child both started");
-      // SIGKILL delivery to the helper group completes asynchronously after
-      // timeout itself exits, so wait for it with a bounded observable check.
+      // Group members killed by SIGKILL can finish exiting after the script
+      // continues, so wait for them with a bounded observable check.
       const deadline = performance.now() + 2_000;
       while (pids.some(isRunning) && performance.now() < deadline) {
         await delay(10);
