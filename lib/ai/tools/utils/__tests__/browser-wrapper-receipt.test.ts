@@ -1,8 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BROWSER_WRAPPER_COMMAND_CLASSES } from "../../../browser-handoff/daemon-program";
+import {
+  BROWSER_WRAPPER_COMMAND_CLASSES,
+  BROWSER_WRAPPER_RESULTS,
+  BROWSER_WRAPPER_RESULT_ELAPSED,
+} from "../../../browser-handoff/daemon-program";
 import { BROWSER_SESSION_PROGRAM } from "../browser-session-program";
 
 /**
@@ -64,6 +75,23 @@ runpy.run_path(script,run_name='__main__')
 `;
 
 /**
+ * Run the generated wrapper with a monotonic clock that returns "start" on its
+ * first read and "end" afterwards ("start,end"), or fails on every read ("fail").
+ */
+const MONOTONIC_BOOTSTRAP = String.raw`import runpy,sys,time
+script,clock=sys.argv[1:3]
+sys.argv=[script,*sys.argv[3:]]
+reads=[]
+def monotonic():
+    reads.append(1)
+    if clock=='fail': raise OSError('PRIVATE clock failure')
+    start,end=(float(v) for v in clock.split(','))
+    return start if len(reads)==1 else end
+time.monotonic=monotonic
+runpy.run_path(script,run_name='__main__')
+`;
+
+/**
  * Controlled CLI: snapshots what the wrapper wrote before it ran and the exact
  * argv it received, creates the requested socket fixture for its selected
  * session, writes fixed output, exits.
@@ -119,7 +147,13 @@ const exercise = (
     socket,
     lstatFault,
     atDigits,
-  }: { socket?: SocketFixture; lstatFault?: string; atDigits?: number } = {},
+    monotonic,
+  }: {
+    socket?: SocketFixture;
+    lstatFault?: string;
+    atDigits?: number;
+    monotonic?: string;
+  } = {},
 ) =>
   JSON.parse(
     execFileSync(
@@ -163,6 +197,7 @@ command=[sys.executable,str(script),*x['args']]
 if x.get('procStat') is not None: command=[sys.executable,'-c',x['bootstrap'],str(script),x['procStat'] or '','1' if x['procStatCloseFails'] else '',*x['args']]
 if x.get('lstatFault'): command=[sys.executable,'-c',x['lstatBootstrap'],str(script),x['lstatFault'],*x['args']]
 if x.get('atDigits'): command=[sys.executable,'-c',x['clockBootstrap'],str(script),str(x['atDigits']),*x['args']]
+if x.get('monotonic'): command=[sys.executable,'-c',x['monotonicBootstrap'],str(script),x['monotonic'],*x['args']]
 result=subprocess.run(command,env=env,capture_output=True)
 if mode=='socket_removed':
     for path in sockets.glob('*.sock'): path.unlink()
@@ -188,6 +223,8 @@ print(json.dumps({'status':result.returncode,'stdout':result.stdout.decode(),'st
           lstatBootstrap: LSTAT_FAULT_BOOTSTRAP,
           atDigits,
           clockBootstrap: CLOCK_BOOTSTRAP,
+          monotonic,
+          monotonicBootstrap: MONOTONIC_BOOTSTRAP,
           fake: FAKE_BROWSER,
           program: BROWSER_SESSION_PROGRAM,
         }),
@@ -842,4 +879,227 @@ it("adds the category beside a maximal private identity within the 512-byte read
   });
   expect(commandClass(result.started)).toBe("open");
   expect(result.started_bytes).toBeLessThanOrEqual(512);
+});
+
+/** One wrapped call with a controlled monotonic clock ("start,end" or "fail"). */
+const timedCall = (exitCode: number, args: string[], monotonic?: string) =>
+  exercise(
+    root,
+    exitCode,
+    false,
+    args,
+    false,
+    undefined,
+    true,
+    undefined,
+    false,
+    { monotonic },
+  );
+const snapshotArgs = ["--session", "PRIVATE_SESSION", "snapshot", "-i"];
+/** Decode a private result tuple with the daemon helper's wire tables. */
+const decodedResult = (receipt: { lr?: number[] } | null) =>
+  receipt?.lr && [
+    BROWSER_WRAPPER_RESULTS[receipt.lr[1]],
+    BROWSER_WRAPPER_RESULT_ELAPSED[receipt.lr[2]],
+  ];
+
+it.each<[number, string]>([
+  [0, "exit_zero"],
+  [37, "exit_nonzero"],
+  // An executed CLI's own 75 is its return, not the verification gate.
+  [75, "exit_nonzero"],
+  [-15, "signal"],
+])(
+  "records the wrapped CLI's own exit %s and monotonic elapsed only on its completed receipt",
+  (exitCode, result) => {
+    const call = timedCall(exitCode, defaultArgs, "100,112.5");
+    if (exitCode >= 0) expect(call.status).toBe(exitCode);
+    expect([call.stdout, call.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    expect(call.finished).toMatchObject({ phase: "completed", exit: exitCode });
+    expect(decodedResult(call.finished)).toEqual([result, "lt30s"]);
+    // The initialized root has no preceding wrapper result to carry.
+    expect(call.started).not.toHaveProperty("lr");
+    // Never on the sticky OPEN record.
+    expect(call.open).not.toHaveProperty("lr");
+    expect(JSON.stringify(call)).not.toContain("PRIVATE");
+    expect(call.leftovers).toBe(0);
+  },
+);
+
+it.each<[string, string]>([
+  ["0,0.999", "lt1s"],
+  ["0,1", "lt10s"],
+  ["0,9.999", "lt10s"],
+  ["0,10", "lt30s"],
+  ["0,30", "lt60s"],
+  ["0,60", "lt5m"],
+  ["0,299.999", "lt5m"],
+  ["0,300", "older"],
+  ["0,86400", "older"],
+])("buckets monotonic elapsed %s as %s", (clock, bucket) => {
+  const call = timedCall(0, snapshotArgs, clock);
+  expect(call.status).toBe(0);
+  expect(decodedResult(call.finished)).toEqual(["exit_zero", bucket]);
+});
+
+it.each(["fail", "5,4", "0,inf", "0,nan"])(
+  "keeps an unusable monotonic clock (%s) unmeasured without changing the CLI result",
+  (clock) => {
+    const call = timedCall(37, defaultArgs, clock);
+    expect(call.status).toBe(37);
+    expect([call.stdout, call.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    expect(call.finished).toMatchObject({ phase: "completed", exit: 37 });
+    expect(call.finished).not.toHaveProperty("lr");
+    // Nothing is invented for the next wrapper either.
+    const next = timedCall(0, snapshotArgs, "0,0.5");
+    expect(next.started).not.toHaveProperty("lr");
+    expect(decodedResult(next.finished)).toEqual(["exit_zero", "lt1s"]);
+  },
+);
+
+it("carries only the immediately preceding same-session result onto the next STARTED receipt", () => {
+  const first = timedCall(37, defaultArgs, "0,45");
+  expect(decodedResult(first.finished)).toEqual(["exit_nonzero", "lt60s"]);
+  // The fixture CLI observes the receipt while the next wrapped call runs.
+  const second = timedCall(0, snapshotArgs, "0,0.2");
+  expect(second.started).toMatchObject({ phase: "started", lr: [1, 1, 3] });
+  expect(decodedResult(second.finished)).toEqual(["exit_zero", "lt1s"]);
+  const other = timedCall(0, ["--session", "OTHER_PRIVATE", "snapshot"], "0,2");
+  expect(other.started).not.toHaveProperty("lr");
+  expect(decodedResult(other.finished)).toEqual(["exit_zero", "lt10s"]);
+  // The latest wrapper was another session's, so no selected result is carried.
+  const back = timedCall(0, snapshotArgs, "0,0.2");
+  expect(back.started).not.toHaveProperty("lr");
+  expect(JSON.stringify([first, second, other, back])).not.toContain("PRIVATE");
+});
+
+it("does not carry a result past a wrapper that ended without a completion record", () => {
+  timedCall(37, defaultArgs, "0,45");
+  const running = timedCall(0, snapshotArgs, "0,0.2");
+  expect(running.started.lr).toEqual([1, 1, 3]);
+  // The next wrapper finds only that wrapper's STARTED record, as after a kill.
+  writeFileSync(
+    path.join(root, "wrapper-receipt.json"),
+    JSON.stringify(running.started),
+  );
+  const next = timedCall(0, snapshotArgs, "0,0.2");
+  expect(next.started).not.toHaveProperty("lr");
+  expect(decodedResult(next.finished)).toEqual(["exit_zero", "lt1s"]);
+});
+
+it("records the verification gate distinctly and carries it to the admitted snapshot", () => {
+  const blocked = exercise(
+    root,
+    0,
+    false,
+    ["open", "PRIVATE_TARGET"],
+    true,
+    undefined,
+    true,
+    undefined,
+    false,
+    { monotonic: "0,0.5" },
+  );
+  expect(blocked.status).toBe(75);
+  expect(blocked.started).toBeNull(); // CLI was not admitted.
+  expect(blocked.finished).toMatchObject({ phase: "completed", exit: 75 });
+  expect(decodedResult(blocked.finished)).toEqual([
+    "verification_gate",
+    "lt1s",
+  ]);
+  expect(blocked.verify_required).toBe(true);
+  const resumed = timedCall(0, ["snapshot", "-i"], "0,2");
+  expect(resumed.status).toBe(0);
+  expect(resumed.started.lr).toEqual([1, 3, 0]);
+  expect(decodedResult(resumed.finished)).toEqual(["exit_zero", "lt10s"]);
+  expect(resumed.verify_required).toBe(false);
+});
+
+const completedReceipt = {
+  v: 1,
+  open_receipt_support: 1,
+  close_receipt_support: 1,
+  close_all: false,
+  session_key: createHash("sha256").update("PRIVATE_SESSION").digest("hex"),
+  action: "other",
+  phase: "completed",
+  exit: 0,
+  at: 1,
+  history: [1, true, false],
+  k1: 6,
+  lr: [1, 1, 3],
+};
+
+it.each<[string, Record<string, unknown>, number?]>([
+  ["a valid same-session completion", {}],
+  ["a legacy writer", { lr: undefined }],
+  ["an unknown result", { lr: [1, 4, 0] }],
+  ["an unknown elapsed bucket", { lr: [1, 0, 6] }],
+  ["a negative code", { lr: [1, -1, 0] }],
+  ["another version", { lr: [2, 0, 0] }],
+  ["a boolean code", { lr: [1, true, 0] }],
+  ["a fractional code", { lr: [1, 0.5, 0] }],
+  ["a short tuple", { lr: [1, 0] }],
+  ["a long tuple", { lr: [1, 0, 0, 0] }],
+  ["a string", { lr: "PRIVATE" }],
+  ["a STARTED receipt", { phase: "started", exit: null }],
+  ["another receipt version", { v: 2 }],
+  ["another session", { session_key: "a".repeat(64) }],
+  ["a group-readable receipt", {}, 0o640],
+])(
+  "validates %s before carrying a preceding result",
+  (name, override, mode = 0o600) => {
+    const file = path.join(root, "wrapper-receipt.json");
+    writeFileSync(file, JSON.stringify({ ...completedReceipt, ...override }));
+    chmodSync(file, mode);
+    const call = timedCall(0, snapshotArgs, "0,0.2");
+    expect(call.status).toBe(0);
+    expect([call.stdout, call.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    if (name === "a valid same-session completion")
+      expect(call.started.lr).toEqual([1, 1, 3]);
+    else expect(call.started).not.toHaveProperty("lr");
+    // A rejected result never disturbs the existing history observation.
+    if (mode === 0o600) expect(call.started.history).toEqual([1, true, false]);
+    else expect(call.started).not.toHaveProperty("history");
+    expect(decodedResult(call.finished)).toEqual(["exit_zero", "lt1s"]);
+    expect(JSON.stringify(call)).not.toContain("PRIVATE");
+  },
+);
+
+it("omits the result before any existing field at the private 512-byte cap", () => {
+  const receiptBytes = () =>
+    readFileSync(path.join(root, "wrapper-receipt.json")).byteLength;
+  const withoutAt = ({ at: _at, ...rest }: Record<string, unknown>) => rest;
+  const call = (atDigits?: number) =>
+    exercise(
+      root,
+      0,
+      false,
+      snapshotArgs,
+      false,
+      undefined,
+      true,
+      undefined,
+      false,
+      { atDigits },
+    );
+  const calibration = call();
+  expect(calibration.finished.lr).toEqual([1, 0, expect.any(Number)]);
+  // Python's default separators: `, "lr": [1, 0, 0]`.
+  const resultBytes = Buffer.byteLength(', "lr": [1, 0, 0]');
+  // Size the receipt through its millisecond timestamp's digit count.
+  const fits = 13 + 512 - receiptBytes();
+  const exact = call(fits);
+  expect(exact.status).toBe(0);
+  expect(receiptBytes()).toBe(512); // Exactly at the cap, the result still fits.
+  expect(exact.finished.lr).toEqual([1, 0, expect.any(Number)]);
+  const over = call(fits + 1);
+  expect(over.status).toBe(0);
+  expect([over.stdout, over.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+  expect(receiptBytes()).toBe(512 - resultBytes + 1);
+  expect(over.finished).not.toHaveProperty("lr");
+  // Every preexisting field, including k1 and history, is retained unchanged.
+  const { lr: _lr, ...previous } = withoutAt(calibration.finished);
+  expect(withoutAt(over.finished)).toEqual(previous);
+  expect(over.leftovers).toBe(0);
 });

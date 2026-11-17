@@ -98,6 +98,25 @@ export const BROWSER_DAEMON_VERSION_FILE_STATUSES = [
   "unparsed",
 ] as const;
 
+// Wire tuple l1 codes are the indexes. The selected session's latest returned
+// wrapped CLI process and its wrapper-measured elapsed time: its own when the
+// receipt is COMPLETED, the immediately preceding wrapper's when STARTED. Not a
+// compound shell result, daemon/CDP state or a capture cause.
+export const BROWSER_WRAPPER_RESULTS = [
+  "exit_zero",
+  "exit_nonzero",
+  "signal",
+  "verification_gate",
+] as const;
+export const BROWSER_WRAPPER_RESULT_ELAPSED = [
+  "lt1s",
+  "lt10s",
+  "lt30s",
+  "lt60s",
+  "lt5m",
+  "older",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -288,6 +307,12 @@ function wrapperReceipt() {
       result.w1 = wrapperProcess(receipt.process);
     // Declared first-verb category of this latest command; older writers omit it.
     if (Number.isInteger(receipt.k1) && receipt.k1 >= 0 && receipt.k1 <= 7) result.k1 = receipt.k1;
+    // Selected session only: [1, result, elapsed] of its latest returned wrapper.
+    // Older writers omit it; it is unmeasured, never a failure or completion.
+    const last = receipt.lr;
+    if (receipt.session_key === sessionKey && Array.isArray(last) && last.length === 3 && last[0] === 1 &&
+        Number.isInteger(last[1]) && last[1] >= 0 && last[1] <= 3 &&
+        Number.isInteger(last[2]) && last[2] >= 0 && last[2] <= 5) result.l1 = [1, last[1], last[2]];
     const history = receipt.history;
     if (Array.isArray(history) && history.length === 3 && history[0] === 1 &&
         typeof history[1] === 'boolean' && typeof history[2] === 'boolean' &&
@@ -437,6 +462,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.l1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.l1;
     if (value?.o1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.o1;
     if (value?.r1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.r1;
     if (value?.dv !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.dv;
