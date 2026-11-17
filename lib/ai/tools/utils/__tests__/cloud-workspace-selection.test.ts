@@ -1,9 +1,14 @@
 import { Sandbox } from "@e2b/code-interpreter";
+import { runs, sessions } from "@trigger.dev/sdk";
 import {
   workspaceRegionView,
   selectWorkspaceRegion,
 } from "../cloud-workspace-selection";
-import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import {
+  getActiveTriggerRunsForUser,
+  getChatById,
+  setActiveTriggerRun,
+} from "@/lib/db/actions";
 import { listActiveSubagentsForUser } from "@/lib/db/subagents";
 
 jest.mock("@e2b/code-interpreter", () => ({
@@ -16,6 +21,13 @@ jest.mock("@e2b/code-interpreter", () => ({
 }));
 jest.mock("@/lib/db/actions", () => ({
   getActiveTriggerRunsForUser: jest.fn(),
+  getChatById: jest.fn(),
+  setActiveTriggerRun: jest.fn(),
+}));
+jest.mock("@trigger.dev/sdk", () => ({
+  ApiError: class ApiError extends Error {},
+  runs: { retrieve: jest.fn(), cancel: jest.fn() },
+  sessions: { close: jest.fn() },
 }));
 jest.mock("@/lib/db/subagents", () => ({
   listActiveSubagentsForUser: jest.fn(),
@@ -189,6 +201,86 @@ it.each([
     ),
   ).rejects.toThrow();
   expect(mockEval).not.toHaveBeenCalled();
+});
+
+describe("with an attached parent run", () => {
+  let attached: boolean;
+  beforeEach(() => {
+    attached = true;
+    jest.mocked(getActiveTriggerRunsForUser).mockImplementation(async () => ({
+      runs: attached
+        ? [
+            {
+              chatId: "chat-1",
+              triggerRunId: "run-1",
+              approvalSessionId: "session-1",
+            },
+          ]
+        : [],
+      hasMore: false,
+    }));
+    jest.mocked(getChatById).mockImplementation(
+      async () =>
+        ({
+          id: "chat-1",
+          user_id: "owner",
+          ...(attached && {
+            active_trigger_run_id: "run-1",
+            active_agent_approval_session_id: "session-1",
+          }),
+        }) as never,
+    );
+    jest.mocked(setActiveTriggerRun).mockImplementation(async () => {
+      attached = false;
+      return "updated";
+    });
+    jest.mocked(sessions.close).mockResolvedValue(undefined as never);
+  });
+
+  it("selects after detaching an owned parent that Trigger reports canceled", async () => {
+    jest.mocked(runs.retrieve).mockResolvedValue({
+      status: "CANCELED",
+      metadata: { chatId: "chat-1", userId: "owner" },
+    } as never);
+
+    const choice = await token();
+    expect(
+      await selectWorkspaceRegion("owner", "eu-central-1", choice),
+    ).toEqual({ status: "selected", region: "eu-central-1" });
+
+    expect(sessions.close).toHaveBeenCalledWith("session-1", {
+      reason: "agent-run-terminal",
+    });
+    expect(setActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerRunId: null,
+        expectedRunId: "run-1",
+        expectedApprovalSessionId: "session-1",
+      }),
+    );
+    expect(runs.cancel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["live", { status: "WAITING" }],
+    ["crashed", { status: "CRASHED" }],
+  ])(
+    "refuses selection without changing a %s parent",
+    async (_label, { status }) => {
+      jest.mocked(runs.retrieve).mockResolvedValue({
+        status,
+        metadata: { chatId: "chat-1", userId: "owner" },
+      } as never);
+
+      await expect(workspaceRegionView("owner")).rejects.toThrow();
+
+      expect(attached).toBe(true);
+      expect(sessions.close).not.toHaveBeenCalled();
+      expect(setActiveTriggerRun).not.toHaveBeenCalled();
+      expect(runs.cancel).not.toHaveBeenCalled();
+      expect(Sandbox.list).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it("allows a legacy US workspace with no cluster tag and preserves both inventories", async () => {

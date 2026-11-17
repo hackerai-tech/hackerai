@@ -268,6 +268,7 @@ export function createAgentRunReporting(context: {
             "elapsed_timeout",
             "user_wait_timeout",
             "user_wait_failed",
+            "approval_timeout",
             "user_stop",
             "request_cancel",
             "unknown",

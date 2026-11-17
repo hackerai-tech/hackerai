@@ -1,8 +1,7 @@
 import { reconcileCompletedRecovery } from "@/lib/cloud-recovery/completed";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
-import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
-import { listActiveSubagentsForUser } from "@/lib/db/subagents";
+import { reconcileActiveAgentRuns } from "@/lib/api/agent-run-reconciliation";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import {
   activityKeyFor,
@@ -104,16 +103,7 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
       region: binding.region,
     });
 
-  const [parents, children] = await Promise.all([
-    getActiveTriggerRunsForUser({ userId }),
-    listActiveSubagentsForUser(userId),
-  ]);
-  if (
-    parents.hasMore ||
-    children.hasMore ||
-    parents.runs.length ||
-    children.runs.length
-  )
+  if ((await reconcileActiveAgentRuns(userId)) === "active")
     return finish({ status: "waiting", reason: "active_tasks" });
   if (activity !== null)
     return finish({ status: "waiting", reason: "recent_activity" });

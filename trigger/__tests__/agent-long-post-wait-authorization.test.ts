@@ -168,7 +168,7 @@ describe("agent-long post-wait authorization contract", () => {
   it("excludes suspension time and rechecks cost capacity under reacquired free concurrency", () => {
     const beforeSuspend = taskSource.indexOf("await beforeSuspend()");
     const claimSlot = taskSource.indexOf(
-      "approvalPendingMarked = await claimApprovalSlot(",
+      "const slotClaim = await claimApprovalSlot(",
       beforeSuspend,
     );
     const pause = taskSource.indexOf(
@@ -279,7 +279,7 @@ describe("agent-long post-wait authorization contract", () => {
       postCatchApproveCheck,
     );
     const markPending = findRequiredSource(
-      "approvalPendingMarked = await claimApprovalSlot(",
+      "const slotClaim = await claimApprovalSlot(",
       approvalSessionCheck,
     );
     const waitForApproval = findRequiredSource(

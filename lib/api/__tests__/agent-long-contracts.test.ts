@@ -1198,11 +1198,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("agent approval waits without a wall-clock expiry", () => {
-    expect(approvalRuntimeSrc).not.toMatch(/AGENT_APPROVAL_TIMEOUT/);
-    expect(approvalRuntimeSrc).toMatch(
-      /\.wait<AgentToolApprovalInputRecord>\(\)/,
-    );
+  test("agent approval suspension is excluded from active runtime", () => {
     expect(approvalRuntimeSrc).toMatch(/activeRuntimeBudget\.pause\(\)/);
     expect(approvalRuntimeSrc).toMatch(/activeRuntimeBudget\.resume\(\)/);
     expect(approvalRuntimeSrc).toMatch(

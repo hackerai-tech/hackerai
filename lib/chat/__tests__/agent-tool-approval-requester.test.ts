@@ -27,7 +27,7 @@ type PendingWait = {
 const mockSessionWaits: PendingWait[] = [];
 const mockSessionSend = jest.fn((_record: unknown) => new Promise(() => {}));
 const mockSessionWait = jest.fn(
-  () =>
+  (_options: { timeout: string }) =>
     new Promise<AgentApprovalSessionWaitResult<unknown>>((resolve, reject) => {
       mockSessionWaits.push({ resolve, reject });
     }),
@@ -125,10 +125,13 @@ const signedDecision = (
 const buildRequester = ({
   approvalSessionWaits = createAgentApprovalSessionWaits(),
   signal = new AbortController().signal,
+  onApprovalExpired = jest.fn(),
 }: {
   approvalSessionWaits?: ReturnType<typeof createAgentApprovalSessionWaits>;
   signal?: AbortSignal;
+  onApprovalExpired?: () => void;
 } = {}) => {
+  const onPostWaitAuthorizationDenied = jest.fn();
   const writer = {
     write: jest.fn(),
     merge: jest.fn(),
@@ -166,10 +169,16 @@ const buildRequester = ({
     autoReviewAuthorizationContext: { text: "", complete: true },
     autoReviewConversationContext: { text: "", complete: true },
     onAutoReviewCircuitBreaker: jest.fn(),
-    onPostWaitAuthorizationDenied: jest.fn(),
+    onPostWaitAuthorizationDenied,
+    onApprovalExpired,
   });
   if (!requester) throw new Error("Expected an approval requester");
-  return { requester, writer, revalidateAfterSuspend };
+  return {
+    requester,
+    writer,
+    revalidateAfterSuspend,
+    onPostWaitAuthorizationDenied,
+  };
 };
 
 const approvalRequestsWritten = (writer: UIMessageStreamWriter) =>
@@ -193,6 +202,10 @@ const deferred = <T>() => {
 beforeEach(() => {
   mockSessionWaits.length = 0;
   jest.clearAllMocks();
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe("buildAgentToolApprovalRequester session waits", () => {
@@ -577,5 +590,178 @@ describe("buildAgentToolApprovalRequester approval slot delays", () => {
       sandboxIdentity: "e2b",
     });
     expect(revalidateAfterSuspend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildAgentToolApprovalRequester approval expiry", () => {
+  const T0 = Date.UTC(2026, 10, 16, 12);
+  const HOUR = 60 * 60 * 1000;
+  const expiredDenial = () => ({
+    approved: false,
+    approvalId: pendingApprovalId(),
+    reason:
+      "This approval request expired before a response arrived. The operation was not run, and this Agent run was stopped. Start a new Agent request to try again.",
+  });
+  let now: jest.SpyInstance<number, []>;
+  beforeEach(() => {
+    now = jest.spyOn(Date, "now").mockReturnValue(T0);
+  });
+
+  it("denies and stops the run at one deadline that malformed or unrelated input does not reset", async () => {
+    const onApprovalExpired = jest.fn();
+    const { requester, revalidateAfterSuspend } = buildRequester({
+      onApprovalExpired,
+    });
+
+    const result = track(requester(request));
+    await flush();
+    expect(mockSessionWait).toHaveBeenLastCalledWith({ timeout: "10800s" });
+
+    now.mockReturnValue(T0 + 2 * HOUR);
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: { type: "agent-tool-approval", approvalId: 7 },
+    });
+    await flush();
+    expect(mockSessionWait).toHaveBeenLastCalledWith({ timeout: "3600s" });
+
+    now.mockReturnValue(T0 + 2.5 * HOUR);
+    mockSessionWaits[1].resolve({
+      ok: true,
+      output: signedDecision("another-approval", "approve"),
+    });
+    await flush();
+    expect(mockSessionWait).toHaveBeenLastCalledWith({ timeout: "1800s" });
+    expect(result.settled).toBe(false);
+
+    now.mockReturnValue(T0 + 3 * HOUR);
+    mockSessionWaits[2].resolve({ ok: false, error: new Error("Timed out") });
+    await flush();
+
+    expect(result.value).toEqual(expiredDenial());
+    expect(onApprovalExpired).toHaveBeenCalledTimes(1);
+    expect(revalidateAfterSuspend).not.toHaveBeenCalled();
+    expect(mockSessionWait).toHaveBeenCalledTimes(3);
+    expect(mockSessionSend).not.toHaveBeenCalled();
+    expect(mockSetActiveAgentApprovalPending).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pending: false,
+        expectedApprovalId: pendingApprovalId(),
+      }),
+    );
+  });
+
+  it("expires without another waitpoint when unrelated input arrives after the deadline", async () => {
+    const onApprovalExpired = jest.fn();
+    const { requester } = buildRequester({ onApprovalExpired });
+
+    const result = track(requester(request));
+    await flush();
+    now.mockReturnValue(T0 + 3 * HOUR + 1);
+    mockSessionWaits[0].resolve({ ok: true, output: { type: "unrelated" } });
+    await flush();
+
+    expect(result.value).toEqual(expiredDenial());
+    expect(onApprovalExpired).toHaveBeenCalledTimes(1);
+    expect(mockSessionWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the next approval request its own full deadline", async () => {
+    const onApprovalExpired = jest.fn();
+    const { requester } = buildRequester({ onApprovalExpired });
+
+    const first = track(requester(request));
+    await flush();
+    now.mockReturnValue(T0 + 3 * HOUR - 60_000);
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: signedDecision(pendingApprovalId(), "approve"),
+    });
+    await flush();
+    expect(first.value).toMatchObject({ approved: true });
+
+    const second = track(requester(request));
+    await flush();
+    expect(mockSessionWait).toHaveBeenLastCalledWith({ timeout: "10800s" });
+    mockSessionWaits[1].resolve({
+      ok: true,
+      output: signedDecision(pendingApprovalId(), "approve"),
+    });
+    await flush();
+
+    expect(second.value).toMatchObject({ approved: true });
+    expect(onApprovalExpired).not.toHaveBeenCalled();
+  });
+
+  it("reports Stop instead of expiry when the stopped wait times out", async () => {
+    const stop = new AbortController();
+    const onApprovalExpired = jest.fn();
+    const { requester } = buildRequester({
+      signal: stop.signal,
+      onApprovalExpired,
+    });
+
+    const result = track(requester(request));
+    await flush();
+    stop.abort();
+    now.mockReturnValue(T0 + 3 * HOUR);
+    mockSessionWaits[0].resolve({ ok: false, error: new Error("Timed out") });
+    await flush();
+
+    expect(result.value).toMatchObject({
+      approved: false,
+      reason: "The Agent run was stopped before approval was received.",
+    });
+    expect(onApprovalExpired).not.toHaveBeenCalled();
+  });
+
+  it("denies a valid approval that is read at the deadline", async () => {
+    const onApprovalExpired = jest.fn();
+    const { requester, revalidateAfterSuspend } = buildRequester({
+      onApprovalExpired,
+    });
+
+    const result = track(requester(request));
+    await flush();
+    // The rounded-up waitpoint or a delayed resume can deliver it late.
+    now.mockReturnValue(T0 + 3 * HOUR);
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: signedDecision(pendingApprovalId(), "approve"),
+    });
+    await flush();
+
+    expect(result.value).toEqual(expiredDenial());
+    expect(onApprovalExpired).toHaveBeenCalledTimes(1);
+    expect(revalidateAfterSuspend).not.toHaveBeenCalled();
+  });
+
+  it("counts time waiting behind a busy slot", async () => {
+    const onApprovalExpired = jest.fn();
+    const { requester, writer, onPostWaitAuthorizationDenied } = buildRequester(
+      { onApprovalExpired },
+    );
+    mockSetActiveAgentApprovalPending
+      .mockResolvedValueOnce("busy")
+      .mockResolvedValueOnce("busy");
+    mockWaitFor
+      .mockImplementationOnce(async () => {
+        now.mockReturnValue(T0 + 2 * HOUR);
+      })
+      .mockImplementationOnce(async () => {
+        now.mockReturnValue(T0 + 3 * HOUR);
+      });
+
+    const result = await requester(request);
+
+    expect(result).toEqual(expiredDenial());
+    expect(slotClaims()).toBe(2);
+    expect(mockSetActiveAgentApprovalPending).not.toHaveBeenCalledWith(
+      expect.objectContaining({ pending: false }),
+    );
+    expect(onApprovalExpired).toHaveBeenCalledTimes(1);
+    expect(onPostWaitAuthorizationDenied).not.toHaveBeenCalled();
+    expect(mockSessionWait).not.toHaveBeenCalled();
+    expect(approvalRequestsWritten(writer)).toBe(0);
   });
 });

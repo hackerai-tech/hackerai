@@ -1342,6 +1342,7 @@ export type AgentAbortSource =
   | "elapsed_timeout"
   | "user_wait_timeout"
   | "user_wait_failed"
+  | "approval_timeout"
   | "user_stop"
   | "request_cancel"
   | "unknown";
@@ -1369,6 +1370,7 @@ export function resolveAgentAbortSource({
   if (stoppedDueToElapsedTimeout) return "elapsed_timeout";
   if (stopSource === "wait_for_user_timeout") return "user_wait_timeout";
   if (stopSource === "wait_for_user") return "user_wait_failed";
+  if (stopSource === "approval_timeout") return "approval_timeout";
   if (userStopRequested) return "user_stop";
   if (requestCancelled) return "request_cancel";
   return "unknown";
