@@ -18,6 +18,10 @@ import {
   DESKTOP_TERMINAL_ERROR_PROPERTIES,
   readDesktopTerminalErrorDiagnostic,
 } from "./desktop-terminal-error-diagnostics";
+import {
+  DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  readDesktopInvocationRejectionDiagnostic,
+} from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
   "bridge_stop",
@@ -195,6 +199,12 @@ export function sanitizeDesktopAckEvent<
       event.properties.terminalType === "error"
         ? readDesktopTerminalErrorDiagnostic(event.properties)
         : null;
+    // The rejection message class joins only a validated invocation_rejected
+    // kind, and likewise survives only as the validated data copy.
+    const invocationRejection =
+      terminalError?.desktop_terminal_error_kind === "invocation_rejected"
+        ? readDesktopInvocationRejectionDiagnostic(event.properties)
+        : null;
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -207,7 +217,8 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key) &&
-            !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
+            !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
+            !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -242,6 +253,8 @@ export function sanitizeDesktopAckEvent<
     if (nativeAuthorizationMitigation)
       Object.assign(event.properties, nativeAuthorizationMitigation);
     if (terminalError) Object.assign(event.properties, terminalError);
+    if (invocationRejection)
+      Object.assign(event.properties, invocationRejection);
   }
   delete event.$set;
   delete event.$set_once;

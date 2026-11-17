@@ -31,6 +31,10 @@ import {
   readDesktopTerminalErrorDiagnostic,
   type DesktopTerminalErrorDiagnostic,
 } from "./desktop-terminal-error-diagnostics";
+import {
+  readDesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationRejectionDiagnostic,
+} from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
   connectionId: string | null;
@@ -59,6 +63,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
   /** Same invocation's first terminal error source; only for a terminal error. */
   terminalError?: DesktopTerminalErrorDiagnostic;
+  /** The same invocation's rejection message class; only joined to a valid
+   * `invocation_rejected` terminal error kind. */
+  invocationRejection?: DesktopInvocationRejectionDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -319,6 +326,10 @@ export class DesktopAckTelemetry {
         result.terminalType === "error"
           ? readDesktopTerminalErrorDiagnostic(result.terminalError)
           : null;
+      const invocationRejection =
+        terminalError?.desktop_terminal_error_kind === "invocation_rejected"
+          ? readDesktopInvocationRejectionDiagnostic(result.invocationRejection)
+          : null;
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -360,6 +371,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
           ...terminalError,
+          ...invocationRejection,
         },
         dedupeKey,
       );
