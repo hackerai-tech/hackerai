@@ -29,6 +29,11 @@ export interface FixtureDelivery {
   fileDetails: FileDetails[];
 }
 
+export interface FixtureRenderOptions {
+  /** True while the assistant response is still streaming. */
+  isAnimating?: boolean;
+}
+
 /**
  * Render assistant Markdown the way MessagePartHandler does: a message-scoped
  * attachment map when delivery data exists, otherwise no download access.
@@ -36,6 +41,7 @@ export interface FixtureDelivery {
 export function renderAssistantMarkdown(
   markdown: string,
   delivery?: FixtureDelivery,
+  { isAnimating = false }: FixtureRenderOptions = {},
 ): string {
   // The client creates its socket lazily on the first query or action; server
   // rendering a link only binds the action and never reaches the network.
@@ -50,7 +56,7 @@ export function renderAssistantMarkdown(
     return renderToStaticMarkup(
       <ConvexProviderWithAuth client={client} useAuth={useOfflineAuth}>
         <SandboxAttachmentContext.Provider value={attachments}>
-          <MemoizedMarkdown content={markdown} />
+          <MemoizedMarkdown content={markdown} isAnimating={isAnimating} />
         </SandboxAttachmentContext.Provider>
       </ConvexProviderWithAuth>,
     );

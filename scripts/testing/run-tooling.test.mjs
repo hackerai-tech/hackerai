@@ -31,6 +31,7 @@ test("application changes skip isolated tooling but tooling dependencies and unk
   for (const path of [
     "scripts/markdown/sandbox-download.fixture.tsx",
     "app/components/MemoizedMarkdown.tsx",
+    "lib/chat/markdown-autolinks.ts",
     "lib/chat/sandbox-attachment-links.ts",
   ]) {
     assert.deepEqual(names([path]), ["markdown", "testing"], path);

@@ -216,6 +216,287 @@ test("HTTPS links, GFM autolinks and local paths keep their behavior", () => {
   assert.equal(localAttributes.dir, "auto");
 });
 
+// Exact href and visible label of every navigable link, plus the visible text.
+const rendered = (html) => {
+  const dom = new JSDOM(html);
+  try {
+    const { body } = dom.window.document;
+    return {
+      links: [...body.querySelectorAll("a[href]")].map((anchor) => [
+        anchor.getAttribute("href"),
+        anchor.textContent,
+      ]),
+      text: body.textContent,
+    };
+  } finally {
+    dom.window.close();
+  }
+};
+const renderStates = [{ isAnimating: false }, { isAnimating: true }];
+
+// Explicit Markdown destinations already keep these suffixes, so they are the
+// reference for what the sanitizers emit for the same URL (null if blocked).
+const explicitHref = (url) =>
+  rendered(
+    renderAssistantMarkdown(
+      `[x](${url.replace(/^www\./i, (www) => `http://${www}`)})`,
+    ),
+  ).links[0]?.[0] ?? null;
+
+test("bare URLs keep trailing underscores and tildes while sentence punctuation stays outside", () => {
+  for (const url of [
+    "https://example.com/name_",
+    "https://example.com/name~",
+    "https://example.com/name__",
+    "https://example.com/name~~",
+    "https://example.com/name_~",
+    "https://example.com/name~_~",
+    "https://example.com/search?q=name_",
+    "https://example.com/page#section~",
+    "www.example.com/name_",
+    "https://Example.COM/Docs/Name_",
+    "WWW.EXAMPLE.COM/NAME~",
+    // The existing sanitizers block uppercase schemes in explicit links too;
+    // the bare form must stay just as blocked, with its text intact.
+    "HTTPS://EXAMPLE.COM/NAME_",
+  ]) {
+    const href = explicitHref(url);
+    assert.equal(href === null, url.startsWith("HTTPS:"), url);
+    if (href !== null) assert.match(href, /[_~]$/, url);
+    // Rendered one at a time: Markdown repair counts delimiters across the
+    // whole message, so repeated URLs could hide an appended delimiter.
+    for (const markdown of [
+      url,
+      `See ${url}.`,
+      `See ${url} next`,
+      `Also (${url}), then more.`,
+      `Open ${url}? Yes`,
+    ]) {
+      for (const options of renderStates) {
+        const result = rendered(
+          renderAssistantMarkdown(markdown, undefined, options),
+        );
+        const name = `${markdown} ${JSON.stringify(options)}`;
+        assert.deepEqual(
+          result.links,
+          href === null ? [] : [[href, url]],
+          name,
+        );
+        // No suffix is lost and no repair delimiter is appended. A blocked
+        // link keeps its whole label, followed by the sanitizer's marker.
+        assert.equal(
+          result.text,
+          href === null ? markdown.replace(url, `${url} [blocked]`) : markdown,
+          name,
+        );
+      }
+    }
+  }
+});
+
+test("streaming prefixes never split a bare URL suffix or append a repair delimiter", () => {
+  const markdown =
+    "See https://example.com/name_~ and https://example.com/a~~ next.";
+  for (let end = 1; end <= markdown.length; end++) {
+    const prefix = markdown.slice(0, end);
+    const { links, text } = rendered(
+      renderAssistantMarkdown(prefix, undefined, { isAnimating: true }),
+    );
+    assert.equal(text, prefix.trimEnd(), prefix);
+    for (const [href, label] of links) {
+      assert.ok(prefix.includes(label), prefix);
+      assert.equal(href, explicitHref(label), prefix);
+    }
+    // Each URL is complete, suffix included, once whitespace follows it.
+    const lastWord = prefix.trimEnd().split(" ").at(-1);
+    if (prefix.endsWith(" ") && lastWord.startsWith("https://")) {
+      assert.equal(links.at(-1)?.[1], lastWord, prefix);
+    }
+  }
+});
+
+test("formatting delimiters around bare URLs remain formatting", () => {
+  for (const [markdown, text, href, states] of [
+    // Delimiters that close emphasis or strikethrough stay out of the URL.
+    [
+      "_see https://example.com/name_",
+      "see https://example.com/name",
+      "https://example.com/name",
+    ],
+    [
+      "__see https://example.com/name__",
+      "see https://example.com/name",
+      "https://example.com/name",
+    ],
+    [
+      "~~https://example.com/name~~",
+      "https://example.com/name",
+      "https://example.com/name",
+    ],
+    // A literal suffix inside other formatting still belongs to the URL.
+    [
+      "**https://example.com/name_**",
+      "https://example.com/name_",
+      "https://example.com/name_",
+    ],
+    [
+      "*see https://example.com/name_*",
+      "see https://example.com/name_",
+      "https://example.com/name_",
+    ],
+    [
+      "~~gone https://example.com/name_~~",
+      "gone https://example.com/name_",
+      "https://example.com/name_",
+    ],
+    [
+      "See https://example.com/name_ and _more_",
+      "See https://example.com/name_ and more",
+      "https://example.com/name_",
+    ],
+    // Streaming repair closes real openers after the URL, not inside it.
+    [
+      "_see https://example.com/name",
+      "see https://example.com/name",
+      "https://example.com/name",
+      [{ isAnimating: true }],
+    ],
+    [
+      "**see https://example.com/name_",
+      "see https://example.com/name_",
+      "https://example.com/name_",
+      [{ isAnimating: true }],
+    ],
+    [
+      "See https://example.com/name_ and _more",
+      "See https://example.com/name_ and more",
+      "https://example.com/name_",
+      [{ isAnimating: true }],
+    ],
+    [
+      "~~see https://example.com/name~",
+      "see https://example.com/name",
+      "https://example.com/name",
+      [{ isAnimating: true }],
+    ],
+  ]) {
+    for (const options of states ?? renderStates) {
+      const name = `${markdown} ${JSON.stringify(options)}`;
+      const result = rendered(
+        renderAssistantMarkdown(markdown, undefined, options),
+      );
+      assert.equal(result.text, text, name);
+      assert.deepEqual(result.links, [[href, href]], name);
+    }
+  }
+});
+
+test("code, explicit, angle and reference links keep their own URL rules", () => {
+  const html = renderAssistantMarkdown(
+    [
+      "Inline `https://example.com/code_` stays code.",
+      "```text\nhttps://example.com/fence_\n```",
+      "Read [docs](https://example.com/explicit_) and <https://example.com/angle~>.",
+      "Use [ref][guide].",
+      "[guide]: https://example.com/reference~",
+    ].join("\n\n"),
+  );
+  assert.deepEqual(rendered(html).links, [
+    ["https://example.com/explicit_", "docs"],
+    ["https://example.com/angle~", "https://example.com/angle~"],
+    ["https://example.com/reference~", "ref"],
+  ]);
+  assert.match(html, /<code[^>]*>https:\/\/example\.com\/code_<\/code>/);
+
+  // An explicit link whose label is a URL is not a bare URL: a following
+  // underscore stays text.
+  for (const options of renderStates) {
+    assert.deepEqual(
+      rendered(
+        renderAssistantMarkdown(
+          "[https://example.com/label](https://example.com/label)_",
+          undefined,
+          options,
+        ),
+      ),
+      {
+        links: [["https://example.com/label", "https://example.com/label"]],
+        text: "https://example.com/label_",
+      },
+    );
+  }
+});
+
+test("bare URL suffixes do not widen sanitized HTML or URL schemes", () => {
+  const html = renderAssistantMarkdown(
+    'Open https://example.com/name_<script>alert(1)</script> or <a href="javascript:alert(1)_">x</a> and javascript:alert(1)_ now.',
+  );
+  assert.deepEqual(rendered(html).links, [
+    ["https://example.com/name_", "https://example.com/name_"],
+  ]);
+  assert.doesNotMatch(html, /<script|javascript:alert\(1\)_"/);
+});
+
+test("long punctuation and entity tails stay outside bare URLs", () => {
+  const semicolons = ";".repeat(4096);
+  for (const [markdown, href, text] of [
+    [`See https://example.com/a_${semicolons} next`, "https://example.com/a_"],
+    [`See https://example.com/a${semicolons} next`, "https://example.com/a"],
+    [
+      `See https://example.com/a_${".,;".repeat(2048)} next`,
+      "https://example.com/a_",
+    ],
+    // An `&name;` tail is trailing punctuation; it renders decoded as text.
+    [
+      "See https://example.com/a_&amp; next",
+      "https://example.com/a_",
+      "See https://example.com/a_& next",
+    ],
+    [
+      "See https://example.com/a&amp;;&lt; next",
+      "https://example.com/a",
+      "See https://example.com/a&;< next",
+    ],
+    ["See https://example.com/a_&zz; next", "https://example.com/a_"],
+    // Before an entity tail, a `_` can still close earlier emphasis.
+    [
+      "_see https://example.com/a_&amp; now",
+      "https://example.com/a",
+      "see https://example.com/a& now",
+    ],
+    // `&` followed by more than a name is part of the query.
+    [
+      "See https://example.com/q?x=1&y=2_; next",
+      "https://example.com/q?x=1&y=2_",
+    ],
+  ]) {
+    for (const options of renderStates) {
+      const name = `${markdown.slice(0, 48)} ${JSON.stringify(options)}`;
+      const result = rendered(
+        renderAssistantMarkdown(markdown, undefined, options),
+      );
+      assert.deepEqual(result.links, [[href, href]], name);
+      assert.equal(result.text, text ?? markdown, name);
+    }
+  }
+});
+
+test("characters the repair step uses internally render as typed", () => {
+  // U+FDD0 and U+FDD1 temporarily stand in for URL delimiters during repair.
+  const internal = String.fromCharCode(0xfdd0, 0xfdd1);
+  for (const markdown of [
+    `Keep ${internal} as typed.`,
+    `Keep ${internal} then https://example.com/a_`,
+  ]) {
+    for (const options of renderStates) {
+      const result = rendered(
+        renderAssistantMarkdown(markdown, undefined, options),
+      );
+      assert.equal(result.text, markdown, JSON.stringify(options));
+    }
+  }
+});
+
 const tagDirections = (html, tagName) =>
   (html.match(new RegExp(`<${tagName}\\b[^>]*>`, "g")) ?? []).map(
     (tag) => attributes(tag).dir,

@@ -87,6 +87,7 @@ const markdownRendererPaths = new Set([
   "app/components/CodeHighlight.tsx",
   "app/components/MarkdownTable.tsx",
   "app/hooks/useAttachmentDownload.ts",
+  "lib/chat/markdown-autolinks.ts",
   "lib/chat/sandbox-attachment-links.ts",
 ]);
 
