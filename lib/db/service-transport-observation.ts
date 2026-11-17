@@ -6,20 +6,29 @@ export interface ServiceTransportObservation {
   finish(): void;
 }
 
+/** Existing service RPCs are POST; a caller may opt into one exact GET target. */
+export interface ServiceTransportObservationOptions {
+  method?: "GET" | "POST";
+}
+
 export const serviceTransportObserverKey = Symbol.for(
   "hackerai.serviceTransportObserver.v1",
 );
 export type ServiceTransportObserver = (
   url: URL,
+  options?: ServiceTransportObservationOptions,
 ) => ServiceTransportObservation;
 export const serviceTransportRuntime = globalThis as typeof globalThis & {
   [serviceTransportObserverKey]?: ServiceTransportObserver;
 };
 
-export function observeServiceTransport(url: URL): ServiceTransportObservation {
+export function observeServiceTransport(
+  url: URL,
+  options?: ServiceTransportObservationOptions,
+): ServiceTransportObservation {
   try {
     const observer = serviceTransportRuntime[serviceTransportObserverKey];
-    if (observer) return observer(url);
+    if (observer) return observer(url, options);
   } catch {
     // Diagnostics are optional in runtimes without Node instrumentation.
   }

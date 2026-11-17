@@ -178,11 +178,18 @@ export const createAgentStatusPost =
 
       ownedRun = { chatId: chat.id, runId: chat.active_trigger_run_id };
       stage = "retrieve_trigger_run";
-      triggerRunRead = createTriggerRunReadDiagnostics();
-      const run = (await runs.retrieve(
-        runId,
-        triggerRunRead.requestOptions,
-      )) as TriggerRunStatus;
+      const read = createTriggerRunReadDiagnostics({ runId });
+      triggerRunRead = read;
+      const readRunId = runId;
+      let run: TriggerRunStatus;
+      try {
+        run = (await read.run(() =>
+          runs.retrieve(readRunId, read.requestOptions),
+        )) as TriggerRunStatus;
+      } finally {
+        // Keep the last state for warnings; ignore events after settlement.
+        read.finish();
+      }
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
         const metadataRecord =
           run.metadata != null &&

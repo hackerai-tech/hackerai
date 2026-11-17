@@ -112,6 +112,122 @@ it("registers once and clears the previous dispatch evidence for another request
   observation.finish();
 });
 
+it("matches one exact GET target per observation without crossing concurrent GET or POST calls", async () => {
+  const runA = new URL("https://trigger.fixture.test/api/v3/runs/run_a");
+  const runB = new URL("https://trigger.fixture.test/api/v3/runs/run_b");
+  const dispatch = (target: URL, method: string) => ({
+    origin: target.origin,
+    path: target.pathname,
+    method,
+  });
+  const getA = observeServiceTransport(runA, { method: "GET" });
+  const getB = observeServiceTransport(runB, { method: "GET" });
+  const post = observeServiceTransport(url);
+  const a1 = dispatch(runA, "GET");
+  const b = dispatch(runB, "GET");
+  const p = request();
+  await Promise.all([
+    getA.run(async () => {
+      await Promise.resolve();
+      publish("request:create", { request: dispatch(runA, "POST") });
+      publish("request:create", { request: dispatch(runB, "GET") });
+      publish("request:create", {
+        request: { ...dispatch(runA, "GET"), origin: "https://other.test" },
+      });
+      publish("request:create", { request: a1 });
+    }),
+    getB.run(async () => {
+      await Promise.resolve();
+      publish("request:create", { request: b });
+    }),
+    post.run(async () => {
+      await Promise.resolve();
+      publish("request:create", { request: dispatch(url, "GET") });
+      publish("request:create", { request: p });
+    }),
+  ]);
+  publish("client:sendHeaders", { request: b, socket: {} });
+  publish("request:headers", { request: a1 });
+  publish("request:headers", { request: p });
+  expect(getA.snapshot()).toMatchObject({
+    transport_observation: "response_headers_received",
+    transport_request_count: 1,
+  });
+  expect(getB.snapshot()).toMatchObject({
+    transport_observation: "socket_assigned",
+    transport_request_count: 1,
+  });
+  expect(post.snapshot()).toMatchObject({
+    transport_observation: "response_headers_received",
+    transport_request_count: 1,
+  });
+
+  // A newer attempt resets the phase; the earlier attempt's late events and
+  // anything after finish cannot make it look further along.
+  const a2 = dispatch(runA, "GET");
+  getA.run(() => publish("request:create", { request: a2 }));
+  publish("request:headers", { request: a1 });
+  publish("client:sendHeaders", { request: a1, socket: {} });
+  expect(getA.snapshot()).toMatchObject({
+    transport_observation: "request_created",
+    transport_request_count: 2,
+  });
+  expect(getA.snapshot()).not.toHaveProperty(
+    "socket_prior_service_use_observed",
+  );
+  publish("request:bodySent", { request: a2 });
+  getA.finish();
+  publish("request:headers", { request: a2 });
+  getA.run(() => publish("request:create", { request: dispatch(runA, "GET") }));
+  expect(getA.snapshot()).toMatchObject({
+    transport_observation: "request_body_sent",
+    transport_request_count: 2,
+  });
+
+  const hostile = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("PRIVATE_REQUEST");
+      },
+    },
+  );
+  getB.run(() => {
+    for (const message of [
+      {},
+      { request: null },
+      { request: "PRIVATE" },
+      { request: hostile },
+    ])
+      expect(() => publish("request:create", message)).not.toThrow();
+  });
+  for (const message of [{ request: hostile, socket: {} }, { request: 1 }])
+    expect(() => publish("client:sendHeaders", message)).not.toThrow();
+  expect(getB.snapshot()).toMatchObject({
+    transport_observation: "socket_assigned",
+    transport_request_count: 1,
+  });
+  getB.finish();
+  post.finish();
+});
+
+it("keeps any method other than an exact GET opt-in on the existing POST contract", () => {
+  const observation = observeServiceTransport(url, {
+    method: "DELETE" as never,
+  });
+  observation.run(() => {
+    publish("request:create", { request: { ...request(), method: "DELETE" } });
+    publish("request:create", { request: { ...request(), method: "GET" } });
+  });
+  expect(observation.snapshot().transport_observation).toBe("no_request_event");
+  observation.run(() => publish("request:create", { request: request() }));
+  expect(observation.snapshot()).toMatchObject({
+    transport_observation: "request_created",
+    transport_request_count: 1,
+  });
+  observation.finish();
+});
+
 it("observes real Node fetch on a reused socket reset and correlates an HTTP 520 without logging successes", async () => {
   // Run outside jsdom to exercise Node's actual built-in fetch and channels.
   const { stdout } = await promisify(execFile)(

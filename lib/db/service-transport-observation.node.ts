@@ -8,6 +8,7 @@ import {
 interface Observation {
   origin: string;
   path: string;
+  method: "GET" | "POST";
   active: boolean;
   request?: object;
   fields: Record<string, string | number | boolean>;
@@ -55,7 +56,7 @@ export function registerServiceTransportObserver() {
       !observation?.active ||
       request.origin !== observation.origin ||
       request.path !== observation.path ||
-      request.method !== "POST"
+      request.method !== observation.method
     )
       return;
     requests.set(request, observation);
@@ -104,10 +105,12 @@ export function registerServiceTransportObserver() {
   });
   // beforeConnect/connectError are pool events, not request-specific. Do not
   // attribute them using ALS; queued concurrent requests can share that pool.
-  serviceTransportRuntime[serviceTransportObserverKey] = (url) => {
+  serviceTransportRuntime[serviceTransportObserverKey] = (url, options) => {
     const observation: Observation = {
       origin: url.origin,
       path: url.pathname + url.search,
+      // Only an exact opt-in selects GET; every existing caller remains POST.
+      method: options?.method === "GET" ? "GET" : "POST",
       active: true,
       fields: { transport_observation: "no_request_event" },
     };

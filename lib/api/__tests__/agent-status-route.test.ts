@@ -6,7 +6,13 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import { channel } from "node:diagnostics_channel";
 import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
+import {
+  serviceTransportObserverKey,
+  serviceTransportRuntime,
+} from "../../db/service-transport-observation";
+import { registerServiceTransportObserver } from "../../db/service-transport-observation.node";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
@@ -397,6 +403,15 @@ describe("agent status route", () => {
       terminal: false,
     });
     expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
+    // Exactly one read of the owned active run, with only the body callback.
+    expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+    const [readRunId, readOptions] = mockRunsRetrieve.mock.calls[0] as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(readRunId).toBe("run-1");
+    expect(Object.keys(readOptions)).toEqual(["onResponseBody"]);
+    expect(readOptions.onResponseBody).toEqual(expect.any(Function));
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 
@@ -573,6 +588,169 @@ describe("agent status timeout diagnostics", () => {
       expect(console.warn).toHaveBeenCalledTimes(2);
     },
   );
+
+  describe("status read transport", () => {
+    const originalApiURL = process.env.TRIGGER_API_URL;
+    let previousObserver: unknown;
+    beforeEach(() => {
+      previousObserver = serviceTransportRuntime[serviceTransportObserverKey];
+      delete process.env.TRIGGER_API_URL;
+    });
+    afterEach(() => {
+      serviceTransportRuntime[serviceTransportObserverKey] =
+        previousObserver as never;
+      if (originalApiURL === undefined) delete process.env.TRIGGER_API_URL;
+      else process.env.TRIGGER_API_URL = originalApiURL;
+    });
+
+    it("reports the latest matching dispatch phase and a saturated count in both warnings", async () => {
+      registerServiceTransportObserver();
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      const dispatches: object[] = [];
+      let finish!: (value: unknown) => void;
+      mockRunsRetrieve.mockImplementationOnce(() => {
+        // The SDK dispatches inside the caller's async context; these are the
+        // env/default target's exact Undici request messages.
+        channel("undici:request:create").publish({
+          request: {
+            origin: "https://api.trigger.dev",
+            path: "/api/v3/runs/run-1",
+            method: "POST",
+          },
+        });
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const request = {
+            origin: "https://api.trigger.dev",
+            path: "/api/v3/runs/run-1",
+            method: "GET",
+          };
+          dispatches.push(request);
+          channel("undici:request:create").publish({ request });
+        }
+        channel("undici:client:sendHeaders").publish({
+          request: dispatches[19],
+          socket: {},
+        });
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      });
+      const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      await jest.advanceTimersByTimeAsync(10_000);
+      channel("undici:request:headers").publish({ request: dispatches[19] });
+      await jest.advanceTimersByTimeAsync(10_000);
+      const logs = jest
+        .mocked(console.warn)
+        .mock.calls.map(([line]) => JSON.parse(line as string));
+      expect(logs).toHaveLength(2);
+      expect(
+        logs.map((log) => [
+          log.stage,
+          log.trigger_run_read_api_body,
+          log.trigger_run_read_transport_diagnostic_version,
+          log.trigger_run_read_transport_state,
+          log.trigger_run_read_transport_request_count,
+          log.trigger_run_read_transport_request_count_capped,
+        ]),
+      ).toEqual([
+        [
+          "retrieve_trigger_run",
+          "not_observed",
+          1,
+          "socket_assigned",
+          16,
+          true,
+        ],
+        [
+          "retrieve_trigger_run",
+          "not_observed",
+          1,
+          "response_headers_received",
+          16,
+          true,
+        ],
+      ]);
+      expect(JSON.stringify(logs)).not.toMatch(
+        /api\.trigger\.dev|api\/v3|socket_(connection|prior|previous)|node_/,
+      );
+      finish({
+        status: "EXECUTING",
+        metadata: { chatId: "chat-1", userId: "user-1" },
+      });
+      const response = await pending;
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: "EXECUTING",
+        terminal: false,
+      });
+      expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["resolved", "missing", "failed"])(
+      "keeps the %s read outcome and both body warnings when the observer throws",
+      async (outcome) => {
+        const fail = () => {
+          throw new Error("PRIVATE_OBSERVER");
+        };
+        serviceTransportRuntime[serviceTransportObserverKey] = () => ({
+          run: fail,
+          snapshot: fail,
+          finish: fail,
+        });
+        const { createAgentStatusPost } = await import("../agent-status-route");
+        const { ApiError } = await import("@trigger.dev/sdk");
+        let settle!: () => void;
+        mockRunsRetrieve.mockImplementationOnce(
+          () =>
+            new Promise((resolve, reject) => {
+              settle = () => {
+                if (outcome === "resolved")
+                  resolve({
+                    status: "EXECUTING",
+                    metadata: { chatId: "chat-1", userId: "user-1" },
+                  });
+                else if (outcome === "missing") {
+                  const missing = Object.assign(new Error("missing"), {
+                    status: 404,
+                  });
+                  Object.setPrototypeOf(missing, ApiError.prototype);
+                  reject(missing);
+                } else reject(new Error("provider unavailable"));
+              };
+            }),
+        );
+        const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+          requestFor("chat-1", "run-1"),
+        );
+        await jest.advanceTimersByTimeAsync(20_000);
+        const logs = jest
+          .mocked(console.warn)
+          .mock.calls.map(([line]) => JSON.parse(line as string));
+        expect(logs).toHaveLength(2);
+        for (const log of logs)
+          expect(log).toMatchObject({
+            stage: "retrieve_trigger_run",
+            trigger_run_read_diagnostic_version: 1,
+            trigger_run_read_api_body: "not_observed",
+            trigger_run_read_transport_state: "unavailable",
+            trigger_run_read_transport_request_count: 0,
+          });
+        expect(JSON.stringify(logs)).not.toContain("PRIVATE");
+        settle();
+        if (outcome === "failed")
+          await expect(pending).rejects.toThrow("unexpected route error");
+        else
+          expect((await pending).status).toBe(
+            outcome === "resolved" ? 200 : 404,
+          );
+        expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(console.warn).toHaveBeenCalledTimes(2);
+      },
+    );
+  });
 
   it.each(["/api/agent", "/api/agent-long"] as const)(
     "observes the real pending session phase on %s without changing request completion",
