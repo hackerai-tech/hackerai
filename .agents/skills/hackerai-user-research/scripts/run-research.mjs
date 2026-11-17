@@ -348,6 +348,29 @@ async function loadPendingRequest(path, handle) {
   return payload;
 }
 
+// Another invocation removes the request copy only after saving its accepted
+// run, so a missing copy is safe only when the same handle now has a run ID.
+async function loadPendingOrAcceptedRun(pendingPath, handlePath, handle) {
+  try {
+    return { payload: await loadPendingRequest(pendingPath, handle), handle };
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const saved = await loadHandle(handlePath);
+  if (
+    saved.requestHash !== handle.requestHash ||
+    saved.idempotencyKey !== handle.idempotencyKey
+  )
+    throw new ResearchRunnerError(
+      "Handle changed during submission; preserve its recovery files and resolve that submission before retrying",
+    );
+  if (!saved.runId)
+    throw new ResearchRunnerError(
+      "Submission outcome is unknown and no saved request exists; retry the original payload with this handle",
+    );
+  return { handle: saved };
+}
+
 export async function runResearch(
   args,
   {
@@ -441,19 +464,12 @@ export async function runResearch(
         throw new ResearchRunnerError(
           "Submission outcome is unknown and its safe retry window expired; do not replay",
         );
-    if (payload === undefined) {
-      try {
-        payload = await loadPendingRequest(pendingPath, handle);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-        // Another process may have saved the accepted run and removed the copy.
-        handle = await loadHandle(args.handlePath);
-        if (!handle.runId)
-          throw new ResearchRunnerError(
-            "Submission outcome is unknown and no saved request exists; retry the original payload with this handle",
-          );
-      }
-    }
+    if (payload === undefined)
+      ({ payload, handle } = await loadPendingOrAcceptedRun(
+        pendingPath,
+        args.handlePath,
+        handle,
+      ));
     if (!handle.runId) {
       // Keep the exact compiled request durable before POST, including for stdin.
       // The sidecar contains no gateway key, raw cohort query or payer mapping.
@@ -461,8 +477,14 @@ export async function runResearch(
         await saveProtectedJson(pendingPath, payload, true);
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        await loadPendingRequest(pendingPath, handle);
+        ({ handle } = await loadPendingOrAcceptedRun(
+          pendingPath,
+          args.handlePath,
+          handle,
+        ));
       }
+    }
+    if (!handle.runId) {
       const started = await request(ENDPOINT, key, {
         method: "POST",
         headers: {
