@@ -99,19 +99,23 @@ async function getSeatOperationContext(
     return { error: { message: "No subscription item found", status: 404 } };
   }
 
-  // Get current members and pending invitations
-  const [allMembers, pendingInvitations] = await Promise.all([
-    workos.userManagement.listOrganizationMemberships({
-      organizationId,
-      statuses: ["active"],
-    }),
-    workos.userManagement.listInvitations({
-      organizationId,
-    }),
+  // Get current members and pending invitations across every page
+  const [allMembers, allInvitations] = await Promise.all([
+    workos.userManagement
+      .listOrganizationMemberships({
+        organizationId,
+        statuses: ["active"],
+      })
+      .then((page) => page.autoPagination()),
+    workos.userManagement
+      .listInvitations({
+        organizationId,
+      })
+      .then((page) => page.autoPagination()),
   ]);
 
-  const currentMembers = allMembers.data.length;
-  const pendingInvites = pendingInvitations.data.filter(
+  const currentMembers = allMembers.length;
+  const pendingInvites = allInvitations.filter(
     (inv) => inv.state === "pending",
   ).length;
   const totalUsed = currentMembers + pendingInvites;

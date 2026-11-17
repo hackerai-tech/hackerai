@@ -49,28 +49,31 @@ export const POST = async (req: NextRequest) => {
         const subscription = subscriptions.data[0];
         const quantity = subscription.items.data[0]?.quantity || 1;
 
-        // Count current members and pending invitations
-        const [currentMembers, pendingInvitations] = await Promise.all([
-          workos.userManagement.listOrganizationMemberships({
-            organizationId,
-          }),
-          workos.userManagement.listInvitations({
-            organizationId,
-          }),
+        // Count current members and pending invitations across every page
+        const [currentMembers, allInvitations] = await Promise.all([
+          workos.userManagement
+            .listOrganizationMemberships({
+              organizationId,
+            })
+            .then((page) => page.autoPagination()),
+          workos.userManagement
+            .listInvitations({
+              organizationId,
+            })
+            .then((page) => page.autoPagination()),
         ]);
 
-        const pendingInvitationsCount = pendingInvitations.data.filter(
+        const pendingInvitationsCount = allInvitations.filter(
           (invitation) => invitation.state === "pending",
         ).length;
 
-        const totalSeatsInUse =
-          currentMembers.data.length + pendingInvitationsCount;
+        const totalSeatsInUse = currentMembers.length + pendingInvitationsCount;
 
         if (totalSeatsInUse >= quantity) {
           return NextResponse.json(
             {
               error: "Seat limit reached",
-              details: `You have ${currentMembers.data.length} members and ${pendingInvitationsCount} pending invitations (${totalSeatsInUse} total) with ${quantity} seats. Please upgrade to add more members.`,
+              details: `You have ${currentMembers.length} members and ${pendingInvitationsCount} pending invitations (${totalSeatsInUse} total) with ${quantity} seats. Please upgrade to add more members.`,
             },
             { status: 400 },
           );
