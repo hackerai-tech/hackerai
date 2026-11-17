@@ -62,7 +62,11 @@ function bridge(port: number, mode: "frame" | "input") {
     signal: signal as NodeJS.Signals | null,
     elapsed: Date.now() - started,
   }));
-  return { child, exited, stderr: () => stderr };
+  // "exit" can precede the last stderr bytes; "close" follows stdio closure.
+  // Await it only where stdout is not left full and unread.
+  const closed = once(child, "close").then(() => undefined);
+  closed.catch(() => {});
+  return { child, exited, closed, stderr: () => stderr };
 }
 
 /** Leave stdout unread for `delayMs` so the child's writes hit pipe backpressure. */
@@ -166,6 +170,7 @@ it("exits nonzero without a crash report when stdout cannot accept the frame", a
   const exit = await run.exited;
   expect(exit).toMatchObject({ code: 1, signal: null });
   expect(exit.elapsed).toBeLessThan(6_500);
+  await run.closed;
   expect(run.stderr()).toBe("");
 });
 
