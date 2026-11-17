@@ -1,7 +1,12 @@
 import { resolveCloudWorkspaceRegion } from "./cloud-workspace-routing";
 import { DEFAULT_TRIGGER_RUN_REGION } from "@/lib/api/trigger-region";
 import { readFailures } from "@/lib/cloud-recovery/store";
-import { ensureCloudNetwork } from "@/lib/cloud-network/service";
+import {
+  ensureCloudNetwork,
+  parseCloudNetworkSuboperation,
+  type CloudNetworkSuboperation,
+} from "@/lib/cloud-network/service";
+import { checkpointCloudErrorContext } from "./persistence-failure";
 import {
   parseCloudAcquisitionStage,
   type CloudAcquisitionStage,
@@ -87,6 +92,9 @@ export async function ensureCloudSandboxConnection(options: {
     | "network_check"
     | "post_checks"
     | undefined;
+  // The network step last entered by this acquisition; "unknown" until the
+  // shared network service reports one. Exported only for network_check.
+  let networkSuboperation: CloudNetworkSuboperation | "unknown" = "unknown";
   const recordOutcome = (outcome: "success" | "error") => {
     const fields = {
       chat_id: options.context?.chatId,
@@ -222,7 +230,15 @@ export async function ensureCloudSandboxConnection(options: {
       result.sandbox.sandboxId,
     );
     workspaceVerificationPhase = "network_check";
-    await ensureCloudNetwork(result.sandbox, options.userId, options.signal);
+    await ensureCloudNetwork(
+      result.sandbox,
+      options.userId,
+      options.signal,
+      (suboperation) => {
+        networkSuboperation =
+          parseCloudNetworkSuboperation(suboperation) ?? "unknown";
+      },
+    );
     workspaceVerificationPhase = "post_checks";
     registerE2BWorkspaceLease(result.sandbox, options.userId);
     options.signal?.throwIfAborted();
@@ -256,6 +272,23 @@ export async function ensureCloudSandboxConnection(options: {
     } catch {
       /* Optional diagnostics cannot mask the original acquisition failure. */
     }
+    let networkVerificationDiagnostics: Record<string, string | number> = {};
+    if (workspaceVerificationPhase === "network_check") {
+      networkVerificationDiagnostics = {
+        network_verification_diagnostic_version: 1,
+        network_verification_suboperation: networkSuboperation,
+      };
+      try {
+        // Reuse the bounded own-data projector; present only for TypeErrors.
+        const transportCode =
+          checkpointCloudErrorContext(error).cloud_transport_code;
+        if (transportCode !== undefined)
+          networkVerificationDiagnostics.network_verification_transport_code =
+            transportCode;
+      } catch {
+        /* The step label remains useful without a transport label. */
+      }
+    }
     try {
       options.context?.onFailure?.();
     } catch {
@@ -280,6 +313,7 @@ export async function ensureCloudSandboxConnection(options: {
       error_name: error instanceof Error ? error.name : "UnknownError",
       ...(error instanceof E2BAcquisitionError ? error.diagnostics : {}),
       ...failureProvenance,
+      ...networkVerificationDiagnostics,
       cloud_sandbox_acquisition_failed_event_version: 7,
       ...workspaceGuardDiagnostics,
     });

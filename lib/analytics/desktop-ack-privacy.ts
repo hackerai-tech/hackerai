@@ -5,6 +5,7 @@ import {
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   readNativeAuthorizationCause,
   readNativeAuthorizationConnector,
@@ -12,6 +13,7 @@ import {
   readNativeAuthorizationIo,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
+  readNativeAuthorizationResponseRead,
   readNativeAuthorizationTransport,
 } from "./native-authorization-diagnostics";
 import {
@@ -192,6 +194,12 @@ export function sanitizeDesktopAckEvent<
     const nativeAuthorizationMitigation = nativeAuthorizationResponse
       ? readNativeAuthorizationMitigation(event.properties)
       : null;
+    // The read group joins only a valid `json_error` response group, likewise
+    // only as the validated data copy; an invalid one is dropped alone.
+    const nativeAuthorizationResponseRead = readNativeAuthorizationResponseRead(
+      event.properties,
+      nativeAuthorizationResponse,
+    );
     // The terminal error kind is independent of every native authorization
     // group, and likewise survives only as the validated data copy.
     const terminalError =
@@ -217,6 +225,7 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key) &&
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
         )
@@ -252,6 +261,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, nativeAuthorizationResponse);
     if (nativeAuthorizationMitigation)
       Object.assign(event.properties, nativeAuthorizationMitigation);
+    if (nativeAuthorizationResponseRead)
+      Object.assign(event.properties, nativeAuthorizationResponseRead);
     if (terminalError) Object.assign(event.properties, terminalError);
     if (invocationRejection)
       Object.assign(event.properties, invocationRejection);

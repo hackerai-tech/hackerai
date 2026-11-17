@@ -29,6 +29,7 @@ import {
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationConnectorDiagnostic,
@@ -36,6 +37,7 @@ import {
   type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationResponseReadDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "../native-authorization-diagnostics";
 import {
@@ -2048,6 +2050,306 @@ describe("native authorization response receipt", () => {
         }).properties!;
         expect(reads).toBe(0);
         expect(sanitized).toEqual({ terminalType: "error", ...response });
+        expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+      },
+    );
+  });
+
+  describe("JSON read snapshot", () => {
+    const jsonResponse: NativeAuthorizationResponseDiagnostic = {
+      ...response,
+      native_authorization_response_http_status: 200,
+      native_authorization_response_approval: "json_error",
+      native_authorization_response_request_id_shape: "absent",
+      native_authorization_response_request_id: null,
+    };
+    const read: NativeAuthorizationResponseReadDiagnostic = {
+      native_authorization_response_read_version: 1,
+      native_authorization_response_read_kind: "body_read",
+      native_authorization_response_read_source_depth: 3,
+      native_authorization_response_read_source_chain_truncated: false,
+    };
+    const readKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key),
+      );
+    const snapshot = (
+      kind: NativeAuthorizationResponseReadDiagnostic["native_authorization_response_read_kind"],
+      depth: number,
+      truncated: boolean,
+    ): NativeAuthorizationResponseReadDiagnostic => ({
+      native_authorization_response_read_version: 1,
+      native_authorization_response_read_kind: kind,
+      native_authorization_response_read_source_depth: depth,
+      native_authorization_response_read_source_chain_truncated: truncated,
+    });
+
+    it.each([
+      snapshot("timeout", 2, false),
+      snapshot("body_read", 3, false),
+      snapshot("serde_eof", 1, false),
+      snapshot("serde_syntax", 1, false),
+      snapshot("serde_data", 1, false),
+      snapshot("serde_io", 1, false),
+      snapshot("unclassified", 0, false),
+      snapshot("unclassified", 5, false),
+      snapshot("unclassified", 8, true),
+      snapshot("serde_eof", 8, true),
+      snapshot("timeout", 8, true),
+    ])(
+      "keeps one complete read group beside a json_error response: %p",
+      (expected) => {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: jsonResponse,
+          nativeAuthorizationResponseRead: { ...expected, message: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({
+          ...jsonResponse,
+          ...expected,
+          terminalType: "error",
+          telemetry_sample_rate: 1,
+        });
+        expect(readKeys(final!.properties)).toHaveLength(4);
+        // Raw incoming keys are stripped before the validated copy.
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_response_read_message: "PRIVATE",
+          native_authorization_response_read_type_name: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({
+          ...jsonResponse,
+          ...expected,
+        });
+        // The frozen response group is unchanged beside the read group.
+        expect(responseKeys(enriched.properties)).toHaveLength(7);
+        expect(readKeys(enriched.properties)).toHaveLength(4);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "unsupported version",
+        { native_authorization_response_read_version: 2 },
+      ],
+      ["string version", { native_authorization_response_read_version: "1" }],
+      [
+        "missing version",
+        { native_authorization_response_read_version: undefined },
+      ],
+      ["private kind", { native_authorization_response_read_kind: "PRIVATE" }],
+      ["decode kind", { native_authorization_response_read_kind: "decode" }],
+      ["null kind", { native_authorization_response_read_kind: null }],
+      ["missing kind", { native_authorization_response_read_kind: undefined }],
+      [
+        "negative depth",
+        { native_authorization_response_read_source_depth: -1 },
+      ],
+      [
+        "depth beyond the budget",
+        { native_authorization_response_read_source_depth: 9 },
+      ],
+      [
+        "fractional depth",
+        { native_authorization_response_read_source_depth: 2.5 },
+      ],
+      ["NaN depth", { native_authorization_response_read_source_depth: NaN }],
+      [
+        "infinite depth",
+        { native_authorization_response_read_source_depth: Infinity },
+      ],
+      [
+        "string depth",
+        { native_authorization_response_read_source_depth: "3" },
+      ],
+      [
+        "missing depth",
+        { native_authorization_response_read_source_depth: undefined },
+      ],
+      [
+        "string truncation",
+        { native_authorization_response_read_source_chain_truncated: "false" },
+      ],
+      [
+        "numeric truncation",
+        { native_authorization_response_read_source_chain_truncated: 0 },
+      ],
+      [
+        "truncation below the budget",
+        { native_authorization_response_read_source_chain_truncated: true },
+      ],
+      [
+        "missing truncation",
+        {
+          native_authorization_response_read_source_chain_truncated: undefined,
+        },
+      ],
+      [
+        "a witnessed kind without a walked link",
+        { native_authorization_response_read_source_depth: 0 },
+      ],
+    ])(
+      "drops only the read group for %s and keeps the response group",
+      (_case, change) => {
+        const invalid = { ...read, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: jsonResponse,
+          nativeAuthorizationResponseRead: invalid,
+        });
+        expect(final?.properties).toMatchObject(jsonResponse);
+        expect(readKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...jsonResponse,
+          ...invalid,
+        });
+        expect(enriched.properties).toEqual({
+          terminalType: "error",
+          ...jsonResponse,
+        });
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("drops an inherited read group", () => {
+      const inherited = Object.create(read) as object;
+      const final = settle({
+        ...terminalError,
+        nativeAuthorizationResponse: jsonResponse,
+        nativeAuthorizationResponseRead: inherited,
+      });
+      expect(final?.properties).toMatchObject(jsonResponse);
+      expect(readKeys(final!.properties)).toEqual([]);
+      const properties = Object.assign(Object.create(read) as object, {
+        terminalType: "error",
+        ...jsonResponse,
+      });
+      expect(
+        sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties,
+        }).properties,
+      ).toEqual({ terminalType: "error", ...jsonResponse });
+    });
+
+    it.each<[string, Record<string, unknown> | undefined]>([
+      ["no response group", undefined],
+      ["an unread non-2xx response group", response],
+      [
+        "an approved_false response group",
+        {
+          ...jsonResponse,
+          native_authorization_response_approval: "approved_false",
+        },
+      ],
+      [
+        "a missing-approval response group",
+        { ...jsonResponse, native_authorization_response_approval: "missing" },
+      ],
+      [
+        "an invalid-type response group",
+        {
+          ...jsonResponse,
+          native_authorization_response_approval: "invalid_type",
+        },
+      ],
+      [
+        "a malformed json_error response group",
+        { ...jsonResponse, native_authorization_response_http_status: 403 },
+      ],
+    ])(
+      "drops a read group joined to %s and keeps the other groups",
+      (_case, base) => {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: send,
+          ...(base && { nativeAuthorizationResponse: base }),
+          nativeAuthorizationResponseRead: read,
+        });
+        expect(final?.properties).toMatchObject(send);
+        expect(readKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...send,
+          ...base,
+          ...read,
+        });
+        expect(readKeys(enriched.properties)).toEqual([]);
+        expect(enriched.properties).toMatchObject({
+          terminalType: "error",
+          ...send,
+        });
+      },
+    );
+
+    it("does not attach the read group to non-error finals, starts or summaries", () => {
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorizationResponse: jsonResponse,
+        nativeAuthorizationResponseRead: read,
+      });
+      expect(exitFinal?.properties).toMatchObject({ terminalExitCode: 1 });
+      expect(readKeys(exitFinal!.properties)).toEqual([]);
+      for (const terminalType of ["exit", null, undefined])
+        expect(
+          readKeys(
+            enrich({ terminalType, ...jsonResponse, ...read }).properties,
+          ),
+        ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          readKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...jsonResponse, ...read },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? "serde_eof" : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s read getter at capture or before_send",
+      (_case, get) => {
+        reads = 0;
+        const hostile = (base: Record<string, unknown>) =>
+          Object.defineProperty(
+            { ...base },
+            "native_authorization_response_read_kind",
+            { enumerable: true, get },
+          );
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: jsonResponse,
+          nativeAuthorizationResponseRead: hostile({ ...read }),
+        });
+        expect(final?.properties).toMatchObject(jsonResponse);
+        expect(readKeys(final!.properties)).toEqual([]);
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: hostile({
+            terminalType: "error",
+            ...jsonResponse,
+            ...read,
+          }),
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(sanitized).toEqual({ terminalType: "error", ...jsonResponse });
         expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
       },
     );

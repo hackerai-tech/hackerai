@@ -343,6 +343,98 @@ describe("ChatItem project actions", () => {
     ).not.toBeInTheDocument();
   });
 
+  async function openRenameDialog(user: ReturnType<typeof userEvent.setup>) {
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    return screen.findByLabelText("Task name");
+  }
+
+  it.each(["Recon notes", " Recon notes "])(
+    "keeps a newer incoming title when the opened draft was left untouched (%j)",
+    async (openingTitle) => {
+      const user = userEvent.setup();
+      const { rerender } = render(
+        <ChatItem id="chat-1" title={openingTitle} />,
+      );
+      expect(await openRenameDialog(user)).toHaveValue(openingTitle);
+
+      rerender(<ChatItem id="chat-1" title="Staging API recon" />);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(mockRenameChat).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
+
+  it.each([
+    ["  Exploit chain  ", "Staging API recon", "Exploit chain"],
+    ["Staging API recon", "Staging API recon", null],
+    ["Staging API recon", " Staging API recon ", null],
+  ])(
+    "saves only a draft that differs from the incoming title (%j over %j)",
+    async (draft, incomingTitle, expectedTitle) => {
+      const user = userEvent.setup();
+      const { rerender } = render(<ChatItem id="chat-1" title="Recon notes" />);
+      const input = await openRenameDialog(user);
+      rerender(<ChatItem id="chat-1" title={incomingTitle} />);
+
+      await user.clear(input);
+      await user.type(input, draft);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      if (expectedTitle) {
+        expect(mockRenameChat).toHaveBeenCalledTimes(1);
+        expect(mockRenameChat).toHaveBeenCalledWith({
+          chatId: "chat-1",
+          newTitle: expectedTitle,
+        });
+      } else {
+        expect(mockRenameChat).not.toHaveBeenCalled();
+      }
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "does not save when Enter confirms an IME candidate (%o)",
+    async (composition) => {
+      const user = userEvent.setup();
+      render(<ChatItem id="chat-1" title="Recon notes" />);
+      const input = await openRenameDialog(user);
+      await user.clear(input);
+      await user.type(input, "Exploit chain");
+
+      fireEvent.keyDown(input, { key: "Enter", ...composition });
+
+      expect(mockRenameChat).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("dialog", { name: "Rename Task" }),
+      ).toBeInTheDocument();
+
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(mockRenameChat).toHaveBeenCalledTimes(1);
+      expect(mockRenameChat).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        newTitle: "Exploit chain",
+      });
+    },
+  );
+
   it("uses compact side padding for standard and project chat rows", () => {
     render(
       <>

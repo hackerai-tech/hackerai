@@ -43,6 +43,14 @@
  * matched against exact literals and never copied. It is an observed marker,
  * not an authenticated provider decision, and it is only reported together
  * with a valid response receipt.
+ *
+ * When the native JSON read of a 2xx body failed, a newer native app also
+ * sends a separate read snapshot on its own channel: a closed kind from typed
+ * evidence only (reqwest's timeout predicate, a nested body-read error or the
+ * JSON parser's category, else `unclassified`) and the extent of one bounded
+ * walk of the error's sources. The depth counts walked sources, not the
+ * witness's or a physical depth. It is only reported together with a valid
+ * `json_error` response receipt; a missing snapshot is unknown, never a kind.
  */
 
 const ORIGIN_CLASSES = [
@@ -198,6 +206,22 @@ const MITIGATIONS = [
 ] as const;
 const MITIGATION_KEYS = ["version", "mitigation"] as const;
 
+const RESPONSE_READ_KINDS = [
+  "timeout",
+  "body_read",
+  "serde_eof",
+  "serde_syntax",
+  "serde_data",
+  "serde_io",
+  "unclassified",
+] as const;
+const RESPONSE_READ_KEYS = [
+  "version",
+  "kind",
+  "sourceDepth",
+  "sourceChainTruncated",
+] as const;
+
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 type IoKind = (typeof IO_KINDS)[number];
@@ -208,6 +232,7 @@ type ConnectorPhase = (typeof CONNECTOR_PHASES)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 type Mitigation = (typeof MITIGATIONS)[number];
+type ResponseReadKind = (typeof RESPONSE_READ_KINDS)[number];
 
 export interface NativeAuthorizationSendReceipt {
   readonly timeout: boolean;
@@ -1020,6 +1045,112 @@ export function readNativeAuthorizationMitigation(
     );
     return version === 1 && isMitigation(mitigation)
       ? nativeAuthorizationMitigationDiagnostic({ mitigation })
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationResponseRead {
+  readonly kind: ResponseReadKind;
+  readonly sourceDepth: number;
+  readonly sourceChainTruncated: boolean;
+}
+
+export interface NativeAuthorizationResponseReadDiagnostic {
+  readonly native_authorization_response_read_version: 1;
+  /** A class of the reported read error, not the physical cause. */
+  readonly native_authorization_response_read_kind: ResponseReadKind;
+  /** Walked sources, 0..8; not the witness's or a physical depth. */
+  readonly native_authorization_response_read_source_depth: number;
+  readonly native_authorization_response_read_source_chain_truncated: boolean;
+}
+
+const RESPONSE_READ_PROPERTIES = [
+  "native_authorization_response_read_version",
+  "native_authorization_response_read_kind",
+  "native_authorization_response_read_source_depth",
+  "native_authorization_response_read_source_chain_truncated",
+] as const satisfies readonly (keyof NativeAuthorizationResponseReadDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES: ReadonlySet<string> =
+  new Set(RESPONSE_READ_PROPERTIES);
+
+/** The native walk's invariants: only a walk of all 8 links can be truncated,
+ * and any kind but `unclassified` needs a walked link. */
+const isResponseRead = (
+  kind: unknown,
+  sourceDepth: unknown,
+  sourceChainTruncated: unknown,
+): boolean =>
+  RESPONSE_READ_KINDS.some((value) => value === kind) &&
+  typeof sourceDepth === "number" &&
+  Number.isSafeInteger(sourceDepth) &&
+  sourceDepth >= 0 &&
+  sourceDepth <= MAX_SOURCE_DEPTH &&
+  typeof sourceChainTruncated === "boolean" &&
+  (!sourceChainTruncated || sourceDepth === MAX_SOURCE_DEPTH) &&
+  (kind === "unclassified" || sourceDepth >= 1);
+
+/** Copy only the closed native read snapshot schema; anything else is
+ * dropped. */
+export function parseNativeAuthorizationResponseRead(
+  value: unknown,
+): NativeAuthorizationResponseRead | null {
+  try {
+    const values = readClosedObject(value, RESPONSE_READ_KEYS);
+    if (!values) return null;
+    const [version, kind, sourceDepth, sourceChainTruncated] = values;
+    if (
+      version !== 1 ||
+      !isResponseRead(kind, sourceDepth, sourceChainTruncated)
+    )
+      return null;
+    return Object.freeze({
+      kind,
+      sourceDepth,
+      sourceChainTruncated,
+    } as NativeAuthorizationResponseRead);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationResponseReadDiagnostic(
+  read: NativeAuthorizationResponseRead,
+): NativeAuthorizationResponseReadDiagnostic {
+  return Object.freeze({
+    native_authorization_response_read_version: 1,
+    native_authorization_response_read_kind: read.kind,
+    native_authorization_response_read_source_depth: read.sourceDepth,
+    native_authorization_response_read_source_chain_truncated:
+      read.sourceChainTruncated,
+  });
+}
+
+/** Read the complete read group from any property bag's own data properties,
+ * or nothing at all. It joins only an already validated response group whose
+ * approval is `json_error`, the only native outcome that reports one. */
+export function readNativeAuthorizationResponseRead(
+  source: unknown,
+  response: NativeAuthorizationResponseDiagnostic | null,
+): NativeAuthorizationResponseReadDiagnostic | null {
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    response?.native_authorization_response_approval !== "json_error"
+  )
+    return null;
+  try {
+    const [version, kind, sourceDepth, sourceChainTruncated] =
+      readDataProperties(source, RESPONSE_READ_PROPERTIES);
+    return version === 1 &&
+      isResponseRead(kind, sourceDepth, sourceChainTruncated)
+      ? nativeAuthorizationResponseReadDiagnostic({
+          kind,
+          sourceDepth,
+          sourceChainTruncated,
+        } as NativeAuthorizationResponseRead)
       : null;
   } catch {
     return null;
