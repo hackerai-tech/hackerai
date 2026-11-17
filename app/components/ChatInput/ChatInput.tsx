@@ -410,6 +410,11 @@ const ChatInputContent = ({
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [submissionPending, setSubmissionPending] = useState(false);
+  // The chat whose first submission left the empty new-chat draft and is
+  // still awaiting admission.
+  const [pendingNewChatSubmission, setPendingNewChatSubmission] = useState<
+    string | null
+  >(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
@@ -575,7 +580,14 @@ const ChatInputContent = ({
     }
   };
 
-  const draftId = isEmptyNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  // The optimistic user message makes a new chat non-empty before admission.
+  // Keep its draft (text, attachments and Goal mode) until the submission
+  // settles: a refused start removes that message and must find it intact.
+  const draftId =
+    isEmptyNewChat ||
+    (isNewChat && !!chatId && pendingNewChatSubmission === chatId)
+      ? "new"
+      : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
@@ -1344,6 +1356,7 @@ const ChatInputContent = ({
       isSubmittingRef.current = true;
       const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
+      if (draftId === "new" && chatId) setPendingNewChatSubmission(chatId);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
       const submittedScope = workspaceRecoveryScope;
@@ -1451,7 +1464,12 @@ const ChatInputContent = ({
         console.error("Failed to submit message:", error);
       } finally {
         isSubmittingRef.current = false;
-        if (isMountedRef.current) setSubmissionPending(false);
+        if (isMountedRef.current) {
+          setSubmissionPending(false);
+          // An admitted chat now moves to its own draft; the existing
+          // new-chat transition clears the submitted draft at that point.
+          setPendingNewChatSubmission(null);
+        }
       }
     } else if (isGoalSubmission) {
       captureGoalComposerAction(

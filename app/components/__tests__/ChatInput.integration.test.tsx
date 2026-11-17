@@ -4673,6 +4673,85 @@ describe("ChatInput - Integration Tests", () => {
       ).not.toBeInTheDocument();
     });
 
+    it.each(["refused", "accepted"] as const)(
+      "keeps a new-chat goal draft through a transient optimistic message that is %s",
+      async (outcome) => {
+        // Mirrors chat.tsx: the optimistic user message makes the new chat
+        // non-empty while admission is pending, then a refusal removes it.
+        let settle!: () => void;
+        const OptimisticNewChat = () => {
+          const { clearUploadedFiles } = useGlobalState();
+          const { clearInput } = useComposerActions();
+          const [hasMessages, setHasMessages] = useState(false);
+          const [status, setStatus] = useState<"ready" | "submitted">("ready");
+          return (
+            <>
+              <UploadedFilesSetter files={[goalFile]} label="Attach scope" />
+              <ChatInput
+                chatId="fresh-goal-chat"
+                isNewChat
+                hasMessages={hasMessages}
+                status={status}
+                onSubmit={() =>
+                  new Promise<boolean>((resolve, reject) => {
+                    setHasMessages(true);
+                    setStatus("submitted");
+                    settle = () => {
+                      if (outcome === "accepted") {
+                        // useChatHandlers clears the admitted draft.
+                        clearInput();
+                        clearUploadedFiles();
+                        resolve(true);
+                        return;
+                      }
+                      setHasMessages(false);
+                      setStatus("ready");
+                      reject(refusal());
+                    };
+                  })
+                }
+              />
+            </>
+          );
+        };
+        render(
+          <TestWrapper>
+            <OptimisticNewChat />
+          </TestWrapper>,
+        );
+        const input = await enterGoalMode("Map the lab app");
+        expect(screen.getByText("scope-lab.txt")).toBeVisible();
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(settle).toBeDefined());
+        // The optimistic message is rendered while admission is pending.
+        await act(async () => {});
+        expect(input).toHaveValue("Map the lab app");
+        expect(screen.getByText("scope-lab.txt")).toBeVisible();
+
+        await act(async () => settle());
+        if (outcome === "refused") {
+          await screen.findByRole("group", {
+            name: "Choose your cloud workspace",
+          });
+          expect(input).toHaveValue("Map the lab app");
+          expect(screen.getByText("scope-lab.txt")).toBeVisible();
+          expect(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          ).toBeVisible();
+          expect(getDraftContentById("new")).toBe("Map the lab app");
+          expect(getDraftAttachmentsById("new")).toHaveLength(1);
+        } else {
+          // An admitted start still leaves no stale new-chat draft behind.
+          await waitFor(() => expect(input).toHaveValue(""));
+          expect(screen.queryByText("scope-lab.txt")).not.toBeInTheDocument();
+          expect(getDraftContentById("new")).toBeNull();
+          expect(getDraftAttachmentsById("new")).toEqual([]);
+          expect(getDraftContentById("fresh-goal-chat")).toBeNull();
+          expect(getDraftAttachmentsById("fresh-goal-chat")).toEqual([]);
+        }
+      },
+    );
+
     it("dismisses the workspace retry when Goal mode is exited, keeping the draft", async () => {
       mockOnSubmit.mockRejectedValueOnce(refusal());
       renderGoalComposer();
