@@ -225,8 +225,9 @@ function receiveFrame(timestamp: unknown) {
     process: {
       argv: ["node", "1234", "frame"],
       stdout: {
-        write: (value: string) => {
+        write: (value: string, written?: (error?: Error | null) => void) => {
           output += value;
+          written?.(null);
         },
       },
       exit: (code: number) => {
@@ -412,8 +413,9 @@ function frameMessages(messages: string[], deadline = true) {
     process: {
       argv: ["node", "1234", "frame"],
       stdout: {
-        write: (value: string) => {
+        write: (value: string, written?: (error?: Error | null) => void) => {
           output += value;
+          written?.(null);
         },
       },
       exit: (value: number) => {
@@ -693,8 +695,9 @@ it("keeps input mode independent of daemon status messages", () => {
           stdin.set(name, listener),
       },
       stdout: {
-        write: (value: string) => {
+        write: (value: string, written?: (error?: Error | null) => void) => {
           output += value;
+          written?.(null);
         },
       },
       exit: (value: number) => {
@@ -718,6 +721,115 @@ it("keeps input mode independent of daemon status messages", () => {
   expect({ exitCode, output }).toEqual({
     exitCode: 0,
     output: JSON.stringify({ ok: true }),
+  });
+});
+
+/** Reach a frame or input success whose stdout write has not completed yet. */
+function pendingSuccess(mode: "frame" | "input", writeThrows = false) {
+  const listeners = new Map<string, (value?: unknown) => void>();
+  const timers = new Map<number, () => void>();
+  const stdin = new Map<string, (value?: unknown) => void>();
+  const exits: number[] = [];
+  const writes: string[] = [];
+  let written: ((error?: Error | null) => void) | undefined;
+  let nextTimer = 0;
+  runInNewContext(BROWSER_BRIDGE_PROGRAM, {
+    WebSocket: class {
+      addEventListener(name: string, listener: (value?: unknown) => void) {
+        listeners.set(name, listener);
+      }
+      send() {}
+      close() {}
+    },
+    process: {
+      argv: ["node", "1234", mode],
+      stdin: {
+        setEncoding() {},
+        on: (name: string, listener: (value?: unknown) => void) =>
+          stdin.set(name, listener),
+      },
+      stdout: {
+        write: (value: string, callback: (error?: Error | null) => void) => {
+          if (writeThrows) throw new Error("PRIVATE output failure");
+          writes.push(value);
+          written = callback;
+        },
+      },
+      exit: (value: number) => exits.push(value),
+    },
+    setTimeout: (callback: () => void) => {
+      timers.set(++nextTimer, callback);
+      return nextTimer;
+    },
+    clearTimeout: (id: number) => timers.delete(id),
+  });
+  // Timer 1 is the 6.5s watchdog; later timers are short exit/send delays.
+  const runTimers = (watchdog: boolean) => {
+    for (const [id, callback] of [...timers]) {
+      if (id === 1 && !watchdog) continue;
+      timers.delete(id);
+      callback();
+    }
+  };
+  if (mode === "input") {
+    stdin.get("data")!(JSON.stringify([{ type: "input_keyboard", key: "a" }]));
+    stdin.get("end")!();
+  }
+  listeners.get("open")!();
+  if (mode === "frame")
+    listeners.get("message")!({
+      data: JSON.stringify({
+        type: "frame",
+        data: "image",
+        metadata: { deviceWidth: 800, deviceHeight: 600, timestamp: 1 },
+      }),
+    });
+  else runTimers(false);
+  return {
+    exits,
+    writes,
+    runTimers,
+    watchdogPending: () => timers.has(1),
+    complete: (error?: Error) => written!(error ?? null),
+    lateEvents: () => {
+      listeners.get("error")!({ error: new Error("PRIVATE") });
+      listeners.get("close")!({ code: 1006 });
+    },
+  };
+}
+
+describe.each(["frame", "input"] as const)("%s success output", (mode) => {
+  it("reports exit 0 only after stdout accepts the whole result", () => {
+    const bridge = pendingSuccess(mode);
+    bridge.lateEvents();
+    bridge.runTimers(false);
+    expect(bridge.exits).toEqual([]);
+    expect(bridge.watchdogPending()).toBe(true);
+    bridge.complete();
+    expect(bridge.watchdogPending()).toBe(false);
+    bridge.runTimers(false);
+    expect(bridge.exits).toEqual([0]);
+    expect(bridge.writes).toHaveLength(1);
+    expect(JSON.parse(bridge.writes[0])).toEqual(
+      mode === "frame"
+        ? { data: "image", width: 800, height: 600, capturedAt: 1 }
+        : { ok: true },
+    );
+  });
+
+  it("ends an undrained result at the existing deadline without appending a packet", () => {
+    const bridge = pendingSuccess(mode);
+    bridge.runTimers(true);
+    expect(bridge.exits).toEqual([3]);
+    expect(bridge.writes).toHaveLength(1);
+    expect(bridge.writes[0]).not.toContain("bridge_failure");
+  });
+
+  it("exits 1 when stdout rejects the result", () => {
+    const bridge = pendingSuccess(mode);
+    bridge.complete(new Error("PRIVATE EPIPE"));
+    expect(bridge.exits).toEqual([1]);
+    expect(pendingSuccess(mode, true).exits).toEqual([1]);
   });
 });
 

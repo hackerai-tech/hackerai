@@ -174,19 +174,36 @@ const errorReasons = ${JSON.stringify(BRIDGE_ERROR_REASON_LABELS)};
 const finish = (code, value) => {
   if (done) return;
   done = true;
-  clearTimeout(timer);
-  if (value !== undefined) {
-    if (code === 3 || code === 6) {
+  if (code === 0) {
+    // A pipe write can still be pending when exit runs, truncating the result.
+    // Report success only once stdout accepted all of it; the watchdog stays
+    // armed so a reader that never drains ends as exit 3. A failed write exits
+    // 1 here, before stdout can emit an unhandled error report.
+    try {
+      process.stdout.write(JSON.stringify(value), error => {
+        if (error) { process.exit(1); return; }
+        clearTimeout(timer);
+        setTimeout(() => process.exit(0), 20);
+      });
+    } catch { process.exit(1); return; }
+  } else {
+    clearTimeout(timer);
+    // Failure packets are optional diagnostics and never delay a failure exit.
+    if (value !== undefined) {
       try { process.stdout.write(JSON.stringify(value)); } catch {}
-    } else process.stdout.write(JSON.stringify(value));
+    }
+    setTimeout(() => process.exit(code), 20);
   }
   try { socket.close(); } catch {}
-  setTimeout(() => process.exit(code), 20);
 };
-const timer = setTimeout(() => finish(3, mode === 'frame'
-  ? { bridge_failure: [5, 'deadline', phase, 'none', nonFrameMessages, lastStatus,
-      lastScreencasting] }
-  : undefined), 6500);
+const timer = setTimeout(() => {
+  // Success output is still draining: no deadline packet may follow it.
+  if (done) { process.exit(3); return; }
+  finish(3, mode === 'frame'
+    ? { bridge_failure: [5, 'deadline', phase, 'none', nonFrameMessages, lastStatus,
+        lastScreencasting] }
+    : undefined);
+}, 6500);
 let payload = '';
 let socket;
 if (mode === 'input') {
