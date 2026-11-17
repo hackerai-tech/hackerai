@@ -19,7 +19,10 @@ import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { DESKTOP_TERMINAL_ERROR_PROPERTIES } from "@/lib/analytics/desktop-terminal-error-diagnostics";
-import { DESKTOP_INVOCATION_REJECTION_PROPERTIES } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
+import {
+  DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
+  DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+} from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
@@ -9547,10 +9550,12 @@ describe("native authorization send receipt", () => {
     const timeout = "Command timed out after 30000ms";
     const emit = (call: NativeCall, chunk: Record<string, unknown>) =>
       (call.onEvent as MockChannel).onmessage!(chunk);
+    const running = "Command is already running";
     const groupKeys = (properties: Record<string, unknown> = {}) =>
       Object.keys(properties).filter(
         (key) =>
           DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) ||
+          DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) ||
           DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
       );
     const rejectionOf = (properties: Record<string, unknown> = {}) =>
@@ -9563,14 +9568,24 @@ describe("native authorization send receipt", () => {
             adapter: properties.desktop_invocation_rejection_adapter,
           }
         : null;
+    const admissionOf = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).some((key) =>
+        DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key),
+      )
+        ? {
+            version: properties.desktop_invocation_admission_version,
+            reason: properties.desktop_invocation_admission_reason,
+          }
+        : null;
 
-    it.each<[string, string, string, string, string]>([
+    it.each<[string, string, unknown, string, string, string | null]>([
       [
         "a reported 0.0.73 approval rejection",
         "0.0.73",
         "Desktop operation was not authorized",
         "authorization_not_approved",
         "authorized_native",
+        null,
       ],
       [
         "a reported 0.0.74 authorization ID rejection",
@@ -9578,6 +9593,7 @@ describe("native authorization send receipt", () => {
         "Invalid Desktop operation authorization",
         "authorization_id_invalid",
         "authorized_native",
+        null,
       ],
       [
         "a current spawn failure",
@@ -9585,6 +9601,7 @@ describe("native authorization send receipt", () => {
         spawn,
         "spawn_failed",
         "authorized_native",
+        null,
       ],
       [
         "an unlisted rejection",
@@ -9592,6 +9609,7 @@ describe("native authorization send receipt", () => {
         "PRIVATE rejection",
         "unknown",
         "authorized_native",
+        null,
       ],
       [
         "a published legacy spawn failure",
@@ -9599,11 +9617,79 @@ describe("native authorization send receipt", () => {
         spawn,
         "spawn_failed",
         "published_legacy_native",
+        null,
+      ],
+      // The six fixed execution admission templates, as Tauri rejects them.
+      [
+        "an update state rejection",
+        "0.0.80",
+        "Desktop update state unavailable",
+        "execution_admission",
+        "authorized_native",
+        "update_state_unavailable",
+      ],
+      [
+        "an update installing rejection",
+        "0.0.80",
+        "Desktop is installing an update. Reopen the app before retrying.",
+        "execution_admission",
+        "authorized_native",
+        "update_installing",
+      ],
+      [
+        "a stdin limit rejection",
+        "0.0.80",
+        "Command stdin exceeds limit",
+        "execution_admission",
+        "authorized_native",
+        "stdin_size_limit",
+      ],
+      [
+        "a stdin encoding rejection",
+        "0.0.80",
+        "Invalid command stdin encoding",
+        "execution_admission",
+        "authorized_native",
+        "stdin_encoding_invalid",
+      ],
+      [
+        "a poisoned command state rejection",
+        "0.0.80",
+        "stream command state lock poisoned",
+        "execution_admission",
+        "authorized_native",
+        "command_state_lock_poisoned",
+      ],
+      [
+        "a duplicate command rejection",
+        "0.0.80",
+        running,
+        "execution_admission",
+        "authorized_native",
+        "command_already_running",
+      ],
+      [
+        "a published legacy Error admission rejection",
+        "0.0.72",
+        new Error("Command stdin exceeds limit"),
+        "execution_admission",
+        "published_legacy_native",
+        "stdin_size_limit",
+      ],
+      [
+        "a changed admission template",
+        "0.0.80",
+        "Command is already running: PRIVATE",
+        "unknown",
+        "authorized_native",
+        null,
       ],
     ])(
       "classifies %s without changing the product frame",
-      async (_case, version, message, reason, adapter) => {
-        const { calls, replies } = await run(() => reject(message), {
+      async (_case, version, rejection, reason, adapter, admission) => {
+        const message =
+          rejection instanceof Error ? rejection.message : String(rejection);
+        const { calls, replies } = await run(() => Promise.reject(rejection), {
           version,
         });
         // The selected command set is unchanged: no downgrade or retry.
@@ -9632,6 +9718,9 @@ describe("native authorization send receipt", () => {
           reason,
           adapter,
         });
+        expect(admissionOf(final.properties)).toEqual(
+          admission && { version: 1, reason: admission },
+        );
         const enriched = sanitizeDesktopAckEvent({
           ...final,
           properties: { ...final.properties, $current_url: "PRIVATE" },
@@ -9639,17 +9728,46 @@ describe("native authorization send receipt", () => {
         expect(rejectionOf(enriched.properties)).toEqual(
           rejectionOf(final.properties),
         );
+        expect(admissionOf(enriched.properties)).toEqual(
+          admissionOf(final.properties),
+        );
         const serialized = JSON.stringify([captures(), enriched]);
         expect(serialized).not.toContain("PRIVATE");
         expect(serialized).not.toContain(message);
       },
     );
 
+    it("reads the rejection's own message once for both classes", async () => {
+      const message = "Invalid command stdin encoding";
+      let descriptorReads = 0;
+      const rejection = new Proxy(new Error(message), {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "message") descriptorReads++;
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+      const { replies } = await run(() => Promise.reject(rejection));
+      // The product frame still takes the existing message read.
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message }),
+      ]);
+      expect(descriptorReads).toBe(1);
+      expect(rejectionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "execution_admission",
+        adapter: "authorized_native",
+      });
+      expect(admissionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "stdin_encoding_invalid",
+      });
+    });
+
     it("reports the compatibility command set when only the legacy command rejects", async () => {
       const { calls } = await run(async (call) => {
         if (call.cmd === "execute_authorized_stream_command")
           throw "Command execute_authorized_stream_command not found";
-        return reject("Command is already running");
+        return reject(running);
       });
       expect(calls.map((call) => call.cmd)).toEqual([
         "execute_authorized_stream_command",
@@ -9660,6 +9778,37 @@ describe("native authorization send receipt", () => {
         reason: "execution_admission",
         adapter: "compatibility_native",
       });
+      expect(admissionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "command_already_running",
+      });
+    });
+
+    it("never reads an admission class before a command set is selected", async () => {
+      const { calls, replies } = await run(
+        async () => {
+          throw new Error("native command must not be invoked");
+        },
+        {
+          afterStart: (bridge) =>
+            Object.defineProperty(bridge, "nativeVersionLookup", {
+              configurable: true,
+              get() {
+                throw new Error(running);
+              },
+            }),
+        },
+      );
+      expect(calls).toEqual([]);
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: running }),
+      ]);
+      expect(rejectionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "unknown",
+        adapter: "not_selected",
+      });
+      expect(admissionOf(finals()[0].properties)).toBeNull();
     });
 
     it("reports unknown and not_selected when the helper fails before selecting a command set", async () => {
@@ -9717,19 +9866,42 @@ describe("native authorization send receipt", () => {
       expect(rejectionOf(finals()[0].properties)).toBeNull();
     });
 
-    it("keeps the existing send receipt group beside the class", async () => {
-      await run(async (call) => {
-        (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
-        return reject(unavailable);
-      });
-      expect(finals()[0].properties).toMatchObject({
-        native_authorization_diagnostic_version: 1,
-        native_authorization_send_connect: true,
-        native_app_version: "0.0.80",
-        desktop_invocation_rejection_reason: "authorization_unavailable",
-        desktop_invocation_rejection_adapter: "authorized_native",
-      });
-    });
+    it.each<[string, string, string | null]>([
+      [unavailable, "authorization_unavailable", null],
+      [
+        "Command stdin exceeds limit",
+        "execution_admission",
+        "stdin_size_limit",
+      ],
+    ])(
+      "keeps the existing send receipt group beside the %s class",
+      async (message, reason, admission) => {
+        await run(async (call) => {
+          (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
+          return reject(message);
+        });
+        const properties = finals()[0].properties;
+        expect(properties).toMatchObject({
+          native_authorization_diagnostic_version: 1,
+          native_authorization_send_connect: true,
+          native_app_version: "0.0.80",
+          desktop_invocation_rejection_reason: reason,
+          desktop_invocation_rejection_adapter: "authorized_native",
+        });
+        expect(admissionOf(properties)).toEqual(
+          admission && { version: 1, reason: admission },
+        );
+        const enriched = sanitizeDesktopAckEvent({
+          ...finals()[0],
+          properties: { ...properties, $current_url: "PRIVATE" },
+        }).properties;
+        expect(enriched).toMatchObject({
+          native_authorization_diagnostic_version: 1,
+          desktop_invocation_rejection_reason: reason,
+        });
+        expect(admissionOf(enriched)).toEqual(admissionOf(properties));
+      },
+    );
 
     it.each<[string, (call: NativeCall) => void, Record<string, unknown>]>([
       [
@@ -9748,13 +9920,15 @@ describe("native authorization send receipt", () => {
     ])(
       "never attaches a rejection that follows %s",
       async (_case, first, expected) => {
+        // An attachable class and admission pair, were it the first terminal.
         await run(async (call) => {
           first(call);
-          return reject("Desktop operation was not authorized");
+          return reject(running);
         });
         expect(finals()).toHaveLength(1);
         expect(finals()[0].properties).toMatchObject(expected);
         expect(rejectionOf(finals()[0].properties)).toBeNull();
+        expect(admissionOf(finals()[0].properties)).toBeNull();
       },
     );
 
@@ -9764,7 +9938,7 @@ describe("native authorization send receipt", () => {
         await run(
           async () => {
             identity.mockReturnValue("another-user");
-            return reject("Desktop operation was not authorized");
+            return reject(running);
           },
           {
             beforeAck: async () => {
@@ -9789,7 +9963,7 @@ describe("native authorization send receipt", () => {
       await run(
         async () => {
           await pending;
-          return reject("Desktop operation was not authorized");
+          return reject(running);
         },
         {
           beforeAck: async (bridge) => {

@@ -55,8 +55,10 @@ import {
   type DesktopTerminalErrorKind,
 } from "@/lib/analytics/desktop-terminal-error-diagnostics";
 import {
-  classifyNativeInvocationRejection,
+  classifyNativeInvocationRejectionMessage,
+  desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
+  type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -1472,6 +1474,7 @@ export class DesktopSandboxBridge {
     // reports the command set the existing adapter selected.
     const invocationTrace: FileStatReceiverTrace = {};
     let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
+    let invocationAdmission: DesktopInvocationAdmissionDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1504,7 +1507,10 @@ export class DesktopSandboxBridge {
               terminalError: desktopTerminalErrorDiagnostic(terminalErrorKind),
             }),
             ...(terminalErrorKind === "invocation_rejected" &&
-              invocationRejection && { invocationRejection }),
+              invocationRejection && {
+                invocationRejection,
+                ...(invocationAdmission && { invocationAdmission }),
+              }),
             ...(invocationRejected &&
               sendReceipt && {
                 nativeAuthorization: nativeAuthorizationDiagnostic(
@@ -1749,13 +1755,24 @@ export class DesktopSandboxBridge {
         // Classified before append can settle; the product message is unchanged.
         // A failure before any command set was selected is never read as a
         // native message.
-        if (latchTerminal("invocation_rejected"))
-          invocationRejection = invocationTrace.adapter
-            ? desktopInvocationRejectionDiagnostic(
-                classifyNativeInvocationRejection(error),
-                invocationTrace.adapter,
-              )
-            : desktopInvocationRejectionDiagnostic("unknown", "not_selected");
+        if (latchTerminal("invocation_rejected")) {
+          if (invocationTrace.adapter) {
+            // One read of the message yields both classes.
+            const rejection = classifyNativeInvocationRejectionMessage(error);
+            invocationRejection = desktopInvocationRejectionDiagnostic(
+              rejection.reason,
+              invocationTrace.adapter,
+            );
+            invocationAdmission = desktopInvocationAdmissionDiagnostic(
+              invocationRejection,
+              rejection.admission,
+            );
+          } else
+            invocationRejection = desktopInvocationRejectionDiagnostic(
+              "unknown",
+              "not_selected",
+            );
+        }
         stream.append({
           type: "error",
           message: error instanceof Error ? error.message : String(error),
