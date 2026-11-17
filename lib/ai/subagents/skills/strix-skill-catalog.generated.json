@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "fe3b30ea8f424c1bd2ddc0433b539dd6637ee5f1",
+  "sourceCommit": "1152d53579d5b3af37ada8c798f197ab093b99c6",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -96,10 +96,10 @@
       "filename": "root_agent",
       "name": "root-agent",
       "description": "Orchestration layer that coordinates specialized subagents for security assessments",
-      "contentBytes": 5911,
+      "contentBytes": 6626,
       "internal": true,
       "sourcePath": "coordination/root_agent.md",
-      "sourceSha256": "fe5ba2d54a231e563ff925f1f0389238096cc688cef3715df2ab6769f79f26aa"
+      "sourceSha256": "c483d320e2cc8fdbc3fc6204e46baf2c71f8ad5db6c5315707335e878e506206"
     },
     {
       "id": "coordination/source_aware_whitebox",
