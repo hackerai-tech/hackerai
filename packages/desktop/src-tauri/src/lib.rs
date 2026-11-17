@@ -2759,6 +2759,7 @@ mod tests {
 
     /// Approves `count` authorization requests, as the production endpoint
     /// would, and counts them.
+    #[cfg(unix)]
     fn approve_authorizations(
         count: usize,
     ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
