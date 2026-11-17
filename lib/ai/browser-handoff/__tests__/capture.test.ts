@@ -2446,7 +2446,12 @@ function runFrameBridge(command: string, messages: string[]) {
     },
     process: {
       argv: ["node", "1234", "frame"],
-      stdout: { write: (text: string) => (stdout += text) },
+      stdout: {
+        write: (text: string, written?: (error?: Error | null) => void) => {
+          stdout += text;
+          written?.(null);
+        },
+      },
       exit: (code: number) => {
         exitCode ??= code;
       },
