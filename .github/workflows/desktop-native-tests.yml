@@ -73,6 +73,9 @@ jobs:
       - name: Test native authorization send and response diagnostics and IPC compatibility
         working-directory: packages/desktop/src-tauri
         run: cargo test --locked --lib authorization_ -- --show-output
+      - name: Test native text file reads within the UTF-8 byte cap
+        working-directory: packages/desktop/src-tauri
+        run: cargo test --locked --lib file_read_tests
       # Reuse the tested executable for source-pinned Windows VM diagnostics.
       # This is a test harness, not a Desktop installer or updater artifact.
       - name: Retain Windows native test executable
