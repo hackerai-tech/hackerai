@@ -200,6 +200,7 @@ export const createGetFindingRetests = (context: ToolContext) =>
           chatId: context.chatId,
           findingId: finding_id,
           limit: 5,
+          signal: abortSignal,
         });
         if (!history.available)
           return {

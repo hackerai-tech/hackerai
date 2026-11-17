@@ -24,25 +24,33 @@ const provenance = ({ triggerRunId, ...rest }: Provenance) => ({
   ...(triggerRunId !== undefined && { triggerRunId }),
 });
 
-/** Bounded, owner-checked history. Pass chatId to restrict to the source chat. */
+/**
+ * Bounded, owner-checked history. Pass chatId to restrict to the source chat.
+ * A supplied signal cancels only this read, including any recovery retry.
+ */
 export function getAgentRetestHistory({
   userId,
   findingId,
   chatId,
   limit,
+  signal,
 }: {
   userId: string;
   findingId: string;
   chatId?: string;
   limit?: number;
+  signal?: AbortSignal;
 }) {
-  return getConvexClient().query(api.findingAgentRetests.getHistoryForBackend, {
-    serviceKey: serviceKey(),
-    userId,
-    findingId,
-    ...(chatId !== undefined && { chatId }),
-    ...(limit !== undefined && { limit }),
-  });
+  return getConvexClient(signal).query(
+    api.findingAgentRetests.getHistoryForBackend,
+    {
+      serviceKey: serviceKey(),
+      userId,
+      findingId,
+      ...(chatId !== undefined && { chatId }),
+      ...(limit !== undefined && { limit }),
+    },
+  );
 }
 
 /** Provenance comes from the server-side tool context, never from the model. */

@@ -20,19 +20,24 @@ const provenance = ({ triggerRunId, ...rest }: Provenance) => ({
   ...(triggerRunId !== undefined && { triggerRunId }),
 });
 
-/** Bounded, owner-checked history. Pass chatId to restrict to the source chat. */
+/**
+ * Bounded, owner-checked history. Pass chatId to restrict to the source chat.
+ * A supplied signal cancels only this read, including any recovery retry.
+ */
 export function getFindingHuntHistory({
   userId,
   findingId,
   chatId,
   limit,
+  signal,
 }: {
   userId: string;
   findingId: string;
   chatId?: string;
   limit?: number;
+  signal?: AbortSignal;
 }) {
-  return getConvexClient().query(api.findingHunts.getHistoryForBackend, {
+  return getConvexClient(signal).query(api.findingHunts.getHistoryForBackend, {
     serviceKey: serviceKey(),
     userId,
     findingId,

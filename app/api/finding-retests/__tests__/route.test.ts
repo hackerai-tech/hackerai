@@ -1,5 +1,7 @@
 /** @jest-environment node */
 import type { NextRequest } from "next/server";
+import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { ChatSDKError } from "@/lib/errors";
 
 jest.mock("next/server", () => ({}));
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { warn: jest.fn() } }));
@@ -41,6 +43,7 @@ const mockEnabled = jest.fn(),
 
 const get = (findingId: string | null) =>
   ({
+    signal: new AbortController().signal,
     nextUrl: {
       searchParams: new URLSearchParams(findingId ? { findingId } : {}),
     },
@@ -50,6 +53,18 @@ describe("/api/finding-retests", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockEnabled.mockResolvedValue(true);
+  });
+
+  it("requires a signed-in user before reading anything", async () => {
+    const unauthorized = new ChatSDKError("unauthorized:auth");
+    const toResponse = jest
+      .spyOn(unauthorized, "toResponse")
+      .mockReturnValue({ status: 401 } as Response);
+    jest.mocked(getUserIDAndPro).mockRejectedValueOnce(unauthorized);
+    expect((await route.GET(get("finding-1"))).status).toBe(401);
+    expect(toResponse).toHaveBeenCalled();
+    expect(mockEnabled).not.toHaveBeenCalled();
+    expect(mockHistory).not.toHaveBeenCalled();
   });
 
   it("returns only enabled:false and reads nothing when the rollout is off", async () => {
@@ -80,11 +95,13 @@ describe("/api/finding-retests", () => {
       },
       retests,
     });
-    const response = await route.GET(get("finding-1"));
-    expect(mockHistory).toHaveBeenCalledWith({
-      userId: "owner",
-      findingId: "finding-1",
-    });
+    const request = get("finding-1");
+    const response = await route.GET(request);
+    // Default bound, no chat restriction; the request cancels the read.
+    expect(mockHistory).toHaveBeenCalledTimes(1);
+    const { signal, ...args } = mockHistory.mock.calls[0][0];
+    expect(args).toEqual({ userId: "owner", findingId: "finding-1" });
+    expect(signal).toBe(request.signal);
     expect(await response.json()).toEqual({
       enabled: true,
       chat_title: "Scan",

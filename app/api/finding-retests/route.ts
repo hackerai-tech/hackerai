@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
 import { phLogger } from "@/lib/posthog/server";
@@ -18,14 +19,20 @@ const json = (body: unknown, status = 200) =>
     headers: { "Cache-Control": "no-store" },
   });
 
-export async function GET(req: NextRequest) {
+// The request owns read recovery for its whole lifetime, including supporting
+// auth reads; the history read is also canceled with the request.
+export const GET = withServiceQueryRecovery(async (req: NextRequest) => {
   try {
     const { userId } = await getUserIDAndPro(req);
     if (!(await isFindingRetestsEnabled(userId)))
       return json({ enabled: false } satisfies FindingRetestState);
     const id = findingId.safeParse(req.nextUrl.searchParams.get("findingId"));
     if (!id.success) return json({ message: "Invalid finding" }, 400);
-    const history = await getAgentRetestHistory({ userId, findingId: id.data });
+    const history = await getAgentRetestHistory({
+      userId,
+      findingId: id.data,
+      signal: req.signal,
+    });
     if (!history.available)
       return json({ message: "Finding unavailable" }, 404);
     return json({
@@ -44,4 +51,4 @@ export async function GET(req: NextRequest) {
     }
     return json({ message: "Retest history is unavailable right now." }, 503);
   }
-}
+});
