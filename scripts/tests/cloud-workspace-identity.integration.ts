@@ -59,6 +59,12 @@ jest.mock("../../lib/rate-limit/redis", () => ({
     del: async (...keys: string[]) => mockCommand("DEL", ...keys),
   }),
 }));
+// Trigger is provider I/O; keep active references active in this Redis suite.
+// Terminal reconciliation is exercised separately against its provider boundary.
+jest.mock("@trigger.dev/sdk", () => ({
+  runs: { retrieve: jest.fn(async () => ({ status: "EXECUTING" })) },
+  sessions: { close: jest.fn() },
+}));
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: {
     list: jest.fn(),
