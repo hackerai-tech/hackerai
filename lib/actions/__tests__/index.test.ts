@@ -1,3 +1,6 @@
+/**
+ * @jest-environment node
+ */
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter } from "ai";
 import {
@@ -6,6 +9,7 @@ import {
   NoOutputGeneratedError,
   TypeValidationError,
 } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 
 const mockGenerateText = jest.fn();
 const mockLanguageModel = jest.fn((modelName: string) => ({ modelName }));
@@ -509,5 +513,125 @@ describe("generateTitleFromUserMessage", () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+});
+
+describe("generateTitleFromUserMessageWithWriter with the installed AI SDK", () => {
+  // Only model I/O is controlled; generateText, retries and abort are real.
+  const loadWithInstalledSdk = () => {
+    // The stubbed "ai" module is cached; reset so the factory below applies.
+    jest.resetModules();
+    jest.doMock("ai", () => jest.requireActual("ai"));
+    return (require("../index") as typeof import("../index"))
+      .generateTitleFromUserMessageWithWriter;
+  };
+
+  const useTitleModel = (model: MockLanguageModelV3) =>
+    mockLanguageModel.mockReturnValueOnce(
+      model as unknown as { modelName: string },
+    );
+
+  it("aborts a stalled title request and delivers the fallback without inventing cost", async () => {
+    const generateWithWriter = loadWithInstalledSdk();
+    let providerCalls = 0;
+    let providerAborted = false;
+    let releaseProvider = () => {};
+    useTitleModel(
+      new MockLanguageModelV3({
+        doGenerate: ({ abortSignal }) =>
+          new Promise((_resolve, reject) => {
+            providerCalls++;
+            releaseProvider = () =>
+              reject(new Error("stalled provider released by the test"));
+            abortSignal?.addEventListener(
+              "abort",
+              () => {
+                providerAborted = true;
+                reject(abortSignal.reason);
+              },
+              { once: true },
+            );
+          }),
+      }),
+    );
+    const writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
+    const persist = jest.fn(async () => undefined);
+    const onCost = jest.fn();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const generation = generateWithWriter(
+      makeMessage("Check a bounded synthetic title request"),
+      writer,
+      persist,
+      onCost,
+    );
+    let observationTimer: ReturnType<typeof setTimeout> | undefined;
+    const stillPending = new Promise<"still pending">((resolve) => {
+      observationTimer = setTimeout(() => resolve("still pending"), 9_000);
+    });
+
+    try {
+      await expect(Promise.race([generation, stillPending])).resolves.toBe(
+        "Check a bounded synthetic title",
+      );
+      expect(providerAborted).toBe(true);
+      expect(providerCalls).toBe(1);
+      expect(writer.write).toHaveBeenCalledTimes(1);
+      expect(writer.write).toHaveBeenCalledWith({
+        type: "data-title",
+        data: { chatTitle: "Check a bounded synthetic title" },
+        transient: true,
+      });
+      expect(persist).toHaveBeenCalledTimes(1);
+      expect(persist).toHaveBeenCalledWith("Check a bounded synthetic title");
+      expect(onCost).not.toHaveBeenCalled();
+    } finally {
+      clearTimeout(observationTimer);
+      releaseProvider();
+      await generation;
+      warn.mockRestore();
+    }
+  }, 15_000);
+
+  it("reports provider usage cost once for a successful title", async () => {
+    const generateWithWriter = loadWithInstalledSdk();
+    useTitleModel(
+      new MockLanguageModelV3({
+        doGenerate: async () => ({
+          content: [
+            { type: "text", text: JSON.stringify({ title: "Costed Title" }) },
+          ],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: {
+            inputTokens: {
+              total: 120,
+              noCache: 120,
+              cacheRead: undefined,
+              cacheWrite: undefined,
+            },
+            outputTokens: { total: 6, text: 6, reasoning: undefined },
+            raw: { cost: 0.0042 },
+          },
+          warnings: [],
+        }),
+      }),
+    );
+    const writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
+    const persist = jest.fn(async () => undefined);
+    const onCost = jest.fn();
+
+    await expect(
+      generateWithWriter(
+        makeMessage("track title generation cost"),
+        writer,
+        persist,
+        onCost,
+      ),
+    ).resolves.toBe("Costed Title");
+
+    expect(onCost).toHaveBeenCalledTimes(1);
+    expect(onCost).toHaveBeenCalledWith(0.0042);
+    expect(writer.write).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith("Costed Title");
   });
 });
