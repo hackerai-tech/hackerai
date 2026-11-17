@@ -2691,9 +2691,19 @@ export const createChatHandler = () => {
                                   isProviderContentFilterFinishReason(
                                     state.streamFinishReason,
                                   );
+                                // A local browser safety read can fail during a
+                                // fallback leg; it is terminal, never success.
+                                const retryTerminalTrustedLocalReadError =
+                                  !retryAborted &&
+                                  state.streamFinishReason === "error" &&
+                                  isTrustedBrowserHandoffReadFailure(
+                                    state.providerError,
+                                  );
                                 const outcome = retryAborted
                                   ? "aborted"
-                                  : providerContentBlocked || retryEmptyResponse
+                                  : providerContentBlocked ||
+                                      retryTerminalTrustedLocalReadError ||
+                                      retryEmptyResponse
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
@@ -2757,6 +2767,7 @@ export const createChatHandler = () => {
                                 });
                                 if (
                                   providerContentBlocked ||
+                                  retryTerminalTrustedLocalReadError ||
                                   retryEmptyResponse
                                 ) {
                                   chatLogger!.emitUnexpectedError(
@@ -3094,6 +3105,7 @@ export const createChatHandler = () => {
                     // A failed local browser safety read is never recovered
                     // above, so its terminal error cannot be reported as success.
                     const terminalTrustedLocalReadError =
+                      !isAborted &&
                       state.streamFinishReason === "error" &&
                       isTrustedBrowserHandoffReadFailure(state.providerError);
                     const outcome = isAborted

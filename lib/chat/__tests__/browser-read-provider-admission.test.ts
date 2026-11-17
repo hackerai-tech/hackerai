@@ -633,40 +633,62 @@ describe("Agent final Pro/Max disconnect continuation", () => {
 
 // --- Ask final outcome and its logging branch ------------------------------
 
-describe("Ask final outcome after a declined local read", () => {
-  // The actual statements from the final finish-reason check through the
-  // success/error logging branch; analytics capture is replaced by `outcome`.
-  const settlement = (() => {
-    const start = declaration(ask, "finalProviderContentBlocked").parent
-      .parent as ts.VariableStatement;
-    const block = start.parent as ts.Block;
-    const from = block.statements.indexOf(start);
-    const to = block.statements.findIndex(
+/**
+ * The actual statements of one Ask settlement: from its finish-reason check
+ * through the first success/error logging branch after `outcome`. Analytics
+ * capture is left out; the compiled body returns `outcome` instead.
+ */
+const askSettlement = (outcomeGuard: string, firstDeclared: string) => {
+  const outcome = only(
+    collect(
+      ask,
+      (node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(ask) === "outcome" &&
+        new RegExp(`^${outcomeGuard}\\s*\\?`).test(
+          node.initializer?.getText(ask) ?? "",
+        ),
+    ),
+    `${outcomeGuard} outcome`,
+  ).parent.parent as ts.VariableStatement;
+  const statements = (outcome.parent as ts.Block).statements;
+  const at = statements.indexOf(outcome);
+  const from = statements.findIndex(
+    (statement) =>
+      ts.isVariableStatement(statement) &&
+      statement.declarationList.declarations.some(
+        (declared) => declared.name.getText(ask) === firstDeclared,
+      ),
+  );
+  const to = statements.findIndex(
+    (statement, index) => index > at && ts.isIfStatement(statement),
+  );
+  if (from < 0 || from > at || to < 0)
+    throw new Error(`${outcomeGuard} settlement changed shape`);
+  const body = statements
+    .slice(from, to + 1)
+    .filter(
       (statement) =>
-        ts.isIfStatement(statement) &&
-        statement.expression.getText(ask) === "visionSummaryRecoveryFailure",
-    );
-    if (from < 0 || to <= from)
-      throw new Error("Ask final settlement changed shape");
-    const body = block.statements
-      .slice(from, to + 1)
-      .filter(
-        (statement) =>
-          !statement
-            .getText(ask)
-            .startsWith("captureAgentCompletionAnalytics("),
-      )
-      .map((statement) => statement.getText(ask))
-      .join("\n");
-    return ts.transpileModule(`${body}\nreturn outcome;`, {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-  })();
+        !statement.getText(ask).startsWith("captureAgentCompletionAnalytics("),
+    )
+    .map((statement) => statement.getText(ask))
+    .join("\n");
+  return ts.transpileModule(`${body}\nreturn outcome;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+};
 
+describe.each([
+  // Primary leg: Stop normally clears the finish reason before settlement.
+  ["primary", askSettlement("isAborted", "finalProviderContentBlocked")],
+  // Fallback leg: a genuine provider failure was admitted and the fallback's
+  // own safety read then failed; Stop keeps the finish reason here.
+  ["fallback", askSettlement("retryAborted", "providerContentBlocked")],
+] as const)("Ask %s outcome after a local read", (leg, settlement) => {
   const settle = (
     providerError: unknown,
     streamFinishReason: string | undefined,
-    isAborted = false,
+    aborted = false,
   ) => {
     const chatLogger = {
       emitUnexpectedError: jest.fn(),
@@ -677,9 +699,11 @@ describe("Ask final outcome after a declined local read", () => {
       isProviderContentFilterFinishReason,
       isTrustedBrowserHandoffReadFailure,
       createProviderContentBlockedFinishReasonError,
-      isAborted,
+      isAborted: leg === "primary" && aborted,
+      retryAborted: leg === "fallback" && aborted,
       visionSummaryRecoveryFailure: undefined,
       terminalEmptyResponse: false,
+      retryEmptyResponse: false,
       isPreemptiveAbort: false,
       summarizationTracker: { hasSummarized: false },
       chatLogger,
@@ -705,12 +729,15 @@ describe("Ask final outcome after a declined local read", () => {
   );
 
   it("keeps Stop, ordinary success, content filters and other provider errors unchanged", () => {
-    // Stop clears the finish reason before settlement and takes precedence.
-    const stopped = settle(local, undefined, true);
-    expect(stopped.outcome).toBe("aborted");
-    expect(stopped.chatLogger.emitSuccess).toHaveBeenCalledWith(
-      expect.objectContaining({ wasAborted: true }),
-    );
+    // Stop takes precedence whether or not the finish reason was cleared.
+    for (const finishReason of [undefined, "error"]) {
+      const stopped = settle(local, finishReason, true);
+      expect(stopped.outcome).toBe("aborted");
+      expect(stopped.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+      expect(stopped.chatLogger.emitSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({ wasAborted: true }),
+      );
+    }
 
     const ordinary = settle(undefined, "stop");
     expect(ordinary.outcome).toBe("success");
