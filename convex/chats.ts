@@ -6,7 +6,6 @@ import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { syncGoalInputTiming } from "./lib/goalInputTiming";
 import { goalTimingForState } from "../lib/goals/timing";
-import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
 import { deleteFindingRetestsForChatBatch } from "./findingRetests";
@@ -479,10 +478,6 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     return;
   }
 
-  if (await deleteScopeBatch(ctx, chat.id)) {
-    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
-    return;
-  }
   // Delete the chat itself
   await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
@@ -550,10 +545,6 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     return true;
   }
 
-  if (await deleteScopeBatch(ctx, chat.id)) {
-    await scheduleDeleteAllChatsBatch(ctx, userId);
-    return true;
-  }
   await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
   await scheduleDeleteAllChatsBatch(ctx, userId);
