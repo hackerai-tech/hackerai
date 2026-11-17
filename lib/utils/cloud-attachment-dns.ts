@@ -107,29 +107,49 @@ function pinnableHostname(url: string): string | null {
     : null;
 }
 
-const isEmptyList = (value: unknown) =>
-  value === undefined || (Array.isArray(value) && value.length === 0);
+export type CloudAttachmentNetworkRefusal =
+  | "info_malformed"
+  | "internet_access_disabled"
+  | "network_absent"
+  | "network_malformed"
+  | "egress_list_null"
+  | "egress_list_malformed"
+  | "egress_list_restricted"
+  | "egress_proxy_present"
+  | "egress_rules_malformed"
+  | "egress_rules_present";
 
-/** Only an explicit network description without any egress control passes. */
-function hasOpenEgress(info: unknown): boolean {
-  if (!info || typeof info !== "object") return false;
+function listRefusal(value: unknown): CloudAttachmentNetworkRefusal | null {
+  if (value === undefined) return null;
+  if (value === null) return "egress_list_null";
+  if (!Array.isArray(value)) return "egress_list_malformed";
+  return value.length === 0 ? null : "egress_list_restricted";
+}
+
+/** First refusal in the existing gate's order, never the policy's private values.
+ * Only an explicit network description without any egress control passes. */
+function openEgressRefusal(
+  info: unknown,
+): CloudAttachmentNetworkRefusal | null {
+  if (!info || typeof info !== "object") return "info_malformed";
   const { network, allowInternetAccess } = info as Record<string, unknown>;
-  if (allowInternetAccess === false) return false;
-  if (!network || typeof network !== "object" || Array.isArray(network))
-    return false;
+  if (allowInternetAccess === false) return "internet_access_disabled";
+  if (network == null) return "network_absent";
+  if (typeof network !== "object" || Array.isArray(network))
+    return "network_malformed";
   const { allowOut, denyOut, egressProxy, rules } = network as Record<
     string,
     unknown
   >;
-  return (
-    isEmptyList(allowOut) &&
-    isEmptyList(denyOut) &&
-    egressProxy == null &&
-    (rules == null ||
-      (typeof rules === "object" &&
-        !Array.isArray(rules) &&
-        (rules instanceof Map ? rules.size : Object.keys(rules).length) === 0))
-  );
+  const refusal = listRefusal(allowOut) ?? listRefusal(denyOut);
+  if (refusal) return refusal;
+  if (egressProxy != null) return "egress_proxy_present";
+  if (rules == null) return null;
+  if (typeof rules !== "object" || Array.isArray(rules))
+    return "egress_rules_malformed";
+  return (rules instanceof Map ? rules.size : Object.keys(rules).length) === 0
+    ? null
+    : "egress_rules_present";
 }
 
 function selectPublicAddress(records: unknown): string | null {
@@ -180,11 +200,18 @@ export async function resolveCloudAttachmentDnsPin(
   sandbox: AnySandbox,
   url: string,
   signal?: AbortSignal,
-  onDecision?: (decision: CloudAttachmentDnsDecision) => void,
+  onDecision?: (
+    decision: CloudAttachmentDnsDecision,
+    networkReason?: CloudAttachmentNetworkRefusal,
+  ) => void,
 ): Promise<string | null> {
-  const decide = (decision: CloudAttachmentDnsDecision) => {
+  const decide = (
+    decision: CloudAttachmentDnsDecision,
+    networkReason?: CloudAttachmentNetworkRefusal,
+  ) => {
     try {
-      onDecision?.(decision);
+      if (networkReason) onDecision?.(decision, networkReason);
+      else onDecision?.(decision);
     } catch {
       // An optional observer must not change the pin.
     }
@@ -214,8 +241,9 @@ export async function resolveCloudAttachmentDnsPin(
     decide("network_info_unavailable");
     return null;
   }
-  if (!hasOpenEgress(info)) {
-    decide("network_not_verified_open");
+  const networkReason = openEgressRefusal(info);
+  if (networkReason) {
+    decide("network_not_verified_open", networkReason);
     return null;
   }
 

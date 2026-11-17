@@ -1,5 +1,8 @@
 import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostics";
-import type { CloudAttachmentDnsDecision } from "@/lib/utils/cloud-attachment-dns";
+import type {
+  CloudAttachmentDnsDecision,
+  CloudAttachmentNetworkRefusal,
+} from "@/lib/utils/cloud-attachment-dns";
 
 type DownloadInput = {
   platform: "windows" | "posix" | "unknown";
@@ -396,11 +399,14 @@ type SetupContext = {
 export type AttachmentDownloadDnsFallback = {
   decision: CloudAttachmentDnsDecision | "unavailable";
   retryResult: "not_attempted" | "nonzero" | "unobserved" | "threw";
+  networkReason?: CloudAttachmentNetworkRefusal;
 };
 type DnsFallbackContext = {
   attachment_download_dns_fallback_version: 1;
   attachment_download_dns_fallback_decision: AttachmentDownloadDnsFallback["decision"];
   attachment_download_dns_fallback_retry_result: AttachmentDownloadDnsFallback["retryResult"];
+  attachment_download_dns_fallback_network_version?: 1;
+  attachment_download_dns_fallback_network_reason?: CloudAttachmentNetworkRefusal;
 };
 export type AttachmentDownloadFailureContext = Partial<
   ResultContext &
@@ -559,6 +565,13 @@ export function recordAttachmentDownloadDnsFallback(
       attachment_download_dns_fallback_version: 1,
       attachment_download_dns_fallback_decision: input.decision,
       attachment_download_dns_fallback_retry_result: input.retryResult,
+      ...(input.decision === "network_not_verified_open" && input.networkReason
+        ? {
+            attachment_download_dns_fallback_network_version: 1 as const,
+            attachment_download_dns_fallback_network_reason:
+              input.networkReason,
+          }
+        : {}),
     });
   } catch {
     // Optional diagnostics must preserve the original rejection.
