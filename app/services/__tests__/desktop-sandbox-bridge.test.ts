@@ -27,6 +27,7 @@ import {
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
@@ -8829,6 +8830,509 @@ describe("native authorization send receipt", () => {
         expect(mitigationKeys(byCommand["send-failure"])).toEqual([]);
       });
     });
+
+    describe("JSON read snapshot", () => {
+      const invalidResponse = "Invalid Desktop authorization response";
+      const jsonRejection = {
+        ...rejection,
+        httpStatus: 200,
+        approval: "json_error",
+        requestIdShape: "absent",
+        requestId: null,
+      };
+      const jsonGroup = {
+        ...responseGroup,
+        native_authorization_response_http_status: 200,
+        native_authorization_response_approval: "json_error",
+        native_authorization_response_request_id_shape: "absent",
+        native_authorization_response_request_id: null,
+      };
+      const read = {
+        version: 1,
+        kind: "body_read",
+        sourceDepth: 3,
+        sourceChainTruncated: false,
+      };
+      const readGroup = {
+        native_authorization_response_read_version: 1,
+        native_authorization_response_read_kind: "body_read",
+        native_authorization_response_read_source_depth: 3,
+        native_authorization_response_read_source_chain_truncated: false,
+      };
+      const readKeys = (properties: Record<string, unknown> = {}) =>
+        Object.keys(properties).filter((key) =>
+          NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key),
+        );
+      const readChannel = (call: NativeCall) =>
+        call.onAuthorizationResponseReadDiagnostic as MockChannel;
+
+      it.each(["before", "after"])(
+        "joins one same-invocation snapshot delivered %s its json_error receipt",
+        async (order) => {
+          const { calls, replies } = await run(async (call) => {
+            if (order === "after")
+              responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(read);
+            // A duplicate cannot replace the first callback attempt.
+            readChannel(call).onmessage!({
+              ...read,
+              kind: "serde_syntax",
+              sourceDepth: 1,
+            });
+            if (order === "before")
+              responseChannel(call).onmessage!(jsonRejection);
+            return Promise.reject(invalidResponse);
+          });
+
+          expect(calls).toHaveLength(1);
+          const channel = readChannel(calls[0]);
+          expect(channel).toBeDefined();
+          for (const other of [
+            calls[0].onEvent,
+            calls[0].onAuthorizationDiagnostic,
+            calls[0].onAuthorizationCauseDiagnostic,
+            calls[0].onAuthorizationResponseDiagnostic,
+            calls[0].onAuthorizationMitigationDiagnostic,
+            calls[0].onAuthorizationTransportDiagnostic,
+            calls[0].onAuthorizationIoDiagnostic,
+            calls[0].onAuthorizationConnectorDiagnostic,
+          ])
+            expect(channel).not.toBe(other);
+          expect(calls[0]).toMatchObject({
+            cmd: "execute_authorized_stream_command",
+            authorizationId,
+          });
+          expect(Object.keys(calls[0].message as object)).not.toContain(
+            "onAuthorizationResponseReadDiagnostic",
+          );
+          // The product error is the identical single terminal frame.
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: invalidResponse,
+              sequence: 0,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          const final = finals()[0];
+          expect(final.properties).toMatchObject({
+            outcome: "acknowledged",
+            terminalType: "error",
+            telemetry_sample_rate: 1,
+            ...jsonGroup,
+            ...readGroup,
+          });
+          expect(nativeKeys(final.properties)).toEqual([]);
+          for (const event of captures().filter(
+            (event) => event.event !== "desktop_ack_command_settled",
+          ))
+            expect(readKeys(event.properties)).toEqual([]);
+          const enriched = sanitizeDesktopAckEvent({
+            ...final,
+            properties: {
+              ...final.properties,
+              $current_url: "PRIVATE",
+              native_authorization_response_read_message: "PRIVATE",
+            },
+          });
+          // The frozen v1 response group is unchanged beside the new group.
+          expect(responseKeys(enriched.properties)).toHaveLength(7);
+          expect(readKeys(enriched.properties)).toHaveLength(4);
+          expect(enriched.properties).toMatchObject(readGroup);
+          const serialized = JSON.stringify([captures(), enriched]);
+          expect(serialized).not.toContain("PRIVATE");
+          expect(serialized).not.toContain(authorizationId);
+          expect(serialized).not.toContain(invalidResponse);
+        },
+      );
+
+      it("keeps the response receipt unchanged when an older native app sends no snapshot", async () => {
+        const { calls } = await run((call) => {
+          responseChannel(call).onmessage!(jsonRejection);
+          return reject(invalidResponse);
+        });
+        expect(calls[0]).toHaveProperty(
+          "onAuthorizationResponseReadDiagnostic",
+        );
+        expect(finals()[0].properties).toMatchObject(jsonGroup);
+        expect(responseKeys(finals()[0].properties)).toHaveLength(7);
+        // Missing is unknown, never defaulted to a kind.
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it.each<[string, (call: NativeCall) => void]>([
+        [
+          "no response receipt",
+          (call) =>
+            (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt),
+        ],
+        [
+          "an unread non-2xx receipt",
+          (call) => responseChannel(call).onmessage!(rejection),
+        ],
+        [
+          "a decoded approved_false receipt",
+          (call) =>
+            responseChannel(call).onmessage!({
+              ...jsonRejection,
+              approval: "approved_false",
+            }),
+        ],
+        [
+          "a malformed json_error receipt",
+          (call) =>
+            responseChannel(call).onmessage!({
+              ...jsonRejection,
+              httpStatus: 403,
+            }),
+        ],
+        [
+          "a malformed first receipt followed by a valid one",
+          (call) => {
+            responseChannel(call).onmessage!("PRIVATE");
+            responseChannel(call).onmessage!(jsonRejection);
+          },
+        ],
+      ])("never joins a snapshot to %s", async (_case, respond) => {
+        const { calls, replies } = await run((call) => {
+          readChannel(call).onmessage!(read);
+          respond(call);
+          return reject(invalidResponse);
+        });
+        expect(calls).toHaveLength(1);
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: invalidResponse }),
+        ]);
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      });
+
+      it.each<[string, () => unknown]>([
+        ["an extra private field", () => ({ ...read, message: "PRIVATE" })],
+        ["a missing version", () => ({ ...read, version: undefined })],
+        ["another version", () => ({ ...read, version: 2 })],
+        ["a string version", () => ({ ...read, version: "1" })],
+        ["an unknown kind", () => ({ ...read, kind: "PRIVATE" })],
+        ["the outer decode predicate", () => ({ ...read, kind: "decode" })],
+        ["a string depth", () => ({ ...read, sourceDepth: "3" })],
+        ["a negative depth", () => ({ ...read, sourceDepth: -1 })],
+        ["a depth beyond the budget", () => ({ ...read, sourceDepth: 9 })],
+        ["a fractional depth", () => ({ ...read, sourceDepth: 1.5 })],
+        ["a NaN depth", () => ({ ...read, sourceDepth: NaN })],
+        ["an infinite depth", () => ({ ...read, sourceDepth: Infinity })],
+        [
+          "a string truncation",
+          () => ({ ...read, sourceChainTruncated: "false" }),
+        ],
+        [
+          "a truncation below the budget",
+          () => ({ ...read, sourceChainTruncated: true }),
+        ],
+        [
+          "a witnessed kind without a walked link",
+          () => ({ ...read, kind: "serde_eof", sourceDepth: 0 }),
+        ],
+        ["a response receipt on the read channel", () => jsonRejection],
+        ["a raw error string", () => "PRIVATE"],
+        ["null", () => null],
+        [
+          "a class instance",
+          () =>
+            Object.assign(Object.create({ raw: "PRIVATE" }) as object, read),
+        ],
+        [
+          "a throwing getter",
+          () =>
+            Object.defineProperty({ ...read }, "kind", {
+              enumerable: true,
+              get() {
+                throw new Error("PRIVATE");
+              },
+            }),
+        ],
+        [
+          "a throwing proxy",
+          () => {
+            const fail = () => {
+              throw new Error("PRIVATE");
+            };
+            return new Proxy(
+              {},
+              { getPrototypeOf: fail, ownKeys: fail, get: fail },
+            );
+          },
+        ],
+      ])(
+        "drops the snapshot for %s and keeps the response receipt",
+        async (_case, value) => {
+          const { calls, replies } = await run((call) => {
+            readChannel(call).onmessage!(value());
+            // The malformed first attempt closed the snapshot latch.
+            readChannel(call).onmessage!(read);
+            responseChannel(call).onmessage!(jsonRejection);
+            return reject(invalidResponse);
+          });
+          expect(calls).toHaveLength(1);
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: invalidResponse,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          expect(finals()[0].properties).toMatchObject(jsonGroup);
+          expect(readKeys(finals()[0].properties)).toEqual([]);
+          expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+        },
+      );
+
+      it("adds no snapshot to a successful command", async () => {
+        await run(async (call) => {
+          readChannel(call).onmessage!(read);
+          responseChannel(call).onmessage!(jsonRejection);
+          (call.onEvent as MockChannel).onmessage!({
+            type: "exit",
+            exitCode: 0,
+          });
+        });
+        expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+        expect(responseKeys(finals()[0].properties)).toEqual([]);
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("drops a snapshot after settlement and releases its callback", async () => {
+        let call!: NativeCall;
+        await run((native) => {
+          call = native;
+          responseChannel(native).onmessage!(jsonRejection);
+          return reject(invalidResponse);
+        });
+        const channel = readChannel(call);
+        expect(channel.cleanupCallback).toHaveBeenCalledTimes(1);
+        channel.onmessage!(read);
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject(jsonGroup);
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("drops a snapshot observed under another analytics owner", async () => {
+        const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+        try {
+          await run((call) => {
+            responseChannel(call).onmessage!(jsonRejection);
+            identity.mockReturnValue("another-user");
+            readChannel(call).onmessage!(read);
+            // The closed latch keeps it from attaching after the owner returns.
+            identity.mockReturnValue("user-456");
+            readChannel(call).onmessage!(read);
+            return reject(invalidResponse);
+          });
+          expect(finals()[0].properties).toMatchObject(jsonGroup);
+          expect(readKeys(finals()[0].properties)).toEqual([]);
+        } finally {
+          identity.mockReturnValue("user-456");
+        }
+      });
+
+      it("drops a snapshot that arrives after the connection is stopped", async () => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (call) => {
+            await pending;
+            responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(read);
+            return reject(invalidResponse);
+          },
+          {
+            beforeAck: async (bridge) => {
+              await bridge.stop();
+              release();
+            },
+          },
+        );
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({
+          outcome: "incomplete",
+          reason: "stopped",
+        });
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      // Only the read callback runs under a replaced router or connection;
+      // both are restored before the invocation rejects and settles, so the
+      // base receipt, the terminal frame and the settlement are unaffected.
+      it.each<[string, "operationRouter" | "connectionId" | null]>([
+        ["no swap (control)", null],
+        ["a replaced operation router", "operationRouter"],
+        ["a replaced connection", "connectionId"],
+      ])(
+        "joins a snapshot only when its callback is not fenced by %s",
+        async (_case, field) => {
+          let bridge!: DesktopSandboxBridge;
+          let release!: () => void;
+          const pending = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          let restored = true;
+          const { calls, replies } = await run(
+            async (call) => {
+              await pending;
+              responseChannel(call).onmessage!(jsonRejection);
+              const state = bridge as unknown as Record<string, unknown>;
+              if (field) {
+                const original = state[field];
+                state[field] =
+                  field === "connectionId" ? "conn-replaced" : { replaced: 1 };
+                restored = false;
+                readChannel(call).onmessage!(read);
+                state[field] = original;
+                restored = state[field] === original;
+              } else readChannel(call).onmessage!(read);
+              // The fenced first attempt closed the latch for good.
+              readChannel(call).onmessage!(read);
+              return reject(invalidResponse);
+            },
+            {
+              beforeAck: async (owned) => {
+                bridge = owned;
+                release();
+              },
+            },
+          );
+          expect(restored).toBe(true);
+          expect(calls).toHaveLength(1);
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: invalidResponse,
+              sequence: 0,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          const properties = finals()[0].properties;
+          expect(properties).toMatchObject({
+            outcome: "acknowledged",
+            reason: "terminal_ack",
+            terminalType: "error",
+            ...jsonGroup,
+          });
+          expect(responseKeys(properties)).toHaveLength(7);
+          if (field) expect(readKeys(properties)).toEqual([]);
+          else expect(properties).toMatchObject(readGroup);
+          const enriched = sanitizeDesktopAckEvent({
+            ...finals()[0],
+            properties: { ...properties },
+          });
+          expect(readKeys(enriched.properties)).toHaveLength(field ? 0 : 4);
+          expect(responseKeys(enriched.properties)).toHaveLength(7);
+        },
+      );
+
+      it("keeps every other channel when only the read channel cannot be created", async () => {
+        const { Channel } = await import("@tauri-apps/api/core");
+        const create = jest.mocked(Channel).getMockImplementation()!;
+        const mocked = jest.mocked(Channel);
+        for (let index = 0; index < 7; index++)
+          mocked.mockImplementationOnce(create);
+        mocked.mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+        const { calls, replies } = await run((call) => {
+          responseChannel(call).onmessage!(jsonRejection);
+          return reject(invalidResponse);
+        });
+        expect(calls).toHaveLength(1);
+        for (const key of [
+          "onEvent",
+          "onAuthorizationDiagnostic",
+          "onAuthorizationCauseDiagnostic",
+          "onAuthorizationResponseDiagnostic",
+          "onAuthorizationMitigationDiagnostic",
+          "onAuthorizationTransportDiagnostic",
+          "onAuthorizationIoDiagnostic",
+          "onAuthorizationConnectorDiagnostic",
+        ])
+          expect(calls[0]).toHaveProperty(key);
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationResponseReadDiagnostic",
+        );
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: invalidResponse }),
+        ]);
+        expect(finals()[0].properties).toMatchObject(jsonGroup);
+        expect(readKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("never requests a snapshot without the response channel", async () => {
+        const { Channel } = await import("@tauri-apps/api/core");
+        const create = jest.mocked(Channel).getMockImplementation()!;
+        jest
+          .mocked(Channel)
+          .mockImplementationOnce(create)
+          .mockImplementationOnce(create)
+          .mockImplementationOnce(() => {
+            throw new Error("channel unavailable");
+          });
+        const { calls, replies } = await run(() => reject(invalidResponse));
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationResponseDiagnostic",
+        );
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationResponseReadDiagnostic",
+        );
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: invalidResponse }),
+        ]);
+      });
+
+      it("keeps interleaved invocations' snapshots separate", async () => {
+        let arrived = 0;
+        let release!: () => void;
+        const all = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (call) => {
+            const commandId = (call.message as { commandId: string }).commandId;
+            // This snapshot arrives first, long before its own receipt.
+            if (commandId === "early-read")
+              readChannel(call).onmessage!({
+                ...read,
+                kind: "timeout",
+                sourceDepth: 2,
+              });
+            if (++arrived === 3) release();
+            await all;
+            if (commandId === "forbidden") {
+              responseChannel(call).onmessage!(rejection);
+              readChannel(call).onmessage!(read);
+            } else responseChannel(call).onmessage!(jsonRejection);
+            return reject(invalidResponse);
+          },
+          { commandIds: ["early-read", "forbidden", "no-read"] },
+        );
+        const byCommand = Object.fromEntries(
+          finals().map((event) => [
+            event.properties!.commandId,
+            event.properties,
+          ]),
+        );
+        expect(byCommand["early-read"]).toMatchObject({
+          ...jsonGroup,
+          native_authorization_response_read_kind: "timeout",
+          native_authorization_response_read_source_depth: 2,
+        });
+        expect(byCommand.forbidden).toMatchObject(responseGroup);
+        expect(readKeys(byCommand.forbidden)).toEqual([]);
+        expect(byCommand["no-read"]).toMatchObject(jsonGroup);
+        expect(readKeys(byCommand["no-read"])).toEqual([]);
+      });
+    });
   });
 
   describe("first terminal error kind", () => {
@@ -9336,10 +9840,10 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt, cause, response, mitigation, transport, IO and
-      // connector channels besides the output one.
+      // optional receipt, cause, response, mitigation, transport, IO,
+      // connector and response-read channels besides the output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 8,
+        options?.version || options?.acknowledged === false ? 1 : 9,
       );
       const optional = [
         "onAuthorizationDiagnostic",
@@ -9349,6 +9853,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationTransportDiagnostic",
         "onAuthorizationIoDiagnostic",
         "onAuthorizationConnectorDiagnostic",
+        "onAuthorizationResponseReadDiagnostic",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

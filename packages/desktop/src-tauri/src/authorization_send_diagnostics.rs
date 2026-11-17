@@ -17,7 +17,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 const MAX_ELAPSED_MS: u64 = 60_000;
-const MAX_SOURCE_LINKS: u8 = 8;
+pub(crate) const MAX_SOURCE_LINKS: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]

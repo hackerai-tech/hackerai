@@ -26,8 +26,10 @@ import {
   nativeAuthorizationIoDiagnostic,
   nativeAuthorizationMitigationDiagnostic,
   nativeAuthorizationResponseDiagnostic,
+  nativeAuthorizationResponseReadDiagnostic,
   nativeAuthorizationTransportDiagnostic,
   parseNativeAuthorizationResponseMitigation,
+  parseNativeAuthorizationResponseRead,
   parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendConnector,
@@ -35,6 +37,7 @@ import {
   parseNativeAuthorizationSendReceipt,
   parseNativeAuthorizationSendTransport,
   type NativeAuthorizationResponseMitigation,
+  type NativeAuthorizationResponseRead,
   type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
   type NativeAuthorizationSendConnector,
@@ -1426,7 +1429,8 @@ export class DesktopSandboxBridge {
     // The IO supplement has its own channel and latch too, and joins only the
     // v1, cause and transport receipts that describe the same IO error. The
     // connector snapshot has its own channel and latch and joins only the v1
-    // receipt.
+    // receipt. The JSON read snapshot has its own channel and latch, and joins
+    // only a `json_error` response receipt; either may arrive first.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     const receiptFenced = () =>
@@ -1441,6 +1445,7 @@ export class DesktopSandboxBridge {
     let connectorOpen = true;
     let responseOpen = true;
     let mitigationOpen = true;
+    let responseReadOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -1448,6 +1453,7 @@ export class DesktopSandboxBridge {
     let sendConnector: NativeAuthorizationSendConnector | null = null;
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
+    let responseRead: NativeAuthorizationResponseRead | null = null;
     let invocationRejected = false;
     // The stream keeps only the first terminal it is handed, so the kind
     // latches with it, synchronously before append can settle. A later
@@ -1488,6 +1494,7 @@ export class DesktopSandboxBridge {
         connectorOpen = false;
         responseOpen = false;
         mitigationOpen = false;
+        responseReadOpen = false;
         terminalLatched = true;
         onSettled(
           {
@@ -1529,6 +1536,11 @@ export class DesktopSandboxBridge {
                   nativeAuthorizationMitigation:
                     nativeAuthorizationMitigationDiagnostic(responseMitigation),
                 }),
+                ...(responseRead &&
+                  responseReceipt.approval === "json_error" && {
+                    nativeAuthorizationResponseRead:
+                      nativeAuthorizationResponseReadDiagnostic(responseRead),
+                  }),
               }),
           },
           this.commandOutputStopSource,
@@ -1545,6 +1557,7 @@ export class DesktopSandboxBridge {
     let transportChannel: object | undefined;
     let ioChannel: object | undefined;
     let connectorChannel: object | undefined;
+    let responseReadChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1656,6 +1669,21 @@ export class DesktopSandboxBridge {
             connectorChannel = undefined;
           }
         }
+        // A read snapshot is only ever reported with the response receipt.
+        if (responseChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!responseReadOpen) return;
+              responseReadOpen = false;
+              if (receiptFenced()) return;
+              responseRead = parseNativeAuthorizationResponseRead(value);
+            };
+            responseReadChannel = channel;
+          } catch {
+            responseReadChannel = undefined;
+          }
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1708,6 +1736,9 @@ export class DesktopSandboxBridge {
               ...(ioChannel && { onAuthorizationIoDiagnostic: ioChannel }),
               ...(connectorChannel && {
                 onAuthorizationConnectorDiagnostic: connectorChannel,
+              }),
+              ...(responseReadChannel && {
+                onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
             },
             invocationTrace,
@@ -1765,6 +1796,7 @@ export class DesktopSandboxBridge {
         transportChannel,
         ioChannel,
         connectorChannel,
+        responseReadChannel,
       ]) {
         try {
           (
