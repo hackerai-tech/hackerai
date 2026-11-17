@@ -50,6 +50,9 @@ jest.mock("@/lib/api/agent-approval-session", () => ({
   cancelAgentTriggerRun: (...args: unknown[]) => mockCancel(...args),
   closeAgentApprovalSession: jest.fn(),
 }));
+jest.mock("@/lib/goals/analytics", () => ({
+  captureGoalLifecycle: jest.fn(async () => undefined),
+}));
 import { GET, POST } from "../route";
 const mockMutation = jest.fn(),
   mockChat = jest.fn(),
@@ -421,6 +424,244 @@ describe("goal status failure diagnostics", () => {
     });
     expect(query).toHaveBeenCalledTimes(1);
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
+  });
+});
+
+describe("goal control failure diagnostics", () => {
+  const warn = jest.mocked(phLogger.warn);
+  const auth = jest.mocked(require("@/lib/auth/get-user-id").getUserIDAndPro);
+  const close = jest.mocked(
+    require("@/lib/api/agent-approval-session").closeAgentApprovalSession,
+  );
+  const capture = jest.mocked(
+    require("@/lib/goals/analytics").captureGoalLifecycle,
+  );
+  const unavailable = {
+    message: "Goal control could not finish. Reload to check saved state.",
+  };
+  const pause = { chatId: "chat", action: "pause" };
+  const update = {
+    chatId: "chat",
+    action: "update",
+    generation: 4,
+    objective: "Revised request",
+    criteria: ["Revised request"],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    warn.mockReset();
+    mockChat.mockResolvedValue({
+      user_id: "owner",
+      active_agent_approval_session_id: "approval",
+    });
+    mockMutation.mockResolvedValue({
+      state: "paused",
+      generation: 5,
+      activeRunId: "claimed-run",
+    });
+  });
+
+  it.each([
+    {
+      stage: "auth_lookup",
+      inject: () => auth.mockRejectedValueOnce(new Error("PRIVATE_AUTH")),
+      kind: "other_error",
+      calls: [0, 0, 0, 0],
+    },
+    {
+      stage: "parse_request",
+      // A synchronous body-reader failure escapes the existing 400 fallback.
+      request: {
+        json: () => {
+          throw new Error("PRIVATE_BODY");
+        },
+      },
+      kind: "other_error",
+      calls: [0, 0, 0, 0],
+    },
+    {
+      stage: "get_chat",
+      inject: () =>
+        mockChat.mockRejectedValueOnce(
+          new ConvexError("[Request ID: 0123456789abcdef] PRIVATE_CHAT"),
+        ),
+      kind: "convex_error",
+      requestId: "0123456789abcdef",
+      calls: [0, 0, 0, 0],
+    },
+    {
+      stage: "update_goal",
+      body: update,
+      inject: () =>
+        mockMutation.mockRejectedValueOnce(new TypeError("PRIVATE_FETCH")),
+      kind: "type_error",
+      calls: [1, 0, 0, 0],
+    },
+    {
+      stage: "control_goal",
+      inject: () =>
+        mockMutation.mockRejectedValueOnce(
+          Object.assign(new ConvexError("Goal chat unavailable"), {
+            message: "[Request ID: ABCDEF0123456789] PRIVATE_GOAL",
+          }),
+        ),
+      kind: "goal_chat_unavailable",
+      requestId: "abcdef0123456789",
+      calls: [1, 0, 0, 0],
+    },
+    {
+      stage: "close_approval_session",
+      inject: () => close.mockRejectedValueOnce(new Error("PRIVATE_CLOSE")),
+      kind: "other_error",
+      calls: [1, 1, 0, 0],
+    },
+    {
+      // The control mutation already succeeded; it is not retried or replayed.
+      stage: "cancel_trigger_run",
+      inject: () => mockCancel.mockRejectedValueOnce("PRIVATE_THROWN"),
+      kind: "thrown_value",
+      calls: [1, 1, 1, 0],
+    },
+    {
+      stage: "capture_lifecycle",
+      body: update,
+      inject: () => capture.mockRejectedValueOnce(new Error("PRIVATE_CAPTURE")),
+      kind: "other_error",
+      calls: [1, 1, 1, 1],
+    },
+    {
+      stage: "response",
+      inject: () =>
+        jest.spyOn(MockResponse, "json").mockImplementationOnce(() => {
+          throw new Error("PRIVATE_RESPONSE");
+        }),
+      kind: "other_error",
+      calls: [1, 1, 1, 1],
+    },
+  ])(
+    "attributes a generic failure to $stage without replaying earlier work",
+    async ({
+      stage,
+      request: custom,
+      body,
+      inject,
+      kind,
+      requestId,
+      calls,
+    }) => {
+      inject?.();
+      try {
+        const response = await POST(
+          (custom ?? request(body ?? pause)) as unknown as NextRequest,
+        );
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual(unavailable);
+      } finally {
+        jest.restoreAllMocks();
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("agent_goal_control_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: stage,
+        failure_kind: kind,
+        convex_request_id: requestId ?? "none",
+      });
+      // No error content or request/user/chat/run/approval identifiers.
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+        /PRIVATE|owner|claimed-run|"chat"|"approval"|Revised/,
+      );
+      expect([
+        mockMutation.mock.calls.length,
+        close.mock.calls.length,
+        mockCancel.mock.calls.length,
+        capture.mock.calls.length,
+      ]).toEqual(calls);
+    },
+  );
+
+  it("cancels the run returned by a successful update before any later failure", async () => {
+    capture.mockRejectedValueOnce(new Error("PRIVATE_CAPTURE"));
+    expect((await POST(request(update))).status).toBe(503);
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ generation: 4, objective: "Revised request" }),
+    );
+    expect(close).toHaveBeenCalledWith("approval", "goal-user-control");
+    expect(mockCancel).toHaveBeenCalledWith("claimed-run");
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancel.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each(["auth_lookup", "cancel_trigger_run"])(
+    "keeps a typed error from %s as its own response without a warning",
+    async (stage) => {
+      const error = new ChatSDKError("unauthorized:chat");
+      if (stage === "auth_lookup") auth.mockRejectedValueOnce(error);
+      else mockCancel.mockRejectedValueOnce(error);
+      const expected = error.toResponse();
+      const response = await POST(request(pause));
+      expect(response.status).toBe(expected.status);
+      expect(await response.json()).toEqual(await expected.json());
+      expect(warn).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledTimes(
+        stage === "auth_lookup" ? 0 : 1,
+      );
+    },
+  );
+
+  it("does not warn for successful, invalid or foreign-chat controls", async () => {
+    expect((await POST(request(pause))).status).toBe(200);
+    expect((await POST(request(update))).status).toBe(200);
+    expect((await POST(request({ chatId: "chat" }))).status).toBe(400);
+    mockChat.mockResolvedValueOnce({ user_id: "other" });
+    expect((await POST(request(pause))).status).toBe(403);
+    expect(warn).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the unavailable response when logging or error inspection fails", async () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    const accessorError = new Error("PRIVATE_MESSAGE");
+    for (const key of ["message", "data"])
+      Object.defineProperty(accessorError, key, { get: getter });
+    const proxyError = new Proxy(new Error("PRIVATE_PROXY"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("PRIVATE_TRAP");
+      },
+    });
+    mockMutation
+      .mockRejectedValueOnce(accessorError)
+      .mockRejectedValueOnce(proxyError)
+      .mockRejectedValueOnce(new Error("[Request ID: PRIVATE_ID] x"));
+    warn.mockImplementationOnce(() => {
+      throw new Error("PRIVATE_LOGGER");
+    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await POST(request(pause));
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual(unavailable);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(warn.mock.calls.map(([, fields]) => fields)).toEqual(
+      [
+        ["other_error", "none"],
+        ["unreadable_error", "none"],
+        ["other_error", "none"],
+      ].map(([failure_kind, convex_request_id]) => ({
+        diagnostic_version: 1,
+        failure_stage: "control_goal",
+        failure_kind,
+        convex_request_id,
+      })),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    expect(mockMutation).toHaveBeenCalledTimes(3);
     expect(mockCancel).not.toHaveBeenCalled();
   });
 });

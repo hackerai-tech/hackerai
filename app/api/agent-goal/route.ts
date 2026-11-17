@@ -81,9 +81,27 @@ async function handleGet(req: NextRequest) {
 }
 export const GET = withServiceQueryRecovery(handleGet);
 
+/**
+ * The last control boundary entered before a failure. It never proves that a
+ * remote call was dispatched or applied: e.g. a mutation can have succeeded
+ * before a later cancellation fails, and argument construction can throw first.
+ */
+type GoalControlStage =
+  | "auth_lookup"
+  | "parse_request"
+  | "get_chat"
+  | "update_goal"
+  | "control_goal"
+  | "close_approval_session"
+  | "cancel_trigger_run"
+  | "capture_lifecycle"
+  | "response";
+
 export async function POST(req: NextRequest) {
+  let failureStage: GoalControlStage = "auth_lookup";
   try {
     const { userId } = await getUserIDAndPro(req);
+    failureStage = "parse_request";
     const parsed = controlRequest.safeParse(await req.json().catch(() => null));
     if (!parsed.success)
       return Response.json(
@@ -91,10 +109,12 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     const body = parsed.data;
+    failureStage = "get_chat";
     const chat = await getChatById({ id: body.chatId });
     if (!chat || chat.user_id !== userId)
       return Response.json({ message: "Chat unavailable" }, { status: 403 });
     const { action, ...fields } = body;
+    failureStage = action === "update" ? "update_goal" : "control_goal";
     const goal =
       action === "update"
         ? await getConvexClient().mutation(api.agentGoals.update, {
@@ -110,27 +130,41 @@ export async function POST(req: NextRequest) {
             generation: body.generation,
           });
     if (goal.activeRunId) {
+      failureStage = "close_approval_session";
       await closeAgentApprovalSession(
         chat.active_agent_approval_session_id,
         "goal-user-control",
       );
+      failureStage = "cancel_trigger_run";
       await cancelAgentTriggerRun(goal.activeRunId);
     }
+    failureStage = "capture_lifecycle";
     await captureGoalLifecycle(
       action === "update" ? "update" : action,
       { userId, chatId: body.chatId, runId: goal.activeRunId },
       goal,
     );
+    failureStage = "response";
     return Response.json({ state: goal.state, generation: goal.generation });
   } catch (e) {
-    return e instanceof ChatSDKError
-      ? e.toResponse()
-      : Response.json(
-          {
-            message:
-              "Goal control could not finish. Reload to check saved state.",
-          },
-          { status: 503 },
-        );
+    if (e instanceof ChatSDKError) return e.toResponse();
+    const { failureKind, convexRequestId } =
+      classifyGoalReconciliationFailure(e);
+    try {
+      phLogger.warn("agent_goal_control_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: failureStage,
+        failure_kind: failureKind,
+        convex_request_id: convexRequestId,
+      });
+    } catch {
+      // Diagnostics must not replace the existing response or retry the control.
+    }
+    return Response.json(
+      {
+        message: "Goal control could not finish. Reload to check saved state.",
+      },
+      { status: 503 },
+    );
   }
 }
