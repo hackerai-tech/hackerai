@@ -1719,37 +1719,45 @@ describe("createAgentStream repeated compaction", () => {
       return { state, stream };
     };
 
+    // One parsed-file annotation of roughly `words` estimated tokens.
+    const fileAnnotations = (words: number, withImage = false) => [
+      {
+        type: "file",
+        file: {
+          hash: "synthetic-hash",
+          name: "synthetic.pdf",
+          content: [
+            {
+              type: "text",
+              text: `${ANNOTATION_CANARY}${" word".repeat(words)}`,
+            },
+            ...(withImage
+              ? [{ type: "image_url", image_url: { url: IMAGE_URL } }]
+              : []),
+          ],
+        },
+      },
+    ];
+
     // Source-owned growth: annotations from a finished step are attached to
-    // the next prepared request after the rolling compaction check ran.
-    const finishStepWithLargeAnnotations = (stream: any) =>
+    // the next prepared request.
+    const finishStepWithAnnotations = (
+      stream: any,
+      annotations = fileAnnotations(MAX_TOKENS_PAID + 10_000, true),
+      modelId = "synthetic/provider-model",
+    ) =>
       stream.onStepFinish({
         content: [],
-        response: { modelId: "synthetic/provider-model", messages: [] },
-        providerMetadata: {
-          openrouter: {
-            annotations: [
-              {
-                type: "file",
-                file: {
-                  hash: "synthetic-hash",
-                  name: "synthetic.pdf",
-                  content: [
-                    {
-                      type: "text",
-                      text: `${ANNOTATION_CANARY}${" word".repeat(MAX_TOKENS_PAID + 10_000)}`,
-                    },
-                    { type: "image_url", image_url: { url: IMAGE_URL } },
-                  ],
-                },
-              },
-            ],
-          },
-        },
+        response: { modelId, messages: [] },
+        providerMetadata: { openrouter: { annotations } },
         toolCalls: [],
         toolResults: [],
         text: "",
         finishReason: "tool-calls",
       });
+
+    const countCanary = (value: unknown) =>
+      JSON.stringify(value).split(ANNOTATION_CANARY).length - 1;
 
     beforeEach(() => {
       mockGetProviderPromptPressure.mockReturnValue(null);
@@ -1760,28 +1768,40 @@ describe("createAgentStream repeated compaction", () => {
       warn.mockRestore();
     });
 
-    it("explains annotation growth that crosses the guard without a compaction attempt", async () => {
+    it("bounds one failed compaction for annotation growth that cannot fit and explains the guard", async () => {
       const original = [uiMessage("initial", "Read the synthetic attachment")];
       const { state, stream } = await createRouteAwareStream(original);
-      await finishStepWithLargeAnnotations(stream);
+      await finishStepWithAnnotations(stream);
       // The previous provider request was comfortably below the threshold.
       state.lastStepInputTokens = 136_500;
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      const step = {
+        steps: [{ toolResults: [] }],
+        stepNumber: 1,
+        messages: stepMessages,
+      };
 
-      await expect(
-        stream.prepareStep({
-          steps: [{ toolResults: [] }],
-          stepNumber: 1,
-          messages: stepMessages,
-        }),
-      ).rejects.toThrow(GUARD_MESSAGE);
+      await expect(stream.prepareStep(step)).rejects.toThrow(GUARD_MESSAGE);
+      // A retry of the same raw cursor must not spend another summary.
+      await expect(stream.prepareStep(step)).rejects.toThrow(GUARD_MESSAGE);
 
-      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+      // The summarizer receives the rolling history, not the annotation.
+      expect(countCanary(mockCompactModelMessagesInRun.mock.calls[0][0])).toBe(
+        0,
+      );
       expect(mockRunSummarizationStep).not.toHaveBeenCalled();
       expect(state.finalMessages).toEqual(original);
-      const [warning] = budgetWarnings();
+      const warnings = budgetWarnings();
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1]).toMatchObject({
+        compaction_attempt_count: 1,
+        unproductive_compaction_count: 1,
+      });
+      const [warning] = warnings;
       expect(warning).toMatchObject({
-        compaction_attempt_count: 0,
-        unproductive_compaction_count: 0,
+        compaction_attempt_count: 1,
+        unproductive_compaction_count: 1,
         context_budget_projection_diagnostic_version: 1,
         context_budget_step_index: 1,
         context_budget_decision_source: "rolling_check",
@@ -1792,9 +1812,9 @@ describe("createAgentStream repeated compaction", () => {
         context_budget_annotation_image_part_count: 1,
         context_budget_annotation_image_url_chars: 46,
       });
-      // The existing decision measured a request below the threshold, while
-      // the guard measured the same step's prepared request above the budget.
-      expect(warning.context_budget_decision_input_tokens).toBeLessThan(
+      // The decision counted the attached annotation, so it compacted; the
+      // annotation alone still keeps the prepared request above the budget.
+      expect(warning.context_budget_decision_input_tokens).toBeGreaterThan(
         threshold,
       );
       expect(warning.estimated_input_tokens).toBeGreaterThan(MAX_TOKENS_PAID);
@@ -1825,7 +1845,7 @@ describe("createAgentStream repeated compaction", () => {
       // The healthy step evaluated the rolling check but emitted nothing.
       expect(budgetWarnings()).toHaveLength(0);
 
-      await finishStepWithLargeAnnotations(stream);
+      await finishStepWithAnnotations(stream);
       // Provider usage short-circuits the rolling estimate on this step.
       state.lastStepInputTokens = MAX_TOKENS_PAID;
       mockCompactModelMessagesInRun.mockResolvedValue(null);
@@ -1888,6 +1908,287 @@ describe("createAgentStream repeated compaction", () => {
       expect(warning).not.toHaveProperty(
         "context_budget_annotation_image_url_chars",
       );
+    });
+
+    describe("paid treatment annotation growth", () => {
+      // Production shape: paid Auto treatment on a verified 1M route resolves
+      // a 500K budget with a 480K compaction threshold.
+      const PAID_MODEL_ID = "z-ai/glm-5.3";
+      const PAID_BUDGET = 500_000;
+      // Mirrors the observed failure: rolling history ~220K tokens, previous
+      // provider usage ~456K and one ~298K non-image file annotation.
+      const ANNOTATION_WORDS = 298_000;
+      const history: ModelMessage[] = [
+        {
+          role: "user",
+          content: `Review the attached report${" ordinary".repeat(220_000)}`,
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "read-report",
+              toolName: "run_terminal_cmd",
+              input: { command: "wc -c report.pdf" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "read-report",
+              toolName: "run_terminal_cmd",
+              output: { type: "text", value: "report.pdf parsed" },
+            },
+          ],
+        },
+      ];
+      const original = [uiMessage("initial", "Review the attached report")];
+      const step = { steps: [{ toolResults: [] }], stepNumber: 1 };
+
+      const createPaidStream = async (overrides: Record<string, unknown>) => {
+        const state = initAgentStreamState(original, {
+          usedTokens: 100,
+          maxTokens: PAID_BUDGET,
+        });
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            paidAgentContext: {
+              flagKey: "paid_agent_context_480k_v1",
+              variant: "test",
+              requestedSelection: "auto",
+            },
+            trackedProvider: {
+              languageModel: () => ({ modelId: PAID_MODEL_ID }),
+            },
+            usageTracker: {
+              setAuthoritativeModelCostForStep: jest.fn(),
+              computeCostDollars: () => 0,
+            },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+              recordSummarization: jest.fn(),
+              recordSummarizationUsage: jest.fn(),
+            },
+            ...overrides,
+          }) as any,
+          state,
+        )) as any;
+        await finishStepWithAnnotations(
+          stream,
+          fileAnnotations(ANNOTATION_WORDS),
+          PAID_MODEL_ID,
+        );
+        return { state, stream };
+      };
+
+      it("compacts once and sends the summary with the annotation once", async () => {
+        const { state, stream } = await createPaidStream({});
+        state.lastStepInputTokens = 455_916;
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Report reviewed</context_summary>",
+          ),
+          summarizationUsage: {},
+        });
+
+        const prepared = await stream.prepareStep({
+          ...step,
+          messages: history,
+        });
+
+        expect(budgetWarnings()).toHaveLength(0);
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+        const [compactionInput] = mockCompactModelMessagesInRun.mock.calls[0];
+        expect(compactionInput.maxTokens).toBe(PAID_BUDGET);
+        expect(countCanary(compactionInput)).toBe(0);
+        const sent = JSON.stringify(prepared.messages);
+        expect(sent).toContain("Report reviewed");
+        expect(sent).toContain("read-report");
+        expect(sent).not.toContain("Review the attached report");
+        expect(countCanary(prepared.messages)).toBe(1);
+        expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+        expect(state.finalMessages).toEqual(original);
+      });
+
+      it("keeps the annotation memo when the compacted request has no assistant and reuses it once on the next assistant", async () => {
+        const PDF_CANARY = "PRIVATE_PDF_PART_CANARY";
+        const pdfHistory: ModelMessage[] = [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: history[0].content as string },
+              {
+                type: "file",
+                mediaType: "application/pdf",
+                filename: "report.pdf",
+                data: PDF_CANARY,
+              },
+            ],
+          },
+          ...history.slice(1),
+        ];
+        const { state, stream } = await createPaidStream({});
+        state.lastStepInputTokens = 455_916;
+        // Existing empty-tail shape: runtime context consumes the whole
+        // retained-tail budget, so no assistant message survives compaction.
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Report reviewed</context_summary>",
+          ),
+          runtimeContextTokens: require("@/lib/chat/summarization/constants")
+            .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+          summarizationUsage: {},
+        });
+
+        const compacted = await stream.prepareStep({
+          ...step,
+          messages: pdfHistory,
+        });
+
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+        expect(budgetWarnings()).toHaveLength(0);
+        const compactedJson = JSON.stringify(compacted.messages);
+        expect(compactedJson).toContain("Report reviewed");
+        // The source PDF part was summarized away with the history.
+        expect(compactedJson).not.toContain(PDF_CANARY);
+        expect(
+          compacted.messages.some(
+            (message: ModelMessage) => message.role === "assistant",
+          ),
+        ).toBe(false);
+        // Existing attachment policy: no assistant anchor, so not sent here.
+        expect(countCanary(compacted.messages)).toBe(0);
+
+        // The compacted step finishes without new parsed-file metadata.
+        await stream.onStepFinish({
+          content: [],
+          response: { modelId: PAID_MODEL_ID, messages: [] },
+          providerMetadata: {},
+          toolCalls: [],
+          toolResults: [],
+          text: "",
+          finishReason: "tool-calls",
+        });
+        const next = await stream.prepareStep({
+          steps: [{ toolResults: [] }, { toolResults: [] }],
+          stepNumber: 2,
+          messages: [
+            ...pdfHistory,
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "summarize-findings",
+                  toolName: "run_terminal_cmd",
+                  input: { command: "cat findings.txt" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: "summarize-findings",
+                  toolName: "run_terminal_cmd",
+                  output: { type: "text", value: "findings listed" },
+                },
+              ],
+            },
+          ],
+        });
+
+        // The memo is reused once on the new assistant message, under budget,
+        // without another summary or vision call.
+        const anchored = next.messages.filter(
+          (message: ModelMessage) => countCanary(message) > 0,
+        );
+        expect(anchored).toHaveLength(1);
+        expect(anchored[0].role).toBe("assistant");
+        expect(JSON.stringify(anchored[0])).toContain("summarize-findings");
+        expect(countCanary(next.messages)).toBe(1);
+        expect(JSON.stringify(next.messages)).not.toContain(PDF_CANARY);
+        expect(budgetWarnings()).toHaveLength(0);
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+        expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+        expect(mockDescribeImage).not.toHaveBeenCalled();
+        expect(state.finalMessages).toEqual(original);
+      });
+
+      it("propagates cancellation during that compaction instead of a budget failure", async () => {
+        const abortController = new AbortController();
+        const { state, stream } = await createPaidStream({ abortController });
+        state.lastStepInputTokens = 455_916;
+        const cancelled = new DOMException("Stopped", "AbortError");
+        mockCompactModelMessagesInRun.mockImplementation(async () => {
+          abortController.abort();
+          throw cancelled;
+        });
+
+        await expect(
+          stream.prepareStep({ ...step, messages: history }),
+        ).rejects.toBe(cancelled);
+
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+        expect(budgetWarnings()).toHaveLength(0);
+        expect(state.finalMessages).toEqual(original);
+      });
+
+      it("counts an annotation already on the replayed assistant message once", async () => {
+        // Counted once this stays under the threshold; twice would cross it.
+        const annotations = fileAnnotations(250_000);
+        const { state, stream } = await createPaidStream({});
+        await finishStepWithAnnotations(stream, annotations, PAID_MODEL_ID);
+        state.lastStepInputTokens = 100;
+
+        const prepared = await stream.prepareStep({
+          ...step,
+          messages: [
+            { role: "user", content: "Review the attached report" },
+            {
+              role: "assistant",
+              content: "Reading the report",
+              providerOptions: { openrouter: { annotations } },
+            },
+          ],
+        });
+
+        expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+        expect(budgetWarnings()).toHaveLength(0);
+        expect(countCanary(prepared.messages)).toBe(1);
+      });
+
+      it("keeps the baseline Agent compaction decision and sends its annotation", async () => {
+        // The ~298K annotation would cross the baseline 256K threshold if the
+        // route-aware decision applied outside its own send guard.
+        const { state, stream } = await createPaidStream({
+          paidAgentContext: {
+            flagKey: "paid_agent_context_480k_v1",
+            variant: "control",
+            requestedSelection: "auto",
+          },
+        });
+        state.lastStepInputTokens = 100;
+
+        const prepared = await stream.prepareStep({
+          ...step,
+          messages: stepMessages,
+        });
+
+        expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+        expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+        expect(budgetWarnings()).toHaveLength(0);
+        expect(countCanary(prepared.messages)).toBe(1);
+      });
     });
   });
 

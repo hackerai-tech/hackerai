@@ -2479,8 +2479,17 @@ export async function createAgentStream(
         // Records the value only when the existing short-circuited comparison
         // actually evaluates it; no additional estimate is computed.
         const rollingCheckInputTokens = (): number => {
+          // The route-aware send guard counts parsed-file annotations attached
+          // to the prepared request. Apply the same copy-on-write attachment
+          // here so they are counted once, and only for the decision.
+          const decisionMessages = routeAwareContext
+            ? addOpenRouterFileAnnotationsToLastAssistantMessage(
+                rollingModelMessages,
+                openRouterFileAnnotations,
+              )
+            : rollingModelMessages;
           const inputTokens =
-            estimateSummaryInputTokens(rollingModelMessages) +
+            estimateSummaryInputTokens(decisionMessages) +
             ctx.systemPromptTokens +
             runtimePromptTokens;
           contextBudgetDecision = { source: "rolling_check", inputTokens };
