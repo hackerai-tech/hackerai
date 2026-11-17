@@ -15,6 +15,66 @@ jest.mock("@/lib/token-utils", () => {
   };
 });
 
+const hasLoneSurrogate = (text: string) =>
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(
+    text,
+  );
+
+// Large outputs make Jest's string diff unreadable; compare a compact summary
+// (JSON escapes lone surrogates) before exact equality.
+const expectSameText = (actual: string | undefined, expected: string) => {
+  const summary = (text: string) => ({
+    length: text.length,
+    loneSurrogate: hasLoneSurrogate(text),
+    start: JSON.stringify(text.slice(0, 8)),
+    end: JSON.stringify(text.slice(-8)),
+  });
+  expect(summary(actual ?? "")).toEqual(summary(expected));
+  expect(actual === expected).toBe(true);
+};
+
+describe("truncateTerminalOutput", () => {
+  // The tokenizer-bound preview keeps 25% head and 75% tail of this budget.
+  const contentChars = 128 * 1024 - tokenUtils.TRUNCATION_MESSAGE.length;
+  const headChars = Math.floor(contentChars * 0.25);
+  const tailChars = contentChars - headChars;
+
+  test("keeps exact ASCII head and tail sizes in the 128KiB preview", () => {
+    const content = "h" + " ".repeat(200_000) + "t";
+
+    expectSameText(
+      truncateTerminalOutput(content).output,
+      "h" +
+        " ".repeat(headChars - 1) +
+        tokenUtils.TRUNCATION_MESSAGE +
+        " ".repeat(tailChars - 1) +
+        "t",
+    );
+  });
+
+  test("omits a pair the head cut would split", () => {
+    const content = " ".repeat(headChars - 1) + "😀" + " ".repeat(200_000);
+
+    expectSameText(
+      truncateTerminalOutput(content).output,
+      " ".repeat(headChars - 1) +
+        tokenUtils.TRUNCATION_MESSAGE +
+        " ".repeat(tailChars),
+    );
+  });
+
+  test("omits a pair the tail cut would split", () => {
+    const content = " ".repeat(200_000) + "😀" + " ".repeat(tailChars - 1);
+
+    expectSameText(
+      truncateTerminalOutput(content).output,
+      " ".repeat(headChars) +
+        tokenUtils.TRUNCATION_MESSAGE +
+        " ".repeat(tailChars - 1),
+    );
+  });
+});
+
 describe("createTerminalHandler", () => {
   test("bounds tokenizer input for a huge chunk and final result while preserving saved output", async () => {
     const count = jest.mocked(tokenUtils.safeCountTokens);
@@ -111,6 +171,44 @@ describe("createTerminalHandler", () => {
     } finally {
       handler.cleanup();
       jest.useRealTimers();
+    }
+  });
+
+  test("streams a 128KiB preview without splitting a surrogate pair", async () => {
+    const previewChars = 128 * 1024;
+    const kept = "x" + " ".repeat(previewChars - 2);
+    const writes: string[] = [];
+    const handler = createTerminalHandler((output) => {
+      writes.push(output);
+    });
+    try {
+      handler.stdout(kept + "😀 after");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(writes).toHaveLength(2);
+      expectSameText(writes[0], kept);
+      expect(writes[1]).toBe(tokenUtils.TRUNCATION_MESSAGE);
+    } finally {
+      handler.cleanup();
+    }
+  });
+
+  test("caps the saved buffer before a pair that would cross 5MiB", async () => {
+    const maxChars = 5 * 1024 * 1024;
+    const first = "a" + " ".repeat(maxChars - 2);
+    const handler = createTerminalHandler(() => {});
+    try {
+      handler.stdout(first);
+      handler.stdout("😀 after the cap");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(handler.wasFullOutputCapped()).toBe(true);
+      expectSameText(handler.getFullOutput(), first);
+      expect(handler.getBufferedCharCount()).toBe(first.length);
+    } finally {
+      handler.cleanup();
     }
   });
 
