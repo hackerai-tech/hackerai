@@ -1,5 +1,5 @@
 import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
-import { useRef, RefObject, useEffect, useState } from "react";
+import { useRef, RefObject, useEffect, useLayoutEffect, useState } from "react";
 
 import { useMutation } from "convex/react";
 import { getConvexSize, type Value } from "convex/values";
@@ -215,33 +215,40 @@ export const useChatHandlers = ({
   );
   // MessageItem intentionally ignores callback identity in its memo comparator,
   // so a rendered Regenerate button can retain an older handler closure.
-  const requestSelectedModelRef = useLatestRef(requestSelectedModel);
-
-  // Avoid stale closure on chatMode: on mobile, a tap on Regenerate can fire
-  // before React commits the new chatMode after a mode toggle, sending the
-  // previous mode in the request body. Reading from a ref always gets the
-  // latest value at the moment of the click.
-  const chatModeRef = useLatestRef(chatMode);
-  const sandboxPreferenceRef = useLatestRef(sandboxPreference);
-  const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
-  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
+  // Request settings come from refs rather than handler closures, and the refs
+  // update during the commit that applies a settings change. An action started
+  // by an older callback or right after that commit reads the latest committed
+  // values.
+  const requestSelectedModelRef = useCommittedRef(requestSelectedModel);
+  const chatModeRef = useCommittedRef(chatMode);
+  const sandboxPreferenceRef = useCommittedRef(sandboxPreference);
+  const desktopEnvironmentIdRef = useCommittedRef(desktopEnvironmentId);
+  const agentPermissionModeRef = useCommittedRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
   const goalGenerationRef = useLatestRef(goalGeneration);
   const goalStateRef = useLatestRef(goalState);
   const recoveryPendingRef = useRef(false);
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
-  useEffect(() => {
+  // Ends with each chat visit, so returning to a chat cannot revive an action
+  // that started during an earlier visit. Ownership changes during the commit,
+  // before any awaited work or later layout callback can observe the old chat.
+  const chatVisitRef = useRef(0);
+  const stopGenerationRef = useRef(0);
+  useLayoutEffect(() => {
     currentChatIdRef.current = chatId;
     return () => {
       // Pending reply requests may resolve after this chat unmounts.
       currentChatIdRef.current = "";
+      chatVisitRef.current += 1;
+      // Leaving the chat also fences pending Stop and edit work, before an
+      // action in the next chat can record the generation.
+      stopGenerationRef.current += 1;
     };
   }, [chatId, currentChatIdRef]);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
-  const stopGenerationRef = useRef(0);
   const stopCompactorRef = useRef<StopCompactor | undefined>(undefined);
   const stopCompactorLoadingRef = useRef(false);
   useEffect(() => {
@@ -270,13 +277,11 @@ export const useChatHandlers = ({
     chatId: string;
     messageId: string;
     options?: RetryOptions;
+    retryAction?: ReplacementAction;
   } | null>(null);
 
   useEffect(() => {
     setSummarySteer(null);
-    return () => {
-      stopGenerationRef.current += 1;
-    };
   }, [chatId]);
 
   const isSendableUploadedFile = (
@@ -665,6 +670,7 @@ export const useChatHandlers = ({
 
   const stopActiveRunForReplacement = async (
     action: "regenerate" | "retry" | "edit",
+    ownsChat: () => boolean,
   ): Promise<boolean> => {
     const requestGeneration = getAgentRunRequestGeneration?.();
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
@@ -684,7 +690,12 @@ export const useChatHandlers = ({
       throw streamStopResult.reason;
     }
     if (triggerCancelResult.value.outcome === "stale_run") {
-      await recoverStaleAgentRun(triggerCancelResult.value, requestGeneration);
+      // Reconnecting belongs to the chat visit that requested the replacement.
+      if (ownsChat())
+        await recoverStaleAgentRun(
+          triggerCancelResult.value,
+          requestGeneration,
+        );
       return false;
     }
     return true;
@@ -1448,16 +1459,39 @@ export const useChatHandlers = ({
     }
   };
 
+  /**
+   * Captures a response replacement when the user acts. A rendered message can
+   * hold an older handler, so read the latest settings now and keep them for
+   * this request; changes made while the old response is stopped or deleted
+   * belong to the next request. Navigation can reuse this hook for another
+   * chat during those awaits, after which the action must not continue.
+   */
+  const captureReplacementAction = () => {
+    const visit = chatVisitRef.current;
+    return {
+      mode: chatModeRef.current,
+      selectedModel: requestSelectedModelRef.current,
+      sandboxPreference: sandboxPreferenceRef.current,
+      desktopEnvironmentId: desktopEnvironmentIdRef.current,
+      agentPermissionMode: agentPermissionModeRef.current,
+      ownsChat: () =>
+        currentChatIdRef.current === chatId && chatVisitRef.current === visit,
+    };
+  };
+  type ReplacementAction = ReturnType<typeof captureReplacementAction>;
+
   const handleRegenerate = async () => {
     if (sendDisabledReasonRef.current) return;
+    const action = captureReplacementAction();
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      if (!(await stopActiveRunForReplacement("regenerate"))) return;
+      if (!(await stopActiveRunForReplacement("regenerate", action.ownsChat)))
+        return;
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
@@ -1468,8 +1502,8 @@ export const useChatHandlers = ({
         .slice()
         .reverse()
         .find((message) => message.role === "assistant")?.id,
-      mode: chatModeRef.current,
-      selected_model: requestSelectedModelRef.current ?? "auto",
+      mode: action.mode,
+      selected_model: action.selectedModel ?? "auto",
     });
     const cleanedTodos =
       chainAssistantIds.length > 0
@@ -1501,19 +1535,19 @@ export const useChatHandlers = ({
         todos: cleanedTodos,
       });
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     runChatAction("regenerate response", () =>
       regenerate({
         body: {
-          mode: chatModeRef.current,
+          mode: action.mode,
           messages: persistentRegenerateMessages,
           todos: cleanedTodos,
           regenerate: true,
           agentRunRequestId,
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModelRef.current,
+          sandboxPreference: action.sandboxPreference,
+          agentPermissionMode: action.agentPermissionMode,
+          selectedModel: action.selectedModel,
         },
       }),
     );
@@ -1522,6 +1556,7 @@ export const useChatHandlers = ({
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current || retryPendingRef.current) return;
     retryPendingRef.current = true;
+    const action = captureReplacementAction();
     try {
       const lastUserId = messages
         .slice()
@@ -1531,7 +1566,7 @@ export const useChatHandlers = ({
         (message) => message.id === lastUserId && message.deliveryStatus,
       );
       if (queuedAttempt && sendQueuedMessage) {
-        await handleSendNow(queuedAttempt.id, options);
+        await handleSendNow(queuedAttempt.id, options, action);
         return;
       }
       if (
@@ -1539,7 +1574,7 @@ export const useChatHandlers = ({
         getAutoContinueChainAssistantIds(messages).length > 0
       ) {
         try {
-          await continueSavedTask(options);
+          await continueSavedTask(options, action);
         } catch {
           toast.error(
             "Could not resume. Your saved progress is still available.",
@@ -1560,15 +1595,16 @@ export const useChatHandlers = ({
           return;
         }
       }
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       setIsAutoResuming(false);
       resetAutoContinueCount?.();
 
       // Stop any active stream first to prevent message order issues and wasted tokens
       if (hasActiveRunToReplace()) {
-        if (!(await stopActiveRunForReplacement("retry"))) return;
+        if (!(await stopActiveRunForReplacement("retry", action.ownsChat)))
+          return;
       }
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       const agentRunRequestId = uuidv4();
 
       const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -1604,20 +1640,20 @@ export const useChatHandlers = ({
         });
       }
 
-      if (sendDisabledReasonRef.current) return;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
       await runChatAction("retry response", () =>
         regenerate({
           body: {
-            mode: chatModeRef.current,
+            mode: action.mode,
             messages: persistentRegenerateMessages,
             todos: cleanedTodos,
             regenerate: !retryUnpersistedMessage,
             agentRunRequestId,
             useClientMessagesForRegenerate:
               shouldSendClientMessagesForRegenerate,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: options.selectedModel ?? requestSelectedModel,
+            sandboxPreference: action.sandboxPreference,
+            agentPermissionMode: action.agentPermissionMode,
+            selectedModel: options.selectedModel ?? action.selectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
         }),
@@ -1633,6 +1669,7 @@ export const useChatHandlers = ({
     remainingFileIds?: string[],
   ) => {
     if (sendDisabledReasonRef.current) return;
+    const action = captureReplacementAction();
     const lastUserMessageIndex = findLastUserMessageIndex(messages);
     if (
       lastUserMessageIndex === undefined ||
@@ -1662,15 +1699,16 @@ export const useChatHandlers = ({
       )
     ) {
       stoppedGoalRun = (await controlSavedGoal("pause")).stoppedRun;
+      if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     }
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (!stoppedGoalRun && hasActiveRunToReplace()) {
-      if (!(await stopActiveRunForReplacement("edit"))) return;
+      if (!(await stopActiveRunForReplacement("edit", action.ownsChat))) return;
     }
-    if (sendDisabledReasonRef.current) return;
+    if (sendDisabledReasonRef.current || !action.ownsChat()) return;
     const agentRunRequestId = uuidv4();
     let savedGoal:
       | {
@@ -1708,7 +1746,7 @@ export const useChatHandlers = ({
           );
         }
         if (
-          currentChatIdRef.current !== chatId ||
+          !action.ownsChat() ||
           stopGenerationRef.current !== editStopGeneration
         )
           throw new Error("The task changed. Your edit has not been sent.");
@@ -1760,7 +1798,7 @@ export const useChatHandlers = ({
 
     if (
       sendDisabledReasonRef.current ||
-      currentChatIdRef.current !== chatId ||
+      !action.ownsChat() ||
       stopGenerationRef.current !== editStopGeneration
     )
       return;
@@ -1811,14 +1849,14 @@ export const useChatHandlers = ({
     runChatAction("regenerate edited message", () =>
       regenerate({
         body: {
-          mode: chatModeRef.current,
+          mode: action.mode,
           messages: [],
           todos: cleanedTodosForEdit,
           regenerate: true,
           agentRunRequestId,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModel,
+          sandboxPreference: action.sandboxPreference,
+          agentPermissionMode: action.agentPermissionMode,
+          selectedModel: action.selectedModel,
           ...(savedGoal && editedGoalGeneration !== undefined
             ? {
                 sandboxPreference: savedGoal.sandboxPreference,
@@ -1835,18 +1873,28 @@ export const useChatHandlers = ({
     );
   };
 
-  const continueSavedTask = async (options: RetryOptions = {}) => {
+  /**
+   * Resumes saved work. A Retry passes the action it captured so recovery
+   * keeps that action's settings and chat visit; Continue uses the settings
+   * current when the request is sent.
+   */
+  const continueSavedTask = async (
+    options: RetryOptions = {},
+    retryAction?: ReplacementAction,
+  ) => {
     if (sendDisabledReasonRef.current || recoveryPendingRef.current) return;
     if (statusRef.current === "streaming" || statusRef.current === "submitted")
       return;
     recoveryPendingRef.current = true;
     const requestGeneration = getAgentRunRequestGeneration?.();
     const isCurrentRequest = () =>
-      currentChatIdRef.current === chatId &&
+      (retryAction
+        ? retryAction.ownsChat()
+        : currentChatIdRef.current === chatId) &&
       getAgentRunRequestGeneration?.() === requestGeneration;
     let partialSaveRejected = false;
     try {
-      if (isAgentMode(chatModeRef.current)) {
+      if (isAgentMode(retryAction?.mode ?? chatModeRef.current)) {
         // An interrupted browser connection does not mean the worker stopped.
         await getPendingAgentLongRunStart(chatId);
         if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
@@ -1876,6 +1924,7 @@ export const useChatHandlers = ({
       hasManuallyStoppedRef.current = false;
       setIsAutoResuming(false);
       resetAutoContinueCount?.();
+      const settings = retryAction ?? captureReplacementAction();
       await sendMessage(
         {
           text: partialSaveRejected
@@ -1885,14 +1934,13 @@ export const useChatHandlers = ({
         },
         {
           body: {
-            mode: chatModeRef.current,
+            mode: settings.mode,
             isAutoContinue: true,
             todos: todosRef.current,
-            sandboxPreference: sandboxPreferenceRef.current,
-            desktopEnvironmentId: desktopEnvironmentIdRef.current,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel:
-              options.selectedModel ?? requestSelectedModelRef.current,
+            sandboxPreference: settings.sandboxPreference,
+            desktopEnvironmentId: settings.desktopEnvironmentId,
+            agentPermissionMode: settings.agentPermissionMode,
+            selectedModel: options.selectedModel ?? settings.selectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
         },
@@ -1907,16 +1955,18 @@ export const useChatHandlers = ({
     limitRescue?: LimitRescueRequest,
   ) => continueSavedTask({ selectedModel: selectedModelOverride, limitRescue });
 
+  /** A Retry passes its captured action so a queued resend keeps its settings. */
   const handleSendNow = async (
     messageId: string,
     options: RetryOptions = {},
+    retryAction?: ReplacementAction,
   ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message || message.deliveryStatus === "sending") return;
     if (isSummarizingRef.current) {
       hasManuallyStoppedRef.current = false;
-      setSummarySteer({ chatId, messageId, options });
+      setSummarySteer({ chatId, messageId, options, retryAction });
       return;
     }
     if (isSendingNowRef.current) return;
@@ -1945,13 +1995,18 @@ export const useChatHandlers = ({
         sendQueuedMessage &&
         (chatModeRef.current === "agent" || message.deliveryStatus)
       ) {
-        await sendQueuedMessage(messageId, {
+        const settings = retryAction ?? {
           mode: chatModeRef.current,
-          todos,
           sandboxPreference,
           agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel:
-            options.selectedModel ?? requestSelectedModelRef.current,
+          selectedModel: requestSelectedModelRef.current,
+        };
+        await sendQueuedMessage(messageId, {
+          mode: settings.mode,
+          todos,
+          sandboxPreference: settings.sandboxPreference,
+          agentPermissionMode: settings.agentPermissionMode,
+          selectedModel: options.selectedModel ?? settings.selectedModel,
           ...(options.limitRescue && { limitRescue: options.limitRescue }),
         });
         return;
@@ -2020,9 +2075,17 @@ export const useChatHandlers = ({
     }
 
     setSummarySteer(null);
+    // A deferred Retry belongs to the chat visit that captured its settings.
+    if (summarySteer.retryAction && !summarySteer.retryAction.ownsChat())
+      return;
     // Use the latest handler/messages/todos after the completion event, rather
-    // than the snapshot from when the user submitted during compaction.
-    void handleSendNowRef.current(message.id, summarySteer.options);
+    // than the snapshot from when the user submitted during compaction. A
+    // Retry keeps the settings it captured; Send Now uses the latest ones.
+    void handleSendNowRef.current(
+      message.id,
+      summarySteer.options,
+      summarySteer.retryAction,
+    );
   }, [
     summarySteer,
     chatId,
