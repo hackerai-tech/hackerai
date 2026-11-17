@@ -1092,8 +1092,9 @@ const downloadFileToSandbox = async (
           sandbox,
           url,
           signal,
-          (decision) => {
+          (decision, networkReason) => {
             fallback.decision = decision;
+            fallback.networkReason = networkReason;
           },
         );
       } catch (error) {

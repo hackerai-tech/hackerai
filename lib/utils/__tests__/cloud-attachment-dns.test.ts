@@ -164,16 +164,23 @@ const lastStagingFailedEvent = () =>
     .filter((event) => event?.event === "sandbox_attachment_staging_failed")
     .at(-1);
 
-/** Only the three closed fields reach the Trigger summary and staging event. */
+/** Only the closed decision and eligible network reason reach both consumers. */
 const expectDnsFallback = (
   result: Awaited<ReturnType<typeof uploadSandboxFiles>>,
   decision: string,
   retryResult: string,
+  networkReason?: string,
 ) => {
   const expected = {
     attachment_download_dns_fallback_version: 1,
     attachment_download_dns_fallback_decision: decision,
     attachment_download_dns_fallback_retry_result: retryResult,
+    ...(networkReason
+      ? {
+          attachment_download_dns_fallback_network_version: 1,
+          attachment_download_dns_fallback_network_reason: networkReason,
+        }
+      : {}),
   };
   expect(dnsFallbackFields(getSandboxUploadFailureMetadata(result))).toEqual(
     expected,
@@ -295,16 +302,19 @@ it.each([
     "restricted egress",
     { network: { allowOut: ["a.example"], denyOut: ["0.0.0.0/0"] } },
     NOT_OPEN,
+    "egress_list_restricted",
   ],
   [
     "offline egress",
     { network: { allowOut: [], denyOut: ["0.0.0.0/0"] } },
     NOT_OPEN,
+    "egress_list_restricted",
   ],
   [
     "an allowlist alone",
     { network: { allowOut: ["a.example"], denyOut: [] } },
     NOT_OPEN,
+    "egress_list_restricted",
   ],
   [
     "an egress proxy",
@@ -315,45 +325,99 @@ it.each([
       },
     },
     NOT_OPEN,
+    "egress_proxy_present",
   ],
   [
     "egress rules",
     { network: { ...OPEN_NETWORK, rules: { "a.example": [{}] } } },
     NOT_OPEN,
+    "egress_rules_present",
   ],
   [
     "disabled internet access",
     { network: OPEN_NETWORK, allowInternetAccess: false },
     NOT_OPEN,
+    "internet_access_disabled",
   ],
   // Unknown or malformed state is not verified open, not proven restricted.
-  ["no network description", {}, NOT_OPEN],
-  ["a malformed network description", { network: [] }, NOT_OPEN],
+  ["no network description", {}, NOT_OPEN, "network_absent"],
+  ["a null network description", { network: null }, NOT_OPEN, "network_absent"],
+  [
+    "a malformed network description",
+    { network: [] },
+    NOT_OPEN,
+    "network_malformed",
+  ],
+  [
+    "a false network description",
+    { network: false },
+    NOT_OPEN,
+    "network_malformed",
+  ],
+  ["a non-object provider description", false, NOT_OPEN, "info_malformed"],
+  [
+    "a null allow list",
+    { network: { allowOut: null } },
+    NOT_OPEN,
+    "egress_list_null",
+  ],
+  [
+    "a null deny list",
+    { network: { denyOut: null } },
+    NOT_OPEN,
+    "egress_list_null",
+  ],
+  [
+    "null allow before restricted deny",
+    { network: { allowOut: null, denyOut: ["private.example"] } },
+    NOT_OPEN,
+    "egress_list_null",
+  ],
+  [
+    "disabled internet before missing network",
+    { allowInternetAccess: false },
+    NOT_OPEN,
+    "internet_access_disabled",
+  ],
   [
     "malformed egress rules",
     { network: { ...OPEN_NETWORK, rules: [] } },
     NOT_OPEN,
+    "egress_rules_malformed",
   ],
   [
     "a malformed deny list",
     { network: { allowOut: [], denyOut: "0.0.0.0/0" } },
     NOT_OPEN,
+    "egress_list_malformed",
   ],
   [
     "an unavailable network description",
     new Error("private provider detail"),
     "network_info_unavailable",
+    undefined,
   ],
 ])(
   "never pins around %s and keeps the original failure",
-  async (_, info, decision) => {
+  async (_, info, decision, networkReason) => {
     const sandbox = cloudSandbox({ failure: exit(28, RESOLVING), info });
     const result = await uploadSandboxFiles([file], async () => sandbox, {
       retryAfterReconnectOnTransientFailure: true,
     });
 
     expectOriginalResolvingFailure(result);
-    expectDnsFallback(result, decision, "not_attempted");
+    expectDnsFallback(result, decision, "not_attempted", networkReason);
+    const metadata = JSON.stringify(
+      dnsFallbackFields(getSandboxUploadFailureMetadata(result)),
+    );
+    for (const privateValue of [
+      "a.example",
+      "private.example",
+      "proxy.example",
+      "0.0.0.0/0",
+      "private provider detail",
+    ])
+      expect(metadata).not.toContain(privateValue);
     expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
     expect(mockDns.resolvers).toHaveLength(0);
     expect(curlCommands(sandbox)).toHaveLength(1);
@@ -565,12 +629,15 @@ it("stops while reading the network description without resolving", async () => 
 it("does not start a lookup when Stop arrives between the network read and lookup", async () => {
   const controller = new AbortController();
   const stop = new Error("user stopped");
+  const readNetwork = jest.fn(() => {
+    controller.abort(stop);
+    return OPEN_NETWORK;
+  });
   const sandbox = cloudSandbox({
     failure: exit(28, RESOLVING),
     info: {
       get network() {
-        controller.abort(stop);
-        return OPEN_NETWORK;
+        return readNetwork();
       },
     },
   });
@@ -585,6 +652,7 @@ it("does not start a lookup when Stop arrives between the network read and looku
     ),
   ).rejects.toBe(stop);
   expect(mockDns.resolvers).toHaveLength(0);
+  expect(readNetwork).toHaveBeenCalledTimes(1);
   expect(onDecision).not.toHaveBeenCalled();
 });
 
@@ -605,6 +673,57 @@ it("returns the same pin when its decision observer throws", async () => {
   expect(onDecision.mock.calls).toEqual([["pin_available"]]);
   expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
   expect(mockDns.resolvers).toHaveLength(1);
+});
+
+it("observes a refusal without changing the gate's property-read order", async () => {
+  const reads: string[] = [];
+  const network = Object.fromEntries(
+    ["allowOut", "denyOut", "egressProxy", "rules"].map((key) => [key, null]),
+  );
+  for (const key of Object.keys(network))
+    Object.defineProperty(network, key, {
+      get() {
+        reads.push(key);
+        return key === "allowOut" ? null : [];
+      },
+    });
+  const sandbox = cloudSandbox({
+    failure: exit(28, RESOLVING),
+    info: {
+      get network() {
+        reads.push("network");
+        return network;
+      },
+      get allowInternetAccess() {
+        reads.push("allowInternetAccess");
+        return true;
+      },
+    },
+  });
+  const onDecision = jest.fn(() => {
+    throw new Error("observer failure");
+  });
+
+  await expect(
+    resolveCloudAttachmentDnsPin(
+      sandbox as unknown as AnySandbox,
+      file.url,
+      undefined,
+      onDecision,
+    ),
+  ).resolves.toBeNull();
+  expect(reads).toEqual([
+    "network",
+    "allowInternetAccess",
+    "allowOut",
+    "denyOut",
+    "egressProxy",
+    "rules",
+  ]);
+  expect(onDecision.mock.calls).toEqual([
+    ["network_not_verified_open", "egress_list_null"],
+  ]);
+  expect(mockDns.resolvers).toHaveLength(0);
 });
 
 it.each([
