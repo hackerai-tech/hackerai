@@ -20,6 +20,7 @@ import {
   browserRelayRenewFailureContext,
   browserRelayStopFailureContext,
   browserSessionReadFailureContext,
+  browserSandboxIdentityFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
   resizeBrowserViewport,
@@ -107,6 +108,8 @@ const unavailableGet = (
               ? "other_error"
               : "thrown_value",
       fresh_requested: request.nextUrl.searchParams.get("fresh") === "1",
+      ...(stage === "connect_sandbox" &&
+        browserSandboxIdentityFailureContext(error)),
       ...((stage === "read_active_session" ||
         stage === "verify_active_session") &&
         browserSessionReadFailureContext(error)),
@@ -259,6 +262,8 @@ const unavailablePost = (
           ? action
           : "unknown",
       failure_stage: stage,
+      ...(stage === "connect_sandbox" &&
+        browserSandboxIdentityFailureContext(error)),
       ...(stage === "capture_frame" && {
         post_capture_diagnostic_version: 1,
         post_capture_context_status: failureDiagnostic?.context
