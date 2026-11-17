@@ -263,7 +263,7 @@ async function startRun() {
   const host = startHost();
   stops.push(() => host.stop());
   const onLost = jest.fn();
-  const stop = watchLocalRunConnection({
+  const { stop } = watchLocalRunConnection({
     userId: USER,
     connectionId: SELECTED,
     onLost,

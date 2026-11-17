@@ -19,6 +19,9 @@ jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn(),
 }));
+jest.mock("@/lib/desktop/authorized-operation", () => ({
+  authorizeDesktopOperation: jest.fn(),
+}));
 
 const PTY_TOKEN_TTL_SECONDS = 600;
 const realSetTimeout = globalThis.setTimeout;
@@ -65,6 +68,9 @@ class LoopbackCentrifugo {
   onPublish: (data: Record<string, any>, channel: string) => void = () => {};
 
   refreshError?: { code: number; message: string };
+
+  /** Reject a client publication of this type after receiving it. */
+  rejectPublish?: string;
 
   next(match: (frame: Frame) => boolean): Promise<Frame> {
     const existing = this.frames.find(match);
@@ -126,6 +132,11 @@ class LoopbackCentrifugo {
         this.send(index, { id, subscribe: {} });
       } else if (command.unsubscribe) {
         this.send(index, { id, unsubscribe: {} });
+      } else if (
+        command.publish &&
+        command.publish.data?.type === this.rejectPublish
+      ) {
+        this.send(index, { id, error: { code: 100, message: "internal" } });
       } else if (command.publish) {
         this.send(index, { id, publish: {} });
         if (socket.readyState === WebSocket.OPEN)
@@ -352,6 +363,259 @@ describe("local relay PTY connection token refresh", () => {
     expect(createPtyHandle).toHaveBeenCalledWith(opts);
     expect(issueToken).not.toHaveBeenCalled();
     expect(server.sockets).toHaveLength(0);
+  });
+});
+
+/** The run's live readiness, opened and closed by the test. */
+function controllableGate() {
+  let ready = false;
+  const waiters = new Set<() => void>();
+  return {
+    gate: {
+      failUncertainExecution: jest.fn(),
+      isReady: () => ready,
+      waitUntilReady: (signal?: AbortSignal) =>
+        new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const done = () => {
+            waiters.delete(done);
+            resolve();
+          };
+          waiters.add(done);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              waiters.delete(done);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    },
+    open() {
+      ready = true;
+      for (const waiter of [...waiters]) waiter();
+    },
+    close() {
+      ready = false;
+    },
+  };
+}
+
+/** Let real socket I/O run; a gated publication must still not appear. */
+const ioSettles = () =>
+  new Promise<void>((resolve) => realSetTimeout(resolve, 100));
+
+describe("run readiness for interactive terminals", () => {
+  it("creates only once the selected host is verified, and tracks the session until it exits", async () => {
+    runPtyRunner();
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    sandbox.setDispatchGate(readiness.gate);
+    const pending = createCentrifugoPtyHandle(sandbox, {
+      command: "bounded-shell",
+      cols: 80,
+      rows: 24,
+    });
+    await within(
+      server.next((frame) => Boolean(frame.command.subscribe)),
+      "PTY subscription",
+    );
+    await ioSettles();
+    expect(server.publications("pty_create")).toHaveLength(0);
+    expect(sandbox.getPublishedCommands()).toEqual([]);
+
+    readiness.open();
+    const handle = await within(pending, "pty_ready");
+    const [create] = server.publications("pty_create");
+    expect(server.publications("pty_create")).toHaveLength(1);
+    const [active] = sandbox.getPublishedCommands();
+    expect(active.commandId).toBe(create.sessionId);
+    // Unsequenced output: never complete, never resumed.
+    expect(active.outputComplete()).toBe(false);
+
+    server.push(channelOf(create), {
+      type: "pty_exit",
+      sessionId: create.sessionId,
+      exitCode: 0,
+    });
+    await within(handle.exited, "pty_exit");
+    expect(sandbox.getPublishedCommands()).toEqual([]);
+    // A host-reported exit is a known outcome.
+    expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+  });
+
+  it("holds input while unverified; kill stays available, ends the wait and the input is never sent", async () => {
+    runPtyRunner();
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const handle = await within(
+      createCentrifugoPtyHandle(sandbox, {
+        command: "bounded-shell",
+        cols: 80,
+        rows: 24,
+      }),
+      "pty_ready",
+    );
+
+    readiness.close();
+    const input = handle.sendInput(new TextEncoder().encode("rm -rf x\n"));
+    void input.catch(() => {});
+    await ioSettles();
+    expect(server.publications("pty_input")).toHaveLength(0);
+
+    const killed = handle.kill();
+    await expect(within(input, "input rejection")).rejects.toBeDefined();
+    await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
+      exitCode: 130,
+    });
+    await killed;
+    expect(server.publications("pty_kill")).toHaveLength(1);
+
+    readiness.open();
+    await ioSettles();
+    expect(server.publications("pty_input")).toHaveLength(0);
+    expect(server.publications("pty_create")).toHaveLength(1);
+    expect(sandbox.getPublishedCommands()).toEqual([]);
+    // The held input never left. The kill's exit arrived while the host was
+    // unverified, so earlier unsequenced output may be missing: the run stops.
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the run when a session's exit arrives while the host is unverified", async () => {
+    runPtyRunner();
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const handle = await within(
+      createCentrifugoPtyHandle(sandbox, {
+        command: "bounded-shell",
+        cols: 80,
+        rows: 24,
+      }),
+      "pty_ready",
+    );
+    const [create] = server.publications("pty_create");
+    readiness.close();
+    server.push(channelOf(create), {
+      type: "pty_exit",
+      sessionId: create.sessionId,
+      exitCode: 0,
+    });
+    await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
+      exitCode: 0,
+    });
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    expect(sandbox.getPublishedCommands()).toEqual([]);
+  });
+
+  it("stops the run when input delivery fails after publication began", async () => {
+    runPtyRunner();
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const handle = await within(
+      createCentrifugoPtyHandle(sandbox, {
+        command: "bounded-shell",
+        cols: 80,
+        rows: 24,
+      }),
+      "pty_ready",
+    );
+    server.rejectPublish = "pty_input";
+    await expect(
+      within(handle.sendInput(new TextEncoder().encode("ls\n")), "input"),
+    ).rejects.toBeDefined();
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    // Never sent again; kill remains available.
+    server.rejectPublish = undefined;
+    await within(handle.kill(), "PTY teardown");
+    expect(server.publications("pty_input")).toHaveLength(1);
+    expect(server.publications("pty_kill")).toHaveLength(1);
+  });
+
+  it("stops the run when a published session ends without a host-reported exit", async () => {
+    runPtyRunner();
+    const runner = server.onPublish;
+    // The host never confirms this kill.
+    server.onPublish = (data, channel) => {
+      if (data.type !== "pty_kill") runner(data, channel);
+    };
+    const sandbox = createSandbox();
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const handle = await within(
+      createCentrifugoPtyHandle(sandbox, {
+        command: "bounded-shell",
+        cols: 80,
+        rows: 24,
+      }),
+      "pty_ready",
+    );
+    const killed = handle.kill();
+    await within(
+      server.next((f) => f.command.publish?.data?.type === "pty_kill"),
+      "kill",
+    );
+    // The kill's exit wait starts after its publish reply arrives over real
+    // I/O; only then can its (fake) 1.5s fallback elapse.
+    let settled = false;
+    void killed.then(() => (settled = true));
+    for (let step = 0; step < 30 && !settled; step++) {
+      await ioSettles();
+      await jest.advanceTimersByTimeAsync(500);
+    }
+    await within(killed, "kill settles");
+    await expect(handle.exited).resolves.toEqual({
+      exitCode: null,
+      observationFailed: true,
+    });
+    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    expect(sandbox.getPublishedCommands()).toEqual([]);
+  });
+
+  it("requires readiness again after Desktop authorization before creating", async () => {
+    runPtyRunner();
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      { connectionId: "conn-1", name: "loopback", isDesktop: true },
+      { wsUrl: server.url, tokenSecret: "unused" },
+    );
+    const readiness = controllableGate();
+    readiness.open();
+    sandbox.setDispatchGate(readiness.gate);
+    const { authorizeDesktopOperation } = jest.requireMock(
+      "@/lib/desktop/authorized-operation",
+    ) as { authorizeDesktopOperation: jest.Mock };
+    // The host leaves while authorization is pending.
+    authorizeDesktopOperation.mockImplementationOnce(async () => {
+      readiness.close();
+      return "a".repeat(64);
+    });
+    const pending = createCentrifugoPtyHandle(sandbox, {
+      command: "bounded-shell",
+      cols: 80,
+      rows: 24,
+    });
+    await within(
+      server.next((frame) => Boolean(frame.command.subscribe)),
+      "PTY subscription",
+    );
+    await ioSettles();
+    expect(authorizeDesktopOperation).toHaveBeenCalledTimes(1);
+    expect(server.publications("pty_create")).toHaveLength(0);
+
+    readiness.open();
+    const handle = await within(pending, "pty_ready");
+    expect(server.publications("pty_create")).toEqual([
+      expect.objectContaining({ authorizationId: "a".repeat(64) }),
+    ]);
+    await within(handle.kill(), "PTY teardown");
   });
 });
 

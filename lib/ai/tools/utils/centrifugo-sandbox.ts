@@ -39,6 +39,13 @@ import {
 } from "./attachment-command";
 import { recordLocalCopyFailure } from "./local-copy-failure-context";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
+import {
+  DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_PROOF,
+  type DesktopDispatchGate,
+  type PublishedDesktopCommand,
+} from "@/lib/centrifugo/desktop-session";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
 
@@ -108,6 +115,8 @@ const VALID_MESSAGE_TYPES = new Set([
 const IGNORED_MESSAGE_TYPES = new Set([
   "command_output_ack",
   "command_output_resume",
+  DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_PROOF,
   "file_stat",
   "file_read",
   "file_write",
@@ -459,6 +468,13 @@ export class CentrifugoSandbox extends EventEmitter {
   >();
   private readonly reportedNativePathFailures =
     new Set<NativePathResolutionFailure>();
+  /** The owning run's live host readiness, checked before each publication. */
+  private dispatchGate?: DesktopDispatchGate;
+  /** Commands whose execution publication began and that have not settled. */
+  private readonly publishedCommands = new Map<
+    string,
+    PublishedDesktopCommand
+  >();
 
   constructor(
     private userId: string,
@@ -494,6 +510,37 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getWorkingDirectory(): string | undefined {
     return this.workingDirectory;
+  }
+
+  /**
+   * Admit new command and file publications only while the owning run's
+   * selected host is verified. Undefined restores ungated dispatch.
+   */
+  setDispatchGate(gate: DesktopDispatchGate | undefined): void {
+    this.dispatchGate = gate;
+  }
+
+  /** The owning run's readiness, for transports that publish on their own. */
+  getDispatchGate(): DesktopDispatchGate | undefined {
+    return this.dispatchGate;
+  }
+
+  /** In-flight commands to reconcile after the selected host returns. */
+  getPublishedCommands(): PublishedDesktopCommand[] {
+    return [...this.publishedCommands.values()];
+  }
+
+  /**
+   * Record an operation whose execution publication began, until it settles.
+   * One without replayable output reports outputComplete() false, so a host
+   * return while it is active stops the run for manual Resume.
+   */
+  registerPublishedOperation(operation: PublishedDesktopCommand): () => void {
+    this.publishedCommands.set(operation.commandId, operation);
+    return () => {
+      if (this.publishedCommands.get(operation.commandId) === operation)
+        this.publishedCommands.delete(operation.commandId);
+    };
   }
 
   supportsPty(): boolean {
@@ -973,6 +1020,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
+          const gate = this.dispatchGate;
           try {
             if (isolated) {
               await dispatchIsolatedOperation(
@@ -988,8 +1036,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 },
                 probe && ((phase) => noteFileProbe(probe, { phase })),
                 this.connectionInfo.isDesktop === true,
+                { gate, signal },
               );
             } else {
+              while (gate && !gate.isReady()) await gate.waitUntilReady(signal);
+              signal?.throwIfAborted();
+              if (settled) return;
               noteFileProbe(probe, {
                 phase: "shared_publish",
                 publicationStarted: true,
@@ -1143,6 +1195,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         let terminalCursorPublished = false;
         let terminalReceivedDuringCancellation = false;
         let completeTerminal: (() => void) | undefined;
+        // Desktop retains this command's output only when it was requested.
+        const requestsAcknowledgedOutput =
+          isolated && this.connectionInfo.isDesktop === true;
+        const gate = this.dispatchGate;
+        // Ends only readiness waits before publication starts; never a
+        // published command, whose Stop goes to the host.
+        const dispatchAbort = new AbortController();
         const diagnostics = createReceiverDiagnostics(
           {
             commandId,
@@ -1162,8 +1221,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         diagnostics.start();
         const sendOutputCursor = async (
           type: "command_output_ack" | "command_output_resume",
+          // A host that returned may hold output this receiver never saw.
+          requested = false,
         ) => {
-          if (!subscription || settled || !acknowledgedOutput) return;
+          if (
+            !subscription ||
+            settled ||
+            !(acknowledgedOutput || (requested && requestsAcknowledgedOutput))
+          )
+            return;
           // A preceding output ACK may complete after terminal receipt. Only
           // a successfully published terminal cursor can release its receiver.
           const sequence = lastStreamSequence;
@@ -1218,9 +1284,31 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         let tFirstMessage = 0;
         let cleanupReason: ReceiverCleanupReason | undefined;
 
+        const published: PublishedDesktopCommand = {
+          commandId,
+          // Sequenced frames are accepted only in order, so a received
+          // terminal means every frame before it was received too.
+          outputComplete: () => acknowledgedOutput && terminalReceived,
+          resumeOutput: () => {
+            void sendOutputCursor("command_output_resume", true);
+          },
+        };
+        let unregisterPublished: (() => void) | undefined;
+        const markPublicationStarted = () => {
+          commandPublicationStarted = true;
+          unregisterPublished ??= this.registerPublishedOperation(published);
+        };
+
         const cleanup = (reason: ReceiverCleanupReason) => {
           cleanupReason = reason;
           diagnostics.finish(reason);
+          // Published, but neither a terminal nor a confirmed cancellation
+          // arrived: execution may continue. Stop the run before forgetting
+          // it, so no recovery or later dispatch can proceed past it.
+          if (unregisterPublished && !terminalReceived && reason !== "canceled")
+            gate?.failUncertainExecution?.();
+          unregisterPublished?.();
+          dispatchAbort.abort();
           clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the
           // cancellation timers. Confirmed cancellation resolves true first.
@@ -1318,7 +1406,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             diagnostics.transition("cancel_requested");
           }
           if (!publishedCommand || !subscription) {
-            if (commandPublishInFlight) return;
+            if (commandPublishInFlight) {
+              // Still unpublished: end any readiness wait now. Once
+              // publication starts, Stop waits for it and targets the host.
+              if (!commandPublicationStarted) dispatchAbort.abort();
+              return;
+            }
             resolveCanceled();
             return;
           }
@@ -1803,7 +1896,6 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 : {}),
             };
 
-            if (!isolated) commandPublicationStarted = true;
             commandPublishInFlight = true;
 
             (async () => {
@@ -1815,13 +1907,22 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   commandMessage as unknown as Record<string, unknown>,
                   () => !settled,
                   subscription!,
-                  () => {
-                    commandPublicationStarted = true;
-                  },
+                  markPublicationStarted,
                   diagnostics.dispatchPhase,
                   this.connectionInfo.isDesktop === true,
+                  { gate, signal: dispatchAbort.signal },
                 );
-              } else if (opts?.stdin === undefined) {
+                return;
+              }
+              // The same live admission as isolated dispatch, read in the
+              // tick that starts publication.
+              while (gate && !gate.isReady())
+                await gate.waitUntilReady(dispatchAbort.signal);
+              dispatchAbort.signal.throwIfAborted();
+              if (settled)
+                throw new Error("Command ended before dispatch completed");
+              markPublicationStarted();
+              if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);
@@ -1843,6 +1944,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               })
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
+                if (!settled && !commandPublicationStarted) {
+                  // Nothing reached the host: a pending Stop completes here,
+                  // and a lost selected host keeps its own cause.
+                  if (cancelRequested || opts?.signal?.aborted) {
+                    resolveCanceled();
+                    return;
+                  }
+                  if (err instanceof LocalConnectionLostError) {
+                    settled = true;
+                    cleanup("dispatch_failed");
+                    reject(err);
+                    return;
+                  }
+                }
                 if (
                   !settled &&
                   isolated &&
