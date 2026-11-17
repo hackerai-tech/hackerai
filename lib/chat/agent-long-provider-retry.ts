@@ -1,5 +1,8 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
-import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import type { ToolResultCycle } from "@/lib/chat/tool-loop-observer";
@@ -178,9 +181,10 @@ const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
  * Return the next bounded app-side recovery after a stream disconnect.
- * Max uses GLM for Grok text recovery or DeepSeek 1017 for images/control,
- * then a context-checked Grok attempt. Existing Pro
- * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
+ * Max recovers on DeepSeek 1017 and keeps the rest of that response there,
+ * so a second, context-checked attempt never returns to a model that refused
+ * or dropped it. Existing Pro recovery remains DeepSeek Pro -> GLM -> Kimi.
+ * Counts are attempts started.
  */
 export const getNextProviderDisconnectRetryModel = ({
   originalModel,
@@ -200,30 +204,27 @@ export const getNextProviderDisconnectRetryModel = ({
   requiredContextTokens?: number;
 }):
   | (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number]
-  | "model-grok-4.6"
+  | typeof DEEPSEEK_1017_MODEL_KEY
   | undefined => {
   if (selectedModelOverride === "hackerai-max") {
-    // Match the recovery already started. New image results can change the
-    // next media policy while GLM is in flight; they must not erase its slot.
-    const isFirstRecovery =
-      failedModel === DEEPSEEK_1017_MODEL_KEY ||
-      (originalModel === "model-grok-4.6" && failedModel === "model-glm-5.3");
+    // Only the first DeepSeek recovery may be followed by one more attempt.
+    // An unknown continuation size cannot be admitted.
     if (
       completedRetryCount !== 1 ||
-      !isFirstRecovery ||
+      failedModel !== DEEPSEEK_1017_MODEL_KEY ||
       requiredContextTokens === undefined ||
       !Number.isFinite(requiredContextTokens) ||
       requiredContextTokens < 0
     )
       return;
-    const grokBudget = getAgentContextBudget({
+    const budget = getAgentContextBudget({
       enabled: agentModelContextEnabled,
       mode: "agent",
       subscription,
-      modelId: "x-ai/grok-4.6",
+      modelId: DEEPSEEK_1017_SLUG,
     });
-    return requiredContextTokens <= getSummarizationThresholdTokens(grokBudget)
-      ? "model-grok-4.6"
+    return requiredContextTokens <= getSummarizationThresholdTokens(budget)
+      ? DEEPSEEK_1017_MODEL_KEY
       : undefined;
   }
   if (originalModel !== DEEPSEEK_PRO_MODEL) return undefined;

@@ -859,6 +859,84 @@ describe("captureAgentRun", () => {
     );
   });
 
+  it("adds reporter recovery history beside the existing disconnect-only fields", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_recovered",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "ultra",
+      endpoint: "/api/agent",
+    });
+    reporting.recordModelRecovery({
+      reason: "content_filter",
+      retryModel: "model-deepseek-v4.1-flash-1017-pro",
+      failure: { category: "content_blocked", model: "x-ai/grok-4.6" },
+    });
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "ultra",
+      sandboxInfo: { type: "cloud" },
+      outcome: "success",
+      hasResponseContent: true,
+      chatLogger: undefined,
+      selectedModel: "model-grok-4.6",
+      configuredModelId: "x-ai/grok-4.6",
+      responseModel: "deepseek/deepseek-v4.1-flash-20261017",
+      finishReason: "stop",
+      triggerRunId: "run_recovered",
+      abliteratedProviderSummary: undefined,
+      // The refusal was not a disconnect, so the existing fields stay empty.
+      providerRecoveryAttempts: 0,
+      providerRecoveryModels: [],
+      providerRecoverySucceeded: false,
+    });
+    const [run] = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(run.properties).toMatchObject({
+      outcome: "success",
+      provider_recovery_attempts: 0,
+      provider_recovery_succeeded: false,
+      model_recovery_version: 1,
+      model_recovery_attempts: 1,
+      model_recovery_models: ["model-deepseek-v4.1-flash-1017-pro"],
+      model_recovery_reasons: ["content_filter"],
+      model_recovery_succeeded: true,
+      initial_provider_failure_category: "content_blocked",
+      initial_provider_failure_model: "x-ai/grok-4.6",
+    });
+  });
+
+  it("adds no recovery history fields for a caller-supplied object", () => {
+    const capture = jest.fn();
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "ultra",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "model-grok-4.6",
+      configuredModelId: "x-ai/grok-4.6",
+      modelRecoveryHistory: {
+        attempts: 1,
+        models: ["PRIVATE"],
+        reasons: ["content_filter"],
+      },
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(
+      /model_recovery_|initial_provider_failure_|PRIVATE/,
+    );
+  });
+
   it("does not capture agent run events for ask mode", () => {
     const capture = jest.fn();
 

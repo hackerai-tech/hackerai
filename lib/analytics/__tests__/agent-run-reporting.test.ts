@@ -6,6 +6,7 @@ import {
   agentFailureSignalContext,
   agentRunEventUuid,
   createAgentRunReporting,
+  modelRecoveryAnalyticsProperties,
 } from "../agent-run-reporting";
 
 function setup(
@@ -793,4 +794,200 @@ describe("first-failure signal attribution", () => {
       expect(JSON.stringify(events())).not.toContain("PRIVATE");
     },
   );
+});
+
+describe("run-scoped model recovery history", () => {
+  const DEEPSEEK = "model-deepseek-v4.1-flash-1017-pro";
+  const refusal = {
+    reason: "content_filter",
+    retryModel: DEEPSEEK,
+    failure: { category: "content_blocked", model: "x-ai/grok-4.6" },
+  };
+  function setupWithMetadata(
+    setRunMetadata: (key: string, value: unknown) => void = jest.fn(),
+  ) {
+    const capture = jest.fn();
+    const metadata = new Map<string, unknown>();
+    const reporter = createAgentRunReporting({
+      posthog: { capture } as unknown as PostHog,
+      runId: "run_recovery",
+      userId: "user_public",
+      chatId: "chat_1",
+      subscription: "ultra",
+      endpoint: "/api/agent",
+      setRunMetadata: (key, value) => {
+        setRunMetadata(key, value);
+        metadata.set(key, value);
+      },
+    });
+    const run = () =>
+      capture.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.event === "hackerai-agent_run");
+    return { reporter, metadata, run };
+  }
+
+  it("keeps the first failure and every leg after later failures, within a bounded record", () => {
+    const { reporter, metadata, run } = setupWithMetadata();
+    reporter.recordModelRecovery(refusal);
+    reporter.recordModelRecovery({
+      reason: "provider_disconnect_continuation",
+      retryModel: DEEPSEEK,
+      failure: {
+        category: "stream_terminated",
+        model: "deepseek/deepseek-v4.1-flash-1017",
+        statusCode: 502,
+      },
+    });
+    for (let i = 0; i < 4; i++)
+      reporter.recordModelRecovery({ ...refusal, failure: undefined });
+    reporter.finalize({ canceled: false });
+    expect(run().properties).toMatchObject({
+      model_recovery_version: 1,
+      model_recovery_attempts: 6,
+      model_recovery_models: [DEEPSEEK, DEEPSEEK, DEEPSEEK, DEEPSEEK],
+      model_recovery_reasons: [
+        "content_filter",
+        "provider_disconnect_continuation",
+        "content_filter",
+        "content_filter",
+      ],
+      model_recovery_succeeded: false,
+      initial_provider_failure_category: "content_blocked",
+      initial_provider_failure_model: "x-ai/grok-4.6",
+    });
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_status_code",
+    );
+    expect(Object.fromEntries(metadata)).toMatchObject({
+      agentRecoveryAttempts: 6,
+      agentRecoveryModel: DEEPSEEK,
+      agentProviderFailureCategory: "content_blocked",
+      agentProviderFailureModel: "x-ai/grok-4.6",
+    });
+  });
+
+  it("exports only allowlisted or validated primitives", () => {
+    const { reporter, metadata, run } = setupWithMetadata();
+    reporter.recordModelRecovery({
+      reason: "PRIVATE reason",
+      retryModel: "PRIVATE prompt with spaces",
+      failure: {
+        category: "PRIVATE",
+        model: "x-ai/grok-4.6",
+        statusCode: 503,
+        message: "PRIVATE provider text",
+      },
+    });
+    reporter.recordModelRecovery({
+      reason: "content_filter",
+      retryModel: DEEPSEEK,
+      failure: {
+        category: "provider_5xx",
+        model: "PRIVATE target https://example.test/x",
+        statusCode: 99_999,
+      },
+    });
+    reporter.finalize({ canceled: false });
+    expect(run().properties).toMatchObject({
+      model_recovery_models: ["unknown", DEEPSEEK],
+      model_recovery_reasons: ["other", "content_filter"],
+      // An invalid category cannot become the initial failure.
+      initial_provider_failure_category: "provider_5xx",
+    });
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_model",
+    );
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_status_code",
+    );
+    expect(JSON.stringify([run(), Object.fromEntries(metadata)])).not.toContain(
+      "PRIVATE",
+    );
+  });
+
+  it("marks a recovered completion successful and keeps the first outcome in metadata", () => {
+    const { reporter, metadata } = setupWithMetadata();
+    reporter.recordModelRecovery(refusal);
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, {
+      outcome: "success",
+      finishReason: "stop",
+    });
+    const { modelRecoveryHistory } = capture.mock.calls[0][0];
+    expect(
+      modelRecoveryAnalyticsProperties(modelRecoveryHistory, "success"),
+    ).toMatchObject({
+      model_recovery_attempts: 1,
+      model_recovery_succeeded: true,
+      initial_provider_failure_category: "content_blocked",
+    });
+    // Later terminal reports and retries cannot rewrite the recorded outcome.
+    reporter.captureTerminal(jest.fn(), { outcome: "aborted" });
+    reporter.recordModelRecovery({ ...refusal, reason: "doom_loop" });
+    reporter.finalize({ canceled: true });
+    expect(Object.fromEntries(metadata)).toMatchObject({
+      agentOutcome: "success",
+      agentOutcomeSource: "completion",
+      agentFinishReason: "stop",
+      agentRecoverySucceeded: true,
+      agentRecoveryAttempts: 1,
+      agentRecoveryReason: "content_filter",
+    });
+    expect(metadata.has("agentAbortSource")).toBe(false);
+  });
+
+  it("writes run-finally outcome metadata for a cancellation with no recovery or analytics client", () => {
+    const metadata = new Map<string, unknown>();
+    const reporter = createAgentRunReporting({
+      posthog: null,
+      runId: "run_canceled",
+      userId: "user_public",
+      chatId: "chat_1",
+      subscription: "pro",
+      endpoint: "/api/agent",
+      setRunMetadata: (key, value) => metadata.set(key, value),
+    });
+    reporter.fail(new Error("PRIVATE"), "canceled");
+    reporter.finalize({ canceled: true });
+    expect(Object.fromEntries(metadata)).toEqual({
+      agentOutcome: "aborted",
+      agentOutcomeSource: "run_finally",
+      agentFinishReason: "unknown",
+      agentAbortSource: "request_cancel",
+    });
+  });
+
+  it("keeps outcome and analytics when the metadata sink fails", () => {
+    const { reporter, run } = setupWithMetadata(() => {
+      throw new Error("metadata unavailable");
+    });
+    expect(() => reporter.recordModelRecovery(refusal)).not.toThrow();
+    const capture = jest.fn();
+    expect(() =>
+      reporter.captureTerminal(capture, { outcome: "error" }),
+    ).not.toThrow();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(() => reporter.finalize({ canceled: false })).not.toThrow();
+    // The normal capture succeeded, so the fallback is not repeated.
+    expect(run()).toBeUndefined();
+  });
+
+  it("produces no recovery fields without a recorded leg or for a forged history", () => {
+    const { reporter, metadata } = setupWithMetadata();
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, { outcome: "success" });
+    expect(capture).toHaveBeenCalledWith({ outcome: "success" });
+    expect(metadata.has("agentRecoverySucceeded")).toBe(false);
+    expect(
+      modelRecoveryAnalyticsProperties(
+        Object.freeze({
+          attempts: 1,
+          models: ["PRIVATE"],
+          reasons: ["content_filter"],
+        }),
+        "success",
+      ),
+    ).toBeUndefined();
+  });
 });

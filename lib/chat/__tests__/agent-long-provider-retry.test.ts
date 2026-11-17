@@ -1125,50 +1125,55 @@ describe("provider recovery decisions", () => {
 });
 
 describe("Agent Max final recovery admission", () => {
-  it.each([213999, 214000, 214001, undefined, NaN, -1])(
-    "checks Grok capacity for %s estimated tokens",
-    (requiredContextTokens) => {
+  const deepSeek = "model-deepseek-v4.1-flash-1017-pro";
+  // Expanded Max context on the 1M DeepSeek route (no transparent fallbacks)
+  // compacts at 488,288 tokens; the baseline subscription budget at 256,000.
+  it.each([
+    [true, 488_288, deepSeek],
+    [true, 488_289, undefined],
+    [false, 256_000, deepSeek],
+    [false, 256_001, undefined],
+    [true, undefined, undefined],
+    [true, NaN, undefined],
+    [true, -1, undefined],
+  ])(
+    "keeps the second recovery on DeepSeek within its capacity (expanded=%s, %s tokens)",
+    (agentModelContextEnabled, requiredContextTokens, expected) => {
+      for (const originalModel of ["model-grok-4.6", "model-glm-5.3"]) {
+        expect(
+          getNextProviderDisconnectRetryModel({
+            originalModel,
+            failedModel: deepSeek,
+            completedRetryCount: 1,
+            selectedModelOverride: "hackerai-max",
+            agentModelContextEnabled,
+            subscription: "ultra",
+            requiredContextTokens,
+          }),
+        ).toBe(expected);
+      }
+    },
+  );
+  it.each([
+    ["a third attempt", deepSeek, 2],
+    ["a leg that did not run on DeepSeek", "model-grok-4.6", 1],
+    ["a legacy GLM leg", "model-glm-5.3", 1],
+    ["a recovery after a non-disconnect first leg", deepSeek, 0],
+  ] as const)(
+    "never returns to Grok or Kimi after %s",
+    (_name, failedModel, completedRetryCount) => {
       expect(
         getNextProviderDisconnectRetryModel({
-          originalModel: "model-glm-5.3",
-          failedModel: "model-deepseek-v4.1-flash-1017-pro",
-          completedRetryCount: 1,
+          originalModel: "model-grok-4.6",
+          failedModel,
+          completedRetryCount,
           selectedModelOverride: "hackerai-max",
           agentModelContextEnabled: true,
-          requiredContextTokens,
+          requiredContextTokens: 1000,
         }),
-      ).toBe(
-        requiredContextTokens === 213999 || requiredContextTokens === 214000
-          ? "model-grok-4.6"
-          : undefined,
-      );
+      ).toBeUndefined();
     },
   );
-  it.each([256_000, 256_001])(
-    "enforces the 256k compaction threshold for %s estimated tokens",
-    (requiredContextTokens) => {
-      expect(
-        getNextProviderDisconnectRetryModel({
-          originalModel: "model-glm-5.3",
-          failedModel: "model-deepseek-v4.1-flash-1017-pro",
-          completedRetryCount: 1,
-          selectedModelOverride: "hackerai-max",
-          requiredContextTokens,
-        }),
-      ).toBe(requiredContextTokens === 256_000 ? "model-grok-4.6" : undefined);
-    },
-  );
-  it("never starts a third recovery or returns to Kimi", () => {
-    expect(
-      getNextProviderDisconnectRetryModel({
-        originalModel: "model-glm-5.3",
-        failedModel: "model-grok-4.6",
-        completedRetryCount: 2,
-        selectedModelOverride: "hackerai-max",
-        requiredContextTokens: 1000,
-      }),
-    ).toBeUndefined();
-  });
 });
 
 it("allows an explicitly enabled empty pre-stream recovery but never drops an uncertain tool", () => {
