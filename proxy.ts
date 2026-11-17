@@ -47,6 +47,12 @@ const AUTHKIT_BYPASS_PATHS = new Set([
 ]);
 const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
+// Closed labels from the patched AuthKit refresh; anything else is "unavailable".
+const AUTH_REFRESH_STAGES = new Set<unknown>([
+  "before_refresh_request",
+  "refresh_request",
+  "after_refresh_response",
+]);
 
 const UNAUTHENTICATED_PATHS = new Set([
   ...AUTHKIT_BYPASS_PATHS,
@@ -482,7 +488,7 @@ export default async function proxy(request: NextRequest) {
     authkitResult = await authkit(request, {
       redirectUri: getRedirectUri(request),
       eagerAuth: true,
-      onSessionRefreshError: ({ error, isTransient }) => {
+      onSessionRefreshError: ({ error, isTransient, refreshStage }) => {
         if (isInvalidRefreshTokenError(error)) {
           refreshEndedSession = true;
           console.warn(
@@ -537,6 +543,10 @@ export default async function proxy(request: NextRequest) {
             error: error instanceof Error ? error.message : String(error),
             is_transient: isTransient,
             ...getRefreshFailureDiagnostics(error),
+            auth_refresh_stage_diagnostic_version: 1,
+            auth_refresh_stage: AUTH_REFRESH_STAGES.has(refreshStage)
+              ? refreshStage
+              : "unavailable",
           }),
         );
       },

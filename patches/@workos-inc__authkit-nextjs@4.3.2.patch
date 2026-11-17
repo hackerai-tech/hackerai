@@ -1,5 +1,5 @@
 diff --git a/dist/esm/actions.js b/dist/esm/actions.js
-index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf626c5ba7c 100644
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..a509a45cca12657424e836e5f13c53ea0594fbda 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
 @@ -13,6 +13,243 @@ function sanitize(value) {
@@ -311,6 +311,42 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
          return {
              accessToken: undefined,
              error: 'Failed to refresh access token',
+diff --git a/dist/esm/session.js b/dist/esm/session.js
+index 33445c94c1cb3f8d1f510b0a6914b628e29fac40..f994f5c30ba0e491235a2dda6a1c9646d5ec274d 100644
+--- a/dist/esm/session.js
++++ b/dist/esm/session.js
+@@ -175,6 +175,8 @@ async function updateSession(request, options = { debug: false }) {
+     if (hasValidSession && !isExpiring) {
+         return respondWithCurrentToken();
+     }
++    // Diagnostic only: records how far this request's refresh got before a failure.
++    let refreshStage = 'before_refresh_request';
+     try {
+         if (options.debug) {
+             // istanbul ignore next
+@@ -183,11 +185,13 @@ async function updateSession(request, options = { debug: false }) {
+                 : `Session invalid. ${session.accessToken ? `Refreshing access token that ends in ${session.accessToken.slice(-10)}` : 'Access token missing.'}`);
+         }
+         const { org_id: organizationIdFromAccessToken } = decodeJwt(session.accessToken);
++        refreshStage = 'refresh_request';
+         const { accessToken, refreshToken, user, impersonator, authenticationMethod } = await getWorkOS().userManagement.authenticateWithRefreshToken({
+             clientId: WORKOS_CLIENT_ID,
+             refreshToken: session.refreshToken,
+             organizationId: organizationIdFromAccessToken,
+         });
++        refreshStage = 'after_refresh_response';
+         if (options.debug) {
+             console.log('Session successfully refreshed');
+         }
+@@ -264,7 +268,7 @@ async function updateSession(request, options = { debug: false }) {
+                 newRequestHeaders.append('Set-Cookie', deleteJwtCookie);
+             }
+         }
+-        options.onSessionRefreshError?.({ error: e, request, isTransient });
++        options.onSessionRefreshError?.({ error: e, request, isTransient, refreshStage });
+         const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
+             returnPathname: getReturnPathname(request.url),
+             redirectUri: options.redirectUri || WORKOS_REDIRECT_URI,
 diff --git a/dist/esm/types/actions.d.ts b/dist/esm/types/actions.d.ts
 index 2ad3f32e5f275becdf7b076f0de253cdd52aab58..f81a1be45a32b1181d42059514d9c759e861d431 100644
 --- a/dist/esm/types/actions.d.ts
@@ -328,6 +364,23 @@ index 2ad3f32e5f275becdf7b076f0de253cdd52aab58..f81a1be45a32b1181d42059514d9c759
      signInUrl: string;
      organizationId?: string | undefined;
      role?: string | undefined;
+diff --git a/dist/esm/types/interfaces.d.ts b/dist/esm/types/interfaces.d.ts
+index d82fd847dc74bac022339c79d3c876ec58719864..62ee1cce799bcdb2d8a30d5a9f0a3723a638c7bf 100644
+--- a/dist/esm/types/interfaces.d.ts
++++ b/dist/esm/types/interfaces.d.ts
+@@ -151,6 +151,12 @@ export interface AuthkitOptions {
+          * session cookie is preserved for a later retry instead of being cleared.
+          */
+         isTransient: boolean;
++        /**
++         * Diagnostic only: the last refresh step this request reached before the
++         * failure. `refresh_request` means the WorkOS refresh call was awaited, not
++         * that no HTTP response arrived.
++         */
++        refreshStage?: 'before_refresh_request' | 'refresh_request' | 'after_refresh_response';
+     }) => void | Promise<void>;
+ }
+ export interface AuthkitResponse {
 diff --git a/src/actions.spec.ts b/src/actions.spec.ts
 index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b664cc97b71 100644
 --- a/src/actions.spec.ts
@@ -347,7 +400,7 @@ index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b66
        const params = { ensureSignedIn: false, organizationId: 'org_123' };
        const result = await refreshAuthAction(params);
 diff --git a/src/actions.ts b/src/actions.ts
-index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92c581100e 100644
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..8f28c43e3f3ebeee2f6c9d890c2a59a199a7a22d 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
 @@ -22,6 +22,274 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
@@ -713,3 +766,59 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
      return {
        accessToken: undefined,
        error: 'Failed to refresh access token',
+diff --git a/src/interfaces.ts b/src/interfaces.ts
+index c0d05b2de0f6227ad77849fbb45af6a266bf2c37..45bcee830d302c6b6290631e09e763fe7b003dea 100644
+--- a/src/interfaces.ts
++++ b/src/interfaces.ts
+@@ -161,6 +161,12 @@ export interface AuthkitOptions {
+      * session cookie is preserved for a later retry instead of being cleared.
+      */
+     isTransient: boolean;
++    /**
++     * Diagnostic only: the last refresh step this request reached before the
++     * failure. `refresh_request` means the WorkOS refresh call was awaited, not
++     * that no HTTP response arrived.
++     */
++    refreshStage?: 'before_refresh_request' | 'refresh_request' | 'after_refresh_response';
+   }) => void | Promise<void>;
+ }
+ 
+diff --git a/src/session.ts b/src/session.ts
+index 9cd410fc84198b027c3c9f112529a9d579c898dd..b18d137caff40c27e1817e935af50e3239aa3783 100644
+--- a/src/session.ts
++++ b/src/session.ts
+@@ -262,6 +262,9 @@ async function updateSession(
+     return respondWithCurrentToken();
+   }
+ 
++  // Diagnostic only: records how far this request's refresh got before a failure.
++  let refreshStage: 'before_refresh_request' | 'refresh_request' | 'after_refresh_response' = 'before_refresh_request';
++
+   try {
+     if (options.debug) {
+       // istanbul ignore next
+@@ -273,6 +276,7 @@ async function updateSession(
+     }
+ 
+     const { org_id: organizationIdFromAccessToken } = decodeJwt<AccessToken>(session.accessToken);
++    refreshStage = 'refresh_request';
+ 
+     const { accessToken, refreshToken, user, impersonator, authenticationMethod } =
+       await getWorkOS().userManagement.authenticateWithRefreshToken({
+@@ -280,6 +284,7 @@ async function updateSession(
+         refreshToken: session.refreshToken,
+         organizationId: organizationIdFromAccessToken,
+       });
++    refreshStage = 'after_refresh_response';
+ 
+     if (options.debug) {
+       console.log('Session successfully refreshed');
+@@ -378,7 +383,7 @@ async function updateSession(
+       }
+     }
+ 
+-    options.onSessionRefreshError?.({ error: e, request, isTransient });
++    options.onSessionRefreshError?.({ error: e, request, isTransient, refreshStage });
+ 
+     const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
+       returnPathname: getReturnPathname(request.url),

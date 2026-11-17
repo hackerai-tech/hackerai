@@ -410,6 +410,11 @@ describe("proxy", () => {
           auth_refresh_cause_kind: "TypeError",
           auth_refresh_cause_code: "ECONNRESET",
         });
+        // A thrown AuthKit error never passed through the refresh callback.
+        expect(JSON.parse(encoded)).not.toHaveProperty("auth_refresh_stage");
+        expect(JSON.parse(encoded)).not.toHaveProperty(
+          "auth_refresh_stage_diagnostic_version",
+        );
       } finally {
         warning.mockRestore();
         if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
@@ -1029,6 +1034,149 @@ describe("proxy", () => {
         expect(mockNextResponseRedirect).not.toHaveBeenCalled();
       } finally {
         warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each<[string, unknown, string]>([
+    [
+      "before the SDK request",
+      "before_refresh_request",
+      "before_refresh_request",
+    ],
+    ["during the SDK request", "refresh_request", "refresh_request"],
+    [
+      "after the SDK response",
+      "after_refresh_response",
+      "after_refresh_response",
+    ],
+    ["from an older AuthKit build", undefined, "unavailable"],
+    ["with private text", "private-stage-marker eyJhbGciOi", "unavailable"],
+    ["with a near-miss label", "Refresh_Request", "unavailable"],
+    [
+      "with a non-string value",
+      { toString: () => "refresh_request" },
+      "unavailable",
+    ],
+  ])(
+    "adds only a closed refresh stage %s to the existing warning",
+    async (_case, refreshStage, expectedStage) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sessionCookie = "wos-session=; Max-Age=0; Path=/; HttpOnly";
+      const jwtInvalid = Object.assign(
+        new Error(
+          "JWTs must use Compact JWS serialization, JWT must be a string",
+        ),
+        { name: "JWTInvalid", code: "ERR_JWT_INVALID" },
+      );
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error: jwtInvalid,
+            isTransient: false,
+            refreshStage,
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers({ "set-cookie": sessionCookie }),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+        const request = createRequest({
+          pathname: "/api/subscription-details",
+          hasSession: true,
+        });
+
+        await proxy(request);
+
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const encoded = String(warnSpy.mock.calls[0][0]);
+        expect(encoded).not.toContain("private-");
+        expect(encoded).not.toContain("eyJ");
+        expect(JSON.parse(encoded)).toMatchObject({
+          event: "auth.session_refresh_failed",
+          is_transient: false,
+          auth_refresh_diagnostic_version: 2,
+          auth_refresh_error_kind: "JWTInvalid",
+          auth_refresh_error_code: "ERR_JWT_INVALID",
+          auth_refresh_stage_diagnostic_version: 1,
+          auth_refresh_stage: expectedStage,
+        });
+        expect(mockNextResponseJson).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseJson).toHaveBeenCalledWith(
+          {
+            code: "unauthorized:auth",
+            message: "You need to sign in before continuing.",
+            cause: "Session expired or invalid",
+          },
+          expect.objectContaining({ status: 401 }),
+        );
+        const responseInit = mockNextResponseJson.mock.calls[0][1] as {
+          headers: Headers;
+        };
+        expect(responseInit.headers.get("set-cookie")).toBe(sessionCookie);
+        expect(request.cookies.delete).not.toHaveBeenCalled();
+        expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    [
+      "invalid refresh token",
+      {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid refresh token.",
+      },
+    ],
+    [
+      "ended session",
+      {
+        error: "invalid_grant",
+        errorDescription: "Session has already ended.",
+      },
+    ],
+    ["rate limit", Object.assign(new Error("Rate limit"), { status: 429 })],
+  ])(
+    "keeps the %s refresh branch free of stage metadata",
+    async (_case, error) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error,
+            isTransient: false,
+            refreshStage: "refresh_request",
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers(),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+
+        await proxy(
+          createRequest({
+            pathname: "/api/subscription-details",
+            hasSession: true,
+          }),
+        );
+
+        const logged = [...warnSpy.mock.calls, ...infoSpy.mock.calls].map(
+          (call) => String(call[0]),
+        );
+        expect(logged).toHaveLength(1);
+        expect(logged[0]).not.toContain("auth.session_refresh_failed");
+        expect(logged[0]).not.toContain("auth_refresh_stage");
+      } finally {
+        warnSpy.mockRestore();
+        infoSpy.mockRestore();
       }
     },
   );
