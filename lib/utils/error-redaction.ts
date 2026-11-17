@@ -2,10 +2,11 @@ const REDACTED_VALUE = "[Redacted]";
 
 // Match credential suffixes (including camelCase and header spellings), not
 // diagnostic fields such as tokenCount or max_tokens. The leading boundary
-// avoids retrying the variable-length key match at every character of long text.
+// avoids retrying the variable-length key match at every character of long text;
+// leading dashes cover command-line flags such as --api-key= behind that guard.
 // Quoted values include escapes; unquoted values retain punctuation in secrets.
 const SENSITIVE_FIELD_PATTERN =
-  /(?<![\w-])(["']?\b[\w-]*(?:service[_-]?(?:role[_-]?)?key|api[_-]?key|secret[_-]?key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:Bearer|Basic)[ \t]+[^\s,}]+|[^\s,}]+)/gi;
+  /(?<![\w-])(["']?-*\b[\w-]*(?:service[_-]?(?:role[_-]?)?key|api[_-]?key|secret[_-]?key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:Bearer|Basic)[ \t]+[^\s,}]+|[^\s,}]+)/gi;
 
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
@@ -96,40 +97,38 @@ export const redactSensitiveErrorMessage = (message: string): string => {
 };
 
 export const stringifyRedactedError = (error: unknown): string => {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : (() => {
-            try {
-              const propertyNames = new Map<string, string>();
-              const serialized = JSON.stringify(error, (key, value) => {
-                const redactedKey = redactSensitiveErrorMessage(key);
-                if (redactedKey !== key) {
-                  propertyNames.set(
-                    JSON.stringify(key),
-                    JSON.stringify(redactedKey),
-                  );
-                }
-                // Use the existing field rule while the raw property name is
-                // available, before renaming it can hide a sensitive suffix.
-                const field = `${JSON.stringify(stripControlSequencesFromErrorMessage(key))}:0`;
-                if (field.search(SENSITIVE_FIELD_PATTERN) >= 0)
-                  return REDACTED_VALUE;
-                return typeof value === "string"
-                  ? redactSensitiveErrorMessage(value)
-                  : value;
-              });
-              let redacted = serialized ?? "Unknown error occurred";
-              for (const [name, replacement] of propertyNames) {
-                redacted = redacted.replaceAll(name, replacement);
-              }
-              return redacted;
-            } catch {
-              return String(error);
-            }
-          })();
+  if (error instanceof Error) return redactSensitiveErrorMessage(error.message);
+  if (typeof error === "string") return redactSensitiveErrorMessage(error);
 
-  return redactSensitiveErrorMessage(message);
+  let serialized: string | undefined;
+  const propertyNames = new Map<string, string>();
+  try {
+    serialized = JSON.stringify(error, (key, value) => {
+      const redactedKey = redactSensitiveErrorMessage(key);
+      if (redactedKey !== key) {
+        propertyNames.set(JSON.stringify(key), JSON.stringify(redactedKey));
+      }
+      // Use the existing field rules while the raw property name is
+      // available, before renaming it can hide a sensitive suffix.
+      const field = `${JSON.stringify(stripControlSequencesFromErrorMessage(key))}:0`;
+      if (
+        field.search(SENSITIVE_FIELD_PATTERN) >= 0 ||
+        field.search(ENV_SECRET_PATTERN) >= 0
+      )
+        return REDACTED_VALUE;
+      return typeof value === "string"
+        ? redactSensitiveErrorMessage(value)
+        : value;
+    });
+  } catch {
+    return redactSensitiveErrorMessage(String(error));
+  }
+
+  // Every property name and string value is already redacted. Another pass
+  // over the serialized text would rewrite escaped quotes into invalid JSON.
+  let redacted = serialized ?? "Unknown error occurred";
+  for (const [name, replacement] of propertyNames) {
+    redacted = redacted.replaceAll(name, replacement);
+  }
+  return redacted;
 };

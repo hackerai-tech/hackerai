@@ -357,6 +357,41 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
     expect(serialized).not.toContain(inlineImage);
   });
 
+  it("redacts credential flag assignments from the message, stack and cause", () => {
+    const cause = new Error(
+      "child exited 1: login --password='FAKE_CAUSE_PASSWORD' --retries=3",
+    );
+    const err = Object.assign(
+      new Error(
+        'scanner --api-key=FAKE_API_KEY --token="FAKE QUOTED TOKEN" --max_tokens=4096 failed',
+        { cause },
+      ),
+      { statusCode: 401, code: "EAUTH" },
+    );
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    for (const secret of [
+      "FAKE_API_KEY",
+      "FAKE QUOTED TOKEN",
+      "FAKE_CAUSE_PASSWORD",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(details).toMatchObject({
+      errorMessage:
+        'scanner --api-key="[Redacted]" --token="[Redacted]" --max_tokens=4096 failed',
+      cause: 'child exited 1: login --password="[Redacted]" --retries=3',
+      statusCode: 401,
+      errorCode: "EAUTH",
+    });
+    expect(details.errorStack).toContain(
+      'scanner --api-key="[Redacted]" --token="[Redacted]" --max_tokens=4096 failed',
+    );
+    expect(getProviderErrorCategory(details)).toBe("provider_4xx");
+  });
+
   it("omits malformed response bodies and circular provider data", () => {
     const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
     const responseBody = `<html>${privateAttachmentText}</html>`;
