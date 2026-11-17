@@ -275,7 +275,8 @@ export const Messages = ({
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
-  const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
+  const { getCachedUrl, setCachedUrl, loadImageUrl } =
+    useFileUrlCache(messages);
 
   // Filter out auto-continue messages for rendering
   const visibleMessages = useMemo(
@@ -1031,6 +1032,7 @@ export const Messages = ({
     <FileUrlCacheProvider
       getCachedUrl={getCachedUrl}
       setCachedUrl={setCachedUrl}
+      loadImageUrl={loadImageUrl}
     >
       <div className="relative flex-1 min-h-0">
         <LegendList<ChatTimelineRow>
