@@ -21,7 +21,9 @@ import {
   readDesktopTerminalErrorDiagnostic,
 } from "./desktop-terminal-error-diagnostics";
 import {
+  DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
@@ -213,6 +215,12 @@ export function sanitizeDesktopAckEvent<
       terminalError?.desktop_terminal_error_kind === "invocation_rejected"
         ? readDesktopInvocationRejectionDiagnostic(event.properties)
         : null;
+    // The admission class joins only a validated execution_admission class,
+    // likewise only as the validated data copy; an invalid one drops alone.
+    const invocationAdmission = readDesktopInvocationAdmissionDiagnostic(
+      event.properties,
+      invocationRejection,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -227,7 +235,8 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key) &&
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
-            !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
+            !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
+            !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -266,6 +275,8 @@ export function sanitizeDesktopAckEvent<
     if (terminalError) Object.assign(event.properties, terminalError);
     if (invocationRejection)
       Object.assign(event.properties, invocationRejection);
+    if (invocationAdmission)
+      Object.assign(event.properties, invocationAdmission);
   }
   delete event.$set;
   delete event.$set_once;

@@ -45,8 +45,40 @@ const AUTHORIZED_ONLY: ReadonlySet<DesktopInvocationRejectionReason> = new Set([
   "operation_rejected",
 ]);
 
+/** A closed class of the fixed `execution_admission` message, refining that
+ * reason only. Like the reason, it names the message template, never the
+ * physical update, stdin, lock or duplicate-command state behind it. */
+const ADMISSION_REASONS = [
+  "update_state_unavailable",
+  "update_installing",
+  "stdin_size_limit",
+  "stdin_encoding_invalid",
+  "command_state_lock_poisoned",
+  "command_already_running",
+] as const;
+
+export type DesktopInvocationAdmissionReason =
+  (typeof ADMISSION_REASONS)[number];
+
+// execute_stream_command admission: update_safety.rs UpdateGate::operation,
+// command_stdin.rs decode and lib.rs spawn_stream_command.
+const ADMISSION_MESSAGES: ReadonlyMap<
+  string,
+  DesktopInvocationAdmissionReason
+> = new Map([
+  ["Desktop update state unavailable", "update_state_unavailable"],
+  [
+    "Desktop is installing an update. Reopen the app before retrying.",
+    "update_installing",
+  ],
+  ["Command stdin exceeds limit", "stdin_size_limit"],
+  ["Invalid command stdin encoding", "stdin_encoding_invalid"],
+  ["stream command state lock poisoned", "command_state_lock_poisoned"],
+  ["Command is already running", "command_already_running"],
+]);
+
 const MESSAGE_REASONS: ReadonlyMap<string, DesktopInvocationRejectionReason> =
-  new Map([
+  new Map<string, DesktopInvocationRejectionReason>([
     // lib.rs redeem_authorized_message, before its approval request is sent.
     ["Invalid Desktop operation authorization", "authorization_id_invalid"],
     ["Invalid Desktop operation", "authorization_precondition"],
@@ -70,17 +102,10 @@ const MESSAGE_REASONS: ReadonlyMap<string, DesktopInvocationRejectionReason> =
     ["Desktop operation type is missing", "operation_rejected"],
     ["Desktop operation type is not allowed here", "operation_rejected"],
     ["Invalid authorized command", "operation_rejected"],
-    // execute_stream_command admission: update_safety.rs UpdateGate::operation,
-    // command_stdin.rs decode and lib.rs spawn_stream_command.
-    ["Desktop update state unavailable", "execution_admission"],
-    [
-      "Desktop is installing an update. Reopen the app before retrying.",
-      "execution_admission",
-    ],
-    ["Command stdin exceeds limit", "execution_admission"],
-    ["Invalid command stdin encoding", "execution_admission"],
-    ["stream command state lock poisoned", "execution_admission"],
-    ["Command is already running", "execution_admission"],
+    ...Array.from(
+      ADMISSION_MESSAGES.keys(),
+      (message) => [message, "execution_admission"] as const,
+    ),
   ]);
 
 // lib.rs spawn_stream_command; the OS error text after it is never read.
@@ -119,16 +144,33 @@ function rejectionMessage(error: unknown): string | null {
   }
 }
 
+export interface NativeInvocationRejectionClass {
+  readonly reason: DesktopInvocationRejectionReason;
+  /** Set only for an `execution_admission` reason. */
+  readonly admission: DesktopInvocationAdmissionReason | null;
+}
+
+/** Both classes from one read of the message. Never throws; anything but a
+ * listed message is `unknown`, with no admission class. */
+export function classifyNativeInvocationRejectionMessage(
+  error: unknown,
+): NativeInvocationRejectionClass {
+  const message = rejectionMessage(error);
+  if (message === null || message.length > MAX_MESSAGE_LENGTH)
+    return { reason: "unknown", admission: null };
+  return {
+    reason:
+      MESSAGE_REASONS.get(message) ??
+      (message.startsWith(SPAWN_PREFIX) ? "spawn_failed" : "unknown"),
+    admission: ADMISSION_MESSAGES.get(message) ?? null,
+  };
+}
+
 /** Never throws; anything but a listed message is `unknown`. */
 export function classifyNativeInvocationRejection(
   error: unknown,
 ): DesktopInvocationRejectionReason {
-  const message = rejectionMessage(error);
-  if (message === null || message.length > MAX_MESSAGE_LENGTH) return "unknown";
-  return (
-    MESSAGE_REASONS.get(message) ??
-    (message.startsWith(SPAWN_PREFIX) ? "spawn_failed" : "unknown")
-  );
+  return classifyNativeInvocationRejectionMessage(error).reason;
 }
 
 /** The complete group, or null for an unlisted value or a reason the
@@ -164,6 +206,58 @@ export function readDesktopInvocationRejectionDiagnostic(
     });
     return version === 1
       ? desktopInvocationRejectionDiagnostic(reason, adapter)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DesktopInvocationAdmissionDiagnostic {
+  readonly desktop_invocation_admission_version: 1;
+  readonly desktop_invocation_admission_reason: DesktopInvocationAdmissionReason;
+}
+
+const ADMISSION_PROPERTIES = [
+  "desktop_invocation_admission_version",
+  "desktop_invocation_admission_reason",
+] as const satisfies readonly (keyof DesktopInvocationAdmissionDiagnostic)[];
+
+export const DESKTOP_INVOCATION_ADMISSION_PROPERTIES: ReadonlySet<string> =
+  new Set(ADMISSION_PROPERTIES);
+
+/** The complete admission group, or null unless it refines a complete
+ * `execution_admission` group, which already names a selected native command
+ * set, with a listed admission class. */
+export function desktopInvocationAdmissionDiagnostic(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  admission: unknown,
+): DesktopInvocationAdmissionDiagnostic | null {
+  if (rejection?.desktop_invocation_rejection_reason !== "execution_admission")
+    return null;
+  const known = ADMISSION_REASONS.find((value) => value === admission);
+  return known
+    ? Object.freeze({
+        desktop_invocation_admission_version: 1,
+        desktop_invocation_admission_reason: known,
+      })
+    : null;
+}
+
+/** Read the complete admission group from any property bag's own data
+ * properties, joined to an already validated rejection group, or nothing at
+ * all. A getter never runs; a throwing proxy reads as nothing. */
+export function readDesktopInvocationAdmissionDiagnostic(
+  source: unknown,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): DesktopInvocationAdmissionDiagnostic | null {
+  if (!rejection || typeof source !== "object" || source === null) return null;
+  try {
+    const [version, reason] = ADMISSION_PROPERTIES.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    return version === 1
+      ? desktopInvocationAdmissionDiagnostic(rejection, reason)
       : null;
   } catch {
     return null;

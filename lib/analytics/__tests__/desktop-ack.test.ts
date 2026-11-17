@@ -45,7 +45,9 @@ import {
   type DesktopTerminalErrorDiagnostic,
 } from "../desktop-terminal-error-diagnostics";
 import {
+  DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
@@ -2714,6 +2716,168 @@ describe("invocation rejection message class", () => {
     }).properties!;
     expect(reads).toBe(0);
     expect(sanitized).toEqual({ terminalType: "error", ...rejectedKind });
+  });
+
+  describe("execution admission class", () => {
+    const executionAdmission: DesktopInvocationRejectionDiagnostic = {
+      ...rejection,
+      desktop_invocation_rejection_reason: "execution_admission",
+      desktop_invocation_rejection_adapter: "compatibility_native",
+    };
+    const admission: DesktopInvocationAdmissionDiagnostic = {
+      desktop_invocation_admission_version: 1,
+      desktop_invocation_admission_reason: "update_installing",
+    };
+    const admissionKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key),
+      );
+
+    it("keeps the pair beside the class and kind through capture and before_send", () => {
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: executionAdmission,
+        invocationAdmission: { ...admission, stdin: "PRIVATE" },
+      });
+      const expected = { ...rejectedKind, ...executionAdmission, ...admission };
+      expect(final?.properties).toMatchObject(expected);
+      const sanitized = sanitize(final!.properties);
+      expect(sanitized).toMatchObject(expected);
+      expect(admissionKeys(sanitized)).toHaveLength(2);
+      expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "a missing version",
+        { desktop_invocation_admission_version: undefined },
+      ],
+      ["a string version", { desktop_invocation_admission_version: "1" }],
+      ["an unsupported version", { desktop_invocation_admission_version: 2 }],
+      ["a missing reason", { desktop_invocation_admission_reason: undefined }],
+      ["a private reason", { desktop_invocation_admission_reason: "PRIVATE" }],
+      [
+        "a raw native message",
+        {
+          desktop_invocation_admission_reason:
+            "Desktop is installing an update. Reopen the app before retrying.",
+        },
+      ],
+    ])("drops only the admission pair for %s", (_case, change) => {
+      const invalid = { ...admission, ...change };
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: executionAdmission,
+        invocationAdmission: invalid,
+      });
+      expect(final?.properties).toMatchObject({
+        ...rejectedKind,
+        ...executionAdmission,
+      });
+      expect(admissionKeys(final!.properties)).toEqual([]);
+      expect(
+        sanitize({
+          terminalType: "error",
+          ...rejectedKind,
+          ...executionAdmission,
+          ...invalid,
+        }),
+      ).toEqual({
+        terminalType: "error",
+        ...rejectedKind,
+        ...executionAdmission,
+      });
+      expect(JSON.stringify(final)).not.toContain("PRIVATE");
+      expect(JSON.stringify(final)).not.toContain("Reopen");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["another class", { invocationRejection: rejection }],
+      [
+        "an invalid class",
+        {
+          invocationRejection: {
+            ...executionAdmission,
+            desktop_invocation_rejection_adapter: "not_selected",
+          },
+        },
+      ],
+      ["no class", { invocationRejection: undefined }],
+      [
+        "a native timeout kind",
+        {
+          terminalError: {
+            ...rejectedKind,
+            desktop_terminal_error_kind: "native_command_timeout",
+          },
+        },
+      ],
+      ["an exit", { terminalType: "exit", terminalExitCode: 1 }],
+    ])("never attaches the pair to %s", (_case, change) => {
+      const settlement = {
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: executionAdmission,
+        invocationAdmission: admission,
+        ...change,
+      };
+      const final = settle(settlement);
+      expect(admissionKeys(final!.properties)).toEqual([]);
+      const {
+        terminalError: kind,
+        invocationRejection,
+        invocationAdmission,
+        ...rest
+      } = settlement;
+      const sanitized = sanitize({
+        ...rest,
+        ...(kind as object),
+        ...(invocationRejection as object),
+        ...(invocationAdmission as object),
+      });
+      expect(admissionKeys(sanitized)).toEqual([]);
+      // The coarse class is unaffected by the pair it did not admit.
+      expect(rejectionKeys(sanitized)).toEqual(
+        rejectionKeys(final!.properties),
+      );
+    });
+
+    it("never runs an admission accessor at capture or before_send", () => {
+      let reads = 0;
+      const withAccessor = (target: Record<string, unknown>) =>
+        Object.defineProperty(target, "desktop_invocation_admission_reason", {
+          enumerable: true,
+          get() {
+            reads++;
+            return "update_installing";
+          },
+        });
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: executionAdmission,
+        invocationAdmission: withAccessor({ ...admission }),
+      });
+      expect(final?.properties).toMatchObject(executionAdmission);
+      expect(admissionKeys(final!.properties)).toEqual([]);
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties: withAccessor({
+          terminalType: "error",
+          ...rejectedKind,
+          ...executionAdmission,
+          ...admission,
+        }),
+      }).properties!;
+      expect(reads).toBe(0);
+      expect(sanitized).toEqual({
+        terminalType: "error",
+        ...rejectedKind,
+        ...executionAdmission,
+      });
+    });
   });
 });
 
