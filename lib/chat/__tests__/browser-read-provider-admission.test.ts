@@ -17,6 +17,7 @@ import {
 } from "@/lib/ai/browser-handoff/read-error";
 import { isProviderApiError } from "@/lib/api/chat-stream-helpers";
 import {
+  createProviderContentBlockedFinishReasonError,
   isInvalidImageInputError,
   isProviderContentFilterFinishReason,
   isRetriableProviderStreamDisconnectError,
@@ -627,5 +628,106 @@ describe("Agent final Pro/Max disconnect continuation", () => {
         { retryAborted: true },
       ),
     ).toBeUndefined();
+  });
+});
+
+// --- Ask final outcome and its logging branch ------------------------------
+
+describe("Ask final outcome after a declined local read", () => {
+  // The actual statements from the final finish-reason check through the
+  // success/error logging branch; analytics capture is replaced by `outcome`.
+  const settlement = (() => {
+    const start = declaration(ask, "finalProviderContentBlocked").parent
+      .parent as ts.VariableStatement;
+    const block = start.parent as ts.Block;
+    const from = block.statements.indexOf(start);
+    const to = block.statements.findIndex(
+      (statement) =>
+        ts.isIfStatement(statement) &&
+        statement.expression.getText(ask) === "visionSummaryRecoveryFailure",
+    );
+    if (from < 0 || to <= from)
+      throw new Error("Ask final settlement changed shape");
+    const body = block.statements
+      .slice(from, to + 1)
+      .filter(
+        (statement) =>
+          !statement
+            .getText(ask)
+            .startsWith("captureAgentCompletionAnalytics("),
+      )
+      .map((statement) => statement.getText(ask))
+      .join("\n");
+    return ts.transpileModule(`${body}\nreturn outcome;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+  })();
+
+  const settle = (
+    providerError: unknown,
+    streamFinishReason: string | undefined,
+    isAborted = false,
+  ) => {
+    const chatLogger = {
+      emitUnexpectedError: jest.fn(),
+      emitSuccess: jest.fn(),
+    };
+    const scope = {
+      state: { providerError, streamFinishReason },
+      isProviderContentFilterFinishReason,
+      isTrustedBrowserHandoffReadFailure,
+      createProviderContentBlockedFinishReasonError,
+      isAborted,
+      visionSummaryRecoveryFailure: undefined,
+      terminalEmptyResponse: false,
+      isPreemptiveAbort: false,
+      summarizationTracker: { hasSummarized: false },
+      chatLogger,
+    };
+    const outcome = new Function(...Object.keys(scope), settlement)(
+      ...Object.values(scope),
+    );
+    return { outcome, chatLogger };
+  };
+
+  it.each([
+    ["direct", () => local],
+    ["wrapped", () => wrappedLocal],
+  ])(
+    "reports a terminal %s local read as an error with its original error",
+    (_kind, failure) => {
+      const { outcome, chatLogger } = settle(failure(), "error");
+      expect(outcome).toBe("error");
+      expect(chatLogger.emitSuccess).not.toHaveBeenCalled();
+      expect(chatLogger.emitUnexpectedError).toHaveBeenCalledTimes(1);
+      expect(chatLogger.emitUnexpectedError.mock.calls[0][0]).toBe(failure());
+    },
+  );
+
+  it("keeps Stop, ordinary success, content filters and other provider errors unchanged", () => {
+    // Stop clears the finish reason before settlement and takes precedence.
+    const stopped = settle(local, undefined, true);
+    expect(stopped.outcome).toBe("aborted");
+    expect(stopped.chatLogger.emitSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({ wasAborted: true }),
+    );
+
+    const ordinary = settle(undefined, "stop");
+    expect(ordinary.outcome).toBe("success");
+    expect(ordinary.chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
+
+    const filtered = settle(undefined, "content-filter");
+    expect(filtered.outcome).toBe("error");
+    expect(filtered.chatLogger.emitUnexpectedError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "ProviderContentBlockedFinishReasonError",
+      }),
+    );
+
+    // Out of scope here: other terminal provider errors keep their existing
+    // accounting rather than being widened by this local-read correction.
+    const genuine = settle(providerFailures.provider_503, "error");
+    expect(genuine.outcome).toBe("success");
+    expect(genuine.chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
   });
 });

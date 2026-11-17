@@ -3091,9 +3091,15 @@ export const createChatHandler = () => {
                       isProviderContentFilterFinishReason(
                         state.streamFinishReason,
                       );
+                    // A failed local browser safety read is never recovered
+                    // above, so its terminal error cannot be reported as success.
+                    const terminalTrustedLocalReadError =
+                      state.streamFinishReason === "error" &&
+                      isTrustedBrowserHandoffReadFailure(state.providerError);
                     const outcome = isAborted
                       ? "aborted"
                       : finalProviderContentBlocked ||
+                          terminalTrustedLocalReadError ||
                           visionSummaryRecoveryFailure ||
                           (terminalEmptyResponse &&
                             state.streamFinishReason === "error")
@@ -3152,6 +3158,7 @@ export const createChatHandler = () => {
                       );
                     } else if (
                       finalProviderContentBlocked ||
+                      terminalTrustedLocalReadError ||
                       (terminalEmptyResponse &&
                         state.streamFinishReason === "error")
                     ) {
