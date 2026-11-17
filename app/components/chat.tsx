@@ -268,17 +268,29 @@ export function getExistingChatLoadState({
 const shouldReleaseStreamedTitle = (
   streamedTitle: string | null,
   persistedTitle: string | null | undefined,
-): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+  titleManuallyEdited: boolean | undefined,
+): boolean =>
+  Boolean(
+    streamedTitle && (titleManuallyEdited || persistedTitle === streamedTitle),
+  );
 
 export function useStreamedChatTitle(
   persistedTitle: string | null | undefined,
+  titleManuallyEdited?: boolean,
 ) {
   const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
   // The streamed title only bridges the gap until Convex receives the same
-  // generated title. This guarded adjustment restarts the current render
-  // before children commit with a stale title source.
-  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+  // generated title, or the owner's rename supersedes it. This guarded
+  // adjustment restarts the current render before children commit with a
+  // stale title source.
+  if (
+    shouldReleaseStreamedTitle(
+      streamedTitle,
+      persistedTitle,
+      titleManuallyEdited,
+    )
+  ) {
     setStreamedTitle(null);
   }
 
@@ -860,6 +872,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatData && (chatData as any).id === chatId ? chatData : undefined;
   const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
     chatDataForCurrentChat?.title,
+    chatDataForCurrentChat?.title_manually_edited,
   );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;

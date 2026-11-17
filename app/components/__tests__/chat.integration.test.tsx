@@ -520,10 +520,15 @@ const QueueEditingHarness = ({
 
 const ChatTitleHandoffHarness = ({
   persistedTitle,
+  titleManuallyEdited,
 }: {
   persistedTitle: string;
+  titleManuallyEdited?: boolean;
 }) => {
-  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(persistedTitle);
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
+    persistedTitle,
+    titleManuallyEdited,
+  );
 
   return (
     <>
@@ -974,6 +979,34 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("chat-title")).toHaveTextContent(
         "Renamed title",
       );
+    });
+
+    it("shows a manual rename over a pending or late streamed title", () => {
+      const { rerender } = render(
+        <ChatTitleHandoffHarness persistedTitle="New Chat" />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      // The rename keeps the placeholder text, so the persisted string alone
+      // does not change; only the manual marker does.
+      rerender(
+        <ChatTitleHandoffHarness
+          persistedTitle="New Chat"
+          titleManuallyEdited
+        />,
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent("New Chat");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent("New Chat");
     });
 
     it("should render new chat with welcome message", () => {
