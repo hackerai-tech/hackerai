@@ -4352,6 +4352,540 @@ describe("POST /api/subscription/webhook", () => {
     });
   });
 
+  describe("default-card recovery failure step", () => {
+    const requestId = "iad1::cardqa-1794168000000-abcdef123456";
+    const build = "c".repeat(40);
+
+    // clearAllMocks keeps implementations and one-shot values; reset the
+    // boundaries these cases make throw so no failure leaks into later tests.
+    afterEach(() => {
+      for (const mock of [
+        mockPostHogEvent,
+        mockRetrieveCustomer,
+        mockHasActiveSuspensionForUser,
+        mockListSubscriptions,
+        mockRetrieveSubscription,
+        mockRetrieveInvoice,
+        mockListStripeEvents,
+        mockUpdateSubscription,
+        mockPayInvoice,
+      ])
+        mock.mockReset();
+    });
+
+    /**
+     * A renewal recovery whose success path enters every boundary: the
+     * customer scope replaces a stale subscription default before paying.
+     */
+    function mockCardRecovery({
+      scope = "customer",
+      failedMutation,
+      failure,
+      laterSubscriptionUpdateFailure = false,
+    }: {
+      scope?: "customer" | "subscription";
+      failedMutation?: string;
+      failure?: Error;
+      laterSubscriptionUpdateFailure?: boolean;
+    } = {}) {
+      jest.replaceProperty(process, "env", {
+        ...process.env,
+        VERCEL_GIT_COMMIT_SHA: build,
+      });
+      const created = Math.floor(Date.now() / 1000);
+      mockConstructEvent.mockReturnValue(
+        scope === "customer"
+          ? {
+              id: "evt_PRIVATE_card",
+              type: "customer.updated",
+              created,
+              data: {
+                object: {
+                  id: "cus_PRIVATE_card",
+                  invoice_settings: {
+                    default_payment_method: "pm_PRIVATE_new",
+                  },
+                },
+                previous_attributes: {
+                  invoice_settings: {
+                    default_payment_method: "pm_PRIVATE_old",
+                  },
+                },
+              },
+            }
+          : {
+              id: "evt_PRIVATE_card",
+              type: "customer.subscription.updated",
+              created,
+              data: {
+                object: {
+                  id: "sub_PRIVATE_card",
+                  customer: "cus_PRIVATE_card",
+                  default_payment_method: "pm_PRIVATE_new",
+                  cancel_at_period_end: false,
+                  metadata: {},
+                },
+                previous_attributes: {
+                  default_payment_method: "pm_PRIVATE_old",
+                  // Makes the later, unrelated handler write a reversal.
+                  ...(laterSubscriptionUpdateFailure && {
+                    cancel_at_period_end: true,
+                  }),
+                },
+              },
+            },
+      );
+      mockRetrieveCustomer.mockResolvedValue({
+        id: "cus_PRIVATE_card",
+        metadata: { workOSOrganizationId: "org_PRIVATE_card" },
+        invoice_settings: { default_payment_method: "pm_PRIVATE_new" },
+      } as never);
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest
+          .fn()
+          .mockResolvedValue([{ userId: "user_PRIVATE_card" }]),
+      } as never);
+      mockHasActiveSuspensionForUser.mockResolvedValue(false as never);
+      mockListSubscriptions.mockResolvedValue({
+        data: [{ id: "sub_PRIVATE_card", status: "past_due" }],
+        has_more: false,
+      } as never);
+      const subscription = {
+        id: "sub_PRIVATE_card",
+        status: "past_due",
+        customer: "cus_PRIVATE_card",
+        collection_method: "charge_automatically",
+        default_payment_method:
+          scope === "customer" ? "pm_PRIVATE_old" : "pm_PRIVATE_new",
+        latest_invoice: "in_PRIVATE_card",
+        metadata: {},
+        items: {
+          data: [
+            {
+              quantity: 1,
+              price: {
+                id: "price_PRIVATE_card",
+                lookup_key: "pro-plus-monthly-plan",
+                recurring: { interval: "month", interval_count: 1 },
+                product: {
+                  id: "prod_PRIVATE_card",
+                  name: "HackerAI Pro Plus",
+                  metadata: {},
+                },
+              },
+            },
+          ],
+        },
+      };
+      mockRetrieveSubscription.mockResolvedValue(subscription as never);
+      mockRetrieveInvoice.mockResolvedValue({
+        id: "in_PRIVATE_card",
+        customer: "cus_PRIVATE_card",
+        amount_due: 6000,
+        amount_remaining: 6000,
+        currency: "usd",
+        status: "open",
+        collection_method: "charge_automatically",
+        billing_reason: "subscription_cycle",
+        attempt_count: 2,
+        parent: { subscription_details: { subscription: "sub_PRIVATE_card" } },
+        payments: {
+          data: [
+            {
+              is_default: true,
+              payment: {
+                type: "payment_intent",
+                payment_intent: hydratedPaymentIntent(),
+              },
+            },
+          ],
+        },
+      } as never);
+      mockListStripeEvents.mockResolvedValue({
+        data: [],
+        has_more: false,
+      } as never);
+      mockUpdateSubscription.mockResolvedValue({} as never);
+      mockPayInvoice.mockResolvedValue({ status: "paid" } as never);
+      mockConvexMutation.mockImplementation((mutation) => {
+        if (mutation === failedMutation) return Promise.reject(failure);
+        return Promise.resolve(
+          mutation === "involuntaryChurn.recordEvent"
+            ? {
+                inserted: true,
+                priorFailureSeen: true,
+                recoveryResult: "payment_method_updated",
+              }
+            : { alreadyProcessed: false },
+        );
+      });
+      return { subscription };
+    }
+
+    const mutationCalls = (name: string) =>
+      mockConvexMutation.mock.calls.filter(([mutation]) => mutation === name)
+        .length;
+
+    /** Count each external effect so a failed request cannot hide a charge. */
+    const recoveryProgress = () => ({
+      customerLookups: mockRetrieveCustomer.mock.calls.length,
+      suspensionChecks: mockHasActiveSuspensionForUser.mock.calls.length,
+      subscriptionLists: mockListSubscriptions.mock.calls.length,
+      subscriptionLookups: mockRetrieveSubscription.mock.calls.length,
+      cardSelectedEvents: mockPostHogEvent.mock.calls.filter(
+        ([event]) => event === PAID_FUNNEL_EVENTS.paymentMethodUpdated,
+      ).length,
+      invoiceReads: mockRetrieveInvoice.mock.calls.length,
+      churnRecords: mutationCalls("involuntaryChurn.recordEvent"),
+      historyReads: mockListStripeEvents.mock.calls.length,
+      defaultUpdates: mockUpdateSubscription.mock.calls.length,
+      invoicePayments: mockPayInvoice.mock.calls.length,
+      // Only the check-only read; a failure must never mark the event processed.
+      idempotencyChecks: mutationCalls("extraUsage.checkAndMarkWebhook"),
+    });
+
+    const failureContexts = () =>
+      mockPostHogWarn.mock.calls.filter(
+        ([event]) => event === "subscription_webhook_failure_context",
+      );
+
+    const recoveryContext = (
+      phase: "customer_updated" | "subscription_updated",
+      step: string,
+      request = requestId,
+    ) => [
+      "subscription_webhook_failure_context",
+      {
+        diagnostic_version: 1,
+        webhook_phase: phase,
+        payment_method_recovery_diagnostic_version: 1,
+        payment_method_recovery_step: step,
+        request_id: request,
+        web_build_commit: build,
+      },
+    ];
+
+    const noProgress = {
+      customerLookups: 0,
+      suspensionChecks: 0,
+      subscriptionLists: 0,
+      subscriptionLookups: 0,
+      cardSelectedEvents: 0,
+      invoiceReads: 0,
+      churnRecords: 0,
+      historyReads: 0,
+      defaultUpdates: 0,
+      invoicePayments: 0,
+      idempotencyChecks: 1,
+    };
+    // The handler's freshness read precedes the shared user resolver's read.
+    const usersResolved = { ...noProgress, customerLookups: 2 };
+    const suspensionsChecked = { ...usersResolved, suspensionChecks: 1 };
+    const subscriptionsListed = { ...suspensionsChecked, subscriptionLists: 1 };
+    const subscriptionResolved = {
+      ...subscriptionsListed,
+      subscriptionLookups: 1,
+    };
+    const cardSelected = { ...subscriptionResolved, cardSelectedEvents: 1 };
+    const invoiceRead = { ...cardSelected, invoiceReads: 1 };
+    const churnRecorded = { ...invoiceRead, churnRecords: 1 };
+    const historyRead = { ...churnRecorded, historyReads: 1 };
+    const defaultUpdated = { ...historyRead, defaultUpdates: 1 };
+
+    it.each([
+      {
+        step: "retrieve_customer",
+        arrange: (failure: Error) =>
+          mockRetrieveCustomer.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: { ...noProgress, customerLookups: 1 },
+      },
+      {
+        // The shared resolver swallows its read; the handler throws its own.
+        step: "resolve_customer_users",
+        arrange: (failure: Error) =>
+          mockRetrieveCustomer
+            .mockResolvedValueOnce({
+              id: "cus_PRIVATE_card",
+              invoice_settings: { default_payment_method: "pm_PRIVATE_new" },
+            } as never)
+            .mockRejectedValueOnce(failure as never),
+        thrown: "Payment recovery customer lookup failed",
+        progress: usersResolved,
+      },
+      {
+        step: "check_user_suspensions",
+        arrange: (failure: Error) =>
+          mockHasActiveSuspensionForUser.mockRejectedValueOnce(
+            failure as never,
+          ),
+        thrown: "original",
+        progress: suspensionsChecked,
+      },
+      {
+        step: "list_subscriptions",
+        arrange: (failure: Error) =>
+          mockListSubscriptions.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: subscriptionsListed,
+      },
+      {
+        step: "resolve_subscription",
+        arrange: (failure: Error) =>
+          mockRetrieveSubscription.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: subscriptionResolved,
+      },
+      {
+        step: "emit_payment_method_updated",
+        arrange: (failure: Error) =>
+          mockPostHogEvent.mockImplementation((event) => {
+            if (event === PAID_FUNNEL_EVENTS.paymentMethodUpdated)
+              throw failure;
+          }),
+        thrown: "original",
+        progress: cardSelected,
+      },
+      {
+        // The lookup helper swallows its read; the handler throws its own.
+        step: "retrieve_invoice",
+        arrange: (failure: Error) =>
+          mockRetrieveInvoice.mockRejectedValueOnce(failure as never),
+        thrown: "Payment recovery invoice lookup failed",
+        progress: invoiceRead,
+      },
+      {
+        step: "record_involuntary_churn_event",
+        failedMutation: "involuntaryChurn.recordEvent",
+        thrown: "original",
+        progress: churnRecorded,
+      },
+      {
+        // An eligibility read inside the shared helper must not blame the
+        // completed churn write that preceded it.
+        step: "recover_subscription_payment",
+        arrange: (
+          failure: Error,
+          { subscription }: ReturnType<typeof mockCardRecovery>,
+        ) => {
+          Object.defineProperty(subscription, "pause_collection", {
+            get: () => {
+              throw failure;
+            },
+          });
+        },
+        thrown: "original",
+        progress: churnRecorded,
+      },
+      {
+        step: "check_subscription_default_history",
+        arrange: (failure: Error) =>
+          mockListStripeEvents.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: historyRead,
+      },
+      {
+        step: "update_subscription_default",
+        arrange: (failure: Error) =>
+          mockUpdateSubscription.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: defaultUpdated,
+      },
+      {
+        step: "pay_invoice",
+        arrange: (failure: Error) =>
+          mockPayInvoice.mockRejectedValueOnce(failure as never),
+        thrown: "original",
+        progress: { ...defaultUpdated, invoicePayments: 1 },
+      },
+    ])(
+      "records $step as the last entered customer recovery step",
+      async ({ step, arrange, failedMutation, thrown, progress }) => {
+        const failure = new Error("PRIVATE_FAILURE");
+        const fixture = mockCardRecovery({ failedMutation, failure });
+        arrange?.(failure, fixture);
+        const { POST } = await import("../route");
+        const rejection = expect(
+          POST(makeWebhookRequest({ requestId })),
+        ).rejects;
+        if (thrown === "original") await rejection.toBe(failure);
+        else await rejection.toThrow(thrown);
+
+        expect(recoveryProgress()).toEqual(progress);
+        if (progress.defaultUpdates) {
+          expect(mockUpdateSubscription).toHaveBeenCalledWith(
+            "sub_PRIVATE_card",
+            { default_payment_method: "pm_PRIVATE_new" },
+            {
+              idempotencyKey: "recovery-card:sub_PRIVATE_card:evt_PRIVATE_card",
+            },
+          );
+        }
+        if (progress.invoicePayments) {
+          expect(mockPayInvoice).toHaveBeenCalledWith(
+            "in_PRIVATE_card",
+            { payment_method: "pm_PRIVATE_new" },
+            {
+              idempotencyKey: "recovery-payment:in_PRIVATE_card:pm_PRIVATE_new",
+            },
+          );
+          expect(
+            mockUpdateSubscription.mock.invocationCallOrder[0],
+          ).toBeLessThan(mockPayInvoice.mock.invocationCallOrder[0]);
+        }
+        expect(failureContexts()).toEqual([
+          recoveryContext("customer_updated", step),
+        ]);
+        expect(JSON.stringify(failureContexts())).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each([
+      {
+        step: "resolve_subscription",
+        arrange: (failure: Error) =>
+          mockRetrieveSubscription.mockRejectedValueOnce(failure as never),
+        payments: 0,
+      },
+      {
+        // The subscription already uses the selected card: no history or update.
+        step: "pay_invoice",
+        arrange: (failure: Error) =>
+          mockPayInvoice.mockRejectedValueOnce(failure as never),
+        payments: 1,
+      },
+    ])(
+      "records $step for a subscription-scoped card selection",
+      async ({ step, arrange, payments }) => {
+        const failure = new Error("PRIVATE_FAILURE");
+        mockCardRecovery({ scope: "subscription" });
+        arrange(failure);
+        const { POST } = await import("../route");
+        await expect(POST(makeWebhookRequest({ requestId }))).rejects.toBe(
+          failure,
+        );
+
+        expect(recoveryProgress()).toEqual(
+          expect.objectContaining({
+            // Only the shared user resolver reads the customer.
+            customerLookups: 1,
+            subscriptionLists: 0,
+            historyReads: 0,
+            defaultUpdates: 0,
+            invoicePayments: payments,
+            idempotencyChecks: 1,
+          }),
+        );
+        expect(failureContexts()).toEqual([
+          recoveryContext("subscription_updated", step),
+        ]);
+      },
+    );
+
+    it("does not attribute a later subscription-update failure to completed recovery", async () => {
+      const laterFailure = new Error("PRIVATE_REVERSAL");
+      mockCardRecovery({
+        scope: "subscription",
+        laterSubscriptionUpdateFailure: true,
+        failedMutation: "cancellationReasons.markCancellationReversed",
+        failure: laterFailure,
+      });
+      const { POST } = await import("../route");
+      await expect(POST(makeWebhookRequest({ requestId }))).rejects.toBe(
+        laterFailure,
+      );
+
+      // Recovery finished, then the unrelated handler failed in the same phase.
+      expect(mockPayInvoice).toHaveBeenCalledTimes(1);
+      expect(
+        mutationCalls("cancellationReasons.markCancellationReversed"),
+      ).toBe(1);
+      expect(failureContexts()).toEqual([
+        [
+          "subscription_webhook_failure_context",
+          {
+            diagnostic_version: 1,
+            webhook_phase: "subscription_updated",
+            request_id: requestId,
+            web_build_commit: build,
+          },
+        ],
+      ]);
+    });
+
+    it("omits the recovery step after a successful recovery in a later phase", async () => {
+      mockCardRecovery();
+      const scheduleFailure = new Error("PRIVATE_SCHEDULE");
+      const { after } = await import("next/server");
+      jest.mocked(after).mockImplementationOnce(() => {
+        throw scheduleFailure;
+      });
+      const { POST } = await import("../route");
+      await expect(POST(makeWebhookRequest({ requestId }))).rejects.toBe(
+        scheduleFailure,
+      );
+
+      expect(recoveryProgress()).toEqual({
+        ...defaultUpdated,
+        invoicePayments: 1,
+      });
+      expect(failureContexts()).toEqual([
+        [
+          "subscription_webhook_failure_context",
+          {
+            diagnostic_version: 1,
+            webhook_phase: "schedule_flush",
+            request_id: requestId,
+            web_build_commit: build,
+          },
+        ],
+      ]);
+    });
+
+    it("keeps concurrent recovery steps request-local", async () => {
+      mockCardRecovery();
+      const payFailure = new Error("PRIVATE_PAY");
+      let payEntered!: () => void;
+      const payStarted = new Promise<void>((resolve) => {
+        payEntered = resolve;
+      });
+      let rejectPay!: (error: Error) => void;
+      mockPayInvoice.mockImplementationOnce(
+        () =>
+          new Promise((_, reject) => {
+            rejectPay = reject;
+            payEntered();
+          }),
+      );
+      const { POST } = await import("../route");
+      const paymentRequest = "iad1::payqa-1794168000000-abcdef123456";
+      const pendingPayment = expect(
+        POST(makeWebhookRequest({ requestId: paymentRequest })),
+      ).rejects.toBe(payFailure);
+      await payStarted;
+
+      // A second delivery fails earlier while the first is still paying.
+      const lookupFailure = new Error("PRIVATE_LOOKUP");
+      mockRetrieveSubscription.mockRejectedValueOnce(lookupFailure as never);
+      const lookupRequest = "iad1::subqa-1794168000000-abcdef123456";
+      await expect(
+        POST(makeWebhookRequest({ requestId: lookupRequest })),
+      ).rejects.toBe(lookupFailure);
+      rejectPay(payFailure);
+      await pendingPayment;
+
+      expect(mockPayInvoice).toHaveBeenCalledTimes(1);
+      expect(failureContexts()).toEqual([
+        recoveryContext(
+          "customer_updated",
+          "resolve_subscription",
+          lookupRequest,
+        ),
+        recoveryContext("customer_updated", "pay_invoice", paymentRequest),
+      ]);
+    });
+  });
+
   it("records reversals against the event's attempt and occurrence time", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_reversed",
