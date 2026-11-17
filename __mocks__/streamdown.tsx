@@ -4,6 +4,7 @@ export const useIsCodeFenceIncomplete = () => false;
 
 // The stub ignores plugins; real Markdown runs in scripts/markdown tests.
 export const defaultRemarkPlugins = {};
+export const defaultRehypePlugins = {};
 
 // Simple mock for streamdown
 export const Streamdown = ({

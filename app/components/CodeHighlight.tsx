@@ -72,10 +72,14 @@ const CodeHighlightImpl = ({
     setIsWrapped(!isWrapped);
   };
 
+  // Code is always LTR, including inside right-to-left Markdown blocks.
+  // Streamdown's own code block sets this; this override must too. On inline
+  // code, dir also isolates the token so paths keep their leading slash.
   return !isInline ? (
     <div
       className="shiki not-prose relative rounded-lg bg-card border border-border my-2 overflow-hidden"
       data-highlight-mode={highlightMode}
+      dir="ltr"
     >
       {/* Menu bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-muted border-b border-border">
@@ -148,6 +152,7 @@ const CodeHighlightImpl = ({
     <code
       className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded text-sm font-mono whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
       {...props}
+      dir="ltr"
     >
       {children}
     </code>
