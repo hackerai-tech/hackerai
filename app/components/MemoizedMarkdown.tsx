@@ -10,6 +10,10 @@ import { CodeHighlight } from "./CodeHighlight";
 import { MarkdownTable } from "./MarkdownTable";
 import { SandboxAttachmentLink } from "./SandboxAttachmentLink";
 import { isTauriEnvironment, revealFileInDir } from "@/app/hooks/useTauri";
+import {
+  bareUrlRepairHandlers,
+  remarkBareUrlSuffixes,
+} from "@/lib/chat/markdown-autolinks";
 import { rehypeMarkdownDirection } from "@/lib/chat/markdown-direction";
 import {
   SANDBOX_ATTACHMENT_HREF_PREFIX,
@@ -92,10 +96,11 @@ const MARKDOWN_COMPONENTS: Components = {
 };
 
 // Passing remarkPlugins replaces Streamdown's defaults, so keep them first.
-// The sandbox rewrite runs before the default rehype sanitize/harden plugins,
-// which still check every resulting URL.
+// The bare URL suffix and sandbox rewrites run before the default rehype
+// sanitize/harden plugins, which still check every resulting URL.
 const MARKDOWN_REMARK_PLUGINS: NonNullable<StreamdownProps["remarkPlugins"]> = [
   ...Object.values(defaultRemarkPlugins),
+  remarkBareUrlSuffixes,
   remarkSandboxAttachmentLinks,
 ];
 
@@ -106,6 +111,13 @@ const MARKDOWN_REHYPE_PLUGINS: NonNullable<StreamdownProps["rehypePlugins"]> = [
   ...Object.values(defaultRehypePlugins),
   rehypeMarkdownDirection,
 ];
+
+// Streamdown repairs incomplete Markdown before parsing on every render, not
+// only while streaming. These handlers keep that repair from treating a bare
+// URL's `_`/`~` as formatting delimiters.
+const MARKDOWN_REMEND: NonNullable<StreamdownProps["remend"]> = {
+  handlers: [...bareUrlRepairHandlers],
+};
 
 // Streamdown styles quotes and nested lists with physical left-side classes.
 // Mirror them only for right-to-left content so LTR keeps its classes as-is.
@@ -122,6 +134,7 @@ export const MemoizedMarkdown = memo(
         components={MARKDOWN_COMPONENTS}
         remarkPlugins={MARKDOWN_REMARK_PLUGINS}
         rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        remend={MARKDOWN_REMEND}
         isAnimating={isAnimating}
       >
         {content}
