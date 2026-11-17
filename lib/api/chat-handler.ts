@@ -27,6 +27,7 @@ import {
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
@@ -1969,6 +1970,7 @@ export const createChatHandler = () => {
               if (
                 !isRetryWithFallback &&
                 !userStopSignal.signal.aborted &&
+                !isTrustedBrowserHandoffReadFailure(error) &&
                 (shouldRecoverAbliterationApiError ||
                   (isProviderApiError(error) &&
                     !(error instanceof AbliterationVisionError) &&
@@ -2080,6 +2082,9 @@ export const createChatHandler = () => {
                   createRecoverableProviderErrorFilter(
                     () =>
                       !isRetryWithFallback &&
+                      !isTrustedBrowserHandoffReadFailure(
+                        state.providerError,
+                      ) &&
                       shouldRetryAbliterationError(
                         activeAbliteratedExperiment,
                         activeModelName,
@@ -2243,7 +2248,12 @@ export const createChatHandler = () => {
                       state.providerError ??
                       new Error("Direct vision route failed");
 
+                    // Provider recovery cannot repair a failed local browser
+                    // safety read; fence it before any model selection.
                     primaryProviderRecovery: if (
+                      !isTrustedBrowserHandoffReadFailure(
+                        state.providerError,
+                      ) &&
                       !uncertainToolOutcome &&
                       (!loopTriggeredRetry || loopContinuation !== undefined) &&
                       (shouldRecoverAbliterationStreamError ||

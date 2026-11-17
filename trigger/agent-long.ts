@@ -47,6 +47,7 @@ import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -4793,6 +4794,7 @@ export const agentLongTask = task({
               if (
                 !isRetryWithFallback &&
                 !userStopSignal.signal.aborted &&
+                !isTrustedBrowserHandoffReadFailure(error) &&
                 (shouldRecoverAbliterationApiError ||
                   (isProviderApiError(error) &&
                     !isInvalidImageInputError(error) &&
@@ -4899,6 +4901,9 @@ export const agentLongTask = task({
                   createRecoverableProviderErrorFilter(
                     () =>
                       !isRetryWithFallback &&
+                      !isTrustedBrowserHandoffReadFailure(
+                        state.providerError,
+                      ) &&
                       shouldRetryAbliterationError(
                         activeAbliteratedExperiment,
                         activeModelName,
@@ -5178,7 +5183,13 @@ export const agentLongTask = task({
                         alreadyRetried: isRetryWithFallback,
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
+                        // Provider recovery cannot repair a failed local
+                        // browser safety read, whichever error recorded it.
                         hasCandidate:
+                          !isTrustedBrowserHandoffReadFailure(
+                            streamError,
+                            state.providerError,
+                          ) &&
                           !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
                           (!loopTriggeredRetry ||
@@ -5648,6 +5659,10 @@ export const agentLongTask = task({
                                         (message.parts?.length ?? 0) > 0,
                                     );
                                   const nextContinuation =
+                                    !isTrustedBrowserHandoffReadFailure(
+                                      streamError,
+                                      state.providerError,
+                                    ) &&
                                     isTerminalProviderStreamError(state) &&
                                     isRetriableProviderStreamDisconnectError(
                                       state.providerError,
