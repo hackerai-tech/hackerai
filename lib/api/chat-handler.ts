@@ -26,7 +26,7 @@ import {
   AGENT_LOOP_CONTINUATION_PROMPT,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
-import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { createProviderErrorDeferral } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
@@ -2072,22 +2072,13 @@ export const createChatHandler = () => {
               }
             }
 
+            // onFinish below drops this attempt's terminal error/finish only
+            // once its retry is merged; otherwise they are published unchanged.
+            const primaryProviderErrors = createProviderErrorDeferral();
             const mergePrimaryStream = (
               stream: Parameters<typeof writer.merge>[0],
             ) => {
-              writer.merge(
-                stream.pipeThrough(
-                  createRecoverableProviderErrorFilter(
-                    () =>
-                      !isRetryWithFallback &&
-                      shouldRetryAbliterationError(
-                        activeAbliteratedExperiment,
-                        activeModelName,
-                        userStopSignal.signal,
-                      ),
-                  ),
-                ),
-              );
+              writer.merge(stream.pipeThrough(primaryProviderErrors.filter()));
             };
 
             mergePrimaryStream(
@@ -2924,10 +2915,15 @@ export const createChatHandler = () => {
                           }),
                         );
 
+                        primaryProviderErrors.discard();
                         retryScheduled = true;
                         return; // Skip normal cleanup - retry handles it
                       }
                     }
+
+                    // No recovery (success, declined or Stop): publish the
+                    // held terminal chunks before any trailing writes.
+                    primaryProviderErrors.release();
 
                     if (
                       terminalEmptyResponse &&

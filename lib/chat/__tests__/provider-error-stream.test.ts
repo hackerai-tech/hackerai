@@ -7,7 +7,7 @@ import {
   type UIMessageChunk,
 } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { createRecoverableProviderErrorFilter } from "../provider-error-stream";
+import { createProviderErrorDeferral } from "../provider-error-stream";
 import {
   PLATFORM_AUTHORIZATION_ANNOTATION,
   preparePlatformAuthorizationForModel,
@@ -74,7 +74,7 @@ async function runRecovery(
     },
   });
   let primaryError: unknown;
-  let retried = false;
+  const primaryErrors = createProviderErrorDeferral();
   const output = createUIMessageStream({
     execute: ({ writer }) => {
       const result = streamText({
@@ -97,8 +97,10 @@ async function runRecovery(
           .toUIMessageStream({
             onFinish: ({ isAborted }) => {
               expect(isAborted).toBe(false);
-              if (!primaryError) return;
-              retried = true;
+              if (!primaryError) {
+                primaryErrors.release();
+                return;
+              }
               const retry = streamText({
                 model: fallback,
                 maxRetries: 0,
@@ -114,9 +116,10 @@ async function runRecovery(
                   onError: () => fallbackError.message,
                 }),
               );
+              primaryErrors.discard();
             },
           })
-          .pipeThrough(createRecoverableProviderErrorFilter(() => !retried)),
+          .pipeThrough(primaryErrors.filter()),
       );
     },
   });
@@ -131,7 +134,7 @@ async function runRecovery(
   expect(JSON.stringify(primary.doStreamCalls[0].prompt)).not.toContain(
     PLATFORM_AUTHORIZATION_ANNOTATION,
   );
-  if (retried)
+  if (fallback.doStreamCalls.length > 0)
     expect(JSON.stringify(fallback.doStreamCalls[0].prompt)).toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
@@ -221,4 +224,131 @@ it("leaves successful treatment streaming unchanged", async () => {
   const { chunks, fallback } = await runRecovery(primary);
   expect(fallback.doStreamCalls).toHaveLength(0);
   expect(chunks.some((chunk) => chunk.type === "error")).toBe(false);
+});
+
+describe("attempt terminal deferral", () => {
+  const failed: UIMessageChunk[] = [
+    { type: "start", messageId: "attempt" },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: "partial" },
+    { type: "error", errorText: "provider failed" },
+    { type: "finish-step" },
+    { type: "message-metadata", messageMetadata: { step: 1 } },
+    { type: "finish" },
+  ];
+  const succeeded: UIMessageChunk[] = [
+    { type: "start", messageId: "attempt" },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: "answer" },
+    { type: "text-end", id: "t" },
+    { type: "finish-step" },
+    { type: "finish" },
+  ];
+  const isTerminal = (chunk: UIMessageChunk) =>
+    chunk.type === "error" || chunk.type === "finish";
+
+  /**
+   * Write the attempt while a reader drains, settle, then close. The filter's
+   * readable has no buffer, so each write completes only after the reader has
+   * taken every earlier published chunk: completed writes are the barrier for
+   * observing what was published before settlement.
+   */
+  async function settle(
+    attempt: UIMessageChunk[],
+    action: (deferral: ReturnType<typeof createProviderErrorDeferral>) => void,
+    trailing: UIMessageChunk[] = [],
+  ) {
+    const deferral = createProviderErrorDeferral();
+    const filter = deferral.filter<UIMessageChunk>();
+    const writer = filter.writable.getWriter();
+    const reader = filter.readable.getReader();
+    const output: UIMessageChunk[] = [];
+    const read = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        output.push(value);
+      }
+    })();
+    for (const chunk of attempt) await writer.write(chunk);
+    const beforeSettlement = [...output];
+    action(deferral);
+    for (const chunk of trailing) await writer.write(chunk);
+    await writer.close();
+    await read;
+    return { beforeSettlement, output };
+  }
+
+  it("holds a failed attempt from its error until the owner settles", async () => {
+    const { beforeSettlement } = await settle(failed, () => {});
+    expect(beforeSettlement).toEqual(failed.slice(0, 3));
+  });
+
+  it("holds a successful attempt's finish until the owner settles", async () => {
+    const { beforeSettlement } = await settle(succeeded, () => {});
+    expect(beforeSettlement).toEqual(succeeded.slice(0, -1));
+  });
+
+  it.each([
+    ["failed", failed],
+    ["successful", succeeded],
+  ])(
+    "drops only the %s attempt's error and finish when recovery is scheduled",
+    async (_kind, attempt) => {
+      const { output } = await settle(attempt, (deferral) =>
+        deferral.discard(),
+      );
+      expect(output).toEqual(attempt.filter((chunk) => !isTerminal(chunk)));
+    },
+  );
+
+  it.each([
+    [
+      "release",
+      (deferral: ReturnType<typeof createProviderErrorDeferral>) =>
+        deferral.release(),
+    ],
+    ["stream end", () => {}],
+  ])(
+    "publishes everything unchanged on %s without a scheduled recovery",
+    async (_kind, action) => {
+      const { output } = await settle(failed, action);
+      expect(output).toEqual(failed);
+    },
+  );
+
+  it("settles once and treats later terminal chunks by that settlement", async () => {
+    const trailing: UIMessageChunk[] = [
+      { type: "message-metadata", messageMetadata: { late: true } },
+      { type: "error", errorText: "late failure" },
+      { type: "finish" },
+    ];
+    const discarded = await settle(
+      failed,
+      (deferral) => {
+        deferral.discard();
+        deferral.release();
+      },
+      trailing,
+    );
+    expect(discarded.output).toEqual(
+      [...failed, ...trailing].filter((chunk) => !isTerminal(chunk)),
+    );
+
+    const released = await settle(
+      failed,
+      (deferral) => {
+        deferral.release();
+        deferral.discard();
+      },
+      trailing,
+    );
+    expect(released.output).toEqual([...failed, ...trailing]);
+  });
+
+  it("refuses to share one deferral across attempt streams", () => {
+    const deferral = createProviderErrorDeferral();
+    deferral.filter();
+    expect(() => deferral.filter()).toThrow("owns one attempt stream");
+  });
 });
