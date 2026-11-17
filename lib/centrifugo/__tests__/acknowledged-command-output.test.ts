@@ -214,6 +214,58 @@ it("discards retained output after confirmed cancellation without claiming full 
   jest.useRealTimers();
 });
 
+describe("resumability for a returning host's session proof", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const open = (deadlineMs = 30_000) => {
+    const sender = new AcknowledgedCommandOutput(
+      "proof",
+      Date.now() + deadlineMs,
+      jest.fn().mockResolvedValue(undefined),
+      () => true,
+    );
+    void sender.delivered.catch(() => {});
+    return sender;
+  };
+
+  it("is resumable only while the window still holds its output", async () => {
+    const running = open();
+    running.append({ type: "stdout", data: "partial" });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(running.resumable).toBe(true);
+    running.append({ type: "exit", exitCode: 0 });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(running.resumable).toBe(true);
+    running.acknowledge(1);
+    expect(running.resumable).toBe(false);
+  });
+
+  it.each([
+    ["stopped", (sender: AcknowledgedCommandOutput) => sender.stop()],
+    ["canceled", (sender: AcknowledgedCommandOutput) => sender.cancel()],
+    [
+      "overflowed",
+      (sender: AcknowledgedCommandOutput) => {
+        // Alternating streams never combine, so each chunk takes a frame.
+        for (let i = 0; i <= 4096; i++)
+          sender.append({ type: i % 2 ? "stderr" : "stdout", data: "x" });
+      },
+    ],
+  ])("is not resumable once %s, though execution may continue", (_, close) => {
+    const sender = open();
+    sender.append({ type: "stdout", data: "partial" });
+    close(sender);
+    expect(sender.resumable).toBe(false);
+  });
+
+  it("is not resumable after its delivery deadline", async () => {
+    const sender = open(1_000);
+    sender.append({ type: "stdout", data: "partial" });
+    await jest.advanceTimersByTimeAsync(1_500);
+    expect(sender.resumable).toBe(false);
+  });
+});
+
 describe("receipt settlement evidence", () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());

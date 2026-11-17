@@ -15,7 +15,11 @@ jest.mock("../cloud-workspace-guard", () => ({
 import { readCloudWorkspaceState } from "../cloud-workspace-guard";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
-const mockWatchLocalRunConnection = jest.fn(() => jest.fn());
+const mockWatchLocalRunConnection = jest.fn(() => ({
+  stop: jest.fn(),
+  isReady: jest.fn(() => true),
+  waitUntilReady: jest.fn(async () => {}),
+}));
 jest.mock("@/lib/centrifugo/watch-local-run-connection", () => ({
   watchLocalRunConnection: (...args: unknown[]) =>
     (mockWatchLocalRunConnection as jest.Mock)(...args),
@@ -2003,6 +2007,92 @@ describe("Agent connection interruption", () => {
       expect.objectContaining({ connectionId: "replacement" }),
     );
     stop();
+  });
+
+  describe("selected host session recovery wiring", () => {
+    type WatchOptions = {
+      connectionId: string;
+      desktopSession?: {
+        publishedCommands(): readonly { commandId: string }[];
+      };
+    };
+    const lastWatch = () => {
+      const call = mockWatchLocalRunConnection.mock.calls.at(-1) as unknown as [
+        WatchOptions,
+      ];
+      const result = mockWatchLocalRunConnection.mock.results.at(-1)!.value as {
+        stop: jest.Mock;
+      };
+      return { options: call[0], watch: result };
+    };
+    const acquire = async (isDesktop: boolean) => {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        // A CLI runner is selected by its exact session.
+        isDesktop ? "desktop-environment:machine" : "selected",
+        "key",
+        null,
+        "pro",
+      );
+      const onLost = jest.fn();
+      const dispose = manager.stopOnLocalDisconnect(onLost);
+      const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          connectionId: "selected",
+          environmentId: "machine",
+          isDesktop,
+          capabilities: {
+            commands: true,
+            pty: true,
+            files: true,
+            operationChannels: true,
+          },
+        }),
+      ]);
+      const gate = jest.spyOn(CentrifugoSandbox.prototype, "setDispatchGate");
+      const { sandbox } = await manager.getSandbox();
+      return { manager, onLost, dispose, list, gate, sandbox };
+    };
+
+    it("lets only a Desktop host reconcile, and gates its sandbox's publications by the run's watch", async () => {
+      const { dispose, gate, sandbox } = await acquire(true);
+      const { options, watch } = lastWatch();
+      expect(options.connectionId).toBe("selected");
+      expect(gate).toHaveBeenLastCalledWith(watch);
+      const inFlight = {
+        commandId: "running",
+        outputComplete: () => false,
+        resumeOutput: () => {},
+      };
+      jest
+        .spyOn(sandbox as CentrifugoSandbox, "getPublishedCommands")
+        .mockReturnValue([inFlight]);
+      // The watch reconciles the run's own in-flight commands, not a copy.
+      expect(options.desktopSession!.publishedCommands()).toEqual([inFlight]);
+      dispose();
+      expect(watch.stop).toHaveBeenCalled();
+      // The stopped watch stays attached: a captured run-owned sandbox never
+      // regains ungated dispatch after the run ends.
+      expect(gate).not.toHaveBeenCalledWith(undefined);
+      expect(gate).toHaveBeenLastCalledWith(watch);
+    });
+
+    it("keeps fail-closed departure for a CLI host", async () => {
+      const { dispose } = await acquire(false);
+      expect(lastWatch().options.desktopSession).toBeUndefined();
+      dispose();
+    });
+
+    it("rejects pending readiness with the manager's own loss cause", async () => {
+      const { manager, onLost, dispose, list } = await acquire(true);
+      const { watch } = lastWatch();
+      list.mockResolvedValue([]);
+      const thrown = await manager.getSandbox().catch((error) => error);
+      expect(onLost).toHaveBeenCalledWith(thrown);
+      expect(watch.stop).toHaveBeenCalledWith(thrown);
+      dispose();
+    });
   });
 
   describe("first local stop cause", () => {

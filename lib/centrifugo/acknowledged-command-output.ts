@@ -95,6 +95,15 @@ export class AcknowledgedCommandOutput {
     }, 250);
   }
 
+  /**
+   * Whether this window can still replay output from a receiver's cursor.
+   * False once closed for any reason (terminal ACK, cancellation, overflow,
+   * deadline, lost ownership or stop), even while native execution continues.
+   */
+  get resumable(): boolean {
+    return !this.closed;
+  }
+
   append(chunk: CommandOutputChunk): void {
     if (this.closed || this.terminalSequence !== undefined) return;
     this.observedFrames++;

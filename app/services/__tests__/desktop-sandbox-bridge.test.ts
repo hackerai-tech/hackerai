@@ -5929,6 +5929,231 @@ it.each([
   },
 );
 
+describe("Desktop session challenge", () => {
+  const LAUNCH = "c".repeat(32);
+  const NONCE = "b".repeat(32);
+  const lifecycle = (pageGeneration: number) => ({
+    launchId: LAUNCH,
+    previousExit: "clean",
+    previousWebProcessTermination: "none",
+    pageGeneration,
+    webProcessTermination: "none",
+  });
+  const challenge = (
+    commandIds: string[],
+    targetConnectionId = "conn-123",
+  ) => ({
+    type: "desktop_session_challenge",
+    nonce: NONCE,
+    targetConnectionId,
+    commandIds,
+  });
+  const proofs = () =>
+    mockSubscription.publish.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.type === "desktop_session_proof");
+
+  async function startBridge(native: () => unknown) {
+    jest.useFakeTimers();
+    let osReads = 0;
+    let executions = 0;
+    const fallback = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "get_desktop_os_info") {
+        osReads++;
+        return native();
+      }
+      // A running command: native execution never completes here.
+      if (cmd === "execute_stream_command") {
+        executions++;
+        return new Promise(() => {});
+      }
+      return fallback(cmd, args);
+    };
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    return {
+      bridge,
+      osReads: () => osReads,
+      executions: () => executions,
+    };
+  }
+
+  afterEach(() => jest.useRealTimers());
+
+  it("answers with fresh native identity and only the command output it retains, never executing", async () => {
+    let generation = 2;
+    const host = await startBridge(() => ({
+      platform: "darwin",
+      arch: "arm64",
+      release: "qa",
+      hostname: "qa",
+      lifecycle: lifecycle(generation),
+    }));
+    try {
+      const reply = {
+        ...mockSubscription,
+        on: jest.fn(),
+        publish: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn(),
+        removeAllListeners: jest.fn(),
+      };
+      mockClient.newSubscription.mockReturnValueOnce(reply);
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "running",
+          command: "bounded",
+          timeout: 120_000,
+          outputProtocol: "ack-v1",
+          targetConnectionId: "conn-123",
+          operationChannel: true,
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(host.executions()).toBe(1);
+      const startupReads = host.osReads();
+
+      getPublicationHandler()({ data: challenge(["running", "unknown"]) });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(host.osReads()).toBe(startupReads + 1);
+      expect(proofs()).toEqual([
+        {
+          type: "desktop_session_proof",
+          nonce: NONCE,
+          connectionId: "conn-123",
+          launchId: LAUNCH,
+          pageGeneration: 2,
+          retainedCommandIds: ["running"],
+        },
+      ]);
+
+      // A later page generation cannot vouch for this page's commands.
+      generation = 3;
+      getPublicationHandler()({ data: challenge(["running"]) });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(proofs().at(-1)).toEqual({
+        type: "desktop_session_proof",
+        nonce: NONCE,
+        connectionId: "conn-123",
+        unavailable: true,
+      });
+
+      // Another connection's challenge is never answered.
+      getPublicationHandler()({ data: challenge([], "conn-other") });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(proofs()).toHaveLength(2);
+      expect(host.executions()).toBe(1);
+    } finally {
+      await host.bridge.stop();
+    }
+  });
+
+  it("never claims a closed output window that remains mapped while native execution is pending", async () => {
+    const host = await startBridge(() => ({
+      platform: "darwin",
+      arch: "arm64",
+      release: "qa",
+      hostname: "qa",
+      lifecycle: lifecycle(2),
+    }));
+    const spies = ["warn", "error"].map((method) =>
+      jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+    );
+    try {
+      const reply = {
+        ...mockSubscription,
+        on: jest.fn(),
+        publish: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn(),
+        removeAllListeners: jest.fn(),
+      };
+      mockClient.newSubscription.mockReturnValueOnce(reply);
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "overflowed",
+          command: "noisy",
+          timeout: 120_000,
+          outputProtocol: "ack-v1",
+          targetConnectionId: "conn-123",
+          operationChannel: true,
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(host.executions()).toBe(1);
+      // Unacknowledged, never-combined frames exceed the window: it closes
+      // while the native invocation itself is still running.
+      for (let i = 0; i <= 4096; i++)
+        capturedChannel!.onmessage!({
+          type: i % 2 ? "stderr" : "stdout",
+          data: "x",
+        });
+      await jest.advanceTimersByTimeAsync(0);
+
+      getPublicationHandler()({ data: challenge(["overflowed"]) });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(proofs()).toEqual([
+        expect.objectContaining({
+          launchId: LAUNCH,
+          pageGeneration: 2,
+          retainedCommandIds: [],
+        }),
+      ]);
+      expect(host.executions()).toBe(1);
+    } finally {
+      await host.bridge.stop();
+      spies.forEach((spy) => spy.mockRestore());
+    }
+  });
+
+  it("answers unavailable for a binary without lifecycle, and nothing while its read hangs", async () => {
+    const legacy = await startBridge(() => ({
+      platform: "darwin",
+      arch: "arm64",
+      release: "qa",
+      hostname: "qa",
+    }));
+    try {
+      const startupReads = legacy.osReads();
+      getPublicationHandler()({ data: challenge([]) });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(proofs()).toEqual([
+        expect.objectContaining({ unavailable: true, nonce: NONCE }),
+      ]);
+      // No startup identity: nothing to compare, so no native read either.
+      expect(legacy.osReads()).toBe(startupReads);
+    } finally {
+      await legacy.bridge.stop();
+    }
+
+    // The next bridge registers its own handlers; drop the stopped one's.
+    mockSubscription.publish.mockClear();
+    mockSubscription.on.mockClear();
+    mockClient.on.mockClear();
+    let hang = false;
+    const hung = await startBridge(() =>
+      hang
+        ? new Promise(() => {})
+        : {
+            platform: "darwin",
+            arch: "arm64",
+            release: "qa",
+            hostname: "qa",
+            lifecycle: lifecycle(1),
+          },
+    );
+    try {
+      hang = true;
+      getPublicationHandler()({ data: challenge([]) });
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(proofs()).toEqual([]);
+    } finally {
+      await hung.bridge.stop();
+    }
+  });
+});
+
 it.each(["ack", "cancel"])(
   "keeps native exit available until %s and never reexecutes",
   async (mode) => {

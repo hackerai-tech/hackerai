@@ -131,7 +131,7 @@ afterEach(() => {
 
 async function start() {
   const onLost = jest.fn();
-  const stop = watchLocalRunConnection({
+  const { stop } = watchLocalRunConnection({
     userId: "u",
     connectionId: SELECTED,
     onLost,

@@ -9,7 +9,10 @@ import {
   type SubscriptionErrorContext,
 } from "centrifuge";
 import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
-import { watchLocalRunConnection } from "@/lib/centrifugo/watch-local-run-connection";
+import {
+  watchLocalRunConnection,
+  type LocalRunConnectionWatch,
+} from "@/lib/centrifugo/watch-local-run-connection";
 import {
   LocalConnectionLostError,
   type LocalStopReason,
@@ -347,8 +350,10 @@ async function queryLiveSandboxConnectionIds(
 
 export class HybridSandboxManager implements SandboxManager {
   private onLocalConnectionLost?: (error: LocalConnectionLostError) => void;
-  private stopLocalConnectionWatch?: () => void;
+  private localConnectionWatch?: LocalRunConnectionWatch;
   private watchedConnectionId?: string;
+  /** Sandboxes admitted by this run's watch; their commands are reconciled. */
+  private readonly gatedSandboxes = new Set<CentrifugoSandbox>();
   /** The first loss; every later access rethrows it with its original cause. */
   private localConnectionLost?: LocalConnectionLostError;
 
@@ -356,10 +361,24 @@ export class HybridSandboxManager implements SandboxManager {
     onLost: (error: LocalConnectionLostError) => void,
   ): () => void {
     this.onLocalConnectionLost = onLost;
-    if (this.currentConnectionId)
-      this.watchRunConnection(this.currentConnectionId);
+    if (this.currentConnectionId) {
+      const sandbox =
+        this.sandbox &&
+        isCentrifugoSandbox(this.sandbox) &&
+        this.sandbox.getConnectionId() === this.currentConnectionId
+          ? this.sandbox
+          : undefined;
+      // Without known Desktop metadata the watch keeps fail-closed departure.
+      this.watchRunConnection({
+        connectionId: this.currentConnectionId,
+        isDesktop: sandbox?.getConnectionInfo().isDesktop,
+      });
+    }
     return () => {
-      this.stopLocalConnectionWatch?.();
+      // The stopped watch stays attached: a run-owned sandbox captured by
+      // queued or later work can never publish after the run ends.
+      this.localConnectionWatch?.stop();
+      this.gatedSandboxes.clear();
       this.onLocalConnectionLost = undefined;
     };
   }
@@ -375,26 +394,56 @@ export class HybridSandboxManager implements SandboxManager {
               connectionId: this.watchedConnectionId,
             });
       this.sandboxUnavailable = true;
-      this.stopLocalConnectionWatch?.();
+      // Pending and later dispatch fails with this loss's own cause.
+      this.localConnectionWatch?.stop(this.localConnectionLost);
       this.onLocalConnectionLost?.(this.localConnectionLost);
     }
     return this.localConnectionLost;
   }
 
-  private watchRunConnection(connectionId: string): void {
+  private watchRunConnection(
+    connection: Pick<ConnectionInfo, "connectionId" | "isDesktop">,
+  ): void {
     if (this.localConnectionLost) throw this.localConnectionLost;
     if (!this.onLocalConnectionLost) return;
+    const { connectionId } = connection;
     if (this.watchedConnectionId === connectionId) return;
     if (this.watchedConnectionId)
       throw this.loseRunConnection("watched_connection_replaced");
     this.watchedConnectionId = connectionId;
-    this.stopLocalConnectionWatch = watchLocalRunConnection({
+    this.localConnectionWatch = watchLocalRunConnection({
       userId: this.userID,
       connectionId,
       onLost: (error) => {
         this.loseRunConnection(error);
       },
+      // CLI hosts never answer a session proof; any departure stays terminal.
+      ...(connection.isDesktop === true && {
+        desktopSession: {
+          publishedCommands: () =>
+            [...this.gatedSandboxes].flatMap((sandbox) =>
+              sandbox.getConnectionId() === connectionId
+                ? sandbox.getPublishedCommands()
+                : [],
+            ),
+        },
+      }),
     });
+    if (
+      this.sandbox &&
+      isCentrifugoSandbox(this.sandbox) &&
+      this.sandbox.getConnectionId() === connectionId
+    )
+      this.gateSandbox(this.sandbox);
+  }
+
+  /** New publications on the watched connection wait for its readiness. */
+  private gateSandbox(sandbox: CentrifugoSandbox): void {
+    const watch = this.localConnectionWatch;
+    if (!watch || sandbox.getConnectionId() !== this.watchedConnectionId)
+      return;
+    sandbox.setDispatchGate(watch);
+    this.gatedSandboxes.add(sandbox);
   }
   private sandbox: SandboxInstance | null = null;
   private isLocal = false;
@@ -1022,7 +1071,7 @@ export class HybridSandboxManager implements SandboxManager {
     connection: ConnectionInfo,
     generation: number,
   ): Promise<void> {
-    this.watchRunConnection(connection.connectionId);
+    this.watchRunConnection(connection);
     await this.closeCurrentSandbox();
     this.assertLocalAcquisitionCurrent(generation);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
@@ -1065,6 +1114,7 @@ export class HybridSandboxManager implements SandboxManager {
         "Desktop file access is unavailable. Update and restart the HackerAI Desktop app, reconnect this computer, then retry. Agent mode needs the native file bridge to save terminal output safely.",
       );
     }
+    this.gateSandbox(sandbox);
     this.sandbox = sandbox;
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -1155,7 +1205,8 @@ export class HybridSandboxManager implements SandboxManager {
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.isLocal = isCentrifugoSandbox(sandbox);
     if (this.isLocal && isCentrifugoSandbox(sandbox)) {
-      this.watchRunConnection(sandbox.getConnectionId());
+      this.watchRunConnection(sandbox.getConnectionInfo());
+      if (sandbox instanceof CentrifugoSandbox) this.gateSandbox(sandbox);
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {
@@ -1216,7 +1267,7 @@ export class HybridSandboxManager implements SandboxManager {
     );
 
     if (preferredConnection) {
-      this.watchRunConnection(preferredConnection.connectionId);
+      this.watchRunConnection(preferredConnection);
       if (
         preferredConnection.isDesktop &&
         preferredConnection.capabilities?.files !== true
