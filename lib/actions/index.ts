@@ -19,6 +19,9 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
+// Ask and Agent await the title before settling usage; a stalled provider
+// must not hold the response open. Covers retries under one deadline.
+const TITLE_GENERATION_TOTAL_TIMEOUT_MS = 8_000;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
 const IMAGE_ONLY_CHAT_TITLE = "New chat";
 const AUXILIARY_IMAGE_DESCRIPTION_PATTERN =
@@ -187,6 +190,7 @@ export const generateTitleFromUserMessage = async (
       temperature: 0,
       maxOutputTokens: TITLE_GENERATION_MAX_OUTPUT_TOKENS,
       maxRetries: 1,
+      timeout: { totalMs: TITLE_GENERATION_TOTAL_TIMEOUT_MS },
       messages: [
         {
           role: "user",
