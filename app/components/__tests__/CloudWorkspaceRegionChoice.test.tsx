@@ -48,6 +48,18 @@ it("explains retained unavailable workspaces without selecting or starting anyth
   expect(retry).not.toHaveBeenCalled();
 });
 
+it("dismisses the workspace card on Cancel without saving or retrying", async () => {
+  fetchMock.mockResolvedValue(response(options));
+  const retry = jest.fn();
+  const cancel = jest.fn();
+  render(<CloudWorkspaceRegionChoice onRetry={retry} onCancel={cancel} />);
+  fireEvent.click(await screen.findByRole("radio", { name: /Europe/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(retry).not.toHaveBeenCalled();
+  expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+});
+
 it("resumes a due status check after returning to a hidden tab without replaying work", async () => {
   jest.useFakeTimers();
   const visibility = jest

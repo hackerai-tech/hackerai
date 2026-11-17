@@ -24,12 +24,14 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
+  isDraftGoalModeById,
   upsertDraft,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
 import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import { CloudWorkspaceSelectionRequiredError } from "@/lib/ai/tools/utils/cloud-workspace-selection-error";
 import { AgentReplyConflictError } from "@/lib/chat/agent-user-wait";
 const mockGoalCapture = jest.fn<
   (event: string, properties: Record<string, unknown>) => boolean
@@ -4460,6 +4462,478 @@ describe("ChatInput - Integration Tests", () => {
         }
       },
     );
+  });
+
+  describe("goal workspace selection recovery", () => {
+    const workspaceOptions = {
+      status: "selection_required",
+      token: "a".repeat(64),
+      choices: [
+        { id: "us-saved-one", region: "us-east-1", lastStartedAt: null },
+        { id: "eu-saved-two", region: "eu-central-1", lastStartedAt: null },
+      ],
+    };
+    let workspaceWrites: unknown[];
+    const goalFile: UploadedFileState = {
+      file: new File(["fixture"], "scope-lab.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "scope-lab",
+    };
+
+    beforeEach(() => {
+      workspaceWrites = [];
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "workspace-goal-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockImplementation(async (url: unknown, init?: unknown) => {
+        const method = (init as RequestInit | undefined)?.method;
+        if (String(url).startsWith("/api/sandbox/workspaces")) {
+          if (method === "POST") {
+            const body = JSON.parse(String((init as RequestInit).body));
+            workspaceWrites.push(body);
+            return {
+              ok: true,
+              json: async () => ({
+                status: "selected",
+                id: body.workspaceId,
+                region: "us-east-1",
+              }),
+            };
+          }
+          return { ok: true, json: async () => workspaceOptions };
+        }
+        return { ok: true, json: async () => ({ enabled: true }) };
+      });
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    const refusal = () => new CloudWorkspaceSelectionRequiredError();
+
+    const renderGoalComposer = (chatId = "workspace-goal-chat") => {
+      const view = (id: string) => (
+        <TestWrapper>
+          <UploadedFilesSetter files={[goalFile]} label="Attach scope" />
+          <ChatInput chatId={id} onSubmit={mockOnSubmit} status="ready" />
+        </TestWrapper>
+      );
+      const result = render(view(chatId));
+      return {
+        ...result,
+        switchChat: (id: string) => result.rerender(view(id)),
+      };
+    };
+
+    const enterGoalMode = async (objective: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Attach scope" }));
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: objective } });
+      fireEvent.keyDown(
+        await screen.findByRole("button", {
+          name: "Add files or pursue a goal",
+        }),
+        { key: "Enter" },
+      );
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Pursue goal" }),
+      );
+      return input;
+    };
+
+    it("offers the workspace selector above the intact goal draft and retries the edited draft once", async () => {
+      const toastError = jest.spyOn(toast, "error");
+      let admit!: (accepted: boolean) => void;
+      mockOnSubmit.mockRejectedValueOnce(refusal()).mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            admit = resolve;
+          }),
+      );
+      renderGoalComposer();
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      const selector = await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      expect(toastError).not.toHaveBeenCalled();
+      expect(input).toHaveValue("Map the lab app");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+      // The selector is placed above the composer, not inside the timeline.
+      expect(
+        selector.compareDocumentPosition(input) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(
+        await within(selector).findByRole("radio", { name: /US workspace/ }),
+      );
+      fireEvent.click(
+        within(selector).getByRole("button", { name: "Use this workspace" }),
+      );
+      const retry = await within(selector).findByRole("button", {
+        name: "Retry",
+      });
+      expect(workspaceWrites).toEqual([
+        { workspaceId: "us-saved-one", token: "a".repeat(64) },
+      ]);
+      // Saving the choice never sends the goal on its own.
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+
+      // Retry uses the current editable draft, not a snapshot of the refusal.
+      fireEvent.change(input, { target: { value: "Map the lab app safely" } });
+      fireEvent.click(retry);
+      fireEvent.click(retry);
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
+      expect(mockOnSubmit.mock.calls[1][1]).toBe(
+        "/goal start Map the lab app safely",
+      );
+      await act(async () => admit(true));
+      expect(mockOnSubmit).toHaveBeenCalledTimes(2);
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps a /goal command draft and lets Cancel dismiss only the workspace selector", async () => {
+      const toastError = jest.spyOn(toast, "error");
+      mockOnSubmit.mockRejectedValueOnce(refusal());
+      renderGoalComposer();
+      fireEvent.click(screen.getByRole("button", { name: "Attach scope" }));
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: "/goal start Map the lab" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      const selector = await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      expect(mockOnSubmit.mock.calls[0][1]).toBeUndefined();
+      expect(toastError).not.toHaveBeenCalled();
+      expect(input).toHaveValue("/goal start Map the lab");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+
+      fireEvent.click(within(selector).getByRole("button", { name: "Cancel" }));
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      expect(input).toHaveValue("/goal start Map the lab");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+      expect(workspaceWrites).toEqual([]);
+    });
+
+    it("drops a stale workspace selector after a chat switch and ignores a late old-chat refusal", async () => {
+      let refuseLate!: (error: Error) => void;
+      mockOnSubmit.mockRejectedValueOnce(refusal()).mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            refuseLate = reject;
+          }),
+      );
+      const view = renderGoalComposer("first-chat");
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      view.switchChat("second-chat");
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+        ).not.toBeInTheDocument(),
+      );
+
+      // Returning to the original chat does not resurrect its old Retry.
+      view.switchChat("first-chat");
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      view.switchChat("second-chat");
+
+      const nextInput = await enterGoalMode("Second objective");
+      fireEvent.keyDown(nextInput, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
+      view.switchChat("third-chat");
+      await act(async () => refuseLate(refusal()));
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      // The late refusal was not stored for a later return either.
+      view.switchChat("second-chat");
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(["refused", "accepted", "unconfirmed"] as const)(
+      "keeps a new-chat goal draft through a transient optimistic message that is %s",
+      async (outcome) => {
+        // Mirrors chat.tsx: the optimistic user message makes the new chat
+        // non-empty while admission is pending. A refusal removes it; an
+        // unconfirmed start keeps it because the turn may have been saved.
+        const toastInfo = jest.spyOn(toast, "info").mockReturnValue(0);
+        let settle!: () => void;
+        const OptimisticNewChat = () => {
+          const { clearUploadedFiles } = useGlobalState();
+          const { clearInput } = useComposerActions();
+          const [hasMessages, setHasMessages] = useState(false);
+          const [status, setStatus] = useState<"ready" | "submitted">("ready");
+          return (
+            <>
+              <UploadedFilesSetter files={[goalFile]} label="Attach scope" />
+              <ChatInput
+                chatId="fresh-goal-chat"
+                isNewChat
+                hasMessages={hasMessages}
+                status={status}
+                onSubmit={() =>
+                  new Promise<boolean>((resolve, reject) => {
+                    setHasMessages(true);
+                    setStatus("submitted");
+                    settle = () => {
+                      if (outcome === "accepted") {
+                        // useChatHandlers clears the admitted draft.
+                        clearInput();
+                        clearUploadedFiles();
+                        resolve(true);
+                        return;
+                      }
+                      setStatus("ready");
+                      if (outcome === "unconfirmed") {
+                        reject(
+                          new GoalSubmissionUnconfirmedError(
+                            true,
+                            "fresh-goal-chat",
+                          ),
+                        );
+                        return;
+                      }
+                      setHasMessages(false);
+                      reject(refusal());
+                    };
+                  })
+                }
+              />
+            </>
+          );
+        };
+        render(
+          <TestWrapper>
+            <OptimisticNewChat />
+          </TestWrapper>,
+        );
+        const input = await enterGoalMode("Map the lab app");
+        expect(screen.getByText("scope-lab.txt")).toBeVisible();
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(settle).toBeDefined());
+        // The optimistic message is rendered while admission is pending.
+        await act(async () => {});
+        expect(input).toHaveValue("Map the lab app");
+        expect(screen.getByText("scope-lab.txt")).toBeVisible();
+
+        await act(async () => settle());
+        if (outcome === "refused") {
+          await screen.findByRole("group", {
+            name: "Choose your cloud workspace",
+          });
+          expect(input).toHaveValue("Map the lab app");
+          expect(screen.getByText("scope-lab.txt")).toBeVisible();
+          expect(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          ).toBeVisible();
+          expect(getDraftContentById("new")).toBe("Map the lab app");
+          expect(getDraftAttachmentsById("new")).toHaveLength(1);
+        } else if (outcome === "unconfirmed") {
+          // The draft now belongs to the possibly-started chat. It keeps its
+          // text, files and Goal mode, and offers no workspace Retry.
+          await waitFor(() =>
+            expect(toastInfo).toHaveBeenCalledWith(
+              expect.stringContaining("Your draft is kept."),
+              expect.any(Object),
+            ),
+          );
+          expect(input).toHaveValue("Map the lab app");
+          expect(screen.getByText("scope-lab.txt")).toBeVisible();
+          expect(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          ).toBeVisible();
+          expect(
+            screen.queryByRole("group", {
+              name: "Choose your cloud workspace",
+            }),
+          ).not.toBeInTheDocument();
+          expect(getDraftContentById("fresh-goal-chat")).toBe(
+            "Map the lab app",
+          );
+          expect(getDraftAttachmentsById("fresh-goal-chat")).toHaveLength(1);
+          expect(isDraftGoalModeById("fresh-goal-chat")).toBe(true);
+          expect(isDraftGoalModeById("new")).toBe(false);
+        } else {
+          // An admitted start still leaves no stale new-chat draft behind,
+          // and does not carry Goal mode into the started chat's composer.
+          await waitFor(() => expect(input).toHaveValue(""));
+          expect(screen.queryByText("scope-lab.txt")).not.toBeInTheDocument();
+          expect(
+            screen.queryByRole("button", { name: "Exit goal mode" }),
+          ).not.toBeInTheDocument();
+          expect(getDraftContentById("new")).toBeNull();
+          expect(getDraftAttachmentsById("new")).toEqual([]);
+          expect(getDraftContentById("fresh-goal-chat")).toBeNull();
+          expect(getDraftAttachmentsById("fresh-goal-chat")).toEqual([]);
+          expect(isDraftGoalModeById("new")).toBe(false);
+          expect(isDraftGoalModeById("fresh-goal-chat")).toBe(false);
+        }
+      },
+    );
+
+    it("keeps a workspace card dismissed when Cancel precedes a late Retry refusal", async () => {
+      let refuseRetry!: () => void;
+      mockOnSubmit
+        .mockRejectedValueOnce(refusal())
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              refuseRetry = () => reject(refusal());
+            }),
+        )
+        .mockRejectedValueOnce(refusal());
+      renderGoalComposer();
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      const selector = await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      fireEvent.click(
+        await within(selector).findByRole("radio", { name: /US workspace/ }),
+      );
+      fireEvent.click(
+        within(selector).getByRole("button", { name: "Use this workspace" }),
+      );
+      fireEvent.click(
+        await within(selector).findByRole("button", { name: "Retry" }),
+      );
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
+      // Cancel only dismisses; the pending request keeps running.
+      fireEvent.click(within(selector).getByRole("button", { name: "Cancel" }));
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      await act(async () => refuseRetry());
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      expect(input).toHaveValue("Map the lab app");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+
+      // A later deliberate submission can offer recovery again.
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      expect(mockOnSubmit).toHaveBeenCalledTimes(3);
+    });
+
+    it("discards a late refusal after leaving and returning to the same chat", async () => {
+      let refuseLate!: () => void;
+      mockOnSubmit.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            refuseLate = () => reject(refusal());
+          }),
+      );
+      const view = renderGoalComposer("round-trip-chat");
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      // Same chat, mode and environment again, but a different visit.
+      view.switchChat("other-chat");
+      view.switchChat("round-trip-chat");
+      expect(
+        await screen.findByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+      await act(async () => refuseLate());
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("dismisses the workspace retry when Goal mode is exited, keeping the draft", async () => {
+      mockOnSubmit.mockRejectedValueOnce(refusal());
+      renderGoalComposer();
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      // A goal Retry must not turn into an ordinary Agent send.
+      fireEvent.click(screen.getByRole("button", { name: "Exit goal mode" }));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(input).toHaveValue("Map the lab app");
+      expect(screen.getByText("scope-lab.txt")).toBeVisible();
+      // Re-entering Goal mode does not resurrect the stale Retry.
+      fireEvent.keyDown(
+        screen.getByRole("button", { name: "Add files or pursue a goal" }),
+        { key: "Enter" },
+      );
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Pursue goal" }),
+      );
+      expect(
+        screen.getByRole("button", { name: "Exit goal mode" }),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("never offers a workspace retry when goal admission is unconfirmed", async () => {
+      jest.spyOn(toast, "info").mockReturnValue(0);
+      mockOnSubmit
+        .mockRejectedValueOnce(refusal())
+        .mockRejectedValueOnce(new GoalSubmissionUnconfirmedError(true));
+      renderGoalComposer();
+      const input = await enterGoalMode("Map the lab app");
+      fireEvent.keyDown(input, { key: "Enter" });
+      const selector = await screen.findByRole("group", {
+        name: "Choose your cloud workspace",
+      });
+      fireEvent.click(
+        await within(selector).findByRole("radio", { name: /US workspace/ }),
+      );
+      fireEvent.click(
+        within(selector).getByRole("button", { name: "Use this workspace" }),
+      );
+      fireEvent.click(
+        await within(selector).findByRole("button", { name: "Retry" }),
+      );
+      await waitFor(() =>
+        expect(toast.info).toHaveBeenCalledWith(
+          expect.stringContaining("Your draft is kept."),
+          expect.any(Object),
+        ),
+      );
+      expect(
+        screen.queryByRole("group", { name: "Choose your cloud workspace" }),
+      ).not.toBeInTheDocument();
+      expect(input).toHaveValue("Map the lab app");
+    });
   });
 
   it.each([false, true])(

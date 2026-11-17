@@ -17,7 +17,10 @@ import {
 } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
 import { toast } from "sonner";
 
 jest.mock("uuid", () => ({
@@ -2360,6 +2363,48 @@ describe("Chat Component Integration", () => {
           mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
         ).rejects.toThrow("The goal changed. Reload before resuming.");
       });
+    });
+
+    it("keeps the workspace selection refusal structured for the composer", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      mockSendMessage.mockImplementationOnce(async () => {
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          onError: (error: Error) => void;
+        };
+        const {
+          CloudWorkspaceSelectionRequiredError,
+        } = require("@/lib/ai/tools/utils/cloud-workspace-selection-error");
+        options.onError(new CloudWorkspaceSelectionRequiredError());
+      });
+      const toastError = jest.spyOn(toast, "error");
+      let rejection: unknown;
+      try {
+        await act(async () => {
+          rejection = await mockChatHandlerArgs.sendGoalMessage!({
+            text: "Map the lab",
+          }).catch((error: unknown) => error);
+        });
+        // The composer needs the refusal metadata to offer the selector.
+        expect(isGoalWorkspaceSelectionRefusal(rejection)).toBe(true);
+        expect(rejection).not.toBeInstanceOf(GoalSubmissionUnconfirmedError);
+        expect(toastError).not.toHaveBeenCalled();
+        // A confirmed refusal removes the unsaved optimistic bubble.
+        const update = mockSetMessages.mock.calls.at(-1)![0] as (
+          messages: { id: string }[],
+        ) => { id: string }[];
+        const payload = (
+          mockSendMessage.mock.calls.at(-1) as unknown as [{ id: string }]
+        )[0];
+        expect(update([{ id: payload.id }])).toEqual([]);
+      } finally {
+        toastError.mockRestore();
+      }
     });
 
     it("releases a rejected goal submission when its persistence lookup cannot reconnect", async () => {

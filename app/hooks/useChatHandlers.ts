@@ -21,7 +21,10 @@ import {
 } from "@/lib/chat/agent-user-wait";
 
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -1286,8 +1289,12 @@ export const useChatHandlers = ({
           outgoingOptions,
         );
       } catch (error) {
+        // The composer owns recovery for these. A refused initial start keeps
+        // its structured error so the composer can offer the workspace choice.
         if (
           error instanceof GoalSubmissionUnconfirmedError ||
+          (goalCommand.action === "start" &&
+            isGoalWorkspaceSelectionRefusal(error)) ||
           (error instanceof Error && error.name === "AbortError")
         )
           throw error;
