@@ -56,6 +56,28 @@ export function isImageFile(file: File | LocalDesktopFile): boolean {
   return file.type.startsWith("image/");
 }
 
+/** DNG originals use file cards even when labeled as images. */
+const DNG_MEDIA_TYPES = new Set([
+  "image/dng",
+  "image/x-dng",
+  "image/x-adobe-dng",
+]);
+
+/**
+ * Whether an attachment should be shown as an inline image tile rather than
+ * the ordinary file card. Raw DNG originals stay downloadable files even when
+ * their media type is missing or mislabeled.
+ */
+export function canPreviewImageInline(
+  mediaType?: string,
+  fileName?: string,
+): boolean {
+  if (!mediaType?.startsWith("image/")) return false;
+  const essence = mediaType.split(";")[0].trim().toLowerCase();
+  if (DNG_MEDIA_TYPES.has(essence)) return false;
+  return !fileName?.toLowerCase().endsWith(".dng");
+}
+
 /** Media types (besides text/*) whose content can be shown as plain text */
 const TEXT_VIEWABLE_MEDIA_TYPES = new Set([
   "application/json",

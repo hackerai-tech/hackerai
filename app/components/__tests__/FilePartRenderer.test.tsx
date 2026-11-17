@@ -88,6 +88,20 @@ describe("FilePartRenderer", () => {
     expect(cache.get("file-1")).toBe("https://files.example/screenshot.png");
   });
 
+  it("keeps an unsupported raw-image original available as a named download", () => {
+    renderWithCache({
+      name: "camera-original.dng",
+      mediaType: "image/x-adobe-dng",
+      url: "https://files.example/camera-original.dng",
+    });
+
+    expect(screen.getByText("camera-original.dng")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /View .* in full size/ }),
+    ).not.toBeInTheDocument();
+  });
+
   describe("document downloads", () => {
     const originalFetch = global.fetch;
     const oldUrl = "https://files.example/old-signed-url";
@@ -206,6 +220,35 @@ describe("FilePartRenderer", () => {
       expect(
         screen.queryByRole("button", { name: "Download report.txt" }),
       ).not.toBeInTheDocument();
+    });
+
+    it("downloads a stored DNG original through the file card without fetching an inline preview", async () => {
+      const original = new Blob(["raw sensor bytes"], {
+        type: "image/x-adobe-dng",
+      });
+      fetchMock.mockResolvedValue({ ok: true, blob: async () => original });
+      renderWithCache({
+        fileId: part.fileId,
+        name: "camera-original.dng",
+        mediaType: "image/x-adobe-dng",
+        s3Key: "uploads/camera-original.dng",
+      });
+
+      expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Download camera-original.dng" }),
+        );
+      });
+
+      expect(mockGetFileUrlAction).toHaveBeenCalledWith({ fileId: "file-1" });
+      expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+      expect(startBlobDownload).toHaveBeenCalledWith(
+        original,
+        "camera-original.dng",
+      );
     });
 
     it("allows retry after a temporary URL-resolution failure without remounting", async () => {

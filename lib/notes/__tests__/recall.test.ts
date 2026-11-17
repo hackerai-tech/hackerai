@@ -36,8 +36,16 @@ const candidate = (overrides: Record<string, unknown> = {}) => ({
 
 const task = "Retest https://alpha.example invoice export";
 
+let random: jest.SpiedFunction<typeof Math.random>;
+
 beforeEach(() => {
   jest.clearAllMocks();
+  // Keep every sampled routine event so result assertions are deterministic.
+  random = jest.spyOn(Math, "random").mockReturnValue(0);
+});
+
+afterEach(() => {
+  random.mockRestore();
 });
 
 describe("relevant notes serialization", () => {
@@ -216,6 +224,7 @@ describe("recall lookup", () => {
         feature_flag: "notes_relevant_recall_v1",
         outcome: "timeout",
         duration_ms: 2_500,
+        sample_rate: 1,
       },
     ]);
 
@@ -246,6 +255,7 @@ describe("recall lookup", () => {
         token_count: hit.tokenCount,
         recheck_due_count: 1,
         observation_date_unknown_count: 1,
+        sample_rate: 0.05,
       },
     ]);
 
@@ -259,6 +269,7 @@ describe("recall lookup", () => {
         outcome: "no_match",
         note_count: 0,
         candidate_count: 1,
+        sample_rate: 0.05,
       }),
     ]);
   });
@@ -275,7 +286,26 @@ describe("recall lookup", () => {
         feature_flag: "notes_relevant_recall_v1",
         outcome: "error",
         duration_ms: 0,
+        sample_rate: 1,
       },
+    ]);
+  });
+
+  it("samples out routine lookups without changing them, but always records failures", async () => {
+    random.mockReturnValue(0.999);
+    mockCandidates.mockResolvedValueOnce([candidate()]);
+    const hit = await build();
+    expect(hit.noteCount).toBe(1);
+    expect(hit.section).toContain("alpha.example");
+    mockCandidates.mockResolvedValueOnce([]);
+    expect((await build()).section).toBe("");
+    expect(mockEvent).not.toHaveBeenCalled();
+
+    const failure = new Error("lookup failed");
+    mockCandidates.mockRejectedValueOnce(failure);
+    await expect(build()).rejects.toBe(failure);
+    expect(resultEvents()).toEqual([
+      expect.objectContaining({ outcome: "error", sample_rate: 1 }),
     ]);
   });
 
@@ -301,7 +331,14 @@ describe("recall lookup", () => {
       "no_match",
       "error",
     ]);
-    for (const { userId, feature_flag, outcome, ...counts } of events) {
+    expect(events.map((event) => event.sample_rate)).toEqual([0.05, 0.05, 1]);
+    for (const {
+      userId,
+      feature_flag,
+      outcome,
+      sample_rate: _sampleRate,
+      ...counts
+    } of events) {
       expect([userId, feature_flag]).toEqual(["u", "notes_relevant_recall_v1"]);
       expect(["hit", "no_match", "error"]).toContain(outcome);
       for (const value of Object.values(counts))
@@ -439,6 +476,7 @@ describe("exposure", () => {
       note_count: 2,
       recheck_due_count: 1,
       observation_date_unknown_count: 0,
+      sample_rate: 0.05,
     });
     expect(
       Object.values(counts).every((value) => typeof value === "number"),

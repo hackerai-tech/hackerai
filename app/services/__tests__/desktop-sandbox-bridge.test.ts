@@ -19,6 +19,7 @@ import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { DESKTOP_TERMINAL_ERROR_PROPERTIES } from "@/lib/analytics/desktop-terminal-error-diagnostics";
+import { DESKTOP_INVOCATION_REJECTION_PROPERTIES } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
@@ -6327,6 +6328,7 @@ describe("native authorization send receipt", () => {
       version?: string;
       commandIds?: string[];
       acknowledged?: boolean;
+      afterStart?: (bridge: DesktopSandboxBridge) => void;
       beforeAck?: (bridge: DesktopSandboxBridge) => Promise<void>;
     } = {},
   ) {
@@ -6363,6 +6365,7 @@ describe("native authorization send receipt", () => {
     }
     try {
       await bridge.start();
+      options.afterStart?.(bridge);
       mockUseAuthorizedNative = true;
       mockClient.newSubscription.mockImplementation(() => {
         const reply = makeReply();
@@ -9536,6 +9539,272 @@ describe("native authorization send receipt", () => {
         terminalType: "error",
         desktop_terminal_error_kind: "native_command_timeout",
       });
+    });
+  });
+
+  describe("invocation rejection message class", () => {
+    const spawn = "Failed to spawn: PRIVATE (os error 2)";
+    const timeout = "Command timed out after 30000ms";
+    const emit = (call: NativeCall, chunk: Record<string, unknown>) =>
+      (call.onEvent as MockChannel).onmessage!(chunk);
+    const groupKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter(
+        (key) =>
+          DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) ||
+          DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
+      );
+    const rejectionOf = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).some((key) =>
+        DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
+      )
+        ? {
+            version: properties.desktop_invocation_rejection_version,
+            reason: properties.desktop_invocation_rejection_reason,
+            adapter: properties.desktop_invocation_rejection_adapter,
+          }
+        : null;
+
+    it.each<[string, string, string, string, string]>([
+      [
+        "a reported 0.0.73 approval rejection",
+        "0.0.73",
+        "Desktop operation was not authorized",
+        "authorization_not_approved",
+        "authorized_native",
+      ],
+      [
+        "a reported 0.0.74 authorization ID rejection",
+        "0.0.74",
+        "Invalid Desktop operation authorization",
+        "authorization_id_invalid",
+        "authorized_native",
+      ],
+      [
+        "a current spawn failure",
+        "0.0.80",
+        spawn,
+        "spawn_failed",
+        "authorized_native",
+      ],
+      [
+        "an unlisted rejection",
+        "0.0.80",
+        "PRIVATE rejection",
+        "unknown",
+        "authorized_native",
+      ],
+      [
+        "a published legacy spawn failure",
+        "0.0.72",
+        spawn,
+        "spawn_failed",
+        "published_legacy_native",
+      ],
+    ])(
+      "classifies %s without changing the product frame",
+      async (_case, version, message, reason, adapter) => {
+        const { calls, replies } = await run(() => reject(message), {
+          version,
+        });
+        // The selected command set is unchanged: no downgrade or retry.
+        expect(calls.map((call) => call.cmd)).toEqual([
+          adapter === "published_legacy_native"
+            ? "execute_stream_command"
+            : "execute_authorized_stream_command",
+        ]);
+        expect(sequencedFrames(replies[0])).toEqual([
+          {
+            type: "error",
+            message,
+            commandId: "auth-send",
+            sequence: 0,
+            outputProtocol: "ack-v1",
+          },
+        ]);
+        expect(finals()).toHaveLength(1);
+        const final = finals()[0];
+        expect(final.properties).toMatchObject({
+          terminalType: "error",
+          desktop_terminal_error_kind: "invocation_rejected",
+        });
+        expect(rejectionOf(final.properties)).toEqual({
+          version: 1,
+          reason,
+          adapter,
+        });
+        const enriched = sanitizeDesktopAckEvent({
+          ...final,
+          properties: { ...final.properties, $current_url: "PRIVATE" },
+        });
+        expect(rejectionOf(enriched.properties)).toEqual(
+          rejectionOf(final.properties),
+        );
+        const serialized = JSON.stringify([captures(), enriched]);
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain(message);
+      },
+    );
+
+    it("reports the compatibility command set when only the legacy command rejects", async () => {
+      const { calls } = await run(async (call) => {
+        if (call.cmd === "execute_authorized_stream_command")
+          throw "Command execute_authorized_stream_command not found";
+        return reject("Command is already running");
+      });
+      expect(calls.map((call) => call.cmd)).toEqual([
+        "execute_authorized_stream_command",
+        "execute_stream_command",
+      ]);
+      expect(rejectionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "execution_admission",
+        adapter: "compatibility_native",
+      });
+    });
+
+    it("reports unknown and not_selected when the helper fails before selecting a command set", async () => {
+      const lookupFailure = "PRIVATE pre-selection failure";
+      const { calls, replies } = await run(
+        async () => {
+          throw new Error("native command must not be invoked");
+        },
+        {
+          // The helper reads the cached version lookup into its trace just
+          // before selecting a command set; failing that read rejects the
+          // invocation with no adapter assigned.
+          afterStart: (bridge) =>
+            Object.defineProperty(bridge, "nativeVersionLookup", {
+              configurable: true,
+              get() {
+                throw new Error(lookupFailure);
+              },
+            }),
+        },
+      );
+      expect(calls).toEqual([]);
+      // The product frame keeps the existing raw message unchanged.
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: lookupFailure }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      expect(final.properties).toMatchObject({
+        terminalType: "error",
+        desktop_terminal_error_kind: "invocation_rejected",
+      });
+      expect(rejectionOf(final.properties)).toEqual({
+        version: 1,
+        reason: "unknown",
+        adapter: "not_selected",
+      });
+      const enriched = sanitizeDesktopAckEvent({
+        ...final,
+        properties: { ...final.properties, $current_url: "PRIVATE" },
+      });
+      expect(rejectionOf(enriched.properties)).toEqual(
+        rejectionOf(final.properties),
+      );
+      expect(JSON.stringify([captures(), enriched])).not.toContain("PRIVATE");
+    });
+
+    it("drops an authorization class the selected legacy command cannot emit", async () => {
+      await run(() => reject("Desktop operation was not authorized"), {
+        version: "0.0.72",
+      });
+      expect(finals()[0].properties).toMatchObject({
+        desktop_terminal_error_kind: "invocation_rejected",
+      });
+      expect(rejectionOf(finals()[0].properties)).toBeNull();
+    });
+
+    it("keeps the existing send receipt group beside the class", async () => {
+      await run(async (call) => {
+        (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({
+        native_authorization_diagnostic_version: 1,
+        native_authorization_send_connect: true,
+        native_app_version: "0.0.80",
+        desktop_invocation_rejection_reason: "authorization_unavailable",
+        desktop_invocation_rejection_adapter: "authorized_native",
+      });
+    });
+
+    it.each<[string, (call: NativeCall) => void, Record<string, unknown>]>([
+      [
+        "a native exit",
+        (call) => emit(call, { type: "exit", exitCode: 0 }),
+        { terminalType: "exit", terminalExitCode: 0 },
+      ],
+      [
+        "a native timeout event",
+        (call) => emit(call, { type: "error", message: timeout }),
+        {
+          terminalType: "error",
+          desktop_terminal_error_kind: "native_command_timeout",
+        },
+      ],
+    ])(
+      "never attaches a rejection that follows %s",
+      async (_case, first, expected) => {
+        await run(async (call) => {
+          first(call);
+          return reject("Desktop operation was not authorized");
+        });
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject(expected);
+        expect(rejectionOf(finals()[0].properties)).toBeNull();
+      },
+    );
+
+    it("drops a rejection observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run(
+          async () => {
+            identity.mockReturnValue("another-user");
+            return reject("Desktop operation was not authorized");
+          },
+          {
+            beforeAck: async () => {
+              identity.mockReturnValue("user-456");
+            },
+          },
+        );
+        // The existing ACK owner gate still emits the original owner's final.
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(groupKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("never attaches a rejection that arrives after bridge stop", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async () => {
+          await pending;
+          return reject("Desktop operation was not authorized");
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+            await jest.advanceTimersByTimeAsync(0);
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(groupKeys(finals()[0].properties)).toEqual([]);
     });
   });
 

@@ -14,6 +14,8 @@ mod pty;
 mod updater_tests;
 #[cfg(test)]
 mod file_acl_tests;
+#[cfg(test)]
+mod file_read_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -789,6 +791,32 @@ async fn handle_file_stat(body: &str) -> Result<String, String> {
     serde_json::to_string(&payload).map_err(|e| e.to_string())
 }
 
+/// Appends `bytes` decoded like `String::from_utf8_lossy` without letting `out`
+/// grow past `max_len` bytes. A character or replacement that does not fit is
+/// left out whole. Returns whether all of `bytes` fit.
+fn push_lossy_utf8_within(out: &mut String, bytes: &[u8], max_len: usize) -> bool {
+    for chunk in bytes.utf8_chunks() {
+        let valid = chunk.valid();
+        let remaining = max_len.saturating_sub(out.len());
+        if valid.len() > remaining {
+            let mut end = remaining;
+            while !valid.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.push_str(&valid[..end]);
+            return false;
+        }
+        out.push_str(valid);
+        if !chunk.invalid().is_empty() {
+            if max_len - out.len() < char::REPLACEMENT_CHARACTER.len_utf8() {
+                return false;
+            }
+            out.push(char::REPLACEMENT_CHARACTER);
+        }
+    }
+    true
+}
+
 async fn handle_file_read(body: &str) -> Result<String, String> {
     let req: FileReadRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -849,7 +877,7 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
     let mut reader = tokio::io::BufReader::new(file);
     let mut line = Vec::<u8>::new();
     let mut line_no = 0u64;
-    let mut selected = Vec::<u8>::new();
+    let mut content = String::new();
     let mut truncated = false;
     let start_line = if range_start > 0 { range_start } else { 1 };
 
@@ -871,20 +899,23 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
             break;
         }
 
-        let remaining = max_result_bytes.saturating_sub(selected.len());
+        let remaining = max_result_bytes.saturating_sub(content.len());
         if remaining == 0 {
             truncated = true;
             break;
         }
-        if line.len() > remaining {
-            selected.extend_from_slice(&line[..remaining]);
+        // Each source byte decodes to at least one output byte, so `remaining`
+        // bytes (plus room for one incomplete trailing character) always reach
+        // the cap; the rest of a long line is never decoded.
+        let window = &line[..line.len().min(remaining.saturating_add(3))];
+        if !push_lossy_utf8_within(&mut content, window, max_result_bytes)
+            || window.len() < line.len()
+        {
             truncated = true;
             break;
         }
-        selected.extend_from_slice(&line);
     }
 
-    let content = String::from_utf8_lossy(&selected).to_string();
     serde_json::to_string(&serde_json::json!({
         "path": req.path,
         "sizeBytes": size_bytes,

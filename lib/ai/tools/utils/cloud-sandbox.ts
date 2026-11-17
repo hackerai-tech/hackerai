@@ -79,6 +79,14 @@ export async function ensureCloudSandboxConnection(options: {
         workspace_region?: TriggerRunRegion;
       }
     | undefined;
+  // Names only the verification boundary active when a failure escaped; it is
+  // not a cause, and stays unset for failures before verification began.
+  let workspaceVerificationPhase:
+    | "stage_report"
+    | "availability_check"
+    | "network_check"
+    | "post_checks"
+    | undefined;
   const recordOutcome = (outcome: "success" | "error") => {
     const fields = {
       chat_id: options.context?.chatId,
@@ -206,12 +214,16 @@ export async function ensureCloudSandboxConnection(options: {
         workspaceOrigin: state?.phase === "e2b" ? state.origin : undefined,
       },
     );
+    workspaceVerificationPhase = "stage_report";
     reportStage("workspace_verification");
+    workspaceVerificationPhase = "availability_check";
     await assertCloudWorkspaceAvailable(
       options.userId,
       result.sandbox.sandboxId,
     );
+    workspaceVerificationPhase = "network_check";
     await ensureCloudNetwork(result.sandbox, options.userId, options.signal);
+    workspaceVerificationPhase = "post_checks";
     registerE2BWorkspaceLease(result.sandbox, options.userId);
     options.signal?.throwIfAborted();
     options.setSandbox(result.sandbox);
@@ -220,10 +232,16 @@ export async function ensureCloudSandboxConnection(options: {
   } catch (error) {
     // Capture before onFailure: its cleanup may itself abort the signal.
     // Identity with the abort reason is context, not proof of the failure cause.
-    let failureProvenance: Record<string, string | boolean> = {};
+    let failureProvenance: Record<string, string | boolean | number> = {};
     try {
       const aborted = options.signal?.aborted === true;
       failureProvenance = {
+        ...(workspaceVerificationPhase
+          ? {
+              workspace_verification_diagnostic_version: 1,
+              workspace_verification_phase: workspaceVerificationPhase,
+            }
+          : {}),
         acquisition_signal_aborted: aborted,
         acquisition_error_is_signal_reason:
           aborted && Object.is(error, options.signal?.reason),

@@ -630,6 +630,20 @@ test.each([400, 401, 403, 404, 500])(
   },
 );
 
+test("a delivered literal null abstention settles empty without a ghost suggestion", async () => {
+  jest.mocked(fetch).mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ ...batch, suggestions: [" null "] }),
+  } as Response);
+  const { result } = renderHook(() => useNextActions(base()));
+  await settle();
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties.outcome).toBe("empty");
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
 test.each(["json", "schema"])(
   "invalid %s is indistinguishable from transport failure in existing telemetry",
   async (kind) => {

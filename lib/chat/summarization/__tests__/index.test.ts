@@ -764,6 +764,41 @@ describe("summary usage coverage", () => {
       expect(result.usage.cost).toBe(reported ? 0 : undefined);
     },
   );
+
+  it.each([-5, 1.5])(
+    "reports malformed token count %p as absent while keeping provider cost",
+    async (malformed) => {
+      mockGenerateText.mockReset();
+      mockGenerateText.mockResolvedValueOnce({
+        text: "Synthetic summary",
+        finishReason: "stop",
+        usage: {
+          inputTokens: malformed,
+          outputTokens: malformed,
+          inputTokenDetails: {
+            cacheReadTokens: malformed,
+            cacheWriteTokens: malformed,
+          },
+          raw: { cost: 0.0125 },
+        },
+      });
+      const result = await generateSummaryText(
+        [],
+        mockLanguageModel,
+        "ask",
+        "system",
+        false,
+      );
+      expect(result.usage).toMatchObject({
+        inputTokens: 0,
+        inputTokensReported: false,
+        outputTokens: 0,
+        cost: 0.0125,
+      });
+      expect(result.usage.cacheReadTokens).toBeUndefined();
+      expect(result.usage.cacheWriteTokens).toBeUndefined();
+    },
+  );
 });
 
 describe("agent compaction state preservation", () => {

@@ -3299,3 +3299,177 @@ describe("stream-status SDK start acknowledgement phase", () => {
     expect(now).not.toHaveBeenCalled();
   });
 });
+
+const completedSelectedWrapper = {
+  ...startedSelectedWrapper,
+  wrapper_action: "other",
+  wrapper_phase: "completed",
+  wrapper_exit: 0,
+};
+
+it.each<[number[], string, string]>([
+  [[1, 0, 0], "exit_zero", "lt1s"],
+  [[1, 1, 3], "exit_nonzero", "lt60s"],
+  [[1, 2, 5], "signal", "older"],
+  [[1, 3, 1], "verification_gate", "lt10s"],
+])(
+  "projects the selected wrapper result %j with its latest or previous scope",
+  async (l1, result, elapsed) => {
+    for (const [wrapper, scope] of [
+      [startedSelectedWrapper, "previous_wrapper"],
+      [completedSelectedWrapper, "latest_wrapper"],
+    ] as const) {
+      const context = await observeDaemonFailure(
+        3,
+        JSON.stringify({
+          deadline: [1, "awaiting_response"],
+          ...wrapper,
+          l1,
+          private: "PRIVATE",
+        }),
+      );
+      expect(context).toMatchObject({
+        capture_stage: "stream_status",
+        capture_command_exit_code: 3,
+        capture_deadline_phase: "awaiting_response",
+        capture_wrapper_phase: wrapper.wrapper_phase,
+        capture_wrapper_result_version: 1,
+        capture_wrapper_result_scope: scope,
+        capture_wrapper_result: result,
+        capture_wrapper_result_elapsed: elapsed,
+      });
+      expect(JSON.stringify(context)).not.toContain("PRIVATE");
+    }
+  },
+);
+
+const wrapperResultFields = [
+  "capture_wrapper_result_version",
+  "capture_wrapper_result_scope",
+  "capture_wrapper_result",
+  "capture_wrapper_result_elapsed",
+];
+
+it.each([
+  [[1, 4, 0]],
+  [[1, 0, 6]],
+  [[1, -1, 0]],
+  [[2, 0, 0]],
+  [[1, 0.5, 0]],
+  [[1, "0", 0]],
+  [[1, true, 0]],
+  [[1, 0]],
+  [[1, 0, 0, 0]],
+  [{ 0: 1, 1: 0, 2: 0, length: 3 }],
+  ["PRIVATE"],
+  [null],
+  [undefined], // An older helper or writer, or dropped at the cap.
+])("omits the whole wrapper result group for %j", async (l1) => {
+  const context = await observeDaemonFailure(
+    3,
+    JSON.stringify({
+      deadline: [1, "awaiting_response"],
+      ...startedSelectedWrapper,
+      l1,
+    }),
+  );
+  expect(context.capture_wrapper_phase).toBe("started");
+  for (const field of wrapperResultFields)
+    expect(context).not.toHaveProperty(field);
+});
+
+it.each([
+  { wrapper_session_matches: false },
+  { wrapper_receipt_version: 2 },
+  { wrapper_age: "PRIVATE" },
+  { wrapper_receipt_version: undefined },
+])(
+  "never attributes a wrapper result without a valid selected-session receipt: %j",
+  async (override) => {
+    const context = await observeDaemonFailure(
+      2,
+      JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        ...startedSelectedWrapper,
+        ...override,
+        l1: [1, 1, 3],
+      }),
+    );
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    for (const field of wrapperResultFields)
+      expect(context).not.toHaveProperty(field);
+  },
+);
+
+it("projects the wrapper result at a fresh screenshot deadline and keeps its rejection", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 3,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      deadline: [1, "awaiting_response"],
+      ...startedSelectedWrapper,
+      l1: [1, 0, 2],
+    }),
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+    ),
+  ).rejects.toBe(error);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  expect(observe.mock.calls[0][0]).toMatchObject({
+    capture_stage: "fresh_screenshot",
+    capture_wrapper_result_scope: "previous_wrapper",
+    capture_wrapper_result: "exit_zero",
+    capture_wrapper_result_elapsed: "lt30s",
+  });
+});
+
+it("parses the wrapper result beside every existing field in a packet at the unchanged cap", async () => {
+  const packet = JSON.stringify({
+    deadline: [1, "awaiting_response"],
+    ...startedSelectedWrapper,
+    wrapper_action: "other",
+    ...successfulSelectedOpen,
+    h1: 3,
+    close_receipt: [1, "unavailable"],
+    open_idle: [1, "unparsed"],
+    p1: [1, 3, 2],
+    os1: 1,
+    w1: 3,
+    k1: 6,
+    l1: [1, 1, 3],
+    dv: [1, 1, 39003],
+    cv: [1, 2],
+  });
+  expect(Buffer.byteLength(packet)).toBeLessThanOrEqual(544);
+  const context = await observeDaemonFailure(
+    3,
+    packet + " ".repeat(544 - packet.length),
+  );
+  expect(context).toMatchObject({
+    capture_deadline_phase: "awaiting_response",
+    capture_wrapper_process_visibility: "same_incarnation_visible",
+    capture_wrapper_command_class: "other",
+    capture_wrapper_result_scope: "previous_wrapper",
+    capture_wrapper_result: "exit_nonzero",
+    capture_wrapper_result_elapsed: "lt60s",
+    capture_open_socket_return_status: "owned_socket",
+    capture_daemon_version_file_status: "measured",
+  });
+});

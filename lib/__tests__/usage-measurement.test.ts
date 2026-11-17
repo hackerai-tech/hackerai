@@ -33,6 +33,70 @@ it("does not count normalized summary input as reported provider usage", () => {
   });
 });
 
+it("never lets an explicit summary report make malformed input reported", () => {
+  const tracker = new UsageTracker();
+  tracker.accumulateSummarization({
+    inputTokens: -5,
+    inputTokensReported: true,
+    outputTokens: 1.5,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cost: 0.0125,
+    model: "model",
+  });
+
+  expect(tracker.inputTokens).toBe(0);
+  expect(tracker.summarizationInputTokens).toBe(0);
+  expect(tracker.outputTokens).toBe(0);
+  expect(tracker.hasCacheData).toBe(false);
+  // The valid fractional cost remains the summary's billed model cost.
+  expect(tracker.computeModelCostDollars("model")).toBe(0.0125);
+  expect(tracker.measurementProperties("model")).toMatchObject({
+    usage_input_reported_records: 0,
+    usage_cache_read_reported_records: 0,
+    usage_provider_cost_records: 1,
+    usage_unreported_model_records: 0,
+    usage_summary_cost_dollars: 0.0125,
+  });
+});
+
+it("discounts summary cache reads only when bounded by reported input", () => {
+  const tracker = new UsageTracker();
+  const opus = "anthropic/claude-4.6-opus-20260205";
+  // Unreported input cannot bound its cache read, even when it is a number.
+  tracker.accumulateSummarization({
+    inputTokens: 100_000,
+    inputTokensReported: false,
+    outputTokens: 0,
+    cacheReadTokens: 100_000,
+    model: opus,
+  });
+  // A read larger than its reported input is not a cache subset.
+  tracker.accumulateSummarization({
+    inputTokens: 100_000,
+    outputTokens: 0,
+    cacheReadTokens: 200_000,
+    model: opus,
+  });
+  tracker.accumulateSummarization({
+    inputTokens: 100_000,
+    outputTokens: 0,
+    cacheReadTokens: 80_000,
+    model: opus,
+  });
+
+  expect(tracker.summarizationCacheReadTokens).toBe(80_000);
+  // Two full-price summaries ($0.50 each) plus 20k uncached and 80k reads.
+  expect(tracker.computeModelCostDollars(opus)).toBeCloseTo(1.14, 10);
+  expect(tracker.measurementProperties(opus)).toMatchObject({
+    usage_input_reported_records: 2,
+    usage_cache_read_reported_records: 1,
+    usage_unreported_model_records: 1,
+    usage_cache_covered_input_tokens: 100_000,
+    usage_cache_covered_read_tokens: 80_000,
+  });
+});
+
 it("retains observed retry costs without adding them back to customer billing", () => {
   const tracker = new UsageTracker();
   tracker.recordModelCall();

@@ -4,6 +4,8 @@
  */
 
 export const NOTE_TARGET_MAX_LENGTH = 200;
+/** One shared budget for the whole serialized recall block, framing included. */
+export const RECALL_TOKEN_BUDGET = 1_500;
 const LABEL_PREFIX = "label:";
 const LABEL_MAX_LENGTH = 64;
 /** Clock skew tolerated when a caller records an observation "now". */

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  latestDeliveredWaitReply,
   predictionToolEvents,
   renderPredictionToolContext,
 } from "./tool-context";
@@ -7,7 +8,8 @@ import {
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
 // Legacy field name: this versions the saved prediction format/behavior, not truth or authorization.
-export const NEXT_ACTIONS_VALIDATION_VERSION = 6;
+// 7: saved drafts from before wait replies counted as the latest stop/resume are not restored.
+export const NEXT_ACTIONS_VALIDATION_VERSION = 7;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
@@ -19,12 +21,21 @@ export const nextActionsRequestSchema = z
       .regex(/^[\w-]+$/),
   })
   .strict();
+/** Models sometimes return the abstention as the string "null" instead of JSON null. */
+export const isNullAbstention = (text: string) =>
+  text.trim().toLowerCase() === "null";
 export const nextActionsResponseSchema = z.object({
   batchId: z.string(),
   messageId: z.string(),
   mode: z.enum(["ask", "agent"]),
   validationVersion: z.number().int().optional(),
-  suggestions: z.array(z.string().trim().min(1).max(240)).max(3),
+  // Batches saved before this normalization can still contain "null".
+  suggestions: z
+    .array(z.string().trim().min(1).max(240))
+    .max(3)
+    .transform((suggestions) =>
+      suggestions.filter((text) => !isNullAbstention(text)),
+    ),
 });
 export type NextActionsBatch = z.infer<typeof nextActionsResponseSchema>;
 export const emptyNextActionsResponseSchema = z.object({
@@ -47,6 +58,10 @@ export type PredictionSource = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Stop-policy metadata, never sent to the model: whether the latest reply
+   * delivered through a successful wait_for_user in this assistant turn is an
+   * explicit stop. Absent when the turn has no delivered reply. */
+  latestUserReplyStopped?: boolean;
 };
 
 const OMITTED_TEXT =
@@ -103,8 +118,24 @@ export function buildPredictionSources(
     const findings = findingParts.join("\n");
     const tools =
       message.role === "assistant" ? predictionToolEvents(message.parts) : [];
+    // Judge the full typed reply here; only the boolean is retained.
+    const reply =
+      message.role === "assistant"
+        ? latestDeliveredWaitReply(message.parts)
+        : undefined;
+    const replyStopped =
+      reply === undefined ? undefined : isExplicitStopText(reply);
     return text.trim() || findings || tools.length
-      ? [{ id: message.id, role: message.role, text, findings, tools }]
+      ? [
+          {
+            id: message.id,
+            role: message.role,
+            text,
+            findings,
+            tools,
+            replyStopped,
+          },
+        ]
       : [];
   });
   const sources: PredictionSource[] = [];
@@ -146,7 +177,15 @@ export function buildPredictionSources(
       .filter(Boolean)
       .join("\n");
     remaining -= text.length;
-    if (text.trim()) sources.push({ id: message.id, role: message.role, text });
+    if (text.trim())
+      sources.push({
+        id: message.id,
+        role: message.role,
+        text,
+        ...(message.replyStopped !== undefined && {
+          latestUserReplyStopped: message.replyStopped,
+        }),
+      });
   }
   return sources.reverse();
 }
@@ -156,7 +195,11 @@ export function parsePredictedNextAction(output: unknown): string[] {
   const parsed = predictedNextActionSchema.safeParse(output);
   if (!parsed.success || parsed.data.suggestion === null) return [];
   const text = parsed.data.suggestion.trim();
-  if (!text || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text))
+  if (
+    !text ||
+    isNullAbstention(text) ||
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text)
+  )
     return [];
   // Composer commands have their own explicit entry flow; a prediction cannot select one.
   if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
@@ -173,12 +216,48 @@ export function parsePredictedNextAction(output: unknown): string[] {
   return [text];
 }
 
-/** Avoid spending or showing a new draft after an explicit conversational stop. */
+// A directive must be a whole clause, optionally after a comma or "and"/"but"/
+// "then"; "do not continue with ..." is an instruction about something else.
+const STOP_DIRECTIVE_CLAUSE =
+  /(?:^|,\s*|\b(?:and|but|then)\s+)(?:please\s+)?(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:continue|add (?:another|any|more) (?:questions?|suggestions?)|suggest (?:a |any )?follow[ -]?ups?))(?:,?\s+(?:afterwards|please))?$/i;
+// A coordinated phrase ("with and without follow-ups") describes a category
+// the user is asking about rather than how to answer this request.
+const WITHOUT_FOLLOW_UPS_CLAUSE =
+  /(?<!\b(?:with|and|or)\s+)\bwithout (?:any )?follow[ -]?ups?(?:,?\s+please)?$/i;
+
+function hasStopDirectiveClause(instruction: string): boolean {
+  for (const [, clause, end] of instruction.matchAll(
+    /([^.!?;\n]+)([.!?;\n]*)/g,
+  )) {
+    // A question about a stop phrase is not a stop.
+    if (end.includes("?")) continue;
+    const text = clause.trim();
+    if (
+      STOP_DIRECTIVE_CLAUSE.test(text) ||
+      WITHOUT_FOLLOW_UPS_CLAUSE.test(text)
+    )
+      return true;
+  }
+  return false;
+}
+
+/** Avoid spending or showing a new draft after an explicit conversational stop.
+ * The latest typed input decides: a user message, or a later reply delivered
+ * through a wait. Assistant prose never counts. */
 export function hasExplicitPredictionStop(
   sources: PredictionSource[],
 ): boolean {
-  const latest =
-    sources.findLast((source) => source.role === "user")?.text ?? "";
+  for (let index = sources.length - 1; index >= 0; index--) {
+    const source = sources[index];
+    if (source.role === "user") return isExplicitStopText(source.text);
+    if (source.latestUserReplyStopped !== undefined)
+      return source.latestUserReplyStopped;
+  }
+  return false;
+}
+
+/** Claims only unambiguous conversational stops; the model sees everything else. */
+function isExplicitStopText(latest: string): boolean {
   // Quoted examples are not direct stop instructions. Apostrophes within
   // words are preserved, including contractions inside a quoted example.
   const instruction = latest.replace(
@@ -189,17 +268,12 @@ export function hasExplicitPredictionStop(
     /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(
       instruction,
     ) ||
-    /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?)\b/i.test(
-      instruction,
-    ) ||
+    hasStopDirectiveClause(instruction) ||
     /\bI(?:['’]m| am) done[.!]?\s*$/i.test(instruction) ||
     /\b(?:and|then)\s+stop\s+(?:here|there)[.!]?\s*$/i.test(instruction) ||
     /^(?:thanks[,.!]\s*)?(?:please\s+)?(?:cancel|stop)(?:\s+(?:that|this)(?:\s+(?:task|request|review))?)?[.!]?\s*$/i.test(
       instruction.trim(),
     ) ||
-    /\bno more on this[.!]?\s*$/i.test(instruction) ||
-    /(?:^|[.!?;,]\s*|\b(?:but|and)\s+|\n)(?:please\s+)?do not suggest (?:a |any )?follow[ -]?ups?\b/i.test(
-      instruction,
-    )
+    /\bno more on this[.!]?\s*$/i.test(instruction)
   );
 }

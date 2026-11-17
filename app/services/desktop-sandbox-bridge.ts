@@ -54,6 +54,11 @@ import {
   desktopTerminalErrorDiagnostic,
   type DesktopTerminalErrorKind,
 } from "@/lib/analytics/desktop-terminal-error-diagnostics";
+import {
+  classifyNativeInvocationRejection,
+  desktopInvocationRejectionDiagnostic,
+  type DesktopInvocationRejectionDiagnostic,
+} from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
@@ -1455,11 +1460,18 @@ export class DesktopSandboxBridge {
     // terminal, a fenced callback or settlement itself can never set it.
     let terminalLatched = false;
     let terminalErrorKind: DesktopTerminalErrorKind | null = null;
+    /** True only when this call recorded `errorKind` as the first terminal. */
     const latchTerminal = (errorKind: DesktopTerminalErrorKind | null) => {
-      if (terminalLatched) return;
+      if (terminalLatched) return false;
       terminalLatched = true;
-      if (errorKind && !receiptFenced()) terminalErrorKind = errorKind;
+      if (!errorKind || receiptFenced()) return false;
+      terminalErrorKind = errorKind;
+      return true;
     };
+    // The rejection's message class joins only that recorded kind. The trace
+    // reports the command set the existing adapter selected.
+    const invocationTrace: FileStatReceiverTrace = {};
+    let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1491,6 +1503,8 @@ export class DesktopSandboxBridge {
             ...(terminalErrorKind && {
               terminalError: desktopTerminalErrorDiagnostic(terminalErrorKind),
             }),
+            ...(terminalErrorKind === "invocation_rejected" &&
+              invocationRejection && { invocationRejection }),
             ...(invocationRejected &&
               sendReceipt && {
                 nativeAuthorization: nativeAuthorizationDiagnostic(
@@ -1727,11 +1741,21 @@ export class DesktopSandboxBridge {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
             },
+            invocationTrace,
           );
         }
       } catch (error) {
         invocationRejected = true;
-        latchTerminal("invocation_rejected");
+        // Classified before append can settle; the product message is unchanged.
+        // A failure before any command set was selected is never read as a
+        // native message.
+        if (latchTerminal("invocation_rejected"))
+          invocationRejection = invocationTrace.adapter
+            ? desktopInvocationRejectionDiagnostic(
+                classifyNativeInvocationRejection(error),
+                invocationTrace.adapter,
+              )
+            : desktopInvocationRejectionDiagnostic("unknown", "not_selected");
         stream.append({
           type: "error",
           message: error instanceof Error ? error.message : String(error),

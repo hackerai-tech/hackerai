@@ -32,6 +32,8 @@ import {
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
   BROWSER_OPEN_INFO_FLAGS,
   BROWSER_WRAPPER_COMMAND_CLASSES,
+  BROWSER_WRAPPER_RESULTS,
+  BROWSER_WRAPPER_RESULT_ELAPSED,
   BROWSER_DAEMON_VERSION_FILE_STATUSES,
 } from "./daemon-program";
 import {
@@ -736,6 +738,15 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // command or a cause. Absent means unmeasured (older writer or budget).
   capture_wrapper_command_version?: 1;
   capture_wrapper_command_class?: (typeof BROWSER_WRAPPER_COMMAND_CLASSES)[number];
+  // Selected session only: its latest returned wrapped CLI process (the receipt's
+  // own wrapper when COMPLETED, the immediately preceding one when STARTED) and its
+  // wrapper-measured elapsed bucket. Not a compound shell result, daemon/CDP state
+  // or capture cause. Absent means unmeasured (older writer, budget, or a preceding
+  // wrapper that ended without a completion record or for another session).
+  capture_wrapper_result_version?: 1;
+  capture_wrapper_result_scope?: "latest_wrapper" | "previous_wrapper";
+  capture_wrapper_result?: (typeof BROWSER_WRAPPER_RESULTS)[number];
+  capture_wrapper_result_elapsed?: (typeof BROWSER_WRAPPER_RESULT_ELAPSED)[number];
   capture_wrapper_history_version?: 1;
   capture_wrapper_history_scope?: "handoff_root";
   // Other than a recognized version-only invocation; leading options stay ambiguous.
@@ -991,6 +1002,10 @@ export async function captureBrowserFrame(
         | "capture_wrapper_process_visibility"
         | "capture_wrapper_command_version"
         | "capture_wrapper_command_class"
+        | "capture_wrapper_result_version"
+        | "capture_wrapper_result_scope"
+        | "capture_wrapper_result"
+        | "capture_wrapper_result_elapsed"
         | "capture_wrapper_history_version"
         | "capture_wrapper_history_scope"
         | "capture_wrapper_other_cli_completed"
@@ -1176,6 +1191,30 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_command_version = 1;
                 precondition.capture_wrapper_command_class =
                   BROWSER_WRAPPER_COMMAND_CLASSES[command];
+              }
+              const wrapperResult = parsed?.l1;
+              if (
+                precondition.capture_wrapper_receipt_version === 1 &&
+                precondition.capture_wrapper_session_matches === true &&
+                Array.isArray(wrapperResult) &&
+                wrapperResult.length === 3 &&
+                wrapperResult[0] === 1 &&
+                Number.isInteger(wrapperResult[1]) &&
+                wrapperResult[1] >= 0 &&
+                wrapperResult[1] < BROWSER_WRAPPER_RESULTS.length &&
+                Number.isInteger(wrapperResult[2]) &&
+                wrapperResult[2] >= 0 &&
+                wrapperResult[2] < BROWSER_WRAPPER_RESULT_ELAPSED.length
+              ) {
+                precondition.capture_wrapper_result_version = 1;
+                precondition.capture_wrapper_result_scope =
+                  precondition.capture_wrapper_phase === "completed"
+                    ? "latest_wrapper"
+                    : "previous_wrapper";
+                precondition.capture_wrapper_result =
+                  BROWSER_WRAPPER_RESULTS[wrapperResult[1]];
+                precondition.capture_wrapper_result_elapsed =
+                  BROWSER_WRAPPER_RESULT_ELAPSED[wrapperResult[2]];
               }
               const history = parsed?.h1;
               if (history === 0 || history === 1 || history === 3) {

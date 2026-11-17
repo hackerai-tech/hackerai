@@ -278,14 +278,21 @@ start_line = range_start if range_start > 0 else 1
 
 def add_text(text):
     global selected_bytes, truncated
-    encoded = text.encode("utf-8", errors="replace")
     remaining = max_result_bytes - selected_bytes
     if remaining <= 0:
         truncated = True
         return False
+    # Each character encodes to at least one byte, so this prefix still
+    # exceeds the cap whenever the whole line would.
+    encoded = text[:remaining + 1].encode("utf-8", errors="replace")
     if len(encoded) > remaining:
-        selected.append(encoded[:remaining].decode("utf-8", errors="replace"))
-        selected_bytes = max_result_bytes
+        # Cut before a character the cap splits instead of decoding its
+        # partial bytes as a replacement character.
+        end = remaining
+        while end > 0 and (encoded[end] & 0xC0) == 0x80:
+            end -= 1
+        selected.append(encoded[:end].decode("utf-8"))
+        selected_bytes += end
         truncated = True
         return False
     selected.append(text)

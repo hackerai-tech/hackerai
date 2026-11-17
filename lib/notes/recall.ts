@@ -11,6 +11,7 @@ import {
   fitTextToTokens,
   isLabelTarget,
   isRecallKeyword,
+  RECALL_TOKEN_BUDGET,
   taskMentionsLabel,
 } from "./policy";
 
@@ -18,9 +19,8 @@ export {
   NOTES_RELEVANT_RECALL_FLAG,
   recordRelevantRecallExposure,
 } from "./analytics";
+export { RECALL_TOKEN_BUDGET };
 export const RECALL_MAX_NOTES = 6;
-/** One shared budget for the whole serialized block, framing included. */
-export const RECALL_TOKEN_BUDGET = 1_500;
 const FLAG_TIMEOUT_MS = 1_000;
 const RECALL_TIMEOUT_MS = 2_500;
 const MAX_GENERAL_BEFORE_RELEVANT = 3;
@@ -326,7 +326,7 @@ export function searchTextFor(taskText: string): string {
 /**
  * Builds the relevant-notes block once for a task. Throws when the lookup
  * fails or exceeds its deadline so callers can keep previously sent context.
- * Records exactly one result event per call; a lookup that settles after the
+ * Records at most one result event per call; a lookup that settles after the
  * deadline records nothing more.
  */
 export async function buildRelevantNotesSection({

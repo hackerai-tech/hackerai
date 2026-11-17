@@ -5,7 +5,9 @@ import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useCompactTaskSidebar } from "@/hooks/use-workspace-layout";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "../contexts/GlobalState";
+import { ChatStartersProvider } from "../contexts/ChatStartersContext";
 import { useChats } from "../hooks/useChats";
 import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -50,6 +52,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
   // Keep list subscriptions in the layout so mobile overlay remounts do not refetch.
   const chatListData = useChats();
   const projectListData = useProjects();
+  const { user } = useAuth();
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Settings dialog — local state, opened via custom event from anywhere
@@ -223,7 +226,15 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
       <div className="flex min-h-0 flex-1 min-w-0 flex-col relative">
         {/* Billing status is checked on demand in Account settings. Keep the
             global layout free of billing/Stripe status requests. */}
-        {children}
+        {/* Starters reuse the history lists above instead of subscribing again. */}
+        <ChatStartersProvider
+          userId={user?.id}
+          chats={chatListData}
+          projects={projectListData}
+          exposureBlocked={taskSidebarOverlayOpen || settingsDialogOpen}
+        >
+          {children}
+        </ChatStartersProvider>
       </div>
 
       {/* Overlay task sidebar for mobile and constrained desktop workspaces. */}

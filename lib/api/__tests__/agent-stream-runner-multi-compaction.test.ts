@@ -1665,6 +1665,232 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  describe("context budget projection diagnostics", () => {
+    const ANNOTATION_CANARY = "PRIVATE_ANNOTATION_CANARY";
+    const IMAGE_CANARY = "PRIVATE_IMAGE_URL_CANARY";
+    // 22 + 24 UTF-16 code units.
+    const IMAGE_URL = `data:image/png;base64,${IMAGE_CANARY}`;
+    const GUARD_MESSAGE =
+      "Conversation could not be compacted to fit the selected model. Please retry.";
+    const threshold = getSummarizationThresholdTokens(MAX_TOKENS_PAID);
+    const stepMessages = [
+      { role: "user", content: "Read the synthetic attachment" },
+      { role: "assistant", content: "Reading the attachment" },
+    ];
+    let warn: jest.SpyInstance;
+
+    const budgetWarnings = () =>
+      warn.mock.calls
+        .map(([value]) => {
+          try {
+            return typeof value === "string" ? JSON.parse(value) : undefined;
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((value) => value?.event === "agent_context_budget_exceeded");
+
+    const createRouteAwareStream = async (
+      original: UIMessage[],
+      summarizationCount = 0,
+    ) => {
+      const state = initAgentStreamState(original, {
+        usedTokens: 100,
+        maxTokens: MAX_TOKENS_PAID,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "synthetic/provider-model" }),
+          },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+          summarizationTracker: {
+            hasSummarized: summarizationCount > 0,
+            summarizationCount,
+          },
+        }) as any,
+        state,
+      )) as any;
+      return { state, stream };
+    };
+
+    // Source-owned growth: annotations from a finished step are attached to
+    // the next prepared request after the rolling compaction check ran.
+    const finishStepWithLargeAnnotations = (stream: any) =>
+      stream.onStepFinish({
+        content: [],
+        response: { modelId: "synthetic/provider-model", messages: [] },
+        providerMetadata: {
+          openrouter: {
+            annotations: [
+              {
+                type: "file",
+                file: {
+                  hash: "synthetic-hash",
+                  name: "synthetic.pdf",
+                  content: [
+                    {
+                      type: "text",
+                      text: `${ANNOTATION_CANARY}${" word".repeat(MAX_TOKENS_PAID + 10_000)}`,
+                    },
+                    { type: "image_url", image_url: { url: IMAGE_URL } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+        toolCalls: [],
+        toolResults: [],
+        text: "",
+        finishReason: "tool-calls",
+      });
+
+    beforeEach(() => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    it("explains annotation growth that crosses the guard without a compaction attempt", async () => {
+      const original = [uiMessage("initial", "Read the synthetic attachment")];
+      const { state, stream } = await createRouteAwareStream(original);
+      await finishStepWithLargeAnnotations(stream);
+      // The previous provider request was comfortably below the threshold.
+      state.lastStepInputTokens = 136_500;
+
+      await expect(
+        stream.prepareStep({
+          steps: [{ toolResults: [] }],
+          stepNumber: 1,
+          messages: stepMessages,
+        }),
+      ).rejects.toThrow(GUARD_MESSAGE);
+
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+      expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+      expect(state.finalMessages).toEqual(original);
+      const [warning] = budgetWarnings();
+      expect(warning).toMatchObject({
+        compaction_attempt_count: 0,
+        unproductive_compaction_count: 0,
+        context_budget_projection_diagnostic_version: 1,
+        context_budget_step_index: 1,
+        context_budget_decision_source: "rolling_check",
+        context_budget_without_file_annotations_status: "measured",
+        context_budget_file_annotation_count: 1,
+        context_budget_annotation_image_diagnostic_version: 1,
+        context_budget_annotation_image_status: "measured",
+        context_budget_annotation_image_part_count: 1,
+        context_budget_annotation_image_url_chars: 46,
+      });
+      // The existing decision measured a request below the threshold, while
+      // the guard measured the same step's prepared request above the budget.
+      expect(warning.context_budget_decision_input_tokens).toBeLessThan(
+        threshold,
+      );
+      expect(warning.estimated_input_tokens).toBeGreaterThan(MAX_TOKENS_PAID);
+      expect(
+        warning.context_budget_prepared_message_tokens +
+          warning.context_budget_system_tokens +
+          warning.tool_schema_tokens,
+      ).toBe(warning.estimated_input_tokens);
+      // Removing only the attached annotations explains the difference.
+      expect(
+        warning.context_budget_without_file_annotations_message_tokens +
+          warning.context_budget_system_tokens,
+      ).toBeLessThan(threshold);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(ANNOTATION_CANARY);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(IMAGE_CANARY);
+    });
+
+    it("never reports a previous step's decision or measures healthy steps", async () => {
+      const { state, stream } = await createRouteAwareStream([
+        uiMessage("initial", "Read the synthetic attachment"),
+      ]);
+      state.lastStepInputTokens = 100;
+      await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        stepNumber: 1,
+        messages: stepMessages,
+      });
+      // The healthy step evaluated the rolling check but emitted nothing.
+      expect(budgetWarnings()).toHaveLength(0);
+
+      await finishStepWithLargeAnnotations(stream);
+      // Provider usage short-circuits the rolling estimate on this step.
+      state.lastStepInputTokens = MAX_TOKENS_PAID;
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      await expect(
+        stream.prepareStep({
+          steps: [{ toolResults: [] }, { toolResults: [] }],
+          stepNumber: 2,
+          messages: [...stepMessages, { role: "user", content: "Continue" }],
+        }),
+      ).rejects.toThrow(GUARD_MESSAGE);
+
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+      const [warning] = budgetWarnings();
+      expect(warning).toMatchObject({
+        compaction_attempt_count: 1,
+        context_budget_step_index: 2,
+        context_budget_decision_source: "not_evaluated",
+        context_budget_without_file_annotations_status: "measured",
+      });
+      expect(warning).not.toHaveProperty(
+        "context_budget_decision_input_tokens",
+      );
+    });
+
+    it("reports the exact startup durable-check input when nothing was attached", async () => {
+      const largeText = " ordinary".repeat(MAX_TOKENS_PAID + 10_000);
+      const original = [uiMessage("large", largeText)];
+      const { state, stream } = await createRouteAwareStream(original);
+
+      await expect(
+        stream.prepareStep({
+          steps: [],
+          stepNumber: 0,
+          messages: [{ role: "user", content: largeText }],
+        }),
+      ).rejects.toThrow(GUARD_MESSAGE);
+
+      expect(mockRunSummarizationStep).toHaveBeenCalledTimes(1);
+      const durableInput =
+        mockRunSummarizationStep.mock.calls[0][0].preparedInputTokens;
+      expect(Number.isSafeInteger(durableInput)).toBe(true);
+      expect(state.finalMessages).toEqual(original);
+      const [warning] = budgetWarnings();
+      expect(warning).toMatchObject({
+        compaction_attempt_count: 0,
+        context_budget_step_index: 0,
+        context_budget_decision_source: "durable_check",
+        context_budget_decision_input_tokens: durableInput,
+        context_budget_without_file_annotations_status: "not_present",
+        context_budget_without_file_annotations_message_tokens:
+          warning.context_budget_prepared_message_tokens,
+        context_budget_annotation_image_status: "not_present",
+      });
+      expect(warning).not.toHaveProperty(
+        "context_budget_file_annotation_count",
+      );
+      expect(warning).not.toHaveProperty(
+        "context_budget_annotation_image_part_count",
+      );
+      expect(warning).not.toHaveProperty(
+        "context_budget_annotation_image_url_chars",
+      );
+    });
+  });
+
   it.each(
     (["control", "test", undefined] as const).flatMap((variant) =>
       (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
@@ -6806,6 +7032,118 @@ describe("createAgentStream repeated compaction", () => {
     state.lastStepInputTokens = 300_000;
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
+  it.each([-5, 1.5])(
+    "uses the recovery estimate when compacted steps report malformed input %p",
+    async (inputTokens) => {
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [uiMessage("small-summary", "Keep the objective.")],
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const state = initAgentStreamState(
+        [uiMessage("original", "old context ".repeat(2_000))],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          tools: {
+            large_tool: {
+              description: "Inspect local state.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  input: {
+                    type: "string",
+                    description: "schema overhead ".repeat(50_000),
+                  },
+                },
+              },
+            },
+          },
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+          usageTracker: {
+            accumulateStep: jest.fn(() => 0),
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const malformedStep = {
+        usage: { inputTokens, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      };
+
+      const initial: ModelMessage[] = [
+        { role: "user", content: "old context ".repeat(2_000) },
+      ];
+      await stream.prepareStep({ steps: [], messages: initial });
+      await stream.onStepFinish(malformedStep);
+      const next: ModelMessage = { role: "assistant", content: "new work" };
+      await stream.prepareStep({
+        steps: [{ toolResults: [], response: { messages: [next] } }],
+        messages: [...initial, next],
+      });
+      await stream.onStepFinish(malformedStep);
+
+      // A malformed count must not confirm that compaction recovered context.
+      expect(state.lastStepInputTokens).toBe(0);
+      expect(state.ctxUsage.usedTokens).toBeGreaterThan(0);
+      state.lastStepInputTokens = 300_000;
+      expect(stream.stopWhen[1]()).toBe(true);
+      expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    },
+  );
+
+  it("keeps reported context usage when a later step reports malformed input", async () => {
+    const { UsageTracker } = jest.requireActual("@/lib/usage-tracker");
+    const usageTracker = new UsageTracker();
+    const state = initAgentStreamState(
+      [uiMessage("context", "verified context")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        usageTracker,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+      }) as any,
+      state,
+    )) as any;
+    const finishStep = (inputTokens: number) =>
+      stream.onStepFinish({
+        usage: { inputTokens, outputTokens: 2 },
+        response: { modelId: "test-model", messages: [] },
+      });
+
+    await finishStep(120_000);
+    expect(state.ctxUsage.usedTokens).toBe(120_000);
+    expect(state.lastStepInputTokens).toBe(120_000);
+    for (const malformed of [-5, 1.5]) {
+      await finishStep(malformed);
+      expect(state.ctxUsage.usedTokens).toBe(120_000);
+      expect(state.lastStepInputTokens).toBe(0);
+    }
+    expect(usageTracker.inputTokens).toBe(120_000);
+    expect(usageTracker.outputTokens).toBe(6);
   });
 
   it("allows compaction after provider rejection recovery without usage", async () => {

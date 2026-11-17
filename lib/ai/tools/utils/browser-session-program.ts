@@ -212,6 +212,21 @@ def open_socket_at_return():
     except Exception:
         return 0
 
+def own_result(status, executed):
+    """Private [1, result, elapsed bucket] of this wrapper's own return, timed only
+    by this process's monotonic clock. Results: 0 exit0, 1 nonzero exit, 2 signal,
+    3 verification gate. Not a compound shell result, daemon state or cause."""
+    try:
+        if type(status) is not int or wrapper_started is None: return None
+        elapsed = time.monotonic() - wrapper_started
+        if not 0 <= elapsed < float('inf'): return None
+        if executed: result = 0 if status == 0 else 1 if status > 0 else 2
+        elif status == 75: result = 3
+        else: return None
+        return [1, result, 0 if elapsed < 1 else 1 if elapsed < 10 else 2 if elapsed < 30 else 3 if elapsed < 60 else 4 if elapsed < 300 else 5]
+    except Exception:
+        return None
+
 def record_wrapper(phase, status=None, executed=False):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
@@ -260,14 +275,24 @@ def record_wrapper(phase, status=None, executed=False):
         # Root-scoped retained observations, not proof of browser startup or of
         # no execution. A later version check must not erase a returned CLI call.
         previous_fd = None
+        result = own_result(status, executed) if phase == 'completed' else None
         try:
             previous_fd = os.open(str(root / 'wrapper-receipt.json'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             previous_info = os.fstat(previous_fd)
             if not __import__('stat').S_ISREG(previous_info.st_mode) or previous_info.st_uid != os.getuid() or previous_info.st_mode & 0o077 or not 0 < previous_info.st_size <= 512:
                 raise ValueError('Unavailable receipt')
-            history = json.loads(os.read(previous_fd, 513)).get('history')
+            previous = json.loads(os.read(previous_fd, 513))
+            history = previous.get('history')
             if isinstance(history, list) and len(history) == 3 and type(history[0]) is int and history[0] == 1 and type(history[1]) is bool and type(history[2]) is bool and (not history[2] or history[1]):
                 value['history'] = [1, history[1] or (executed and action != 'version'), history[2] or (executed and option_prefix)]
+            # Carry only the immediately preceding wrapper's own valid result, and only
+            # when it COMPLETED for this same session; anything else stays unmeasured.
+            carried = previous.get('lr')
+            if (phase == 'started' and previous.get('v') == 1 and previous.get('phase') == 'completed' and
+                    previous.get('session_key') == value['session_key'] and isinstance(carried, list) and
+                    len(carried) == 3 and all(type(code) is int for code in carried) and carried[0] == 1 and
+                    0 <= carried[1] <= 3 and 0 <= carried[2] <= 5):
+                result = carried
         except Exception:
             pass  # Legacy, missing and unreadable history remains unmeasured.
         finally:
@@ -283,6 +308,9 @@ def record_wrapper(phase, status=None, executed=False):
         classified = dict(latest, k1=('wait', 'snapshot', 'screenshot', 'open', 'close', 'version', 'other', 'unparsed').index(command))
         if len(json.dumps(classified)) <= 512:
             latest = classified
+        # Latest-command receipt only, appended last and omitted at the same cap.
+        if result is not None and len(json.dumps(dict(latest, lr=result))) <= 512:
+            latest = dict(latest, lr=result)
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', latest)
@@ -306,6 +334,10 @@ def record_wrapper(phase, status=None, executed=False):
     except Exception:
         pass
 
+try:
+    wrapper_started = time.monotonic()
+except Exception:
+    wrapper_started = None
 record_wrapper('started')
 verify = root / 'verify-required'
 # Keep the last successful terminal environment as the handoff baseline.

@@ -1,4 +1,10 @@
-import { generateText, NoObjectGeneratedError, Output } from "ai";
+import {
+  APICallError,
+  generateText,
+  NoObjectGeneratedError,
+  Output,
+  type FinishReason,
+} from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
@@ -6,6 +12,7 @@ import {
   predictedNextActionSchema,
   parsePredictedNextAction,
   hasExplicitPredictionStop,
+  isNullAbstention,
   type PredictionSource,
 } from "./contracts";
 
@@ -32,16 +39,78 @@ Return exactly one natural user message on one line in suggestion, at most 240 c
 
 Priority example: if the assistant asks "Paste the exact stderr", predict "how do i capture stderr?" or "[paste stderr here]", never a guessed stderr message. This missing-evidence rule takes priority over predicting the most likely answer.`;
 
+/** Closed diagnostic categories. They are never derived from provider messages,
+ * bodies, headers, request data, causes or model text. The route alone uses
+ * `internal_error` for an unexpected throw around generation. */
+export type NextActionsGenerationReason =
+  | "generated"
+  | "explicit_stop"
+  | "model_abstained"
+  | "parser_rejected"
+  | "caller_aborted"
+  | "deadline"
+  | "invalid_structured_output"
+  | "provider_api_error"
+  | "other_error"
+  | "internal_error";
+
+const FINISH_REASONS = new Set<unknown>([
+  "stop",
+  "length",
+  "content-filter",
+  "tool-calls",
+  "error",
+  "other",
+] satisfies FinishReason[]);
+const finishReason = (value: unknown) =>
+  FINISH_REASONS.has(value) ? (value as FinishReason) : undefined;
+const httpStatus = (value: unknown) =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 100 &&
+  value <= 599
+    ? value
+    : undefined;
+
+function failureReason(
+  error: unknown,
+  abortSignal: AbortSignal,
+  deadline: AbortSignal,
+): NextActionsGenerationReason {
+  // A known abort is the first cause, even if a provider or SDK error follows.
+  // The combined signal keeps the first source's reason, so a caller abort is
+  // not mistaken for our deadline even when both are TimeoutErrors.
+  if (abortSignal.aborted)
+    return abortSignal.reason === deadline.reason
+      ? "deadline"
+      : "caller_aborted";
+  if (NoObjectGeneratedError.isInstance(error))
+    return "invalid_structured_output";
+  if (APICallError.isInstance(error)) return "provider_api_error";
+  // Neither signal fired: only the SDK's equal internal `timeout` remains.
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? error.name
+      : undefined;
+  return name === "TimeoutError" || name === "AbortError"
+    ? "deadline"
+    : "other_error";
+}
+
 /** One small utility generation, following OpenClaw's composer-prediction pattern.
  * No tools, supporting-quote generation or second semantic-verification call. */
 export async function generateNextActions(
   sources: PredictionSource[],
   signal: AbortSignal,
 ) {
-  const abortSignal = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
+  const deadline = AbortSignal.timeout(8_000);
+  const abortSignal = AbortSignal.any([signal, deadline]);
   let attempted = false;
   let suggestions: string[] = [];
   let unavailable = false;
+  let reason: NextActionsGenerationReason = "explicit_stop";
+  let providerFinishReason: FinishReason | undefined;
+  let providerHttpStatus: number | undefined;
   let cost: number | undefined;
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -76,8 +145,18 @@ export async function generateNextActions(
       outputTokens = result.usage.outputTokens;
       reasoningTokens = result.usage.outputTokenDetails.reasoningTokens;
       modelId = result.response.modelId;
+      providerFinishReason = finishReason(result.finishReason);
       abortSignal.throwIfAborted();
-      suggestions = parsePredictedNextAction(result.output);
+      const output = result.output;
+      suggestions = parsePredictedNextAction(output);
+      const prediction = (output as { suggestion?: unknown } | null)
+        ?.suggestion;
+      reason = suggestions.length
+        ? "generated"
+        : prediction === null ||
+            (typeof prediction === "string" && isNullAbstention(prediction))
+          ? "model_abstained"
+          : "parser_rejected";
     }
   } catch (error) {
     // Structured output can fail after a completed, billable generation.
@@ -88,7 +167,11 @@ export async function generateNextActions(
       outputTokens = error.usage?.outputTokens;
       reasoningTokens = error.usage?.outputTokenDetails?.reasoningTokens;
       modelId = error.response?.modelId;
+      providerFinishReason = finishReason(error.finishReason);
     }
+    if (APICallError.isInstance(error))
+      providerHttpStatus = httpStatus(error.statusCode);
+    reason = failureReason(error, abortSignal, deadline);
     unavailable = true;
     suggestions = [];
   }
@@ -97,6 +180,9 @@ export async function generateNextActions(
   return {
     suggestions,
     unavailable,
+    reason,
+    ...(providerFinishReason && { finishReason: providerFinishReason }),
+    ...(providerHttpStatus !== undefined && { httpStatus: providerHttpStatus }),
     inputTokens,
     outputTokens,
     reasoningTokens,

@@ -5,6 +5,7 @@ import {
   isPositiveFiniteNumber,
 } from "@/lib/provider-usage-cost";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
+import { isValidTokenCount } from "@/lib/token-usage";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
@@ -32,8 +33,59 @@ interface StepUsage {
   };
 }
 
-const isValidCacheTokenCount = (value: unknown): value is number =>
+/** Costs may be fractional, and an explicit zero is a known measurement. */
+const isNonNegativeCost = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+type TokenReceipt = {
+  inputReported: boolean;
+  cacheReadReported: boolean;
+  cacheTelemetryReported: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+/**
+ * Normalizes one provider usage receipt before it reaches counters, model step
+ * records or measurement. Malformed fields are ignored independently rather
+ * than coerced, so they cannot reduce or poison accumulated usage. Cache reads
+ * and writes are subsets of input: each counts only when it is bounded by this
+ * receipt's reported input, otherwise the input is priced uncached.
+ */
+const normalizeTokenReceipt = (usage: {
+  inputTokens?: unknown;
+  inputTokensReported?: boolean;
+  outputTokens?: unknown;
+  cacheReadTokens?: unknown;
+  cacheWriteTokens?: unknown;
+}): TokenReceipt => {
+  const reportedInput =
+    isValidTokenCount(usage.inputTokens) && usage.inputTokensReported !== false
+      ? usage.inputTokens
+      : undefined;
+  const cacheSubset = (value: unknown): number | undefined =>
+    reportedInput !== undefined &&
+    isValidTokenCount(value) &&
+    value <= reportedInput
+      ? value
+      : undefined;
+  const cacheReadTokens = cacheSubset(usage.cacheReadTokens);
+  const cacheWriteTokens = cacheSubset(usage.cacheWriteTokens);
+  return {
+    inputReported: reportedInput !== undefined,
+    cacheReadReported: cacheReadTokens !== undefined,
+    cacheTelemetryReported:
+      cacheReadTokens !== undefined || cacheWriteTokens !== undefined,
+    inputTokens: isValidTokenCount(usage.inputTokens) ? usage.inputTokens : 0,
+    outputTokens: isValidTokenCount(usage.outputTokens)
+      ? usage.outputTokens
+      : 0,
+    cacheReadTokens: cacheReadTokens ?? 0,
+    cacheWriteTokens: cacheWriteTokens ?? 0,
+  };
+};
 
 type ModelStepCost = {
   measurementCost?: number;
@@ -177,26 +229,23 @@ export class UsageTracker {
   }
 
   accumulateStep(usage: StepUsage, modelName?: string): number {
-    const reportedCacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
-    const reportedCacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens;
-    const cacheReadTokens = isValidCacheTokenCount(reportedCacheReadTokens)
-      ? reportedCacheReadTokens
-      : 0;
-    const cacheWriteTokens = isValidCacheTokenCount(reportedCacheWriteTokens)
-      ? reportedCacheWriteTokens
-      : 0;
-    if (
-      isValidCacheTokenCount(reportedCacheReadTokens) ||
-      isValidCacheTokenCount(reportedCacheWriteTokens)
-    ) {
+    const receipt = normalizeTokenReceipt({
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens,
+      cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens,
+    });
+    if (receipt.cacheTelemetryReported) {
       this.modelCacheTelemetryObserved = true;
     }
-    this.inputTokens += usage.inputTokens || 0;
-    this.outputTokens += usage.outputTokens || 0;
-    this.totalTokens += usage.totalTokens || 0;
-    this.lastStepInputTokens = usage.inputTokens || 0;
-    this.cacheReadTokens += cacheReadTokens;
-    this.cacheWriteTokens += cacheWriteTokens;
+    this.inputTokens += receipt.inputTokens;
+    this.outputTokens += receipt.outputTokens;
+    this.totalTokens += isValidTokenCount(usage.totalTokens)
+      ? usage.totalTokens
+      : receipt.inputTokens + receipt.outputTokens;
+    this.lastStepInputTokens = receipt.inputTokens;
+    this.cacheReadTokens += receipt.cacheReadTokens;
+    this.cacheWriteTokens += receipt.cacheWriteTokens;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const reportedCost = isPositiveFiniteNumber(usage.raw?.cost)
@@ -212,16 +261,16 @@ export class UsageTracker {
               usage.raw?.costDetails?.upstream_inference_cost,
               usage.raw?.costDetails?.upstreamInferenceCost,
               usage.raw?.cost,
-            ].find(isValidCacheTokenCount),
-        inputReported: isValidCacheTokenCount(usage.inputTokens),
-        cacheReadReported: isValidCacheTokenCount(reportedCacheReadTokens),
+            ].find(isNonNegativeCost),
+        inputReported: receipt.inputReported,
+        cacheReadReported: receipt.cacheReadReported,
         rawCost,
         reportedCost,
         reportedIsByok: usage.raw?.is_byok,
-        inputTokens: usage.inputTokens || 0,
-        outputTokens: usage.outputTokens || 0,
-        cacheReadTokens,
-        cacheWriteTokens,
+        inputTokens: receipt.inputTokens,
+        outputTokens: receipt.outputTokens,
+        cacheReadTokens: receipt.cacheReadTokens,
+        cacheWriteTokens: receipt.cacheWriteTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
@@ -240,20 +289,12 @@ export class UsageTracker {
     cost?: number;
     model?: string;
   }): void {
-    const cacheReadTokens = isValidCacheTokenCount(usage.cacheReadTokens)
-      ? usage.cacheReadTokens
-      : 0;
-    const cacheWriteTokens = isValidCacheTokenCount(usage.cacheWriteTokens)
-      ? usage.cacheWriteTokens
-      : 0;
-    if (
-      isValidCacheTokenCount(usage.cacheReadTokens) ||
-      isValidCacheTokenCount(usage.cacheWriteTokens)
-    ) {
+    const receipt = normalizeTokenReceipt(usage);
+    if (receipt.cacheTelemetryReported) {
       this.summarizationCacheTelemetryObserved = true;
     }
-    const inputTokens = usage.inputTokens || 0;
-    const outputTokens = usage.outputTokens || 0;
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } =
+      receipt;
     const rawCost = isPositiveFiniteNumber(usage.cost) ? usage.cost : 0;
 
     this.inputTokens += inputTokens;
@@ -266,12 +307,9 @@ export class UsageTracker {
     this.cacheWriteTokens += cacheWriteTokens;
     this.summarizationCacheWriteTokens += cacheWriteTokens;
     this.summarizationStepCosts.push({
-      measurementCost: isValidCacheTokenCount(usage.cost)
-        ? usage.cost
-        : undefined,
-      inputReported:
-        usage.inputTokensReported ?? isValidCacheTokenCount(usage.inputTokens),
-      cacheReadReported: isValidCacheTokenCount(usage.cacheReadTokens),
+      measurementCost: isNonNegativeCost(usage.cost) ? usage.cost : undefined,
+      inputReported: receipt.inputReported,
+      cacheReadReported: receipt.cacheReadReported,
       rawCost,
       inputTokens,
       outputTokens,
@@ -308,7 +346,7 @@ export class UsageTracker {
             openRouter.isByok,
           )
         : costDollars;
-    if (isValidCacheTokenCount(resolvedCost)) {
+    if (isNonNegativeCost(resolvedCost)) {
       stepCost.measurementCost = resolvedCost;
     }
     if (!isPositiveFiniteNumber(resolvedCost)) return;

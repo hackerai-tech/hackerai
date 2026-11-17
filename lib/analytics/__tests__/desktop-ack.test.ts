@@ -44,6 +44,10 @@ import {
   DESKTOP_TERMINAL_ERROR_PROPERTIES,
   type DesktopTerminalErrorDiagnostic,
 } from "../desktop-terminal-error-diagnostics";
+import {
+  DESKTOP_INVOCATION_REJECTION_PROPERTIES,
+  type DesktopInvocationRejectionDiagnostic,
+} from "../desktop-invocation-rejection-diagnostics";
 
 jest.mock("../client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
@@ -2504,6 +2508,212 @@ describe("first terminal error kind", () => {
     }).properties!;
     expect(reads).toBe(0);
     expect(sanitized).toEqual({ terminalType: "error" });
+  });
+});
+
+describe("invocation rejection message class", () => {
+  const rejectedKind: DesktopTerminalErrorDiagnostic = {
+    desktop_terminal_error_diagnostic_version: 1,
+    desktop_terminal_error_kind: "invocation_rejected",
+  };
+  const rejection: DesktopInvocationRejectionDiagnostic = {
+    desktop_invocation_rejection_version: 1,
+    desktop_invocation_rejection_reason: "authorization_not_approved",
+    desktop_invocation_rejection_adapter: "authorized_native",
+  };
+  const terminalError = {
+    ...result,
+    terminalType: "error" as const,
+    terminalExitCode: null,
+  };
+  const rejectionKeys = (properties: Record<string, unknown> = {}) =>
+    Object.keys(properties).filter((key) =>
+      DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key),
+    );
+  const settle = (settlement: Record<string, unknown>) => {
+    capture.mockClear();
+    telemetry.start({ connectionId: "connection", commandId: "command" })(
+      settlement as never,
+    );
+    return capture.mock.calls.find(
+      ([event]) => event.event === "desktop_ack_command_settled",
+    )?.[0];
+  };
+  const sanitize = (properties: Record<string, unknown>) =>
+    sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: { ...properties, $current_url: "PRIVATE URL" },
+      $set: { email: "PRIVATE" },
+    }).properties!;
+
+  it("keeps an unselected unknown class through capture and before_send", () => {
+    const unselected = {
+      ...rejection,
+      desktop_invocation_rejection_reason: "unknown",
+      desktop_invocation_rejection_adapter: "not_selected",
+    };
+    const final = settle({
+      ...terminalError,
+      terminalError: rejectedKind,
+      invocationRejection: unselected,
+    });
+    expect(final?.properties).toMatchObject(unselected);
+    expect(sanitize(final!.properties)).toMatchObject({
+      ...rejectedKind,
+      ...unselected,
+    });
+  });
+
+  it("keeps the class beside the rejection kind through capture and before_send", () => {
+    const final = settle({
+      ...terminalError,
+      terminalError: rejectedKind,
+      invocationRejection: { ...rejection, message: "PRIVATE" },
+    });
+    expect(final?.properties).toMatchObject({
+      ...rejectedKind,
+      ...rejection,
+      terminalType: "error",
+    });
+    const sanitized = sanitize(final!.properties);
+    expect(sanitized).toMatchObject({ ...rejectedKind, ...rejection });
+    expect(rejectionKeys(sanitized)).toHaveLength(3);
+    expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    [
+      "a native timeout kind",
+      {
+        terminalError: {
+          ...rejectedKind,
+          desktop_terminal_error_kind: "native_command_timeout",
+        },
+      },
+    ],
+    ["no kind", { terminalError: undefined }],
+    [
+      "an invalid kind",
+      {
+        terminalError: {
+          ...rejectedKind,
+          desktop_terminal_error_diagnostic_version: 2,
+        },
+      },
+    ],
+    ["an exit", { terminalType: "exit", terminalExitCode: 1 }],
+  ])("never attaches the class to %s", (_case, change) => {
+    const settlement = {
+      ...terminalError,
+      terminalError: rejectedKind,
+      invocationRejection: rejection,
+      ...change,
+    };
+    const final = settle(settlement);
+    expect(rejectionKeys(final!.properties)).toEqual([]);
+    const { terminalError: kind, invocationRejection, ...rest } = settlement;
+    const sanitized = sanitize({
+      ...rest,
+      ...(kind as object),
+      ...(invocationRejection as object),
+    });
+    expect(rejectionKeys(sanitized)).toEqual([]);
+  });
+
+  it("never attaches the class to a start or summary", () => {
+    for (const event of [
+      "desktop_ack_command_started",
+      "desktop_ack_delivery_summary",
+    ])
+      expect(
+        rejectionKeys(
+          sanitizeDesktopAckEvent({
+            event,
+            properties: {
+              terminalType: "error",
+              ...rejectedKind,
+              ...rejection,
+            },
+          }).properties,
+        ),
+      ).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["a missing reason", { desktop_invocation_rejection_reason: undefined }],
+    ["an unsupported version", { desktop_invocation_rejection_version: 2 }],
+    ["a private reason", { desktop_invocation_rejection_reason: "PRIVATE" }],
+    [
+      "a raw native message",
+      {
+        desktop_invocation_rejection_reason: "Failed to spawn: PRIVATE",
+      },
+    ],
+    [
+      "an authorization reason from a legacy command",
+      { desktop_invocation_rejection_adapter: "published_legacy_native" },
+    ],
+    [
+      "the file loopback adapter",
+      { desktop_invocation_rejection_adapter: "legacy_loopback" },
+    ],
+    [
+      "a native class without a selected command set",
+      { desktop_invocation_rejection_adapter: "not_selected" },
+    ],
+  ])("drops only the class group for %s", (_case, change) => {
+    const invalid = { ...rejection, ...change };
+    const final = settle({
+      ...terminalError,
+      terminalError: rejectedKind,
+      invocationRejection: invalid,
+    });
+    expect(final?.properties).toMatchObject(rejectedKind);
+    expect(rejectionKeys(final!.properties)).toEqual([]);
+    expect(
+      sanitize({ terminalType: "error", ...rejectedKind, ...invalid }),
+    ).toEqual({ terminalType: "error", ...rejectedKind });
+    expect(JSON.stringify(final)).not.toContain("PRIVATE");
+  });
+
+  it("never runs a class accessor or proxy trap at capture or before_send", () => {
+    let reads = 0;
+    const withAccessor = (target: Record<string, unknown>) =>
+      Object.defineProperty(target, "desktop_invocation_rejection_reason", {
+        enumerable: true,
+        get() {
+          reads++;
+          return "PRIVATE";
+        },
+      });
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    for (const invocationRejection of [
+      withAccessor({ ...rejection }),
+      new Proxy(
+        { ...rejection },
+        { get: fail, getOwnPropertyDescriptor: fail },
+      ),
+    ]) {
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection,
+      });
+      expect(final?.properties).toMatchObject(rejectedKind);
+      expect(rejectionKeys(final!.properties)).toEqual([]);
+    }
+    const sanitized = sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: withAccessor({
+        terminalType: "error",
+        ...rejectedKind,
+        ...rejection,
+      }),
+    }).properties!;
+    expect(reads).toBe(0);
+    expect(sanitized).toEqual({ terminalType: "error", ...rejectedKind });
   });
 });
 
