@@ -10,7 +10,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { WritableStream } from "node:stream/web";
 import ts from "typescript";
-import { streamText, type LanguageModel, type UIMessage } from "ai";
+import {
+  readUIMessageStream,
+  stepCountIs,
+  streamText,
+  tool,
+  type LanguageModel,
+  type UIMessage,
+} from "ai";
+import { z } from "zod";
 import {
   isTrustedBrowserHandoffReadFailure,
   rethrowBrowserHandoffReadError,
@@ -678,6 +686,113 @@ const askSettlement = (outcomeGuard: string, firstDeclared: string) => {
   }).outputText;
 };
 
+type UiRunMode =
+  | "local"
+  | "local_wrapped"
+  | "local_after_tool"
+  | "provider_disconnect"
+  | "success";
+
+/**
+ * Run the real SDK through its UI message stream and record Ask's stream state
+ * the way the shared runner does: its onError stores the error, and only the
+ * SDK onFinish sets the finish reason. `priorFinishReason` is state left from
+ * before this attempt, which a failed step must not be mistaken for.
+ */
+const runThroughUi = async (mode: UiRunMode, priorFinishReason?: string) => {
+  const read = Object.freeze(disconnect());
+  const state: { providerError: unknown; streamFinishReason?: string } = {
+    providerError: undefined,
+    streamFinishReason: priorFinishReason,
+  };
+  const record: {
+    modelCalls: number;
+    sdkFinishCalled: boolean;
+    ui?: { isAborted: boolean };
+  } = { modelCalls: 0, sdkFinishCalled: false };
+  const parts = (...chunks: unknown[]) => ({
+    stream: new ReadableStream({
+      start(controller) {
+        chunks.forEach((chunk) => controller.enqueue(chunk));
+        controller.close();
+      },
+    }),
+  });
+  const finish = (reason: string) => ({
+    type: "finish",
+    finishReason: { unified: reason, raw: reason },
+    usage: {
+      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 1, text: 1, reasoning: 0 },
+    },
+  });
+  const doStream = jest.fn(async () => {
+    record.modelCalls++;
+    if (mode === "provider_disconnect")
+      return parts({ type: "error", error: disconnect() });
+    if (mode === "local_after_tool")
+      return parts(
+        {
+          type: "tool-call",
+          toolCallId: "saved-once",
+          toolName: "save",
+          input: "{}",
+        },
+        finish("tool-calls"),
+      );
+    return parts(
+      { type: "text-start", id: "answer" },
+      { type: "text-delta", id: "answer", delta: "Done." },
+      { type: "text-end", id: "answer" },
+      finish("stop"),
+    );
+  });
+  const result = streamText({
+    model: model(doStream),
+    prompt: "fixture",
+    tools: {
+      save: tool({ inputSchema: z.object({}), execute: async () => ({}) }),
+    },
+    stopWhen: stepCountIs(3),
+    maxRetries: 0,
+    prepareStep: async ({ stepNumber }) => {
+      const failingStep =
+        mode === "local" || mode === "local_wrapped"
+          ? 0
+          : mode === "local_after_tool"
+            ? 1
+            : -1;
+      if (stepNumber !== failingStep) return undefined;
+      if (mode === "local_wrapped") {
+        try {
+          rethrowBrowserHandoffReadError(read);
+        } catch (error) {
+          throw new Error("step preparation failed", { cause: error });
+        }
+      }
+      rethrowBrowserHandoffReadError(read);
+    },
+    onError: ({ error }) => {
+      state.providerError = error;
+    },
+    onFinish: ({ finishReason }) => {
+      record.sdkFinishCalled = true;
+      state.streamFinishReason = finishReason;
+    },
+  });
+  let chunks = 0;
+  for await (const message of readUIMessageStream({
+    stream: result.toUIMessageStream({
+      onFinish: ({ isAborted }) => {
+        record.ui = { isAborted };
+      },
+    }),
+    onError: () => {},
+  }))
+    chunks += message ? 1 : 0;
+  return { state, record, read, chunks };
+};
+
 describe.each([
   // Primary leg: Stop normally clears the finish reason before settlement.
   ["primary", askSettlement("isAborted", "finalProviderContentBlocked")],
@@ -714,17 +829,73 @@ describe.each([
     return { outcome, chatLogger };
   };
 
+  // [case, mode, state before the attempt, provider calls, SDK onFinish,
+  //  finish reason Ask observes]. None is "error": a first-step failure never
+  // reaches the SDK onFinish, and a later one reports the completed step's.
   it.each([
-    ["direct", () => local],
-    ["wrapped", () => wrappedLocal],
-  ])(
-    "reports a terminal %s local read as an error with its original error",
-    (_kind, failure) => {
-      const { outcome, chatLogger } = settle(failure(), "error");
+    ["a first-step", "local", undefined, 0, false, undefined],
+    ["a wrapped first-step", "local_wrapped", undefined, 0, false, undefined],
+    ["a stale-reason first-step", "local", "stop", 0, false, "stop"],
+    ["a post-tool", "local_after_tool", undefined, 1, true, "tool-calls"],
+  ] as const)(
+    "reports %s local read delivered by the SDK UI stream as an error",
+    async (
+      _kind,
+      mode,
+      priorFinishReason,
+      modelCalls,
+      sdkFinishCalled,
+      observedFinishReason,
+    ) => {
+      const { state, record, read } = await runThroughUi(
+        mode,
+        priorFinishReason,
+      );
+      // No provider call for the failed step and a non-aborted UI finish.
+      expect(record).toEqual({
+        modelCalls,
+        sdkFinishCalled,
+        ui: { isAborted: false },
+      });
+      expect(state.streamFinishReason).toBe(observedFinishReason);
+      expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+        true,
+      );
+      if (mode !== "local_wrapped") expect(state.providerError).toBe(read);
+
+      const { outcome, chatLogger } = settle(
+        state.providerError,
+        state.streamFinishReason,
+        record.ui!.isAborted,
+      );
       expect(outcome).toBe("error");
       expect(chatLogger.emitSuccess).not.toHaveBeenCalled();
       expect(chatLogger.emitUnexpectedError).toHaveBeenCalledTimes(1);
-      expect(chatLogger.emitUnexpectedError.mock.calls[0][0]).toBe(failure());
+      expect(chatLogger.emitUnexpectedError.mock.calls[0][0]).toBe(
+        state.providerError,
+      );
+    },
+  );
+
+  it.each([
+    ["an ordinary answer", "success"],
+    ["a genuine provider disconnect", "provider_disconnect"],
+  ] as const)(
+    "keeps %s from the SDK UI stream on its existing accounting",
+    async (_kind, mode) => {
+      const { state, record } = await runThroughUi(mode);
+      expect(record.modelCalls).toBe(1);
+      expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+        false,
+      );
+      const { outcome, chatLogger } = settle(
+        state.providerError,
+        state.streamFinishReason,
+        record.ui!.isAborted,
+      );
+      expect(outcome).toBe("success");
+      expect(chatLogger.emitUnexpectedError).not.toHaveBeenCalled();
+      expect(chatLogger.emitSuccess).toHaveBeenCalledTimes(1);
     },
   );
 

@@ -2693,9 +2693,10 @@ export const createChatHandler = () => {
                                   );
                                 // A local browser safety read can fail during a
                                 // fallback leg; it is terminal, never success.
+                                // A failed prepareStep never sets an "error"
+                                // finish reason, so the error itself decides.
                                 const retryTerminalTrustedLocalReadError =
                                   !retryAborted &&
-                                  state.streamFinishReason === "error" &&
                                   isTrustedBrowserHandoffReadFailure(
                                     state.providerError,
                                   );
@@ -3104,9 +3105,10 @@ export const createChatHandler = () => {
                       );
                     // A failed local browser safety read is never recovered
                     // above, so its terminal error cannot be reported as success.
+                    // A failed prepareStep never sets an "error" finish reason
+                    // (it is unset or a completed step's), so the error decides.
                     const terminalTrustedLocalReadError =
                       !isAborted &&
-                      state.streamFinishReason === "error" &&
                       isTrustedBrowserHandoffReadFailure(state.providerError);
                     const outcome = isAborted
                       ? "aborted"
