@@ -237,6 +237,85 @@ describe("error redaction", () => {
     expect(redactSensitiveErrorMessage(diagnostic)).toBe(diagnostic);
   });
 
+  it("redacts credential-named command-line flag assignments", () => {
+    const command =
+      "Command failed: scanner --target example.test --api-key=FAKE_API_KEY -token=FAKE_SHORT_TOKEN --password='prefix\\'FAKE_PASSWORD' --openai-api-key=\"FAKE PROVIDER KEY\" --client_secret=FAKE_CLIENT_SECRET --max_tokens=4096 --tokenCount=42 --secretLength=12 exited 1";
+    const expected =
+      'Command failed: scanner --target example.test --api-key="[Redacted]" -token="[Redacted]" --password="[Redacted]" --openai-api-key="[Redacted]" --client_secret="[Redacted]" --max_tokens=4096 --tokenCount=42 --secretLength=12 exited 1';
+    expect(redactSensitiveErrorMessage(command)).toBe(expected);
+    expect(redactSensitiveErrorMessage(expected)).toBe(expected);
+    expect(stringifyRedactedError(new Error(command))).toBe(expected);
+  });
+
+  it.each([
+    '{"--api-key":"FAKE_CREDENTIAL","--max_tokens":4096}',
+    "'--github-token'='FAKE_CREDENTIAL' --tokenCount=42",
+  ])("redacts quoted credential-named flag fields in %s", (message) => {
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).not.toContain("FAKE_CREDENTIAL");
+    expect(redacted).toMatch(/--(?:api-key|github-token)/);
+    expect(redacted).toMatch(/--(?:max_tokens":4096|tokenCount=42)/);
+    expect(redactSensitiveErrorMessage(redacted)).toBe(redacted);
+  });
+
+  it("redacts credential-named flag properties in structured errors", () => {
+    const redacted = stringifyRedactedError({
+      "--token": "FAKE_CREDENTIAL",
+      "--tokenCount": 42,
+    });
+    expect(JSON.parse(redacted)).toEqual({
+      "--token": "[Redacted]",
+      "--tokenCount": 42,
+    });
+  });
+
+  it.each(["token", "--token"])(
+    "keeps structured errors with %s= assignments parseable",
+    (flag) => {
+      const redacted = stringifyRedactedError({
+        status: 401,
+        args: ["scan", `${flag}=FAKE_CREDENTIAL`, "--max_tokens=4096"],
+        command: `tool ${flag}=FAKE_CREDENTIAL --tokenCount=42`,
+      });
+      expect(redacted).not.toContain("FAKE_CREDENTIAL");
+      expect(JSON.parse(redacted)).toEqual({
+        status: 401,
+        args: ["scan", `${flag}="[Redacted]"`, "--max_tokens=4096"],
+        command: `tool ${flag}="[Redacted]" --tokenCount=42`,
+      });
+    },
+  );
+
+  it("keeps whole-value protections for structured errors", () => {
+    const redacted = stringifyRedactedError({
+      token: 12345,
+      NODE_ENV: "production",
+      DATABASE_CONFIG: { host: "fixture-host" },
+      rejected: "Provider rejected sk-proj-SYNTHETIC_provider_key_012345",
+      status: 500,
+    });
+    expect(JSON.parse(redacted)).toEqual({
+      token: "[Redacted]",
+      NODE_ENV: "[Redacted]",
+      DATABASE_CONFIG: "[Redacted]",
+      rejected: "Provider rejected [Redacted]",
+      status: 500,
+    });
+  });
+
+  it("redacts a flag after a long dash-separated diagnostic", () => {
+    // Dash-separated words put a word boundary beside every dash, so this
+    // exercises the left-boundary guard on the credential-field key.
+    const prefix = "segment-".repeat(25_000);
+    const dashes = "-".repeat(50_000);
+    const message = `${prefix} --api-key=FAKE_CREDENTIAL ${dashes}tail --tokenCount=42`;
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).not.toContain("FAKE_CREDENTIAL");
+    expect(redacted).toBe(
+      `${prefix} --api-key="[Redacted]" ${dashes}tail --tokenCount=42`,
+    );
+  });
+
   it("redacts nested serialized credentials without losing safe fields", () => {
     const value = {
       status: 401,
