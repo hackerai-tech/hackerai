@@ -51,27 +51,64 @@ const getUnknownTitleErrorKind = (
   }
 };
 
+/**
+ * True when a UTF-16 cut at `index` would separate a valid surrogate pair.
+ * Already-unpaired surrogates in the input are left as they are.
+ */
+const splitsSurrogatePair = (text: string, index: number): boolean => {
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return (
+    before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+  );
+};
+
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
 
   const halfLength = Math.floor((maxLength - 3) / 2); // -3 for "..."
-  const start = text.substring(0, halfLength);
-  const end = text.substring(text.length - halfLength);
+  // Shrink each kept edge rather than splitting an emoji, staying within budget.
+  let headEnd = halfLength;
+  if (splitsSurrogatePair(text, headEnd)) headEnd -= 1;
+  let tailStart = text.length - halfLength;
+  if (splitsSurrogatePair(text, tailStart)) tailStart += 1;
 
-  return `${start}...${end}`;
+  return `${text.substring(0, headEnd)}...${text.substring(tailStart)}`;
+};
+
+const TITLE_QUOTES = new Set(['"', "'", "`"]);
+
+/** Remove one quote pair only when it unambiguously wraps the whole title. */
+const unwrapQuotedTitle = (title: string): string => {
+  // Delimiters with no content are not a title; let the caller fall back.
+  if (/^["'`\s]*$/.test(title)) return "";
+
+  const quote = title[0];
+  if (
+    title.length < 2 ||
+    !TITLE_QUOTES.has(quote) ||
+    title[title.length - 1] !== quote
+  ) {
+    return title;
+  }
+
+  const inner = title.slice(1, -1);
+  // `"foo" and "bar"` has matching ends but no single wrapper.
+  return inner.includes(quote) ? title : inner;
 };
 
 const normalizeTitle = (title: unknown): string | undefined => {
   if (typeof title !== "string") return undefined;
 
-  const normalized = title
-    .replace(/^["'`]+|["'`]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = unwrapQuotedTitle(
+    title.replace(/\s+/g, " ").trim(),
+  ).trim();
 
   if (!normalized) return undefined;
 
-  return normalized.substring(0, MAX_GENERATED_TITLE_LENGTH);
+  let end = MAX_GENERATED_TITLE_LENGTH;
+  if (splitsSurrogatePair(normalized, end)) end -= 1;
+  return normalized.substring(0, end);
 };
 
 const fallbackTitleFromMessage = (message: string): string | undefined => {

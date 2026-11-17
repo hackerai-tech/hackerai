@@ -337,6 +337,119 @@ describe("generateTitleFromUserMessage", () => {
     },
   );
 
+  describe("UTF-16 scalar boundaries", () => {
+    const ROCKET = "\u{1F680}";
+
+    const rejectTitleModel = () =>
+      mockGenerateText.mockRejectedValue(
+        new APICallError({
+          message: "provider unavailable",
+          url: "https://provider.example/",
+          requestBodyValues: {},
+          statusCode: 503,
+        }),
+      );
+
+    it.each([
+      [
+        "drops an emoji that would be split by the title limit",
+        `${"a".repeat(99)}${ROCKET}`,
+        "a".repeat(99),
+      ],
+      [
+        "keeps an emoji that ends exactly at the title limit",
+        `${"a".repeat(98)}${ROCKET}`,
+        `${"a".repeat(98)}${ROCKET}`,
+      ],
+      ["keeps the ASCII limit", "a".repeat(150), "a".repeat(100)],
+      ["keeps the BMP limit", "é".repeat(150), "é".repeat(100)],
+    ])(
+      "%s in the delivered and persisted fallback title",
+      async (_name, message, expected) => {
+        rejectTitleModel();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
+        const persist = jest.fn(async () => undefined);
+
+        try {
+          const title = await generateTitleFromUserMessageWithWriter(
+            makeMessage(message),
+            writer,
+            persist,
+          );
+
+          expect(title).toBe(expected);
+          expect(title!.isWellFormed()).toBe(true);
+          expect(title!.length).toBeLessThanOrEqual(100);
+          expect(writer.write).toHaveBeenCalledWith({
+            type: "data-title",
+            data: { chatTitle: expected },
+            transient: true,
+          });
+          expect(persist).toHaveBeenCalledWith(expected);
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      ["head", `${"a".repeat(3997)}${ROCKET}${"b".repeat(5000)}`],
+      ["tail", `${"a".repeat(5000)}${ROCKET}${"b".repeat(3997)}`],
+    ])(
+      "keeps the title prompt well-formed when an emoji crosses the %s truncation boundary",
+      async (_edge, message) => {
+        mockGenerateText.mockResolvedValue({ output: { title: "Long Input" } });
+
+        await generateTitleFromUserMessage(makeMessage(message));
+
+        const generateTextOptions = mockGenerateText.mock.calls[0][0] as {
+          messages: [{ content: string }];
+        };
+        const prompt = generateTextOptions.messages[0].content;
+        const context = prompt.split("### User Message:\n")[1];
+        expect(message.isWellFormed()).toBe(true);
+        expect(prompt.isWellFormed()).toBe(true);
+        expect(context).toContain("...");
+        expect(context.length).toBeLessThanOrEqual(8000);
+        expect(context.startsWith("a".repeat(3997))).toBe(true);
+        expect(context.endsWith("b".repeat(3997))).toBe(true);
+      },
+    );
+  });
+
+  describe("generated title quote cleanup", () => {
+    it.each([
+      ["Explain `curl -I`", "Explain `curl -I`"],
+      ['Rename "foo" to "bar"', 'Rename "foo" to "bar"'],
+      ['"foo" Variable Naming', '"foo" Variable Naming'],
+      ["'sudo' Permission Errors", "'sudo' Permission Errors"],
+      ['"Debug login"', "Debug login"],
+      ["'Debug login'", "Debug login"],
+      ["`Debug login`", "Debug login"],
+      ['"Debug the user\'s login"', "Debug the user's login"],
+      ["User's Login Bug", "User's Login Bug"],
+      ['"foo" and "bar"', '"foo" and "bar"'],
+    ])("normalizes %j to %j", async (generated, expected) => {
+      mockGenerateText.mockResolvedValue({ output: { title: generated } });
+
+      await expect(
+        generateTitleFromUserMessage(makeMessage("title quote check")),
+      ).resolves.toBe(expected);
+    });
+
+    it.each(['"', "'", "`", '""', '"""', "``` `"])(
+      "falls back to the user message when the generated title is only quote delimiters %j",
+      async (generated) => {
+        mockGenerateText.mockResolvedValue({ output: { title: generated } });
+
+        await expect(
+          generateTitleFromUserMessage(makeMessage("title quote check")),
+        ).resolves.toBe("title quote check");
+      },
+    );
+  });
+
   it("persists the generated title after streaming it to the header", async () => {
     mockGenerateText.mockResolvedValue({
       output: { title: "Sidebar Title Update" },
