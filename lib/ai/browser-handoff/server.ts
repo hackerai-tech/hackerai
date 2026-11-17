@@ -352,6 +352,29 @@ export function browserSessionReadFailureContext(error: unknown) {
 
 const SESSION_NAME_RE = /^[^/\u0000\r\n]{1,80}$/;
 
+type SandboxIdentityGuardReason =
+  "not_running" | "user_mismatch" | "cluster_mismatch" | "template_mismatch";
+
+// Keyed only by the identity guard's own rejection; holds the closed reason,
+// never the compared metadata or the session's identifiers.
+const sandboxIdentityGuardFailures = new WeakMap<
+  object,
+  SandboxIdentityGuardReason
+>();
+
+/** The first identity guard that refused this rejection, else nothing; never throws. */
+export function browserSandboxIdentityFailureContext(error: unknown) {
+  const reason =
+    typeof error === "object" && error !== null
+      ? sandboxIdentityGuardFailures.get(error)
+      : undefined;
+  if (reason === undefined) return undefined;
+  return {
+    sandbox_identity_guard_version: 1,
+    sandbox_identity_guard_reason: reason,
+  } as const;
+}
+
 /** Connect only to the exact running, user-owned cloud workspace. */
 export async function connectBrowserSandbox(session: BrowserSessionLocation) {
   const region = session.triggerRegion as TriggerRunRegion | null;
@@ -367,17 +390,25 @@ export async function connectBrowserSandbox(session: BrowserSessionLocation) {
     console.warn("[browser-preview] sandbox lookup unavailable");
     throw new BrowserPreviewUnavailable("disconnected");
   }
-  if (
-    info.state !== "running" ||
-    info.metadata?.userID !== session.userId ||
-    // Older reusable sandboxes predate cluster metadata. The selected E2B
-    // account and endpoint still bind discovery to the intended region.
-    (info.metadata?.e2bCluster != null &&
-      info.metadata.e2bCluster !== cluster.cluster) ||
-    info.metadata?.template !== cluster.template
-  ) {
+  // The first failing guard in the original short-circuit order, with the same reads.
+  const mismatch: SandboxIdentityGuardReason | undefined =
+    info.state !== "running"
+      ? "not_running"
+      : info.metadata?.userID !== session.userId
+        ? "user_mismatch"
+        : // Older reusable sandboxes predate cluster metadata. The selected E2B
+          // account and endpoint still bind discovery to the intended region.
+          info.metadata?.e2bCluster != null &&
+            info.metadata.e2bCluster !== cluster.cluster
+          ? "cluster_mismatch"
+          : info.metadata?.template !== cluster.template
+            ? "template_mismatch"
+            : undefined;
+  if (mismatch !== undefined) {
     console.warn("[browser-preview] sandbox identity mismatch");
-    throw new BrowserPreviewUnavailable("disconnected");
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    sandboxIdentityGuardFailures.set(unavailable, mismatch);
+    throw unavailable;
   }
   return Sandbox.connect(session.sandboxId, {
     ...options,

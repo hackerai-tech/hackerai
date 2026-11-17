@@ -114,6 +114,7 @@ jest.mock("@/lib/posthog/server", () => ({
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
   browserRelayStopFailureContext: (error: unknown) => mockStopContext(error),
   browserRelayRenewFailureContext: (error: unknown) => mockRenewContext(error),
+  browserSandboxIdentityFailureContext: () => undefined,
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
       ? {
