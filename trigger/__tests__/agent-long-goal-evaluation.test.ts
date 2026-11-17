@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 
 // Exercise the actual end-of-turn settlement guard without starting a worker.
 const source = ts.createSourceFile(
@@ -42,7 +43,8 @@ function setup({
   const deps = {
     activeGoal: goal ? {} : undefined,
     userStopSignal: controller,
-    state: { streamFinishReason: reason },
+    isTrustedBrowserHandoffReadFailure,
+    state: { streamFinishReason: reason, providerError: undefined },
     getGoal: jest.fn(async () => ({
       activeRunId: latestRun,
       state: latestState,

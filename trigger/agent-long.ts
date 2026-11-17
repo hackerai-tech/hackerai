@@ -3635,9 +3635,12 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
+                // A failed local safety read ended this leg; a stale step
+                // finish reason must not admit it to completion judging.
                 if (
                   activeGoal &&
                   !userStopSignal.signal.aborted &&
+                  !isTrustedBrowserHandoffReadFailure(state.providerError) &&
                   ["stop", "tool-calls"].includes(
                     state.streamFinishReason ?? "",
                   )

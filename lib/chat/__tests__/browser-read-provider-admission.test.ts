@@ -1166,3 +1166,147 @@ describe.each(Object.keys(synthesisSites) as SynthesisSite[])(
     });
   },
 );
+
+// --- Agent goal completion judging during final usage settlement ----------
+
+describe("Agent final usage settlement with an active goal", () => {
+  // The whole actual helper shared by the primary, fallback and final legs.
+  // External I/O is stubbed; the free-plan branch is the settlement exercised.
+  const deductAccumulatedUsage = compile(
+    agent,
+    declaration(agent, "deductAccumulatedUsage").initializer!,
+  );
+
+  const settle = (state: object, signal = running) => {
+    const getGoal = jest.fn(async () => ({
+      activeRunId: "run",
+      state: "running",
+    }));
+    const judgeGoalCompletion = jest.fn(async () => ({
+      verdict: "done",
+      reason: "Criteria met.",
+    }));
+    const recordFreeMonthlyCost = jest.fn(async () => undefined);
+    const releaseFreeRunLockOnce = jest.fn(async () => undefined);
+    const noop = () => undefined;
+    const run = deductAccumulatedUsage({
+      hasRecordedUsage: false,
+      goalJudgePromise: undefined,
+      goalJudgment: undefined,
+      activeGoal: { id: "goal" },
+      userStopSignal: signal,
+      isTrustedBrowserHandoffReadFailure,
+      state,
+      getGoal,
+      judgeGoalCompletion,
+      chatId: "chat",
+      userId: "user",
+      ctx: { run: { id: "run" } },
+      chatLogger: undefined,
+      goalFinalMessages: [],
+      goalFinalMessageId: "assistant",
+      goalRunMessageIds: new Set(["assistant"]),
+      messagesForAccounting: [],
+      titlePromise: Promise.resolve(),
+      getSandboxSessionUsage: async () => ({ totalCostDollars: 0 }),
+      getTriggerRunUsage: () => ({ totalCostDollars: 0 }),
+      usageTracker: {
+        providerCost: 0,
+        nonModelCost: 0,
+        hasUsage: true,
+        usageSettlementId: "settlement",
+        createUsageCostRecord: () => ({ costDollars: 0.01 }),
+        measurementProperties: () => ({}),
+      },
+      paidDailyFreeAllowanceReservation: undefined,
+      subscription: "free",
+      recordFreeMonthlyCost,
+      freeUsageSubject: "user",
+      resolveServedModelForCostAccounting: () => "model",
+      runReporting: { captureCost: jest.fn() },
+      captureUsageCost: noop,
+      usageSettlementState: null,
+      usageSettlementSequence: 0,
+      localConnectionLost: () => false,
+      releaseFreeRunLockOnce,
+      selectedModel: "model",
+      selectedModelOverride: undefined,
+      configuredModelId: "model",
+      activeModelName: "model",
+      mode: "agent",
+      rateLimitInfo: {},
+      posthog: undefined,
+      organizationId: undefined,
+      endpoint: "/api/agent",
+      agentPermissionMode: undefined,
+      analyticsRequestContext: undefined,
+      routingExperimentContext: undefined,
+    }) as () => Promise<void>;
+    return {
+      run,
+      getGoal,
+      judgeGoalCompletion,
+      recordFreeMonthlyCost,
+      releaseFreeRunLockOnce,
+    };
+  };
+
+  it.each([
+    ["a stale-stop tool step", "local_after_tool_stop", undefined, "stop"],
+    ["a tool-calls step", "local_after_tool", undefined, "tool-calls"],
+    // Stale-state fixture: a reason already in state before the first step.
+    ["a wrapped first step", "local_wrapped", "stop", "stop"],
+    ["a first step", "local", undefined, undefined],
+  ] as const)(
+    "does not judge a goal after a local read following %s, but still settles once",
+    async (_kind, mode, priorFinishReason, finishReason) => {
+      const { state } = await runThroughUi(mode, priorFinishReason);
+      expect(state.streamFinishReason).toBe(finishReason);
+      expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+        true,
+      );
+      const settlement = settle(state);
+      await settlement.run();
+      await settlement.run();
+      expect(settlement.getGoal).not.toHaveBeenCalled();
+      expect(settlement.judgeGoalCompletion).not.toHaveBeenCalled();
+      expect(settlement.recordFreeMonthlyCost).toHaveBeenCalledTimes(1);
+      expect(settlement.releaseFreeRunLockOnce).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    ["an ordinary answer", "success"],
+    ["an ordinary empty answer after tools", "empty_after_tool_stop"],
+  ] as const)("still judges %s once and settles once", async (_kind, mode) => {
+    const { state } = await runThroughUi(mode);
+    expect(state.streamFinishReason).toBe("stop");
+    const settlement = settle(state);
+    await settlement.run();
+    await settlement.run();
+    expect(settlement.getGoal).toHaveBeenCalledTimes(1);
+    expect(settlement.judgeGoalCompletion).toHaveBeenCalledTimes(1);
+    expect(settlement.recordFreeMonthlyCost).toHaveBeenCalledTimes(1);
+  });
+
+  it("still judges an unmarked provider error under the same stale stop", async () => {
+    // Stale-state fixture: a genuine SDK-delivered provider failure left with
+    // a previous "stop"; only trusted local reads lose judging admission.
+    const settlement = settle({
+      providerError: providerFailures.provider_disconnect,
+      streamFinishReason: "stop",
+    });
+    await settlement.run();
+    expect(settlement.getGoal).toHaveBeenCalledTimes(1);
+    expect(settlement.judgeGoalCompletion).toHaveBeenCalledTimes(1);
+    expect(settlement.recordFreeMonthlyCost).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not judge after Stop but still settles", async () => {
+    const { state } = await runThroughUi("success");
+    const settlement = settle(state, stopped);
+    await settlement.run();
+    expect(settlement.judgeGoalCompletion).not.toHaveBeenCalled();
+    expect(settlement.recordFreeMonthlyCost).toHaveBeenCalledTimes(1);
+  });
+});
