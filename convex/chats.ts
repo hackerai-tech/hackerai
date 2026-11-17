@@ -571,6 +571,7 @@ export const getChatByIdFromClient = query({
       _creationTime: v.number(),
       id: v.string(),
       title: v.string(),
+      title_manually_edited: v.optional(v.boolean()),
       user_id: v.string(),
       engagement_scope_expected: v.optional(v.boolean()),
       finish_reason: v.optional(v.string()),
@@ -704,6 +705,7 @@ export const getChatById = query({
       _creationTime: v.number(),
       id: v.string(),
       title: v.string(),
+      title_manually_edited: v.optional(v.boolean()),
       user_id: v.string(),
       engagement_scope_expected: v.optional(v.boolean()),
       finish_reason: v.optional(v.string()),
@@ -1013,6 +1015,8 @@ export const updateChatTitle = mutation({
       // Benign race: the user deleted the chat while its title was generating.
       return null;
     }
+    // The user renamed the chat while its title was generating.
+    if (chat.title_manually_edited) return null;
 
     await ctx.db.patch(chat._id, {
       title,
@@ -1114,14 +1118,11 @@ export const updateChat = mutation({
         updateData.last_run_finished_at = Date.now();
       }
 
-      if (args.title !== undefined) {
-        updateData.title = args.title;
-        await syncFindingSourceChatTitle(
-          ctx,
-          chat.user_id,
-          chat.id,
-          args.title,
-        );
+      // A generated title never replaces the owner's rename.
+      const title = chat.title_manually_edited ? undefined : args.title;
+      if (title !== undefined) {
+        updateData.title = title;
+        await syncFindingSourceChatTitle(ctx, chat.user_id, chat.id, title);
       }
 
       if (args.finishReason !== undefined) {
@@ -1146,7 +1147,7 @@ export const updateChat = mutation({
 
       // Bump update_time only when a sidebar-visible field actually changed.
       if (
-        args.title !== undefined ||
+        title !== undefined ||
         args.defaultModelSlug !== undefined ||
         args.sandboxType !== undefined ||
         args.selectedModel !== undefined
@@ -1680,6 +1681,7 @@ export const renameChat = mutation({
       // Update the chat title
       await ctx.db.patch(chat._id, {
         title: trimmedTitle,
+        title_manually_edited: true,
         update_time: Date.now(),
       });
       await syncFindingSourceChatTitle(

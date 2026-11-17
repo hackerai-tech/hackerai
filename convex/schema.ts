@@ -364,6 +364,8 @@ export default defineSchema({
     engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
     title: v.string(),
+    // Set only by the owner's rename; generated titles must not replace it.
+    title_manually_edited: v.optional(v.boolean()),
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
     last_run_finished_at: v.optional(v.number()),
