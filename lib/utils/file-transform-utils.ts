@@ -377,6 +377,9 @@ const validateImageUrl = async (
     };
   } finally {
     clearTimeout(timeoutId);
+    // Release any unread body on early rejection. Aborting is synchronous and
+    // has no effect once the body has been fully consumed.
+    controller.abort();
   }
 };
 
