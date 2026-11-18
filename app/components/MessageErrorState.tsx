@@ -18,6 +18,7 @@ import {
 } from "@/lib/errors";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { useStartNewChat } from "@/app/hooks/useStartNewChat";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAddCreditCtaClick,
@@ -101,8 +102,8 @@ const MessageErrorContent = ({
   onReconnect,
   mode,
 }: MessageErrorStateProps) => {
-  const { subscription, initializeNewChat, setSelectedModel } =
-    useGlobalState();
+  const { subscription, setSelectedModel } = useGlobalState();
+  const startNewChat = useStartNewChat();
   const structuredStreamError = useMemo(
     () => deserializeChatSDKErrorFromStream(error),
     [error],
@@ -576,7 +577,7 @@ const MessageErrorContent = ({
             )}
           </>
         ) : isProviderContentBlocked ? (
-          <Button variant="outline" size="sm" onClick={initializeNewChat}>
+          <Button variant="outline" size="sm" onClick={() => startNewChat()}>
             New Task
           </Button>
         ) : (

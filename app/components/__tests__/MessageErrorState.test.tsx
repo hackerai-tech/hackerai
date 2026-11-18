@@ -23,12 +23,29 @@ import { resetExtraUsageResumeRetryGuardForTests } from "@/lib/chat/extra-usage-
 
 let mockSubscription: "free" | "pro" = "pro";
 const mockSetSelectedModel = jest.fn();
+const mockInitializeNewChat = jest.fn();
+const mockRouterPush = jest.fn();
+
+jest.mock("next/navigation", () => ({
+  ...jest.requireActual<object>("next/navigation"),
+  useRouter: () => ({ push: mockRouterPush }),
+}));
+
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
   useGlobalState: () => ({
     subscription: mockSubscription,
     setSelectedModel: mockSetSelectedModel,
+    initializeNewChat: mockInitializeNewChat,
+  }),
+  useGlobalStateActions: () => ({
+    closeSidebar: jest.fn(),
+    initializeNewChat: mockInitializeNewChat,
+    setActiveProjectId: jest.fn(),
+    setChatSidebarOpen: jest.fn(),
+    setSandboxPreference: jest.fn(),
   }),
 }));
 
@@ -128,7 +145,7 @@ describe("MessageErrorState", () => {
       }
     },
   );
-  it("does not offer same-payload retry for provider content blocks", () => {
+  it("opens a new task route when a provider block prevents retry", () => {
     const error = new ChatSDKError(
       "forbidden:stream",
       "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.",
@@ -156,9 +173,9 @@ describe("MessageErrorState", () => {
       screen.getByText(/Retrying with the same conversation/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^retry$/i })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /new task/i }),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /new task/i }));
+    expect(mockInitializeNewChat).toHaveBeenCalledTimes(1);
+    expect(mockRouterPush).toHaveBeenCalledWith("/");
   });
 
   it("offers a fresh retry for a serialized offline computer error without resuming its finished stream", () => {
