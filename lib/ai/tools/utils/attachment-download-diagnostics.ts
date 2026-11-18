@@ -384,6 +384,17 @@ type RouteContext = {
   attachment_download_route: AttachmentDownloadRoute;
   attachment_download_boundary_present: boolean;
 };
+/** Closed values from the SDK error context that selected a terminal
+ * client_error. `connectionLimitPredicate` is the receiver's existing computed
+ * predicate (a "connection limit" message phrase or code 4503), recorded as
+ * computed; neither input is a receipt of an actual broker connection quota. */
+export type AttachmentCommandReceiverClientError = {
+  type: "connect" | "transport" | "other" | "unavailable";
+  /** SDK codes 0-99 and the public 4503 code; other numbers are `other`. */
+  code: number | "other" | "unavailable";
+  temporary: boolean | "unavailable";
+  connectionLimitPredicate: boolean;
+};
 /** Observed by the command receiver that selected this rejection. Publish
  * completion is the existing dispatch result, not execution or sender receipt. */
 export type AttachmentCommandReceiver = {
@@ -393,6 +404,8 @@ export type AttachmentCommandReceiver = {
   publicationStarted: boolean;
   publishCompleted: boolean;
   firstMessageObserved: boolean;
+  /** Recorded only with reason `client_error`. */
+  clientError?: AttachmentCommandReceiverClientError;
 };
 type ReceiverContext = {
   attachment_command_receiver_version: 1;
@@ -403,6 +416,102 @@ type ReceiverContext = {
   attachment_command_receiver_publish_completed: boolean;
   attachment_command_receiver_first_message_observed: boolean;
 };
+type ReceiverClientErrorContext = {
+  attachment_command_receiver_client_error_version: 1;
+  attachment_command_receiver_client_error_type: AttachmentCommandReceiverClientError["type"];
+  attachment_command_receiver_client_error_code: AttachmentCommandReceiverClientError["code"];
+  attachment_command_receiver_client_error_temporary: AttachmentCommandReceiverClientError["temporary"];
+  attachment_command_receiver_client_error_connection_limit_predicate: boolean;
+};
+const CLIENT_ERROR_KEYS = [
+  "attachment_command_receiver_client_error_version",
+  "attachment_command_receiver_client_error_type",
+  "attachment_command_receiver_client_error_code",
+  "attachment_command_receiver_client_error_temporary",
+  "attachment_command_receiver_client_error_connection_limit_predicate",
+] as const satisfies readonly (keyof ReceiverClientErrorContext)[];
+
+/** An own data property only: never invokes getters or inherited values. */
+function ownDataValue(value: unknown, key: string): unknown {
+  try {
+    if (
+      (typeof value !== "object" || value === null) &&
+      typeof value !== "function"
+    )
+      return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const isClientErrorCode = (
+  code: unknown,
+): code is AttachmentCommandReceiverClientError["code"] =>
+  code === "other" ||
+  code === "unavailable" ||
+  code === 4503 ||
+  (typeof code === "number" &&
+    Number.isInteger(code) &&
+    code >= 0 &&
+    code <= 99);
+
+/** Snapshot an SDK error context's closed type/code/temporary values. Reads
+ * no message or other field, and never throws. */
+export function readAttachmentCommandReceiverClientError(
+  ctx: unknown,
+  connectionLimitPredicate: boolean,
+): AttachmentCommandReceiverClientError {
+  const type = ownDataValue(ctx, "type");
+  const error = ownDataValue(ctx, "error");
+  const code = ownDataValue(error, "code");
+  const temporary = ownDataValue(error, "temporary");
+  return {
+    type:
+      typeof type !== "string"
+        ? "unavailable"
+        : type === "connect" || type === "transport"
+          ? type
+          : "other",
+    code:
+      typeof code !== "number"
+        ? "unavailable"
+        : isClientErrorCode(code)
+          ? code
+          : "other",
+    temporary: typeof temporary === "boolean" ? temporary : "unavailable",
+    connectionLimitPredicate: connectionLimitPredicate === true,
+  };
+}
+
+/** Validate the whole group from own data fields; any invalid value omits it. */
+function clientErrorContext(
+  input: unknown,
+): ReceiverClientErrorContext | undefined {
+  const type = ownDataValue(input, "type");
+  const code = ownDataValue(input, "code");
+  const temporary = ownDataValue(input, "temporary");
+  const predicate = ownDataValue(input, "connectionLimitPredicate");
+  if (
+    (type !== "connect" &&
+      type !== "transport" &&
+      type !== "other" &&
+      type !== "unavailable") ||
+    !isClientErrorCode(code) ||
+    (typeof temporary !== "boolean" && temporary !== "unavailable") ||
+    typeof predicate !== "boolean"
+  )
+    return undefined;
+  return {
+    attachment_command_receiver_client_error_version: 1,
+    attachment_command_receiver_client_error_type: type,
+    attachment_command_receiver_client_error_code: code,
+    attachment_command_receiver_client_error_temporary: temporary,
+    attachment_command_receiver_client_error_connection_limit_predicate:
+      predicate,
+  };
+}
 type SetupContext = {
   attachment_command_setup_version: 1;
   attachment_command_setup_attempt: 1 | 2;
@@ -428,6 +537,7 @@ type AnyFailureContext = Partial<
     ShellContextStageContext &
     RouteContext &
     ReceiverContext &
+    ReceiverClientErrorContext &
     SetupContext &
     DnsFallbackContext
 >;
@@ -453,8 +563,15 @@ export function recordAttachmentCommandReceiver(
   )
     return;
   try {
+    const previous: AnyFailureContext = { ...contexts.get(error) };
+    // A reused rejection must not keep an earlier receiver's client detail.
+    for (const key of CLIENT_ERROR_KEYS) delete previous[key];
+    const clientError =
+      input.reason === "client_error"
+        ? clientErrorContext(input.clientError)
+        : undefined;
     contexts.set(error, {
-      ...contexts.get(error),
+      ...previous,
       attachment_command_receiver_version: 1,
       attachment_command_receiver_reason: input.reason,
       attachment_command_receiver_connected_observed: input.connectedObserved,
@@ -463,6 +580,7 @@ export function recordAttachmentCommandReceiver(
       attachment_command_receiver_publish_completed: input.publishCompleted,
       attachment_command_receiver_first_message_observed:
         input.firstMessageObserved,
+      ...clientError,
     });
   } catch {
     // Optional diagnostics must preserve the original rejection.

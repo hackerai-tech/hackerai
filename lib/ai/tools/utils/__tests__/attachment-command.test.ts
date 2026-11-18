@@ -426,6 +426,84 @@ it("does not invoke an error name getter or invent context for unrelated rejecti
   ).toBeUndefined();
 });
 
+const copyOwner = "directory_and_copy";
+
+it.each([
+  ["foreground", undefined, undefined],
+  ["foreground", { displayName: "", timeoutMs: 30_000 }, undefined],
+  ["signaled", { displayName: "" }, new AbortController().signal],
+  ["signaled", undefined, new AbortController().signal],
+] as const)(
+  "forwards a local-copy owner only to a Centrifugo %s command",
+  async (_mode, options, signal) => {
+    const result = { stdout: "", stderr: "", exitCode: 0 };
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      commands: { run: jest.fn(async () => result) },
+    };
+    await expect(
+      runAttachmentCommand(
+        sandbox as any,
+        "private command",
+        signal,
+        options,
+        copyOwner,
+      ),
+    ).resolves.toBe(result);
+    // Unchanged SDK-facing options; the owner is a separate internal argument.
+    expect(sandbox.commands.run.mock.calls).toEqual([
+      ["private command", signal ? { ...options, signal } : options, copyOwner],
+    ]);
+    // Without an owner, the existing call shape is unchanged.
+    sandbox.commands.run.mockClear();
+    await runAttachmentCommand(
+      sandbox as any,
+      "private command",
+      signal,
+      options,
+    );
+    expect(sandbox.commands.run.mock.calls[0]).toHaveLength(
+      signal || options ? 2 : 1,
+    );
+  },
+);
+
+it.each([false, true])(
+  "keeps the exact E2B command options when a local-copy owner is supplied (signal=%s)",
+  async (withSignal) => {
+    const result = { stdout: "", stderr: "", exitCode: 0 };
+    const handle = {
+      pid: 7,
+      wait: jest.fn(async () => result),
+      disconnect: jest.fn(),
+    };
+    const sandbox = {
+      commands: {
+        run: jest.fn(async () => (withSignal ? handle : result)),
+        kill: jest.fn(),
+      },
+    };
+    const options = { displayName: "", timeoutMs: 30_000 };
+    await expect(
+      runAttachmentCommand(
+        sandbox as any,
+        "private command",
+        withSignal ? new AbortController().signal : undefined,
+        options,
+        copyOwner,
+      ),
+    ).resolves.toEqual(result);
+    expect(sandbox.commands.run.mock.calls).toEqual([
+      [
+        "private command",
+        withSignal
+          ? { ...options, background: true, requestTimeoutMs: 10_000 }
+          : options,
+      ],
+    ]);
+  },
+);
+
 it.each([false, true])(
   "leaves native rejection identity and diagnostics unchanged with signal=%s",
   async (withSignal) => {
