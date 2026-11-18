@@ -1510,15 +1510,6 @@ describe("stream fence origin", () => {
         ["an extra symbol", () => ({ ...ok, [Symbol("x")]: 1 })],
         ["an inherited receipt", () => Object.create(ok)],
         [
-          "a code getter",
-          () =>
-            Object.defineProperty(
-              { version: 1, outcome: "nonzero_exit" },
-              "exitCode",
-              { enumerable: true, get: fail },
-            ),
-        ],
-        [
           "a throwing proxy",
           () =>
             new Proxy(ok, {
@@ -1540,6 +1531,25 @@ describe("stream fence origin", () => {
           expect(parsed).not.toHaveProperty("windowsTaskkill");
         },
       );
+
+      it("never runs a code getter, even one returning a valid status", () => {
+        let gets = 0;
+        const receipt = Object.defineProperty(
+          { version: 1, outcome: "nonzero_exit" },
+          "exitCode",
+          {
+            enumerable: true,
+            get() {
+              gets++;
+              return 1;
+            },
+          },
+        );
+        const parsed = parseNativeStreamFenceRejection(withTaskkill(receipt));
+        expect(parsed).toEqual(treeParsed);
+        expect(parsed).not.toHaveProperty("windowsTaskkill");
+        expect(gets).toBe(0);
+      });
 
       it("never reads a receipt beside another cleanup failure or without one", () => {
         const receipt = watched({ ...ok });

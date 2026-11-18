@@ -4054,6 +4054,85 @@ describe("invocation rejection message class", () => {
               ),
             ).toEqual(Object.keys(stopOrigin));
           });
+
+          describe("final acknowledgement projection", () => {
+            // The coarse fields without the flag; each case supplies its own.
+            const unflagged = Object.fromEntries(
+              Object.entries(coarse).filter(
+                ([key]) => key !== "terminalAcknowledged",
+              ),
+            );
+            const project = (properties: Record<string, unknown>) =>
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties,
+              }).properties!;
+
+            it.each([true, false])(
+              "keeps an ordinary own %s flag and joins only its groups",
+              (flag) => {
+                expect(
+                  project({
+                    ...unflagged,
+                    terminalAcknowledged: flag,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+                ).toEqual({
+                  ...unflagged,
+                  terminalAcknowledged: flag,
+                  ...(flag ? { ...treePairs, ...taskkill } : stopOrigin),
+                });
+              },
+            );
+
+            it.each<[string, () => Record<string, unknown>]>([
+              [
+                "an inherited",
+                () =>
+                  Object.assign(Object.create({ terminalAcknowledged: true }), {
+                    ...unflagged,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+              ],
+              [
+                "a non-enumerable",
+                () =>
+                  Object.defineProperty(
+                    { ...unflagged, ...treePairs, ...taskkill },
+                    "terminalAcknowledged",
+                    { value: true, enumerable: false },
+                  ),
+              ],
+            ])(
+              "omits %s true flag and keeps exactly the origin pair",
+              (_case, properties) => {
+                const projected = project(properties());
+                expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+                expect(projected).not.toHaveProperty("terminalAcknowledged");
+              },
+            );
+
+            it("never runs an accessor true flag and omits it with both receipts", () => {
+              let gets = 0;
+              const accessor = Object.defineProperty(
+                { ...unflagged, ...treePairs, ...taskkill },
+                "terminalAcknowledged",
+                {
+                  enumerable: true,
+                  get() {
+                    gets++;
+                    return true;
+                  },
+                },
+              );
+              const projected = project(accessor);
+              expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+              expect(projected).not.toHaveProperty("terminalAcknowledged");
+              expect(gets).toBe(0);
+            });
+          });
         });
       });
     });

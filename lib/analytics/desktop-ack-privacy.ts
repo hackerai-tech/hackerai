@@ -143,6 +143,23 @@ const SUMMARY_PROPERTIES = new Set([
   "pendingAtEnd",
 ]);
 
+/** One snapshot of `key` as an enumerable own data value, or null for an
+ * absent, inherited, non-enumerable or accessor key. Never runs a getter and
+ * never throws. */
+function enumerableOwnData(
+  source: object,
+  key: string,
+): { readonly value: unknown } | null {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor?.enumerable && "value" in descriptor
+      ? { value: descriptor.value }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Strip SDK enrichment from command details and cross-command summaries. */
 export function sanitizeDesktopAckEvent<
   T extends {
@@ -249,17 +266,25 @@ export function sanitizeDesktopAckEvent<
     // invalid one drops alone, leaving the origin pair. Its Windows taskkill
     // group is read only beside a validated `tree_unconfirmed` cleanup pair,
     // and an invalid one drops alone, leaving both pairs.
+    // The acknowledgement that admits them is the same single snapshot that
+    // is emitted: an inherited or accessor flag never admits them, is never
+    // run and never survives the copy below.
+    const acknowledgement =
+      event.event === "desktop_ack_delivery_summary"
+        ? null
+        : enumerableOwnData(event.properties, "terminalAcknowledged");
     const streamFence = readDesktopStreamFenceDiagnostic(
       event.properties,
       invocationRejection,
       invocationUnknown,
-      event.properties.terminalAcknowledged === true,
+      acknowledgement?.value === true,
     );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
         .filter(
           (key) =>
+            key !== "terminalAcknowledged" &&
             !NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key) &&
@@ -292,6 +317,8 @@ export function sanitizeDesktopAckEvent<
                 isDesktopAckStopSource(value))),
         ),
     );
+    if (acknowledgement)
+      event.properties.terminalAcknowledged = acknowledgement.value;
     // Copy the same validated send snapshot used by the joined receipts.
     if (nativeAuthorizationDiagnostic)
       Object.assign(event.properties, nativeAuthorizationDiagnostic);
