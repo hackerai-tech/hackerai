@@ -6660,6 +6660,9 @@ describe("native authorization send receipt", () => {
       command?: Record<string, unknown>;
       afterStart?: (bridge: DesktopSandboxBridge) => void;
       beforeAck?: (bridge: DesktopSandboxBridge) => Promise<void>;
+      /** The native OS, as Rust's `std::env::consts::OS`; the harness
+       * default is otherwise the cached macOS info. */
+      nativeOs?: string;
     } = {},
   ) {
     const {
@@ -6672,6 +6675,13 @@ describe("native authorization send receipt", () => {
     const calls: NativeCall[] = [];
     mockInvokeHandler = async (cmd, args) => {
       if (cmd === "plugin:app|version") return version;
+      if (options.nativeOs && cmd === "get_desktop_os_info")
+        return {
+          platform: options.nativeOs,
+          arch: "x64",
+          release: "10.0.26100",
+          hostname: "qa-host",
+        };
       if (
         cmd === "execute_authorized_stream_command" ||
         cmd === "execute_stream_command"
@@ -11026,11 +11036,14 @@ describe("native authorization send receipt", () => {
     );
 
     it("never offers or unwraps the opt-in through the compatibility command", async () => {
-      const { calls, replies } = await run(async (call) => {
-        if (call.cmd === "execute_authorized_stream_command")
-          throw "Command execute_authorized_stream_command not found";
-        return Promise.reject(fenced());
-      });
+      const { calls, replies } = await run(
+        async (call) => {
+          if (call.cmd === "execute_authorized_stream_command")
+            throw "Command execute_authorized_stream_command not found";
+          return Promise.reject(fenced());
+        },
+        { nativeOs: "windows" },
+      );
       expect(calls.map((call) => call.cmd)).toEqual([
         "execute_authorized_stream_command",
         "execute_stream_command",
@@ -11038,12 +11051,16 @@ describe("native authorization send receipt", () => {
       expect(calls[0]).toMatchObject({
         includeStreamFenceOrigin: true,
         includeStreamFenceCleanup: true,
+        includeStreamFenceCancelWaitOwnerPhase: true,
       });
       expect(calls[1]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceCleanup");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceWindowsTaskkill");
       expect(calls[1]).not.toHaveProperty(
         "includeStreamFenceWindowsTaskkillRootReport",
+      );
+      expect(calls[1]).not.toHaveProperty(
+        "includeStreamFenceCancelWaitOwnerPhase",
       );
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
@@ -11075,7 +11092,9 @@ describe("native authorization send receipt", () => {
       const identity = jest.mocked(getIdentifiedAnalyticsUserId);
       identity.mockReturnValue(null);
       try {
-        const { calls, replies } = await run(() => reject(stopUnconfirmed));
+        const { calls, replies } = await run(() => reject(stopUnconfirmed), {
+          nativeOs: "windows",
+        });
         expect(calls).toHaveLength(1);
         expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
         expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
@@ -11084,6 +11103,9 @@ describe("native authorization send receipt", () => {
         );
         expect(calls[0]).not.toHaveProperty(
           "includeStreamFenceWindowsTaskkillRootReport",
+        );
+        expect(calls[0]).not.toHaveProperty(
+          "includeStreamFenceCancelWaitOwnerPhase",
         );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: stopUnconfirmed }),
@@ -11640,6 +11662,190 @@ describe("native authorization send receipt", () => {
         );
       });
     });
+
+    describe("cancel wait owner phase", () => {
+      const ownerPhase = { version: 1, phase: "stop_cleanup_tree_pending" };
+      const withPhase = (
+        streamFenceCancelWaitOwnerPhase: unknown,
+        streamFence: unknown = fence,
+      ) => ({ ...fenced(streamFence), streamFenceCancelWaitOwnerPhase });
+      const phaseGroup = {
+        desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+        desktop_stream_fence_cancel_wait_owner_phase:
+          "stop_cleanup_tree_pending",
+      };
+      // The final as the analytics client would enrich and then sanitize it.
+      const sanitized = (properties: Record<string, unknown>) =>
+        sanitizeDesktopAckEvent({
+          ...finals()[0],
+          properties: { ...properties },
+        });
+
+      it("offers Windows Desktop the opt-in and joins its phase to the timeout origin", async () => {
+        const cwd = "C:\\Users\\PRIVATE-CWD\\project";
+        const { calls, replies } = await run(
+          () => Promise.reject(withPhase(ownerPhase)),
+          { version: "0.0.86", nativeOs: "windows", command: { cwd } },
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({
+          cmd: "execute_authorized_stream_command",
+          includeStreamFenceOrigin: true,
+          includeStreamFenceCancelWaitOwnerPhase: true,
+        });
+        expect(Object.keys(calls[0].message as object)).not.toContain(
+          "includeStreamFenceCancelWaitOwnerPhase",
+        );
+        // The product error is the exact original string, as one terminal.
+        expect(sequencedFrames(replies[0])).toEqual([
+          {
+            type: "error",
+            message: stopUnconfirmed,
+            commandId: "auth-send",
+            sequence: 0,
+            outputProtocol: "ack-v1",
+          },
+        ]);
+        const expected = { ...fenceGroup, ...phaseGroup };
+        expect(finals()).toHaveLength(1);
+        const final = finals()[0];
+        expect(final.properties).toMatchObject({
+          outcome: "acknowledged",
+          terminalAcknowledged: true,
+          desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+          ...expected,
+        });
+        expect(fenceKeys(final.properties)).toEqual(Object.keys(expected));
+        const enriched = sanitizeDesktopAckEvent({
+          ...final,
+          properties: {
+            ...final.properties,
+            $current_url: "PRIVATE",
+            cwd,
+            command: "PRIVATE COMMAND",
+            pid: 4242,
+          },
+          $set: { email: "PRIVATE" },
+        });
+        expect(enriched.properties).toMatchObject(expected);
+        expect(fenceKeys(enriched.properties)).toEqual(Object.keys(expected));
+        expect(enriched.properties).not.toHaveProperty("pid");
+        const serialized = JSON.stringify([captures(), enriched]);
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain(authorizationId);
+        expect(serialized).not.toContain(stopUnconfirmed);
+        expect(serialized).not.toContain("streamFence");
+      });
+
+      it.each(["macos", "linux"])(
+        "never offers %s Desktop the opt-in or keeps a phase it never requested",
+        async (nativeOs) => {
+          const { calls, replies } = await run(
+            () => Promise.reject(withPhase(ownerPhase)),
+            { nativeOs },
+          );
+          expect(calls).toHaveLength(1);
+          // The existing opt-ins are unchanged.
+          expect(calls[0]).toMatchObject({
+            includeStreamFenceOrigin: true,
+            includeStreamFenceCleanup: true,
+            includeStreamFenceWindowsTaskkill: true,
+            includeStreamFenceWindowsTaskkillRootReport: true,
+          });
+          expect(calls[0]).not.toHaveProperty(
+            "includeStreamFenceCancelWaitOwnerPhase",
+          );
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: stopUnconfirmed,
+              sequence: 0,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          const properties = finals()[0].properties;
+          expect(properties).toMatchObject(fenceGroup);
+          expect(fenceKeys(properties)).toEqual(Object.keys(fenceGroup));
+          const enriched = sanitized(properties);
+          expect(fenceKeys(enriched.properties)).toEqual(
+            Object.keys(fenceGroup),
+          );
+          const serialized = JSON.stringify([captures(), enriched]);
+          expect(serialized).not.toContain("cancel_wait_owner_phase");
+          expect(serialized).not.toContain("streamFence");
+        },
+      );
+
+      const phaseGetter = () => {
+        const hostile = { version: 1 } as Record<string, unknown>;
+        Object.defineProperty(hostile, "phase", {
+          enumerable: true,
+          get() {
+            throw new Error("PRIVATE");
+          },
+        });
+        return hostile;
+      };
+      // [case, native rejection, expected fence groups]
+      it.each<[string, () => unknown, Record<string, unknown>]>([
+        // A current frontend beside a native app without the sibling.
+        ["an older native app's origin alone", () => fenced(), fenceGroup],
+        [
+          "an unlisted phase",
+          () => withPhase({ version: 1, phase: "PRIVATE" }),
+          fenceGroup,
+        ],
+        [
+          "an extra duration",
+          () => withPhase({ ...ownerPhase, elapsedMs: 15_000 }),
+          fenceGroup,
+        ],
+        [
+          "an extra private field",
+          () => withPhase({ ...ownerPhase, pid: "PRIVATE" }),
+          fenceGroup,
+        ],
+        [
+          "an unsupported version",
+          () => withPhase({ ...ownerPhase, version: 2 }),
+          fenceGroup,
+        ],
+        ["a phase getter", () => withPhase(phaseGetter()), fenceGroup],
+        [
+          "a phase beside another origin",
+          () => withPhase(ownerPhase, { version: 1, origin: "owner_timeout" }),
+          { ...fenceGroup, desktop_stream_fence_origin: "owner_timeout" },
+        ],
+      ])(
+        "keeps the exact message and only the origin for %s on Windows",
+        async (_case, native, expected) => {
+          const { calls, replies } = await run(() => Promise.reject(native()), {
+            nativeOs: "windows",
+          });
+          expect(calls[0]).toMatchObject({
+            includeStreamFenceOrigin: true,
+            includeStreamFenceCancelWaitOwnerPhase: true,
+          });
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: stopUnconfirmed,
+              sequence: 0,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          const properties = finals()[0].properties;
+          expect(properties).toMatchObject(expected);
+          expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+          const enriched = sanitized(properties);
+          expect(fenceKeys(enriched.properties)).toEqual(Object.keys(expected));
+          const serialized = JSON.stringify([captures(), enriched]);
+          expect(serialized).not.toContain("PRIVATE");
+          expect(serialized).not.toContain("streamFence");
+          expect(serialized).not.toContain("cancel_wait_owner_phase");
+        },
+      );
+    });
   });
 
   it.each<
@@ -11693,6 +11899,7 @@ describe("native authorization send receipt", () => {
         "includeStreamFenceCleanup",
         "includeStreamFenceWindowsTaskkill",
         "includeStreamFenceWindowsTaskkillRootReport",
+        "includeStreamFenceCancelWaitOwnerPhase",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

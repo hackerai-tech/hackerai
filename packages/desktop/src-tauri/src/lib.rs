@@ -1428,6 +1428,9 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // Only literal `true`, beside all three opt-ins above, upgrades that
     // taskkill failure to its v2 receipt with the closed root report.
     include_stream_fence_windows_taskkill_root_report: Option<serde_json::Value>,
+    // Only literal `true`, beside the origin opt-in and independent of the
+    // others, adds a cancellation wait timeout's matched owner phase.
+    include_stream_fence_cancel_wait_owner_phase: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1493,6 +1496,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             include_stream_fence_windows_taskkill_root_report: CommandArg::from_command(item(
                 "includeStreamFenceWindowsTaskkillRootReport",
             ))?,
+            include_stream_fence_cancel_wait_owner_phase: CommandArg::from_command(item(
+                "includeStreamFenceCancelWaitOwnerPhase",
+            ))?,
         })
     }
 }
@@ -1547,7 +1553,9 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// request's recorded unconfirmed leg is added as that origin's sibling. With
 /// all three, the Windows taskkill failure recorded with a `tree_unconfirmed`
 /// leg is added as a further sibling, as its exact v1 receipt. With all four,
-/// that sibling is instead its v2 receipt when it has one.
+/// that sibling is instead its v2 receipt when it has one. Separately, with
+/// the origin and owner phase opt-ins, a `cancel_wait_timeout` origin's
+/// recorded owner phase is added as that origin's sibling.
 fn authorized_stream_rejection(
     state: &StreamCommandState,
     error: String,
@@ -1555,6 +1563,7 @@ fn authorized_stream_rejection(
     include_stream_fence_cleanup: bool,
     include_stream_fence_windows_taskkill: bool,
     include_stream_fence_windows_taskkill_root_report: bool,
+    include_stream_fence_cancel_wait_owner_phase: bool,
 ) -> tauri::ipc::InvokeError {
     let fence_rejection =
         include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
@@ -1586,6 +1595,14 @@ fn authorized_stream_rejection(
                 .unwrap_or(taskkill);
             rejection["streamFenceWindowsTaskkill"] = serde_json::json!(taskkill);
         }
+    }
+    // The fence records an owner phase only with its own cancellation wait
+    // timeout origin, never beside a cleanup leg.
+    if let Some(phase) = receipts
+        .cancel_wait_owner_phase
+        .filter(|_| include_stream_fence_cancel_wait_owner_phase)
+    {
+        rejection["streamFenceCancelWaitOwnerPhase"] = serde_json::json!(phase);
     }
     tauri::ipc::InvokeError(rejection)
 }
@@ -1619,6 +1636,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_cleanup,
         include_stream_fence_windows_taskkill,
         include_stream_fence_windows_taskkill_root_report,
+        include_stream_fence_cancel_wait_owner_phase,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1706,6 +1724,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_windows_taskkill == Some(serde_json::Value::Bool(true));
     let include_stream_fence_windows_taskkill_root_report =
         include_stream_fence_windows_taskkill_root_report == Some(serde_json::Value::Bool(true));
+    let include_stream_fence_cancel_wait_owner_phase =
+        include_stream_fence_cancel_wait_owner_phase == Some(serde_json::Value::Bool(true));
     execute_stream_command(
         &state,
         admission,
@@ -1727,6 +1747,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             include_stream_fence_cleanup,
             include_stream_fence_windows_taskkill,
             include_stream_fence_windows_taskkill_root_report,
+            include_stream_fence_cancel_wait_owner_phase,
         )
     })
 }
@@ -2767,8 +2788,8 @@ mod tests {
                 ),
             ] {
                 // The origin opt-in alone, and beside the cleanup, Windows
-                // taskkill and root report opt-ins and all eight current
-                // channels.
+                // taskkill, root report and owner phase opt-ins and all eight
+                // current channels.
                 for with_others in [false, true] {
                     for fence in &optional {
                         let mut body = serde_json::json!({
@@ -2799,6 +2820,7 @@ mod tests {
                                 body["includeStreamFenceCleanup"] = value.clone();
                                 body["includeStreamFenceWindowsTaskkill"] = value.clone();
                                 body["includeStreamFenceWindowsTaskkillRootReport"] = value.clone();
+                                body["includeStreamFenceCancelWaitOwnerPhase"] = value.clone();
                             }
                         }
                         let response = get_ipc_response(
@@ -2981,6 +3003,12 @@ mod tests {
         let mut next_authorization = 0u32;
         for (stop_failure, cases) in fences {
             let state = tauri::async_runtime::block_on(fenced_stream_state(stop_failure));
+            // Each case also with the owner phase opt-in: no other origin
+            // ever carries a phase, so every shape is unchanged by it.
+            let cases: Vec<_> = cases
+                .into_iter()
+                .flat_map(|case| [(case.clone(), None), (case, yes())])
+                .collect();
             let count = cases.len();
             let (port, approvals) = approve_authorizations(count);
             let app = mock_builder()
@@ -2993,14 +3021,16 @@ mod tests {
             let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
                 .build()
                 .unwrap();
-            for (origin_opt_in, cleanup_opt_in, taskkill_opt_in, root_report_opt_in, expected) in
-                cases
+            for (
+                (origin_opt_in, cleanup_opt_in, taskkill_opt_in, root_report_opt_in, expected),
+                phase_opt_in,
+            ) in cases
             {
                 next_authorization += 1;
                 let authorization = format!("{next_authorization:064x}");
                 let label = format!(
                     "{stop_failure:?} {origin_opt_in:?} {cleanup_opt_in:?} {taskkill_opt_in:?} \
-                     {root_report_opt_in:?}"
+                     {root_report_opt_in:?} {phase_opt_in:?}"
                 );
                 let mut body = json!({
                     "authorizationId": authorization,
@@ -3018,6 +3048,9 @@ mod tests {
                 }
                 if let Some(value) = root_report_opt_in {
                     body["includeStreamFenceWindowsTaskkillRootReport"] = value;
+                }
+                if let Some(value) = phase_opt_in {
+                    body["includeStreamFenceCancelWaitOwnerPhase"] = value;
                 }
                 let response = get_ipc_response(
                     &window,
@@ -3439,6 +3472,125 @@ mod tests {
         state
     }
 
+    /// A stream lifecycle with its own update gate, first fenced by a
+    /// cancellation wait that timed out before its owner started `run`. The
+    /// owner is then released without an outcome, which never replaces it.
+    #[cfg(unix)]
+    async fn cancel_wait_fenced_stream_state() -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state.launch(state.admit(), "held", &mut cmd).await.unwrap() {
+            stream_lifecycle::Launch::Started(mut owned) => {
+                state.time_out_cancel_wait(&owned);
+                let _ = owned.child.wait().await;
+                drop(owned);
+            }
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_stream_command_cancel_wait_fence_carries_owner_phase_only_when_opted_in() {
+        use serde_json::{json, Value};
+        use std::sync::atomic::Ordering;
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+
+        let scratch = unique_test_dir("fence-owner-phase-ipc");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
+        let timed_out = json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "cancel_wait_timeout" },
+        });
+        let mut with_phase = timed_out.clone();
+        with_phase["streamFenceCancelWaitOwnerPhase"] =
+            json!({ "version": 1, "phase": "owner_pending" });
+        let yes = || Some(json!(true));
+        // [origin opt-in, owner phase opt-in, every other fence opt-in, expected]
+        let cases: Vec<(Option<Value>, Option<Value>, Option<Value>, &Value)> = vec![
+            (yes(), yes(), None, &with_phase),
+            // Independent of the cleanup, taskkill and root report opt-ins,
+            // none of which adds anything beside this origin.
+            (yes(), yes(), yes(), &with_phase),
+            // An older frontend keeps exactly the origin receipt.
+            (yes(), None, None, &timed_out),
+            (yes(), None, yes(), &timed_out),
+            (yes(), Some(json!(false)), yes(), &timed_out),
+            (yes(), Some(json!("true")), None, &timed_out),
+            (yes(), Some(json!(1)), None, &timed_out),
+            (yes(), Some(json!({ "value": true })), None, &timed_out),
+            (yes(), Some(Value::Null), None, &timed_out),
+            // Without the origin opt-in, the exact string.
+            (None, yes(), yes(), &exact),
+            (Some(json!(false)), yes(), None, &exact),
+            (None, None, None, &exact),
+        ];
+        let state = tauri::async_runtime::block_on(cancel_wait_fenced_stream_state());
+        let (port, approvals) = approve_authorizations(cases.len());
+        let app = mock_builder()
+            .manage(state)
+            .invoke_handler(with_authorized_stream_dispatch(|_| false))
+            .build(app_context())
+            .unwrap();
+        let page =
+            tauri::WebviewUrl::External(format!("http://localhost:{port}/").parse().unwrap());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
+            .build()
+            .unwrap();
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        for (index, (origin_opt_in, phase_opt_in, others, expected)) in cases.iter().enumerate() {
+            let authorization = format!("{:064x}", 0xca00 + index);
+            let label = format!("{origin_opt_in:?} {phase_opt_in:?} {others:?}");
+            let mut body = json!({
+                "authorizationId": authorization,
+                "message": { "type": "command", "commandId": authorization, "command": command },
+                "onEvent": "__CHANNEL__:1",
+            });
+            if let Some(value) = origin_opt_in {
+                body["includeStreamFenceOrigin"] = value.clone();
+            }
+            if let Some(value) = phase_opt_in {
+                body["includeStreamFenceCancelWaitOwnerPhase"] = value.clone();
+            }
+            if let Some(value) = others {
+                for key in [
+                    "includeStreamFenceCleanup",
+                    "includeStreamFenceWindowsTaskkill",
+                    "includeStreamFenceWindowsTaskkillRootReport",
+                ] {
+                    body[key] = value.clone();
+                }
+            }
+            let response = get_ipc_response(
+                &window,
+                tauri::webview::InvokeRequest {
+                    cmd: AUTHORIZED_STREAM_COMMAND.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "https://hackerai.co/".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+            .map(|_| ());
+            // Redeemed once, then fenced with the exact original message; only
+            // a literal `true` beside the origin opt-in adds the phase.
+            assert_eq!(response, Err((*expected).clone()), "{label}");
+        }
+        assert_eq!(approvals.load(Ordering::SeqCst), cases.len());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "a fenced command ran");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
     #[cfg(unix)]
     type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
@@ -3493,6 +3645,7 @@ mod tests {
                             opted_in,
                             opted_in,
                             opted_in,
+                            opted_in,
                         )
                         .0
                     })
@@ -3517,6 +3670,7 @@ mod tests {
             authorized_stream_rejection(
                 &open,
                 stream_lifecycle::STOP_UNCONFIRMED.into(),
+                true,
                 true,
                 true,
                 true,
