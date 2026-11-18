@@ -456,3 +456,82 @@ it.each(["start", "wait"] as const)(
     expect(JSON.stringify(fields)).not.toContain("PRIVATE");
   },
 );
+
+it.each([
+  [
+    "sdk_read",
+    new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }),
+    {
+      capture_fresh_read_error_kind: "other_error",
+      capture_fresh_read_http_status: "none",
+      capture_fresh_read_type_error_signal: "fetch_failed",
+      capture_fresh_read_transport_code: "ECONNRESET",
+    },
+  ],
+  ["bytes_convert", new Error("PRIVATE conversion"), {}],
+] as const)(
+  "forwards the fresh-read %s phase into the existing GET-unavailable event",
+  async (phase, error, sdk) => {
+    const frame = JSON.stringify({
+      data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64"),
+      width: 800,
+      height: 600,
+      capturedAt: 0,
+    });
+    const port = { exitCode: 0, stdout: JSON.stringify({ data: { port: 1 } }) };
+    // Stream status starts in the background; bridge and screenshot succeed.
+    const run = async (_command: string, options?: { background?: boolean }) =>
+      options?.background
+        ? { pid: 1, wait: async () => port }
+        : { exitCode: 0, stdout: frame };
+    const read = async (_path: string, options?: { format?: string }) => {
+      if (options?.format !== "bytes") return "default\n";
+      if (phase === "sdk_read") throw error;
+      // An incompatible SDK result whose conversion rejects.
+      return {
+        PRIVATE_BYTES: "PRIVATE_CONTENT",
+        valueOf: () => {
+          throw error;
+        },
+      };
+    };
+    const remove = jest.fn(async () => undefined);
+    jest.mocked(Sandbox.getInfo).mockResolvedValue({
+      state: "running",
+      metadata: VALID,
+    } as never);
+    jest.mocked(Sandbox.connect).mockResolvedValue({
+      files: { read, getInfo: async () => ({ size: 6 }), remove },
+      commands: { run },
+    } as never);
+    const request = getRequest();
+    request.nextUrl.searchParams.set("fresh", "1");
+
+    const response = await get(request, routeContext());
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(remove).toHaveBeenCalledTimes(1);
+    const { event, fields } = loggedEvent();
+    expect(event).toBe("agent_browser_preview_get_unavailable");
+    expect(fields).toMatchObject({
+      failure_stage: "capture_frame",
+      fresh_requested: true,
+      capture_stage: "fresh_read",
+      capture_error_kind: "other_error",
+      capture_command_exit_code: "none",
+    });
+    expect(
+      Object.fromEntries(
+        Object.entries(fields).filter(([key]) =>
+          key.startsWith("capture_fresh_read_"),
+        ),
+      ),
+    ).toEqual({
+      capture_fresh_read_diagnostic_version: 1,
+      capture_fresh_read_phase: phase,
+      ...sdk,
+    });
+    expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|\/dev\/shm/);
+  },
+);

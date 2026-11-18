@@ -3478,3 +3478,125 @@ it("parses the wrapper result beside every existing field in a packet at the unc
     capture_daemon_version_file_status: "measured",
   });
 });
+
+describe("fresh screenshot read phase", () => {
+  const failure = (stage: string, kind: string, group = {}) => [
+    [
+      {
+        capture_stage: stage,
+        capture_error_kind: kind,
+        capture_command_exit_code: "none",
+        ...group,
+      },
+    ],
+  ];
+  const capture = (sandbox: ReturnType<typeof fixture>, observed: jest.Mock) =>
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observed,
+    );
+  const sdkNotFound = () =>
+    Object.assign(new Error("PRIVATE /dev/shm/preview.jpg"), {
+      name: "NotFoundError",
+      statusCode: 404,
+    });
+  // Buffer.from reads valueOf; this incompatible result's conversion rejects.
+  const unconvertible = (error: unknown) =>
+    ({
+      PRIVATE_BYTES: "PRIVATE_CONTENT",
+      valueOf: () => {
+        throw error;
+      },
+    }) as never;
+
+  it.each([
+    [
+      "sdk_read",
+      (sandbox: ReturnType<typeof fixture>, error: Error) =>
+        sandbox.files.read.mockRejectedValueOnce(error),
+      sdkNotFound(),
+      {
+        capture_fresh_read_error_kind: "not_found",
+        capture_fresh_read_http_status: 404,
+      },
+    ],
+    [
+      "bytes_convert",
+      (sandbox: ReturnType<typeof fixture>, error: Error) =>
+        sandbox.files.read.mockResolvedValueOnce(unconvertible(error)),
+      new Error("PRIVATE conversion"),
+      {},
+    ],
+  ] as const)(
+    "attributes the %s phase and keeps its rejection through cleanup",
+    async (phase, arrange, error, sdk) => {
+      const sandbox = fixture();
+      arrange(sandbox, error);
+      // An asynchronous cleanup rejection stays swallowed.
+      sandbox.files.remove.mockRejectedValueOnce(new Error("PRIVATE cleanup"));
+      const observed = jest.fn();
+      await expect(capture(sandbox, observed)).rejects.toBe(error);
+      expect(observed.mock.calls).toEqual(
+        failure("fresh_read", "other_error", {
+          capture_fresh_read_diagnostic_version: 1,
+          capture_fresh_read_phase: phase,
+          ...sdk,
+        }),
+      );
+      expect(JSON.stringify(observed.mock.calls)).not.toMatch(
+        /PRIVATE|\/dev\/shm/,
+      );
+      const [[path, options]] = sandbox.files.read.mock.calls as unknown as [
+        [string, unknown],
+      ];
+      expect(options).toEqual({
+        format: "bytes",
+        user: "root",
+        requestTimeoutMs: 4_000,
+      });
+      expect(sandbox.files.remove.mock.calls).toEqual([
+        [path, { user: "root", requestTimeoutMs: 4_000 }],
+      ]);
+    },
+  );
+
+  const readError = sdkNotFound();
+  const cleanupError = new Error("PRIVATE cleanup");
+  it.each([
+    ["an SDK read rejection", readError, cleanupError],
+    ["the same SDK read rejection thrown again", readError, readError],
+    ["a conversion rejection", unconvertible(readError), cleanupError],
+  ])(
+    "does not attribute a synchronous cleanup exception replacing %s",
+    async (_case, readOutcome: unknown, thrown) => {
+      const sandbox = fixture();
+      if (readOutcome instanceof Error)
+        sandbox.files.read.mockRejectedValueOnce(readOutcome);
+      else sandbox.files.read.mockResolvedValueOnce(readOutcome as never);
+      sandbox.files.remove.mockImplementationOnce(() => {
+        throw thrown;
+      });
+      const observed = jest.fn();
+      // The existing finally lets this cleanup exception replace the failure.
+      await expect(capture(sandbox, observed)).rejects.toBe(thrown);
+      expect(observed.mock.calls).toEqual(failure("fresh_read", "other_error"));
+    },
+  );
+
+  it("omits the group once validation follows a successful conversion", async () => {
+    const sandbox = fixture();
+    sandbox.files.read.mockResolvedValueOnce(Buffer.from([0x89, 0x50, 0, 0]));
+    const observed = jest.fn();
+    await expect(capture(sandbox, observed)).rejects.toThrow(
+      "Browser preview disconnected",
+    );
+    expect(observed.mock.calls).toEqual(
+      failure("fresh_validation", "preview_unavailable"),
+    );
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  });
+});

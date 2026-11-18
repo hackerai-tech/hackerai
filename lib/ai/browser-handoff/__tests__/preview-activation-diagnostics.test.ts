@@ -400,6 +400,12 @@ const OTHER_STAGE_CAPTURE_KEYS = [
   "capture_sdk_command_diagnostic_version",
   "capture_sdk_command_phase",
   "capture_sdk_start_ack_latency",
+  "capture_fresh_read_diagnostic_version",
+  "capture_fresh_read_phase",
+  "capture_fresh_read_error_kind",
+  "capture_fresh_read_http_status",
+  "capture_fresh_read_type_error_signal",
+  "capture_fresh_read_transport_code",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
 // A new capture field must be classified here, so the max fixture stays current.
 type UnclassifiedCaptureKey = Exclude<

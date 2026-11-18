@@ -830,7 +830,44 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_sdk_command_diagnostic_version?: 1;
   capture_sdk_command_phase?: "start" | "wait";
   capture_sdk_start_ack_latency?: "lt1s" | "lt3s" | "lt6s" | "gte6s";
+  // Fresh_read only: the SDK read call or converting its result, with the SDK
+  // projection only for sdk_read. Absent means unmeasured (other stages, older
+  // builds, or a cleanup exception that replaced the failure), never none.
+  capture_fresh_read_diagnostic_version?: 1;
+  capture_fresh_read_phase?: "sdk_read" | "bytes_convert";
+  capture_fresh_read_error_kind?: string;
+  capture_fresh_read_http_status?: number | "none" | "other";
+  capture_fresh_read_type_error_signal?:
+    "fetch_failed" | "other_type_error" | "unreadable";
+  capture_fresh_read_transport_code?: string;
 };
+
+/** The whole version-1 group; only an SDK read carries the bounded SDK labels. */
+function freshReadContext(
+  phase: "sdk_read" | "bytes_convert",
+  error: unknown,
+): Pick<
+  BrowserCaptureFailureContext,
+  Extract<keyof BrowserCaptureFailureContext, `capture_fresh_read_${string}`>
+> {
+  const group = {
+    capture_fresh_read_diagnostic_version: 1,
+    capture_fresh_read_phase: phase,
+  } as const;
+  if (phase === "bytes_convert") return group;
+  const cloud = checkpointCloudErrorContext(error);
+  return {
+    ...group,
+    capture_fresh_read_error_kind: cloud.cloud_error_kind,
+    capture_fresh_read_http_status: cloud.cloud_http_status,
+    ...(cloud.cloud_type_error_signal === undefined
+      ? {}
+      : {
+          capture_fresh_read_type_error_signal: cloud.cloud_type_error_signal,
+          capture_fresh_read_transport_code: cloud.cloud_transport_code,
+        }),
+  };
+}
 
 /** The whole version-1 group, or nothing when a wait latency is unusable. */
 function statusSdkPhaseContext({
@@ -885,6 +922,7 @@ export async function captureBrowserFrame(
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
   let returnedBridgeFailure: unknown;
   let statusRejection: StatusCommandRejection | undefined;
+  let freshReadPhase: "sdk_read" | "bytes_convert" | undefined;
   try {
     const port =
       streamPort ??
@@ -983,13 +1021,14 @@ export async function captureBrowserFrame(
         if (info.size < 4 || info.size > 675_000)
           throw new BrowserPreviewUnavailable("disconnected");
         stage = "fresh_read";
-        const fresh = Buffer.from(
-          await sandbox.files.read(path, {
-            format: "bytes",
-            user: "root",
-            requestTimeoutMs: 4_000,
-          }),
-        );
+        freshReadPhase = "sdk_read";
+        const bytes = await sandbox.files.read(path, {
+          format: "bytes",
+          user: "root",
+          requestTimeoutMs: 4_000,
+        });
+        freshReadPhase = "bytes_convert";
+        const fresh = Buffer.from(bytes);
         stage = "fresh_validation";
         if (
           fresh.byteLength < 4 ||
@@ -1001,9 +1040,15 @@ export async function captureBrowserFrame(
         imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
       } finally {
         // The private memory-backed run directory is also erased at run cleanup.
-        await sandbox.files
-          .remove(path, { user: "root", requestTimeoutMs: 4_000 })
-          .catch(() => undefined);
+        try {
+          await sandbox.files
+            .remove(path, { user: "root", requestTimeoutMs: 4_000 })
+            .catch(() => undefined);
+        } catch (error) {
+          // This cleanup exception replaces any read failure; never attribute it.
+          freshReadPhase = undefined;
+          throw error;
+        }
       }
     }
     return {
@@ -1473,6 +1518,13 @@ export async function captureBrowserFrame(
       } catch {
         /* An unreadable phase omits the group and keeps the original rejection. */
       }
+      let freshRead: ReturnType<typeof freshReadContext> = {};
+      try {
+        if (stage === "fresh_read" && freshReadPhase)
+          freshRead = freshReadContext(freshReadPhase, error);
+      } catch {
+        /* An unreadable projection omits the group and keeps the rejection. */
+      }
       try {
         onFailure({
           capture_stage: stage,
@@ -1482,6 +1534,7 @@ export async function captureBrowserFrame(
           ...decodeDiagnostic,
           ...bridgeDiagnostic,
           ...sdkPhase,
+          ...freshRead,
         });
       } catch {
         /* Observers cannot change capture behavior. */
