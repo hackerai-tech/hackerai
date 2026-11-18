@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { ConvexError } from "convex/values";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useFileUpload } from "../useFileUpload";
 import {
   getLocalFileMetadata,
@@ -107,6 +108,9 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest
+      .mocked(useAuth)
+      .mockReturnValue({ user: null } as ReturnType<typeof useAuth>);
     (isTauriEnvironment as jest.Mock).mockReturnValue(true);
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
     storedFiles = [];
@@ -141,6 +145,29 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   afterAll(() => {
     global.fetch = originalFetch;
+  });
+
+  it("discards files from a native picker opened before the account changed", async () => {
+    const auth = (id: string) =>
+      ({ user: { id } }) as ReturnType<typeof useAuth>;
+    jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+    let finishPicker!: (paths: string[]) => void;
+    jest.mocked(pickLocalFiles).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPicker = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useFileUpload("agent"));
+    act(() => result.current.handleAttachClick());
+
+    jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+    rerender();
+    await act(async () => finishPicker(["/synthetic/attachment.png"]));
+
+    expect(getLocalFileMetadata).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
   });
 
   it("opens camera and unrestricted photos/files without leaking picker settings", () => {

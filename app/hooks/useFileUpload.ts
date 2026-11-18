@@ -721,6 +721,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const processGeneratedPastedText = useCallback(
     async (content: string): Promise<boolean> => {
+      const selectionSignal = uploadScopeRef.current?.signal;
       const existingUploadedCount = uploadedFiles.length;
       const remainingSlots = maxFilesLimit - existingUploadedCount;
       const hasRemainingSlots = remainingSlots > 0;
@@ -735,6 +736,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const attachmentId = createGeneratedTextAttachmentId();
       const file = createGeneratedTextFile(content, fileName);
       const result = await validateAndFilterFiles([file]);
+      if (selectionSignal?.aborted) return false;
 
       showProcessingFeedback(result, hasRemainingSlots);
 
@@ -878,7 +880,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   );
 
   const processLocalDesktopPaths = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], selectionSignal: AbortSignal | undefined) => {
+      if (selectionSignal?.aborted) return;
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
         return;
@@ -914,6 +917,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const invalidFiles: string[] = [];
 
       for (const path of selectedPaths) {
+        if (selectionSignal?.aborted) return;
         let metadata: Awaited<ReturnType<typeof getLocalFileMetadata>>;
         try {
           metadata = await getLocalFileMetadata(path);
@@ -927,6 +931,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           );
           continue;
         }
+        if (selectionSignal?.aborted) return;
         if (!metadata) {
           invalidFiles.push(
             `${getFilenameFromPath(path)}: could not read file metadata`,
@@ -960,6 +965,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           }
 
           const localFileData = await readLocalFile(path);
+          if (selectionSignal?.aborted) return;
           if (!localFileData) {
             invalidFiles.push(`${file.name}: could not read image file`);
             continue;
@@ -986,6 +992,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         validFiles.push({ storage: "local-desktop", file });
       }
 
+      if (selectionSignal?.aborted) return;
       if (invalidFiles.length > 0) {
         toast.error(`Some files were invalid:\n${invalidFiles.join("\n")}`);
       }
@@ -1016,7 +1023,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         return false;
       }
 
+      // Validation can wait for image decoding. A selection must still belong
+      // to the sign-in scope that admitted it when we add it to the draft.
+      const selectionSignal = uploadScopeRef.current?.signal;
       const result = await validateAndFilterFiles(files);
+      if (selectionSignal?.aborted) return false;
 
       // Check if we have slots available
       const existingUploadedCount = uploadedFiles.length;
@@ -1321,13 +1332,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     });
 
     if (shouldUseLocalDesktopAttachments) {
+      const selectionSignal = uploadScopeRef.current?.signal;
       pickLocalFiles()
         .then(async (paths) => {
           logLocalAttachmentDebug("local-picker-result", {
             selectedCount: paths.length,
           });
           if (paths.length > 0) {
-            await processLocalDesktopPaths(paths);
+            await processLocalDesktopPaths(paths, selectionSignal);
           }
         })
         .catch((error) => {

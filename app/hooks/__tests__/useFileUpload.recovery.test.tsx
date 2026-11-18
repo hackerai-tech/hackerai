@@ -10,6 +10,7 @@ import {
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
+import * as fileUtils from "@/lib/utils/file-utils";
 import { useFileUpload } from "../useFileUpload";
 import { UploadedFileState } from "@/types/file";
 
@@ -46,6 +47,10 @@ jest.mock("../../contexts/GlobalState", () => ({
   useGlobalState: () => useContext(StateContext),
 }));
 const mockStorageRegion = jest.fn<Promise<undefined>, []>();
+jest.mock("@/lib/utils/file-utils", () => {
+  const actual = jest.requireActual<typeof fileUtils>("@/lib/utils/file-utils");
+  return { ...actual, validateImageFile: jest.fn(actual.validateImageFile) };
+});
 jest.mock("@/lib/storage/file-storage-region", () => ({
   getPreferredFileStorageRegion: () => mockStorageRegion(),
 }));
@@ -1029,6 +1034,36 @@ describe("browser attachment recovery", () => {
     });
     await act(async () => reservations[0].resolve());
     expect(generateS3UploadUrlAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a file selected before the account changes during validation", async () => {
+    let finishImageValidation!: (result: { valid: boolean }) => void;
+    const validateImage = jest
+      .mocked(fileUtils.validateImageFile)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishImageValidation = resolve;
+          }),
+      );
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    const image = new File(["qa"], "selected.png", { type: "image/png" });
+    let submit!: Promise<void>;
+    await act(async () => {
+      submit = result.current.picker.handleFileUploadEvent(select([image]));
+    });
+    expect(validateImage).toHaveBeenCalledWith(image);
+
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await act(async () => {
+      finishImageValidation({ valid: true });
+      await submit;
+    });
+    expect(result.current.uploadedFiles).toEqual([]);
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
   });
 
   it("does not retry an old-scope reservation after the account changes", async () => {
