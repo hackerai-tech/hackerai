@@ -158,6 +158,7 @@ import {
   replaceUsageSettlementState,
   shouldSettleUsageMidRun,
   reservePaidDailyFreeAllowanceRequest,
+  verifyPaidDailyFreeAllowanceReservationOwnership,
   type PaidDailyFreeAllowanceReservation,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
@@ -3013,15 +3014,42 @@ export const agentLongTask = task({
                   currentlyAllowedModel,
                   currentEntitlement.subscription,
                 );
-              await checkRateLimitCapacity(
-                userId,
-                mode,
-                currentEntitlement.subscription,
-                currentModelExtraUsageConfig,
-                selectedModel,
-                currentEntitlement.organizationId,
-                freeQuotaSubject,
-              );
+              const admittedAllowanceReservation =
+                paidDailyFreeAllowanceReservation;
+              if (admittedAllowanceReservation) {
+                // Included capacity was already exhausted when this run was
+                // admitted; it continues only on its original lease and cap.
+                const ownership =
+                  await verifyPaidDailyFreeAllowanceReservationOwnership(
+                    userId,
+                    admittedAllowanceReservation,
+                  );
+                if (!ownership.owned) {
+                  triggerLogger.warn(
+                    "[agent-long] daily allowance lease unavailable after user wait",
+                    {
+                      chatId,
+                      userId,
+                      runId: ctx.run.id,
+                      reason: ownership.reason,
+                    },
+                  );
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The daily allowance for this run is no longer available.",
+                  );
+                }
+              } else {
+                await checkRateLimitCapacity(
+                  userId,
+                  mode,
+                  currentEntitlement.subscription,
+                  currentModelExtraUsageConfig,
+                  selectedModel,
+                  currentEntitlement.organizationId,
+                  freeQuotaSubject,
+                );
+              }
               if (currentEntitlement.subscription === "free") {
                 await checkFreeMonthlyCostLimit(freeUsageSubject);
                 const lock = await acquireFreeRunConcurrencyLock(
