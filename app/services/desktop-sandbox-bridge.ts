@@ -74,6 +74,7 @@ import {
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -1526,7 +1527,9 @@ export class DesktopSandboxBridge {
     // only a `json_error` response receipt; either may arrive first. The
     // native stream fence origin is no callback: an opted-in authorized
     // command carries it in its own exact unconfirmed-stop rejection, and it
-    // joins only that rejection as this invocation's first terminal.
+    // joins only that rejection as this invocation's first terminal. An
+    // `owner_stop_requested` origin's cleanup failure rides the same rejection
+    // and latch.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's
@@ -1548,6 +1551,8 @@ export class DesktopSandboxBridge {
     let mitigationOpen = true;
     let responseReadOpen = true;
     let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
+    let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
+      null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -1608,6 +1613,7 @@ export class DesktopSandboxBridge {
                 invocationRejection,
                 invocationUnknown,
                 streamFenceOrigin,
+                streamFenceCleanupFailure,
               )
             : null;
         onSettled(
@@ -1861,7 +1867,11 @@ export class DesktopSandboxBridge {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
               // Outside the signed message; never sent to a legacy command.
-              ...(streamFenceOffered && { includeStreamFenceOrigin: true }),
+              // The cleanup opt-in is only ever offered with the origin one.
+              ...(streamFenceOffered && {
+                includeStreamFenceOrigin: true,
+                includeStreamFenceCleanup: true,
+              }),
             },
             invocationTrace,
           );
@@ -1881,6 +1891,7 @@ export class DesktopSandboxBridge {
         // native message.
         if (latchTerminal("invocation_rejected")) {
           streamFenceOrigin = fenceRejection?.origin ?? null;
+          streamFenceCleanupFailure = fenceRejection?.cleanupFailure ?? null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);

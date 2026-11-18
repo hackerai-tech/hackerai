@@ -244,11 +244,14 @@ export function sanitizeDesktopAckEvent<
     // The stream fence origin joins only validated authorized unknown and
     // `lifecycle_stop_unconfirmed` groups; no fence property is read without
     // them. It likewise survives only as the validated data copy and drops
-    // alone.
+    // alone. Its cleanup pair is read only beside a validated
+    // `owner_stop_requested` origin on an acknowledged terminal, and an
+    // invalid one drops alone, leaving the origin pair.
     const streamFence = readDesktopStreamFenceDiagnostic(
       event.properties,
       invocationRejection,
       invocationUnknown,
+      event.properties.terminalAcknowledged === true,
     );
     const properties = event.properties;
     event.properties = Object.fromEntries(

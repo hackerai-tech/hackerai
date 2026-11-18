@@ -10794,9 +10794,13 @@ describe("native authorization send receipt", () => {
         authorizationId,
         message: expect.objectContaining({ cwd }),
         includeStreamFenceOrigin: true,
+        includeStreamFenceCleanup: true,
       });
       expect(Object.keys(calls[0].message as object)).not.toContain(
         "includeStreamFenceOrigin",
+      );
+      expect(Object.keys(calls[0].message as object)).not.toContain(
+        "includeStreamFenceCleanup",
       );
       // The product error is the exact original string, as one terminal.
       expect(sequencedFrames(replies[0])).toEqual([
@@ -10988,7 +10992,10 @@ describe("native authorization send receipt", () => {
       async (_case, native, message, unknownClass) => {
         const { calls, replies } = await run(native);
         expect(calls).toHaveLength(1);
-        expect(calls[0]).toMatchObject({ includeStreamFenceOrigin: true });
+        expect(calls[0]).toMatchObject({
+          includeStreamFenceOrigin: true,
+          includeStreamFenceCleanup: true,
+        });
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining(
             message === null
@@ -11025,8 +11032,12 @@ describe("native authorization send receipt", () => {
         "execute_authorized_stream_command",
         "execute_stream_command",
       ]);
-      expect(calls[0]).toMatchObject({ includeStreamFenceOrigin: true });
+      expect(calls[0]).toMatchObject({
+        includeStreamFenceOrigin: true,
+        includeStreamFenceCleanup: true,
+      });
       expect(calls[1]).not.toHaveProperty("includeStreamFenceOrigin");
+      expect(calls[1]).not.toHaveProperty("includeStreamFenceCleanup");
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11042,6 +11053,7 @@ describe("native authorization send receipt", () => {
       });
       expect(calls.map((call) => call.cmd)).toEqual(["execute_stream_command"]);
       expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
+      expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11055,6 +11067,7 @@ describe("native authorization send receipt", () => {
         const { calls, replies } = await run(() => reject(stopUnconfirmed));
         expect(calls).toHaveLength(1);
         expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
+        expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: stopUnconfirmed }),
         ]);
@@ -11139,6 +11152,234 @@ describe("native authorization send receipt", () => {
       expect(byCommand.cancel).toMatchObject(fenceGroup);
       expect(fenceKeys(byCommand.none)).toEqual([]);
     });
+
+    describe("stop cleanup failure", () => {
+      const stop = { version: 1, origin: "owner_stop_requested" };
+      const stopGroup = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_stop_requested",
+      };
+      // The opted-in sibling shape: the exact message, the stop origin and
+      // the closed cleanup failure, as Tauri delivers the command's JSON error.
+      const withCleanup = (
+        streamFenceCleanup: unknown,
+        streamFence: unknown = stop,
+      ) => ({ message: stopUnconfirmed, streamFence, streamFenceCleanup });
+
+      it.each([
+        "tree_unconfirmed",
+        "leader_wait_timed_out",
+        "leader_wait_failed",
+        "tree_and_leader_wait_timed_out",
+        "tree_and_leader_wait_failed",
+      ])(
+        "unwraps the exact message and joins the %s failure to its stop origin",
+        async (failure) => {
+          const cwd = "/Users/PRIVATE-CWD/project";
+          const { calls, replies } = await run(
+            () => Promise.reject(withCleanup({ version: 1, failure })),
+            { version: "0.0.84", command: { cwd } },
+          );
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toMatchObject({
+            cmd: "execute_authorized_stream_command",
+            includeStreamFenceOrigin: true,
+            includeStreamFenceCleanup: true,
+          });
+          // The product error is the exact original string, as one terminal.
+          expect(sequencedFrames(replies[0])).toEqual([
+            {
+              type: "error",
+              message: stopUnconfirmed,
+              commandId: "auth-send",
+              sequence: 0,
+              outputProtocol: "ack-v1",
+            },
+          ]);
+          const cleanupGroup = {
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: failure,
+          };
+          expect(finals()).toHaveLength(1);
+          const final = finals()[0];
+          expect(final.properties).toMatchObject({
+            outcome: "acknowledged",
+            terminalType: "error",
+            terminalAcknowledged: true,
+            telemetry_sample_rate: 1,
+            desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+            ...stopGroup,
+            ...cleanupGroup,
+          });
+          expect(fenceKeys(final.properties)).toHaveLength(4);
+          const enriched = sanitizeDesktopAckEvent({
+            ...final,
+            properties: {
+              ...final.properties,
+              $current_url: "PRIVATE",
+              cwd,
+              command: "PRIVATE COMMAND",
+            },
+            $set: { email: "PRIVATE" },
+          });
+          expect(enriched.properties).toMatchObject({
+            ...stopGroup,
+            ...cleanupGroup,
+          });
+          expect(fenceKeys(enriched.properties)).toHaveLength(4);
+          const serialized = JSON.stringify([captures(), enriched]);
+          expect(serialized).not.toContain("PRIVATE");
+          expect(serialized).not.toContain(authorizationId);
+          expect(serialized).not.toContain(stopUnconfirmed);
+          expect(serialized).not.toContain("streamFence");
+        },
+      );
+
+      // [case, native rejection, expected fence group]
+      it.each<[string, () => unknown, Record<string, unknown>]>([
+        ["an older native app's exact v1 shape", () => fenced(stop), stopGroup],
+        [
+          "an unlisted failure",
+          () => withCleanup({ version: 1, failure: "PRIVATE" }),
+          stopGroup,
+        ],
+        [
+          "an unsupported version",
+          () => withCleanup({ version: 2, failure: "tree_unconfirmed" }),
+          stopGroup,
+        ],
+        [
+          "an extra private field",
+          () =>
+            withCleanup({ version: 1, failure: "tree_unconfirmed", pid: 4242 }),
+          stopGroup,
+        ],
+        [
+          "a failure getter",
+          () =>
+            withCleanup(
+              Object.defineProperty({ version: 1 }, "failure", {
+                enumerable: true,
+                get: fail,
+              }),
+            ),
+          stopGroup,
+        ],
+        [
+          "a throwing proxy",
+          () =>
+            withCleanup(
+              new Proxy(
+                { version: 1, failure: "tree_unconfirmed" },
+                { getPrototypeOf: fail, ownKeys: fail, get: fail },
+              ),
+            ),
+          stopGroup,
+        ],
+        ["a string", () => withCleanup("tree_unconfirmed"), stopGroup],
+        [
+          "a sibling beside another origin",
+          () => withCleanup({ version: 1, failure: "tree_unconfirmed" }, fence),
+          fenceGroup,
+        ],
+      ])(
+        "keeps the exact message and only the origin for %s",
+        async (_case, native, expected) => {
+          const { replies } = await run(() => Promise.reject(native()));
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: stopUnconfirmed,
+              sequence: 0,
+            }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          const properties = finals()[0].properties;
+          expect(properties).toMatchObject(expected);
+          expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+          const enriched = sanitizeDesktopAckEvent({
+            ...finals()[0],
+            properties: { ...properties },
+          });
+          expect(fenceKeys(enriched.properties)).toEqual(Object.keys(expected));
+          const serialized = JSON.stringify([captures(), enriched]);
+          expect(serialized).not.toContain("PRIVATE");
+          expect(serialized).not.toContain("streamFence");
+          expect(serialized).not.toContain("desktop_stream_fence_cleanup");
+        },
+      );
+
+      it("never unwraps the sibling through the compatibility command", async () => {
+        const { replies } = await run(async (call) => {
+          if (call.cmd === "execute_authorized_stream_command")
+            throw "Command execute_authorized_stream_command not found";
+          return Promise.reject(
+            withCleanup({ version: 1, failure: "tree_unconfirmed" }),
+          );
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({
+            type: "error",
+            message: "[object Object]",
+          }),
+        ]);
+        expect(fenceKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("drops both groups when the rejection arrives after the connection is stopped", async () => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async () => {
+            await pending;
+            return Promise.reject(
+              withCleanup({ version: 1, failure: "leader_wait_failed" }),
+            );
+          },
+          {
+            beforeAck: async (bridge) => {
+              await bridge.stop();
+              release();
+            },
+          },
+        );
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({
+          outcome: "incomplete",
+          reason: "stopped",
+        });
+        expect(fenceKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("keeps the cleanup failure with its own invocation only", async () => {
+        await run(
+          async (call) => {
+            const commandId = (call.message as { commandId: string }).commandId;
+            if (commandId === "stop")
+              return Promise.reject(
+                withCleanup({ version: 1, failure: "tree_unconfirmed" }),
+              );
+            if (commandId === "older") return Promise.reject(fenced(stop));
+            return Promise.reject(fenced());
+          },
+          { commandIds: ["stop", "older", "cancel"] },
+        );
+        const byCommand = Object.fromEntries(
+          finals().map((event) => [
+            event.properties!.commandId,
+            event.properties,
+          ]),
+        );
+        expect(byCommand.stop).toMatchObject({
+          ...stopGroup,
+          desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+        });
+        expect(fenceKeys(byCommand.older)).toEqual(Object.keys(stopGroup));
+        expect(fenceKeys(byCommand.cancel)).toEqual(Object.keys(fenceGroup));
+      });
+    });
   });
 
   it.each<
@@ -11189,6 +11430,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationConnectorDiagnostic",
         "onAuthorizationResponseReadDiagnostic",
         "includeStreamFenceOrigin",
+        "includeStreamFenceCleanup",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

@@ -20,7 +20,8 @@
 //! Admission fails closed: once any owner cannot confirm its group stopped,
 //! members may still be running, so no further streamed command starts in this
 //! native process. The fence keeps the closed origin of the path that set it
-//! first, for an optional diagnostic only; it never changes admission.
+//! first, and for a stop request which cleanup leg was unconfirmed, for an
+//! optional diagnostic only; it never changes admission.
 
 use std::collections::{HashMap, HashSet};
 use std::process::ExitStatus;
@@ -97,6 +98,54 @@ pub(crate) struct FenceOriginReceipt {
     origin: FenceOrigin,
 }
 
+/// Which checks of an explicit stop's existing cleanup were unconfirmed: the
+/// tree termination, the bounded leader wait, or both. The leader wait either
+/// reached its existing deadline or returned an error, never its detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CleanupFailure {
+    TreeUnconfirmed,
+    LeaderWaitTimedOut,
+    LeaderWaitFailed,
+    TreeAndLeaderWaitTimedOut,
+    TreeAndLeaderWaitFailed,
+}
+
+/// Carried only beside an `owner_stop_requested` origin receipt, in that same
+/// rejection, and only when separately opted in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FenceCleanupReceipt {
+    version: u8,
+    failure: CleanupFailure,
+}
+
+/// The first unconfirmed outcome. Its origin and cleanup leg are recorded
+/// together, so a later outcome can never supply the leg of an earlier origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fence {
+    origin: FenceOrigin,
+    // Only an explicit stop request records the leg that was unconfirmed.
+    cleanup: Option<CleanupFailure>,
+}
+
+impl Fence {
+    fn stop_requested(failure: CleanupFailure) -> Self {
+        Self {
+            origin: FenceOrigin::OwnerStopRequested,
+            cleanup: Some(failure),
+        }
+    }
+}
+
+impl From<FenceOrigin> for Fence {
+    fn from(origin: FenceOrigin) -> Self {
+        Self {
+            origin,
+            cleanup: None,
+        }
+    }
+}
+
 struct Running {
     serial: u64,
     generation: u64,
@@ -112,8 +161,8 @@ struct State {
     // Keep cancellation until app exit, including IPCs that arrive before launch.
     canceled: HashSet<String>,
     // Set once and never cleared: an owner could not confirm its tree stopped.
-    // The first origin wins; admission only asks whether it is set.
-    fence: Option<FenceOrigin>,
+    // The first outcome wins; admission only asks whether it is set.
+    fence: Option<Fence>,
 }
 
 pub(crate) struct StreamLifecycle {
@@ -146,7 +195,7 @@ struct Completion {
     outcome: watch::Sender<Option<bool>>,
     /// None only once `run` confirmed the tree stopped. Until `run` records its
     /// final outcome, a released owner is unconfirmed with a missing outcome.
-    unconfirmed: Option<FenceOrigin>,
+    unconfirmed: Option<Fence>,
 }
 
 impl Drop for Completion {
@@ -163,8 +212,8 @@ impl Drop for Completion {
             }
             // Fence admission under the same lock that releases the entry, so no
             // launch can observe the slot free without also seeing the fence.
-            if let Some(origin) = self.unconfirmed {
-                state.fence.get_or_insert(origin);
+            if let Some(fence) = self.unconfirmed {
+                state.fence.get_or_insert(fence);
             }
         }
         if !confirmed {
@@ -193,16 +242,34 @@ impl StreamLifecycle {
     }
 
     fn fence_unconfirmed(&self, origin: FenceOrigin) {
-        self.state().fence.get_or_insert(origin);
+        self.state().fence.get_or_insert(origin.into());
         self.update_gate.block_for_unconfirmed_command();
     }
 
+    #[cfg(all(test, unix))]
+    fn fence_origin_receipt(&self) -> Option<FenceOriginReceipt> {
+        self.fence_receipts().map(|(origin, _)| origin)
+    }
+
     /// The first recorded origin of the admission fence, as its closed v1
-    /// receipt, or None while admission is not fenced.
-    pub(crate) fn fence_origin_receipt(&self) -> Option<FenceOriginReceipt> {
-        self.state()
-            .fence
-            .map(|origin| FenceOriginReceipt { version: 1, origin })
+    /// receipt, or None while admission is not fenced. Beside it, only for an
+    /// explicit stop request whose unconfirmed leg was recorded with that
+    /// origin, the leg's closed v1 receipt.
+    pub(crate) fn fence_receipts(
+        &self,
+    ) -> Option<(FenceOriginReceipt, Option<FenceCleanupReceipt>)> {
+        self.state().fence.map(|fence| {
+            (
+                FenceOriginReceipt {
+                    version: 1,
+                    origin: fence.origin,
+                },
+                fence.cleanup.map(|failure| FenceCleanupReceipt {
+                    version: 1,
+                    failure,
+                }),
+            )
+        })
     }
 
     /// Capture synchronously while the IPC is dispatched. An async command body
@@ -288,7 +355,7 @@ impl StreamLifecycle {
                             command_id: command_id.to_string(),
                             serial,
                             outcome,
-                            unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing),
+                            unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing.into()),
                         },
                     }));
                 }
@@ -415,7 +482,7 @@ pub(crate) async fn run(
             unless_confirmed(confirmed, FenceOrigin::OwnerTimeout)
         }
         Ended::StopRequested => {
-            let (confirmed, status) = terminate_owned(&mut child).await;
+            let (failure, status) = terminate_owned(&mut child).await;
             let _ = on_event.send(match status {
                 Some(status) => StreamEvent::Exit {
                     exit_code: status.code().unwrap_or(-1),
@@ -424,18 +491,18 @@ pub(crate) async fn run(
                     message: "Desktop could not confirm the command stopped".to_string(),
                 },
             });
-            unless_confirmed(confirmed, FenceOrigin::OwnerStopRequested)
+            failure.map(Fence::stop_requested)
         }
         // The receiver is gone: stop producing output nobody can deliver.
         Ended::DeliveryFailed => unless_confirmed(
-            terminate_owned(&mut child).await.0,
+            terminate_owned(&mut child).await.0.is_none(),
             FenceOrigin::OwnerDeliveryFailed,
         ),
     };
 }
 
-fn unless_confirmed(confirmed: bool, origin: FenceOrigin) -> Option<FenceOrigin> {
-    (!confirmed).then_some(origin)
+fn unless_confirmed(confirmed: bool, origin: FenceOrigin) -> Option<Fence> {
+    (!confirmed).then_some(origin.into())
 }
 
 async fn stop_requested(stop: &mut watch::Receiver<bool>) {
@@ -508,18 +575,53 @@ async fn stream_until_exit(
 }
 
 /// Stop the owned tree while reaping its leader concurrently: an unreaped
-/// leader keeps its process group alive.
-async fn terminate_owned(child: &mut Child) -> (bool, Option<ExitStatus>) {
+/// leader keeps its process group alive. Confirmed only when no check failed.
+async fn terminate_owned(child: &mut Child) -> (Option<CleanupFailure>, Option<ExitStatus>) {
     let Some(pid) = child.id() else {
         // Already reaped by this owner; no live PID remains to signal.
-        return (true, child.try_wait().ok().flatten());
+        return (None, child.try_wait().ok().flatten());
     };
     let (stopped, waited) = tokio::join!(
         crate::platform::cancel_process_tree(pid),
         tokio::time::timeout(REAP_TIMEOUT, child.wait())
     );
-    let status = waited.ok().and_then(Result::ok);
-    (stopped && status.is_some(), status)
+    let (leader, status) = match waited {
+        Ok(Ok(status)) => (LeaderWait::Reaped, Some(status)),
+        Ok(Err(_)) => (LeaderWait::Failed, None),
+        Err(_) => (LeaderWait::TimedOut, None),
+    };
+    (cleanup_failure(stopped, leader), status)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LeaderWait {
+    Reaped,
+    TimedOut,
+    Failed,
+}
+
+/// The unconfirmed checks, or None only when the tree stopped and the leader
+/// was reaped.
+fn cleanup_failure(tree_stopped: bool, leader: LeaderWait) -> Option<CleanupFailure> {
+    use CleanupFailure::*;
+    match (tree_stopped, leader) {
+        (true, LeaderWait::Reaped) => None,
+        (false, LeaderWait::Reaped) => Some(TreeUnconfirmed),
+        (true, LeaderWait::TimedOut) => Some(LeaderWaitTimedOut),
+        (true, LeaderWait::Failed) => Some(LeaderWaitFailed),
+        (false, LeaderWait::TimedOut) => Some(TreeAndLeaderWaitTimedOut),
+        (false, LeaderWait::Failed) => Some(TreeAndLeaderWaitFailed),
+    }
+}
+
+#[cfg(all(test, unix))]
+impl OwnedCommand {
+    /// Reap a finished test command, then release ownership as `run` does
+    /// after a stop request whose cleanup reported `failure`.
+    pub(crate) async fn release_stop_unconfirmed(mut self, failure: CleanupFailure) {
+        let _ = self.child.wait().await;
+        self.completion.unconfirmed = Some(Fence::stop_requested(failure));
+    }
 }
 
 #[cfg(test)]
@@ -579,8 +681,40 @@ mod tests {
                 serde_json::json!({ "version": 1, "origin": wire })
             );
             // An unconfirmed owner reports its own path; a confirmed one none.
-            assert_eq!(unless_confirmed(false, origin), Some(origin));
+            assert_eq!(unless_confirmed(false, origin), Some(Fence::from(origin)));
             assert_eq!(unless_confirmed(true, origin), None);
+        }
+    }
+
+    #[test]
+    fn stream_lifecycle_cleanup_failure_names_exactly_the_unconfirmed_checks() {
+        use LeaderWait::*;
+        for (tree_stopped, leader, expected) in [
+            (true, Reaped, None),
+            (false, Reaped, Some("tree_unconfirmed")),
+            (true, TimedOut, Some("leader_wait_timed_out")),
+            (true, Failed, Some("leader_wait_failed")),
+            (false, TimedOut, Some("tree_and_leader_wait_timed_out")),
+            (false, Failed, Some("tree_and_leader_wait_failed")),
+        ] {
+            let failure = cleanup_failure(tree_stopped, leader);
+            // Confirmation keeps its exact prior rule: tree stopped and leader reaped.
+            assert_eq!(
+                failure.is_none(),
+                tree_stopped && matches!(leader, Reaped),
+                "{tree_stopped} {leader:?}"
+            );
+            assert_eq!(
+                failure.map(|failure| {
+                    serde_json::to_value(FenceCleanupReceipt {
+                        version: 1,
+                        failure,
+                    })
+                    .unwrap()
+                }),
+                expected.map(|wire| serde_json::json!({ "version": 1, "failure": wire })),
+                "{tree_stopped} {leader:?}"
+            );
         }
     }
 }
@@ -718,7 +852,7 @@ mod unix_tests {
             completion,
             ..
         } = owned;
-        assert!(terminate_owned(&mut child).await.0);
+        assert_eq!(terminate_owned(&mut child).await.0, None);
         assert!(!group_alive(leader));
         assert!(!process_alive(descendant));
         assert_eq!(lifecycle.fence_origin_receipt(), None);
@@ -755,22 +889,98 @@ mod unix_tests {
         Box::leak(Box::new(UpdateGate::default()))
     }
 
-    /// Stop the test-owned tree exactly, then release ownership with `origin`
+    /// Stop the test-owned tree exactly, then release ownership with `fence`
     /// as `run`'s recorded final outcome, or confirmed when None.
-    async fn release(owned: OwnedCommand, origin: Option<FenceOrigin>) {
+    async fn release_with(owned: OwnedCommand, fence: Option<Fence>) {
         let OwnedCommand {
             mut child,
             mut completion,
             ..
         } = owned;
-        assert!(terminate_owned(&mut child).await.0);
-        completion.unconfirmed = origin;
+        assert_eq!(terminate_owned(&mut child).await.0, None);
+        completion.unconfirmed = fence;
+    }
+
+    /// As `release_with`, for an outcome that records no cleanup leg.
+    async fn release(owned: OwnedCommand, origin: Option<FenceOrigin>) {
+        release_with(owned, origin.map(Fence::from)).await;
     }
 
     fn origin(lifecycle: &StreamLifecycle) -> Option<FenceOrigin> {
         lifecycle
             .fence_origin_receipt()
             .map(|receipt| receipt.origin)
+    }
+
+    fn cleanup(lifecycle: &StreamLifecycle) -> Option<CleanupFailure> {
+        lifecycle
+            .fence_receipts()
+            .and_then(|(_, cleanup)| cleanup)
+            .map(|receipt| receipt.failure)
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_fence_keeps_the_first_stop_leg_with_its_origin_only() {
+        let scratch = Scratch::new();
+        let launch = |lifecycle: Arc<StreamLifecycle>, id: &'static str| {
+            let mut cmd = platform::build_command(&long_tree(&scratch, id), None, None);
+            async move { started(lifecycle.launch(lifecycle.admit(), id, &mut cmd).await) }
+        };
+
+        // The first stop's leg is recorded with its origin and survives a
+        // later owner's outcome, a later stop's leg and a cancellation timeout.
+        let first = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+        let (stop, later_stop, timeout) = (
+            launch(first.clone(), "stop").await,
+            launch(first.clone(), "later-stop").await,
+            launch(first.clone(), "timeout").await,
+        );
+        assert_eq!(first.fence_receipts(), None);
+        release_with(
+            stop,
+            Some(Fence::stop_requested(CleanupFailure::LeaderWaitFailed)),
+        )
+        .await;
+        release(timeout, Some(FenceOrigin::OwnerTimeout)).await;
+        release_with(
+            later_stop,
+            Some(Fence::stop_requested(CleanupFailure::TreeUnconfirmed)),
+        )
+        .await;
+        first.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
+        assert_eq!(origin(&first), Some(FenceOrigin::OwnerStopRequested));
+        assert_eq!(cleanup(&first), Some(CleanupFailure::LeaderWaitFailed));
+
+        // A later stop never backfills a leg onto an earlier origin: another
+        // owner's outcome, a stop released before recording its outcome, or a
+        // cancellation wait timeout.
+        for earlier in [
+            FenceOrigin::OwnerTimeout,
+            FenceOrigin::OwnerOutcomeMissing,
+            FenceOrigin::CancelWaitTimeout,
+        ] {
+            let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+            let (fenced, stop) = (
+                launch(lifecycle.clone(), "fenced").await,
+                launch(lifecycle.clone(), "stop").await,
+            );
+            match earlier {
+                FenceOrigin::CancelWaitTimeout => {
+                    lifecycle.fence_unconfirmed(earlier);
+                    release(fenced, None).await;
+                }
+                _ => release(fenced, Some(earlier)).await,
+            }
+            release_with(
+                stop,
+                Some(Fence::stop_requested(
+                    CleanupFailure::TreeAndLeaderWaitTimedOut,
+                )),
+            )
+            .await;
+            assert_eq!(origin(&lifecycle), Some(earlier));
+            assert_eq!(cleanup(&lifecycle), None, "{earlier:?}");
+        }
     }
 
     #[tokio::test]

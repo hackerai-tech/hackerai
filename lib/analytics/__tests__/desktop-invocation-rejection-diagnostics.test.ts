@@ -1033,6 +1033,367 @@ describe("stream fence origin", () => {
       ),
     ).toBeNull();
   });
+
+  describe("stop cleanup failure", () => {
+    const failures = [
+      "tree_unconfirmed",
+      "leader_wait_timed_out",
+      "leader_wait_failed",
+      "tree_and_leader_wait_timed_out",
+      "tree_and_leader_wait_failed",
+    ];
+    const stop = { version: 1, origin: "owner_stop_requested" };
+    const sibling = (
+      streamFenceCleanup: unknown,
+      streamFence: unknown = stop,
+    ) => ({
+      message: STOP_UNCONFIRMED,
+      streamFence,
+      streamFenceCleanup,
+    });
+    const stopGroup = {
+      desktop_stream_fence_version: 1,
+      desktop_stream_fence_origin: "owner_stop_requested",
+    };
+    const cleanupGroup = {
+      desktop_stream_fence_cleanup_version: 1,
+      desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+    };
+    // Counts every own-key, descriptor, prototype or value access.
+    const watched = (target: object) => {
+      const reads = { count: 0 };
+      const count = <T>(value: T) => {
+        reads.count++;
+        return value;
+      };
+      const proxy = new Proxy(target, {
+        get: (object, key) => count(Reflect.get(object, key)),
+        getOwnPropertyDescriptor: (object, key) =>
+          count(Reflect.getOwnPropertyDescriptor(object, key)),
+        getPrototypeOf: (object) => count(Reflect.getPrototypeOf(object)),
+        ownKeys: (object) => count(Reflect.ownKeys(object)),
+      });
+      return { proxy, reads };
+    };
+
+    it.each(failures)(
+      "unwraps the exact message beside the stop origin and its %s failure",
+      (failure) => {
+        const parsed = parseNativeStreamFenceRejection(
+          sibling({ version: 1, failure }),
+        );
+        expect(parsed).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_stop_requested",
+          cleanupFailure: failure,
+        });
+        expect(Object.isFrozen(parsed)).toBe(true);
+        const diagnostic = desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          parsed!.origin,
+          parsed!.cleanupFailure,
+        );
+        expect(diagnostic).toEqual({
+          ...stopGroup,
+          desktop_stream_fence_cleanup_version: 1,
+          desktop_stream_fence_cleanup_failure: failure,
+        });
+        expect(Object.isFrozen(diagnostic)).toBe(true);
+      },
+    );
+
+    it("keeps the exact v1 shape from an older native app unchanged", () => {
+      const parsed = parseNativeStreamFenceRejection(rejection(stop));
+      expect(parsed).toEqual({
+        message: STOP_UNCONFIRMED,
+        origin: "owner_stop_requested",
+      });
+      expect(parsed).not.toHaveProperty("cleanupFailure");
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          parsed!.origin,
+          parsed!.cleanupFailure,
+        ),
+      ).toEqual(stopGroup);
+    });
+
+    it.each(origins.filter((origin) => origin !== "owner_stop_requested"))(
+      "never reads a cleanup sibling beside the %s origin",
+      (origin) => {
+        const cleanup = watched({ version: 1, failure: "tree_unconfirmed" });
+        const parsed = parseNativeStreamFenceRejection(
+          sibling(cleanup.proxy, { version: 1, origin }),
+        );
+        expect(parsed).toEqual({ message: STOP_UNCONFIRMED, origin });
+        expect(parsed).not.toHaveProperty("cleanupFailure");
+        expect(cleanup.reads.count).toBe(0);
+        // Nor does the group admit one.
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            origin,
+            "tree_unconfirmed",
+          ),
+        ).toEqual({ ...group, desktop_stream_fence_origin: origin });
+      },
+    );
+
+    it("never reads a cleanup sibling beside a malformed origin", () => {
+      const cleanup = watched({ version: 1, failure: "tree_unconfirmed" });
+      expect(
+        parseNativeStreamFenceRejection(
+          sibling(cleanup.proxy, {
+            version: 2,
+            origin: "owner_stop_requested",
+          }),
+        ),
+      ).toEqual({ message: STOP_UNCONFIRMED, origin: null });
+      expect(cleanup.reads.count).toBe(0);
+    });
+
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    it.each<[string, () => unknown]>([
+      ["an unlisted failure", () => ({ version: 1, failure: "PRIVATE" })],
+      ["a numeric failure", () => ({ version: 1, failure: 1 })],
+      [
+        "an unsupported version",
+        () => ({ version: 2, failure: "tree_unconfirmed" }),
+      ],
+      [
+        "a string version",
+        () => ({ version: "1", failure: "tree_unconfirmed" }),
+      ],
+      ["a missing version", () => ({ failure: "tree_unconfirmed" })],
+      ["a missing failure", () => ({ version: 1 })],
+      [
+        "an extra field",
+        () => ({ version: 1, failure: "tree_unconfirmed", pid: 4242 }),
+      ],
+      [
+        "an extra symbol",
+        () => ({ version: 1, failure: "tree_unconfirmed", [Symbol("x")]: 1 }),
+      ],
+      [
+        "an inherited failure",
+        () => Object.create({ version: 1, failure: "tree_unconfirmed" }),
+      ],
+      [
+        "a null-prototype failure",
+        () =>
+          Object.assign(Object.create(null), {
+            version: 1,
+            failure: "tree_unconfirmed",
+          }),
+      ],
+      [
+        "a failure getter",
+        () =>
+          Object.defineProperty({ version: 1 }, "failure", {
+            enumerable: true,
+            get: fail,
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () =>
+          new Proxy(
+            { version: 1, failure: "tree_unconfirmed" },
+            {
+              getPrototypeOf: fail,
+              ownKeys: fail,
+              get: fail,
+              getOwnPropertyDescriptor: fail,
+            },
+          ),
+      ],
+      ["a string", () => "tree_unconfirmed"],
+      ["an array", () => [1, "tree_unconfirmed"]],
+      ["null", () => null],
+      ["undefined", () => undefined],
+    ])(
+      "keeps the exact message and stop origin beside %s",
+      (_case, cleanup) => {
+        const parsed = parseNativeStreamFenceRejection(sibling(cleanup()));
+        expect(parsed).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_stop_requested",
+        });
+        expect(parsed).not.toHaveProperty("cleanupFailure");
+      },
+    );
+
+    it("keeps the exact message and stop origin beside a cleanup accessor", () => {
+      let gets = 0;
+      const error = Object.defineProperty(
+        rejection(stop),
+        "streamFenceCleanup",
+        {
+          enumerable: true,
+          get() {
+            gets++;
+            return { version: 1, failure: "tree_unconfirmed" };
+          },
+        },
+      );
+      expect(parseNativeStreamFenceRejection(error)).toEqual({
+        message: STOP_UNCONFIRMED,
+        origin: "owner_stop_requested",
+      });
+      expect(gets).toBe(0);
+    });
+
+    it.each<[string, () => unknown]>([
+      [
+        "a cleanup without an origin",
+        () => ({
+          message: STOP_UNCONFIRMED,
+          streamFenceCleanup: { version: 1, failure: "tree_unconfirmed" },
+        }),
+      ],
+      [
+        "an extra field beside the sibling",
+        () => ({
+          ...sibling({ version: 1, failure: "tree_unconfirmed" }),
+          pid: 4242,
+        }),
+      ],
+      [
+        "a sibling beside another message",
+        () => ({
+          ...sibling({ version: 1, failure: "tree_unconfirmed" }),
+          message: PAGE_REPLACED,
+        }),
+      ],
+      [
+        "an inherited sibling",
+        () =>
+          Object.create(sibling({ version: 1, failure: "tree_unconfirmed" })),
+      ],
+    ])("reads nothing from %s", (_case, error) => {
+      expect(parseNativeStreamFenceRejection(error())).toBeNull();
+    });
+
+    it("joins only a listed failure to a validated stop origin", () => {
+      for (const failure of ["PRIVATE", 1, undefined, null])
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            "owner_stop_requested",
+            failure,
+          ),
+        ).toEqual(stopGroup);
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          desktopInvocationUnknownDiagnostic(
+            authorizedUnknown,
+            "lifecycle_page_replaced",
+          ),
+          "owner_stop_requested",
+          "tree_unconfirmed",
+        ),
+      ).toBeNull();
+    });
+
+    it("reads the cleanup pair only beside the stop origin on an acknowledged terminal", () => {
+      const source = { ...stopGroup, ...cleanupGroup, message: "PRIVATE" };
+      const read = readDesktopStreamFenceDiagnostic(
+        source,
+        authorizedUnknown,
+        stopUnconfirmed,
+        true,
+      );
+      expect(read).toEqual({ ...stopGroup, ...cleanupGroup });
+      expect(Object.isFrozen(read)).toBe(true);
+      // Without an acknowledged terminal, or beside another origin, the
+      // cleanup keys are never read and the origin pair stays as before.
+      for (const [base, acknowledged] of [
+        [stopGroup, false],
+        [stopGroup, undefined],
+        [group, true],
+      ] as const) {
+        let reads = 0;
+        const counted = new Proxy(
+          { ...base, ...cleanupGroup },
+          {
+            getOwnPropertyDescriptor(target, key) {
+              if (typeof key === "string" && key in cleanupGroup) reads++;
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+          },
+        );
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            counted,
+            authorizedUnknown,
+            stopUnconfirmed,
+            acknowledged,
+          ),
+        ).toEqual(base);
+        expect(reads).toBe(0);
+      }
+    });
+
+    it("drops only an invalid or hostile cleanup pair", () => {
+      let gets = 0;
+      const accessor = { ...stopGroup } as Record<string, unknown>;
+      for (const key of Object.keys(cleanupGroup))
+        Object.defineProperty(accessor, key, {
+          enumerable: true,
+          get() {
+            gets++;
+            return cleanupGroup[key as keyof typeof cleanupGroup];
+          },
+        });
+      for (const source of [
+        { ...stopGroup },
+        {
+          ...stopGroup,
+          ...cleanupGroup,
+          desktop_stream_fence_cleanup_version: 2,
+        },
+        {
+          ...stopGroup,
+          ...cleanupGroup,
+          desktop_stream_fence_cleanup_version: "1",
+        },
+        {
+          ...stopGroup,
+          ...cleanupGroup,
+          desktop_stream_fence_cleanup_failure: "PRIVATE",
+        },
+        { ...stopGroup, desktop_stream_fence_cleanup_version: 1 },
+        Object.assign(Object.create(cleanupGroup), stopGroup),
+        accessor,
+        new Proxy(
+          { ...stopGroup, ...cleanupGroup },
+          {
+            get: fail,
+            getOwnPropertyDescriptor(target, key) {
+              if (typeof key === "string" && key in cleanupGroup) fail();
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+          },
+        ),
+      ])
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            source,
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          ),
+        ).toEqual(stopGroup);
+      expect(gets).toBe(0);
+    });
+  });
 });
 
 describe("desktopInvocationAdmissionDiagnostic", () => {

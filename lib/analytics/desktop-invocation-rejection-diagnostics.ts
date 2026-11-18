@@ -484,26 +484,48 @@ const STREAM_FENCE_ORIGINS = [
 
 export type DesktopStreamFenceOrigin = (typeof STREAM_FENCE_ORIGINS)[number];
 
-/** The own data values of exactly `keys` on a plain object, or null. Never
- * runs a getter and never throws. */
-function readClosedOwnData(
-  value: unknown,
-  keys: readonly string[],
-): unknown[] | null {
+/** Only this origin can carry a cleanup failure: the owner's requested stop. */
+const STREAM_FENCE_CLEANUP_ORIGIN = "owner_stop_requested";
+
+/** A closed class of which bounded steps of an `owner_stop_requested` owner's
+ * stop failed: the tree's stopped verification, the wait for its leader, or
+ * both, and whether that wait timed out or failed. It never names the process,
+ * its output, an OS error, a time or a raw comparison. */
+const STREAM_FENCE_CLEANUP_FAILURES = [
+  "tree_unconfirmed",
+  "leader_wait_timed_out",
+  "leader_wait_failed",
+  "tree_and_leader_wait_timed_out",
+  "tree_and_leader_wait_failed",
+] as const;
+
+export type DesktopStreamFenceCleanupFailure =
+  (typeof STREAM_FENCE_CLEANUP_FAILURES)[number];
+
+/** A plain object's own string keys, or null for anything else or any symbol.
+ * Never runs a getter and never throws. */
+function plainOwnKeys(value: unknown): string[] | null {
   try {
     if (
       typeof value !== "object" ||
       value === null ||
-      Object.getPrototypeOf(value) !== Object.prototype
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.getOwnPropertySymbols(value).length > 0
     )
       return null;
-    const own = Object.getOwnPropertyNames(value);
-    if (
-      own.length !== keys.length ||
-      Object.getOwnPropertySymbols(value).length > 0 ||
-      !keys.every((key) => own.includes(key))
-    )
-      return null;
+    return Object.getOwnPropertyNames(value);
+  } catch {
+    return null;
+  }
+}
+
+/** The own data values of `keys` on `value`, or null if any is missing or an
+ * accessor. Never runs a getter and never throws. */
+function readOwnDataValues(
+  value: object,
+  keys: readonly string[],
+): unknown[] | null {
+  try {
     const values: unknown[] = [];
     for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -516,49 +538,131 @@ function readClosedOwnData(
   }
 }
 
+/** The own data values of exactly `keys` on a plain object, or null. Never
+ * runs a getter and never throws. */
+function readClosedOwnData(
+  value: unknown,
+  keys: readonly string[],
+): unknown[] | null {
+  const own = plainOwnKeys(value);
+  if (
+    !own ||
+    own.length !== keys.length ||
+    !keys.every((key) => own.includes(key))
+  )
+    return null;
+  return readOwnDataValues(value as object, keys);
+}
+
 const STREAM_FENCE_REJECTION_KEYS = ["message", "streamFence"] as const;
+const STREAM_FENCE_CLEANUP_KEY = "streamFenceCleanup";
 const STREAM_FENCE_ORIGIN_KEYS = ["version", "origin"] as const;
+const STREAM_FENCE_CLEANUP_KEYS = ["version", "failure"] as const;
 
 export interface NativeStreamFenceRejection {
   /** Always exactly the public `STOP_UNCONFIRMED` message. */
   readonly message: string;
   /** Null unless the carried origin is the closed v1 shape. */
   readonly origin: DesktopStreamFenceOrigin | null;
+  /** Present only beside an `owner_stop_requested` origin, for the closed v1
+   * `streamFenceCleanup` sibling. */
+  readonly cleanupFailure?: DesktopStreamFenceCleanupFailure;
+}
+
+/** The closed v1 cleanup failure in `cleanup`, or null. Never throws. */
+function parseStreamFenceCleanup(
+  cleanup: unknown,
+): DesktopStreamFenceCleanupFailure | null {
+  const values = readClosedOwnData(cleanup, STREAM_FENCE_CLEANUP_KEYS);
+  return values?.[0] === 1
+    ? (STREAM_FENCE_CLEANUP_FAILURES.find((known) => known === values[1]) ??
+        null)
+    : null;
 }
 
 /** The opted-in authorized stream command's rejection for its exact
  * unconfirmed stop: a plain object whose only own properties are the data
  * properties `message`, exactly the public fence message, and `streamFence`,
- * `{ version: 1, origin }` with a listed origin. Any other value, including
- * every string rejection, is null, so the caller keeps the rejection exactly
- * as received. A malformed `streamFence` keeps only the exact message. Never
+ * `{ version: 1, origin }` with a listed origin, optionally beside a
+ * `streamFenceCleanup` sibling, `{ version: 1, failure }` with a listed
+ * failure. Any other value, including every string rejection, is null, so the
+ * caller keeps the rejection exactly as received. A malformed `streamFence`
+ * keeps only the exact message; a malformed cleanup, or one beside any other
+ * origin, which is then never read, keeps the exact message and origin. Never
  * throws; a getter never runs. */
 export function parseNativeStreamFenceRejection(
   error: unknown,
 ): NativeStreamFenceRejection | null {
-  const values = readClosedOwnData(error, STREAM_FENCE_REJECTION_KEYS);
+  const own = plainOwnKeys(error);
+  const sibling =
+    own?.length === STREAM_FENCE_REJECTION_KEYS.length + 1 &&
+    own.includes(STREAM_FENCE_CLEANUP_KEY);
+  if (
+    !own ||
+    own.length !== STREAM_FENCE_REJECTION_KEYS.length + (sibling ? 1 : 0) ||
+    !STREAM_FENCE_REJECTION_KEYS.every((key) => own.includes(key))
+  )
+    return null;
+  const values = readOwnDataValues(
+    error as object,
+    STREAM_FENCE_REJECTION_KEYS,
+  );
   if (!values || values[0] !== STOP_UNCONFIRMED_MESSAGE) return null;
   const fence = readClosedOwnData(values[1], STREAM_FENCE_ORIGIN_KEYS);
   const origin =
     fence?.[0] === 1
       ? (STREAM_FENCE_ORIGINS.find((known) => known === fence[1]) ?? null)
       : null;
-  return Object.freeze({ message: STOP_UNCONFIRMED_MESSAGE, origin });
+  const cleanupFailure =
+    sibling && origin === STREAM_FENCE_CLEANUP_ORIGIN
+      ? parseStreamFenceCleanup(
+          readOwnDataValues(error as object, [STREAM_FENCE_CLEANUP_KEY])?.[0],
+        )
+      : null;
+  return Object.freeze({
+    message: STOP_UNCONFIRMED_MESSAGE,
+    origin,
+    ...(cleanupFailure && { cleanupFailure }),
+  });
 }
 
-export interface DesktopStreamFenceDiagnostic {
+interface DesktopStreamFenceOriginGroup {
   readonly desktop_stream_fence_version: 1;
   readonly desktop_stream_fence_origin: DesktopStreamFenceOrigin;
 }
 
+interface DesktopStreamFenceCleanupGroup {
+  readonly desktop_stream_fence_cleanup_version: 1;
+  readonly desktop_stream_fence_cleanup_failure: DesktopStreamFenceCleanupFailure;
+}
+
+/** The fence origin pair, and only beside `owner_stop_requested` the complete
+ * cleanup pair. */
+export type DesktopStreamFenceDiagnostic = DesktopStreamFenceOriginGroup &
+  (
+    | DesktopStreamFenceCleanupGroup
+    | {
+        readonly desktop_stream_fence_cleanup_version?: never;
+        readonly desktop_stream_fence_cleanup_failure?: never;
+      }
+  );
+
 const STREAM_FENCE_PROPERTIES = [
   "desktop_stream_fence_version",
   "desktop_stream_fence_origin",
-] as const satisfies readonly (keyof DesktopStreamFenceDiagnostic)[];
+] as const satisfies readonly (keyof DesktopStreamFenceOriginGroup)[];
 
-export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set(
-  STREAM_FENCE_PROPERTIES,
-);
+const STREAM_FENCE_CLEANUP_PROPERTIES = [
+  "desktop_stream_fence_cleanup_version",
+  "desktop_stream_fence_cleanup_failure",
+] as const satisfies readonly (keyof DesktopStreamFenceCleanupGroup)[];
+
+/** Both pairs: the final whitelist strips every one and re-adds only the
+ * validated copy. */
+export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
+  ...STREAM_FENCE_PROPERTIES,
+  ...STREAM_FENCE_CLEANUP_PROPERTIES,
+]);
 
 /** Only the authorized command's exact unconfirmed-stop rejection, already
  * validated as both groups, can carry a fence origin. */
@@ -574,30 +678,60 @@ function refinesStopUnconfirmed(
 }
 
 /** The complete fence group, or null unless it refines a complete authorized
- * `lifecycle_stop_unconfirmed` rejection with a listed origin. */
+ * `lifecycle_stop_unconfirmed` rejection with a listed origin. Only an
+ * `owner_stop_requested` origin adds the complete cleanup pair, for a listed
+ * failure; any other failure value leaves the origin pair alone. */
 export function desktopStreamFenceDiagnostic(
   rejection: DesktopInvocationRejectionDiagnostic | null,
   unknown: DesktopInvocationUnknownDiagnostic | null,
   origin: unknown,
+  cleanupFailure: unknown = null,
 ): DesktopStreamFenceDiagnostic | null {
   if (!refinesStopUnconfirmed(rejection, unknown)) return null;
   const known = STREAM_FENCE_ORIGINS.find((value) => value === origin);
-  return known
-    ? Object.freeze({
-        desktop_stream_fence_version: 1,
-        desktop_stream_fence_origin: known,
-      })
-    : null;
+  if (!known) return null;
+  const failure =
+    known === STREAM_FENCE_CLEANUP_ORIGIN
+      ? STREAM_FENCE_CLEANUP_FAILURES.find((value) => value === cleanupFailure)
+      : undefined;
+  const pair = {
+    desktop_stream_fence_version: 1,
+    desktop_stream_fence_origin: known,
+  } as const;
+  return Object.freeze(
+    failure
+      ? {
+          ...pair,
+          desktop_stream_fence_cleanup_version: 1 as const,
+          desktop_stream_fence_cleanup_failure: failure,
+        }
+      : pair,
+  );
+}
+
+/** Own data values of `keys` on any property bag; a missing key or accessor
+ * reads as undefined. A getter never runs; a throw propagates. */
+function ownDataValuesOrUndefined(
+  source: object,
+  keys: readonly string[],
+): unknown[] {
+  return keys.map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  });
 }
 
 /** Read the complete fence group from any property bag's own data properties,
  * joined to already validated authorized `unknown` and
  * `lifecycle_stop_unconfirmed` groups, or nothing at all. No property is read
- * without them. A getter never runs; a throwing proxy reads as nothing. */
+ * without them. The cleanup pair is read only beside a validated
+ * `owner_stop_requested` origin on an acknowledged terminal, and an invalid
+ * one drops alone. A getter never runs; a throwing proxy reads as nothing. */
 export function readDesktopStreamFenceDiagnostic(
   source: unknown,
   rejection: DesktopInvocationRejectionDiagnostic | null,
   unknown: DesktopInvocationUnknownDiagnostic | null,
+  terminalAcknowledged = false,
 ): DesktopStreamFenceDiagnostic | null {
   if (
     !refinesStopUnconfirmed(rejection, unknown) ||
@@ -605,16 +739,40 @@ export function readDesktopStreamFenceDiagnostic(
     source === null
   )
     return null;
+  let fence: DesktopStreamFenceDiagnostic | null;
   try {
-    const [version, origin] = STREAM_FENCE_PROPERTIES.map((key) => {
-      const descriptor = Object.getOwnPropertyDescriptor(source, key);
-      return descriptor && "value" in descriptor ? descriptor.value : undefined;
-    });
-    return version === 1
-      ? desktopStreamFenceDiagnostic(rejection, unknown, origin)
-      : null;
+    const [version, origin] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_PROPERTIES,
+    );
+    fence =
+      version === 1
+        ? desktopStreamFenceDiagnostic(rejection, unknown, origin)
+        : null;
   } catch {
     return null;
+  }
+  if (
+    !fence ||
+    !terminalAcknowledged ||
+    fence.desktop_stream_fence_origin !== STREAM_FENCE_CLEANUP_ORIGIN
+  )
+    return fence;
+  try {
+    const [version, failure] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_CLEANUP_PROPERTIES,
+    );
+    return version === 1
+      ? desktopStreamFenceDiagnostic(
+          rejection,
+          unknown,
+          fence.desktop_stream_fence_origin,
+          failure,
+        )
+      : fence;
+  } catch {
+    return fence;
   }
 }
 
