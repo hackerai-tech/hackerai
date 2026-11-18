@@ -10796,11 +10796,13 @@ describe("native authorization send receipt", () => {
         includeStreamFenceOrigin: true,
         includeStreamFenceCleanup: true,
         includeStreamFenceWindowsTaskkill: true,
+        includeStreamFenceWindowsTaskkillRootReport: true,
       });
       for (const optIn of [
         "includeStreamFenceOrigin",
         "includeStreamFenceCleanup",
         "includeStreamFenceWindowsTaskkill",
+        "includeStreamFenceWindowsTaskkillRootReport",
       ])
         expect(Object.keys(calls[0].message as object)).not.toContain(optIn);
       // The product error is the exact original string, as one terminal.
@@ -11040,6 +11042,9 @@ describe("native authorization send receipt", () => {
       expect(calls[1]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceCleanup");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceWindowsTaskkill");
+      expect(calls[1]).not.toHaveProperty(
+        "includeStreamFenceWindowsTaskkillRootReport",
+      );
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11057,6 +11062,9 @@ describe("native authorization send receipt", () => {
       expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
       expect(calls[0]).not.toHaveProperty("includeStreamFenceWindowsTaskkill");
+      expect(calls[0]).not.toHaveProperty(
+        "includeStreamFenceWindowsTaskkillRootReport",
+      );
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11073,6 +11081,9 @@ describe("native authorization send receipt", () => {
         expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
         expect(calls[0]).not.toHaveProperty(
           "includeStreamFenceWindowsTaskkill",
+        );
+        expect(calls[0]).not.toHaveProperty(
+          "includeStreamFenceWindowsTaskkillRootReport",
         );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: stopUnconfirmed }),
@@ -11416,6 +11427,39 @@ describe("native authorization send receipt", () => {
               desktop_stream_fence_windows_taskkill_outcome: "output_error",
             },
           ],
+          // A current native app's v2 receipt adds only the root report pair
+          // beside the unchanged v1 group.
+          [
+            {
+              version: 2,
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "requested_pid_not_found",
+            },
+            {
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              desktop_stream_fence_windows_taskkill_exit_code: 128,
+              desktop_stream_fence_windows_taskkill_root_report_version: 1,
+              desktop_stream_fence_windows_taskkill_root_report:
+                "requested_pid_not_found",
+            },
+          ],
+          [
+            {
+              version: 2,
+              outcome: "nonzero_exit",
+              exitCode: 255,
+              rootReport: "unclassified",
+            },
+            {
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              desktop_stream_fence_windows_taskkill_exit_code: 255,
+              desktop_stream_fence_windows_taskkill_root_report_version: 1,
+              desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+            },
+          ],
         ])(
           "unwraps the exact message and joins %j to its tree_unconfirmed stop",
           async (receipt, taskkillGroup) => {
@@ -11430,6 +11474,7 @@ describe("native authorization send receipt", () => {
               includeStreamFenceOrigin: true,
               includeStreamFenceCleanup: true,
               includeStreamFenceWindowsTaskkill: true,
+              includeStreamFenceWindowsTaskkillRootReport: true,
             });
             expect(sequencedFrames(replies[0])).toEqual([
               {
@@ -11515,6 +11560,39 @@ describe("native authorization send receipt", () => {
           [
             "an unsupported version",
             () => withTaskkill({ version: 2, outcome: "output_error" }),
+            treeGroup,
+          ],
+          [
+            "a not-found report beside exit 255",
+            () =>
+              withTaskkill({
+                version: 2,
+                outcome: "nonzero_exit",
+                exitCode: 255,
+                rootReport: "requested_pid_not_found",
+              }),
+            treeGroup,
+          ],
+          [
+            "a raw taskkill line as the report",
+            () =>
+              withTaskkill({
+                version: 2,
+                outcome: "nonzero_exit",
+                exitCode: 128,
+                rootReport: 'ERROR: The process "PRIVATE" not found.',
+              }),
+            treeGroup,
+          ],
+          [
+            "a v1 receipt carrying a report",
+            () =>
+              withTaskkill({
+                version: 1,
+                outcome: "nonzero_exit",
+                exitCode: 128,
+                rootReport: "requested_pid_not_found",
+              }),
             treeGroup,
           ],
           [
@@ -11614,6 +11692,7 @@ describe("native authorization send receipt", () => {
         "includeStreamFenceOrigin",
         "includeStreamFenceCleanup",
         "includeStreamFenceWindowsTaskkill",
+        "includeStreamFenceWindowsTaskkillRootReport",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

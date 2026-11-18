@@ -4032,6 +4032,113 @@ describe("invocation rejection message class", () => {
             });
           });
 
+          describe("root report pair", () => {
+            const withoutRoot = {
+              ...taskkill,
+              desktop_stream_fence_windows_taskkill_exit_code: 128,
+            } as const;
+            const root = {
+              desktop_stream_fence_windows_taskkill_root_report_version: 1,
+              desktop_stream_fence_windows_taskkill_root_report:
+                "requested_pid_not_found",
+            } as const;
+            const notFound = { ...withoutRoot, ...root } as const;
+
+            it("keeps the unsampled pair beside its code through capture and before_send", () => {
+              jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+              const expected = { ...treePairs, ...notFound };
+              const final = settle({
+                ...fenced,
+                streamFence: {
+                  ...expected,
+                  stderr: 'ERROR: The process "PRIVATE" not found.',
+                  pid: 4242,
+                },
+              });
+              expect(final?.properties).toMatchObject({
+                ...expected,
+                telemetry_sample_rate: 1,
+              });
+              expect(fenceKeys(final!.properties)).toHaveLength(9);
+              const enriched = sanitize({
+                ...final!.properties,
+                pid: 4242,
+                command: "PRIVATE",
+              });
+              expect(enriched).toMatchObject(expected);
+              expect(fenceKeys(enriched)).toHaveLength(9);
+              expect(final!.properties).not.toHaveProperty("pid");
+              expect(enriched).not.toHaveProperty("pid");
+              expect(JSON.stringify([final, enriched])).not.toContain(
+                "PRIVATE",
+              );
+            });
+
+            it.each<[string, Record<string, unknown>]>([
+              [
+                "not found beside exit 255",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_exit_code: 255,
+                },
+              ],
+              [
+                "a private report",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_root_report: "PRIVATE",
+                },
+              ],
+              [
+                "an unsupported version",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_root_report_version: 2,
+                },
+              ],
+            ])("drops only the pair for %s", (_case, carried) => {
+              const kept = {
+                ...treePairs,
+                ...withoutRoot,
+                desktop_stream_fence_windows_taskkill_exit_code:
+                  carried.desktop_stream_fence_windows_taskkill_exit_code,
+              };
+              const final = settle({
+                ...fenced,
+                streamFence: { ...treePairs, ...carried },
+              });
+              expect(fenceKeys(final!.properties)).toEqual(Object.keys(kept));
+              expect(final?.properties).toMatchObject(kept);
+              expect(sanitize({ ...coarse, ...treePairs, ...carried })).toEqual(
+                { ...coarse, ...kept },
+              );
+            });
+
+            it("never keeps the pair without a code or on an unacknowledged terminal", () => {
+              const codeless = {
+                desktop_stream_fence_windows_taskkill_version: 1,
+                desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              };
+              expect(
+                sanitize({ ...coarse, ...treePairs, ...codeless, ...root }),
+              ).toEqual({
+                ...coarse,
+                ...treePairs,
+                ...codeless,
+              });
+              expect(
+                fenceKeys(
+                  sanitize({
+                    ...coarse,
+                    terminalAcknowledged: false,
+                    ...treePairs,
+                    ...notFound,
+                  }),
+                ),
+              ).toEqual(Object.keys(stopOrigin));
+            });
+          });
+
           it("never keeps the group on an unacknowledged terminal", () => {
             const final = settle({
               ...fenced,

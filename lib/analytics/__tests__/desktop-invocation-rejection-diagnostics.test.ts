@@ -1692,6 +1692,358 @@ describe("stream fence origin", () => {
           ).toEqual(pairs);
         expect(gets).toBe(0);
       });
+
+      describe("root report", () => {
+        const notFound = {
+          version: 2,
+          outcome: "nonzero_exit",
+          exitCode: 128,
+          rootReport: "requested_pid_not_found",
+        };
+        const rootPair = (report: string) => ({
+          desktop_stream_fence_windows_taskkill_root_report_version: 1,
+          desktop_stream_fence_windows_taskkill_root_report: report,
+        });
+        const code = (exitCode: number) => ({
+          ...taskkillGroup,
+          desktop_stream_fence_windows_taskkill_exit_code: exitCode,
+        });
+
+        // [native v2 receipt, parsed receipt, analytics groups]
+        it.each<[unknown, unknown, Record<string, unknown>]>([
+          [
+            notFound,
+            {
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "requested_pid_not_found",
+            },
+            { ...code(128), ...rootPair("requested_pid_not_found") },
+          ],
+          [
+            { ...notFound, rootReport: "unclassified" },
+            {
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "unclassified",
+            },
+            { ...code(128), ...rootPair("unclassified") },
+          ],
+          [
+            { ...notFound, exitCode: 255, rootReport: "unclassified" },
+            {
+              outcome: "nonzero_exit",
+              exitCode: 255,
+              rootReport: "unclassified",
+            },
+            { ...code(255), ...rootPair("unclassified") },
+          ],
+        ])(
+          "joins the v2 receipt %j beside the unchanged v1 group",
+          (receipt, windowsTaskkill, expected) => {
+            const parsed = parseNativeStreamFenceRejection(
+              withTaskkill(receipt),
+            );
+            expect(parsed).toEqual({ ...treeParsed, windowsTaskkill });
+            expect(Object.isFrozen(parsed!.windowsTaskkill)).toBe(true);
+            const diagnostic = desktopStreamFenceDiagnostic(
+              authorizedUnknown,
+              stopUnconfirmed,
+              parsed!.origin,
+              parsed!.cleanupFailure,
+              parsed!.windowsTaskkill,
+            );
+            expect(diagnostic).toEqual({
+              ...stopGroup,
+              ...cleanupGroup,
+              ...expected,
+            });
+            // The property-bag reader keeps exactly the same groups.
+            expect(
+              readDesktopStreamFenceDiagnostic(
+                { ...diagnostic, message: "PRIVATE" },
+                authorizedUnknown,
+                stopUnconfirmed,
+                true,
+              ),
+            ).toEqual(diagnostic);
+          },
+        );
+
+        it("keeps accepting an older native app's exact v1 receipt without a root report", () => {
+          const parsed = parseNativeStreamFenceRejection(
+            withTaskkill({
+              version: 1,
+              outcome: "nonzero_exit",
+              exitCode: 128,
+            }),
+          );
+          expect(parsed?.windowsTaskkill).toEqual({
+            outcome: "nonzero_exit",
+            exitCode: 128,
+          });
+          expect(
+            desktopStreamFenceDiagnostic(
+              authorizedUnknown,
+              stopUnconfirmed,
+              parsed!.origin,
+              parsed!.cleanupFailure,
+              parsed!.windowsTaskkill,
+            ),
+          ).toEqual({ ...stopGroup, ...cleanupGroup, ...taskkillGroup });
+        });
+
+        it.each<[string, () => unknown]>([
+          ["not found beside exit 255", () => ({ ...notFound, exitCode: 255 })],
+          ["not found beside exit 1", () => ({ ...notFound, exitCode: 1 })],
+          [
+            "not found beside a negative code",
+            () => ({ ...notFound, exitCode: -128 }),
+          ],
+          [
+            "an unlisted report",
+            () => ({ ...notFound, rootReport: "PRIVATE" }),
+          ],
+          [
+            "a raw taskkill line",
+            () => ({
+              ...notFound,
+              rootReport: 'ERROR: The process "4242" not found.',
+            }),
+          ],
+          ["a null report", () => ({ ...notFound, rootReport: null })],
+          ["a boolean report", () => ({ ...notFound, rootReport: true })],
+          ["a v1 receipt with a report", () => ({ ...notFound, version: 1 })],
+          ["a v3 receipt", () => ({ ...notFound, version: 3 })],
+          [
+            "a v2 receipt without a report",
+            () => ({ version: 2, outcome: "nonzero_exit", exitCode: 128 }),
+          ],
+          [
+            "a v2 receipt without a code",
+            () => ({
+              version: 2,
+              outcome: "nonzero_exit",
+              rootReport: "unclassified",
+            }),
+          ],
+          [
+            "a v2 output_error",
+            () => ({ ...notFound, outcome: "output_error" }),
+          ],
+          ["a v2 zero code", () => ({ ...notFound, exitCode: 0 })],
+          ["a v2 string code", () => ({ ...notFound, exitCode: "128" })],
+          ["an extra pid", () => ({ ...notFound, pid: 4242 })],
+          ["an extra stderr", () => ({ ...notFound, stderr: "PRIVATE" })],
+          [
+            "an accessor report",
+            () =>
+              Object.defineProperty(
+                { version: 2, outcome: "nonzero_exit", exitCode: 128 },
+                "rootReport",
+                { enumerable: true, get: fail },
+              ),
+          ],
+          ["an inherited v2 receipt", () => Object.create(notFound)],
+        ])("drops only the taskkill receipt for %s", (_case, receipt) => {
+          const parsed = parseNativeStreamFenceRejection(
+            withTaskkill(receipt()),
+          );
+          expect(parsed).toEqual(treeParsed);
+          expect(parsed).not.toHaveProperty("windowsTaskkill");
+        });
+
+        it("never classifies an unchecked report beside another code or outcome", () => {
+          const build = (windowsTaskkill: Record<string, unknown>) =>
+            desktopStreamFenceDiagnostic(
+              authorizedUnknown,
+              stopUnconfirmed,
+              "owner_stop_requested",
+              "tree_unconfirmed",
+              windowsTaskkill as never,
+            );
+          // A positive report beside another code drops alone; 255 is never
+          // read as the tree's state.
+          expect(
+            build({
+              outcome: "nonzero_exit",
+              exitCode: 255,
+              rootReport: "requested_pid_not_found",
+            }),
+          ).toEqual({ ...stopGroup, ...cleanupGroup, ...code(255) });
+          expect(
+            build({
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "PRIVATE",
+            }),
+          ).toEqual({ ...stopGroup, ...cleanupGroup, ...code(128) });
+          // Without a code there is no root report at all.
+          expect(
+            build({ outcome: "nonzero_exit", rootReport: "unclassified" }),
+          ).toEqual({
+            ...stopGroup,
+            ...cleanupGroup,
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+          });
+          expect(
+            build({ outcome: "output_error", rootReport: "unclassified" }),
+          ).toEqual({
+            ...stopGroup,
+            ...cleanupGroup,
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "output_error",
+          });
+        });
+
+        it("reads the pair only beside a validated taskkill code", () => {
+          const pairs = { ...stopGroup, ...cleanupGroup };
+          const outputError = {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "output_error",
+          };
+          const root = rootPair("requested_pid_not_found");
+          for (const [base, kept] of [
+            [
+              { ...pairs, ...outputError },
+              { ...pairs, ...outputError },
+            ],
+            [
+              {
+                ...pairs,
+                desktop_stream_fence_windows_taskkill_version: 1,
+                desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              },
+              {
+                ...pairs,
+                desktop_stream_fence_windows_taskkill_version: 1,
+                desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              },
+            ],
+            [{ ...pairs, ...code(0) }, pairs],
+            [pairs, pairs],
+          ] as const) {
+            let reads = 0;
+            const counted = new Proxy(
+              { ...base, ...root },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (typeof key === "string" && key in root) reads++;
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            );
+            expect(
+              readDesktopStreamFenceDiagnostic(
+                counted,
+                authorizedUnknown,
+                stopUnconfirmed,
+                true,
+              ),
+            ).toEqual(kept);
+            expect(reads).toBe(0);
+          }
+        });
+
+        it("joins the report only to the taskkill snapshot it validated", () => {
+          const validated = { ...stopGroup, ...cleanupGroup, ...code(128) };
+          const root = rootPair("requested_pid_not_found");
+          // While the report is read, the bag's code changes or vanishes.
+          const changing = (
+            change?: (target: Record<string, unknown>) => void,
+          ) =>
+            new Proxy<Record<string, unknown>>(
+              { ...validated, ...root },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (
+                    key === "desktop_stream_fence_windows_taskkill_root_report"
+                  )
+                    change?.(target);
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            );
+          const read = (source: unknown) =>
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            );
+          // A stable snapshot keeps the positive report.
+          expect(read(changing())).toEqual({ ...validated, ...root });
+          for (const change of [
+            (target: Record<string, unknown>) => {
+              target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+            },
+            (target: Record<string, unknown>) => {
+              delete target.desktop_stream_fence_windows_taskkill_exit_code;
+            },
+          ])
+            // A mixed snapshot keeps only the earlier validated code.
+            expect(read(changing(change))).toEqual(validated);
+        });
+
+        it("drops only an invalid or hostile root report pair", () => {
+          const kept = { ...stopGroup, ...cleanupGroup, ...code(255) };
+          let gets = 0;
+          const accessor = Object.defineProperty(
+            { ...kept, ...rootPair("unclassified") },
+            "desktop_stream_fence_windows_taskkill_root_report",
+            {
+              enumerable: true,
+              get() {
+                gets++;
+                return "unclassified";
+              },
+            },
+          );
+          for (const source of [
+            { ...kept, ...rootPair("requested_pid_not_found") },
+            { ...kept, ...rootPair("PRIVATE") },
+            {
+              ...kept,
+              ...rootPair("unclassified"),
+              desktop_stream_fence_windows_taskkill_root_report_version: 2,
+            },
+            {
+              ...kept,
+              desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+            },
+            {
+              ...kept,
+              desktop_stream_fence_windows_taskkill_root_report_version: 1,
+            },
+            accessor,
+            new Proxy(
+              { ...kept, ...rootPair("unclassified") },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (
+                    typeof key === "string" &&
+                    key.startsWith(
+                      "desktop_stream_fence_windows_taskkill_root_report",
+                    )
+                  )
+                    fail();
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+          ])
+            expect(
+              readDesktopStreamFenceDiagnostic(
+                source,
+                authorizedUnknown,
+                stopUnconfirmed,
+                true,
+              ),
+            ).toEqual(kept);
+          expect(gets).toBe(0);
+        });
+      });
     });
   });
 });

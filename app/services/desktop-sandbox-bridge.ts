@@ -1873,11 +1873,14 @@ export class DesktopSandboxBridge {
               }),
               // Outside the signed message; never sent to a legacy command.
               // The cleanup opt-in is only ever offered with the origin one,
-              // and the taskkill opt-in only with both.
+              // the taskkill opt-in only with both, and its root report
+              // opt-in only with all three. An older native app ignores it
+              // and keeps the v1 taskkill receipt, which is still accepted.
               ...(streamFenceOffered && {
                 includeStreamFenceOrigin: true,
                 includeStreamFenceCleanup: true,
                 includeStreamFenceWindowsTaskkill: true,
+                includeStreamFenceWindowsTaskkillRootReport: true,
               }),
             },
             invocationTrace,
