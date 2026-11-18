@@ -1,4 +1,7 @@
-import { captureGoalLifecycle } from "@/lib/goals/analytics";
+import {
+  captureGoalLifecycle,
+  type GoalDispatchPhase,
+} from "@/lib/goals/analytics";
 import { task, tasks, sessions } from "@trigger.dev/sdk";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient, setConvexUrl } from "@/lib/db/convex-client";
@@ -19,6 +22,7 @@ export const agentGoalDispatch = task({
       throw new Error("Missing goal identity");
     setConvexUrl(payload.convexUrl);
     let startedRunId: string | undefined;
+    let phase: GoalDispatchPhase = "claim_dispatch";
     try {
       const claimed = await getConvexClient().mutation(
         api.agentGoals.claimDispatch,
@@ -31,7 +35,9 @@ export const agentGoalDispatch = task({
         },
       );
       if (!claimed) return;
+      phase = "execution_policy";
       await assertGoalExecutionAllowed(payload);
+      phase = "goal_read";
       const goal = await getGoal(payload.chatId, payload.userId);
       if (
         !goal ||
@@ -61,6 +67,7 @@ export const agentGoalDispatch = task({
       if (permission === "ask_approval" || permission === "auto_review") {
         const sessionId = `goal:${goal._id}:${goal.generation}`;
         nextPayload.approvalSessionId = sessionId;
+        phase = "approval_session_start";
         const session = await sessions.start({
           type: `agent-long-approval.v${payload.approvalProtocolVersion}`,
           externalId: sessionId,
@@ -82,6 +89,7 @@ export const agentGoalDispatch = task({
         });
         startedRunId = session.runId;
       } else {
+        phase = "task_trigger";
         const handle = await tasks.trigger("agent-long", nextPayload, {
           idempotencyKey: `goal:${goal._id}:${goal.generation}`,
           idempotencyKeyTTL: "30d",
@@ -112,10 +120,15 @@ export const agentGoalDispatch = task({
       );
       return { runId: startedRunId };
     } catch (error) {
+      // captureGoalLifecycle never throws, so a failure after a launch call
+      // resolves cannot be reported under that launch phase.
       await captureGoalLifecycle("dispatch_failed", {
         ...payload,
         runId: ctx.run.id,
+        // The dispatcher's own build, not the target worker pin.
+        workerVersion: ctx.deployment?.version,
         automatic: true,
+        dispatchPhase: phase,
       });
       await getConvexClient().mutation(api.agentGoals.failDispatch, {
         serviceKey: goalServiceKey(),
