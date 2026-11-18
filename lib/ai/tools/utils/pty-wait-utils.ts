@@ -6,16 +6,16 @@ import type { PtySession } from "./pty-session-manager";
  * dep. UI-side consumers still get the raw bytes via `data-terminal` events.
  *
  * Mirrors what a terminal displays for 7-bit ESC controls:
- * - OSC ends at BEL or ESC \; any other ESC cancels it and starts anew, so the
- *   ESC is left for the next match. An unterminated OSC is removed only when it
- *   is trailing metadata on the same line, so later output is never hidden.
+ * - OSC ends at BEL or ESC \, and CAN or SUB cancels it. For an unterminated
+ *   OSC, recover only within the same line so later output is kept, and leave
+ *   any new ESC for the next match.
  * - ESC + intermediate bytes (e.g. charset `ESC ( B`) is one sequence.
  * - An ESC directly followed by another ESC is discarded, and a sequence cut
  *   off at the end of the text (chunk or excerpt boundary) is dropped.
  * Decoded C1 code points (U+0080-U+009F) are left as text.
  */
 export const ANSI_REGEX =
-  /\x1B(?:\[[0-?]*[ -/]*(?:[@-~]|$)|\](?:[^\x07\x1B]*(?:\x07|\x1B\\|(?=\x1B))|[^\x07\x1B\n]*$)|[ -/]+(?:[0-~]|$)|[@-Z\\-_]|(?=\x1B)|$)/g;
+  /\x1B(?:\[[0-?]*[ -/]*(?:[@-~]|$)|\](?:[^\x07\x18\x1A\x1B]*(?:[\x07\x18\x1A]|\x1B\\)|[^\x07\x18\x1A\x1B\n]*(?=\x1B|$))|[ -/]+(?:[0-~]|$)|[@-Z\\-_]|(?=\x1B)|$)/g;
 
 export const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 

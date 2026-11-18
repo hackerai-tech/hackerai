@@ -191,6 +191,9 @@ describe("pty-wait-utils", () => {
       "ok\x1b]0;title\x1b\x1b[31mred\x1b[0m",
       "okred",
     ],
+    ["a title cancelled by CAN", "ok\x1b]0;title\x18red", "okred"],
+    ["a title cancelled by SUB", "ok\x1b]0;title\x1ared", "okred"],
+    ["a complete multiline title", "ok\x1b]0;title\ncontinued\x07red", "okred"],
     ["a character-set designation", "a\x1b(Bb", "ab"],
     ["a title cut off at the end of the excerpt", "ok\n\x1b]0;tit", "ok\n"],
     ["a color cut off at the end of the excerpt", "ok\x1b[3", "ok"],
@@ -209,6 +212,18 @@ describe("pty-wait-utils", () => {
       "0;title\ncommand output",
     );
   });
+
+  it.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+  ])(
+    "keeps a colored line after an unterminated title ending at %s",
+    (_label, eol) => {
+      expect(
+        stripAnsi(`\x1b]0;title${eol}command output \x1b[31mred\x1b[0m`),
+      ).toBe(`0;title${eol}command output red`);
+    },
+  );
 
   it("peeks resolved exits without waiting on live processes", async () => {
     const live = makeSession();
