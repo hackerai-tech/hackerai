@@ -6,7 +6,7 @@ import {
   desktopInvocationSpawnHintDiagnostic,
   desktopInvocationUnknownDiagnostic,
   desktopStreamFenceDiagnostic,
-  parseNativeStreamFenceOrigin,
+  parseNativeStreamFenceRejection,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
@@ -736,25 +736,37 @@ describe("stream fence origin", () => {
     desktop_stream_fence_origin: "owner_timeout",
   };
 
-  it.each(origins)("parses and joins the closed %s receipt", (origin) => {
-    const parsed = parseNativeStreamFenceOrigin({ version: 1, origin });
-    expect(parsed).toBe(origin);
-    const diagnostic = desktopStreamFenceDiagnostic(
-      authorizedUnknown,
-      stopUnconfirmed,
-      parsed,
-    );
-    expect(diagnostic).toEqual({
-      desktop_stream_fence_version: 1,
-      desktop_stream_fence_origin: origin,
-    });
-    expect(Object.isFrozen(diagnostic)).toBe(true);
+  const rejection = (streamFence: unknown) => ({
+    message: STOP_UNCONFIRMED,
+    streamFence,
   });
 
+  it.each(origins)(
+    "unwraps the exact message and joins the closed %s origin",
+    (origin) => {
+      const parsed = parseNativeStreamFenceRejection(
+        rejection({ version: 1, origin }),
+      );
+      expect(parsed).toEqual({ message: STOP_UNCONFIRMED, origin });
+      expect(Object.isFrozen(parsed)).toBe(true);
+      // The unwrapped message classifies exactly as the original string.
+      expect(classifyNativeInvocationRejectionMessage(parsed!.message)).toEqual(
+        classifyNativeInvocationRejectionMessage(STOP_UNCONFIRMED),
+      );
+      const diagnostic = desktopStreamFenceDiagnostic(
+        authorizedUnknown,
+        stopUnconfirmed,
+        parsed!.origin,
+      );
+      expect(diagnostic).toEqual({
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: origin,
+      });
+      expect(Object.isFrozen(diagnostic)).toBe(true);
+    },
+  );
+
   it.each<[string, () => unknown]>([
-    ["null", () => null],
-    ["a string", () => "owner_timeout"],
-    ["an array", () => [1, "owner_timeout"]],
     ["an unlisted origin", () => ({ version: 1, origin: "PRIVATE" })],
     ["a numeric origin", () => ({ version: 1, origin: 0 })],
     ["an unsupported version", () => ({ version: 2, origin: "owner_timeout" })],
@@ -770,49 +782,101 @@ describe("stream fence origin", () => {
       () => ({ version: 1, origin: "owner_timeout", [Symbol("x")]: 1 }),
     ],
     [
-      "an inherited receipt",
+      "an inherited origin",
       () => Object.create({ version: 1, origin: "owner_timeout" }),
     ],
     [
-      "a null-prototype receipt",
+      "a null-prototype origin",
       () =>
         Object.assign(Object.create(null), {
           version: 1,
           origin: "owner_timeout",
         }),
     ],
-  ])("parses nothing from %s", (_case, value) => {
-    expect(parseNativeStreamFenceOrigin(value())).toBeNull();
+    ["a string", () => "owner_timeout"],
+    ["an array", () => [1, "owner_timeout"]],
+    ["null", () => null],
+  ])("keeps only the exact message beside %s", (_case, streamFence) => {
+    expect(parseNativeStreamFenceRejection(rejection(streamFence()))).toEqual({
+      message: STOP_UNCONFIRMED,
+      origin: null,
+    });
   });
 
-  it("never runs a receipt accessor and survives a throwing proxy", () => {
+  it.each<[string, () => unknown]>([
+    ["the original string", () => STOP_UNCONFIRMED],
+    ["an Error", () => new Error(STOP_UNCONFIRMED)],
+    ["null", () => null],
+    ["an array", () => [STOP_UNCONFIRMED, { version: 1, origin: "x" }]],
+    [
+      "another lifecycle message",
+      () => ({
+        message: PAGE_REPLACED,
+        streamFence: { version: 1, origin: "owner_timeout" },
+      }),
+    ],
+    [
+      "a message with a private suffix",
+      () => ({
+        message: `${STOP_UNCONFIRMED} PRIVATE`,
+        streamFence: { version: 1, origin: "owner_timeout" },
+      }),
+    ],
+    ["a missing origin", () => ({ message: STOP_UNCONFIRMED })],
+    [
+      "an extra field",
+      () => ({
+        ...rejection({ version: 1, origin: "owner_timeout" }),
+        pid: 4242,
+      }),
+    ],
+    [
+      "an inherited rejection",
+      () => Object.create(rejection({ version: 1, origin: "owner_timeout" })),
+    ],
+  ])("reads nothing from %s", (_case, error) => {
+    expect(parseNativeStreamFenceRejection(error())).toBeNull();
+  });
+
+  it("never runs an accessor and survives a throwing proxy", () => {
     let reads = 0;
-    const accessor = { version: 1 } as Record<string, unknown>;
-    Object.defineProperty(accessor, "origin", {
-      enumerable: true,
-      get() {
-        reads++;
-        return "owner_timeout";
-      },
-    });
-    expect(parseNativeStreamFenceOrigin(accessor)).toBeNull();
+    const counted = (target: Record<string, unknown>, key: string) => {
+      const value = target[key];
+      Object.defineProperty(target, key, {
+        enumerable: true,
+        get() {
+          reads++;
+          return value;
+        },
+      });
+      return target;
+    };
+    expect(
+      parseNativeStreamFenceRejection(
+        counted(rejection({ version: 1, origin: "owner_timeout" }), "message"),
+      ),
+    ).toBeNull();
+    expect(
+      parseNativeStreamFenceRejection(
+        rejection(counted({ version: 1, origin: "owner_timeout" }, "origin")),
+      ),
+    ).toEqual({ message: STOP_UNCONFIRMED, origin: null });
     expect(reads).toBe(0);
     const fail = () => {
       throw new Error("PRIVATE");
     };
-    expect(
-      parseNativeStreamFenceOrigin(
-        new Proxy(
-          { version: 1, origin: "owner_timeout" },
-          {
-            getPrototypeOf: fail,
-            ownKeys: fail,
-            get: fail,
-            getOwnPropertyDescriptor: fail,
-          },
-        ),
-      ),
-    ).toBeNull();
+    const hostile = () =>
+      new Proxy(rejection({ version: 1, origin: "owner_timeout" }), {
+        getPrototypeOf: fail,
+        ownKeys: fail,
+        get: fail,
+        getOwnPropertyDescriptor: fail,
+      });
+    expect(parseNativeStreamFenceRejection(hostile())).toBeNull();
+    expect(parseNativeStreamFenceRejection(rejection(hostile()))).toEqual({
+      message: STOP_UNCONFIRMED,
+      origin: null,
+    });
   });
 
   it.each<[string, unknown, unknown]>([

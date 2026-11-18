@@ -178,6 +178,10 @@ const UNKNOWN_CLASSES = [
 
 export type DesktopInvocationUnknownClass = (typeof UNKNOWN_CLASSES)[number];
 
+/** stream_lifecycle.rs `STOP_UNCONFIRMED`, the public product message. */
+const STOP_UNCONFIRMED_MESSAGE =
+  "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
+
 // stream_lifecycle.rs admission denials, first in the source after
 // desktop-v0.0.81. Exact equality only: a changed template is `other_*`.
 const LIFECYCLE_MESSAGES: ReadonlyMap<string, DesktopInvocationUnknownClass> =
@@ -190,10 +194,7 @@ const LIFECYCLE_MESSAGES: ReadonlyMap<string, DesktopInvocationUnknownClass> =
       "Desktop is still stopping commands from a previous page. Retry shortly.",
       "lifecycle_prior_cleanup_pending",
     ],
-    [
-      "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.",
-      "lifecycle_stop_unconfirmed",
-    ],
+    [STOP_UNCONFIRMED_MESSAGE, "lifecycle_stop_unconfirmed"],
   ]);
 
 /** Tauri rejects with the native string. Otherwise only an Error's own data
@@ -483,14 +484,12 @@ const STREAM_FENCE_ORIGINS = [
 
 export type DesktopStreamFenceOrigin = (typeof STREAM_FENCE_ORIGINS)[number];
 
-const STREAM_FENCE_RECEIPT_KEYS = ["version", "origin"] as const;
-
-/** Copy only the closed native v1 receipt: a plain object whose only own
- * properties are the data properties `version` (1) and a listed `origin`.
- * Never throws; a getter never runs. */
-export function parseNativeStreamFenceOrigin(
+/** The own data values of exactly `keys` on a plain object, or null. Never
+ * runs a getter and never throws. */
+function readClosedOwnData(
   value: unknown,
-): DesktopStreamFenceOrigin | null {
+  keys: readonly string[],
+): unknown[] | null {
   try {
     if (
       typeof value !== "object" ||
@@ -500,20 +499,51 @@ export function parseNativeStreamFenceOrigin(
       return null;
     const own = Object.getOwnPropertyNames(value);
     if (
-      own.length !== STREAM_FENCE_RECEIPT_KEYS.length ||
+      own.length !== keys.length ||
       Object.getOwnPropertySymbols(value).length > 0 ||
-      !STREAM_FENCE_RECEIPT_KEYS.every((key) => own.includes(key))
+      !keys.every((key) => own.includes(key))
     )
       return null;
-    const [version, origin] = STREAM_FENCE_RECEIPT_KEYS.map((key) => {
+    const values: unknown[] = [];
+    for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor && "value" in descriptor ? descriptor.value : undefined;
-    });
-    if (version !== 1) return null;
-    return STREAM_FENCE_ORIGINS.find((known) => known === origin) ?? null;
+      if (!descriptor || !("value" in descriptor)) return null;
+      values.push(descriptor.value);
+    }
+    return values;
   } catch {
     return null;
   }
+}
+
+const STREAM_FENCE_REJECTION_KEYS = ["message", "streamFence"] as const;
+const STREAM_FENCE_ORIGIN_KEYS = ["version", "origin"] as const;
+
+export interface NativeStreamFenceRejection {
+  /** Always exactly the public `STOP_UNCONFIRMED` message. */
+  readonly message: string;
+  /** Null unless the carried origin is the closed v1 shape. */
+  readonly origin: DesktopStreamFenceOrigin | null;
+}
+
+/** The opted-in authorized stream command's rejection for its exact
+ * unconfirmed stop: a plain object whose only own properties are the data
+ * properties `message`, exactly the public fence message, and `streamFence`,
+ * `{ version: 1, origin }` with a listed origin. Any other value, including
+ * every string rejection, is null, so the caller keeps the rejection exactly
+ * as received. A malformed `streamFence` keeps only the exact message. Never
+ * throws; a getter never runs. */
+export function parseNativeStreamFenceRejection(
+  error: unknown,
+): NativeStreamFenceRejection | null {
+  const values = readClosedOwnData(error, STREAM_FENCE_REJECTION_KEYS);
+  if (!values || values[0] !== STOP_UNCONFIRMED_MESSAGE) return null;
+  const fence = readClosedOwnData(values[1], STREAM_FENCE_ORIGIN_KEYS);
+  const origin =
+    fence?.[0] === 1
+      ? (STREAM_FENCE_ORIGINS.find((known) => known === fence[1]) ?? null)
+      : null;
+  return Object.freeze({ message: STOP_UNCONFIRMED_MESSAGE, origin });
 }
 
 export interface DesktopStreamFenceDiagnostic {

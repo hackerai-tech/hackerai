@@ -69,7 +69,7 @@ import {
   desktopInvocationSpawnHintDiagnostic,
   desktopInvocationUnknownDiagnostic,
   desktopStreamFenceDiagnostic,
-  parseNativeStreamFenceOrigin,
+  parseNativeStreamFenceRejection,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
@@ -1524,11 +1524,16 @@ export class DesktopSandboxBridge {
     // connector snapshot has its own channel and latch and joins only the v1
     // receipt. The JSON read snapshot has its own channel and latch, and joins
     // only a `json_error` response receipt; either may arrive first. The
-    // native stream fence origin has its own channel and latch, independent of
-    // every authorization channel, and joins only this invocation's first
-    // terminal: an authorized `lifecycle_stop_unconfirmed` rejection.
+    // native stream fence origin is no callback: an opted-in authorized
+    // command carries it in its own exact unconfirmed-stop rejection, and it
+    // joins only that rejection as this invocation's first terminal.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
+    // The same gate as the optional channels: only an identified owner's
+    // invocation of an authorized-capable native app offers the opt-in.
+    const streamFenceOffered =
+      Boolean(receiptOwner) &&
+      !usesPublishedLegacyDesktopCommands(nativeAppVersion);
     const receiptFenced = () =>
       this.isStoppingOrStopped ||
       this.operationRouter !== router ||
@@ -1542,7 +1547,6 @@ export class DesktopSandboxBridge {
     let responseOpen = true;
     let mitigationOpen = true;
     let responseReadOpen = true;
-    let streamFenceOpen = true;
     let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
@@ -1597,7 +1601,6 @@ export class DesktopSandboxBridge {
         responseOpen = false;
         mitigationOpen = false;
         responseReadOpen = false;
-        streamFenceOpen = false;
         terminalLatched = true;
         const streamFence =
           terminalErrorKind === "invocation_rejected"
@@ -1675,7 +1678,6 @@ export class DesktopSandboxBridge {
     let ioChannel: object | undefined;
     let connectorChannel: object | undefined;
     let responseReadChannel: object | undefined;
-    let streamFenceChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1802,20 +1804,6 @@ export class DesktopSandboxBridge {
             responseReadChannel = undefined;
           }
         }
-        // Independent of every authorization channel: native sends it only
-        // with its exact unconfirmed-stop launch rejection.
-        try {
-          const channel = new Channel<unknown>();
-          channel.onmessage = (value) => {
-            if (!streamFenceOpen) return;
-            streamFenceOpen = false;
-            if (receiptFenced()) return;
-            streamFenceOrigin = parseNativeStreamFenceOrigin(value);
-          };
-          streamFenceChannel = channel;
-        } catch {
-          streamFenceChannel = undefined;
-        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1872,19 +1860,27 @@ export class DesktopSandboxBridge {
               ...(responseReadChannel && {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
-              ...(streamFenceChannel && {
-                onStreamFenceDiagnostic: streamFenceChannel,
-              }),
+              // Outside the signed message; never sent to a legacy command.
+              ...(streamFenceOffered && { includeStreamFenceOrigin: true }),
             },
             invocationTrace,
           );
         }
-      } catch (error) {
+      } catch (caught) {
         invocationRejected = true;
+        // Only the authorized command offered the opt-in can carry the fence
+        // origin in its rejection; it is unwrapped to the exact original
+        // message. Every other rejection is kept exactly as received.
+        const fenceRejection =
+          streamFenceOffered && invocationTrace.adapter === "authorized_native"
+            ? parseNativeStreamFenceRejection(caught)
+            : null;
+        const error: unknown = fenceRejection ? fenceRejection.message : caught;
         // Classified before append can settle; the product message is unchanged.
         // A failure before any command set was selected is never read as a
         // native message.
         if (latchTerminal("invocation_rejected")) {
+          streamFenceOrigin = fenceRejection?.origin ?? null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);
@@ -1952,7 +1948,6 @@ export class DesktopSandboxBridge {
         ioChannel,
         connectorChannel,
         responseReadChannel,
-        streamFenceChannel,
       ]) {
         try {
           (

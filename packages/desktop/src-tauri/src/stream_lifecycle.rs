@@ -89,8 +89,8 @@ pub(crate) enum FenceOrigin {
     CancelWaitTimeout,
 }
 
-/// Sent once, only with an exact `STOP_UNCONFIRMED` rejection, on its own
-/// optional channel.
+/// Carried only beside an opted-in invocation's exact `STOP_UNCONFIRMED`
+/// rejection, in that same rejection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct FenceOriginReceipt {
     version: u8,
