@@ -89,7 +89,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
    * `unknown` rejection class from the authorized command set. */
   invocationUnknown?: DesktopInvocationUnknownDiagnostic;
   /** The native stream fence's first origin; only joined to a valid
-   * authorized `lifecycle_stop_unconfirmed` unknown class. */
+   * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
+   * failure is reported only for `owner_stop_requested` on an acknowledged
+   * terminal. */
   streamFence?: DesktopStreamFenceDiagnostic;
 };
 
@@ -372,10 +374,13 @@ export class DesktopAckTelemetry {
         result.invocationUnknown,
         invocationRejection,
       );
+      // Its cleanup pair joins only an `owner_stop_requested` origin on an
+      // acknowledged terminal; otherwise the origin pair alone, as before.
       const streamFence = readDesktopStreamFenceDiagnostic(
         result.streamFence,
         invocationRejection,
         invocationUnknown,
+        result.terminalAcknowledged === true,
       );
       this.capture(
         "desktop_ack_command_settled",
