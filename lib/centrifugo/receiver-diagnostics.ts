@@ -28,6 +28,17 @@ export type ReceiverCleanupReason =
 export type DispatchUncertainReason =
   "publish_timeout" | "operation_ready_timeout";
 
+const ATTACHMENT_LOCAL_COPY_OWNER_STAGES = [
+  "shell_detection",
+  "source_native_path_conversion",
+  "destination_native_path_conversion",
+  "directory_and_copy",
+] as const;
+/** The local-copy step that issued this command; not its outcome or cause.
+ * Server-internal: never forwarded to a provider SDK or the Desktop host. */
+export type AttachmentLocalCopyOwnerStage =
+  (typeof ATTACHMENT_LOCAL_COPY_OWNER_STAGES)[number];
+
 /** Server-side, content-free counterpart to Desktop sender settlement telemetry.
  * A published cursor proves broker acceptance, not receipt by the sender.
  * Bound transition logs independently of retries; always retain final counters.
@@ -41,11 +52,27 @@ export function createReceiverDiagnostics(
     requestedBackground?: boolean;
     /** Requested execution budget, excluding any receiver delivery allowance. */
     requestedTimeoutMs?: number;
+    /** Local-copy step that issued this command, when one did. */
+    attachmentLocalCopyOwnerStage?: AttachmentLocalCopyOwnerStage;
   },
   state: () => ReceiverState,
 ) {
   const started = Date.now();
   let startRecorded = false;
+  // Closed group: omitted entirely unless the stage is a known value.
+  const copyOwner = () => {
+    try {
+      const stage: unknown = context.attachmentLocalCopyOwnerStage;
+      return ATTACHMENT_LOCAL_COPY_OWNER_STAGES.some((known) => known === stage)
+        ? {
+            attachment_local_copy_owner_version: 1,
+            attachment_local_copy_owner_stage: stage as string,
+          }
+        : {};
+    } catch {
+      return {};
+    }
+  };
   // Closed group: omitted entirely unless both requested values are valid.
   const requestIntent = () => {
     try {
@@ -133,7 +160,10 @@ export function createReceiverDiagnostics(
     start() {
       const first = !startRecorded;
       startRecorded = true;
-      emit("started", first && context.enabled ? requestIntent() : {});
+      emit(
+        "started",
+        first && context.enabled ? { ...requestIntent(), ...copyOwner() } : {},
+      );
       if (context.enabled && !closed && !waitTimer) {
         // One passive snapshot before a web request's platform deadline.
         waitTimer = setTimeout(() => {

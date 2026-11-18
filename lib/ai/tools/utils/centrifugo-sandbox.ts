@@ -3,6 +3,8 @@ import {
   recordAttachmentDownloadBoundary,
   recordAttachmentCommandReceiver,
   recordAttachmentCommandSetupAttempt,
+  readAttachmentCommandReceiverClientError,
+  type AttachmentCommandReceiverClientError,
   type AttachmentDownloadBoundary,
   type AttachmentDownloadShellContextObservation,
 } from "./attachment-download-diagnostics";
@@ -26,6 +28,7 @@ import {
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
+  type AttachmentLocalCopyOwnerStage,
 } from "@/lib/centrifugo/receiver-diagnostics";
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import {
@@ -146,6 +149,9 @@ const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
+
+/** Which path of a local copy issued a setup command. */
+type LocalCopyRole = "source" | "destination";
 
 /** Classify rejected conversion output without retaining any path or output text. */
 function nativePathOutputShape(value: string) {
@@ -1099,6 +1105,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         signal?: AbortSignal;
         onCancelReady?: (cancel: () => Promise<boolean>) => void;
       },
+      /** Server-internal diagnostics only; never published to the host. */
+      copyOwnerStage?: AttachmentLocalCopyOwnerStage,
     ): Promise<{
       stdout: string;
       stderr: string;
@@ -1149,7 +1157,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       const result = await new Promise<CommandResult>((resolve, fail) => {
         let commandPublicationStarted = false;
-        const reject = (error: unknown, retryable = false) => {
+        const reject = (
+          error: unknown,
+          retryable = false,
+          // Only the terminal client_error branch supplies this snapshot.
+          clientError?: AttachmentCommandReceiverClientError,
+        ) => {
           const rejection = isLocalCommandRelayUnsubscribedError(error)
             ? error
             : new LocalCommandDispatchError(
@@ -1166,6 +1179,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               publicationStarted: commandPublicationStarted,
               publishCompleted: Boolean(tPublished),
               firstMessageObserved: Boolean(tFirstMessage),
+              ...(clientError && { clientError }),
             });
           fail(rejection);
         };
@@ -1210,6 +1224,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             // Requested execution intent, not maxWaitTime's delivery window.
             requestedBackground: opts?.background === true,
             requestedTimeoutMs: timeout,
+            attachmentLocalCopyOwnerStage: copyOwnerStage,
           },
           () => ({
             sequence: lastStreamSequence,
@@ -2054,19 +2069,25 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             const msg = ctx.error?.message ?? "unknown";
             const isConnectionLimit =
               msg.includes("connection limit") || ctx.error?.code === 4503;
-            reject(
-              new Error(
-                isConnectionLimit
-                  ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
-                  : `Centrifugo client error: ${msg}`,
-              ),
-              isConnectionLimit ||
-                ctx.type === "transport" ||
-                (ctx.type === "connect" &&
-                  (ctx.error.code < 100 ||
-                    ("temporary" in ctx.error &&
-                      ctx.error.temporary === true))),
+            const error = new Error(
+              isConnectionLimit
+                ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
+                : `Centrifugo client error: ${msg}`,
             );
+            const retryable =
+              isConnectionLimit ||
+              ctx.type === "transport" ||
+              (ctx.type === "connect" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true)));
+            // Only after the original outcome is settled: descriptor reads can
+            // reach SDK-context traps, so they must not affect it. Closed
+            // values plus the predicate above; never the message.
+            const clientError = readAttachmentCommandReceiverClientError(
+              ctx,
+              isConnectionLimit,
+            );
+            reject(error, retryable, clientError);
           }
         });
 
@@ -2138,13 +2159,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     path: string,
     signal?: AbortSignal,
     nativePaths?: Map<string, string>,
+    copyRole?: LocalCopyRole,
   ): Promise<string> {
     signal?.throwIfAborted();
     if (!this.isWindows()) return path;
     if (
       path.startsWith("/") &&
       !path.startsWith("//") &&
-      (await this.detectShell(signal)) === "bash"
+      (await this.detectShell(signal, copyRole)) === "bash"
     ) {
       const cached = nativePaths?.get(path);
       if (cached !== undefined) return cached;
@@ -2152,7 +2174,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       // Use its installed utility, independent of PATH or project executables.
       const result = await this.runSetupCommand(
         `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
-        { signal },
+        {
+          signal,
+          copyOwnerStage: copyRole && `${copyRole}_native_path_conversion`,
+        },
       );
       const resolved = result.stdout.replace(/\r?\n$/, "");
       if (
@@ -2272,7 +2297,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
    * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
-  async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
+  async detectShell(
+    signal?: AbortSignal,
+    /** Set only by a local copy, to attribute a probe it actually issues. */
+    copyRole?: LocalCopyRole,
+  ): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
     const declaredPlatform = this.connectionInfo.osInfo?.platform;
@@ -2286,6 +2315,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const probe = await this.runSetupCommand("echo $BASH_VERSION", {
       signal,
       displayName: "",
+      copyOwnerStage: copyRole && "shell_detection",
     });
     if (probe.exitCode !== 0) {
       throw persistenceCommandError("Failed to detect local shell", probe);
@@ -2300,6 +2330,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       displayName?: string;
       timeoutMs?: number;
       signal?: AbortSignal;
+      /** Reused by each attempt; every attempt is its own command. */
+      copyOwnerStage?: AttachmentLocalCopyOwnerStage;
     } = {},
   ): Promise<CommandResult> {
     for (let attempt = 1; attempt <= SETUP_COMMAND_MAX_ATTEMPTS; attempt++) {
@@ -2312,6 +2344,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             timeoutMs: options.timeoutMs ?? SETUP_COMMAND_TIMEOUT_MS,
             displayName: options.displayName ?? "",
           },
+          options.copyOwnerStage,
         );
         options.signal?.throwIfAborted();
         return result;
@@ -2350,6 +2383,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     rawPath: string,
     signal?: AbortSignal,
     observation?: AttachmentDownloadShellContextObservation,
+    copyRole?: LocalCopyRole,
   ): Promise<{
     useBash: boolean;
     path: string;
@@ -2358,13 +2392,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     escapeValue: (value: string) => string;
   }> {
     if (observation) observation.stage = "detect_shell";
-    const shell = await this.detectShell(signal);
+    const shell = await this.detectShell(signal, copyRole);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
     if (observation) observation.stage = "native_path_conversion";
     const nativePath = await this.toNativePath(
       this.resolveWorkingPath(rawPath),
       signal,
+      undefined,
+      copyRole,
     );
     const path =
       useBash && this.isWindows()
@@ -3138,8 +3174,19 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       options?: { signal?: AbortSignal },
     ): Promise<void> => {
       options?.signal?.throwIfAborted();
-      const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
-      const destCtx = await this.shellContext(destRawPath, options?.signal);
+      // Each role attributes only the setup commands it actually issues.
+      const sourceCtx = await this.shellContext(
+        sourceRawPath,
+        options?.signal,
+        undefined,
+        "source",
+      );
+      const destCtx = await this.shellContext(
+        destRawPath,
+        options?.signal,
+        undefined,
+        "destination",
+      );
       const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
@@ -3154,6 +3201,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
         : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
 
+      // One combined mutation; never split into separate directory/copy stages.
       const result = await runAttachmentCommand(
         this,
         `${mkdirPart} ${copyPart}`,
@@ -3161,6 +3209,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         {
           displayName: `Preparing: ${fileName}`,
         },
+        "directory_and_copy",
       );
       options?.signal?.throwIfAborted();
       if (result.exitCode !== 0) {
