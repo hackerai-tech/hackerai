@@ -790,6 +790,43 @@ describe("desktop-local sandbox file helpers", () => {
     },
   );
 
+  it("omits client selection from a classified E2B curl exit 127", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const run = jest.fn().mockResolvedValue({
+      stdout: "",
+      stderr: "/bin/sh: curl: inaccessible or not found",
+      exitCode: 127,
+    });
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/report.pdf",
+            localPath: "/home/user/upload/report.pdf",
+          },
+        ],
+        async () => ({ files: {}, commands: { run } }),
+      );
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "attachment_client_not_executable",
+        upload_failure_sandbox_provider: "e2b",
+        attachment_download_exit_code: 127,
+      });
+      // The generic route selects no client, so its receipt has no reason.
+      expect(
+        Object.keys(getSandboxUploadFailureMetadata(result) ?? {}).filter(
+          (key) => key.startsWith("attachment_client_selection_"),
+        ),
+      ).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   it("logs the final copy exit status when the fallback upload path also fails", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, "error")

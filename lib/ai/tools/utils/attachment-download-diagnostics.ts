@@ -4,6 +4,21 @@ import type {
   CloudAttachmentNetworkRefusal,
 } from "@/lib/utils/cloud-attachment-dns";
 
+/** How this transfer's own detecting call chose its client: a positive
+ * existence probe or the no-client curl default, made by that call or reused
+ * from the adapter's cache. Not executable identity or failure cause. */
+export type AttachmentClientSelection =
+  | "current_probe_positive"
+  | "cached_probe_positive"
+  | "current_unverified_default"
+  | "cached_unverified_default";
+const CLIENT_SELECTIONS = new Set<unknown>([
+  "current_probe_positive",
+  "cached_probe_positive",
+  "current_unverified_default",
+  "cached_unverified_default",
+] satisfies AttachmentClientSelection[]);
+
 type DownloadInput = {
   platform: "windows" | "posix" | "unknown";
   shell: "bash" | "cmd";
@@ -15,6 +30,9 @@ type DownloadInput = {
   directoryProbe?:
     | { state: "returned"; output: string; truncated: boolean }
     | { state: "unavailable" };
+  /** Kept only for a curl exit 127 with its "inaccessible or not found"
+   * wording; omitted when the caller has no recorded selection. */
+  clientSelection?: AttachmentClientSelection;
 };
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
@@ -332,6 +350,17 @@ function summarize(input: DownloadInput) {
       : {}),
     ...(input.directoryProbe
       ? directoryProbeContext(input.directoryProbe)
+      : {}),
+    // The wording gates only whether to keep the caller's closed value.
+    ...(input.httpClient === "curl" &&
+    input.exitCode === 127 &&
+    CLIENT_SELECTIONS.has(input.clientSelection) &&
+    /\bcurl:\s*inaccessible or not found\b/i.test(stderr)
+      ? {
+          attachment_client_selection_version: 1 as const,
+          attachment_client_selection_reason:
+            input.clientSelection as AttachmentClientSelection,
+        }
       : {}),
   };
 }
