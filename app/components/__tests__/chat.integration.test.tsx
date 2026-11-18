@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
+import { readFileSync } from "node:fs";
 import {
   GoalSubmissionUnconfirmedError,
   isGoalWorkspaceSelectionRefusal,
@@ -3013,6 +3014,39 @@ describe("Chat Component Integration", () => {
       } finally {
         uuid.v4.mockImplementation(() => "queued-message-id");
       }
+    });
+  });
+
+  describe("Chat route transition rendering", () => {
+    // Keep these source checks with the integration suite so related-test
+    // selection includes them when chat.tsx changes.
+    const chatSource = readFileSync(require.resolve("../chat"), "utf8");
+
+    it("updates route ownership and replaces stale messages in layout effects", () => {
+      const layoutEffects = Array.from(
+        chatSource.matchAll(
+          /^  useLayoutEffect\(\(\) => \{\n([\s\S]*?)^  \},/gm,
+        ),
+        ([, body]) => body,
+      );
+
+      expect(layoutEffects).toContainEqual(
+        expect.stringMatching(/\brouteChatId\b[\s\S]*\bsetChatId\(/),
+      );
+      expect(layoutEffects).toContainEqual(
+        expect.stringMatching(
+          /\bmessagesChatIdRef\b[\s\S]*\bsetMessages\(serverMessages\)/,
+        ),
+      );
+    });
+
+    it("shows an explicit loading state instead of hiding stale messages", () => {
+      expect(chatSource).toContain('data-testid="chat-timeline-loading"');
+      expect(chatSource).toContain("Loading task…");
+      expect(chatSource).toMatch(/<Messages\s+key=\{chatId\}/);
+      expect(chatSource).not.toMatch(
+        /isInitialExistingChatLoad\s*\?\s*"opacity-0"/,
+      );
     });
   });
 
