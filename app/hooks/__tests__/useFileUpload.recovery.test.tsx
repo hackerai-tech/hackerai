@@ -3,12 +3,23 @@ import {
   createContext,
   useContext,
   useCallback,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { ConvexError } from "convex/values";
+import { toast } from "sonner";
 import { useFileUpload } from "../useFileUpload";
 import { UploadedFileState } from "@/types/file";
 
+let authState: { user: { id: string } | null; organizationId?: string };
+type Reservation = {
+  fileName: string;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+};
+let reservations: Reservation[] = [];
 const deleteFile = jest.fn().mockResolvedValue(undefined);
 const saveFile = jest.fn();
 const generateS3UploadUrlAction = jest.fn();
@@ -48,10 +59,29 @@ jest.mock("sonner", () => ({
 }));
 
 function HarnessProvider({ children }: { children: ReactNode }) {
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadedFileState[]>(
+    [],
+  );
+  // Like GlobalState, membership changes are readable before React renders.
+  const uploadedFilesRef = useRef<UploadedFileState[]>([]);
+  const getUploadedFiles = useCallback(() => uploadedFilesRef.current, []);
+  const setUploadedFiles = useCallback(
+    (
+      update:
+        | UploadedFileState[]
+        | ((files: UploadedFileState[]) => UploadedFileState[]),
+    ) => {
+      uploadedFilesRef.current =
+        typeof update === "function"
+          ? update(uploadedFilesRef.current)
+          : update;
+      setUploadedFilesState(uploadedFilesRef.current);
+    },
+    [],
+  );
   const addUploadedFile = useCallback(
     (file: UploadedFileState) => setUploadedFiles((prev) => [...prev, file]),
-    [],
+    [setUploadedFiles],
   );
   const updateUploadedFile = useCallback(
     (
@@ -65,7 +95,7 @@ function HarnessProvider({ children }: { children: ReactNode }) {
             : file,
         ),
       ),
-    [],
+    [setUploadedFiles],
   );
   const removeUploadedFile = useCallback(
     (target: number | UploadedFileState["file"]) =>
@@ -74,10 +104,11 @@ function HarnessProvider({ children }: { children: ReactNode }) {
           typeof target === "number" ? index !== target : file.file !== target,
         ),
       ),
-    [],
+    [setUploadedFiles],
   );
   const globalState = {
     uploadedFiles,
+    getUploadedFiles,
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
@@ -112,12 +143,40 @@ const tick = async (ms = 0) => {
     await jest.advanceTimersByTimeAsync(ms);
   });
 };
+// Holds every sent reservation until the test settles it.
+const deferReservations = () => {
+  generateS3UploadUrlAction.mockImplementation(
+    ({ fileName }: { fileName: string }) =>
+      new Promise((resolve, reject) => {
+        reservations.push({
+          fileName,
+          resolve: () =>
+            resolve({
+              uploadUrl: `https://s3.example/${fileName}`,
+              s3Key: `users/test/${fileName}`,
+            }),
+          reject,
+        });
+      }),
+  );
+};
+const sentReservations = () => reservations.map((item) => item.fileName);
+const putUrls = () =>
+  (global.fetch as jest.Mock).mock.calls.map(([url]) => url as string);
 
 describe("browser attachment recovery", () => {
   const originalFetch = global.fetch;
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    authState = { user: { id: "user-a" }, organizationId: "org-a" };
+    // A fresh object per render, as AuthKit may return for the same session.
+    jest
+      .mocked(useAuth)
+      .mockImplementation(
+        () => ({ ...authState }) as unknown as ReturnType<typeof useAuth>,
+      );
+    reservations = [];
     jest.spyOn(console, "error").mockImplementation(() => {});
     global.fetch = jest.fn().mockResolvedValue({ ok: true });
     generateS3UploadUrlAction.mockResolvedValue({
@@ -130,7 +189,12 @@ describe("browser attachment recovery", () => {
       tokens: 0,
     });
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // The reservation queue is page-wide; settle each sent request once so
+    // the next test starts with an idle queue.
+    for (let index = 0; index < reservations.length; index += 1) {
+      await act(async () => reservations[index].resolve());
+    }
     jest.useRealTimers();
     jest.restoreAllMocks();
     global.fetch = originalFetch;
@@ -565,4 +629,237 @@ describe("browser attachment recovery", () => {
     unmount();
     expect(signal.aborted).toBe(true);
   });
+
+  it("sends reservations one at a time across hook owners while earlier transfers run", async () => {
+    deferReservations();
+    const finishPuts: Array<(response: unknown) => void> = [];
+    (global.fetch as jest.Mock).mockImplementation(
+      () => new Promise((resolve) => finishPuts.push(resolve)),
+    );
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("first.txt"), file("second.txt")]),
+      );
+      await result.current.preview.handleFileUploadEvent(
+        select([file("third.txt")]),
+      );
+    });
+    expect(sentReservations()).toEqual(["first.txt"]);
+
+    await act(async () => reservations[0].resolve());
+    expect(putUrls()).toEqual(["https://s3.example/first.txt"]);
+    expect(sentReservations()).toEqual(["first.txt", "second.txt"]);
+
+    // The first transfer is still running; the next reservation does not wait.
+    await act(async () => reservations[1].resolve());
+    expect(putUrls()).toEqual([
+      "https://s3.example/first.txt",
+      "https://s3.example/second.txt",
+    ]);
+    expect(sentReservations()).toEqual([
+      "first.txt",
+      "second.txt",
+      "third.txt",
+    ]);
+
+    await act(async () => {
+      reservations[2].resolve();
+    });
+    await act(async () => {
+      finishPuts.forEach((finish) => finish({ ok: true }));
+    });
+    expect(saveFile).toHaveBeenCalledTimes(3);
+    expect(result.current.uploadedFiles.map((item) => item.uploaded)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it("never sends a waiting reservation after removal or unmount", async () => {
+    deferReservations();
+    const { result, unmount } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([
+          file("first.txt"),
+          file("second.txt"),
+          file("third.txt"),
+          file("fourth.txt"),
+        ]),
+      );
+    });
+    await act(async () => {
+      await result.current.preview.handleRemoveFile(1);
+    });
+    expect(result.current.uploadedFiles.map((item) => item.file.name)).toEqual([
+      "first.txt",
+      "third.txt",
+      "fourth.txt",
+    ]);
+
+    // The removed waiter holds no place; the next live waiter goes directly.
+    await act(async () => reservations[0].resolve());
+    expect(sentReservations()).toEqual(["first.txt", "third.txt"]);
+
+    unmount();
+    await act(async () => reservations[1].resolve());
+    await tick(10_000);
+    expect(sentReservations()).toEqual(["first.txt", "third.txt"]);
+  });
+
+  it("keeps the slot for a sent reservation until it settles after removal", async () => {
+    deferReservations();
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("first.txt"), file("second.txt")]),
+      );
+    });
+    await act(async () => {
+      await result.current.preview.handleRemoveFile(0);
+    });
+    expect(sentReservations()).toEqual(["first.txt"]);
+
+    await act(async () => reservations[0].resolve());
+    expect(sentReservations()).toEqual(["first.txt", "second.txt"]);
+    expect(putUrls()).not.toContain("https://s3.example/first.txt");
+
+    await act(async () => reservations[1].resolve());
+    expect(result.current.uploadedFiles).toHaveLength(1);
+    expect(result.current.uploadedFiles[0]).toMatchObject({
+      uploaded: true,
+      fileId: "saved-file",
+    });
+    expect(saveFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("advances once per rejected reservation and keeps ordinary error handling", async () => {
+    deferReservations();
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("first.txt"), file("second.txt"), file("third.txt")]),
+      );
+    });
+    await act(async () =>
+      reservations[0].reject(
+        new ConvexError({
+          code: "STORAGE_LIMIT_EXCEEDED",
+          message: "Storage limit exceeded.",
+        }),
+      ),
+    );
+    expect(sentReservations()).toEqual(["first.txt", "second.txt"]);
+    expect(result.current.uploadedFiles[0]).toMatchObject({
+      uploading: false,
+      uploaded: false,
+      error: "Storage limit exceeded.",
+    });
+    expect(toast.error).toHaveBeenCalledWith("Storage limit exceeded.");
+    expect(console.error).not.toHaveBeenCalled();
+
+    await act(async () =>
+      reservations[1].reject(new Error("Reservation unavailable")),
+    );
+    expect(sentReservations()).toEqual([
+      "first.txt",
+      "second.txt",
+      "third.txt",
+    ]);
+    expect(result.current.uploadedFiles[1]).toMatchObject({
+      uploading: false,
+      uploaded: false,
+      error: "Reservation unavailable",
+    });
+
+    await act(async () => reservations[2].resolve());
+    expect(result.current.uploadedFiles[2]).toMatchObject({ uploaded: true });
+  });
+
+  it("never sends a waiting reservation cleared from the store before effects run", async () => {
+    deferReservations();
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("first.txt"), file("second.txt")]),
+      );
+    });
+    const { clear } = result.current;
+    await act(async () => {
+      // React publishes the clear only when this scope ends, so the running
+      // reservation wakes the waiter while the hooks still hold old state.
+      clear();
+      reservations[0].resolve();
+      for (let flush = 0; flush < 10; flush += 1) await Promise.resolve();
+    });
+    await tick(10_000);
+    expect(sentReservations()).toEqual(["first.txt"]);
+    expect(result.current.uploadedFiles).toHaveLength(0);
+  });
+
+  it.each([
+    ["organization", { user: { id: "user-a" }, organizationId: "org-b" }],
+    ["account", { user: { id: "user-b" }, organizationId: "org-a" }],
+    ["sign-out", { user: null }],
+  ])(
+    "discards reservations still waiting after a %s change",
+    async (_change, nextAuth) => {
+      deferReservations();
+      const { result, rerender } = renderHook(() => useHarness(), {
+        wrapper: HarnessProvider,
+      });
+      await act(async () => {
+        await result.current.picker.handleFileUploadEvent(
+          select([file("first.txt"), file("second.txt"), file("third.txt")]),
+        );
+      });
+      // A re-render for the same committed session keeps queued work.
+      rerender();
+      await tick();
+      expect(result.current.uploadedFiles[1].uploading).toBe(true);
+
+      authState = nextAuth;
+      rerender();
+      await tick();
+      const interrupted = {
+        uploading: false,
+        uploaded: false,
+        retryable: false,
+        error: "Upload interrupted. Remove and attach the file again.",
+      };
+      expect(result.current.uploadedFiles[1]).toMatchObject(interrupted);
+      expect(result.current.uploadedFiles[2]).toMatchObject(interrupted);
+
+      // The already-sent request completes; stale waiters are never sent.
+      await act(async () => reservations[0].resolve());
+      await tick(10_000);
+      expect(sentReservations()).toEqual(["first.txt"]);
+      expect(result.current.uploadedFiles[0]).toMatchObject({
+        uploaded: true,
+      });
+
+      await act(async () => {
+        await result.current.preview.handleFileUploadEvent(
+          select([file("fourth.txt")]),
+        );
+      });
+      expect(sentReservations()).toEqual(["first.txt", "fourth.txt"]);
+      await act(async () => reservations[1].resolve());
+      expect(result.current.uploadedFiles[3]).toMatchObject({
+        uploaded: true,
+      });
+    },
+  );
 });

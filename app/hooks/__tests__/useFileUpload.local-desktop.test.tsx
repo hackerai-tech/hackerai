@@ -10,10 +10,35 @@ import {
   writeGeneratedTextAttachment,
 } from "@/app/hooks/useTauri";
 import { toast } from "sonner";
+import type { UploadedFileState } from "@/types/file";
 
-const addUploadedFile = jest.fn();
-const updateUploadedFile = jest.fn();
-const removeUploadedFile = jest.fn();
+// Mirrors GlobalState's synchronous membership, read by getUploadedFiles().
+let storedFiles: UploadedFileState[] = [];
+const matches = (
+  item: UploadedFileState,
+  index: number,
+  target: number | UploadedFileState["file"],
+) => (typeof target === "number" ? index === target : item.file === target);
+const addUploadedFile = jest.fn((file: UploadedFileState) => {
+  storedFiles = [...storedFiles, file];
+});
+const updateUploadedFile = jest.fn(
+  (
+    target: number | UploadedFileState["file"],
+    updates: Partial<UploadedFileState>,
+  ) => {
+    storedFiles = storedFiles.map((item, index) =>
+      matches(item, index, target) ? { ...item, ...updates } : item,
+    );
+  },
+);
+const removeUploadedFile = jest.fn(
+  (target: number | UploadedFileState["file"]) => {
+    storedFiles = storedFiles.filter(
+      (item, index) => !matches(item, index, target),
+    );
+  },
+);
 const deleteFile = jest.fn();
 const saveFile = jest.fn();
 const generateS3UploadUrlAction = jest.fn();
@@ -84,8 +109,10 @@ describe("useFileUpload desktop-local agent attachments", () => {
     jest.clearAllMocks();
     (isTauriEnvironment as jest.Mock).mockReturnValue(true);
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
+    storedFiles = [];
     globalState = {
       uploadedFiles: [],
+      getUploadedFiles: () => storedFiles,
       addUploadedFile,
       updateUploadedFile,
       removeUploadedFile,

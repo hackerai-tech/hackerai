@@ -1,5 +1,12 @@
 import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -38,11 +45,18 @@ import { getPreferredFileStorageRegion } from "@/lib/storage/file-storage-region
 import {
   browserUploadTransfers,
   putBrowserFile,
+  queueUploadReservation,
   UploadTransportError,
 } from "@/lib/utils/browser-file-upload";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
+const UPLOAD_INTERRUPTED_STATE: Partial<UploadedFileState> = {
+  uploading: false,
+  uploaded: false,
+  retryable: false,
+  error: "Upload interrupted. Remove and attach the file again.",
+};
 const PASTED_TEXT_ATTACHMENT_BASE_NAME = "Pasted text";
 const PASTED_TEXT_ATTACHMENT_EXTENSION = ".txt";
 const TEXT_PLAIN_MEDIA_TYPE = "text/plain";
@@ -161,6 +175,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
   const {
     uploadedFiles,
+    getUploadedFiles,
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
@@ -169,7 +184,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     sandboxPreference,
     desktopEnvironmentId,
   } = useGlobalState();
+  const { user, organizationId } = useAuth();
+  const userId = user?.id;
   const uploadedFilesRef = useRef(uploadedFiles);
+  // Reservations queued under one committed account/organization must not be
+  // sent after the session switches; this hook does not remount on a switch.
+  const identityScopeRef = useRef<AbortController | null>(null);
+  useLayoutEffect(() => {
+    const scope = new AbortController();
+    identityScopeRef.current = scope;
+    return () => scope.abort();
+  }, [userId, organizationId]);
   const activeTransfersRef = useRef(new Set<File>());
   const preferredStorageRegionPromiseRef = useRef<ReturnType<
     typeof getPreferredFileStorageRegion
@@ -189,12 +214,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     return () => {
       for (const file of activeTransfers) {
         browserUploadTransfers.get(file)?.controller.abort();
-        updateUploadedFile(file, {
-          uploading: false,
-          uploaded: false,
-          retryable: false,
-          error: "Upload interrupted. Remove and attach the file again.",
-        });
+        updateUploadedFile(file, UPLOAD_INTERRUPTED_STATE);
       }
       activeTransfers.clear();
     };
@@ -388,7 +408,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       browserUploadTransfers.set(file, transfer);
       activeTransfersRef.current.add(file);
       const uploadMode = transfer.mode;
-      const { signal } = transfer.controller;
+      const { controller } = transfer;
+      const { signal } = controller;
+      const identitySignal = identityScopeRef.current?.signal;
       const getCurrentUploadIndex = () => {
         if (signal.aborted) return null;
         const index = uploadedFilesRef.current.findIndex(
@@ -411,13 +433,24 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             getPreferredFileStorageRegion();
           const storageRegion = await preferredStorageRegionPromiseRef.current;
           signal.throwIfAborted();
-          const reservation = await generateS3UploadUrlAction({
-            fileName: file.name,
-            contentType: file.type || "application/octet-stream",
-            size: file.size,
-            mode: uploadMode,
-            ...(storageRegion ? { storageRegion } : {}),
-          });
+          const reservation = await queueUploadReservation(
+            () => {
+              // The store drops a cleared attachment before this hook's passive
+              // effects run, so check membership at the moment of sending.
+              if (!getUploadedFiles().some((item) => item.file === file)) {
+                controller.abort();
+                return Promise.reject(signal.reason);
+              }
+              return generateS3UploadUrlAction({
+                fileName: file.name,
+                contentType: file.type || "application/octet-stream",
+                size: file.size,
+                mode: uploadMode,
+                ...(storageRegion ? { storageRegion } : {}),
+              });
+            },
+            identitySignal ? [signal, identitySignal] : [signal],
+          );
           transfer.reservation = reservation;
           if (reservation.rateLimit)
             showRateLimitWarning(reservation.rateLimit);
@@ -501,6 +534,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return;
         }
 
+        // The account or organization changed before this reservation was sent.
+        if (identitySignal?.aborted && error === identitySignal.reason) {
+          applyUploadedFileUpdate(currentUploadIndex, UPLOAD_INTERRUPTED_STATE);
+          return;
+        }
+
         if (
           getConvexErrorCode(error) === "FILE_UPLOAD_RATE_LIMIT" &&
           options.fallbackLocalFile
@@ -576,6 +615,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     },
     [
       generateS3UploadUrlAction,
+      getUploadedFiles,
       saveFile,
       getTotalTokens,
       deleteFile,

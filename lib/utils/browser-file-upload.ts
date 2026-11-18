@@ -14,6 +14,69 @@ export const browserUploadTransfers = new WeakMap<
   BrowserUploadTransfer
 >();
 
+// Concurrent reservations for one user contend on the same storage records, so
+// the page sends them one at a time. Only the presign request is serialized;
+// transfers and metadata saves still run in parallel.
+let reservationActive = false;
+const reservationWaiters = new Set<() => void>();
+
+function startNextReservation() {
+  const next = reservationWaiters.values().next();
+  if (next.done) return;
+  reservationWaiters.delete(next.value);
+  next.value();
+}
+
+/**
+ * Sends `request` once every earlier reservation on this page has settled.
+ * Work still waiting is discarded, and never sent, when any signal aborts;
+ * a request already sent keeps its slot until its own promise settles.
+ */
+export function queueUploadReservation<T>(
+  request: () => Promise<T>,
+  signals: readonly AbortSignal[],
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abortedSignal = signals.find((signal) => signal.aborted);
+    if (abortedSignal) {
+      reject(abortedSignal.reason);
+      return;
+    }
+    let removeListeners = () => {};
+    const start = () => {
+      removeListeners();
+      reservationActive = true;
+      let result: Promise<T>;
+      try {
+        result = Promise.resolve(request());
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      const release = () => {
+        reservationActive = false;
+        startNextReservation();
+      };
+      result.then(release, release);
+      resolve(result);
+    };
+    if (!reservationActive) {
+      start();
+      return;
+    }
+    reservationWaiters.add(start);
+    const listeners = signals.map((signal) => {
+      const discard = () => {
+        if (!reservationWaiters.delete(start)) return;
+        removeListeners();
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", discard, { once: true });
+      return () => signal.removeEventListener("abort", discard);
+    });
+    removeListeners = () => listeners.forEach((remove) => remove());
+  });
+}
+
 export class UploadTransportError extends Error {
   constructor(
     message: string,
