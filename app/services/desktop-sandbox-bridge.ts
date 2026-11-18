@@ -67,9 +67,11 @@ import {
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
+  desktopInvocationUnknownDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -1556,13 +1558,14 @@ export class DesktopSandboxBridge {
       terminalErrorKind = errorKind;
       return true;
     };
-    // The rejection's message class, and its admission or spawn refinement,
-    // join only that recorded kind. The trace reports the command set the
-    // existing adapter selected.
+    // The rejection's message class, and its admission, spawn or unknown
+    // refinement, join only that recorded kind. The trace reports the command
+    // set the existing adapter selected.
     const invocationTrace: FileStatReceiverTrace = {};
     let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
     let invocationAdmission: DesktopInvocationAdmissionDiagnostic | null = null;
     let invocationSpawnHint: DesktopInvocationSpawnHintDiagnostic | null = null;
+    let invocationUnknown: DesktopInvocationUnknownDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1599,6 +1602,7 @@ export class DesktopSandboxBridge {
                 invocationRejection,
                 ...(invocationAdmission && { invocationAdmission }),
                 ...(invocationSpawnHint && { invocationSpawnHint }),
+                ...(invocationUnknown && { invocationUnknown }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1859,6 +1863,11 @@ export class DesktopSandboxBridge {
             invocationSpawnHint = desktopInvocationSpawnHintDiagnostic(
               invocationRejection,
               rejection.spawnOsCodeHint,
+            );
+            // Only an authorized `unknown` group admits it.
+            invocationUnknown = desktopInvocationUnknownDiagnostic(
+              invocationRejection,
+              rejection.unknownClass,
             );
           } else
             invocationRejection = desktopInvocationRejectionDiagnostic(

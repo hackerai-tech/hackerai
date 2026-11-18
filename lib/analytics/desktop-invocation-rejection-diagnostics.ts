@@ -7,7 +7,7 @@
  * message below has identical text in the desktop-v0.0.73 and desktop-v0.0.74
  * sources and in the current source; other releases were not inspected.
  * Anything else, including a changed message, a Tauri runtime error or a
- * frontend error, is `unknown`.
+ * frontend error, is `unknown`, refined only by a closed class below.
  */
 
 const REASONS = [
@@ -160,17 +160,55 @@ const PROPERTIES = [
 export const DESKTOP_INVOCATION_REJECTION_PROPERTIES: ReadonlySet<string> =
   new Set(PROPERTIES);
 
+/** A closed class of an `unknown` reason, refining that reason only. The
+ * lifecycle classes name a fixed message template, never the physical page,
+ * cleanup or process state behind it; the rest name only how the message was
+ * readable, never its text. */
+const UNKNOWN_CLASSES = [
+  "lifecycle_page_replaced",
+  "lifecycle_prior_cleanup_pending",
+  "lifecycle_stop_unconfirmed",
+  // A bounded message from a string or an Error's own data `message`.
+  "other_string",
+  "other_error_message",
+  "message_over_limit",
+  // Not a string, nor an Error with an own data string `message`.
+  "message_unavailable",
+] as const;
+
+export type DesktopInvocationUnknownClass = (typeof UNKNOWN_CLASSES)[number];
+
+// stream_lifecycle.rs admission denials, first in the source after
+// desktop-v0.0.81. Exact equality only: a changed template is `other_*`.
+const LIFECYCLE_MESSAGES: ReadonlyMap<string, DesktopInvocationUnknownClass> =
+  new Map([
+    [
+      "Desktop page was replaced before this command started",
+      "lifecycle_page_replaced",
+    ],
+    [
+      "Desktop is still stopping commands from a previous page. Retry shortly.",
+      "lifecycle_prior_cleanup_pending",
+    ],
+    [
+      "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.",
+      "lifecycle_stop_unconfirmed",
+    ],
+  ]);
+
 /** Tauri rejects with the native string. Otherwise only an Error's own data
  * `message` is read: never a getter, `toString` or other coercion. */
-function rejectionMessage(error: unknown): string | null {
-  if (typeof error === "string") return error;
+function rejectionMessage(
+  error: unknown,
+): { readonly text: string; readonly fromError: boolean } | null {
+  if (typeof error === "string") return { text: error, fromError: false };
   try {
     if (!(error instanceof Error)) return null;
     const descriptor = Object.getOwnPropertyDescriptor(error, "message");
     return descriptor &&
       "value" in descriptor &&
       typeof descriptor.value === "string"
-      ? descriptor.value
+      ? { text: descriptor.value, fromError: true }
       : null;
   } catch {
     return null;
@@ -183,16 +221,29 @@ export interface NativeInvocationRejectionClass {
   readonly admission: DesktopInvocationAdmissionReason | null;
   /** Set only for a `spawn_failed` reason. */
   readonly spawnOsCodeHint: DesktopInvocationSpawnOsCodeHint | null;
+  /** Set only for an `unknown` reason. */
+  readonly unknownClass: DesktopInvocationUnknownClass | null;
 }
 
+const unclassified = (
+  unknownClass: DesktopInvocationUnknownClass,
+): NativeInvocationRejectionClass => ({
+  reason: "unknown",
+  admission: null,
+  spawnOsCodeHint: null,
+  unknownClass,
+});
+
 /** Every class from one read of the message. Never throws; anything but a
- * listed message is `unknown`, with no refinement. */
+ * listed message is `unknown`, refined only by its closed unknown class. */
 export function classifyNativeInvocationRejectionMessage(
   error: unknown,
 ): NativeInvocationRejectionClass {
-  const message = rejectionMessage(error);
-  if (message === null || message.length > MAX_MESSAGE_LENGTH)
-    return { reason: "unknown", admission: null, spawnOsCodeHint: null };
+  const read = rejectionMessage(error);
+  if (read === null) return unclassified("message_unavailable");
+  const message = read.text;
+  if (message.length > MAX_MESSAGE_LENGTH)
+    return unclassified("message_over_limit");
   const reason =
     MESSAGE_REASONS.get(message) ??
     (message.startsWith(SPAWN_PREFIX) ? "spawn_failed" : "unknown");
@@ -202,6 +253,11 @@ export function classifyNativeInvocationRejectionMessage(
     spawnOsCodeHint:
       reason === "spawn_failed"
         ? spawnOsCodeHint(message.slice(SPAWN_PREFIX.length))
+        : null,
+    unknownClass:
+      reason === "unknown"
+        ? (LIFECYCLE_MESSAGES.get(message) ??
+          (read.fromError ? "other_error_message" : "other_string"))
         : null,
   };
 }
@@ -365,6 +421,74 @@ export function readDesktopInvocationSpawnHintDiagnostic(
     });
     return version === 1
       ? desktopInvocationSpawnHintDiagnostic(rejection, hint)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DesktopInvocationUnknownDiagnostic {
+  readonly desktop_invocation_unknown_version: 1;
+  readonly desktop_invocation_unknown_class: DesktopInvocationUnknownClass;
+}
+
+const UNKNOWN_PROPERTIES = [
+  "desktop_invocation_unknown_version",
+  "desktop_invocation_unknown_class",
+] as const satisfies readonly (keyof DesktopInvocationUnknownDiagnostic)[];
+
+export const DESKTOP_INVOCATION_UNKNOWN_PROPERTIES: ReadonlySet<string> =
+  new Set(UNKNOWN_PROPERTIES);
+
+/** Only a validated `unknown` group from the authorized command set can carry
+ * an unknown class; a legacy, compatibility or unselected invocation never
+ * does. The adapter names the selected command set, not the binary or cause. */
+function refinesAuthorizedUnknown(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): boolean {
+  return (
+    rejection?.desktop_invocation_rejection_reason === "unknown" &&
+    rejection.desktop_invocation_rejection_adapter === "authorized_native"
+  );
+}
+
+/** The complete unknown class group, or null unless it refines a complete
+ * authorized `unknown` group with a listed class. */
+export function desktopInvocationUnknownDiagnostic(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  unknownClass: unknown,
+): DesktopInvocationUnknownDiagnostic | null {
+  if (!refinesAuthorizedUnknown(rejection)) return null;
+  const known = UNKNOWN_CLASSES.find((value) => value === unknownClass);
+  return known
+    ? Object.freeze({
+        desktop_invocation_unknown_version: 1,
+        desktop_invocation_unknown_class: known,
+      })
+    : null;
+}
+
+/** Read the complete unknown class group from any property bag's own data
+ * properties, joined to an already validated authorized `unknown` group, or
+ * nothing at all. No property is read without that group. A getter never
+ * runs; a throwing proxy reads as nothing. */
+export function readDesktopInvocationUnknownDiagnostic(
+  source: unknown,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): DesktopInvocationUnknownDiagnostic | null {
+  if (
+    !refinesAuthorizedUnknown(rejection) ||
+    typeof source !== "object" ||
+    source === null
+  )
+    return null;
+  try {
+    const [version, unknownClass] = UNKNOWN_PROPERTIES.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    return version === 1
+      ? desktopInvocationUnknownDiagnostic(rejection, unknownClass)
       : null;
   } catch {
     return null;
