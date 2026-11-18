@@ -47,7 +47,19 @@ import {
   putBrowserFile,
   queueUploadReservation,
   UploadTransportError,
+  waitUnlessAborted,
+  type UploadScope,
 } from "@/lib/utils/browser-file-upload";
+
+type CommittedUploadScope = UploadScope & { signal: AbortSignal };
+
+// The account or organization changed after this upload started.
+class UploadScopeChangedError extends Error {
+  constructor() {
+    super("Upload scope changed");
+    this.name = "UploadScopeChangedError";
+  }
+}
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
@@ -185,16 +197,21 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     desktopEnvironmentId,
   } = useGlobalState();
   const { user, organizationId } = useAuth();
-  const userId = user?.id;
+  const scopeUserId = user?.id ?? null;
+  const scopeOrganizationId = organizationId || null;
   const uploadedFilesRef = useRef(uploadedFiles);
-  // Reservations queued under one committed account/organization must not be
-  // sent after the session switches; this hook does not remount on a switch.
-  const identityScopeRef = useRef<AbortController | null>(null);
+  // Upload work started under one committed account/organization must not
+  // continue after the session switches; this hook does not remount on a switch.
+  const uploadScopeRef = useRef<CommittedUploadScope | null>(null);
   useLayoutEffect(() => {
-    const scope = new AbortController();
-    identityScopeRef.current = scope;
-    return () => scope.abort();
-  }, [userId, organizationId]);
+    const controller = new AbortController();
+    uploadScopeRef.current = {
+      userId: scopeUserId,
+      organizationId: scopeOrganizationId,
+      signal: controller.signal,
+    };
+    return () => controller.abort(new UploadScopeChangedError());
+  }, [scopeUserId, scopeOrganizationId]);
   const activeTransfersRef = useRef(new Set<File>());
   const preferredStorageRegionPromiseRef = useRef<ReturnType<
     typeof getPreferredFileStorageRegion
@@ -410,7 +427,25 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const uploadMode = transfer.mode;
       const { controller } = transfer;
       const { signal } = controller;
-      const identitySignal = identityScopeRef.current?.signal;
+      const scope = uploadScopeRef.current;
+      const scopeSignal = scope?.signal;
+      const stopSignals = scopeSignal ? [signal, scopeSignal] : [signal];
+      // The server rejects the reservation if its signed session differs.
+      const expectedUploadScope = scope?.userId
+        ? { userId: scope.userId, organizationId: scope.organizationId }
+        : undefined;
+      // No new PUT or save once the scope this reservation was signed for ends.
+      const assertUploadScope = () => {
+        scopeSignal?.throwIfAborted();
+        const reserved = transfer?.reservationScope;
+        if (
+          reserved &&
+          scope &&
+          (reserved.userId !== scope.userId ||
+            reserved.organizationId !== scope.organizationId)
+        )
+          throw new UploadScopeChangedError();
+      };
       const getCurrentUploadIndex = () => {
         if (signal.aborted) return null;
         const index = uploadedFilesRef.current.findIndex(
@@ -431,34 +466,40 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         if (!transfer.reservation) {
           preferredStorageRegionPromiseRef.current ??=
             getPreferredFileStorageRegion();
-          const storageRegion = await preferredStorageRegionPromiseRef.current;
-          signal.throwIfAborted();
-          const reservation = await queueUploadReservation(
-            () => {
-              // The store drops a cleared attachment before this hook's passive
-              // effects run, so check membership at the moment of sending.
-              if (!getUploadedFiles().some((item) => item.file === file)) {
-                controller.abort();
-                return Promise.reject(signal.reason);
-              }
-              return generateS3UploadUrlAction({
-                fileName: file.name,
-                contentType: file.type || "application/octet-stream",
-                size: file.size,
-                mode: uploadMode,
-                ...(storageRegion ? { storageRegion } : {}),
-              });
-            },
-            identitySignal ? [signal, identitySignal] : [signal],
+          const storageRegion = await waitUnlessAborted(
+            preferredStorageRegionPromiseRef.current,
+            stopSignals,
           );
+          const reservation = await queueUploadReservation(() => {
+            // The store drops a cleared attachment before this hook's passive
+            // effects run, so check membership at the moment of sending.
+            if (!getUploadedFiles().some((item) => item.file === file)) {
+              controller.abort();
+              return Promise.reject(signal.reason);
+            }
+            return generateS3UploadUrlAction({
+              fileName: file.name,
+              contentType: file.type || "application/octet-stream",
+              size: file.size,
+              mode: uploadMode,
+              ...(storageRegion ? { storageRegion } : {}),
+              ...(expectedUploadScope ? { expectedUploadScope } : {}),
+            });
+          }, stopSignals);
           transfer.reservation = reservation;
+          transfer.reservationScope = scope
+            ? { userId: scope.userId, organizationId: scope.organizationId }
+            : undefined;
+          scopeSignal?.throwIfAborted();
           if (reservation.rateLimit)
             showRateLimitWarning(reservation.rateLimit);
         }
         signal.throwIfAborted();
+        assertUploadScope();
         const { uploadUrl, s3Key } = transfer.reservation;
-        await putBrowserFile(file, uploadUrl, signal);
+        await putBrowserFile(file, uploadUrl, signal, scopeSignal);
         signal.throwIfAborted();
+        assertUploadScope();
 
         // Step 3: Save file metadata to database with S3 key
         const { url, fileId, tokens } = await saveFile({
@@ -468,6 +509,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           size: file.size,
           mode: uploadMode,
         });
+        assertUploadScope();
 
         const currentUploadIndex = getCurrentUploadIndex();
         if (currentUploadIndex === null) {
@@ -534,9 +576,22 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return;
         }
 
-        // The account or organization changed before this reservation was sent.
-        if (identitySignal?.aborted && error === identitySignal.reason) {
-          applyUploadedFileUpdate(currentUploadIndex, UPLOAD_INTERRUPTED_STATE);
+        // The account or organization changed, here or as signed on the server.
+        if (
+          error instanceof UploadScopeChangedError ||
+          getConvexErrorCode(error) === "UPLOAD_CONTEXT_CHANGED"
+        ) {
+          const previousUploadedFile =
+            options.expectedGeneratedTextAttachment?.previousUploadedFile;
+          applyUploadedFileUpdate(
+            currentUploadIndex,
+            previousUploadedFile
+              ? {
+                  ...previousUploadedFile,
+                  error: UPLOAD_INTERRUPTED_STATE.error,
+                }
+              : UPLOAD_INTERRUPTED_STATE,
+          );
           return;
         }
 

@@ -16,6 +16,7 @@ import { UploadedFileState } from "@/types/file";
 let authState: { user: { id: string } | null; organizationId?: string };
 type Reservation = {
   fileName: string;
+  scope?: { userId: string; organizationId: string | null };
   resolve: () => void;
   reject: (error: unknown) => void;
 };
@@ -44,8 +45,9 @@ jest.mock("@/convex/_generated/api", () => ({
 jest.mock("../../contexts/GlobalState", () => ({
   useGlobalState: () => useContext(StateContext),
 }));
+const mockStorageRegion = jest.fn<Promise<undefined>, []>();
 jest.mock("@/lib/storage/file-storage-region", () => ({
-  getPreferredFileStorageRegion: async () => undefined,
+  getPreferredFileStorageRegion: () => mockStorageRegion(),
 }));
 jest.mock("@/app/hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
 jest.mock("sonner", () => ({
@@ -146,10 +148,17 @@ const tick = async (ms = 0) => {
 // Holds every sent reservation until the test settles it.
 const deferReservations = () => {
   generateS3UploadUrlAction.mockImplementation(
-    ({ fileName }: { fileName: string }) =>
+    ({
+      fileName,
+      expectedUploadScope,
+    }: {
+      fileName: string;
+      expectedUploadScope?: Reservation["scope"];
+    }) =>
       new Promise((resolve, reject) => {
         reservations.push({
           fileName,
+          scope: expectedUploadScope,
           resolve: () =>
             resolve({
               uploadUrl: `https://s3.example/${fileName}`,
@@ -161,6 +170,12 @@ const deferReservations = () => {
   );
 };
 const sentReservations = () => reservations.map((item) => item.fileName);
+const INTERRUPTED = {
+  uploading: false,
+  uploaded: false,
+  retryable: false,
+  error: "Upload interrupted. Remove and attach the file again.",
+};
 const putUrls = () =>
   (global.fetch as jest.Mock).mock.calls.map(([url]) => url as string);
 
@@ -177,6 +192,7 @@ describe("browser attachment recovery", () => {
         () => ({ ...authState }) as unknown as ReturnType<typeof useAuth>,
       );
     reservations = [];
+    mockStorageRegion.mockResolvedValue(undefined);
     jest.spyOn(console, "error").mockImplementation(() => {});
     global.fetch = jest.fn().mockResolvedValue({ ok: true });
     generateS3UploadUrlAction.mockResolvedValue({
@@ -630,11 +646,20 @@ describe("browser attachment recovery", () => {
     expect(signal.aborted).toBe(true);
   });
 
-  it("sends reservations one at a time across hook owners while earlier transfers run", async () => {
+  it("sends reservations one at a time across hook owners while earlier transfers and saves run", async () => {
     deferReservations();
     const finishPuts: Array<(response: unknown) => void> = [];
     (global.fetch as jest.Mock).mockImplementation(
       () => new Promise((resolve) => finishPuts.push(resolve)),
+    );
+    const finishSaves: Array<() => void> = [];
+    saveFile.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          finishSaves.push(() =>
+            resolve({ fileId: "saved-file", url: "url", tokens: 0 }),
+          ),
+        ),
     );
     const { result } = renderHook(() => useHarness(), {
       wrapper: HarnessProvider,
@@ -648,12 +673,19 @@ describe("browser attachment recovery", () => {
       );
     });
     expect(sentReservations()).toEqual(["first.txt"]);
+    expect(reservations[0].scope).toEqual({
+      userId: "user-a",
+      organizationId: "org-a",
+    });
 
+    // The first PUT is still running; the next reservation does not wait.
     await act(async () => reservations[0].resolve());
     expect(putUrls()).toEqual(["https://s3.example/first.txt"]);
     expect(sentReservations()).toEqual(["first.txt", "second.txt"]);
 
-    // The first transfer is still running; the next reservation does not wait.
+    // Nor does it wait for the first metadata save.
+    await act(async () => finishPuts[0]({ ok: true }));
+    expect(saveFile).toHaveBeenCalledTimes(1);
     await act(async () => reservations[1].resolve());
     expect(putUrls()).toEqual([
       "https://s3.example/first.txt",
@@ -664,12 +696,16 @@ describe("browser attachment recovery", () => {
       "second.txt",
       "third.txt",
     ]);
+    expect(finishSaves).toHaveLength(1);
 
     await act(async () => {
       reservations[2].resolve();
     });
     await act(async () => {
       finishPuts.forEach((finish) => finish({ ok: true }));
+    });
+    await act(async () => {
+      finishSaves.forEach((finish) => finish());
     });
     expect(saveFile).toHaveBeenCalledTimes(3);
     expect(result.current.uploadedFiles.map((item) => item.uploaded)).toEqual([
@@ -768,19 +804,23 @@ describe("browser attachment recovery", () => {
     expect(toast.error).toHaveBeenCalledWith("Storage limit exceeded.");
     expect(console.error).not.toHaveBeenCalled();
 
+    // A server-side scope mismatch is an interruption, not a failure toast.
     await act(async () =>
-      reservations[1].reject(new Error("Reservation unavailable")),
+      reservations[1].reject(
+        new ConvexError({
+          code: "UPLOAD_CONTEXT_CHANGED",
+          message: "Upload interrupted. Remove and attach the file again.",
+        }),
+      ),
     );
     expect(sentReservations()).toEqual([
       "first.txt",
       "second.txt",
       "third.txt",
     ]);
-    expect(result.current.uploadedFiles[1]).toMatchObject({
-      uploading: false,
-      uploaded: false,
-      error: "Reservation unavailable",
-    });
+    expect(result.current.uploadedFiles[1]).toMatchObject(INTERRUPTED);
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(console.error).not.toHaveBeenCalled();
 
     await act(async () => reservations[2].resolve());
     expect(result.current.uploadedFiles[2]).toMatchObject({ uploaded: true });
@@ -810,12 +850,20 @@ describe("browser attachment recovery", () => {
   });
 
   it.each([
-    ["organization", { user: { id: "user-a" }, organizationId: "org-b" }],
-    ["account", { user: { id: "user-b" }, organizationId: "org-a" }],
-    ["sign-out", { user: null }],
+    [
+      "organization",
+      { user: { id: "user-a" }, organizationId: "org-b" },
+      { userId: "user-a", organizationId: "org-b" },
+    ],
+    [
+      "account",
+      { user: { id: "user-b" }, organizationId: "org-a" },
+      { userId: "user-b", organizationId: "org-a" },
+    ],
+    ["sign-out", { user: null }, undefined],
   ])(
-    "discards reservations still waiting after a %s change",
-    async (_change, nextAuth) => {
+    "stops old-scope work after a %s change while new-scope work proceeds",
+    async (_change, nextAuth, nextScope) => {
       deferReservations();
       const { result, rerender } = renderHook(() => useHarness(), {
         wrapper: HarnessProvider,
@@ -825,6 +873,10 @@ describe("browser attachment recovery", () => {
           select([file("first.txt"), file("second.txt"), file("third.txt")]),
         );
       });
+      expect(reservations[0].scope).toEqual({
+        userId: "user-a",
+        organizationId: "org-a",
+      });
       // A re-render for the same committed session keeps queued work.
       rerender();
       await tick();
@@ -833,33 +885,153 @@ describe("browser attachment recovery", () => {
       authState = nextAuth;
       rerender();
       await tick();
-      const interrupted = {
-        uploading: false,
-        uploaded: false,
-        retryable: false,
-        error: "Upload interrupted. Remove and attach the file again.",
-      };
-      expect(result.current.uploadedFiles[1]).toMatchObject(interrupted);
-      expect(result.current.uploadedFiles[2]).toMatchObject(interrupted);
+      expect(result.current.uploadedFiles[1]).toMatchObject(INTERRUPTED);
+      expect(result.current.uploadedFiles[2]).toMatchObject(INTERRUPTED);
 
-      // The already-sent request completes; stale waiters are never sent.
-      await act(async () => reservations[0].resolve());
-      await tick(10_000);
-      expect(sentReservations()).toEqual(["first.txt"]);
-      expect(result.current.uploadedFiles[0]).toMatchObject({
-        uploaded: true,
-      });
-
+      // New-scope work waits behind the request already sent.
       await act(async () => {
         await result.current.preview.handleFileUploadEvent(
           select([file("fourth.txt")]),
         );
       });
+      expect(sentReservations()).toEqual(["first.txt"]);
+
+      // The sent request settles without starting a PUT for the old scope.
+      await act(async () => reservations[0].resolve());
+      expect(putUrls()).toEqual([]);
+      expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
       expect(sentReservations()).toEqual(["first.txt", "fourth.txt"]);
+      expect(reservations[1].scope).toEqual(nextScope);
+
       await act(async () => reservations[1].resolve());
+      await tick(10_000);
+      expect(sentReservations()).toEqual(["first.txt", "fourth.txt"]);
+      expect(putUrls()).toEqual(["https://s3.example/fourth.txt"]);
+      expect(saveFile).toHaveBeenCalledTimes(1);
       expect(result.current.uploadedFiles[3]).toMatchObject({
         uploaded: true,
       });
     },
   );
+
+  it("does not save metadata for a PUT that finishes after the account changes", async () => {
+    let finishPut!: (response: unknown) => void;
+    let putSignal!: AbortSignal;
+    (global.fetch as jest.Mock).mockImplementation(
+      (_url, options) =>
+        new Promise((resolve) => {
+          putSignal = options.signal;
+          finishPut = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("report.txt")]),
+      );
+    });
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    // A PUT already in flight is not cancelled; only new work stops.
+    expect(putSignal.aborted).toBe(false);
+    await act(async () => finishPut({ ok: true }));
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+  });
+
+  it("does not publish an old attachment when its save finishes after an account change", async () => {
+    let finishSave!: (receipt: {
+      url: string;
+      fileId: string;
+      tokens: number;
+    }) => void;
+    saveFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("report.txt")]),
+      );
+    });
+    expect(saveFile).toHaveBeenCalledTimes(1);
+
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await act(async () =>
+      finishSave({
+        url: "https://s3.example/saved",
+        fileId: "old-account-file",
+        tokens: 0,
+      }),
+    );
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+    expect(result.current.uploadedFiles[0]?.fileId).toBeUndefined();
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an old-scope reservation after the account changes", async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new TypeError("offline"));
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("report.txt")]),
+      );
+    });
+    await tick(3000);
+    expect(result.current.uploadedFiles[0].retryable).toBe(true);
+
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    (global.fetch as jest.Mock).mockClear();
+    await act(async () => {
+      result.current.preview.handleRetryFile(0);
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+  });
+
+  it("stops waiting for a slow region lookup when its transfer or scope ends", async () => {
+    deferReservations();
+    let finishRegion!: (region: undefined) => void;
+    mockStorageRegion.mockReturnValue(
+      new Promise((resolve) => {
+        finishRegion = resolve;
+      }),
+    );
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("first.txt"), file("second.txt")]),
+      );
+    });
+    // Both share the hook's single region lookup.
+    expect(mockStorageRegion).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.preview.handleRemoveFile(0);
+    });
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await tick();
+    // Interrupted while the lookup is still pending.
+    expect(result.current.uploadedFiles).toHaveLength(1);
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+
+    await act(async () => finishRegion(undefined));
+    await tick(10_000);
+    expect(sentReservations()).toEqual([]);
+  });
 });

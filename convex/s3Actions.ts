@@ -116,6 +116,15 @@ export const generateS3UploadUrlAction = action({
     size: v.optional(v.number()),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     storageRegion: v.optional(s3StorageRegionValidator),
+    // A reject-only fence from the client's original session; ownership and
+    // eligibility still come only from the authenticated identity. Optional so
+    // already deployed clients keep working.
+    expectedUploadScope: v.optional(
+      v.object({
+        userId: v.string(),
+        organizationId: v.union(v.string(), v.null()),
+      }),
+    ),
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -135,6 +144,25 @@ export const generateS3UploadUrlAction = action({
       throw new Error(
         "Unauthenticated: User must be logged in to upload files",
       );
+    }
+
+    // A request queued under another account or organization stops here,
+    // before any read, rate-limit token, signed URL or pending file.
+    if (args.expectedUploadScope) {
+      // WorkOS access tokens bind the active organization in the signed org_id claim.
+      const signedOrganizationId =
+        typeof identity.org_id === "string" && identity.org_id
+          ? identity.org_id
+          : null;
+      if (
+        args.expectedUploadScope.userId !== identity.subject ||
+        args.expectedUploadScope.organizationId !== signedOrganizationId
+      ) {
+        throw new ConvexError({
+          code: "UPLOAD_CONTEXT_CHANGED",
+          message: "Upload interrupted. Remove and attach the file again.",
+        });
+      }
     }
 
     // Validate inputs
