@@ -174,6 +174,9 @@ type NativeReceiverErrorClass =
   | "authorization_send_unavailable"
   | "authorization_denied"
   | "authorization_response_invalid"
+  | "authorized_ipc_denied"
+  | "authorization_message_invalid"
+  | "authorized_file_request_invalid"
   | "other";
 
 // Exact public authorization errors from the Desktop native file command
@@ -199,6 +202,45 @@ const NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
   ["Desktop operation was not authorized", "authorization_denied"],
   ["Invalid Desktop authorization response", "authorization_response_invalid"],
 ]);
+
+// Exact rejections of an authorized_desktop_file_request invocation: Tauri's
+// release ACL denial for that command (pinned tauri src/webview/mod.rs), the
+// authorization message shape check and the redeemed file request shape checks
+// (packages/desktop/src-tauri/src/lib.rs). Classified only when the receiver
+// reports that exact invoke boundary, so other adapters' text stays "other".
+const AUTHORIZED_NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
+  string,
+  NativeReceiverErrorClass
+> = new Map([
+  [
+    "Command authorized_desktop_file_request not allowed by ACL",
+    "authorized_ipc_denied",
+  ],
+  ["Invalid Desktop operation", "authorization_message_invalid"],
+  ["Desktop operation type is missing", "authorized_file_request_invalid"],
+  [
+    "Desktop operation type is not allowed here",
+    "authorized_file_request_invalid",
+  ],
+  ["File path is missing", "authorized_file_request_invalid"],
+]);
+
+function nativeReceiverErrorClass(
+  message: string,
+  diagnostic: DesktopFileReceiverDiagnostic | undefined,
+): NativeReceiverErrorClass {
+  const authorizedInvoke =
+    diagnostic?.version === 1 &&
+    diagnostic.stage === "native_invoke" &&
+    diagnostic.adapter === "authorized_native";
+  return (
+    NATIVE_RECEIVER_ERROR_CLASSES.get(message) ??
+    (authorizedInvoke
+      ? AUTHORIZED_NATIVE_RECEIVER_ERROR_CLASSES.get(message)
+      : undefined) ??
+    "other"
+  );
+}
 
 /**
  * Version 1 of the last sender step the read-only capability probe entered.
@@ -615,8 +657,10 @@ export class CentrifugoSandbox extends EventEmitter {
         fileFailure === "unknown" &&
         error instanceof LocalFileRequestError
       )
-        receiverErrorClass =
-          NATIVE_RECEIVER_ERROR_CLASSES.get(error.message) ?? "other";
+        receiverErrorClass = nativeReceiverErrorClass(
+          error.message,
+          error.receiverDiagnostic,
+        );
       // Observation only: the receiver's last attempted boundary and adapter.
       if (failure === "native_error" && error instanceof LocalFileRequestError)
         receiverDiagnostic = error.receiverDiagnostic;
