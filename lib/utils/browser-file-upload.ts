@@ -43,20 +43,16 @@ const firstAbortReason = (signals: readonly AbortSignal[]) =>
   signals.find((signal) => signal.aborted);
 
 /**
- * Waits for a shared lookup such as the storage region, but stops waiting as
- * soon as this transfer or its scope aborts. The shared promise is untouched.
+ * Waits for a shared lookup or a sent request, but stops waiting as soon as
+ * this transfer or its scope aborts. The awaited promise is not cancelled; it
+ * is always observed, so a rejection after the wait stops stays handled.
  */
 export function waitUnlessAborted<T>(
   promise: Promise<T>,
   signals: readonly AbortSignal[],
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const aborted = firstAbortReason(signals);
-    if (aborted) {
-      reject(aborted.reason);
-      return;
-    }
-    const remove = listenForAbort(signals, reject);
+    let remove = () => {};
     promise.then(
       (value) => {
         remove();
@@ -67,6 +63,12 @@ export function waitUnlessAborted<T>(
         reject(error);
       },
     );
+    const aborted = firstAbortReason(signals);
+    if (aborted) {
+      reject(aborted.reason);
+      return;
+    }
+    remove = listenForAbort(signals, reject);
   });
 }
 

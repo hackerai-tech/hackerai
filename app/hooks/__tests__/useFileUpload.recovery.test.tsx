@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import * as fileUtils from "@/lib/utils/file-utils";
 import { useFileUpload } from "../useFileUpload";
 import { UploadedFileState } from "@/types/file";
+import { waitUnlessAborted } from "@/lib/utils/browser-file-upload";
 
 let authState: { user: { id: string } | null; organizationId?: string };
 type Reservation = {
@@ -890,6 +891,8 @@ describe("browser attachment recovery", () => {
       authState = nextAuth;
       rerender();
       await tick();
+      // The sent request's spinner clears while its presign is unresolved.
+      expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
       expect(result.current.uploadedFiles[1]).toMatchObject(INTERRUPTED);
       expect(result.current.uploadedFiles[2]).toMatchObject(INTERRUPTED);
 
@@ -998,6 +1001,16 @@ describe("browser attachment recovery", () => {
 
     authState = { user: { id: "user-b" }, organizationId: "org-a" };
     rerender();
+    await tick();
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+    await act(async () => {
+      await result.current.preview.handleFileUploadEvent(
+        select([file("next.txt")]),
+      );
+    });
+    expect(sentReservations()).toEqual(["report.txt"]);
+
+    // The rejection after the wait stopped is consumed and frees the slot.
     await act(async () =>
       reservations[0].reject(
         new ConvexError({
@@ -1006,12 +1019,89 @@ describe("browser attachment recovery", () => {
         }),
       ),
     );
-
+    expect(sentReservations()).toEqual(["report.txt", "next.txt"]);
     expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();
     expect(toast.warning).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("restores the previous paste without its stopped spinner when a replacement fails", async () => {
+    deferReservations();
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    const original = "x".repeat(5000);
+    await act(async () => {
+      await result.current.picker.handlePastedTextAttachment(original);
+    });
+    expect(sentReservations()).toEqual(["Pasted text.txt"]);
+
+    // Replacing the File stops the original transfer through the store; its
+    // sent presign still holds the queue.
+    await act(async () => {
+      result.current.preview.handleUpdateGeneratedTextFile(0, "edited text");
+    });
+    await tick();
+    expect(sentReservations()).toEqual(["Pasted text.txt"]);
+    await act(async () => reservations[0].resolve());
+    expect(sentReservations()).toHaveLength(2);
+
+    await act(async () =>
+      reservations[1].reject(
+        new ConvexError({
+          code: "STORAGE_LIMIT_EXCEEDED",
+          message: "Storage limit exceeded.",
+        }),
+      ),
+    );
+    expect(result.current.uploadedFiles).toHaveLength(1);
+    expect(result.current.uploadedFiles[0]).toMatchObject({
+      uploading: false,
+      uploaded: false,
+      error: "Storage limit exceeded.",
+      generatedTextAttachment: { content: original },
+    });
+    expect(putUrls()).toEqual([]);
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("observes a late rejection and removes its listeners after a wait stops", async () => {
+    const unhandled = jest.fn();
+    process.on("unhandledRejection", unhandled);
+    const nextMacrotask = () =>
+      new Promise((resolve) =>
+        jest
+          .requireActual<typeof import("timers")>("timers")
+          .setImmediate(resolve),
+      );
+    try {
+      const stopped = new AbortController();
+      stopped.abort(new Error("stopped"));
+      let rejectLate!: (error: unknown) => void;
+      const late = new Promise<never>((_resolve, reject) => {
+        rejectLate = reject;
+      });
+      await expect(waitUnlessAborted(late, [stopped.signal])).rejects.toBe(
+        stopped.signal.reason,
+      );
+      rejectLate(new Error("late"));
+
+      const live = new AbortController();
+      const add = jest.spyOn(live.signal, "addEventListener");
+      const remove = jest.spyOn(live.signal, "removeEventListener");
+      await expect(
+        waitUnlessAborted(Promise.resolve("done"), [live.signal]),
+      ).resolves.toBe("done");
+      expect(remove).toHaveBeenCalledTimes(add.mock.calls.length);
+
+      await nextMacrotask();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("clears the old spinner when an edit of an uploading pasted attachment is interrupted", async () => {

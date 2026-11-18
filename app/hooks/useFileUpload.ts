@@ -53,6 +53,18 @@ import {
 
 type CommittedUploadScope = UploadScope & { signal: AbortSignal };
 
+// A restored attachment keeps its spinner only while its own transfer runs.
+const restoredUpload = (previous: UploadedFileState): UploadedFileState => {
+  if (!previous.uploading) return previous;
+  const transfer =
+    previous.file instanceof File
+      ? browserUploadTransfers.get(previous.file)
+      : undefined;
+  return transfer?.running && !transfer.controller.signal.aborted
+    ? previous
+    : { ...previous, uploading: false };
+};
+
 // The account or organization changed after this upload started.
 class UploadScopeChangedError extends Error {
   constructor() {
@@ -471,22 +483,27 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             preferredStorageRegionPromiseRef.current,
             stopSignals,
           );
-          const reservation = await queueUploadReservation(() => {
-            // The store drops a cleared attachment before this hook's passive
-            // effects run, so check membership at the moment of sending.
-            if (!getUploadedFiles().some((item) => item.file === file)) {
-              controller.abort();
-              return Promise.reject(signal.reason);
-            }
-            return generateS3UploadUrlAction({
-              fileName: file.name,
-              contentType: file.type || "application/octet-stream",
-              size: file.size,
-              mode: uploadMode,
-              ...(storageRegion ? { storageRegion } : {}),
-              ...(expectedUploadScope ? { expectedUploadScope } : {}),
-            });
-          }, stopSignals);
+          // Cancellation or a scope change stops this wait at once, even after
+          // sending; the sent request still holds the queue until it settles.
+          const reservation = await waitUnlessAborted(
+            queueUploadReservation(() => {
+              // The store drops a cleared attachment before this hook's passive
+              // effects run, so check membership at the moment of sending.
+              if (!getUploadedFiles().some((item) => item.file === file)) {
+                controller.abort();
+                return Promise.reject(signal.reason);
+              }
+              return generateS3UploadUrlAction({
+                fileName: file.name,
+                contentType: file.type || "application/octet-stream",
+                size: file.size,
+                mode: uploadMode,
+                ...(storageRegion ? { storageRegion } : {}),
+                ...(expectedUploadScope ? { expectedUploadScope } : {}),
+              });
+            }, stopSignals),
+            stopSignals,
+          );
           transfer.reservation = reservation;
           transfer.reservationScope = scope
             ? { userId: scope.userId, organizationId: scope.organizationId }
@@ -537,7 +554,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
               options.expectedGeneratedTextAttachment?.previousUploadedFile;
             if (previousUploadedFile) {
               applyUploadedFileUpdate(currentUploadIndex, {
-                ...previousUploadedFile,
+                ...restoredUpload(previousUploadedFile),
                 error: `${file.name} exceeds the Ask mode token limit`,
               });
             } else {
@@ -649,7 +666,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           options.expectedGeneratedTextAttachment?.previousUploadedFile;
         if (previousUploadedFile) {
           applyUploadedFileUpdate(currentUploadIndex, {
-            ...previousUploadedFile,
+            ...restoredUpload(previousUploadedFile),
             error: errorMessage,
           });
           toast.error(errorMessage);
