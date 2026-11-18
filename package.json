@@ -76,7 +76,7 @@
   "dependencies": {
     "@ai-sdk/openai": "3.0.143",
     "@ai-sdk/openai-compatible": "2.0.93",
-    "@ai-sdk/react": "3.0.335",
+    "@ai-sdk/react": "3.0.304",
     "@aws-sdk/client-cost-explorer": "3.1170.0",
     "@aws-sdk/client-s3": "3.1170.0",
     "@aws-sdk/client-sts": "3.1170.0",
@@ -124,7 +124,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",
-    "ai": "6.0.332",
+    "ai": "6.0.301",
     "ai-elements": "^1.9.1",
     "centrifuge": "^5.8.0",
     "chalk": "^5.6.2",
