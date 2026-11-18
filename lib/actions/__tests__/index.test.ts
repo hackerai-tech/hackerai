@@ -454,6 +454,30 @@ describe("generateTitleFromUserMessage", () => {
     );
   });
 
+  it.each(["title", '  "TiTlE"  '])(
+    "streams and persists a useful fallback when the model echoes %j",
+    async (title) => {
+      mockGenerateText.mockResolvedValue({ output: { title } });
+      const write = jest.fn();
+      const writer = { write } as unknown as UIMessageStreamWriter;
+      const persist = jest.fn(async (_title: string) => undefined);
+      const expected = "List the ingredients for tomato";
+
+      await generateTitleFromUserMessageWithWriter(
+        makeMessage("List the ingredients for tomato soup"),
+        writer,
+        persist,
+      );
+
+      expect(write).toHaveBeenCalledWith({
+        type: "data-title",
+        data: { chatTitle: expected },
+        transient: true,
+      });
+      expect(persist).toHaveBeenCalledWith(expected);
+    },
+  );
+
   // Scope: the shared redactor's recognized credential patterns, not every
   // possible secret. Fixtures are synthetic.
   describe("credential redaction", () => {

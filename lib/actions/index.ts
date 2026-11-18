@@ -115,9 +115,11 @@ const normalizeGeneratedTitle = (title: unknown): string | undefined => {
   if (typeof title !== "string") return undefined;
   // Unwrap first: an unquoted redacted value would absorb the closing quote.
   // Redact before folding or truncation can separate a value from its field.
-  return finishRedactedTitle(
+  const normalized = finishRedactedTitle(
     redactSensitiveErrorMessage(unwrapQuotedTitle(title.trim())),
   );
+  // A bare schema label carries no information about the chat.
+  return normalized?.toLowerCase() === "title" ? undefined : normalized;
 };
 
 const fallbackTitleFromRedactedMessage = (
