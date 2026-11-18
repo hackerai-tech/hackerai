@@ -160,6 +160,27 @@ describe("MessageSearchDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a clipped search excerpt from splitting an emoji", async () => {
+    const query = useConvex().query as jest.Mock;
+    const prefix = `search ${"a".repeat(192)}`;
+    query.mockResolvedValue({
+      page: [makeSearchResult("emoji", `${prefix}😀tail`)],
+      isDone: true,
+      continueCursor: "",
+    });
+
+    render(<MessageSearchDialog isOpen={true} onClose={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("Search messages..."), {
+      target: { value: "search" },
+    });
+    await runDebounce();
+
+    expect(
+      await screen.findByText("search", { selector: "mark" }),
+    ).toBeVisible();
+    expect(screen.getByText(`${"a".repeat(192)}...`)).toBeVisible();
+  });
+
   it("ignores stale results when the query changes", async () => {
     const query = useConvex().query as jest.Mock;
     let resolveFirstSearch!: (value: {

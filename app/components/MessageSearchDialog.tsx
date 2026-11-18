@@ -367,7 +367,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
   const truncateContent = (content: string, maxLength: number = 200) => {
     if (content.length <= maxLength) return content;
-    return content.slice(0, maxLength) + "...";
+    // Drop a surrogate pair that would straddle the cut instead of rendering half of it.
+    const end =
+      (content.codePointAt(maxLength - 1) ?? 0) > 0xffff
+        ? maxLength - 1
+        : maxLength;
+    return content.slice(0, end) + "...";
   };
 
   const getMatchIcon = () => {
