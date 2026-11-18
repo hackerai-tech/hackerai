@@ -156,6 +156,13 @@ const fileFromBase64 = (
   });
 };
 
+// Picker, paste and drop use separate hooks. Share the admission tail within
+// one composer provider while allowing a different chat to start immediately.
+const attachmentAdmissionTails = new WeakMap<
+  () => UploadedFileState[],
+  { revision: number; pathname: string; completion: Promise<boolean> }
+>();
+
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
@@ -168,6 +175,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     getTotalTokens,
     sandboxPreference,
     desktopEnvironmentId,
+    getUploadedFiles,
+    getChatNavigationRevision,
   } = useGlobalState();
   const uploadedFilesRef = useRef(uploadedFiles);
   const activeTransfersRef = useRef(new Set<File>());
@@ -266,8 +275,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
-    async (files: File[]): Promise<FileProcessingResult> => {
-      const existingUploadedCount = uploadedFiles.length;
+    async (
+      files: File[],
+      existingUploadedCount: number = uploadedFiles.length,
+    ): Promise<FileProcessingResult> => {
       const totalFiles = existingUploadedCount + files.length;
 
       // Check file limits
@@ -917,30 +928,72 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         return false;
       }
 
-      const result = await validateAndFilterFiles(files);
+      const admitValidatedFiles = (result: FileProcessingResult): boolean => {
+        // Earlier selections may have filled slots since validation started.
+        const remainingSlots = maxFilesLimit - getUploadedFiles().length;
+        const hasRemainingSlots = remainingSlots > 0;
+        const admitted =
+          hasRemainingSlots && result.validFiles.length > remainingSlots
+            ? {
+                ...result,
+                validFiles: result.validFiles.slice(0, remainingSlots),
+                truncated: true,
+                processedCount: remainingSlots,
+              }
+            : result;
 
-      // Check if we have slots available
-      const existingUploadedCount = uploadedFiles.length;
-      const remainingSlots = maxFilesLimit - existingUploadedCount;
-      const hasRemainingSlots = remainingSlots > 0;
+        showProcessingFeedback(admitted, hasRemainingSlots);
 
-      // Show feedback messages
-      showProcessingFeedback(result, hasRemainingSlots);
+        if (admitted.validFiles.length > 0 && hasRemainingSlots) {
+          startFileUploads(admitted.validFiles, options);
+          return true;
+        }
+        return false;
+      };
 
-      // Start uploads for valid files
-      if (result.validFiles.length > 0 && hasRemainingSlots) {
-        startFileUploads(result.validFiles, options);
-        return true;
-      }
-
-      return false;
+      // Overlapping selections validate concurrently, then join the composer
+      // in selection order and only within the chat where they were chosen.
+      const revision = getChatNavigationRevision();
+      const pathname = window.location.pathname;
+      const previous = attachmentAdmissionTails.get(getUploadedFiles);
+      const validation = validateAndFilterFiles(
+        files,
+        getUploadedFiles().length,
+      );
+      // A failed decode must still wait its turn before releasing the batch
+      // behind it, otherwise that batch could overtake an earlier selection.
+      const completion = Promise.allSettled([
+        validation,
+        previous?.revision === revision && previous.pathname === pathname
+          ? previous.completion
+          : undefined,
+      ]).then(([result]) => {
+        // History traversal can change the path without a sidebar action.
+        if (
+          getChatNavigationRevision() !== revision ||
+          window.location.pathname !== pathname
+        )
+          return false;
+        if (result.status === "rejected") throw result.reason;
+        return admitValidatedFiles(result.value);
+      });
+      const tail = { revision, pathname, completion };
+      attachmentAdmissionTails.set(getUploadedFiles, tail);
+      const releaseTail = () => {
+        if (attachmentAdmissionTails.get(getUploadedFiles) === tail) {
+          attachmentAdmissionTails.delete(getUploadedFiles);
+        }
+      };
+      void completion.then(releaseTail, releaseTail);
+      return completion;
     },
     [
       subscription,
       validateAndFilterFiles,
       showProcessingFeedback,
       startFileUploads,
-      uploadedFiles.length,
+      getUploadedFiles,
+      getChatNavigationRevision,
       maxFilesLimit,
     ],
   );

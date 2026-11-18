@@ -86,6 +86,8 @@ describe("useFileUpload desktop-local agent attachments", () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
     globalState = {
       uploadedFiles: [],
+      getUploadedFiles: () => globalState.uploadedFiles,
+      getChatNavigationRevision: () => 0,
       addUploadedFile,
       updateUploadedFile,
       removeUploadedFile,

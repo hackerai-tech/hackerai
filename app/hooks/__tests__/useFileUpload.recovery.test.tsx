@@ -3,6 +3,7 @@ import {
   createContext,
   useContext,
   useCallback,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -48,10 +49,28 @@ jest.mock("sonner", () => ({
 }));
 
 function HarnessProvider({ children }: { children: ReactNode }) {
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadedFileState[]>(
+    [],
+  );
+  // Like GlobalState, writes are visible to getUploadedFiles before React
+  // renders, so admission can read live occupancy.
+  const uploadedFilesRef = useRef<UploadedFileState[]>([]);
+  const getUploadedFiles = useCallback(() => uploadedFilesRef.current, []);
+  const setUploadedFiles = useCallback(
+    (update: (files: UploadedFileState[]) => UploadedFileState[]) => {
+      uploadedFilesRef.current = update(uploadedFilesRef.current);
+      setUploadedFilesState(uploadedFilesRef.current);
+    },
+    [],
+  );
+  const navigationRevisionRef = useRef(0);
+  const getChatNavigationRevision = useCallback(
+    () => navigationRevisionRef.current,
+    [],
+  );
   const addUploadedFile = useCallback(
     (file: UploadedFileState) => setUploadedFiles((prev) => [...prev, file]),
-    [],
+    [setUploadedFiles],
   );
   const updateUploadedFile = useCallback(
     (
@@ -65,7 +84,7 @@ function HarnessProvider({ children }: { children: ReactNode }) {
             : file,
         ),
       ),
-    [],
+    [setUploadedFiles],
   );
   const removeUploadedFile = useCallback(
     (target: number | UploadedFileState["file"]) =>
@@ -74,17 +93,24 @@ function HarnessProvider({ children }: { children: ReactNode }) {
           typeof target === "number" ? index !== target : file.file !== target,
         ),
       ),
-    [],
+    [setUploadedFiles],
   );
   const globalState = {
     uploadedFiles,
+    getUploadedFiles,
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
     subscription: "pro",
     getTotalTokens: () => 0,
     sandboxPreference: "e2b",
-    clear: () => setUploadedFiles([]),
+    getChatNavigationRevision,
+    clear: () => setUploadedFiles(() => []),
+    // Mirrors chat navigation: the revision advances and the composer resets.
+    navigate: () => {
+      navigationRevisionRef.current += 1;
+      setUploadedFiles(() => []);
+    },
   };
   return (
     <StateContext.Provider value={globalState}>
@@ -99,6 +125,7 @@ function useHarness(mode: "ask" | "agent" = "agent") {
     preview: useFileUpload(mode),
     uploadedFiles: globalState.uploadedFiles as UploadedFileState[],
     clear: globalState.clear,
+    navigate: globalState.navigate as () => void,
   };
 }
 const file = (name: string) =>
@@ -134,6 +161,180 @@ describe("browser attachment recovery", () => {
     jest.useRealTimers();
     jest.restoreAllMocks();
     global.fetch = originalFetch;
+  });
+
+  describe("overlapping selections", () => {
+    const image = (name: string) =>
+      new File(["image attachment"], name, { type: "image/png" });
+    const paste = (file: File) =>
+      ({
+        clipboardData: {
+          getData: () => "",
+          items: [{ kind: "file", getAsFile: () => file }],
+        },
+        preventDefault: jest.fn(),
+      }) as unknown as ClipboardEvent;
+    const names = (files: UploadedFileState[]) =>
+      files.map(({ file }) => file.name);
+    const originalCreateImageBitmap = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "createImageBitmap",
+    );
+    let decodes: Map<
+      string,
+      { succeed: () => void; fail: (error: Error) => void }
+    >;
+    beforeEach(() => {
+      decodes = new Map();
+      Object.defineProperty(globalThis, "createImageBitmap", {
+        configurable: true,
+        value: (image: File) =>
+          new Promise((resolve, reject) => {
+            decodes.set(image.name, {
+              succeed: () => resolve({ close() {} }),
+              fail: reject,
+            });
+          }),
+      });
+    });
+    afterEach(() => {
+      if (originalCreateImageBitmap) {
+        Object.defineProperty(
+          globalThis,
+          "createImageBitmap",
+          originalCreateImageBitmap,
+        );
+      } else {
+        Reflect.deleteProperty(globalThis, "createImageBitmap");
+      }
+    });
+
+    it("keeps overlapping image pastes in user order when the second image decodes first", async () => {
+      const { result } = renderHook(() => useHarness(), {
+        wrapper: HarnessProvider,
+      });
+      const pending: Promise<boolean>[] = [];
+      await act(async () => {
+        pending.push(
+          result.current.picker.handlePasteEvent(paste(image("first.png"))),
+        );
+        pending.push(
+          result.current.preview.handlePasteEvent(paste(image("second.png"))),
+        );
+      });
+      expect([...decodes.keys()]).toEqual(["first.png", "second.png"]);
+      await act(async () => {
+        decodes.get("second.png")?.succeed();
+      });
+      expect(result.current.uploadedFiles).toHaveLength(0);
+      await act(async () => {
+        decodes.get("first.png")?.succeed();
+        await Promise.all(pending);
+      });
+      expect(names(result.current.uploadedFiles)).toEqual([
+        "first.png",
+        "second.png",
+      ]);
+    });
+
+    it("reports an invalid earlier image without holding back the next selection", async () => {
+      const { toast } = jest.requireMock("sonner");
+      const { result } = renderHook(() => useHarness(), {
+        wrapper: HarnessProvider,
+      });
+      const pending: Promise<boolean>[] = [];
+      await act(async () => {
+        pending.push(
+          result.current.picker.handlePasteEvent(paste(image("broken.png"))),
+        );
+        pending.push(
+          result.current.preview.handlePasteEvent(paste(image("second.png"))),
+        );
+      });
+      await act(async () => {
+        decodes.get("second.png")?.succeed();
+        decodes.get("broken.png")?.fail(new Error("bad pixels"));
+        await Promise.all(pending);
+      });
+      expect(names(result.current.uploadedFiles)).toEqual(["second.png"]);
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("broken.png: Image validation failed"),
+      );
+    });
+
+    it.each(["sidebar", "history"])(
+      "drops the old selection after %s navigation without delaying the next chat",
+      async (navigation) => {
+        const initialPath = window.location.pathname;
+        try {
+          const { result } = renderHook(() => useHarness(), {
+            wrapper: HarnessProvider,
+          });
+          let previousChat!: Promise<boolean>;
+          let currentChat!: Promise<boolean>;
+          await act(async () => {
+            previousChat = result.current.picker.handlePasteEvent(
+              paste(image("previous-chat.png")),
+            );
+          });
+          act(() => {
+            if (navigation === "sidebar") {
+              result.current.navigate();
+            } else {
+              window.history.replaceState({}, "", "/c/opened-from-history");
+            }
+          });
+          await act(async () => {
+            currentChat = result.current.preview.handlePasteEvent(
+              paste(image("current-chat.png")),
+            );
+          });
+          await act(async () => {
+            decodes.get("current-chat.png")?.succeed();
+            await currentChat;
+          });
+          expect(names(result.current.uploadedFiles)).toEqual([
+            "current-chat.png",
+          ]);
+          await act(async () => {
+            decodes.get("previous-chat.png")?.succeed();
+            await previousChat;
+          });
+          expect(names(result.current.uploadedFiles)).toEqual([
+            "current-chat.png",
+          ]);
+          expect(generateS3UploadUrlAction).not.toHaveBeenCalledWith(
+            expect.objectContaining({ fileName: "previous-chat.png" }),
+          );
+        } finally {
+          window.history.replaceState({}, "", initialPath);
+        }
+      },
+    );
+
+    it("admits a later batch only into slots that remain at the cap", async () => {
+      const { toast } = jest.requireMock("sonner");
+      const { result } = renderHook(() => useHarness("ask"), {
+        wrapper: HarnessProvider,
+      });
+      const batch = (prefix: string) =>
+        Array.from({ length: 6 }, (_, index) => file(`${prefix}-${index}.txt`));
+      await act(async () => {
+        await Promise.all([
+          result.current.picker.handleFileUploadEvent(select(batch("a"))),
+          result.current.preview.handleFileUploadEvent(select(batch("b"))),
+        ]);
+      });
+      expect(names(result.current.uploadedFiles)).toEqual([
+        ...batch("a").map(({ name }) => name),
+        ...batch("b")
+          .slice(0, 4)
+          .map(({ name }) => name),
+      ]);
+      expect(toast.error).toHaveBeenCalledWith(
+        "Only 4 files were added. Maximum 10 files allowed.",
+      );
+    });
   });
 
   it("retries a transient transfer against one reservation and finalizes once", async () => {
