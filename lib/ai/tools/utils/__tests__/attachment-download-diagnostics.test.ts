@@ -1081,6 +1081,68 @@ it("retains the command hint through existing boundary and copy propagation", ()
   expect(Object.keys(original)).toEqual([]);
 });
 
+const notExecutable = "/system/bin/sh: curl: inaccessible or not found";
+const selectionFields = (error: object) =>
+  Object.fromEntries(
+    Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+      ([key]) => key.startsWith("attachment_client_selection_"),
+    ),
+  );
+
+it.each([
+  "current_probe_positive",
+  "cached_probe_positive",
+  "current_unverified_default",
+  "cached_unverified_default",
+] as const)(
+  "keeps the %s selection of a curl exit127 not-executable result through copy",
+  (clientSelection) => {
+    const original = recordAttachmentDownloadFailure(
+      Object.freeze(new Error("private original")),
+      { ...input, exitCode: 127, stderr: notExecutable, clientSelection },
+    );
+    const copy = copyAttachmentDownloadFailureContext(
+      original,
+      new Error("private wrapper"),
+    );
+    for (const error of [original, copy])
+      expect(selectionFields(error)).toEqual({
+        attachment_client_selection_version: 1,
+        attachment_client_selection_reason: clientSelection,
+      });
+    // Existing command-hint evidence for the same result is unchanged.
+    expect(getAttachmentDownloadFailureContext(copy)).toMatchObject({
+      attachment_download_exit_code: 127,
+      attachment_download_command_hint: "unclassified",
+    });
+  },
+);
+
+it.each([
+  ["another client", { httpClient: "wget" as const }],
+  ["another exit", { exitCode: 126 }],
+  ["command-not-found wording", { stderr: "sh: curl: not found" }],
+  [
+    "another program's wording",
+    { stderr: "sh: wget: inaccessible or not found" },
+  ],
+  ["an unrecorded selection", { clientSelection: undefined }],
+  ["an unknown value", { clientSelection: "private" as never }],
+])("omits client selection for %s", (_case, override) => {
+  const error = recordAttachmentDownloadFailure(new Error(), {
+    ...input,
+    exitCode: 127,
+    stderr: notExecutable,
+    clientSelection: "current_probe_positive",
+    ...override,
+  });
+  expect(getAttachmentDownloadFailureContext(error)).toHaveProperty(
+    "attachment_download_diagnostic_version",
+    1,
+  );
+  expect(selectionFields(error)).toEqual({});
+});
+
 const directoryKeys = [
   "attachment_download_directory_probe_version",
   "attachment_download_directory_probe_state",

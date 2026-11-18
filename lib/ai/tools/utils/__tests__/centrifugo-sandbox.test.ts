@@ -6108,6 +6108,219 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("remote curl client selection diagnostics", () => {
+    const URL = "https://private.example/object?X-Amz-Signature=PRIVATE_TOKEN";
+    const DEST = "/tmp/hackerai-upload/PRIVATE_DEST.pdf";
+    const CURL_PROBE = "command -v curl || true";
+    const WGET_PROBE = "command -v wget || true";
+    const notExecutable = {
+      stdout: "PRIVATE_STDOUT",
+      stderr: "/system/bin/sh: curl: inaccessible or not found",
+      exitCode: 127,
+    };
+    const ok = (stdout = "") => ({ stdout, stderr: "", exitCode: 0 });
+    type Reply = { stdout: string; stderr: string; exitCode: number };
+
+    /** Linux remote connection; probes and transfer replies are per test. */
+    function linuxSandbox(reply: {
+      curl?: () => Reply | Promise<Reply>;
+      wget?: string;
+      download?: Reply | ((command: string) => Promise<Reply>);
+    }) {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "arm64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      const commands: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (command: string) => {
+        commands.push(command);
+        if (command === CURL_PROBE) return reply.curl?.() ?? ok();
+        if (command === WGET_PROBE) return ok(reply.wget ?? "");
+        if (command === "curl --help all 2>&1") return ok();
+        if (command.includes("target_dir_exists"))
+          return ok("target_dir_exists=true\ntarget_dir_writable=true\n");
+        return typeof reply.download === "function"
+          ? reply.download(command)
+          : (reply.download ?? notExecutable);
+      });
+      return { sandbox, commands };
+    }
+    const download = (sandbox: CentrifugoSandbox, dest = DEST) =>
+      sandbox.files.downloadFromUrl(URL, dest).catch((error: unknown) => error);
+    const selection = (reason: string) => ({
+      attachment_client_selection_version: 1,
+      attachment_client_selection_reason: reason,
+    });
+    const selectionOf = (record: unknown) =>
+      Object.fromEntries(
+        Object.entries(
+          (record as Record<string, unknown> | undefined) ?? {},
+        ).filter(([key]) => key.startsWith("attachment_client_selection_")),
+      );
+    const failureSelection = (error: unknown) =>
+      selectionOf(getAttachmentDownloadFailureContext(error));
+
+    it.each([
+      ["a native curl", "/usr/bin/curl\n", "probe_positive"],
+      // Snap curl is kept only when wget is missing; the probe still found it.
+      ["a Snap curl without wget", "/snap/bin/curl\n", "probe_positive"],
+      ["no client", "", "unverified_default"],
+    ])(
+      "attributes %s to this call, then to the adapter cache",
+      async (_case, curlPath, basis) => {
+        const { sandbox, commands } = linuxSandbox({
+          curl: () => ok(curlPath),
+        });
+        const first = (await download(sandbox)) as Error;
+        const second = (await download(sandbox)) as Error;
+
+        // The returned result keeps its existing message and classification.
+        expect(first.message).toMatch(
+          /^Failed to download file: \/system\/bin\/sh: curl: inaccessible or not found\n/,
+        );
+        expect(getAttachmentDownloadFailureContext(first)).toMatchObject({
+          attachment_download_exit_code: 127,
+          attachment_download_http_client: "curl",
+          attachment_download_phase: "failure_diagnostics",
+        });
+        expect(failureSelection(first)).toEqual(selection(`current_${basis}`));
+        expect(failureSelection(second)).toEqual(selection(`cached_${basis}`));
+        // No added probe, transfer or retry: one detection serves both calls.
+        expect(commands.filter((c) => c === CURL_PROBE)).toHaveLength(1);
+        expect(commands.filter((c) => c.includes("curl -fsSL"))).toHaveLength(
+          2,
+        );
+      },
+    );
+
+    it("keeps concurrent detecting calls' selections owned by each transfer", async () => {
+      let resolveFirstProbe!: (reply: Reply) => void;
+      let probes = 0;
+      const pending = new Map<string, (reply: Reply) => void>();
+      const { sandbox, commands } = linuxSandbox({
+        curl: () =>
+          ++probes === 1
+            ? new Promise<Reply>((resolve) => (resolveFirstProbe = resolve))
+            : ok("/usr/bin/curl\n"),
+        download: (command) =>
+          new Promise<Reply>((resolve) =>
+            pending.set(/(first|second|third)\.pdf/.exec(command)![1], resolve),
+          ),
+      });
+      const first = download(sandbox, "/tmp/hackerai-upload/first.pdf");
+      await jest.advanceTimersByTimeAsync(0);
+      // The second transfer probes and selects while the first still waits.
+      const second = download(sandbox, "/tmp/hackerai-upload/second.pdf");
+      await jest.advanceTimersByTimeAsync(0);
+      // The first then completes a different selection, rewriting the cache,
+      // before the second transfer's result returns.
+      resolveFirstProbe(ok());
+      await jest.advanceTimersByTimeAsync(0);
+      expect([...pending.keys()].sort()).toEqual(["first", "second"]);
+      pending.get("second")!(notExecutable);
+      const secondFailure = await second;
+      pending.get("first")!(notExecutable);
+      const firstFailure = await first;
+
+      expect(failureSelection(secondFailure)).toEqual(
+        selection("current_probe_positive"),
+      );
+      expect(failureSelection(firstFailure)).toEqual(
+        selection("current_unverified_default"),
+      );
+      expect(commands.filter((c) => c === CURL_PROBE)).toHaveLength(2);
+      // The cache keeps the last completed selection with its own provenance.
+      const third = download(sandbox, "/tmp/hackerai-upload/third.pdf");
+      await jest.advanceTimersByTimeAsync(0);
+      pending.get("third")!(notExecutable);
+      expect(failureSelection(await third)).toEqual(
+        selection("cached_unverified_default"),
+      );
+    });
+
+    it("omits selection for a cached client without recorded provenance", async () => {
+      const { sandbox, commands } = linuxSandbox({});
+      (sandbox as any).httpClient = "curl";
+      const failure = await download(sandbox);
+      expect(getAttachmentDownloadFailureContext(failure)).toMatchObject({
+        attachment_download_exit_code: 127,
+      });
+      expect(failureSelection(failure)).toEqual({});
+      expect(commands).not.toContain(CURL_PROBE);
+    });
+
+    it.each(["fails", "succeeds"])(
+      "forwards only a classified failure's selection to staging sinks when the transfer %s",
+      async (outcome) => {
+        const { sandbox } = linuxSandbox(
+          outcome === "fails" ? {} : { download: ok() },
+        );
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const result = await uploadSandboxFiles(
+            [{ kind: "url", url: URL, localPath: DEST }],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "agent-long",
+                requestId: "run-client-selection",
+                userId: "user-1",
+                chatId: "chat-client-selection",
+              },
+            },
+          );
+          const records = (spy: jest.SpyInstance, name: string) =>
+            spy.mock.calls
+              .map(([value]) => {
+                try {
+                  return JSON.parse(value);
+                } catch {
+                  return {};
+                }
+              })
+              .filter((record) => record.event === name);
+          const sinks = [
+            ...event.mock.calls
+              .filter(([name]) => name === "sandbox_attachment_staging_failed")
+              .map(([, fields]) => fields),
+            ...records(error, "sandbox_attachment_staging_failed"),
+            ...records(warn, "sandbox_attachment_failure_diagnostics"),
+            ...(getSandboxUploadFailureMetadata(result)
+              ? [getSandboxUploadFailureMetadata(result)]
+              : []),
+          ];
+          if (outcome === "succeeds") {
+            expect(result).toEqual({ failedCount: 0, pathRewrites: [] });
+            expect(sinks).toEqual([]);
+            return;
+          }
+          expect(result.failedCount).toBe(1);
+          expect(result.failureDetails?.[0]?.reason).toBe(
+            "attachment_client_not_executable",
+          );
+          expect(sinks).toHaveLength(4);
+          // Exact finite fields: the default used when no client was found.
+          for (const sink of sinks)
+            expect(selectionOf(sink)).toEqual(
+              selection("current_unverified_default"),
+            );
+        } finally {
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
+  });
+
   describe("Windows file download shell-context stage diagnostics", () => {
     const SHELL_PROBE = "echo $BASH_VERSION";
     const URL = "https://private.example/object?X-Amz-Signature=PRIVATE_TOKEN";

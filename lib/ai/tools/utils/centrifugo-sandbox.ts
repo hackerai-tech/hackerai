@@ -4,6 +4,7 @@ import {
   recordAttachmentCommandReceiver,
   recordAttachmentCommandSetupAttempt,
   readAttachmentCommandReceiverClientError,
+  type AttachmentClientSelection,
   type AttachmentCommandReceiverClientError,
   type AttachmentDownloadBoundary,
   type AttachmentDownloadShellContextObservation,
@@ -2443,8 +2444,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     }
   }
 
-  // Cache for the detected HTTP client.
+  // Cache for the detected HTTP client, and whether a probe found it.
   private httpClient: HttpClient | null = null;
+  private httpClientProbePositive: boolean | undefined;
   private powerShellExecutable: string | undefined;
   private uploadReadDiagnosticStarted = false;
 
@@ -2650,9 +2652,29 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    * Alpine Linux uses wget by default, most other distros have curl.
    * Windows falls back to PowerShell when curl.exe is unavailable.
    */
-  private async detectHttpClient(signal?: AbortSignal): Promise<HttpClient> {
+  private async detectHttpClient(
+    signal?: AbortSignal,
+    /** Owned by one transfer; set as this call selects, before it returns. */
+    observation?: { selection?: AttachmentClientSelection },
+  ): Promise<HttpClient> {
     signal?.throwIfAborted();
-    if (this.httpClient) return this.httpClient;
+    if (this.httpClient) {
+      // A cache without recorded provenance stays unattributed.
+      if (observation && this.httpClientProbePositive !== undefined)
+        observation.selection = this.httpClientProbePositive
+          ? "cached_probe_positive"
+          : "cached_unverified_default";
+      return this.httpClient;
+    }
+    const select = (client: HttpClient, probePositive: boolean) => {
+      this.httpClient = client;
+      this.httpClientProbePositive = probePositive;
+      if (observation)
+        observation.selection = probePositive
+          ? "current_probe_positive"
+          : "current_unverified_default";
+      return client;
+    };
 
     // Most supported Windows versions bundle curl.exe, but hardened or older
     // installations can omit it. Probe with syntax matching the selected
@@ -2667,13 +2689,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         curlCheck.exitCode === 0 &&
         /curl(?:\.exe)?/i.test(curlCheck.stdout)
       ) {
-        this.httpClient = "curl";
-        return "curl";
+        return select("curl", true);
       }
 
       await this.resolvePowerShellExecutable(signal);
-      this.httpClient = "powershell";
-      return "powershell";
+      return select("powershell", true);
     }
 
     const curlCheck = await this.runSetupCommand("command -v curl || true", {
@@ -2685,8 +2705,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     // can report the destination writable while Snap curl still cannot open
     // that same host path, so prefer the already-supported wget when present.
     if (curlPath && !curlPath.endsWith("/snap/bin/curl")) {
-      this.httpClient = "curl";
-      return "curl";
+      return select("curl", true);
     }
 
     const wgetCheck = await this.runSetupCommand("command -v wget || true", {
@@ -2715,17 +2734,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           }),
         );
       }
-      this.httpClient = "wget";
-      return "wget";
+      return select("wget", true);
     }
 
+    // Snap curl found without wget is still a positive probe.
     if (curlPath) {
-      this.httpClient = "curl";
-      return "curl";
+      return select("curl", true);
     }
 
-    this.httpClient = "curl";
-    return "curl";
+    return select("curl", false);
   }
 
   private static encodePowerShellValue(value: string): string {
@@ -3319,7 +3336,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         const { useBash, path, nativePath, escapePath, escapeValue } =
           await this.shellContext(rawPath, signal, shellContextObservation);
         phase = "http_client";
-        const httpClient = await this.detectHttpClient(signal);
+        // This call's own selection; later awaits and concurrent transfers
+        // sharing the adapter cache cannot change it.
+        const clientObservation: { selection?: AttachmentClientSelection } = {};
+        const httpClient = await this.detectHttpClient(
+          signal,
+          clientObservation,
+        );
+        const clientSelection = clientObservation.selection;
         phase = "prepare_command";
         const dir = this.parentDir(path);
         const fileName = getSandboxFileName(path, this.isWindows());
@@ -3514,6 +3538,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 exitCode: result.exitCode,
                 stderr: result.stderr,
                 directoryProbe,
+                clientSelection,
               },
             );
           }
