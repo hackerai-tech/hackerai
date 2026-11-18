@@ -375,7 +375,8 @@ export class DesktopAckTelemetry {
         invocationRejection,
       );
       // Its cleanup pair joins only an `owner_stop_requested` origin on an
-      // acknowledged terminal; otherwise the origin pair alone, as before.
+      // acknowledged terminal, and its taskkill group only that pair's
+      // `tree_unconfirmed` failure; otherwise the prior pairs alone, as before.
       const streamFence = readDesktopStreamFenceDiagnostic(
         result.streamFence,
         invocationRejection,

@@ -283,43 +283,82 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
 pub async fn cancel_process_tree(pid: u32) -> bool {
+    cancel_process_tree_observed(pid).await.is_ok()
+}
+
+/// How Windows `taskkill` failed to confirm a tree stopped: a closed class of
+/// its result, never its output, text, PID or OS error.
+// Only the Windows path and tests construct a failure.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskkillFailure {
+    /// It exited unsuccessfully, with its nonzero code when the OS reported one.
+    NonzeroExit(Option<std::num::NonZeroI32>),
+    /// It could not be spawned or its completion could not be collected.
+    OutputError,
+}
+
+/// `cancel_process_tree`, which delegates here: Ok only when confirmed stopped.
+/// An unconfirmed outcome carries the closed failure only from the Windows
+/// taskkill path; every other path reports None.
+pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TaskkillFailure>> {
     #[cfg(unix)]
     let stopped = {
         terminate_process_group(pid, libc::SIGTERM);
         for _ in 0..10 {
             if !process_group_is_running(pid) {
-                return true;
+                return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         terminate_process_group(pid, libc::SIGKILL);
         for _ in 0..20 {
             if !process_group_is_running(pid) {
-                return true;
+                return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        !process_group_is_running(pid)
+        if process_group_is_running(pid) {
+            Err(None)
+        } else {
+            Ok(())
+        }
     };
 
     #[cfg(windows)]
-    let stopped = {
+    let stopped = taskkill_outcome(
         tokio::process::Command::new(windows_system_executable("taskkill.exe"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    };
+            // Only the status: captured output is never read.
+            .map(|output| output.status),
+    )
+    .map_err(Some);
 
     #[cfg(not(any(unix, windows)))]
-    let stopped = false;
+    let stopped = Err(None);
 
-    if !stopped {
+    if stopped.is_err() {
         crate::update_safety::UPDATE_GATE.block_for_unconfirmed_command();
     }
     stopped
+}
+
+/// Confirmed only by a successful exit, as before; otherwise which of the two
+/// existing failures occurred.
+#[cfg(any(windows, test))]
+fn taskkill_outcome(
+    result: std::io::Result<std::process::ExitStatus>,
+) -> Result<(), TaskkillFailure> {
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(TaskkillFailure::NonzeroExit(
+            status.code().and_then(std::num::NonZeroI32::new),
+        )),
+        Err(_) => Err(TaskkillFailure::OutputError),
+    }
 }
 
 #[cfg(unix)]
@@ -330,4 +369,57 @@ fn process_group_is_running(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroI32;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    #[test]
+    fn taskkill_outcome_keeps_its_confirmation_and_separates_exit_from_output_error() {
+        #[cfg(unix)]
+        let exited = |code: u8| ExitStatus::from_raw(i32::from(code) << 8);
+        #[cfg(windows)]
+        let exited = |code: u8| ExitStatus::from_raw(u32::from(code));
+        let mut cases = vec![
+            // Only a successful exit confirms the tree stopped.
+            (Ok(exited(0)), Ok(())),
+            (
+                Ok(exited(1)),
+                Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(1))),
+            ),
+            (
+                Ok(exited(128)),
+                Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(128))),
+            ),
+            (
+                Err(std::io::Error::other("spawn failed")),
+                Err(TaskkillFailure::OutputError),
+            ),
+        ];
+        // An unsuccessful status without a code stays a nonzero exit.
+        #[cfg(unix)]
+        cases.push((
+            Ok(ExitStatus::from_raw(libc::SIGKILL)),
+            Err(TaskkillFailure::NonzeroExit(None)),
+        ));
+        // Windows codes keep their signed 32-bit value.
+        #[cfg(windows)]
+        cases.push((
+            Ok(ExitStatus::from_raw(0xC000_013A)),
+            Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(
+                -1_073_741_510,
+            ))),
+        ));
+        for (result, expected) in cases {
+            let label = format!("{result:?}");
+            assert_eq!(taskkill_outcome(result), expected, "{label}");
+        }
+    }
 }

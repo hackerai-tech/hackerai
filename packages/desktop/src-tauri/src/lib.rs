@@ -1422,6 +1422,9 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // Only literal `true`, beside the origin opt-in, adds a stop request's
     // unconfirmed cleanup leg as a sibling of that origin.
     include_stream_fence_cleanup: Option<serde_json::Value>,
+    // Only literal `true`, beside both opt-ins above, adds the Windows taskkill
+    // failure recorded with a stop request's `tree_unconfirmed` leg.
+    include_stream_fence_windows_taskkill: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1481,6 +1484,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             include_stream_fence_cleanup: CommandArg::from_command(item(
                 "includeStreamFenceCleanup",
             ))?,
+            include_stream_fence_windows_taskkill: CommandArg::from_command(item(
+                "includeStreamFenceWindowsTaskkill",
+            ))?,
         })
     }
 }
@@ -1532,12 +1538,15 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// The exact original rejection, as a string. Only an opted-in invocation's
 /// exact fence rejection, with a recorded origin, is instead that same public
 /// message beside the fence's closed v1 origin. With both opt-ins, a stop
-/// request's recorded unconfirmed leg is added as that origin's sibling.
+/// request's recorded unconfirmed leg is added as that origin's sibling. With
+/// all three, the Windows taskkill failure recorded with a `tree_unconfirmed`
+/// leg is added as a further sibling.
 fn authorized_stream_rejection(
     state: &StreamCommandState,
     error: String,
     include_stream_fence_origin: bool,
     include_stream_fence_cleanup: bool,
+    include_stream_fence_windows_taskkill: bool,
 ) -> tauri::ipc::InvokeError {
     let fence_rejection =
         include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
@@ -1546,15 +1555,23 @@ fn authorized_stream_rejection(
     } else {
         None
     };
-    let Some((stream_fence, cleanup)) = receipts else {
+    let Some(receipts) = receipts else {
         return tauri::ipc::InvokeError::from(error);
     };
     let mut rejection = serde_json::json!({
         "message": error,
-        "streamFence": stream_fence,
+        "streamFence": receipts.origin,
     });
-    if let Some(cleanup) = cleanup.filter(|_| include_stream_fence_cleanup) {
+    if let Some(cleanup) = receipts.cleanup.filter(|_| include_stream_fence_cleanup) {
         rejection["streamFenceCleanup"] = serde_json::json!(cleanup);
+        // The fence records a taskkill failure only with its own stop
+        // request's `tree_unconfirmed` leg.
+        if let Some(taskkill) = receipts
+            .windows_taskkill
+            .filter(|_| include_stream_fence_windows_taskkill)
+        {
+            rejection["streamFenceWindowsTaskkill"] = serde_json::json!(taskkill);
+        }
     }
     tauri::ipc::InvokeError(rejection)
 }
@@ -1586,6 +1603,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_authorization_response_read_diagnostic,
         include_stream_fence_origin,
         include_stream_fence_cleanup,
+        include_stream_fence_windows_taskkill,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1669,6 +1687,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_origin == Some(serde_json::Value::Bool(true));
     let include_stream_fence_cleanup =
         include_stream_fence_cleanup == Some(serde_json::Value::Bool(true));
+    let include_stream_fence_windows_taskkill =
+        include_stream_fence_windows_taskkill == Some(serde_json::Value::Bool(true));
     execute_stream_command(
         &state,
         admission,
@@ -1688,6 +1708,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             error,
             include_stream_fence_origin,
             include_stream_fence_cleanup,
+            include_stream_fence_windows_taskkill,
         )
     })
 }
@@ -2727,8 +2748,8 @@ mod tests {
                     "Desktop origin is not allowed for native authorization",
                 ),
             ] {
-                // The origin opt-in alone, and beside the cleanup opt-in and
-                // all eight current channels.
+                // The origin opt-in alone, and beside the cleanup and Windows
+                // taskkill opt-ins and all eight current channels.
                 for with_others in [false, true] {
                     for fence in &optional {
                         let mut body = serde_json::json!({
@@ -2757,6 +2778,7 @@ mod tests {
                             body["includeStreamFenceOrigin"] = value.clone();
                             if with_others {
                                 body["includeStreamFenceCleanup"] = value.clone();
+                                body["includeStreamFenceWindowsTaskkill"] = value.clone();
                             }
                         }
                         let response = get_ipc_response(
@@ -2786,8 +2808,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn authorized_stream_command_fence_rejection_carries_receipts_only_when_opted_in() {
+        use crate::platform::TaskkillFailure;
         use crate::stream_lifecycle::CleanupFailure;
         use serde_json::{json, Value};
+        use std::num::NonZeroI32;
         use std::sync::atomic::Ordering;
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
 
@@ -2806,37 +2830,66 @@ mod tests {
         let mut with_cleanup = stopped.clone();
         with_cleanup["streamFenceCleanup"] =
             json!({ "version": 1, "failure": "tree_and_leader_wait_failed" });
+        let mut tree_cleanup = stopped.clone();
+        tree_cleanup["streamFenceCleanup"] = json!({ "version": 1, "failure": "tree_unconfirmed" });
+        let mut with_taskkill = tree_cleanup.clone();
+        with_taskkill["streamFenceWindowsTaskkill"] =
+            json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": -1_073_741_510 });
+        let windows_exit = Some(TaskkillFailure::NonzeroExit(NonZeroI32::new(
+            -1_073_741_510,
+        )));
         let yes = || Some(json!(true));
         let fences = [
             // A fence without a recorded leg keeps the exact v1 shapes, even
-            // with the new opt-in.
+            // with the newer opt-ins.
             (
                 None,
                 vec![
-                    (yes(), None, &missing),
-                    (yes(), yes(), &missing),
-                    (None, None, &exact),
-                    (Some(json!(false)), None, &exact),
-                    (Some(json!("true")), None, &exact),
-                    (Some(json!(1)), None, &exact),
-                    (Some(Value::Null), None, &exact),
-                    (None, yes(), &exact),
+                    (yes(), None, None, &missing),
+                    (yes(), yes(), None, &missing),
+                    (yes(), yes(), yes(), &missing),
+                    (None, None, None, &exact),
+                    (Some(json!(false)), None, None, &exact),
+                    (Some(json!("true")), None, None, &exact),
+                    (Some(json!(1)), None, None, &exact),
+                    (Some(Value::Null), None, None, &exact),
+                    (None, yes(), None, &exact),
+                    (None, yes(), yes(), &exact),
                 ],
             ),
             // A stop request's leg needs both literal opt-ins; the cleanup
-            // opt-in alone never changes the exact string.
+            // opt-in alone never changes the exact string. A taskkill failure
+            // reported beside a leader-wait failure is never recorded.
             (
-                Some(CleanupFailure::TreeAndLeaderWaitFailed),
+                Some((CleanupFailure::TreeAndLeaderWaitFailed, windows_exit)),
                 vec![
-                    (yes(), yes(), &with_cleanup),
-                    (yes(), None, &stopped),
-                    (yes(), Some(json!(false)), &stopped),
-                    (yes(), Some(json!("true")), &stopped),
-                    (yes(), Some(json!(1)), &stopped),
-                    (yes(), Some(Value::Null), &stopped),
-                    (None, yes(), &exact),
-                    (Some(json!(false)), yes(), &exact),
-                    (None, None, &exact),
+                    (yes(), yes(), None, &with_cleanup),
+                    (yes(), yes(), yes(), &with_cleanup),
+                    (yes(), None, None, &stopped),
+                    (yes(), Some(json!(false)), None, &stopped),
+                    (yes(), Some(json!("true")), None, &stopped),
+                    (yes(), Some(json!(1)), None, &stopped),
+                    (yes(), Some(Value::Null), None, &stopped),
+                    (None, yes(), None, &exact),
+                    (Some(json!(false)), yes(), None, &exact),
+                    (None, None, None, &exact),
+                ],
+            ),
+            // The tree-only leg's taskkill failure needs all three literal
+            // opt-ins; otherwise every earlier negotiated shape is unchanged.
+            (
+                Some((CleanupFailure::TreeUnconfirmed, windows_exit)),
+                vec![
+                    (yes(), yes(), yes(), &with_taskkill),
+                    (yes(), yes(), None, &tree_cleanup),
+                    (yes(), yes(), Some(json!(false)), &tree_cleanup),
+                    (yes(), yes(), Some(json!("true")), &tree_cleanup),
+                    (yes(), yes(), Some(json!(1)), &tree_cleanup),
+                    (yes(), yes(), Some(json!({ "value": true })), &tree_cleanup),
+                    (yes(), yes(), Some(Value::Null), &tree_cleanup),
+                    (yes(), None, yes(), &stopped),
+                    (None, yes(), yes(), &exact),
+                    (None, None, yes(), &exact),
                 ],
             ),
         ];
@@ -2856,10 +2909,12 @@ mod tests {
             let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
                 .build()
                 .unwrap();
-            for (origin_opt_in, cleanup_opt_in, expected) in cases {
+            for (origin_opt_in, cleanup_opt_in, taskkill_opt_in, expected) in cases {
                 next_authorization += 1;
                 let authorization = format!("{next_authorization:064x}");
-                let label = format!("{stop_failure:?} {origin_opt_in:?} {cleanup_opt_in:?}");
+                let label = format!(
+                    "{stop_failure:?} {origin_opt_in:?} {cleanup_opt_in:?} {taskkill_opt_in:?}"
+                );
                 let mut body = json!({
                     "authorizationId": authorization,
                     "message": { "type": "command", "commandId": authorization, "command": command },
@@ -2870,6 +2925,9 @@ mod tests {
                 }
                 if let Some(value) = cleanup_opt_in {
                     body["includeStreamFenceCleanup"] = value;
+                }
+                if let Some(value) = taskkill_opt_in {
+                    body["includeStreamFenceWindowsTaskkill"] = value;
                 }
                 let response = get_ipc_response(
                     &window,
@@ -2886,8 +2944,9 @@ mod tests {
                 .map(|_| ());
                 // The signed message is redeemed once, then the launch is
                 // fenced with the exact original message; only literal `true`
-                // adds the closed origin, and with a second literal `true` a
-                // stop request's recorded leg, beside it.
+                // adds the closed origin, with a second literal `true` a
+                // stop request's recorded leg, and with a third its recorded
+                // taskkill failure, beside it.
                 assert_eq!(response, Err(expected.clone()), "{label}");
             }
             assert_eq!(approvals.load(Ordering::SeqCst), count);
@@ -3257,10 +3316,14 @@ mod tests {
 
     /// A stream lifecycle with its own update gate, fenced the way a real owner
     /// released before recording an outcome fences it, or with `stop_failure`
-    /// the way a stop request whose cleanup reported it does.
+    /// the way a stop request whose cleanup reported that leg, and tree stop
+    /// that taskkill failure, does.
     #[cfg(unix)]
     async fn fenced_stream_state(
-        stop_failure: Option<stream_lifecycle::CleanupFailure>,
+        stop_failure: Option<(
+            stream_lifecycle::CleanupFailure,
+            Option<platform::TaskkillFailure>,
+        )>,
     ) -> StreamCommandState {
         let gate: &'static update_safety::UpdateGate =
             Box::leak(Box::new(update_safety::UpdateGate::default()));
@@ -3273,7 +3336,7 @@ mod tests {
             .unwrap()
         {
             stream_lifecycle::Launch::Started(mut owned) => match stop_failure {
-                Some(failure) => owned.release_stop_unconfirmed(failure).await,
+                Some((failure, detail)) => owned.release_stop_unconfirmed(failure, detail).await,
                 None => {
                     let _ = owned.child.wait().await;
                     drop(owned);
@@ -3332,7 +3395,14 @@ mod tests {
                 .await;
                 let rejections = result.clone().err().map(|error| {
                     [false, true].map(|opted_in| {
-                        authorized_stream_rejection(&state, error.clone(), opted_in, opted_in).0
+                        authorized_stream_rejection(
+                            &state,
+                            error.clone(),
+                            opted_in,
+                            opted_in,
+                            opted_in,
+                        )
+                        .0
                     })
                 });
                 let output = output.lock().unwrap().clone();
@@ -3357,6 +3427,7 @@ mod tests {
                 stream_lifecycle::STOP_UNCONFIRMED.into(),
                 true,
                 true,
+                true,
             )
             .0,
             serde_json::json!(stream_lifecycle::STOP_UNCONFIRMED)
@@ -3371,11 +3442,23 @@ mod tests {
                 }),
             ),
             (
-                Some(stream_lifecycle::CleanupFailure::LeaderWaitTimedOut),
+                Some((stream_lifecycle::CleanupFailure::LeaderWaitTimedOut, None)),
                 serde_json::json!({
                     "message": stream_lifecycle::STOP_UNCONFIRMED,
                     "streamFence": { "version": 1, "origin": "owner_stop_requested" },
                     "streamFenceCleanup": { "version": 1, "failure": "leader_wait_timed_out" },
+                }),
+            ),
+            (
+                Some((
+                    stream_lifecycle::CleanupFailure::TreeUnconfirmed,
+                    Some(platform::TaskkillFailure::OutputError),
+                )),
+                serde_json::json!({
+                    "message": stream_lifecycle::STOP_UNCONFIRMED,
+                    "streamFence": { "version": 1, "origin": "owner_stop_requested" },
+                    "streamFenceCleanup": { "version": 1, "failure": "tree_unconfirmed" },
+                    "streamFenceWindowsTaskkill": { "version": 1, "outcome": "output_error" },
                 }),
             ),
         ] {

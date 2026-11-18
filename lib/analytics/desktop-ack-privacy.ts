@@ -246,7 +246,9 @@ export function sanitizeDesktopAckEvent<
     // them. It likewise survives only as the validated data copy and drops
     // alone. Its cleanup pair is read only beside a validated
     // `owner_stop_requested` origin on an acknowledged terminal, and an
-    // invalid one drops alone, leaving the origin pair.
+    // invalid one drops alone, leaving the origin pair. Its Windows taskkill
+    // group is read only beside a validated `tree_unconfirmed` cleanup pair,
+    // and an invalid one drops alone, leaving both pairs.
     const streamFence = readDesktopStreamFenceDiagnostic(
       event.properties,
       invocationRejection,

@@ -1393,6 +1393,296 @@ describe("stream fence origin", () => {
         ).toEqual(stopGroup);
       expect(gets).toBe(0);
     });
+
+    describe("Windows taskkill receipt", () => {
+      const treeCleanup = { version: 1, failure: "tree_unconfirmed" };
+      const withTaskkill = (
+        streamFenceWindowsTaskkill: unknown,
+        streamFenceCleanup: unknown = treeCleanup,
+      ) => ({
+        ...sibling(streamFenceCleanup),
+        streamFenceWindowsTaskkill,
+      });
+      const treeParsed = {
+        message: STOP_UNCONFIRMED,
+        origin: "owner_stop_requested",
+        cleanupFailure: "tree_unconfirmed",
+      };
+      const taskkillGroup = {
+        desktop_stream_fence_windows_taskkill_version: 1,
+        desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+        desktop_stream_fence_windows_taskkill_exit_code: 128,
+      };
+
+      // [native receipt, parsed receipt, analytics group]
+      it.each<[unknown, unknown, Record<string, unknown>]>([
+        [
+          { version: 1, outcome: "nonzero_exit", exitCode: 128 },
+          { outcome: "nonzero_exit", exitCode: 128 },
+          taskkillGroup,
+        ],
+        [
+          { version: 1, outcome: "nonzero_exit", exitCode: -2147483648 },
+          { outcome: "nonzero_exit", exitCode: -2147483648 },
+          {
+            ...taskkillGroup,
+            desktop_stream_fence_windows_taskkill_exit_code: -2147483648,
+          },
+        ],
+        [
+          { version: 1, outcome: "nonzero_exit", exitCode: 2147483647 },
+          { outcome: "nonzero_exit", exitCode: 2147483647 },
+          {
+            ...taskkillGroup,
+            desktop_stream_fence_windows_taskkill_exit_code: 2147483647,
+          },
+        ],
+        [
+          { version: 1, outcome: "nonzero_exit" },
+          { outcome: "nonzero_exit" },
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+          },
+        ],
+        [
+          { version: 1, outcome: "output_error" },
+          { outcome: "output_error" },
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "output_error",
+          },
+        ],
+      ])(
+        "joins %j only to a tree_unconfirmed stop",
+        (receipt, windowsTaskkill, expected) => {
+          const parsed = parseNativeStreamFenceRejection(withTaskkill(receipt));
+          expect(parsed).toEqual({ ...treeParsed, windowsTaskkill });
+          expect(Object.isFrozen(parsed!.windowsTaskkill)).toBe(true);
+          const diagnostic = desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            parsed!.origin,
+            parsed!.cleanupFailure,
+            parsed!.windowsTaskkill,
+          );
+          expect(diagnostic).toEqual({
+            ...stopGroup,
+            ...cleanupGroup,
+            ...expected,
+          });
+          expect(Object.isFrozen(diagnostic)).toBe(true);
+          // Another cleanup failure never admits the group.
+          expect(
+            desktopStreamFenceDiagnostic(
+              authorizedUnknown,
+              stopUnconfirmed,
+              "owner_stop_requested",
+              "tree_and_leader_wait_failed",
+              parsed!.windowsTaskkill,
+            ),
+          ).toEqual({
+            ...stopGroup,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: "tree_and_leader_wait_failed",
+          });
+        },
+      );
+
+      const ok = { version: 1, outcome: "nonzero_exit", exitCode: 1 };
+      it.each<[string, () => unknown]>([
+        ["a zero code", () => ({ ...ok, exitCode: 0 })],
+        ["a negative zero code", () => ({ ...ok, exitCode: -0 })],
+        ["a fractional code", () => ({ ...ok, exitCode: 1.5 })],
+        ["a code above i32", () => ({ ...ok, exitCode: 2147483648 })],
+        ["a code below i32", () => ({ ...ok, exitCode: -2147483649 })],
+        ["a string code", () => ({ ...ok, exitCode: "1" })],
+        ["a NaN code", () => ({ ...ok, exitCode: Number.NaN })],
+        ["a null code", () => ({ ...ok, exitCode: null })],
+        [
+          "a code beside output_error",
+          () => ({ ...ok, outcome: "output_error" }),
+        ],
+        ["an unlisted outcome", () => ({ version: 1, outcome: "PRIVATE" })],
+        ["an unsupported version", () => ({ ...ok, version: 2 })],
+        ["a missing version", () => ({ outcome: "output_error" })],
+        ["an extra field", () => ({ ...ok, pid: 4242 })],
+        ["an extra symbol", () => ({ ...ok, [Symbol("x")]: 1 })],
+        ["an inherited receipt", () => Object.create(ok)],
+        [
+          "a code getter",
+          () =>
+            Object.defineProperty(
+              { version: 1, outcome: "nonzero_exit" },
+              "exitCode",
+              { enumerable: true, get: fail },
+            ),
+        ],
+        [
+          "a throwing proxy",
+          () =>
+            new Proxy(ok, {
+              getPrototypeOf: fail,
+              ownKeys: fail,
+              get: fail,
+              getOwnPropertyDescriptor: fail,
+            }),
+        ],
+        ["a string", () => "nonzero_exit"],
+        ["null", () => null],
+      ])(
+        "keeps the exact message, origin and cleanup beside %s",
+        (_case, receipt) => {
+          const parsed = parseNativeStreamFenceRejection(
+            withTaskkill(receipt()),
+          );
+          expect(parsed).toEqual(treeParsed);
+          expect(parsed).not.toHaveProperty("windowsTaskkill");
+        },
+      );
+
+      it("never reads a receipt beside another cleanup failure or without one", () => {
+        const receipt = watched({ ...ok });
+        expect(
+          parseNativeStreamFenceRejection(
+            withTaskkill(receipt.proxy, {
+              version: 1,
+              failure: "leader_wait_failed",
+            }),
+          ),
+        ).toEqual({ ...treeParsed, cleanupFailure: "leader_wait_failed" });
+        expect(
+          parseNativeStreamFenceRejection(
+            withTaskkill(receipt.proxy, { version: 2, failure: "PRIVATE" }),
+          ),
+        ).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_stop_requested",
+        });
+        expect(receipt.reads.count).toBe(0);
+        // An unnegotiated shape is never unwrapped at all.
+        expect(
+          parseNativeStreamFenceRejection({
+            ...rejection(stop),
+            streamFenceWindowsTaskkill: ok,
+          }),
+        ).toBeNull();
+        expect(
+          parseNativeStreamFenceRejection({ ...withTaskkill(ok), pid: 4242 }),
+        ).toBeNull();
+      });
+
+      it("reads the group only beside a tree_unconfirmed pair on an acknowledged terminal", () => {
+        const source = {
+          ...stopGroup,
+          ...cleanupGroup,
+          ...taskkillGroup,
+          message: "PRIVATE",
+        };
+        const read = readDesktopStreamFenceDiagnostic(
+          source,
+          authorizedUnknown,
+          stopUnconfirmed,
+          true,
+        );
+        expect(read).toEqual({
+          ...stopGroup,
+          ...cleanupGroup,
+          ...taskkillGroup,
+        });
+        expect(Object.isFrozen(read)).toBe(true);
+        // Otherwise no taskkill key is read and the prior pairs stay as before.
+        const otherCleanup = {
+          ...stopGroup,
+          desktop_stream_fence_cleanup_version: 1,
+          desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+        };
+        for (const [base, acknowledged] of [
+          [otherCleanup, true],
+          [stopGroup, false],
+          [group, true],
+        ] as const) {
+          let reads = 0;
+          const counted = new Proxy(
+            { ...base, ...taskkillGroup },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && key in taskkillGroup) reads++;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              counted,
+              authorizedUnknown,
+              stopUnconfirmed,
+              acknowledged,
+            ),
+          ).toEqual(base);
+          expect(reads).toBe(0);
+        }
+      });
+
+      it("drops only an invalid or hostile taskkill group", () => {
+        const pairs = { ...stopGroup, ...cleanupGroup };
+        const outputError = {
+          desktop_stream_fence_windows_taskkill_version: 1,
+          desktop_stream_fence_windows_taskkill_outcome: "output_error",
+        };
+        let gets = 0;
+        const accessor = Object.defineProperty(
+          { ...pairs, ...taskkillGroup },
+          "desktop_stream_fence_windows_taskkill_exit_code",
+          {
+            enumerable: true,
+            get() {
+              gets++;
+              return 128;
+            },
+          },
+        );
+        const code = (value: unknown) => ({
+          desktop_stream_fence_windows_taskkill_exit_code: value,
+        });
+        for (const source of [
+          { ...pairs, ...outputError, ...code(1) },
+          { ...pairs, ...taskkillGroup, ...code(0) },
+          { ...pairs, ...taskkillGroup, ...code("128") },
+          { ...pairs, ...taskkillGroup, ...code(undefined) },
+          {
+            ...pairs,
+            ...taskkillGroup,
+            desktop_stream_fence_windows_taskkill_version: 2,
+          },
+          {
+            ...pairs,
+            ...taskkillGroup,
+            desktop_stream_fence_windows_taskkill_outcome: "PRIVATE",
+          },
+          { ...pairs, ...code(128) },
+          accessor,
+          new Proxy(
+            { ...pairs, ...taskkillGroup },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && key in taskkillGroup) fail();
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          ),
+        ])
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            ),
+          ).toEqual(pairs);
+        expect(gets).toBe(0);
+      });
+    });
   });
 });
 
