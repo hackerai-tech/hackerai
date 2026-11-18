@@ -66,9 +66,20 @@ describe("bounded goal continuation dispatch", () => {
     expect(mockAllowed).not.toHaveBeenCalled();
     expect(captureGoalLifecycle).not.toHaveBeenCalled();
     expect(tasks.trigger).not.toHaveBeenCalled();
+    mockMutation.mockResolvedValue(true);
+    mockGetGoal.mockResolvedValue({
+      _id: "goal",
+      state: "queued",
+      generation: 3,
+    });
+    await expect(run()).resolves.toBeUndefined();
+    expect(captureGoalLifecycle).not.toHaveBeenCalled();
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledTimes(2);
   });
   it("preserves sandbox, permissions, worker version, and idempotency", async () => {
-    await run();
+    await expect(run()).resolves.toEqual({ runId: "worker" });
+    expect(captureGoalLifecycle).toHaveBeenCalledTimes(1);
     expect(captureGoalLifecycle).toHaveBeenCalledWith(
       "dispatch_started",
       expect.objectContaining({
@@ -95,8 +106,16 @@ describe("bounded goal continuation dispatch", () => {
     );
   });
   it("reopens the existing approval protocol instead of bypassing approvals", async () => {
-    await run({ ...payload, agentPermissionMode: "ask_approval" });
+    await expect(
+      run({ ...payload, agentPermissionMode: "ask_approval" }),
+    ).resolves.toEqual({ runId: "worker" });
     expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(captureGoalLifecycle).toHaveBeenCalledTimes(1);
+    expect(captureGoalLifecycle).toHaveBeenCalledWith(
+      "dispatch_started",
+      expect.objectContaining({ runId: "worker", workerVersion: "version1" }),
+      expect.objectContaining({ _id: "goal" }),
+    );
     expect(sessions.start).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "agent-long-approval.v2",
@@ -111,19 +130,71 @@ describe("bounded goal continuation dispatch", () => {
       }),
     );
   });
-  it("fails closed if the user loses entitlement before continuation", async () => {
-    mockAllowed.mockRejectedValue(new Error("Subscription changed"));
-    await expect(run()).rejects.toThrow("Subscription changed");
-    expect(tasks.trigger).not.toHaveBeenCalled();
-    expect(captureGoalLifecycle).toHaveBeenCalledWith(
-      "dispatch_failed",
-      expect.objectContaining({ goalGeneration: 2, runId: "dispatcher" }),
-    );
-    expect(mockMutation).toHaveBeenLastCalledWith(
-      expect.anything(),
-      expect.objectContaining({ generation: 2, chatId: "chat" }),
-    );
-  });
+  it.each([
+    [
+      "claim_dispatch",
+      "full_access",
+      (error: Error) => mockMutation.mockRejectedValueOnce(error),
+    ],
+    [
+      "execution_policy",
+      "full_access",
+      (error: Error) => mockAllowed.mockRejectedValue(error),
+    ],
+    [
+      "goal_read",
+      "full_access",
+      (error: Error) => mockGetGoal.mockRejectedValue(error),
+    ],
+    [
+      "approval_session_start",
+      "ask_approval",
+      (error: Error) => (sessions.start as jest.Mock).mockRejectedValue(error),
+    ],
+    [
+      "task_trigger",
+      "full_access",
+      (error: Error) => (tasks.trigger as jest.Mock).mockRejectedValue(error),
+    ],
+  ])(
+    "reports the %s failure phase and still fails the generation closed",
+    async (phase, agentPermissionMode, fail) => {
+      const error = new Error("Synthetic dispatch failure");
+      fail(error);
+      await expect(
+        run({
+          ...payload,
+          agentPermissionMode,
+        } as AgentLongPayload),
+      ).rejects.toBe(error);
+      const launched = [
+        (tasks.trigger as jest.Mock).mock.calls.length,
+        (sessions.start as jest.Mock).mock.calls.length,
+      ];
+      expect(launched).toEqual(
+        phase === "task_trigger"
+          ? [1, 0]
+          : phase === "approval_session_start"
+            ? [0, 1]
+            : [0, 0],
+      );
+      expect(captureGoalLifecycle).toHaveBeenCalledTimes(1);
+      expect(captureGoalLifecycle).toHaveBeenCalledWith("dispatch_failed", {
+        ...payload,
+        agentPermissionMode,
+        runId: "dispatcher",
+        workerVersion: "version2",
+        automatic: true,
+        dispatchPhase: phase,
+      });
+      expect(mockMutation).toHaveBeenLastCalledWith(expect.anything(), {
+        serviceKey: "synthetic",
+        chatId: "chat",
+        userId: "owner",
+        generation: 2,
+      });
+    },
+  );
   it.each([
     ["replacement or manually resumed goal", undefined],
     ["another run's continuation", "newer-run"],

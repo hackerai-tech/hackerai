@@ -20,6 +20,17 @@ export type GoalLifecycleAction =
   | "schedule_failed"
   | "admission_failed";
 
+/**
+ * Last dispatcher step entered before a dispatch_failed event. A launch phase
+ * means the launch call was attempted, not that it was enqueued.
+ */
+export type GoalDispatchPhase =
+  | "claim_dispatch"
+  | "execution_policy"
+  | "goal_read"
+  | "approval_session_start"
+  | "task_trigger";
+
 type GoalAnalyticsContext = {
   userId: string;
   chatId: string;
@@ -28,6 +39,8 @@ type GoalAnalyticsContext = {
   runId?: string;
   workerVersion?: string;
   automatic?: boolean;
+  /** Recorded only on dispatch_failed. */
+  dispatchPhase?: GoalDispatchPhase;
 };
 
 /** Allowlisted snapshots only. Telemetry must never change goal execution. */
@@ -78,6 +91,13 @@ export async function captureGoalLifecycle(
       worker_version: context.workerVersion,
       service_version:
         process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA,
+      // Absent on older writers and other actions; readers must treat it as unknown.
+      ...(action === "dispatch_failed" && context.dispatchPhase
+        ? {
+            dispatch_phase: context.dispatchPhase,
+            dispatch_phase_version: 1,
+          }
+        : {}),
       $geoip_disable: true,
       $process_person_profile: false,
     };
