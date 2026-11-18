@@ -3182,6 +3182,7 @@ mod tests {
         state
     }
 
+    #[cfg(unix)]
     type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     #[cfg(unix)]
