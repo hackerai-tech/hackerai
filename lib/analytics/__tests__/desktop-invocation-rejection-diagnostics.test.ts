@@ -2046,6 +2046,349 @@ describe("stream fence origin", () => {
       });
     });
   });
+
+  describe("cancel wait owner phase", () => {
+    const phases = [
+      "owner_pending",
+      "owner_streaming",
+      "stop_cleanup_tree_and_leader_pending",
+      "stop_cleanup_tree_pending",
+      "stop_cleanup_leader_pending",
+      "owner_cleanup",
+      "terminal_delivery",
+      "released",
+    ];
+    const timedOut = { version: 1, origin: "cancel_wait_timeout" };
+    const withPhase = (
+      streamFenceCancelWaitOwnerPhase: unknown,
+      streamFence: unknown = timedOut,
+    ) => ({
+      message: STOP_UNCONFIRMED,
+      streamFence,
+      streamFenceCancelWaitOwnerPhase,
+    });
+    const timedOutGroup = {
+      desktop_stream_fence_version: 1,
+      desktop_stream_fence_origin: "cancel_wait_timeout",
+    };
+    const phaseGroup = {
+      desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+      desktop_stream_fence_cancel_wait_owner_phase: "stop_cleanup_tree_pending",
+    };
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+
+    it.each(phases)(
+      "unwraps the exact message beside the timeout origin and its %s phase",
+      (phase) => {
+        const parsed = parseNativeStreamFenceRejection(
+          withPhase({ version: 1, phase }),
+        );
+        expect(parsed).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "cancel_wait_timeout",
+          cancelWaitOwnerPhase: phase,
+        });
+        expect(Object.isFrozen(parsed)).toBe(true);
+        const diagnostic = desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          parsed!.origin,
+          null,
+          null,
+          parsed!.cancelWaitOwnerPhase,
+        );
+        expect(diagnostic).toEqual({
+          ...timedOutGroup,
+          desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+          desktop_stream_fence_cancel_wait_owner_phase: phase,
+        });
+        expect(Object.isFrozen(diagnostic)).toBe(true);
+      },
+    );
+
+    it("keeps the origin alone from a native app without the sibling", () => {
+      const parsed = parseNativeStreamFenceRejection(rejection(timedOut));
+      expect(parsed).toEqual({
+        message: STOP_UNCONFIRMED,
+        origin: "cancel_wait_timeout",
+      });
+      expect(parsed).not.toHaveProperty("cancelWaitOwnerPhase");
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          parsed!.origin,
+          parsed!.cleanupFailure,
+          parsed!.windowsTaskkill,
+          parsed!.cancelWaitOwnerPhase,
+        ),
+      ).toEqual(timedOutGroup);
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an unlisted phase", () => ({ version: 1, phase: "PRIVATE" })],
+      ["a numeric phase", () => ({ version: 1, phase: 0 })],
+      [
+        "an unsupported version",
+        () => ({ version: 2, phase: "owner_streaming" }),
+      ],
+      ["a string version", () => ({ version: "1", phase: "owner_streaming" })],
+      ["a missing version", () => ({ phase: "owner_streaming" })],
+      ["a missing phase", () => ({ version: 1 })],
+      [
+        "an extra duration",
+        () => ({ version: 1, phase: "owner_streaming", elapsedMs: 15_000 }),
+      ],
+      [
+        "an extra PID",
+        () => ({ version: 1, phase: "owner_streaming", pid: 4242 }),
+      ],
+      [
+        "an inherited receipt",
+        () => Object.create({ version: 1, phase: "owner_streaming" }),
+      ],
+      [
+        "a null-prototype receipt",
+        () =>
+          Object.assign(Object.create(null), {
+            version: 1,
+            phase: "owner_streaming",
+          }),
+      ],
+      ["a bare string", () => "owner_streaming"],
+      ["null", () => null],
+      [
+        "a phase accessor",
+        () =>
+          Object.defineProperty({ version: 1 }, "phase", {
+            enumerable: true,
+            get: fail,
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () =>
+          new Proxy(
+            { version: 1, phase: "owner_streaming" },
+            { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+          ),
+      ],
+    ])(
+      "keeps the exact message and timeout origin beside %s",
+      (_case, receipt) => {
+        expect(parseNativeStreamFenceRejection(withPhase(receipt()))).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "cancel_wait_timeout",
+        });
+      },
+    );
+
+    it("never reads the sibling beside any other or a malformed origin", () => {
+      for (const streamFence of [
+        { version: 1, origin: "owner_stop_requested" },
+        { version: 1, origin: "owner_timeout" },
+        { version: 1, origin: "owner_outcome_missing" },
+        { version: 2, origin: "cancel_wait_timeout" },
+        { version: 1, origin: "PRIVATE" },
+      ]) {
+        let reads = 0;
+        const receipt = new Proxy(
+          { version: 1, phase: "owner_streaming" },
+          {
+            getOwnPropertyDescriptor(target, key) {
+              reads++;
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+            ownKeys(target) {
+              reads++;
+              return Reflect.ownKeys(target);
+            },
+          },
+        );
+        const parsed = parseNativeStreamFenceRejection(
+          withPhase(receipt, streamFence),
+        );
+        expect(parsed).not.toBeNull();
+        expect(parsed).not.toHaveProperty("cancelWaitOwnerPhase");
+        expect(reads).toBe(0);
+      }
+      // A stop request's leg stays exactly as before beside a phase sibling.
+      expect(
+        parseNativeStreamFenceRejection({
+          ...withPhase(
+            { version: 1, phase: "owner_streaming" },
+            { version: 1, origin: "owner_stop_requested" },
+          ),
+          streamFenceCleanup: { version: 1, failure: "tree_unconfirmed" },
+        }),
+      ).toEqual({
+        message: STOP_UNCONFIRMED,
+        origin: "owner_stop_requested",
+        cleanupFailure: "tree_unconfirmed",
+      });
+      // Any further key still rejects the whole shape.
+      expect(
+        parseNativeStreamFenceRejection({
+          ...withPhase({ version: 1, phase: "owner_streaming" }),
+          pid: 4242,
+        }),
+      ).toBeNull();
+    });
+
+    it("joins a listed phase only to a validated timeout origin", () => {
+      for (const origin of origins.filter(
+        (value) => value !== "cancel_wait_timeout",
+      ))
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            origin,
+            null,
+            null,
+            "owner_streaming",
+          ),
+        ).toEqual({
+          desktop_stream_fence_version: 1,
+          desktop_stream_fence_origin: origin,
+        });
+      for (const phase of ["PRIVATE", "", 1, undefined, null, {}])
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            "cancel_wait_timeout",
+            null,
+            null,
+            phase,
+          ),
+        ).toEqual(timedOutGroup);
+      // A cleanup leg never joins the timeout origin either.
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          "cancel_wait_timeout",
+          "tree_unconfirmed",
+          { outcome: "output_error" },
+          "owner_pending",
+        ),
+      ).toEqual({
+        ...timedOutGroup,
+        desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+        desktop_stream_fence_cancel_wait_owner_phase: "owner_pending",
+      });
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          null,
+          "cancel_wait_timeout",
+          null,
+          null,
+          "owner_pending",
+        ),
+      ).toBeNull();
+    });
+
+    it("reads the phase pair only beside the timeout origin on an acknowledged terminal", () => {
+      const read = readDesktopStreamFenceDiagnostic(
+        { ...timedOutGroup, ...phaseGroup, message: "PRIVATE" },
+        authorizedUnknown,
+        stopUnconfirmed,
+        true,
+      );
+      expect(read).toEqual({ ...timedOutGroup, ...phaseGroup });
+      expect(Object.isFrozen(read)).toBe(true);
+      const stopGroup = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_stop_requested",
+      };
+      for (const [base, acknowledged] of [
+        [timedOutGroup, false],
+        [timedOutGroup, undefined],
+        [group, true],
+        [stopGroup, true],
+      ] as const) {
+        let reads = 0;
+        const counted = new Proxy(
+          { ...base, ...phaseGroup },
+          {
+            getOwnPropertyDescriptor(target, key) {
+              if (typeof key === "string" && key in phaseGroup) reads++;
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+          },
+        );
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            counted,
+            authorizedUnknown,
+            stopUnconfirmed,
+            acknowledged,
+          ),
+        ).toEqual(base);
+        expect(reads).toBe(0);
+      }
+    });
+
+    it("drops only an invalid or hostile phase pair", () => {
+      let gets = 0;
+      const accessor = { ...timedOutGroup } as Record<string, unknown>;
+      for (const key of Object.keys(phaseGroup))
+        Object.defineProperty(accessor, key, {
+          enumerable: true,
+          get() {
+            gets++;
+            return phaseGroup[key as keyof typeof phaseGroup];
+          },
+        });
+      for (const source of [
+        { ...timedOutGroup },
+        {
+          ...timedOutGroup,
+          ...phaseGroup,
+          desktop_stream_fence_cancel_wait_owner_phase_version: 2,
+        },
+        {
+          ...timedOutGroup,
+          ...phaseGroup,
+          desktop_stream_fence_cancel_wait_owner_phase_version: "1",
+        },
+        {
+          ...timedOutGroup,
+          ...phaseGroup,
+          desktop_stream_fence_cancel_wait_owner_phase: "PRIVATE",
+        },
+        {
+          ...timedOutGroup,
+          desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+        },
+        Object.assign(Object.create(phaseGroup), timedOutGroup),
+        accessor,
+        new Proxy(
+          { ...timedOutGroup, ...phaseGroup },
+          {
+            get: fail,
+            getOwnPropertyDescriptor(target, key) {
+              if (typeof key === "string" && key in phaseGroup) fail();
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+          },
+        ),
+      ])
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            source,
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          ),
+        ).toEqual(timedOutGroup);
+      expect(gets).toBe(0);
+    });
+  });
 });
 
 describe("desktopInvocationAdmissionDiagnostic", () => {

@@ -4242,6 +4242,189 @@ describe("invocation rejection message class", () => {
           });
         });
       });
+
+      describe("cancel wait owner phase", () => {
+        const timedOut = {
+          desktop_stream_fence_version: 1,
+          desktop_stream_fence_origin: "cancel_wait_timeout",
+        } as const;
+        const phasePair = {
+          desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+          desktop_stream_fence_cancel_wait_owner_phase: "owner_streaming",
+        } as const;
+        const coarse = {
+          terminalType: "error",
+          terminalAcknowledged: true,
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        };
+
+        it.each([
+          "owner_pending",
+          "owner_streaming",
+          "stop_cleanup_tree_and_leader_pending",
+          "stop_cleanup_tree_pending",
+          "stop_cleanup_leader_pending",
+          "owner_cleanup",
+          "terminal_delivery",
+          "released",
+        ])(
+          "keeps the unsampled %s pair beside its timeout origin through capture and before_send",
+          (phase) => {
+            jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+            const expected = {
+              ...timedOut,
+              desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+              desktop_stream_fence_cancel_wait_owner_phase: phase,
+            };
+            const final = settle({
+              ...fenced,
+              // Private extras on the same carrier never survive the copy.
+              streamFence: { ...expected, pid: 4242, elapsedMs: 987_654_321 },
+            });
+            expect(final?.properties).toMatchObject({
+              ...unknown,
+              ...expected,
+              telemetry_sampled: false,
+              telemetry_sample_rate: 1,
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(expected));
+            const enriched = sanitize({ ...final!.properties, pid: 4242 });
+            expect(enriched).toMatchObject(expected);
+            expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+            expect(enriched).not.toHaveProperty("pid");
+            expect(JSON.stringify([final, enriched])).not.toContain(
+              "987654321",
+            );
+          },
+        );
+
+        it.each<[string, Record<string, unknown>]>([
+          ["no phase pair", {}],
+          [
+            "a missing version",
+            {
+              desktop_stream_fence_cancel_wait_owner_phase: "owner_streaming",
+            },
+          ],
+          [
+            "a missing phase",
+            { desktop_stream_fence_cancel_wait_owner_phase_version: 1 },
+          ],
+          [
+            "a string version",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase_version: "1",
+            },
+          ],
+          [
+            "an unsupported version",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase_version: 2,
+            },
+          ],
+          [
+            "a private phase",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase: "PRIVATE",
+            },
+          ],
+        ])("keeps exactly the origin pair for %s", (_case, carried) => {
+          const final = settle({
+            ...fenced,
+            streamFence: { ...timedOut, ...carried },
+          });
+          expect(fenceKeys(final!.properties)).toEqual(Object.keys(timedOut));
+          expect(sanitize({ ...coarse, ...timedOut, ...carried })).toEqual({
+            ...coarse,
+            ...timedOut,
+          });
+        });
+
+        // Phase keys as getters; the proxy also counts their descriptor reads.
+        const counted = (target: Record<string, unknown>) => {
+          const reads = { count: 0 };
+          for (const key of Object.keys(phasePair))
+            Object.defineProperty(target, key, {
+              enumerable: true,
+              get() {
+                reads.count++;
+                return phasePair[key as keyof typeof phasePair];
+              },
+            });
+          const proxy = new Proxy(target, {
+            getOwnPropertyDescriptor(object, key) {
+              if (typeof key === "string" && key in phasePair) reads.count++;
+              return Reflect.getOwnPropertyDescriptor(object, key);
+            },
+          });
+          return { target, proxy, reads };
+        };
+
+        it.each([
+          "owner_timeout",
+          "owner_process_error",
+          "owner_stop_requested",
+          "owner_delivery_failed",
+          "owner_outcome_missing",
+        ])(
+          "never reads or keeps a phase pair beside the %s origin",
+          (origin) => {
+            const otherOrigin = {
+              ...timedOut,
+              desktop_stream_fence_origin: origin,
+            };
+            expect(
+              fenceKeys(sanitize({ ...coarse, ...otherOrigin, ...phasePair })),
+            ).toEqual(Object.keys(otherOrigin));
+            const carrier = counted({ ...otherOrigin });
+            const final = settle({ ...fenced, streamFence: carrier.proxy });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(otherOrigin),
+            );
+            const event = counted({ ...coarse, ...otherOrigin });
+            expect(
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties: event.target,
+              }).properties,
+            ).toEqual({ ...coarse, ...otherOrigin });
+            expect(carrier.reads.count + event.reads.count).toBe(0);
+          },
+        );
+
+        it.each<[string, unknown]>([
+          ["an unacknowledged terminal", false],
+          ["a missing acknowledgement", undefined],
+          ["a string acknowledgement", "true"],
+        ])(
+          "never reads or keeps the phase pair on %s",
+          (_case, terminalAcknowledged) => {
+            expect(
+              fenceKeys(
+                sanitize({
+                  ...coarse,
+                  terminalAcknowledged,
+                  ...timedOut,
+                  ...phasePair,
+                }),
+              ),
+            ).toEqual(Object.keys(timedOut));
+            const carrier = counted({ ...timedOut });
+            const final = settle({
+              ...fenced,
+              terminalAcknowledged,
+              streamFence: carrier.proxy,
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(timedOut));
+            expect(carrier.reads.count).toBe(0);
+          },
+        );
+      });
     });
   });
 });

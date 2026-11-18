@@ -21,12 +21,15 @@
 //! members may still be running, so no further streamed command starts in this
 //! native process. The fence keeps the closed origin of the path that set it
 //! first, for a stop request which cleanup leg was unconfirmed and, when that
-//! leg was only the Windows taskkill stop, how taskkill failed, for an optional
-//! diagnostic only; it never changes admission.
+//! leg was only the Windows taskkill stop, how taskkill failed, and for a
+//! cancellation wait timeout the matched owner's last published step, for an
+//! optional diagnostic only; it never changes admission.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::num::NonZeroI32;
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::ipc::Channel;
@@ -195,6 +198,101 @@ impl FenceWindowsTaskkillReceipt {
     }
 }
 
+/// The last step the owner matched by a timed-out cancellation wait had
+/// published when that timeout set the fence, or `released` once that owner's
+/// registration was gone. A closed class of the owner's own code path, never
+/// the process, its output, a time or an OS error. It does not say whether any
+/// process survived or that a step ran; only that its owner had not finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CancelWaitOwnerPhase {
+    /// Registered, but `run` had not started.
+    OwnerPending,
+    /// Streaming output; the stop request was not yet observed.
+    OwnerStreaming,
+    /// Stopping after a stop request, with both concurrent checks outstanding.
+    StopCleanupTreeAndLeaderPending,
+    /// Stopping after a stop request; only the tree stop was outstanding.
+    StopCleanupTreePending,
+    /// Stopping after a stop request; only the leader wait was outstanding.
+    StopCleanupLeaderPending,
+    /// Stopping on its own after a timeout, process error or failed delivery.
+    OwnerCleanup,
+    /// Cleanup finished; delivering its final event, if any, before release.
+    TerminalDelivery,
+    /// The matched owner's registration had been released.
+    Released,
+}
+
+/// Carried only beside a `cancel_wait_timeout` origin receipt, in that same
+/// rejection, and only when separately opted in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FenceCancelWaitOwnerPhaseReceipt {
+    version: u8,
+    phase: CancelWaitOwnerPhase,
+}
+
+/// An owner's last published step, written without a lock by its own `run`
+/// and read only under the state lock. Best effort: a read reports whichever
+/// step was published last, never an ordering with the process itself.
+#[derive(Clone, Default)]
+struct OwnerPhase(Arc<AtomicU8>);
+
+impl OwnerPhase {
+    // Zero, the initial value, is a registered owner whose `run` has not started.
+    const PENDING: u8 = 0;
+    const STREAMING: u8 = 1;
+    const OWNER_CLEANUP: u8 = 2;
+    const TERMINAL_DELIVERY: u8 = 3;
+    // A stop request's cleanup, with one bit per check still outstanding.
+    const STOP_CLEANUP: u8 = 0b1000;
+    const TREE_PENDING: u8 = 0b0001;
+    const LEADER_PENDING: u8 = 0b0010;
+
+    fn publish(&self, step: u8) {
+        self.0.store(step, Ordering::Relaxed);
+    }
+
+    /// Clear one stop-cleanup check's bit once that check has returned.
+    fn finish_check(&self, check: u8) {
+        self.0.fetch_and(!check, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> CancelWaitOwnerPhase {
+        use CancelWaitOwnerPhase::*;
+        let step = self.0.load(Ordering::Relaxed);
+        if step & Self::STOP_CLEANUP != 0 {
+            return match (
+                step & Self::TREE_PENDING != 0,
+                step & Self::LEADER_PENDING != 0,
+            ) {
+                (true, true) => StopCleanupTreeAndLeaderPending,
+                (true, false) => StopCleanupTreePending,
+                (false, true) => StopCleanupLeaderPending,
+                // Both checks returned; the owner is about to deliver.
+                (false, false) => TerminalDelivery,
+            };
+        }
+        match step {
+            Self::PENDING => OwnerPending,
+            Self::STREAMING => OwnerStreaming,
+            Self::OWNER_CLEANUP => OwnerCleanup,
+            _ => TerminalDelivery,
+        }
+    }
+}
+
+/// Await `check`, then clear its outstanding bit, if tracked. Each check is
+/// constructed by the caller, so wrapping it changes neither its deadline nor
+/// how it is polled.
+async fn tracked<F: Future>(check: F, phase: Option<&OwnerPhase>, bit: u8) -> F::Output {
+    let output = check.await;
+    if let Some(phase) = phase {
+        phase.finish_check(bit);
+    }
+    output
+}
+
 /// The admission fence's closed receipts, read together from its first outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FenceReceipts {
@@ -203,11 +301,12 @@ pub(crate) struct FenceReceipts {
     pub(crate) windows_taskkill: Option<FenceWindowsTaskkillReceipt>,
     /// The same failure's version 2 receipt, when it has one.
     pub(crate) windows_taskkill_root_report: Option<FenceWindowsTaskkillReceipt>,
+    pub(crate) cancel_wait_owner_phase: Option<FenceCancelWaitOwnerPhaseReceipt>,
 }
 
-/// The first unconfirmed outcome. Its origin, cleanup leg and taskkill failure
-/// are recorded together, so a later outcome can never supply the detail of an
-/// earlier origin.
+/// The first unconfirmed outcome. Its origin, cleanup leg, taskkill failure and
+/// owner phase are recorded together, so a later outcome can never supply the
+/// detail of an earlier origin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Fence {
     origin: FenceOrigin,
@@ -216,14 +315,23 @@ struct Fence {
     // Only a stop request whose sole unconfirmed leg was the tree stop records
     // how the Windows taskkill path failed.
     taskkill: Option<TaskkillFailure>,
+    // Only a cancellation wait timeout records its matched owner's phase.
+    owner_phase: Option<CancelWaitOwnerPhase>,
 }
 
 impl Fence {
     fn stop_requested(failure: CleanupFailure, taskkill: Option<TaskkillFailure>) -> Self {
         Self {
-            origin: FenceOrigin::OwnerStopRequested,
             cleanup: Some(failure),
             taskkill: taskkill.filter(|_| failure == CleanupFailure::TreeUnconfirmed),
+            ..FenceOrigin::OwnerStopRequested.into()
+        }
+    }
+
+    fn cancel_wait_timeout(phase: CancelWaitOwnerPhase) -> Self {
+        Self {
+            owner_phase: Some(phase),
+            ..FenceOrigin::CancelWaitTimeout.into()
         }
     }
 }
@@ -234,6 +342,7 @@ impl From<FenceOrigin> for Fence {
             origin,
             cleanup: None,
             taskkill: None,
+            owner_phase: None,
         }
     }
 }
@@ -243,6 +352,7 @@ struct Running {
     generation: u64,
     stop: watch::Sender<bool>,
     cleanup: Cleanup,
+    phase: OwnerPhase,
 }
 
 #[derive(Default)]
@@ -278,6 +388,8 @@ pub(crate) struct OwnedCommand {
     pub(crate) child: Child,
     stop: watch::Receiver<bool>,
     completion: Completion,
+    // Shared with this owner's registration; only this owner publishes to it.
+    phase: OwnerPhase,
 }
 
 struct Completion {
@@ -333,8 +445,25 @@ impl StreamLifecycle {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    fn fence_unconfirmed(&self, origin: FenceOrigin) {
-        self.state().fence.get_or_insert(origin.into());
+    /// A cancellation's wait for the owner registered as `serial` timed out.
+    /// Only when this is the first fence does it record that owner's last
+    /// published phase, read under the same lock that inserts the fence, or
+    /// `released` once that registration is gone. A later owner outcome never
+    /// supplies it, and it never replaces an earlier fence.
+    fn fence_cancel_wait_timeout(&self, command_id: &str, serial: u64) {
+        {
+            let mut state = self.state();
+            if state.fence.is_none() {
+                let phase = state
+                    .running
+                    .get(command_id)
+                    .filter(|running| running.serial == serial)
+                    .map_or(CancelWaitOwnerPhase::Released, |running| {
+                        running.phase.load()
+                    });
+                state.fence = Some(Fence::cancel_wait_timeout(phase));
+            }
+        }
         self.update_gate.block_for_unconfirmed_command();
     }
 
@@ -348,7 +477,8 @@ impl StreamLifecycle {
     /// explicit stop request whose unconfirmed leg was recorded with that
     /// origin, the leg's closed v1 receipt, and only for a `tree_unconfirmed`
     /// leg from the Windows taskkill path, that failure's closed v1 receipt,
-    /// and its closed v2 receipt when it has one.
+    /// and its closed v2 receipt when it has one. Only for a cancellation wait
+    /// timeout, its matched owner's closed v1 phase receipt.
     pub(crate) fn fence_receipts(&self) -> Option<FenceReceipts> {
         self.state().fence.map(|fence| FenceReceipts {
             origin: FenceOriginReceipt {
@@ -363,6 +493,9 @@ impl StreamLifecycle {
             windows_taskkill_root_report: fence
                 .taskkill
                 .and_then(FenceWindowsTaskkillReceipt::with_root_report),
+            cancel_wait_owner_phase: fence
+                .owner_phase
+                .map(|phase| FenceCancelWaitOwnerPhaseReceipt { version: 1, phase }),
         })
     }
 
@@ -432,6 +565,7 @@ impl StreamLifecycle {
                     let serial = state.next_serial;
                     let (stop, stop_requested) = watch::channel(false);
                     let (outcome, cleanup) = watch::channel(None);
+                    let phase = OwnerPhase::default();
                     state.running.insert(
                         command_id.to_string(),
                         Running {
@@ -439,6 +573,7 @@ impl StreamLifecycle {
                             generation: current,
                             stop,
                             cleanup,
+                            phase: phase.clone(),
                         },
                     );
                     return Ok(Launch::Started(OwnedCommand {
@@ -451,6 +586,7 @@ impl StreamLifecycle {
                             outcome,
                             unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing.into()),
                         },
+                        phase,
                     }));
                 }
                 pending
@@ -468,24 +604,24 @@ impl StreamLifecycle {
     /// Record a tombstone and ask the owner, if running, to stop. True only when
     /// no process is running or its owner confirmed the tree stopped.
     pub(crate) async fn cancel(&self, command_id: &str) -> bool {
-        let cleanup = {
+        let matched = {
             let mut state = self.state();
             state.canceled.insert(command_id.to_string());
             state.running.get(command_id).map(|running| {
                 running.stop.send_replace(true);
-                running.cleanup.clone()
+                (running.serial, running.cleanup.clone())
             })
         };
         // Either it already exited, or its future launch is now fenced. A
         // concurrent launch cannot pass the fence before registering itself.
-        let Some(cleanup) = cleanup else {
+        let Some((serial, cleanup)) = matched else {
             return true;
         };
         match tokio::time::timeout(CANCEL_WAIT, resolved(vec![cleanup])).await {
             Ok(confirmed) => confirmed,
             // An owner that has not answered is an unknown outcome.
             Err(_) => {
-                self.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
+                self.fence_cancel_wait_timeout(command_id, serial);
                 false
             }
         }
@@ -541,7 +677,9 @@ pub(crate) async fn run(
         mut child,
         mut stop,
         mut completion,
+        phase,
     } = owned;
+    phase.publish(OwnerPhase::STREAMING);
     let ended = {
         let streaming = stream_until_exit(&mut child, input, on_event);
         tokio::select! {
@@ -556,27 +694,33 @@ pub(crate) async fn run(
     // released while it is still pending keeps `OwnerOutcomeMissing`.
     completion.unconfirmed = match ended {
         Ended::Exited(status) => {
+            phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Exit {
                 exit_code: status.code().unwrap_or(-1),
             });
             None
         }
         Ended::ProcessError(e) => {
+            phase.publish(OwnerPhase::OWNER_CLEANUP);
             let confirmed = crate::platform::graceful_kill(&mut child).await;
+            phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Process error: {}", e),
             });
             unless_confirmed(confirmed, FenceOrigin::OwnerProcessError)
         }
         Ended::TimedOut => {
+            phase.publish(OwnerPhase::OWNER_CLEANUP);
             let confirmed = crate::platform::graceful_kill(&mut child).await;
+            phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Command timed out after {}ms", timeout.as_millis()),
             });
             unless_confirmed(confirmed, FenceOrigin::OwnerTimeout)
         }
         Ended::StopRequested => {
-            let (fence, status) = terminate_owned(&mut child).await;
+            let (fence, status) = terminate_owned(&mut child, Some(&phase)).await;
+            phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(match status {
                 Some(status) => StreamEvent::Exit {
                     exit_code: status.code().unwrap_or(-1),
@@ -588,10 +732,12 @@ pub(crate) async fn run(
             fence
         }
         // The receiver is gone: stop producing output nobody can deliver.
-        Ended::DeliveryFailed => unless_confirmed(
-            terminate_owned(&mut child).await.0.is_none(),
-            FenceOrigin::OwnerDeliveryFailed,
-        ),
+        Ended::DeliveryFailed => {
+            phase.publish(OwnerPhase::OWNER_CLEANUP);
+            let confirmed = terminate_owned(&mut child, None).await.0.is_none();
+            phase.publish(OwnerPhase::TERMINAL_DELIVERY);
+            unless_confirmed(confirmed, FenceOrigin::OwnerDeliveryFailed)
+        }
     };
 }
 
@@ -670,15 +816,26 @@ async fn stream_until_exit(
 
 /// Stop the owned tree while reaping its leader concurrently: an unreaped
 /// leader keeps its process group alive. Confirmed (None) only when no check
-/// failed; otherwise the fence a stop request records for those checks.
-async fn terminate_owned(child: &mut Child) -> (Option<Fence>, Option<ExitStatus>) {
+/// failed; otherwise the fence a stop request records for those checks. With
+/// `phase`, a stop request's cleanup publishes which checks are outstanding.
+async fn terminate_owned(
+    child: &mut Child,
+    phase: Option<&OwnerPhase>,
+) -> (Option<Fence>, Option<ExitStatus>) {
     let Some(pid) = child.id() else {
         // Already reaped by this owner; no live PID remains to signal.
         return (None, child.try_wait().ok().flatten());
     };
+    let tree = crate::platform::cancel_process_tree_observed(pid);
+    let leader = tokio::time::timeout(REAP_TIMEOUT, child.wait());
+    if let Some(phase) = phase {
+        phase.publish(
+            OwnerPhase::STOP_CLEANUP | OwnerPhase::TREE_PENDING | OwnerPhase::LEADER_PENDING,
+        );
+    }
     let (stopped, waited) = tokio::join!(
-        crate::platform::cancel_process_tree_observed(pid),
-        tokio::time::timeout(REAP_TIMEOUT, child.wait())
+        tracked(tree, phase, OwnerPhase::TREE_PENDING),
+        tracked(leader, phase, OwnerPhase::LEADER_PENDING)
     );
     let (leader, status) = match waited {
         Ok(Ok(status)) => (LeaderWait::Reaped, Some(status)),
@@ -723,6 +880,15 @@ impl OwnedCommand {
     ) {
         let _ = self.child.wait().await;
         self.completion.unconfirmed = Some(Fence::stop_requested(failure, taskkill));
+    }
+}
+
+#[cfg(all(test, unix))]
+impl StreamLifecycle {
+    /// Time out a cancellation's wait for `owned`, as `cancel` does at its
+    /// deadline, without waiting for it.
+    pub(crate) fn time_out_cancel_wait(&self, owned: &OwnedCommand) {
+        self.fence_cancel_wait_timeout(&owned.completion.command_id, owned.completion.serial);
     }
 }
 
@@ -886,6 +1052,124 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn stream_lifecycle_cancel_wait_owner_phase_serializes_only_its_closed_schema() {
+        use CancelWaitOwnerPhase::*;
+        let phase = OwnerPhase::default();
+        let stop = OwnerPhase::STOP_CLEANUP;
+        let (tree, leader) = (OwnerPhase::TREE_PENDING, OwnerPhase::LEADER_PENDING);
+        // [published step, its phase, its wire name]
+        for (step, expected, wire) in [
+            (OwnerPhase::PENDING, OwnerPending, "owner_pending"),
+            (OwnerPhase::STREAMING, OwnerStreaming, "owner_streaming"),
+            (
+                stop | tree | leader,
+                StopCleanupTreeAndLeaderPending,
+                "stop_cleanup_tree_and_leader_pending",
+            ),
+            (
+                stop | tree,
+                StopCleanupTreePending,
+                "stop_cleanup_tree_pending",
+            ),
+            (
+                stop | leader,
+                StopCleanupLeaderPending,
+                "stop_cleanup_leader_pending",
+            ),
+            // Both checks returned: about to deliver.
+            (stop, TerminalDelivery, "terminal_delivery"),
+            (OwnerPhase::OWNER_CLEANUP, OwnerCleanup, "owner_cleanup"),
+            (
+                OwnerPhase::TERMINAL_DELIVERY,
+                TerminalDelivery,
+                "terminal_delivery",
+            ),
+        ] {
+            phase.publish(step);
+            assert_eq!(phase.load(), expected, "{step:#06b}");
+            assert_eq!(
+                serde_json::to_value(FenceCancelWaitOwnerPhaseReceipt {
+                    version: 1,
+                    phase: expected,
+                })
+                .unwrap(),
+                serde_json::json!({ "version": 1, "phase": wire })
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(FenceCancelWaitOwnerPhaseReceipt {
+                version: 1,
+                phase: Released,
+            })
+            .unwrap(),
+            serde_json::json!({ "version": 1, "phase": "released" })
+        );
+        // Only a cancellation wait timeout's fence carries a phase.
+        assert_eq!(
+            Fence::cancel_wait_timeout(Released),
+            Fence {
+                owner_phase: Some(Released),
+                ..FenceOrigin::CancelWaitTimeout.into()
+            }
+        );
+        assert_eq!(
+            Fence::stop_requested(CleanupFailure::TreeUnconfirmed, None).owner_phase,
+            None
+        );
+    }
+
+    /// Yield until `phase` reads `expected`, so a spawned check can run.
+    pub(super) async fn reaches(phase: &OwnerPhase, expected: CancelWaitOwnerPhase) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while phase.load() != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached {expected:?}; last {:?}",
+                phase.load()
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_owner_phase_clears_each_concurrent_stop_check_as_it_returns() {
+        use CancelWaitOwnerPhase::*;
+        // Either check may return first; the other remains outstanding.
+        for leader_first in [true, false] {
+            let phase = OwnerPhase::default();
+            phase.publish(
+                OwnerPhase::STOP_CLEANUP | OwnerPhase::TREE_PENDING | OwnerPhase::LEADER_PENDING,
+            );
+            let (tree_done, tree) = tokio::sync::oneshot::channel::<u8>();
+            let (leader_done, leader) = tokio::sync::oneshot::channel::<u8>();
+            let checks = tokio::spawn({
+                let phase = phase.clone();
+                async move {
+                    tokio::join!(
+                        tracked(tree, Some(&phase), OwnerPhase::TREE_PENDING),
+                        tracked(leader, Some(&phase), OwnerPhase::LEADER_PENDING)
+                    )
+                }
+            });
+            tokio::task::yield_now().await;
+            assert_eq!(phase.load(), StopCleanupTreeAndLeaderPending);
+            if leader_first {
+                leader_done.send(2).unwrap();
+                reaches(&phase, StopCleanupTreePending).await;
+                tree_done.send(1).unwrap();
+            } else {
+                tree_done.send(1).unwrap();
+                reaches(&phase, StopCleanupLeaderPending).await;
+                leader_done.send(2).unwrap();
+            }
+            // Each check's own output is returned unchanged.
+            let (tree, leader) = checks.await.unwrap();
+            assert_eq!((tree.unwrap(), leader.unwrap()), (1, 2));
+            assert_eq!(phase.load(), TerminalDelivery);
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -1021,7 +1305,7 @@ mod unix_tests {
             completion,
             ..
         } = owned;
-        assert_eq!(terminate_owned(&mut child).await.0, None);
+        assert_eq!(terminate_owned(&mut child, None).await.0, None);
         assert!(!group_alive(leader));
         assert!(!process_alive(descendant));
         assert_eq!(lifecycle.fence_origin_receipt(), None);
@@ -1066,7 +1350,7 @@ mod unix_tests {
             mut completion,
             ..
         } = owned;
-        assert_eq!(terminate_owned(&mut child).await.0, None);
+        assert_eq!(terminate_owned(&mut child, None).await.0, None);
         completion.unconfirmed = fence;
     }
 
@@ -1092,6 +1376,13 @@ mod unix_tests {
         lifecycle
             .fence_receipts()
             .and_then(|receipts| receipts.windows_taskkill)
+    }
+
+    fn owner_phase(lifecycle: &StreamLifecycle) -> Option<CancelWaitOwnerPhase> {
+        lifecycle
+            .fence_receipts()
+            .and_then(|receipts| receipts.cancel_wait_owner_phase)
+            .map(|receipt| receipt.phase)
     }
 
     #[tokio::test]
@@ -1130,10 +1421,12 @@ mod unix_tests {
         .await;
         release(timeout, Some(FenceOrigin::OwnerTimeout)).await;
         release_with(later_stop, later_tree_stop()).await;
-        first.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
+        first.fence_cancel_wait_timeout("timeout", 0);
         assert_eq!(origin(&first), Some(FenceOrigin::OwnerStopRequested));
         assert_eq!(cleanup(&first), Some(CleanupFailure::LeaderWaitFailed));
         assert_eq!(windows_taskkill(&first), None);
+        // A later cancellation timeout never adds its owner's phase either.
+        assert_eq!(owner_phase(&first), None);
 
         // The first tree-only stop keeps its own taskkill failure.
         let tree = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
@@ -1176,17 +1469,25 @@ mod unix_tests {
                 launch(lifecycle.clone(), "fenced").await,
                 launch(lifecycle.clone(), "stop").await,
             );
-            match earlier {
-                FenceOrigin::CancelWaitTimeout => {
-                    lifecycle.fence_unconfirmed(earlier);
-                    release(fenced, None).await;
-                }
-                _ => release(fenced, Some(earlier)).await,
+            let timed_out = earlier == FenceOrigin::CancelWaitTimeout;
+            if timed_out {
+                // Its matched owner had not started `run`.
+                lifecycle.fence_cancel_wait_timeout("fenced", fenced.completion.serial);
+                release(fenced, None).await;
+            } else {
+                release(fenced, Some(earlier)).await;
             }
             release_with(stop, later_tree_stop()).await;
             assert_eq!(origin(&lifecycle), Some(earlier));
             assert_eq!(cleanup(&lifecycle), None, "{earlier:?}");
             assert_eq!(windows_taskkill(&lifecycle), None, "{earlier:?}");
+            // Only the cancellation timeout records a phase: its own owner's,
+            // unchanged by that owner's or a later stop's outcome.
+            assert_eq!(
+                owner_phase(&lifecycle),
+                timed_out.then_some(CancelWaitOwnerPhase::OwnerPending),
+                "{earlier:?}"
+            );
         }
     }
 
@@ -1231,8 +1532,9 @@ mod unix_tests {
             Some(FenceOrigin::OwnerDeliveryFailed),
         )
         .await;
-        lifecycle.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
+        lifecycle.fence_cancel_wait_timeout("second", 0);
         assert_eq!(origin(&lifecycle), Some(FenceOrigin::OwnerTimeout));
+        assert_eq!(owner_phase(&lifecycle), None);
         assert!(gate.install().is_err(), "updates must stay fenced");
         let mut cmd = platform::build_command("true", None, None);
         assert_eq!(
@@ -1261,13 +1563,23 @@ mod unix_tests {
         // Waits the full existing CANCEL_WAIT before reporting unconfirmed.
         assert!(!lifecycle.cancel("held").await);
         assert_eq!(origin(&lifecycle), Some(FenceOrigin::CancelWaitTimeout));
+        // Recorded from the owner the cancellation matched, at that instant.
+        assert_eq!(
+            owner_phase(&lifecycle),
+            Some(CancelWaitOwnerPhase::OwnerPending)
+        );
 
-        // The owner then confirms its stop; the fence and its origin remain.
+        // The owner then confirms its stop; the fence, its origin and phase
+        // remain: a later owner result never backfills the timeout's phase.
         let (channel, _) = collecting_channel();
         run(owned, None, Duration::from_secs(120), &channel).await;
         assert!(!group_alive(leader));
         assert!(lifecycle.state().running.is_empty());
         assert_eq!(origin(&lifecycle), Some(FenceOrigin::CancelWaitTimeout));
+        assert_eq!(
+            owner_phase(&lifecycle),
+            Some(CancelWaitOwnerPhase::OwnerPending)
+        );
         let mut cmd = platform::build_command("true", None, None);
         assert_eq!(
             lifecycle
@@ -1278,6 +1590,156 @@ mod unix_tests {
             Some(STOP_UNCONFIRMED)
         );
         assert!(gate.install().is_err(), "updates must stay fenced");
+    }
+
+    /// The terminal callback acknowledges entry and waits for the test to
+    /// release it. Dropping the release sender also lets the owner continue.
+    fn held_terminal_channel() -> (
+        Channel<StreamEvent>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, entry) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let released = Mutex::new(released);
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                if json.contains(r#""type":"exit""#) || json.contains(r#""type":"error""#) {
+                    let _ = entered.try_send(());
+                    let _ = released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(10));
+                }
+            }
+            Ok(())
+        });
+        (channel, entry, release)
+    }
+
+    /// The timeout's fence records the step its matched owner had published
+    /// when that fence was inserted, with each later outcome or timeout
+    /// leaving it unchanged. Each case is its own lifecycle: the first fence
+    /// wins for the life of the process.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_lifecycle_cancel_wait_timeout_records_its_matched_owner_phase_when_it_wins() {
+        use super::tests::reaches;
+        use CancelWaitOwnerPhase::*;
+        let scratch = Scratch::new();
+        let fresh = || Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+
+        // Streaming, before the owner observed any stop request.
+        let lifecycle = fresh();
+        let mut cmd = platform::build_command(&long_tree(&scratch, "streaming"), None, None);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "streaming", &mut cmd)
+                .await,
+        );
+        let (serial, phase, leader) = (
+            owned.completion.serial,
+            owned.phase.clone(),
+            owned.child.id().unwrap(),
+        );
+        let (channel, _) = collecting_channel();
+        let owner =
+            tokio::spawn(async move { run(owned, None, Duration::from_secs(120), &channel).await });
+        wait_for_file(&scratch.path("runs")).await;
+        reaches(&phase, OwnerStreaming).await;
+        lifecycle.fence_cancel_wait_timeout("streaming", serial);
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::CancelWaitTimeout));
+        assert_eq!(owner_phase(&lifecycle), Some(OwnerStreaming));
+        // The owner still answers a later stop; neither its confirmed cleanup
+        // nor a later timeout for it changes the recorded phase.
+        assert!(lifecycle.cancel("streaming").await);
+        owner.await.unwrap();
+        assert!(!group_alive(leader));
+        lifecycle.fence_cancel_wait_timeout("streaming", serial);
+        assert_eq!(owner_phase(&lifecycle), Some(OwnerStreaming));
+
+        // A stop request's cleanup whose leader was reaped while a TERM-ignoring
+        // member kept the tree check outstanding.
+        let lifecycle = fresh();
+        let stubborn = format!(
+            "(trap '' TERM; printf 'ready\\n' > {}; while :; do sleep 0.05; done) & wait",
+            quoted(&scratch.path("ready"))
+        );
+        let mut cmd = platform::build_command(&stubborn, None, None);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "stubborn", &mut cmd)
+                .await,
+        );
+        let (serial, phase, leader) = (
+            owned.completion.serial,
+            owned.phase.clone(),
+            owned.child.id().unwrap(),
+        );
+        let (channel, _) = collecting_channel();
+        let owner =
+            tokio::spawn(async move { run(owned, None, Duration::from_secs(120), &channel).await });
+        wait_for_file(&scratch.path("ready")).await;
+        reaches(&phase, OwnerStreaming).await;
+        let canceling = tokio::spawn({
+            let lifecycle = lifecycle.clone();
+            async move { lifecycle.cancel("stubborn").await }
+        });
+        reaches(&phase, StopCleanupTreePending).await;
+        lifecycle.fence_cancel_wait_timeout("stubborn", serial);
+        assert_eq!(owner_phase(&lifecycle), Some(StopCleanupTreePending));
+        // Escalation then stops the member; the confirmed result never
+        // replaces the phase recorded while the check was outstanding.
+        assert!(canceling.await.unwrap());
+        owner.await.unwrap();
+        assert!(!group_alive(leader));
+        assert_eq!(owner_phase(&lifecycle), Some(StopCleanupTreePending));
+
+        // Delivering its terminal event, after its cleanup and before release.
+        let lifecycle = fresh();
+        let mut cmd = platform::build_command("exit 0", None, None);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "delivering", &mut cmd)
+                .await,
+        );
+        let serial = owned.completion.serial;
+        let (channel, entered, allow_delivery) = held_terminal_channel();
+        let owner =
+            tokio::spawn(async move { run(owned, None, Duration::from_secs(30), &channel).await });
+        tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        lifecycle.fence_cancel_wait_timeout("delivering", serial);
+        assert_eq!(owner_phase(&lifecycle), Some(TerminalDelivery));
+        allow_delivery.send(()).unwrap();
+        owner.await.unwrap();
+        assert!(lifecycle.state().running.is_empty());
+        assert_eq!(owner_phase(&lifecycle), Some(TerminalDelivery));
+
+        // Released: the matched owner's registration is gone, even though a
+        // later owner now holds the same command ID under another serial.
+        let lifecycle = fresh();
+        let mut cmd = platform::build_command("exit 0", None, None);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "reused", &mut cmd)
+                .await,
+        );
+        let serial = owned.completion.serial;
+        let (channel, _) = collecting_channel();
+        run(owned, None, Duration::from_secs(30), &channel).await;
+        let mut cmd = platform::build_command("exit 0", None, None);
+        let later = started(
+            lifecycle
+                .launch(lifecycle.admit(), "reused", &mut cmd)
+                .await,
+        );
+        assert_ne!(later.completion.serial, serial);
+        lifecycle.fence_cancel_wait_timeout("reused", serial);
+        assert_eq!(owner_phase(&lifecycle), Some(Released));
+        release(later, None).await;
+        assert_eq!(owner_phase(&lifecycle), Some(Released));
     }
 
     #[tokio::test]

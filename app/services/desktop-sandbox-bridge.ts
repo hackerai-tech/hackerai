@@ -74,6 +74,7 @@ import {
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceCancelWaitOwnerPhase,
   type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
   type NativeStreamFenceWindowsTaskkill,
@@ -1531,7 +1532,7 @@ export class DesktopSandboxBridge {
     // joins only that rejection as this invocation's first terminal. An
     // `owner_stop_requested` origin's cleanup failure rides the same rejection
     // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
-    // receipt.
+    // receipt, and a `cancel_wait_timeout` origin's owner phase.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's
@@ -1539,6 +1540,10 @@ export class DesktopSandboxBridge {
     const streamFenceOffered =
       Boolean(receiptOwner) &&
       !usesPublishedLegacyDesktopCommands(nativeAppVersion);
+    // The owner phase is scoped to Windows Desktop: no other platform offers
+    // it, so no other platform ever reports it.
+    const streamFenceOwnerPhaseOffered =
+      streamFenceOffered && this.nativePlatform === "windows";
     const receiptFenced = () =>
       this.isStoppingOrStopped ||
       this.operationRouter !== router ||
@@ -1556,6 +1561,8 @@ export class DesktopSandboxBridge {
     let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
       null;
     let streamFenceWindowsTaskkill: NativeStreamFenceWindowsTaskkill | null =
+      null;
+    let streamFenceOwnerPhase: DesktopStreamFenceCancelWaitOwnerPhase | null =
       null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
@@ -1619,6 +1626,7 @@ export class DesktopSandboxBridge {
                 streamFenceOrigin,
                 streamFenceCleanupFailure,
                 streamFenceWindowsTaskkill,
+                streamFenceOwnerPhase,
               )
             : null;
         onSettled(
@@ -1882,6 +1890,11 @@ export class DesktopSandboxBridge {
                 includeStreamFenceWindowsTaskkill: true,
                 includeStreamFenceWindowsTaskkillRootReport: true,
               }),
+              // Only with the origin opt-in, and only to Windows Desktop. An
+              // older native app ignores it and keeps the origin alone.
+              ...(streamFenceOwnerPhaseOffered && {
+                includeStreamFenceCancelWaitOwnerPhase: true,
+              }),
             },
             invocationTrace,
           );
@@ -1903,6 +1916,10 @@ export class DesktopSandboxBridge {
           streamFenceOrigin = fenceRejection?.origin ?? null;
           streamFenceCleanupFailure = fenceRejection?.cleanupFailure ?? null;
           streamFenceWindowsTaskkill = fenceRejection?.windowsTaskkill ?? null;
+          // Never kept unless this invocation offered it.
+          streamFenceOwnerPhase = streamFenceOwnerPhaseOffered
+            ? (fenceRejection?.cancelWaitOwnerPhase ?? null)
+            : null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);
