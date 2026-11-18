@@ -2152,6 +2152,121 @@ describe("CentrifugoSandbox", () => {
       expect(probeRecords()).toHaveLength(1);
     });
 
+    const authorizedInvoke = {
+      ...receiverDiagnostic,
+      adapter: "authorized_native",
+    };
+    const aclDenial =
+      "Command authorized_desktop_file_request not allowed by ACL";
+
+    it.each([
+      [aclDenial, authorizedInvoke, "authorized_ipc_denied"],
+      [
+        "Invalid Desktop operation",
+        authorizedInvoke,
+        "authorization_message_invalid",
+      ],
+      [
+        "Desktop operation type is missing",
+        authorizedInvoke,
+        "authorized_file_request_invalid",
+      ],
+      [
+        "Desktop operation type is not allowed here",
+        authorizedInvoke,
+        "authorized_file_request_invalid",
+      ],
+      [
+        "File path is missing",
+        authorizedInvoke,
+        "authorized_file_request_invalid",
+      ],
+      // Existing classes keep their meaning at this boundary.
+      [
+        "Desktop operation was not authorized",
+        authorizedInvoke,
+        "authorization_denied",
+      ],
+      // Lookalikes stay other: no prefix, case or whitespace matching.
+      [
+        "Command desktop_file_request not allowed by ACL",
+        authorizedInvoke,
+        "other",
+      ],
+      [`${aclDenial}: PRIVATE_PATH`, authorizedInvoke, "other"],
+      ["Invalid Desktop operation PRIVATE_ID", authorizedInvoke, "other"],
+      ["file path is missing", authorizedInvoke, "other"],
+      [" Desktop operation type is missing", authorizedInvoke, "other"],
+      // The same text from another adapter, stage or an older sender is other.
+      [aclDenial, receiverDiagnostic, "other"],
+      [
+        "Invalid Desktop operation",
+        { ...authorizedInvoke, adapter: "compatibility_native" },
+        "other",
+      ],
+      [
+        "File path is missing",
+        { ...authorizedInvoke, stage: "module_load" },
+        "other",
+      ],
+      ["Desktop operation type is missing", undefined, "other"],
+      [aclDenial, { ...authorizedInvoke, version: 2 }, "other"],
+    ])(
+      "classifies authorized native rejection %j at %j as %s",
+      async (message, diagnostic, receiverErrorClass) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply, control } = await dispatchProbe(sandbox);
+        // Another request's authorized rejection must not classify this probe.
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: aclDenial,
+            receiverDiagnostic: authorizedInvoke,
+          },
+        });
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message,
+            ...(diagnostic && { receiverDiagnostic: diagnostic }),
+          },
+        });
+        const error = await pending;
+
+        expect(error).toBeInstanceOf(DesktopFileBridgeError);
+        expect(error).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+        const accepted = diagnostic?.version === 1 ? diagnostic : undefined;
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: receiverErrorClass,
+            ...(accepted && {
+              receiver_stage_version: 1,
+              receiver_stage: accepted.stage,
+              receiver_adapter: accepted.adapter,
+            }),
+          },
+        ]);
+        const logs = JSON.stringify(receiverLog.mock.calls);
+        expect(logs).not.toContain(message.trim());
+        expect(logs).not.toContain("PRIVATE");
+        expect(sandbox.supportsNativeFileRelay()).toBe(false);
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+        expect(probeRecords()).toHaveLength(1);
+        expect(mockClients).toHaveLength(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
     it.each([
       ["timeout", "timeout"],
       ["resolved_published_legacy", "resolved_published_legacy"],
