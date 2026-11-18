@@ -182,6 +182,49 @@ describe("pty-wait-utils", () => {
     );
   });
 
+  // Expected values are the text a terminal displays for the same bytes.
+  it.each([
+    ["a BEL-terminated title", "ok\x1b]0;title\x07red", "okred"],
+    ["an ESC-backslash-terminated title", "ok\x1b]0;title\x1b\\red", "okred"],
+    [
+      "a title cancelled by repeated ESC before a color",
+      "ok\x1b]0;title\x1b\x1b[31mred\x1b[0m",
+      "okred",
+    ],
+    ["a title cancelled by CAN", "ok\x1b]0;title\x18red", "okred"],
+    ["a title cancelled by SUB", "ok\x1b]0;title\x1ared", "okred"],
+    ["a complete multiline title", "ok\x1b]0;title\ncontinued\x07red", "okred"],
+    ["a character-set designation", "a\x1b(Bb", "ab"],
+    ["a title cut off at the end of the excerpt", "ok\n\x1b]0;tit", "ok\n"],
+    ["a color cut off at the end of the excerpt", "ok\x1b[3", "ok"],
+    ["a lone trailing ESC", "ok\x1b", "ok"],
+  ])("strips %s without leaking control text", (_label, input, expected) => {
+    expect(stripAnsi(input)).toBe(expected);
+  });
+
+  it("keeps printed text that only resembles terminal controls", () => {
+    // A decoded U+009C is a printable code point in UTF-8 output, not ST.
+    expect(stripAnsi("\x1b[1mé\u009c→\x1b[0m\nnext\r\n")).toBe(
+      "é\u009c→\nnext\r\n",
+    );
+    // An unterminated title must not hide later lines of command output.
+    expect(stripAnsi("\x1b]0;title\ncommand output")).toBe(
+      "0;title\ncommand output",
+    );
+  });
+
+  it.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+  ])(
+    "keeps a colored line after an unterminated title ending at %s",
+    (_label, eol) => {
+      expect(
+        stripAnsi(`\x1b]0;title${eol}command output \x1b[31mred\x1b[0m`),
+      ).toBe(`0;title${eol}command output red`);
+    },
+  );
+
   it("peeks resolved exits without waiting on live processes", async () => {
     const live = makeSession();
     await expect(peekExited(live)).resolves.toBeNull();
