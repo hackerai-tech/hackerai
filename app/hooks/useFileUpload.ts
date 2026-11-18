@@ -519,15 +519,20 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         signal.throwIfAborted();
         assertUploadScope();
 
-        // Step 3: Save file metadata to database with S3 key
-        const { url, fileId, tokens } = await saveFile({
-          s3Key,
-          name: file.name,
-          mediaType: file.type,
-          size: file.size,
-          mode: uploadMode,
-          ...(expectedUploadScope ? { expectedUploadScope } : {}),
-        });
+        // Step 3: Save file metadata to database with S3 key. A scope change
+        // stops this wait; the old-scope file is left in place. Removal does
+        // not, so the returned fileId can still be cleaned up below.
+        const { url, fileId, tokens } = await waitUnlessAborted(
+          saveFile({
+            s3Key,
+            name: file.name,
+            mediaType: file.type,
+            size: file.size,
+            mode: uploadMode,
+            ...(expectedUploadScope ? { expectedUploadScope } : {}),
+          }),
+          scopeSignal ? [scopeSignal] : [],
+        );
         assertUploadScope();
 
         const currentUploadIndex = getCurrentUploadIndex();
@@ -768,6 +773,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           attachmentId,
           fileName,
           content,
+          selectionSignal,
         );
         // A completed local write belongs to the original scope. Preserve its
         // contents without adding it to a draft under a different account.
@@ -984,7 +990,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             continue;
           }
 
-          const localFileData = await readLocalFile(path);
+          const localFileData = await readLocalFile(path, selectionSignal);
           if (selectionSignal?.aborted) return;
           if (!localFileData) {
             invalidFiles.push(`${file.name}: could not read image file`);
@@ -1270,12 +1276,34 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
         applyUploadedFileUpdate(indexToUpdate, pendingUploadedFile);
 
-        writeGeneratedTextAttachment(
-          generatedTextAttachmentId,
-          uploadedFile.file.name,
-          content,
+        // A scope change stops the UI wait for this exact entry. The write
+        // can still settle on disk without publishing a new draft receipt.
+        const selectionSignal = uploadScopeRef.current?.signal;
+        const interruptPendingEdit = () => {
+          const pendingFile = pendingUploadedFile.file;
+          uploadedFilesRef.current = uploadedFilesRef.current.map(
+            (currentFile) =>
+              currentFile.file === pendingFile
+                ? { ...currentFile, ...UPLOAD_INTERRUPTED_STATE }
+                : currentFile,
+          );
+          updateUploadedFile(pendingFile, UPLOAD_INTERRUPTED_STATE);
+        };
+
+        void waitUnlessAborted(
+          writeGeneratedTextAttachment(
+            generatedTextAttachmentId,
+            uploadedFile.file.name,
+            content,
+            selectionSignal,
+          ),
+          selectionSignal ? [selectionSignal] : [],
         )
           .then((localMetadata) => {
+            if (selectionSignal?.aborted) {
+              interruptPendingEdit();
+              return;
+            }
             const currentIndex = getCurrentLocalTextIndex();
             if (currentIndex < 0) {
               return;
@@ -1304,6 +1332,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             applyUploadedFileUpdate(currentIndex, updatedUploadedFile);
           })
           .catch((error) => {
+            if (selectionSignal?.aborted) {
+              interruptPendingEdit();
+              return;
+            }
             console.error("Failed to update local generated text file:", error);
             const currentIndex = getCurrentLocalTextIndex();
             if (currentIndex >= 0) {
@@ -1343,7 +1375,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         },
       });
     },
-    [applyUploadedFileUpdate, uploadFileToS3],
+    [applyUploadedFileUpdate, updateUploadedFile, uploadFileToS3],
   );
 
   const handleAttachClick = (source: "camera" | "files" = "files") => {

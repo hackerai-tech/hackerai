@@ -6,6 +6,8 @@ import {
   DESKTOP_UPDATE_URL,
   navigateToAuth,
   pickLocalFolder,
+  readLocalFile,
+  writeGeneratedTextAttachment,
 } from "../useTauri";
 
 jest.mock("@tauri-apps/api/core", () => ({
@@ -119,5 +121,80 @@ describe("pickLocalFolder", () => {
     mockDialogOpen.mockResolvedValue(null);
 
     await expect(pickLocalFolder()).resolves.toBeNull();
+  });
+});
+
+describe("local attachment feedback after the caller's scope ends", () => {
+  beforeEach(() => {
+    setTauriEnvironment();
+    mockInvoke.mockReset();
+    mockToastError.mockClear();
+    consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+
+  const failAfterAbort = (scope: AbortController) =>
+    mockInvoke.mockImplementation(async () => {
+      scope.abort();
+      throw new Error("read failed");
+    });
+
+  it("does not start a read for an already ended scope", async () => {
+    const scope = new AbortController();
+    scope.abort();
+
+    await expect(readLocalFile("/tmp/logo.png", scope.signal)).resolves.toBe(
+      null,
+    );
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed read only while its scope is current", async () => {
+    const stale = new AbortController();
+    failAfterAbort(stale);
+    await expect(readLocalFile("/tmp/logo.png", stale.signal)).resolves.toBe(
+      null,
+    );
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    mockInvoke.mockRejectedValue(new Error("read failed"));
+    await expect(
+      readLocalFile("/tmp/logo.png", new AbortController().signal),
+    ).resolves.toBe(null);
+    expect(mockToastError).toHaveBeenCalledWith("Failed to read local file");
+  });
+
+  it("still writes pasted text but reports failure only for the current scope", async () => {
+    const stale = new AbortController();
+    failAfterAbort(stale);
+    await expect(
+      writeGeneratedTextAttachment(
+        "paste-1",
+        "Pasted text.txt",
+        "body",
+        stale.signal,
+      ),
+    ).resolves.toBe(null);
+    expect(mockInvoke).toHaveBeenCalledWith("write_generated_text_attachment", {
+      attachmentId: "paste-1",
+      fileName: "Pasted text.txt",
+      content: "body",
+    });
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    mockInvoke.mockRejectedValue(new Error("write failed"));
+    await writeGeneratedTextAttachment("paste-1", "Pasted text.txt", "body");
+    expect(mockToastError).toHaveBeenCalledWith(
+      "Failed to save pasted text locally",
+    );
   });
 });

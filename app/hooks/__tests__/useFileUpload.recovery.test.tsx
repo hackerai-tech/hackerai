@@ -976,6 +976,10 @@ describe("browser attachment recovery", () => {
 
     authState = { user: { id: "user-b" }, organizationId: "org-a" };
     rerender();
+    await tick();
+    // The spinner clears while the old-scope save is still pending.
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+
     await act(async () =>
       finishSave({
         url: "https://s3.example/saved",
@@ -985,6 +989,7 @@ describe("browser attachment recovery", () => {
     );
     expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
     expect(result.current.uploadedFiles[0]?.fileId).toBeUndefined();
+    // The old-scope file is preserved, not deleted from the new session.
     expect(deleteFile).not.toHaveBeenCalled();
   });
 

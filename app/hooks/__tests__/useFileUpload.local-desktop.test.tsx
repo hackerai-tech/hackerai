@@ -307,6 +307,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
       expect.any(String),
       "Pasted text.txt",
       pastedText,
+      expect.any(AbortSignal),
     );
     expect(addUploadedFile).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -420,10 +421,85 @@ describe("useFileUpload desktop-local agent attachments", () => {
       "paste_1",
       "pasted_content.txt",
       "edited",
+      expect.any(AbortSignal),
     );
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      "completes",
+      (finish: (outcome: unknown) => void) =>
+        finish({
+          path: "/synthetic/pasted_content.txt",
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          size: 6,
+          lastModified: 2000,
+        }),
+    ],
+    ["returns no result", (finish: (outcome: unknown) => void) => finish(null)],
+  ])(
+    "does not publish a local text edit that %s after the account changes",
+    async (_outcome, settle) => {
+      const auth = (id: string) =>
+        ({ user: { id } }) as ReturnType<typeof useAuth>;
+      jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+      const previousUpload: UploadedFileState = {
+        file: {
+          name: "pasted_content.txt",
+          type: "text/plain",
+          size: 8,
+          lastModified: 1000,
+        },
+        uploading: false,
+        uploaded: true,
+        storage: "local-desktop",
+        generatedSource: "pasted-text",
+        generatedTextAttachmentId: "paste_1",
+        localAttachmentId: "paste_1",
+        localPath: "/synthetic/pasted_content.txt",
+        tokens: 0,
+        generatedTextAttachment: { id: "paste_1", content: "original" },
+      };
+      globalState.uploadedFiles = [previousUpload];
+      storedFiles = [previousUpload];
+      let finishWrite!: (outcome: unknown) => void;
+      jest.mocked(writeGeneratedTextAttachment).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishWrite = resolve as (outcome: unknown) => void;
+        }) as ReturnType<typeof writeGeneratedTextAttachment>,
+      );
+      const { result, rerender } = renderHook(() => useFileUpload("agent"));
+
+      act(() => result.current.handleUpdateGeneratedTextFile(0, "edited"));
+      const writeSignal = jest.mocked(writeGeneratedTextAttachment).mock
+        .calls[0][3] as AbortSignal;
+      expect(storedFiles[0]).toMatchObject({ uploading: true });
+
+      jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+      globalState.uploadedFiles = storedFiles;
+      await act(async () => rerender());
+      expect(writeSignal.aborted).toBe(true);
+      expect(storedFiles[0]).toMatchObject({
+        uploading: false,
+        uploaded: false,
+      });
+      await act(async () => settle(finishWrite));
+
+      // The initiated write still settles; only this pending entry stops.
+      expect(storedFiles).toHaveLength(1);
+      expect(storedFiles[0]).toMatchObject({
+        uploading: false,
+        uploaded: false,
+        retryable: false,
+        error: "Upload interrupted. Remove and attach the file again.",
+      });
+      expect(storedFiles[0].file).toMatchObject({ size: 6 });
+      expect(toast.error).not.toHaveBeenCalled();
+    },
+  );
 
   it("finishes a local text edit after an earlier attachment is removed", async () => {
     const firstUpload = {

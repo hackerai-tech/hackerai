@@ -250,17 +250,21 @@ export async function getLocalFileMetadata(
   }
 }
 
+/** `signal` ends the caller's interest: no read starts and no stale feedback. */
 export async function readLocalFile(
   path: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileData | null> {
-  if (!detectTauri()) return null;
+  if (!detectTauri() || signal?.aborted) return null;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return null;
     return await invoke<LocalFileData>("read_local_file", {
       path,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to read local file:", err);
     toast.error("Failed to read local file");
     return null;
@@ -283,10 +287,15 @@ export async function readLocalPreviewFile(path: string): Promise<File> {
   });
 }
 
+/**
+ * The write always runs once called; `signal` only suppresses failure
+ * feedback after the caller's scope has ended.
+ */
 export async function writeGeneratedTextAttachment(
   attachmentId: string,
   fileName: string,
   content: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileMetadata | null> {
   if (!detectTauri()) return null;
 
@@ -298,6 +307,7 @@ export async function writeGeneratedTextAttachment(
       content,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to write generated text attachment:", err);
     toast.error("Failed to save pasted text locally");
     return null;
