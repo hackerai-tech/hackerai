@@ -25,10 +25,12 @@ import {
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
   DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
+  DESKTOP_STREAM_FENCE_PROPERTIES,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
@@ -239,6 +241,15 @@ export function sanitizeDesktopAckEvent<
       event.properties,
       invocationRejection,
     );
+    // The stream fence origin joins only validated authorized unknown and
+    // `lifecycle_stop_unconfirmed` groups; no fence property is read without
+    // them. It likewise survives only as the validated data copy and drops
+    // alone.
+    const streamFence = readDesktopStreamFenceDiagnostic(
+      event.properties,
+      invocationRejection,
+      invocationUnknown,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -256,7 +267,8 @@ export function sanitizeDesktopAckEvent<
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key) &&
-            !DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key),
+            !DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key) &&
+            !DESKTOP_STREAM_FENCE_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -300,6 +312,7 @@ export function sanitizeDesktopAckEvent<
     if (invocationSpawnHint)
       Object.assign(event.properties, invocationSpawnHint);
     if (invocationUnknown) Object.assign(event.properties, invocationUnknown);
+    if (streamFence) Object.assign(event.properties, streamFence);
   }
   delete event.$set;
   delete event.$set_once;

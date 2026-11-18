@@ -1416,6 +1416,9 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     on_authorization_connector_diagnostic: Option<serde_json::Value>,
     // Independent optional channel for typed JSON response-read failures.
     on_authorization_response_read_diagnostic: Option<serde_json::Value>,
+    // Only literal `true` opts in to the fence origin beside the exact fence
+    // rejection; anything else keeps every rejection an exact string.
+    include_stream_fence_origin: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1469,6 +1472,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             on_authorization_response_read_diagnostic: CommandArg::from_command(item(
                 "onAuthorizationResponseReadDiagnostic",
             ))?,
+            include_stream_fence_origin: CommandArg::from_command(item(
+                "includeStreamFenceOrigin",
+            ))?,
         })
     }
 }
@@ -1511,16 +1517,39 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
     resolver.respond_async_serialized(async move {
         use tauri::ipc::{InvokeError, IpcResponse};
         execute_authorized_stream_command(request)
-            .await
-            .map_err(InvokeError::from)?
+            .await?
             .body()
             .map_err(InvokeError::from)
     });
 }
 
+/// The exact original rejection, as a string. Only an opted-in invocation's
+/// exact fence rejection, with a recorded origin, is instead that same public
+/// message beside the fence's closed v1 origin.
+fn authorized_stream_rejection(
+    state: &StreamCommandState,
+    error: String,
+    include_stream_fence_origin: bool,
+) -> tauri::ipc::InvokeError {
+    let fence_rejection =
+        include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
+    let stream_fence = if fence_rejection {
+        state.fence_origin_receipt()
+    } else {
+        None
+    };
+    match stream_fence {
+        Some(stream_fence) => tauri::ipc::InvokeError(serde_json::json!({
+            "message": error,
+            "streamFence": stream_fence,
+        })),
+        None => tauri::ipc::InvokeError::from(error),
+    }
+}
+
 async fn execute_authorized_stream_command<R: tauri::Runtime>(
     request: AuthorizedStreamRequest<R>,
-) -> Result<(), String> {
+) -> Result<(), tauri::ipc::InvokeError> {
     use authorization_connector_diagnostics::ConnectorPhaseSnapshot;
     use authorization_response_diagnostics::{
         ResponseMitigationReceipt, ResponseReadSnapshot, ResponseRejectionReceipt,
@@ -1543,6 +1572,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_authorization_io_diagnostic,
         on_authorization_connector_diagnostic,
         on_authorization_response_read_diagnostic,
+        include_stream_fence_origin,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1621,6 +1651,9 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     authorized_operation_type(&message, &["command"])?;
     let command: AuthorizedCommandMessage =
         serde_json::from_value(message).map_err(|_| "Invalid authorized command".to_string())?;
+    // Read only after authorization, and only literal `true` opts in.
+    let include_stream_fence_origin =
+        include_stream_fence_origin == Some(serde_json::Value::Bool(true));
     execute_stream_command(
         &state,
         admission,
@@ -1634,6 +1667,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_event,
     )
     .await
+    .map_err(|error| authorized_stream_rejection(&state, error, include_stream_fence_origin))
 }
 
 #[tauri::command]
@@ -2600,6 +2634,198 @@ mod tests {
             .map(|_| ())
     }
 
+    // The published ABI with the response-read argument has no stream fence
+    // opt-in argument.
+    #[tauri::command(rename = "execute_authorized_stream_command")]
+    async fn response_read_authorized_command_fixture<R: tauri::Runtime>(
+        window: tauri::WebviewWindow<R>,
+        authorization_id: String,
+        message: serde_json::Value,
+        on_event: tauri::ipc::Channel<StreamEvent>,
+        on_authorization_diagnostic: Option<serde_json::Value>,
+        on_authorization_cause_diagnostic: Option<serde_json::Value>,
+        on_authorization_response_diagnostic: Option<serde_json::Value>,
+        on_authorization_mitigation_diagnostic: Option<serde_json::Value>,
+        on_authorization_transport_diagnostic: Option<serde_json::Value>,
+        on_authorization_io_diagnostic: Option<serde_json::Value>,
+        on_authorization_connector_diagnostic: Option<serde_json::Value>,
+        on_authorization_response_read_diagnostic: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let _ = (
+            on_event,
+            on_authorization_diagnostic,
+            on_authorization_cause_diagnostic,
+            on_authorization_response_diagnostic,
+            on_authorization_mitigation_diagnostic,
+            on_authorization_transport_diagnostic,
+            on_authorization_io_diagnostic,
+            on_authorization_connector_diagnostic,
+            on_authorization_response_read_diagnostic,
+        );
+        redeem_authorized_message(&authorization_id, message, &window)
+            .await
+            .map(|_| ())
+    }
+
+    #[test]
+    fn authorized_stream_command_fence_opt_in_keeps_original_command_errors() {
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+        // As above: an untrusted loaded page, so no POST can be attempted.
+        for abi in ["response_read", "current"] {
+            let builder = mock_builder().manage(StreamCommandState::default());
+            let builder = match abi {
+                "response_read" => builder.invoke_handler(tauri::generate_handler![
+                    response_read_authorized_command_fixture
+                ]),
+                _ => builder.invoke_handler(with_authorized_stream_dispatch(|_| false)),
+            };
+            let app = builder.build(app_context()).unwrap();
+            let untrusted_page =
+                tauri::WebviewUrl::External("https://untrusted.invalid/".parse().unwrap());
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", untrusted_page)
+                .build()
+                .unwrap();
+            // Authorization rejects first, so even the opt-in keeps its string.
+            let optional = [
+                None,
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!(false)),
+                Some(serde_json::json!("true")),
+                Some(serde_json::json!(1)),
+                Some(serde_json::json!({ "value": true })),
+                Some(serde_json::json!(true)),
+            ];
+            for (id, expected) in [
+                (
+                    "invalid".to_string(),
+                    "Invalid Desktop operation authorization",
+                ),
+                (
+                    "a".repeat(64),
+                    "Desktop origin is not allowed for native authorization",
+                ),
+            ] {
+                // The opt-in alone, and beside all eight current channels.
+                for with_others in [false, true] {
+                    for fence in &optional {
+                        let mut body = serde_json::json!({
+                            "authorizationId": id,
+                            "message": { "type": "command", "commandId": "synthetic", "command": "true" },
+                            "onEvent": "__CHANNEL__:1",
+                        });
+                        if with_others {
+                            for (slot, key) in [
+                                "onAuthorizationDiagnostic",
+                                "onAuthorizationCauseDiagnostic",
+                                "onAuthorizationResponseDiagnostic",
+                                "onAuthorizationMitigationDiagnostic",
+                                "onAuthorizationTransportDiagnostic",
+                                "onAuthorizationIoDiagnostic",
+                                "onAuthorizationConnectorDiagnostic",
+                                "onAuthorizationResponseReadDiagnostic",
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                body[key] = serde_json::json!(format!("__CHANNEL__:{}", slot + 2));
+                            }
+                        }
+                        if let Some(value) = fence {
+                            body["includeStreamFenceOrigin"] = value.clone();
+                        }
+                        let response = get_ipc_response(
+                            &window,
+                            tauri::webview::InvokeRequest {
+                                cmd: AUTHORIZED_STREAM_COMMAND.into(),
+                                callback: tauri::ipc::CallbackFn(0),
+                                error: tauri::ipc::CallbackFn(1),
+                                url: "https://hackerai.co/".parse().unwrap(),
+                                body: tauri::ipc::InvokeBody::Json(body),
+                                headers: Default::default(),
+                                invoke_key: INVOKE_KEY.to_string(),
+                            },
+                        )
+                        .map(|_| ());
+                        assert_eq!(
+                            response,
+                            Err(serde_json::json!(expected)),
+                            "{abi} {fence:?} {with_others}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_stream_command_fence_rejection_carries_the_origin_only_when_opted_in() {
+        use std::sync::atomic::Ordering;
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+
+        let scratch = unique_test_dir("fence-ipc");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let state = tauri::async_runtime::block_on(fenced_stream_state());
+        let exact = serde_json::json!(stream_lifecycle::STOP_UNCONFIRMED);
+        let with_origin = serde_json::json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "owner_outcome_missing" },
+        });
+        let cases = [
+            ("a", Some(serde_json::json!(true)), &with_origin),
+            ("b", None, &exact),
+            ("c", Some(serde_json::json!(false)), &exact),
+            ("d", Some(serde_json::json!("true")), &exact),
+            ("e", Some(serde_json::json!(1)), &exact),
+            ("f", Some(serde_json::Value::Null), &exact),
+        ];
+        let count = cases.len();
+        let (port, approvals) = approve_authorizations(count);
+        let app = mock_builder()
+            .manage(state)
+            .invoke_handler(with_authorized_stream_dispatch(|_| false))
+            .build(app_context())
+            .unwrap();
+        let page =
+            tauri::WebviewUrl::External(format!("http://localhost:{port}/").parse().unwrap());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
+            .build()
+            .unwrap();
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        for (authorization, opt_in, expected) in cases {
+            let mut body = serde_json::json!({
+                "authorizationId": authorization.repeat(64),
+                "message": { "type": "command", "commandId": authorization, "command": command },
+                "onEvent": "__CHANNEL__:1",
+            });
+            if let Some(value) = opt_in {
+                body["includeStreamFenceOrigin"] = value;
+            }
+            let response = get_ipc_response(
+                &window,
+                tauri::webview::InvokeRequest {
+                    cmd: AUTHORIZED_STREAM_COMMAND.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "https://hackerai.co/".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+            .map(|_| ());
+            // The signed message is redeemed once, then the launch is fenced
+            // with the exact original message; only literal `true` adds the
+            // closed origin beside it.
+            assert_eq!(response, Err(expected.clone()), "{authorization}");
+        }
+        assert_eq!(approvals.load(Ordering::SeqCst), count);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "a fenced command ran");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
     #[test]
     fn authorization_stream_command_optional_diagnostics_keep_original_command_errors() {
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
@@ -2956,6 +3182,148 @@ mod tests {
             Err(stream_lifecycle::PAGE_REPLACED.to_string())
         );
         assert!(events.lock().unwrap().is_empty());
+    }
+
+    /// A stream lifecycle with its own update gate, fenced the way a real owner
+    /// released before recording an outcome fences it.
+    #[cfg(unix)]
+    async fn fenced_stream_state() -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state
+            .launch(state.admit(), "released", &mut cmd)
+            .await
+            .unwrap()
+        {
+            stream_lifecycle::Launch::Started(mut owned) => {
+                let _ = owned.child.wait().await;
+                drop(owned);
+            }
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
+    #[cfg(unix)]
+    type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    #[cfg(unix)]
+    fn recording_channel() -> (tauri::ipc::Channel<StreamEvent>, Recorded) {
+        let recorded = Recorded::default();
+        let sink = recorded.clone();
+        let channel = tauri::ipc::Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                sink.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        (channel, recorded)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authorized_stream_rejection_adds_the_origin_only_to_the_opted_in_fence_rejection() {
+        let scratch = unique_test_dir("fence-origin");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        // `execute_stream_command`, then the authorized dispatch's rejection,
+        // with and without the opt-in.
+        let run = |state: StreamCommandState,
+                   admission: stream_lifecycle::Admission,
+                   command_id: &'static str,
+                   stdin: Option<(&'static str, &'static str)>| {
+            let command = command.clone();
+            async move {
+                let (events, output) = recording_channel();
+                let result = execute_stream_command(
+                    &state,
+                    admission,
+                    command_id.into(),
+                    command,
+                    None,
+                    None,
+                    stdin.map(|(input, _)| input.to_string()),
+                    stdin.map(|(_, encoding)| encoding.to_string()),
+                    Some(30_000),
+                    events,
+                )
+                .await;
+                let rejections = result.clone().err().map(|error| {
+                    [false, true].map(|opted_in| {
+                        authorized_stream_rejection(&state, error.clone(), opted_in).0
+                    })
+                });
+                let output = output.lock().unwrap().clone();
+                (result, rejections, output)
+            }
+        };
+        let exact = |message: &str| [serde_json::json!(message), serde_json::json!(message)];
+
+        // An unfenced command runs normally.
+        let open = StreamCommandState::default();
+        let (result, rejections, output) = run(open.clone(), open.admit(), "open", None).await;
+        assert_eq!((result, rejections), (Ok(()), None));
+        assert_eq!(
+            output.last().map(String::as_str),
+            Some(r#"{"type":"exit","exitCode":0}"#)
+        );
+        fs::remove_file(&marker).unwrap();
+        // Without a recorded origin, even the fence text stays an exact string.
+        assert_eq!(
+            authorized_stream_rejection(&open, stream_lifecycle::STOP_UNCONFIRMED.into(), true).0,
+            serde_json::json!(stream_lifecycle::STOP_UNCONFIRMED)
+        );
+
+        let fenced = fenced_stream_state().await;
+        // The exact fence rejection: an exact string without the opt-in, and
+        // the same public message beside the closed origin with it.
+        let (result, rejections, output) =
+            run(fenced.clone(), fenced.admit(), "fenced", None).await;
+        assert_eq!(result, Err(stream_lifecycle::STOP_UNCONFIRMED.to_string()));
+        assert_eq!(
+            rejections,
+            Some([
+                serde_json::json!(stream_lifecycle::STOP_UNCONFIRMED),
+                serde_json::json!({
+                    "message": stream_lifecycle::STOP_UNCONFIRMED,
+                    "streamFence": { "version": 1, "origin": "owner_outcome_missing" },
+                }),
+            ])
+        );
+        assert!(output.is_empty());
+
+        // Earlier admission denials keep priority and stay exact strings.
+        let stale = fenced.admit();
+        fenced.invalidate();
+        let (result, rejections, output) = run(fenced.clone(), stale, "stale", None).await;
+        assert_eq!(result, Err(stream_lifecycle::PAGE_REPLACED.to_string()));
+        assert_eq!(rejections, Some(exact(stream_lifecycle::PAGE_REPLACED)));
+        assert!(output.is_empty());
+        assert!(fenced.cancel("tombstoned").await);
+        let (result, rejections, output) =
+            run(fenced.clone(), fenced.admit(), "tombstoned", None).await;
+        assert_eq!((result, rejections), (Ok(()), None));
+        assert_eq!(output, [r#"{"type":"exit","exitCode":130}"#]);
+        // An admission error before launch stays an exact string as well.
+        let (result, rejections, _) = run(
+            fenced.clone(),
+            fenced.admit(),
+            "bad-stdin",
+            Some(("a", "base64")),
+        )
+        .await;
+        assert_eq!(result, Err("Invalid command stdin encoding".to_string()));
+        assert_eq!(rejections, Some(exact("Invalid command stdin encoding")));
+
+        // No fenced invocation spawned anything.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!marker.exists(), "a fenced command ran");
+        let _ = fs::remove_dir_all(&scratch);
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {
