@@ -17,6 +17,7 @@ import {
   tool,
   type LanguageModel,
   type UIMessage,
+  type UIMessageChunk,
 } from "ai";
 import { z } from "zod";
 import {
@@ -42,6 +43,7 @@ import {
   PROVIDER_EMPTY_RESPONSE_MESSAGE,
 } from "../agent-long-provider-retry";
 import { stripAgentLongHeartbeatParts } from "../agent-long-heartbeat";
+import { createProviderErrorDeferral } from "../provider-error-stream";
 
 jest.mock("@/lib/db/actions", () => ({ getNotes: jest.fn() }));
 
@@ -140,21 +142,21 @@ const prestreamAdmission = (source: ts.SourceFile) => {
   );
 };
 
-const errorSuppression = (source: ts.SourceFile) => {
-  const predicate = only(
-    collect(
-      source,
-      (node): node is ts.CallExpression =>
-        ts.isCallExpression(node) &&
-        node.expression.getText(source) ===
-          "createRecoverableProviderErrorFilter",
-    ),
-    "error suppression",
-  ).arguments[0];
-  if (!ts.isArrowFunction(predicate) || ts.isBlock(predicate.body))
-    throw new Error("error suppression predicate changed shape");
-  return compile(source, predicate.body);
-};
+/** Every provider-error deferral's immediate-publication predicate. */
+const immediatePublication = (source: ts.SourceFile) =>
+  collect(
+    source,
+    (node): node is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(node) &&
+      node.name.getText(source) === "publishImmediately" &&
+      ts.isCallExpression(node.parent.parent) &&
+      node.parent.parent.expression.getText(source) ===
+        "createProviderErrorDeferral",
+  ).map(({ initializer: predicate }) => {
+    if (!ts.isArrowFunction(predicate) || ts.isBlock(predicate.body))
+      throw new Error("immediate publication predicate changed shape");
+    return compile(source, predicate.body);
+  });
 
 const askRecovery = only(
   collect(
@@ -349,28 +351,106 @@ describe.each([
   });
 });
 
-// --- Abliteration error suppression ---------------------------------------
+// --- Provider error deferral never hides a local read ----------------------
 
-it.each([
-  ["Ask", ask],
-  ["Agent", agent],
-])(
-  "%s publishes a local read error instead of hiding it for an Abliteration retry",
-  (_name, source) => {
-    const hides = errorSuppression(source);
-    const scope = (providerError: unknown) => ({
-      isRetryWithFallback: false,
-      isTrustedBrowserHandoffReadFailure,
-      state: { providerError },
-      shouldRetryAbliterationError: () => true,
-      activeAbliteratedExperiment: {},
-      activeModelName: "abliterated",
-      userStopSignal: running,
-    });
-    expect(hides(scope(providerFailures.provider_disconnect))).toBe(true);
-    expect(hides(scope(local))).toBe(false);
-  },
-);
+/**
+ * Publish one SDK attempt through a real deferral whose immediate-publication
+ * predicate is a caller's actual expression, reading the state the attempt's
+ * onError fills. onFinish then discards, as a scheduled recovery would: only a
+ * held error can be hidden that way, so a published error proves it bypassed
+ * the deferral.
+ */
+const publishThroughDeferral = async (
+  mode: "local_read" | "provider_disconnect",
+  predicate: (scope: Record<string, unknown>) => unknown,
+  settlement: "discard" | "release",
+) => {
+  const state: { providerError: unknown } = { providerError: undefined };
+  const deferral = createProviderErrorDeferral({
+    publishImmediately: () =>
+      Boolean(predicate({ isTrustedBrowserHandoffReadFailure, state })),
+  });
+  const read = Object.freeze(disconnect());
+  const result = streamText({
+    model: model(
+      jest.fn(async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "error", error: disconnect() });
+            controller.close();
+          },
+        }),
+      })),
+    ),
+    prompt: "fixture",
+    maxRetries: 0,
+    prepareStep: async () => {
+      if (mode === "local_read") rethrowBrowserHandoffReadError(read);
+      return undefined;
+    },
+    onError: ({ error }) => {
+      state.providerError = error;
+    },
+  });
+  const published: UIMessageChunk[] = [];
+  const reader = result
+    .toUIMessageStream({
+      onFinish: () => {
+        if (settlement === "discard") deferral.discard();
+        else deferral.release();
+      },
+    })
+    .pipeThrough(deferral.filter())
+    .getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    published.push(value);
+  }
+  expect(isTrustedBrowserHandoffReadFailure(state.providerError)).toBe(
+    mode === "local_read",
+  );
+  return published.map((chunk) => chunk.type);
+};
+
+describe.each([
+  ["Ask", ask, 1],
+  ["Agent", agent, 2],
+] as const)("%s provider error deferral", (_name, source, attempts) => {
+  const predicates = immediatePublication(source);
+
+  it("gives every deferred attempt the local read publication predicate", () => {
+    expect(predicates).toHaveLength(attempts);
+  });
+
+  it("publishes an SDK-delivered local read error that recovery could otherwise hide", async () => {
+    for (const predicate of predicates) {
+      expect(
+        await publishThroughDeferral("local_read", predicate, "discard"),
+      ).toContain("error");
+    }
+  });
+
+  it("still defers a genuine provider error to the recovery decision", async () => {
+    for (const predicate of predicates) {
+      const recovered = await publishThroughDeferral(
+        "provider_disconnect",
+        predicate,
+        "discard",
+      );
+      expect(recovered).not.toContain("error");
+      expect(recovered).not.toContain("finish");
+      expect(recovered).toContain("finish-step");
+      expect(
+        await publishThroughDeferral(
+          "provider_disconnect",
+          predicate,
+          "release",
+        ),
+      ).toEqual(expect.arrayContaining(["error", "finish"]));
+    }
+  });
+});
 
 // --- Ask after the stream --------------------------------------------------
 

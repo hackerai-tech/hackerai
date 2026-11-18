@@ -26,7 +26,7 @@ import {
   AGENT_LOOP_CONTINUATION_PROMPT,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
-import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { createProviderErrorDeferral } from "@/lib/chat/provider-error-stream";
 import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -2074,25 +2074,17 @@ export const createChatHandler = () => {
               }
             }
 
+            // onFinish below drops this attempt's terminal error/finish only
+            // once its retry is merged; otherwise they are published unchanged.
+            // A failed local safety read is never recovered: publish it at once.
+            const primaryProviderErrors = createProviderErrorDeferral({
+              publishImmediately: () =>
+                isTrustedBrowserHandoffReadFailure(state.providerError),
+            });
             const mergePrimaryStream = (
               stream: Parameters<typeof writer.merge>[0],
             ) => {
-              writer.merge(
-                stream.pipeThrough(
-                  createRecoverableProviderErrorFilter(
-                    () =>
-                      !isRetryWithFallback &&
-                      !isTrustedBrowserHandoffReadFailure(
-                        state.providerError,
-                      ) &&
-                      shouldRetryAbliterationError(
-                        activeAbliteratedExperiment,
-                        activeModelName,
-                        userStopSignal.signal,
-                      ),
-                  ),
-                ),
-              );
+              writer.merge(stream.pipeThrough(primaryProviderErrors.filter()));
             };
 
             mergePrimaryStream(
@@ -2951,10 +2943,15 @@ export const createChatHandler = () => {
                           }),
                         );
 
+                        primaryProviderErrors.discard();
                         retryScheduled = true;
                         return; // Skip normal cleanup - retry handles it
                       }
                     }
+
+                    // No recovery (success, declined or Stop): publish the
+                    // held terminal chunks before any trailing writes.
+                    primaryProviderErrors.release();
 
                     // A failed local safety read is the terminal error; a
                     // stale "stop" must not replace it with a provider empty answer.

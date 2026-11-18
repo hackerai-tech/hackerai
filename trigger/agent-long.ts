@@ -46,7 +46,7 @@ import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-sub
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { createProviderErrorDeferral } from "@/lib/chat/provider-error-stream";
 import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
@@ -4930,25 +4930,17 @@ export const agentLongTask = task({
               }
             }
 
+            // onFinish below drops this attempt's terminal error/finish only
+            // once its retry is merged; otherwise they are published unchanged.
+            // A failed local safety read is never recovered: publish it at once.
+            const primaryProviderErrors = createProviderErrorDeferral({
+              publishImmediately: () =>
+                isTrustedBrowserHandoffReadFailure(state.providerError),
+            });
             const mergePrimaryStream = (
               stream: Parameters<typeof writer.merge>[0],
             ) => {
-              writer.merge(
-                stream.pipeThrough(
-                  createRecoverableProviderErrorFilter(
-                    () =>
-                      !isRetryWithFallback &&
-                      !isTrustedBrowserHandoffReadFailure(
-                        state.providerError,
-                      ) &&
-                      shouldRetryAbliterationError(
-                        activeAbliteratedExperiment,
-                        activeModelName,
-                        userStopSignal.signal,
-                      ),
-                  ),
-                ),
-              );
+              writer.merge(stream.pipeThrough(primaryProviderErrors.filter()));
             };
 
             mergePrimaryStream(
@@ -5642,6 +5634,16 @@ export const agentLongTask = task({
                             ? [blockedProviderModel]
                             : undefined,
                         );
+                        // This retry's onFinish settles its own terminal chunks:
+                        // dropped only when the final retry is merged.
+                        const retryProviderErrors = createProviderErrorDeferral(
+                          {
+                            publishImmediately: () =>
+                              isTrustedBrowserHandoffReadFailure(
+                                state.providerError,
+                              ),
+                          },
+                        );
 
                         writer.merge(
                           withAgentLongStreamHeartbeat(
@@ -5903,10 +5905,12 @@ export const agentLongTask = task({
                                         userStopSignal.signal,
                                       ),
                                     );
+                                    retryProviderErrors.discard();
                                     finalRetryScheduled = true;
                                     return;
                                   }
 
+                                  retryProviderErrors.release();
                                   await finalizeRetryStream({
                                     retryMessages,
                                     retryAborted,
@@ -5921,12 +5925,16 @@ export const agentLongTask = task({
                               },
                             }),
                             userStopSignal.signal,
-                          ),
+                          ).pipeThrough(retryProviderErrors.filter()),
                         );
+                        primaryProviderErrors.discard();
                         retryScheduled = true;
                         return;
                       }
 
+                      // No recovery (success, declined or Stop): publish the
+                      // held terminal chunks before any trailing writes.
+                      primaryProviderErrors.release();
                       stopLocalConnectionWatch?.();
                       if (localConnectionLost()) {
                         isAborted = true;
