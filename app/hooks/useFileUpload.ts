@@ -1,5 +1,12 @@
 import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -38,11 +45,42 @@ import { getPreferredFileStorageRegion } from "@/lib/storage/file-storage-region
 import {
   browserUploadTransfers,
   putBrowserFile,
+  queueUploadReservation,
   UploadTransportError,
+  waitUnlessAborted,
+  type UploadScope,
 } from "@/lib/utils/browser-file-upload";
+
+type CommittedUploadScope = UploadScope & { signal: AbortSignal };
+
+// A restored attachment keeps its spinner only while its own transfer runs.
+const restoredUpload = (previous: UploadedFileState): UploadedFileState => {
+  if (!previous.uploading) return previous;
+  const transfer =
+    previous.file instanceof File
+      ? browserUploadTransfers.get(previous.file)
+      : undefined;
+  return transfer?.running && !transfer.controller.signal.aborted
+    ? previous
+    : { ...previous, uploading: false };
+};
+
+// The account or organization changed after this upload started.
+class UploadScopeChangedError extends Error {
+  constructor() {
+    super("Upload scope changed");
+    this.name = "UploadScopeChangedError";
+  }
+}
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
+const UPLOAD_INTERRUPTED_STATE: Partial<UploadedFileState> = {
+  uploading: false,
+  uploaded: false,
+  retryable: false,
+  error: "Upload interrupted. Remove and attach the file again.",
+};
 const PASTED_TEXT_ATTACHMENT_BASE_NAME = "Pasted text";
 const PASTED_TEXT_ATTACHMENT_EXTENSION = ".txt";
 const TEXT_PLAIN_MEDIA_TYPE = "text/plain";
@@ -158,9 +196,11 @@ const fileFromBase64 = (
 
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const webPickerSignalRef = useRef<AbortSignal | undefined>(undefined);
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
   const {
     uploadedFiles,
+    getUploadedFiles,
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
@@ -169,7 +209,22 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     sandboxPreference,
     desktopEnvironmentId,
   } = useGlobalState();
+  const { user, organizationId } = useAuth();
+  const scopeUserId = user?.id ?? null;
+  const scopeOrganizationId = organizationId || null;
   const uploadedFilesRef = useRef(uploadedFiles);
+  // Upload work started under one committed account/organization must not
+  // continue after the session switches; this hook does not remount on a switch.
+  const uploadScopeRef = useRef<CommittedUploadScope | null>(null);
+  useLayoutEffect(() => {
+    const controller = new AbortController();
+    uploadScopeRef.current = {
+      userId: scopeUserId,
+      organizationId: scopeOrganizationId,
+      signal: controller.signal,
+    };
+    return () => controller.abort(new UploadScopeChangedError());
+  }, [scopeUserId, scopeOrganizationId]);
   const activeTransfersRef = useRef(new Set<File>());
   const preferredStorageRegionPromiseRef = useRef<ReturnType<
     typeof getPreferredFileStorageRegion
@@ -189,12 +244,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     return () => {
       for (const file of activeTransfers) {
         browserUploadTransfers.get(file)?.controller.abort();
-        updateUploadedFile(file, {
-          uploading: false,
-          uploaded: false,
-          retryable: false,
-          error: "Upload interrupted. Remove and attach the file again.",
-        });
+        updateUploadedFile(file, UPLOAD_INTERRUPTED_STATE);
       }
       activeTransfers.clear();
     };
@@ -388,7 +438,27 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       browserUploadTransfers.set(file, transfer);
       activeTransfersRef.current.add(file);
       const uploadMode = transfer.mode;
-      const { signal } = transfer.controller;
+      const { controller } = transfer;
+      const { signal } = controller;
+      const scope = uploadScopeRef.current;
+      const scopeSignal = scope?.signal;
+      const stopSignals = scopeSignal ? [signal, scopeSignal] : [signal];
+      // The server rejects the reservation if its signed session differs.
+      const expectedUploadScope = scope?.userId
+        ? { userId: scope.userId, organizationId: scope.organizationId }
+        : undefined;
+      // No new PUT or save once the scope this reservation was signed for ends.
+      const assertUploadScope = () => {
+        scopeSignal?.throwIfAborted();
+        const reserved = transfer?.reservationScope;
+        if (
+          reserved &&
+          scope &&
+          (reserved.userId !== scope.userId ||
+            reserved.organizationId !== scope.organizationId)
+        )
+          throw new UploadScopeChangedError();
+      };
       const getCurrentUploadIndex = () => {
         if (signal.aborted) return null;
         const index = uploadedFilesRef.current.findIndex(
@@ -409,32 +479,61 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         if (!transfer.reservation) {
           preferredStorageRegionPromiseRef.current ??=
             getPreferredFileStorageRegion();
-          const storageRegion = await preferredStorageRegionPromiseRef.current;
-          signal.throwIfAborted();
-          const reservation = await generateS3UploadUrlAction({
-            fileName: file.name,
-            contentType: file.type || "application/octet-stream",
-            size: file.size,
-            mode: uploadMode,
-            ...(storageRegion ? { storageRegion } : {}),
-          });
+          const storageRegion = await waitUnlessAborted(
+            preferredStorageRegionPromiseRef.current,
+            stopSignals,
+          );
+          // Cancellation or a scope change stops this wait at once, even after
+          // sending; the sent request still holds the queue until it settles.
+          const reservation = await waitUnlessAborted(
+            queueUploadReservation(() => {
+              // The store drops a cleared attachment before this hook's passive
+              // effects run, so check membership at the moment of sending.
+              if (!getUploadedFiles().some((item) => item.file === file)) {
+                controller.abort();
+                return Promise.reject(signal.reason);
+              }
+              return generateS3UploadUrlAction({
+                fileName: file.name,
+                contentType: file.type || "application/octet-stream",
+                size: file.size,
+                mode: uploadMode,
+                ...(storageRegion ? { storageRegion } : {}),
+                ...(expectedUploadScope ? { expectedUploadScope } : {}),
+              });
+            }, stopSignals),
+            stopSignals,
+          );
           transfer.reservation = reservation;
+          transfer.reservationScope = scope
+            ? { userId: scope.userId, organizationId: scope.organizationId }
+            : undefined;
+          scopeSignal?.throwIfAborted();
           if (reservation.rateLimit)
             showRateLimitWarning(reservation.rateLimit);
         }
         signal.throwIfAborted();
+        assertUploadScope();
         const { uploadUrl, s3Key } = transfer.reservation;
-        await putBrowserFile(file, uploadUrl, signal);
+        await putBrowserFile(file, uploadUrl, signal, scopeSignal);
         signal.throwIfAborted();
+        assertUploadScope();
 
-        // Step 3: Save file metadata to database with S3 key
-        const { url, fileId, tokens } = await saveFile({
-          s3Key,
-          name: file.name,
-          mediaType: file.type,
-          size: file.size,
-          mode: uploadMode,
-        });
+        // Step 3: Save file metadata to database with S3 key. A scope change
+        // stops this wait; the old-scope file is left in place. Removal does
+        // not, so the returned fileId can still be cleaned up below.
+        const { url, fileId, tokens } = await waitUnlessAborted(
+          saveFile({
+            s3Key,
+            name: file.name,
+            mediaType: file.type,
+            size: file.size,
+            mode: uploadMode,
+            ...(expectedUploadScope ? { expectedUploadScope } : {}),
+          }),
+          scopeSignal ? [scopeSignal] : [],
+        );
+        assertUploadScope();
 
         const currentUploadIndex = getCurrentUploadIndex();
         if (currentUploadIndex === null) {
@@ -460,7 +559,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
               options.expectedGeneratedTextAttachment?.previousUploadedFile;
             if (previousUploadedFile) {
               applyUploadedFileUpdate(currentUploadIndex, {
-                ...previousUploadedFile,
+                ...restoredUpload(previousUploadedFile),
                 error: `${file.name} exceeds the Ask mode token limit`,
               });
             } else {
@@ -498,6 +597,28 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       } catch (error) {
         const currentUploadIndex = getCurrentUploadIndex();
         if (currentUploadIndex === null) {
+          return;
+        }
+
+        // The account or organization changed, here or as signed on the server.
+        if (
+          scopeSignal?.aborted ||
+          error instanceof UploadScopeChangedError ||
+          getConvexErrorCode(error) === "UPLOAD_CONTEXT_CHANGED"
+        ) {
+          const previousUploadedFile =
+            options.expectedGeneratedTextAttachment?.previousUploadedFile;
+          applyUploadedFileUpdate(
+            currentUploadIndex,
+            previousUploadedFile
+              ? {
+                  ...previousUploadedFile,
+                  uploading: false,
+                  retryable: false,
+                  error: UPLOAD_INTERRUPTED_STATE.error,
+                }
+              : UPLOAD_INTERRUPTED_STATE,
+          );
           return;
         }
 
@@ -550,7 +671,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           options.expectedGeneratedTextAttachment?.previousUploadedFile;
         if (previousUploadedFile) {
           applyUploadedFileUpdate(currentUploadIndex, {
-            ...previousUploadedFile,
+            ...restoredUpload(previousUploadedFile),
             error: errorMessage,
           });
           toast.error(errorMessage);
@@ -576,6 +697,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     },
     [
       generateS3UploadUrlAction,
+      getUploadedFiles,
       saveFile,
       getTotalTokens,
       deleteFile,
@@ -622,6 +744,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const processGeneratedPastedText = useCallback(
     async (content: string): Promise<boolean> => {
+      const selectionSignal = uploadScopeRef.current?.signal;
       const existingUploadedCount = uploadedFiles.length;
       const remainingSlots = maxFilesLimit - existingUploadedCount;
       const hasRemainingSlots = remainingSlots > 0;
@@ -636,6 +759,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const attachmentId = createGeneratedTextAttachmentId();
       const file = createGeneratedTextFile(content, fileName);
       const result = await validateAndFilterFiles([file]);
+      if (selectionSignal?.aborted) return false;
 
       showProcessingFeedback(result, hasRemainingSlots);
 
@@ -649,8 +773,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           attachmentId,
           fileName,
           content,
+          selectionSignal,
         );
-        if (!localMetadata) {
+        // A completed local write belongs to the original scope. Preserve its
+        // contents without adding it to a draft under a different account.
+        if (!localMetadata || selectionSignal?.aborted) {
           return false;
         }
 
@@ -779,7 +906,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   );
 
   const processLocalDesktopPaths = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], selectionSignal: AbortSignal | undefined) => {
+      if (selectionSignal?.aborted) return;
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
         return;
@@ -815,10 +943,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const invalidFiles: string[] = [];
 
       for (const path of selectedPaths) {
+        if (selectionSignal?.aborted) return;
         let metadata: Awaited<ReturnType<typeof getLocalFileMetadata>>;
         try {
-          metadata = await getLocalFileMetadata(path);
+          metadata = await getLocalFileMetadata(path, selectionSignal);
         } catch (error) {
+          if (selectionSignal?.aborted) return;
           logLocalAttachmentDebug("local-metadata-error", {
             fileName: getFilenameFromPath(path),
             error: error instanceof Error ? error.message : String(error),
@@ -828,6 +958,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           );
           continue;
         }
+        if (selectionSignal?.aborted) return;
         if (!metadata) {
           invalidFiles.push(
             `${getFilenameFromPath(path)}: could not read file metadata`,
@@ -860,7 +991,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             continue;
           }
 
-          const localFileData = await readLocalFile(path);
+          const localFileData = await readLocalFile(path, selectionSignal);
+          if (selectionSignal?.aborted) return;
           if (!localFileData) {
             invalidFiles.push(`${file.name}: could not read image file`);
             continue;
@@ -887,6 +1019,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         validFiles.push({ storage: "local-desktop", file });
       }
 
+      if (selectionSignal?.aborted) return;
       if (invalidFiles.length > 0) {
         toast.error(`Some files were invalid:\n${invalidFiles.join("\n")}`);
       }
@@ -917,7 +1050,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         return false;
       }
 
+      // Validation can wait for image decoding. A selection must still belong
+      // to the sign-in scope that admitted it when we add it to the draft.
+      const selectionSignal = uploadScopeRef.current?.signal;
       const result = await validateAndFilterFiles(files);
+      if (selectionSignal?.aborted) return false;
 
       // Check if we have slots available
       const existingUploadedCount = uploadedFiles.length;
@@ -948,10 +1085,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const handleFileUploadEvent = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
+    const pickerSignal = webPickerSignalRef.current;
+    webPickerSignalRef.current = undefined;
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    await processFiles(Array.from(selectedFiles));
+    if (!pickerSignal?.aborted) {
+      await processFiles(Array.from(selectedFiles));
+    }
 
     // Clear the input
     if (fileInputRef.current) {
@@ -1136,12 +1277,34 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
         applyUploadedFileUpdate(indexToUpdate, pendingUploadedFile);
 
-        writeGeneratedTextAttachment(
-          generatedTextAttachmentId,
-          uploadedFile.file.name,
-          content,
+        // A scope change stops the UI wait for this exact entry. The write
+        // can still settle on disk without publishing a new draft receipt.
+        const selectionSignal = uploadScopeRef.current?.signal;
+        const interruptPendingEdit = () => {
+          const pendingFile = pendingUploadedFile.file;
+          uploadedFilesRef.current = uploadedFilesRef.current.map(
+            (currentFile) =>
+              currentFile.file === pendingFile
+                ? { ...currentFile, ...UPLOAD_INTERRUPTED_STATE }
+                : currentFile,
+          );
+          updateUploadedFile(pendingFile, UPLOAD_INTERRUPTED_STATE);
+        };
+
+        void waitUnlessAborted(
+          writeGeneratedTextAttachment(
+            generatedTextAttachmentId,
+            uploadedFile.file.name,
+            content,
+            selectionSignal,
+          ),
+          selectionSignal ? [selectionSignal] : [],
         )
           .then((localMetadata) => {
+            if (selectionSignal?.aborted) {
+              interruptPendingEdit();
+              return;
+            }
             const currentIndex = getCurrentLocalTextIndex();
             if (currentIndex < 0) {
               return;
@@ -1170,6 +1333,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             applyUploadedFileUpdate(currentIndex, updatedUploadedFile);
           })
           .catch((error) => {
+            if (selectionSignal?.aborted) {
+              interruptPendingEdit();
+              return;
+            }
             console.error("Failed to update local generated text file:", error);
             const currentIndex = getCurrentLocalTextIndex();
             if (currentIndex >= 0) {
@@ -1209,7 +1376,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         },
       });
     },
-    [applyUploadedFileUpdate, uploadFileToS3],
+    [applyUploadedFileUpdate, updateUploadedFile, uploadFileToS3],
   );
 
   const handleAttachClick = (source: "camera" | "files" = "files") => {
@@ -1222,16 +1389,18 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     });
 
     if (shouldUseLocalDesktopAttachments) {
-      pickLocalFiles()
+      const selectionSignal = uploadScopeRef.current?.signal;
+      pickLocalFiles(selectionSignal)
         .then(async (paths) => {
           logLocalAttachmentDebug("local-picker-result", {
             selectedCount: paths.length,
           });
           if (paths.length > 0) {
-            await processLocalDesktopPaths(paths);
+            await processLocalDesktopPaths(paths, selectionSignal);
           }
         })
         .catch((error) => {
+          if (selectionSignal?.aborted) return;
           logLocalAttachmentDebug("local-picker-error", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -1249,6 +1418,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     } else {
       input.removeAttribute("capture");
     }
+    webPickerSignalRef.current = uploadScopeRef.current?.signal;
     input.click();
   };
 

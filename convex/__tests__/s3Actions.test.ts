@@ -137,6 +137,105 @@ describe("s3Actions", () => {
       );
     });
 
+    describe("expected upload scope", () => {
+      const uploadArgs = {
+        fileName: "test.pdf",
+        contentType: "application/pdf",
+        size: 1024,
+      };
+      const createCtx = (identity: Record<string, unknown>): any => ({
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            entitlements: ["pro-plan"],
+            ...identity,
+          }),
+        },
+        runQuery: jest.fn<any>().mockResolvedValue({
+          usedBytes: 0,
+          maxBytes: 10 * 1024 * 1024 * 1024,
+          availableBytes: 10 * 1024 * 1024 * 1024,
+        }),
+        runMutation: jest.fn<any>().mockResolvedValue("file_123"),
+      });
+
+      it.each([
+        [
+          "another account",
+          { subject: "user-b", org_id: "org-a" },
+          { userId: "user-a", organizationId: "org-a" },
+        ],
+        [
+          "another organization",
+          { subject: "user-a", org_id: "org-b" },
+          { userId: "user-a", organizationId: "org-a" },
+        ],
+        [
+          "a personal session expected in an organization",
+          { subject: "user-a" },
+          { userId: "user-a", organizationId: "org-a" },
+        ],
+        [
+          "an organization session expected as personal",
+          { subject: "user-a", org_id: "org-a" },
+          { userId: "user-a", organizationId: null },
+        ],
+      ])(
+        "rejects %s before any read, rate limit, signing or write",
+        async (_case, identity, expectedUploadScope) => {
+          const { generateS3UploadUrl } = await import("../s3Utils");
+          const { generateS3UploadUrlAction } = await import("../s3Actions");
+          const ctx = createCtx(identity);
+
+          await expect(
+            generateS3UploadUrlAction.handler(ctx, {
+              ...uploadArgs,
+              expectedUploadScope,
+            }),
+          ).rejects.toMatchObject({
+            data: expect.objectContaining({ code: "UPLOAD_CONTEXT_CHANGED" }),
+          });
+
+          expect(ctx.runQuery).not.toHaveBeenCalled();
+          expect(mockCheckFileUploadRateLimit).not.toHaveBeenCalled();
+          expect(generateS3UploadUrl).not.toHaveBeenCalled();
+          expect(ctx.runMutation).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ["an organization", { org_id: "org-a" }, "org-a"],
+        ["a missing claim as personal", {}, null],
+        ["an empty claim as personal", { org_id: "" }, null],
+      ])(
+        "accepts a matching scope with %s",
+        async (_case, claims, organizationId) => {
+          const { generateS3UploadUrl } = await import("../s3Utils");
+          (
+            generateS3UploadUrl as jest.MockedFunction<
+              typeof generateS3UploadUrl
+            >
+          ).mockResolvedValue({
+            uploadUrl: "https://s3.amazonaws.com/test-upload-url",
+            s3Key: "users/user-a/123-uuid-test.pdf",
+            storageLocation: { region: "us-east-1", bucket: "test-bucket" },
+          });
+          const { generateS3UploadUrlAction } = await import("../s3Actions");
+          const ctx = createCtx({ subject: "user-a", ...claims });
+
+          await expect(
+            generateS3UploadUrlAction.handler(ctx, {
+              ...uploadArgs,
+              expectedUploadScope: { userId: "user-a", organizationId },
+            }),
+          ).resolves.toMatchObject({ s3Key: "users/user-a/123-uuid-test.pdf" });
+          expect(ctx.runMutation).toHaveBeenCalledWith(
+            "internal.fileStorage.createPendingS3File",
+            expect.objectContaining({ userId: "user-a" }),
+          );
+        },
+      );
+    });
+
     it("should reject free users before generating an upload URL", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
       const mockGenerateS3UploadUrl =

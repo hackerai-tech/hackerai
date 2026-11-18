@@ -1,5 +1,11 @@
 import type { ChatMode } from "@/types/chat";
 
+/** The committed account and organization an upload was started under. */
+export interface UploadScope {
+  userId: string | null;
+  organizationId: string | null;
+}
+
 // Keep signed URLs and transfer state in memory, outside persisted drafts.
 export interface BrowserUploadTransfer {
   mode: ChatMode;
@@ -7,12 +13,120 @@ export interface BrowserUploadTransfer {
   running: boolean;
   retryable: boolean;
   reservation?: { uploadUrl: string; s3Key: string };
+  // The scope the reservation was signed for; a retry never crosses it.
+  reservationScope?: UploadScope;
 }
 
 export const browserUploadTransfers = new WeakMap<
   File,
   BrowserUploadTransfer
 >();
+
+/** Calls `onAbort` once for the first signal that aborts; returns a remover. */
+function listenForAbort(
+  signals: readonly AbortSignal[],
+  onAbort: (reason: unknown) => void,
+): () => void {
+  const removers = signals.map((signal) => {
+    const abort = () => {
+      remove();
+      onAbort(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    return () => signal.removeEventListener("abort", abort);
+  });
+  const remove = () => removers.forEach((removeListener) => removeListener());
+  return remove;
+}
+
+const firstAbortReason = (signals: readonly AbortSignal[]) =>
+  signals.find((signal) => signal.aborted);
+
+/**
+ * Waits for a shared lookup or a sent request, but stops waiting as soon as
+ * this transfer or its scope aborts. The awaited promise is not cancelled; it
+ * is always observed, so a rejection after the wait stops stays handled.
+ */
+export function waitUnlessAborted<T>(
+  promise: Promise<T>,
+  signals: readonly AbortSignal[],
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let remove = () => {};
+    promise.then(
+      (value) => {
+        remove();
+        resolve(value);
+      },
+      (error) => {
+        remove();
+        reject(error);
+      },
+    );
+    const aborted = firstAbortReason(signals);
+    if (aborted) {
+      reject(aborted.reason);
+      return;
+    }
+    remove = listenForAbort(signals, reject);
+  });
+}
+
+// Concurrent reservations for one user contend on the same storage records, so
+// the page sends them one at a time. Only the presign request is serialized;
+// transfers and metadata saves still run in parallel.
+let reservationActive = false;
+const reservationWaiters = new Set<() => void>();
+
+function startNextReservation() {
+  const next = reservationWaiters.values().next();
+  if (next.done) return;
+  reservationWaiters.delete(next.value);
+  next.value();
+}
+
+/**
+ * Sends `request` once every earlier reservation on this page has settled.
+ * Work still waiting is discarded, and never sent, when any signal aborts;
+ * a request already sent keeps its slot until its own promise settles.
+ */
+export function queueUploadReservation<T>(
+  request: () => Promise<T>,
+  signals: readonly AbortSignal[],
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const aborted = firstAbortReason(signals);
+    if (aborted) {
+      reject(aborted.reason);
+      return;
+    }
+    let removeListeners = () => {};
+    const start = () => {
+      removeListeners();
+      reservationActive = true;
+      let result: Promise<T>;
+      try {
+        result = Promise.resolve(request());
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      const release = () => {
+        reservationActive = false;
+        startNextReservation();
+      };
+      result.then(release, release);
+      resolve(result);
+    };
+    if (!reservationActive) {
+      start();
+      return;
+    }
+    reservationWaiters.add(start);
+    removeListeners = listenForAbort(signals, (reason) => {
+      if (reservationWaiters.delete(start)) reject(reason);
+    });
+  });
+}
 
 export class UploadTransportError extends Error {
   constructor(
@@ -24,36 +138,45 @@ export class UploadTransportError extends Error {
   }
 }
 
-function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
+function waitForRetry(
+  delay: number,
+  signals: readonly AbortSignal[],
+): Promise<void> {
   return new Promise((resolve, reject) => {
+    const aborted = firstAbortReason(signals);
+    if (aborted) {
+      reject(aborted.reason);
+      return;
+    }
     const cleanup = () => {
       clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
+      removeAbort();
       window.removeEventListener("online", resume);
     };
     const resume = () => {
       cleanup();
       resolve();
     };
-    const abort = () => {
-      cleanup();
-      reject(signal.reason);
-    };
     const timer = setTimeout(
       resume,
       navigator.onLine === false ? 10_000 : delay,
     );
-    signal.addEventListener("abort", abort, { once: true });
+    const removeAbort = listenForAbort(signals, (reason) => {
+      cleanup();
+      reject(reason);
+    });
     window.addEventListener("online", resume, { once: true });
-    if (signal.aborted) abort();
   });
 }
 
+/** PUTs the file with bounded retries while the transfer and sign-in scope are active. */
 export async function putBrowserFile(
   file: File,
   uploadUrl: string,
   signal: AbortSignal,
+  scopeSignal?: AbortSignal,
 ): Promise<void> {
+  const stopSignals = scopeSignal ? [signal, scopeSignal] : [signal];
   // Allow slower large transfers while keeping every attempt finite.
   const timeoutMs = Math.min(
     75 * 60_000,
@@ -61,9 +184,11 @@ export async function putBrowserFile(
   );
   for (let attempt = 0; attempt < 3; attempt += 1) {
     signal.throwIfAborted();
+    scopeSignal?.throwIfAborted();
     const request = new AbortController();
-    const abort = () => request.abort(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
+    const removeAbort = listenForAbort(stopSignals, (reason) =>
+      request.abort(reason),
+    );
     const timeout = setTimeout(() => request.abort(), timeoutMs);
     try {
       const response = await fetch(uploadUrl, {
@@ -83,6 +208,7 @@ export async function putBrowserFile(
       );
     } catch (error) {
       signal.throwIfAborted();
+      scopeSignal?.throwIfAborted();
       const failure =
         error instanceof UploadTransportError
           ? error
@@ -93,8 +219,8 @@ export async function putBrowserFile(
       if (!failure.retryable || attempt === 2) throw failure;
     } finally {
       clearTimeout(timeout);
-      signal.removeEventListener("abort", abort);
+      removeAbort();
     }
-    await waitForRetry(1_000 * (attempt + 1), signal);
+    await waitForRetry(1_000 * (attempt + 1), stopSignals);
   }
 }

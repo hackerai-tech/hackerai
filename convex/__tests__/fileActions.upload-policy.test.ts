@@ -21,6 +21,7 @@ jest.mock("convex/values", () => ({
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
+    null: jest.fn(() => "null"),
   },
   ConvexError: class ConvexError extends Error {
     data: unknown;
@@ -136,6 +137,35 @@ describe("fileActions saveFile upload policy", () => {
       runQuery: jest.fn().mockResolvedValue({ user_id: "user123" }),
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
+
+  it("rejects metadata finalization from a different signed organization before side effects", async () => {
+    const { saveFile } = await import("../fileActions");
+    const ctx = makeCtx();
+    ctx.auth.getUserIdentity.mockResolvedValueOnce({
+      subject: "user123",
+      org_id: "org_current",
+      entitlements: ["pro-plan"],
+    });
+
+    await expect(
+      saveFile.handler(ctx, {
+        s3Key: "users/user123/test.txt",
+        name: "test.txt",
+        mediaType: "text/plain",
+        size: 20,
+        mode: "agent",
+        expectedUploadScope: {
+          userId: "user123",
+          organizationId: "org_original",
+        },
+      }),
+    ).rejects.toMatchObject({ data: { code: "UPLOAD_CONTEXT_CHANGED" } });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
 
   beforeEach(async () => {
     jest.clearAllMocks();

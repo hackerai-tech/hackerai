@@ -10,6 +10,10 @@ import {
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import {
+  assertExpectedUploadScope,
+  expectedUploadScopeValidator,
+} from "./lib/fileUploadScope";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
@@ -116,6 +120,7 @@ export const generateS3UploadUrlAction = action({
     size: v.optional(v.number()),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     storageRegion: v.optional(s3StorageRegionValidator),
+    expectedUploadScope: expectedUploadScopeValidator,
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -136,6 +141,8 @@ export const generateS3UploadUrlAction = action({
         "Unauthenticated: User must be logged in to upload files",
       );
     }
+
+    assertExpectedUploadScope(identity, args.expectedUploadScope);
 
     // Validate inputs
     if (!args.fileName || args.fileName.trim().length === 0) {
