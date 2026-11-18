@@ -1042,6 +1042,19 @@ export function readDesktopStreamFenceDiagnostic(
       STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
     );
     if (version !== 1) return taskkill;
+    // The report joins only the taskkill snapshot validated above: a group
+    // that changed, vanished or became an accessor meanwhile keeps only that
+    // earlier snapshot.
+    const [taskkillVersion, outcome, code] = ownDataValuesOrUndefined(source, [
+      ...STREAM_FENCE_TASKKILL_PROPERTIES,
+      STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
+    ]);
+    if (
+      taskkillVersion !== 1 ||
+      outcome !== taskkill.desktop_stream_fence_windows_taskkill_outcome ||
+      code !== exitCode
+    )
+      return taskkill;
     return (
       desktopStreamFenceDiagnostic(
         rejection,

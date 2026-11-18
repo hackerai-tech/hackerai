@@ -4067,6 +4067,8 @@ describe("invocation rejection message class", () => {
               });
               expect(enriched).toMatchObject(expected);
               expect(fenceKeys(enriched)).toHaveLength(9);
+              expect(final!.properties).not.toHaveProperty("pid");
+              expect(enriched).not.toHaveProperty("pid");
               expect(JSON.stringify([final, enriched])).not.toContain(
                 "PRIVATE",
               );

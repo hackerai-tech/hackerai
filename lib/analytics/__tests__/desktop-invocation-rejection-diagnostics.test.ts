@@ -1946,6 +1946,46 @@ describe("stream fence origin", () => {
           }
         });
 
+        it("joins the report only to the taskkill snapshot it validated", () => {
+          const validated = { ...stopGroup, ...cleanupGroup, ...code(128) };
+          const root = rootPair("requested_pid_not_found");
+          // While the report is read, the bag's code changes or vanishes.
+          const changing = (
+            change?: (target: Record<string, unknown>) => void,
+          ) =>
+            new Proxy<Record<string, unknown>>(
+              { ...validated, ...root },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (
+                    key === "desktop_stream_fence_windows_taskkill_root_report"
+                  )
+                    change?.(target);
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            );
+          const read = (source: unknown) =>
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            );
+          // A stable snapshot keeps the positive report.
+          expect(read(changing())).toEqual({ ...validated, ...root });
+          for (const change of [
+            (target: Record<string, unknown>) => {
+              target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+            },
+            (target: Record<string, unknown>) => {
+              delete target.desktop_stream_fence_windows_taskkill_exit_code;
+            },
+          ])
+            // A mixed snapshot keeps only the earlier validated code.
+            expect(read(changing(change))).toEqual(validated);
+        });
+
         it("drops only an invalid or hostile root report pair", () => {
           const kept = { ...stopGroup, ...cleanupGroup, ...code(255) };
           let gets = 0;
