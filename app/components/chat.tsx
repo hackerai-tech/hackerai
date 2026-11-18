@@ -121,7 +121,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
@@ -136,7 +136,7 @@ import {
 } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
-import { finalizeNewChatRoute } from "./chat-route";
+import { finalizeNewChatRoute, getRouteChatIdFromPathname } from "./chat-route";
 import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
 import { useChatPerformance } from "@/app/hooks/useChatPerformance";
 import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
@@ -566,7 +566,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
-  const routeChatId = params?.id as string | undefined;
+  const pathname = usePathname();
+  // The URL owns the displayed chat. Back/Forward can restore the home-page
+  // tree (no dynamic params) at a /c/<id> URL saved by finalizeNewChatRoute.
+  const routeChatId =
+    (pathname
+      ? getRouteChatIdFromPathname(pathname)
+      : (params?.id as string | undefined)) ?? undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
   const computerSidebarOverlay = useComputerSidebarOverlay();
@@ -769,6 +775,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
+  // Committed before the route sync below so a new chat started while the old
+  // saved URL is still visible is not mistaken for a route change.
+  const committedChatIdRef = useCommittedRef(chatId);
+  // Only chats adopted from the URL may resume a server stream. A draft that
+  // gains its saved URL already owns its in-flight request.
+  const [routeAdoptedChatId, setRouteAdoptedChatId] = useState<
+    string | undefined
+  >(routeChatId);
+  const lastSyncedRouteChatIdRef = useRef<string | undefined | null>(null);
 
   useEffect(() => {
     clearAgentApprovalSession();
@@ -876,22 +891,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
-
-  // Sync local chat state from URL (single source of truth)
-  useLayoutEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      resetSandboxPreference();
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -1947,6 +1946,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [clearDataStream, setIsAutoResuming],
   );
+
+  useLayoutEffect(() => {
+    if (lastSyncedRouteChatIdRef.current === routeChatId) return;
+    const isInitialSync = lastSyncedRouteChatIdRef.current === null;
+    lastSyncedRouteChatIdRef.current = routeChatId;
+    // The current draft gained its saved URL. Keep its stream and composer.
+    if (!isInitialSync && routeChatId === committedChatIdRef.current) return;
+
+    const nextChatId = routeChatId ?? uuidv4();
+    // Back/Forward can switch chats within the same mounted home page.
+    if (!isInitialSync && activeChatIdRef.current !== nextChatId) {
+      stopActiveBrowserStream(nextChatId);
+    }
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (!routeChatId) resetSandboxPreference();
+    wasNewChatRef.current = !routeChatId;
+    setChatId(nextChatId);
+    setIsExistingChat(!!routeChatId);
+    setRouteAdoptedChatId(routeChatId);
+  }, [
+    routeChatId,
+    committedChatIdRef,
+    resetSandboxPreference,
+    setStreamedTitle,
+    stopActiveBrowserStream,
+  ]);
 
   useEffect(() => {
     setChatNavigationHandler(stopActiveBrowserStream);
@@ -3029,7 +3055,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
-        autoResume={autoResume}
+        autoResume={autoResume || routeAdoptedChatId === chatId}
         serverMessages={serverMessages}
         resumeStream={resumeStream}
         setMessages={setMessages}
