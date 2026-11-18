@@ -154,6 +154,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
+    getChatNavigationRevision,
     optimisticChatId,
     setOptimisticChatId,
   } = useGlobalState();
@@ -293,6 +294,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleDeleteConfirm = async () => {
     if (isDeleting) return;
     setIsDeleting(true);
+    // Deletion can outlive this row and the route. A chat navigation started
+    // meanwhile advances this revision before its route commits.
+    const navigationRevision = getChatNavigationRevision();
 
     try {
       await confirmDeletion(
@@ -311,8 +315,13 @@ const ChatItem: React.FC<ChatItemProps> = ({
       // Remove draft from localStorage immediately after successful deletion
       removeDraft(id);
 
-      // If we're deleting the currently active chat, navigate to home
-      if (isCurrentlyActive) {
+      // Return home only if the deleted chat still owns navigation: it was
+      // active, the live route still shows it, and no newer navigation began.
+      if (
+        isCurrentlyActive &&
+        getRouteChatIdFromPathname(window.location.pathname) === id &&
+        getChatNavigationRevision() === navigationRevision
+      ) {
         initializeNewChat();
         router.push("/");
       }

@@ -66,7 +66,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const { user } = useAuth();
   const router = useRouter();
   const convex = useConvex();
-  const { setChatSidebarOpen, closeSidebar } = useGlobalStateActions();
+  const { setChatSidebarOpen, closeSidebar, markChatNavigationStarted } =
+    useGlobalStateActions();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -311,6 +312,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
       setChatSidebarOpen(false);
     }
 
+    markChatNavigationStarted();
     router.push(`/c/${chatId}`);
     onClose();
   };
