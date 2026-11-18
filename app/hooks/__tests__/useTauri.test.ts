@@ -211,6 +211,20 @@ describe("local attachment feedback after the caller's scope ends", () => {
     expect(mockDialogOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores a legacy picker failure after the open selection ends", async () => {
+    const scope = new AbortController();
+    mockInvoke.mockRejectedValue(new Error("command not registered"));
+    mockDialogOpen.mockImplementationOnce(async () => {
+      scope.abort();
+      throw new Error("legacy picker failed");
+    });
+
+    await expect(pickLocalFiles(scope.signal)).resolves.toEqual([]);
+    expect(scope.signal.aborted).toBe(true);
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
   it("still writes pasted text but reports failure only for the current scope", async () => {
     const stale = new AbortController();
     failAfterAbort(stale);
