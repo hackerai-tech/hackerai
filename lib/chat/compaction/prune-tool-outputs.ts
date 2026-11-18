@@ -295,21 +295,35 @@ const isCompletedToolPart = (part: ToolPart): boolean =>
   (part.state === "output-available" || part.state === "output-error") &&
   part.output != null;
 
+const splitsPairAt = (value: string, offset: number): boolean =>
+  (value.codePointAt(offset - 1) ?? 0) > 0xffff;
+
+// Move an edge inward if retaining it would split a UTF-16 surrogate pair.
+const sliceStorageText = (
+  value: string,
+  start: number,
+  end = value.length,
+): string => {
+  const safeStart = splitsPairAt(value, start) ? start + 1 : start;
+  const safeEnd = splitsPairAt(value, end) ? end - 1 : end;
+  return value.slice(safeStart, safeEnd);
+};
+
 const truncateStorageString = (
   value: string,
   maxLength = STORAGE_TOOL_INPUT_STRING_LIMIT,
 ): string => {
   if (value.length <= maxLength) return value;
   if (maxLength <= STORAGE_COMPACTED_STRING_SUFFIX.length) {
-    return value.slice(0, maxLength);
+    return sliceStorageText(value, 0, maxLength);
   }
 
   const contentBudget = maxLength - STORAGE_COMPACTED_STRING_SUFFIX.length;
   const headBudget = Math.ceil(contentBudget * 0.65);
   const tailBudget = contentBudget - headBudget;
 
-  return `${value.slice(0, headBudget)}${STORAGE_COMPACTED_STRING_SUFFIX}${
-    tailBudget > 0 ? value.slice(-tailBudget) : ""
+  return `${sliceStorageText(value, 0, headBudget)}${STORAGE_COMPACTED_STRING_SUFFIX}${
+    tailBudget > 0 ? sliceStorageText(value, value.length - tailBudget) : ""
   }`;
 };
 
@@ -626,7 +640,7 @@ const compactReasoningParts = (
         text: `${STORAGE_COMPACTED_REASONING_PREFIX.slice(
           0,
           prefixBudget,
-        )}${tailBudget > 0 ? text.slice(-tailBudget) : ""}`,
+        )}${tailBudget > 0 ? sliceStorageText(text, text.length - tailBudget) : ""}`,
       };
     })
     .filter((part): part is UIMessage["parts"][number] => part !== null)

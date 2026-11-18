@@ -1065,6 +1065,53 @@ describe("compactMessageForStorage", () => {
     );
   });
 
+  it("keeps protected note excerpts well-formed at both storage cuts", () => {
+    const head = "a".repeat(315);
+    const tail = "z".repeat(168);
+    const notes = Array.from({ length: 30 }, (_, index) => ({
+      note_id: `note-${index}`,
+      title: `Note ${index}`,
+      content: `${head}🙂${"middle".repeat(5_000)}🙂${tail}`,
+    }));
+    const message = makeAssistantMessage([
+      makeToolPart("list_notes", {
+        success: true,
+        notes,
+        total_count: notes.length,
+      }),
+    ]);
+
+    const result = compactMessageForStorage(message);
+    const part = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(850 * 1024);
+    expect(part.output.notes[0].content).toBe(
+      `${head}... [truncated for storage]${tail}`,
+    );
+  });
+
+  it("keeps the saved reasoning tail from starting with half a character", () => {
+    const prefix = "[Earlier reasoning compacted for storage]\n\n";
+    const tail = "z".repeat(8_000 - prefix.length - 1);
+    const message = makeAssistantMessage([
+      {
+        type: "reasoning",
+        text: `${"x".repeat(16_000)}🙂${tail}`,
+        state: "done",
+      },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 12_000,
+    });
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(12_000);
+    expect(result.message.parts).toEqual([
+      { type: "reasoning", text: prefix + tail, state: "done" },
+    ]);
+  });
+
   it("enforces the byte cap for a single oversized assistant text part", () => {
     const message = makeAssistantMessage([
       { type: "text", text: "analysis ".repeat(50_000) },
