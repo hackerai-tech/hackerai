@@ -977,6 +977,60 @@ describe("browser attachment recovery", () => {
     expect(deleteFile).not.toHaveBeenCalled();
   });
 
+  it("treats a late rejection after an account change as an interruption", async () => {
+    deferReservations();
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("report.txt")]),
+      );
+    });
+
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await act(async () =>
+      reservations[0].reject(
+        new ConvexError({
+          code: "FILE_UPLOAD_RATE_LIMIT",
+          message: "Try again.",
+        }),
+      ),
+    );
+
+    expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("clears the old spinner when an edit of an uploading pasted attachment is interrupted", async () => {
+    deferReservations();
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    const original = "x".repeat(5000);
+    await act(async () => {
+      await result.current.picker.handlePastedTextAttachment(original);
+    });
+    expect(result.current.uploadedFiles[0].uploading).toBe(true);
+
+    await act(async () => {
+      result.current.preview.handleUpdateGeneratedTextFile(0, "edited text");
+    });
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await tick();
+    expect(result.current.uploadedFiles[0]).toMatchObject({
+      ...INTERRUPTED,
+      generatedTextAttachment: { content: original },
+    });
+    await act(async () => reservations[0].resolve());
+    expect(generateS3UploadUrlAction).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry an old-scope reservation after the account changes", async () => {
     (global.fetch as jest.Mock).mockRejectedValue(new TypeError("offline"));
     const { result, rerender } = renderHook(() => useHarness(), {

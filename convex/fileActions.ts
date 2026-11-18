@@ -27,6 +27,10 @@ import {
   getStoredS3Location,
 } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
+import {
+  assertExpectedUploadScope,
+  expectedUploadScopeValidator,
+} from "./lib/fileUploadScope";
 import type {
   FileItemChunk,
   SupportedFileType,
@@ -669,6 +673,7 @@ export const saveFile = action({
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
     skipTokenValidation: v.optional(v.boolean()),
+    expectedUploadScope: expectedUploadScopeValidator,
     mode: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
@@ -710,6 +715,7 @@ export const saveFile = action({
           message: "Unauthorized: User not authenticated",
         });
       }
+      assertExpectedUploadScope(user, args.expectedUploadScope);
       actingUserId = user.subject;
       entitlements = parseEntitlements(user.entitlements);
 

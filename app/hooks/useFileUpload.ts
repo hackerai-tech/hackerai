@@ -508,6 +508,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           mediaType: file.type,
           size: file.size,
           mode: uploadMode,
+          ...(expectedUploadScope ? { expectedUploadScope } : {}),
         });
         assertUploadScope();
 
@@ -578,6 +579,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
         // The account or organization changed, here or as signed on the server.
         if (
+          scopeSignal?.aborted ||
           error instanceof UploadScopeChangedError ||
           getConvexErrorCode(error) === "UPLOAD_CONTEXT_CHANGED"
         ) {
@@ -588,6 +590,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             previousUploadedFile
               ? {
                   ...previousUploadedFile,
+                  uploading: false,
+                  retryable: false,
                   error: UPLOAD_INTERRUPTED_STATE.error,
                 }
               : UPLOAD_INTERRUPTED_STATE,
