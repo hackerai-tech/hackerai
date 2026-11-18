@@ -30,6 +30,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
+use crate::stream_utf8::Utf8Stream;
 use crate::update_safety::UpdateGate;
 
 /// Bounds a new document's wait for the previous document's cleanup.
@@ -408,6 +409,8 @@ async fn stream_until_exit(
     let mut write_input = Box::pin(crate::command_stdin::write(child.stdin.take(), input));
     let mut stdout_buf = [0u8; 4096];
     let mut stderr_buf = [0u8; 4096];
+    let mut stdout_text = Utf8Stream::default();
+    let mut stderr_text = Utf8Stream::default();
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut input_done = false;
@@ -420,24 +423,34 @@ async fn stream_until_exit(
                     return Ended::ProcessError(e);
                 }
             }
-            result = stdout.read(&mut stdout_buf), if !stdout_done => match result {
-                Ok(0) | Err(_) => stdout_done = true,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&stdout_buf[..n]).to_string();
+            result = stdout.read(&mut stdout_buf), if !stdout_done => {
+                let data = match result {
+                    Ok(0) | Err(_) => {
+                        stdout_done = true;
+                        stdout_text.finish()
+                    }
+                    Ok(n) => stdout_text.decode(&stdout_buf[..n]),
+                };
+                if let Some(data) = data {
                     if on_event.send(StreamEvent::Stdout { data }).is_err() {
                         return Ended::DeliveryFailed;
                     }
                 }
-            },
-            result = stderr.read(&mut stderr_buf), if !stderr_done => match result {
-                Ok(0) | Err(_) => stderr_done = true,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&stderr_buf[..n]).to_string();
+            }
+            result = stderr.read(&mut stderr_buf), if !stderr_done => {
+                let data = match result {
+                    Ok(0) | Err(_) => {
+                        stderr_done = true;
+                        stderr_text.finish()
+                    }
+                    Ok(n) => stderr_text.decode(&stderr_buf[..n]),
+                };
+                if let Some(data) = data {
                     if on_event.send(StreamEvent::Stderr { data }).is_err() {
                         return Ended::DeliveryFailed;
                     }
                 }
-            },
+            }
         }
     }
     match child.wait().await {
@@ -919,6 +932,75 @@ mod unix_tests {
             "an unrelated process with the stale PID was signaled"
         );
         unrelated.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_preserves_utf8_across_reads() {
+        let scratch = Scratch::new();
+        let lifecycle = Arc::new(StreamLifecycle::default());
+        let (stdout_gate, stderr_gate) = (scratch.path("stdout-gate"), scratch.path("stderr-gate"));
+        // The shell writes the first two bytes of a euro sign, then blocks until
+        // the test has received the printable prefix, so the continuation byte
+        // can only arrive in a later read. Stderr completes its own scalar while
+        // stdout's is pending, and ends on a truncated scalar at EOF.
+        let command = format!(
+            "printf 'out:\\342\\202'; while [ ! -f {stdout_gate} ]; do sleep 0.02; done; \
+             printf 'err:\\342\\202\\254\\n' >&2; \
+             while [ ! -f {stderr_gate} ]; do sleep 0.02; done; \
+             printf '\\254\\n'; printf 'tail:\\342\\202' >&2",
+            stdout_gate = quoted(&stdout_gate),
+            stderr_gate = quoted(&stderr_gate),
+        );
+        let mut cmd = platform::build_command(&command, None, None);
+        let owned = started(lifecycle.launch(lifecycle.admit(), "utf8", &mut cmd).await);
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let _ = sender.send(serde_json::from_str::<serde_json::Value>(&json).unwrap());
+            }
+            Ok(())
+        });
+        let owner =
+            tokio::spawn(async move { run(owned, None, Duration::from_secs(30), &channel).await });
+
+        let (mut stdout, mut stderr) = (String::new(), String::new());
+        let (mut stdout_released, mut stderr_released) = (false, false);
+        let exit = loop {
+            let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await
+                .expect("no stream event arrived")
+                .expect("the channel closed before the exit event");
+            let target = match event["type"].as_str() {
+                Some("stdout") => &mut stdout,
+                Some("stderr") => &mut stderr,
+                _ => break event,
+            };
+            let data = event["data"].as_str().unwrap();
+            assert!(!data.is_empty(), "empty data event: {event}");
+            target.push_str(data);
+            if !stdout_released && stdout.contains("out:") {
+                stdout_released = true;
+                std::fs::write(&stdout_gate, b"go").unwrap();
+            }
+            if stdout_released
+                && !stderr_released
+                && stderr
+                    .split_once("err:")
+                    .is_some_and(|(_, line)| line.contains('\n'))
+            {
+                stderr_released = true;
+                std::fs::write(&stderr_gate, b"go").unwrap();
+            }
+        };
+        assert_eq!(exit, serde_json::json!({ "type": "exit", "exitCode": 0 }));
+        assert!(stdout.ends_with("out:€\n"), "stdout: {stdout:?}");
+        // The truncated stderr scalar is reported once, before the exit event.
+        assert!(
+            stderr.ends_with("err:€\ntail:\u{FFFD}"),
+            "stderr: {stderr:?}"
+        );
+        owner.await.unwrap();
+        assert!(events.recv().await.is_none(), "an event followed exit");
     }
 
     #[tokio::test]

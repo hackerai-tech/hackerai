@@ -13,6 +13,7 @@ mod lifecycle_diagnostics;
 mod platform;
 mod pty;
 mod stream_lifecycle;
+mod stream_utf8;
 mod update_safety;
 #[cfg(test)]
 mod update_safety_tests;
