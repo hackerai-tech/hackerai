@@ -6,6 +6,7 @@
  */
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
+import { BrowserHandoffAbandonedError } from "@/lib/chat/manual-agent-resume";
 import type { ModelMessage, UIMessage } from "ai";
 
 const mockStreamText = jest.fn();
@@ -348,6 +349,77 @@ test("an unwatched (Cloud or Ask) run completes without any host wait", async ()
   await run.finish();
   expect(run.state.streamFinishReason).toBe("stop");
   expect(mockCloseAll).toHaveBeenCalledWith("chat");
+});
+
+describe("browser handoff completion gate", () => {
+  /** Holds like the owned browser gate until the worker's stop aborts it. */
+  const heldGate = (signal?: AbortSignal) =>
+    new Promise<boolean>((_, reject) =>
+      signal?.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      }),
+    );
+
+  test("an abandonment during the gate settles usage and saves the manual-resume reason", async () => {
+    const setCost = jest.fn();
+    const run = await finishableRun(undefined, {
+      waitForBrowserHandoff: heldGate,
+      usageTracker: {
+        hasUsage: true,
+        setAuthoritativeModelCostForStep: setCost,
+      },
+    });
+    const finished = settled(run.finish("stop"));
+    await flush();
+    expect(finished.done).toBe(false);
+    expect(setCost).not.toHaveBeenCalled();
+    // As BrowserSessions' committed-abandonment callback does in the worker.
+    run.stop.abort(
+      "browser_handoff_abandoned",
+      new BrowserHandoffAbandonedError(),
+    );
+    await flush();
+    expect(finished).toEqual({ done: true, error: undefined });
+    expect(run.state.streamFinishReason).toBe("browser-handoff-abandoned");
+    expect(setCost).toHaveBeenCalled();
+    expect(mockCloseAll).toHaveBeenCalledWith("chat");
+  });
+
+  test("a user Stop during the gate still propagates without the abandonment reason", async () => {
+    const run = await finishableRun(undefined, {
+      waitForBrowserHandoff: heldGate,
+    });
+    const finished = settled(run.finish("stop"));
+    await flush();
+    run.stop.controller.abort(new Error("Stopped by user"));
+    await flush();
+    expect(finished.done).toBe(true);
+    expect(finished.error).toEqual(new Error("Stopped by user"));
+    expect(run.state.streamFinishReason).toBeUndefined();
+  });
+
+  test.each([
+    ["the abandonment", () => new BrowserHandoffAbandonedError(), true],
+    ["a user Stop", () => new Error("Stopped by user"), false],
+  ])(
+    "labels a stream aborted by %s only from its first stop",
+    async (_name, reason, abandoned) => {
+      const run = await finishableRun(undefined);
+      run.stop.controller.abort(reason());
+      // A later abandonment callback cannot replace the first stop.
+      run.stop.abort(
+        "browser_handoff_abandoned",
+        new BrowserHandoffAbandonedError(),
+      );
+      const stream = (await mockStreamText.mock.results[0].value) as {
+        onAbort: (event: { steps: unknown[] }) => Promise<void>;
+      };
+      await stream.onAbort({ steps: [] });
+      expect(run.state.streamFinishReason).toBe(
+        abandoned ? "browser-handoff-abandoned" : undefined,
+      );
+    },
+  );
 });
 
 test("an unexpected confirmation failure is never turned into success", async () => {

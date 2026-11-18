@@ -109,7 +109,16 @@ function renderNotice(
 }
 
 describe("FinishReasonNotice", () => {
-  it("waits for a manual Resume after the selected computer reconnects", async () => {
+  it.each([
+    {
+      finishReason: "local-connection-lost",
+      reason: "The connection to your computer was lost, so this run stopped.",
+    },
+    {
+      finishReason: "browser-handoff-abandoned",
+      reason: "The Agent paused while waiting for the browser handoff.",
+    },
+  ])("waits for one manual Resume after $finishReason", async (stop) => {
     let finishResume!: () => void;
     const onContinue = jest.fn(
       () =>
@@ -118,7 +127,7 @@ describe("FinishReasonNotice", () => {
         }),
     );
     const props = {
-      finishReason: "local-connection-lost",
+      finishReason: stop.finishReason,
       mode: "agent" as const,
       onContinue,
     };
@@ -126,6 +135,7 @@ describe("FinishReasonNotice", () => {
       ...props,
       continueDisabledReason: "Reconnect the selected computer.",
     });
+    expect(screen.getByRole("status")).toHaveTextContent(stop.reason);
     expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Resume" }),
@@ -157,6 +167,18 @@ describe("FinishReasonNotice", () => {
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains an abandoned browser handoff without a transcript Resume when the Goal owns it", () => {
+    renderNotice(
+      { finishReason: "browser-handoff-abandoned", mode: "agent" },
+      { isAutoContinuing: true },
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saved progress is available. You may need to reopen the browser.",
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("explains a repetition halt without offering to repeat the same work", () => {

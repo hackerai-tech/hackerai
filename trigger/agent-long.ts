@@ -42,6 +42,10 @@ import {
   LocalConnectionLostError,
   LOCAL_CONNECTION_LOST_FINISH_REASON,
 } from "@/lib/chat/local-connection-stop";
+import {
+  BrowserHandoffAbandonedError,
+  manualAgentResumeFinishReason,
+} from "@/lib/chat/manual-agent-resume";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
@@ -2084,6 +2088,10 @@ export const agentLongTask = task({
     let stopLocalConnectionWatch: (() => void) | undefined;
     const localConnectionLost = () =>
       userStopSignal.signal.reason instanceof LocalConnectionLostError;
+    // A lost host or an abandoned browser handoff won the first stop: save
+    // progress normally and continue only after an explicit user resume.
+    const manualResumeFinishReason = () =>
+      manualAgentResumeFinishReason(userStopSignal.signal.reason);
     const forwardTriggerAbort = () =>
       stopSignal.abort("trigger_platform", triggerSignal.reason);
     triggerSignal.addEventListener("abort", forwardTriggerAbort, {
@@ -3262,6 +3270,11 @@ export const agentLongTask = task({
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>
                   stopSignal.abort("browser_ownership_lost"),
+                onBrowserHandoffAbandoned: () =>
+                  stopSignal.abort(
+                    "browser_handoff_abandoned",
+                    new BrowserHandoffAbandonedError(),
+                  ),
                 additionalTools: (toolContext) => ({
                   wait_for_user: createWaitForUserTool(toolContext, {
                     signal: userStopSignal.signal,
@@ -4574,9 +4587,10 @@ export const agentLongTask = task({
               );
               goalFinalMessageId = retryMessageId;
               stopLocalConnectionWatch?.();
-              if (localConnectionLost()) {
+              const manualResume = manualResumeFinishReason();
+              if (manualResume) {
                 retryAborted = true;
-                state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+                state.streamFinishReason = manualResume;
               }
               // A failed local safety read already ended this leg; it is
               // neither a provider empty answer nor a finished continuation.
@@ -4637,6 +4651,8 @@ export const agentLongTask = task({
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
               await deductAccumulatedUsage();
+              // Billing settled above; the manual-resume boundary still wins.
+              if (manualResume) state.streamFinishReason = manualResume;
               const outcome = retryAborted
                 ? "aborted"
                 : isTerminalProviderStreamError(state)
@@ -4976,10 +4992,10 @@ export const agentLongTask = task({
                       finishedMessages,
                       goalRunMessageIds,
                     );
-                    if (localConnectionLost()) {
+                    const primaryManualResume = manualResumeFinishReason();
+                    if (primaryManualResume) {
                       isAborted = true;
-                      state.streamFinishReason =
-                        LOCAL_CONNECTION_LOST_FINISH_REASON;
+                      state.streamFinishReason = primaryManualResume;
                     }
                     let retryScheduled = false;
                     try {
@@ -5936,10 +5952,10 @@ export const agentLongTask = task({
                       // held terminal chunks before any trailing writes.
                       primaryProviderErrors.release();
                       stopLocalConnectionWatch?.();
-                      if (localConnectionLost()) {
+                      const finalManualResume = manualResumeFinishReason();
+                      if (finalManualResume) {
                         isAborted = true;
-                        state.streamFinishReason =
-                          LOCAL_CONNECTION_LOST_FINISH_REASON;
+                        state.streamFinishReason = finalManualResume;
                       }
                       // A failed local safety read is the terminal error; a
                       // stale "stop" must not replace it with a provider empty answer.
@@ -5990,6 +6006,10 @@ export const agentLongTask = task({
                       // budget-exhausted; do it before analytics and
                       // persistence consume state.
                       await deductAccumulatedUsage();
+                      // Billing settled above; the manual-resume boundary
+                      // still wins over a concurrent usage-limit reason.
+                      if (finalManualResume)
+                        state.streamFinishReason = finalManualResume;
                       const outcome = isAborted
                         ? "aborted"
                         : isTerminalProviderStreamError(state)
@@ -6418,7 +6438,7 @@ export const agentLongTask = task({
       }
       memoryTelemetry.checkpoint({ phase: "stream_finished" });
 
-      const terminalStreamError = localConnectionLost()
+      const terminalStreamError = manualResumeFinishReason()
         ? undefined
         : (streamError ??
           getTerminalProviderStreamError(
@@ -6663,8 +6683,9 @@ export const agentLongTask = task({
           finishReason:
             terminalAgentState?.streamFinishReason ?? goalFinishReason,
           judgment: goalJudgment,
+          // A manual-resume stop pauses the Goal even if billing also stopped it.
           canceled:
-            localConnectionLost() ||
+            !!manualResumeFinishReason() ||
             triggerSignal.aborted ||
             (userStopSignal.signal.aborted &&
               !terminalAgentState?.stoppedDueToElapsedTimeout &&

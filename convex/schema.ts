@@ -449,6 +449,8 @@ export default defineSchema({
     input_expires_at: v.optional(v.number()),
     exit_note_ids: v.optional(v.array(v.string())),
     exposed_at: v.optional(v.number()),
+    // Receipt that the owning parent run stopped for an abandoned handoff.
+    abandoned_at: v.optional(v.number()),
     expires_at: v.number(),
     updated_at: v.number(),
   })

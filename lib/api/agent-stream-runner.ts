@@ -33,6 +33,10 @@ import {
   LocalConnectionLostError,
   LOCAL_CONNECTION_LOST_FINISH_REASON,
 } from "@/lib/chat/local-connection-stop";
+import {
+  BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
+  BrowserHandoffAbandonedError,
+} from "@/lib/chat/manual-agent-resume";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
@@ -3467,7 +3471,18 @@ export async function createAgentStream(
       // A final response can arrive while the user is taking control. Hold normal
       // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
-      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
+      const handoffAbandoned = () =>
+        ctx.abortController.signal.reason instanceof
+        BrowserHandoffAbandonedError;
+      if (!abortSignal.aborted) {
+        try {
+          await ctx.waitForBrowserHandoff?.(abortSignal);
+        } catch (error) {
+          // An abandoned handoff is a resumable stop: settle this response's
+          // usage below. Any other interruption still propagates unchanged.
+          if (!handoffAbandoned()) throw error;
+        }
+      }
       // Close terminals first: a confirmed exit is a known outcome, so an
       // open healthy session never reads as uncertain work below.
       await ptySessionManager
@@ -3522,6 +3537,8 @@ export async function createAgentStream(
         ctx.abortController.signal.reason instanceof LocalConnectionLostError
       ) {
         state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      } else if (handoffAbandoned()) {
+        state.streamFinishReason = BROWSER_HANDOFF_ABANDONED_FINISH_REASON;
       } else if (hardReason !== null) {
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
@@ -3775,6 +3792,11 @@ export async function createAgentStream(
         ctx.abortController.signal.reason instanceof LocalConnectionLostError
       ) {
         state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      } else if (
+        ctx.abortController.signal.reason instanceof
+        BrowserHandoffAbandonedError
+      ) {
+        state.streamFinishReason = BROWSER_HANDOFF_ABANDONED_FINISH_REASON;
       }
       recordAssistantContentLoopAbortState(steps);
       await refundProviderContentBlockedIfSettled({

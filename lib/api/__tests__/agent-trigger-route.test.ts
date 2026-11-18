@@ -514,6 +514,31 @@ describe("web request correlation at Agent dispatch", () => {
     },
   );
 
+  it.each([
+    ["a stale automatic continuation", { isAutomaticContinuation: true }, 400],
+    ["the user's explicit Resume", {}, 200],
+  ] as const)(
+    "after an abandoned browser handoff admits only %s",
+    async (_operation, marker, status) => {
+      getChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        finish_reason: "browser-handoff-abandoned",
+        update_time: 1,
+      });
+      const response = await start("/api/agent", "full_access", requestId, {
+        isAutoContinue: true,
+        ...marker,
+      });
+      expect(response.status).toBe(status);
+      const started = status === 200 ? 1 : 0;
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledTimes(
+        started,
+      );
+      expect(mockTriggerTask).toHaveBeenCalledTimes(started);
+    },
+  );
+
   it.each(dispatchPaths)(
     "correlates %s %s without changing retry identity or payload",
     async (endpoint, mode) => {

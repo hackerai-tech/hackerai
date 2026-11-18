@@ -1,4 +1,5 @@
 import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { BrowserHandoffAbandonedError } from "@/lib/chat/manual-agent-resume";
 import { randomBytes } from "node:crypto";
 import type { ToolSet } from "ai";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
@@ -31,6 +32,14 @@ type BrowserSession = {
 // owner's lifetime. Only states where a human holds the page are kept alive.
 const HANDOFF_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
 const HANDOFF_KEEPALIVE_STATES = new Set(["waiting", "human", "recovery"]);
+
+// The abandonment close is idempotent; retry only it, never browser/tool work.
+const ABANDON_ATTEMPTS = 3;
+const ABANDON_ATTEMPT_TIMEOUT_MS = 10_000;
+// Worker/backend clock skew must not turn a defeated deadline into a hot loop.
+const ABANDON_RECHECK_MS = 5_000;
+
+type AbandonResult = "abandoned" | "not_due" | null | "unknown";
 
 type BrowserPreparationReason =
   "gate_only" | "recognized_browser_command" | "interactive_shell" | "internal";
@@ -78,11 +87,68 @@ export class BrowserSessions {
     state: { calls: 0, succeeded: 0, rejected: 0 },
     notes: { calls: 0, succeeded: 0, rejected: 0 },
   };
+  /** Committed abandonment receipt; every later gate stops the same way. */
+  private abandoned = false;
+  /** The exact row whose close this owner requested; its receipt outranks ownership loss. */
+  private abandonCandidate?: BrowserSession;
+  private abandonment?: Promise<AbandonResult>;
+  private abandonNotBefore = 0;
 
+  /**
+   * `onHandoffAbandoned` opts a parent run into the backend abandonment
+   * deadline. Without it an uncontrolled handoff keeps holding the run.
+   */
   constructor(
     private readonly handoffScope?: BrowserHandoffScope,
     private readonly onOwnershipLost?: () => void,
+    private readonly onHandoffAbandoned?: () => void,
   ) {}
+
+  /**
+   * Compare-and-close the owned handoff after its backend deadline. Waiters
+   * share one bounded request; a lost response is resolved by retrying the
+   * idempotent close, which then returns the committed receipt.
+   */
+  private requestAbandonment(session: BrowserSession): Promise<AbandonResult> {
+    const scope = this.handoffScope;
+    if (!scope) return Promise.resolve(null);
+    if (this.abandonment) return this.abandonment;
+    this.abandonCandidate = session;
+    const request = (async (): Promise<AbandonResult> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await getConvexClient(
+            AbortSignal.timeout(ABANDON_ATTEMPT_TIMEOUT_MS),
+          ).mutation(api.browserHandoffs.abandonForBackend, {
+            serviceKey: scope.serviceKey,
+            userId: scope.userId,
+            sessionId: session.sessionId,
+          });
+        } catch {
+          if (attempt >= ABANDON_ATTEMPTS) return "unknown";
+          await abortableDelay(250 * 2 ** (attempt - 1));
+        }
+      }
+    })();
+    this.abandonment = request;
+    void request.then((result) => {
+      if (result === "abandoned") {
+        this.abandoned = true;
+        return;
+      }
+      if (this.abandonment === request) this.abandonment = undefined;
+      this.abandonNotBefore = Date.now() + ABANDON_RECHECK_MS;
+    });
+    return request;
+  }
+
+  private stopForAbandonment(signal?: AbortSignal): never {
+    this.abandoned = true;
+    // The first stop wins: an earlier user Stop or replacement keeps its reason.
+    this.onHandoffAbandoned?.();
+    signal?.throwIfAborted();
+    throw new BrowserHandoffAbandonedError();
+  }
 
   private async observeRead<T>(
     kind: "state" | "notes",
@@ -193,7 +259,7 @@ export class BrowserSessions {
     sandbox: AnySandbox,
     reason: BrowserPreparationReason = "internal",
   ): Promise<Record<string, string>> {
-    if (this.closed) {
+    if (this.closed || this.abandoned) {
       throw new Error(
         "Browser session ownership has ended. Start a new Agent run.",
       );
@@ -580,6 +646,7 @@ export class BrowserSessions {
     while (true) {
       signal?.throwIfAborted();
       if (this.closed) throw new Error("Browser session ownership has ended.");
+      if (this.abandoned) this.stopForAbandonment(signal);
       if (!this.handoffScope) return waited;
       const scope = this.handoffScope;
       const sessions = [...this.sessions.values()].filter((s) => s.registered);
@@ -608,6 +675,16 @@ export class BrowserSessions {
         return state?.runActive ? [{ session, state }] : [];
       });
       if (states.length > 0 && current.length === 0) {
+        // Our own committed close also ends ownership. A concurrent waiter or a
+        // lost response must not report it as generic ownership loss.
+        if (this.onHandoffAbandoned && this.abandonCandidate) {
+          const receipt = await withCancellation(
+            this.requestAbandonment(this.abandonCandidate),
+            signal,
+          );
+          signal?.throwIfAborted();
+          if (receipt === "abandoned") this.stopForAbandonment(signal);
+        }
         // Fail closed before any action, but let the owning worker settle its
         // already-produced output/usage as cancellation instead of provider error.
         this.onOwnershipLost?.();
@@ -617,6 +694,26 @@ export class BrowserSessions {
       if (current.every(({ state }) => state.state === "agent")) return waited;
       // Expired grants become recovery, which still requires an explicit resume.
       waited = true;
+      // Older backends omit the deadline and keep holding the run. Each poll
+      // compares the backend's deadline only; the close rechecks it atomically.
+      const due =
+        this.onHandoffAbandoned && Date.now() >= this.abandonNotBefore
+          ? current.find(
+              ({ state }) =>
+                state.abandonAfter !== undefined &&
+                state.abandonAfter <= Date.now(),
+            )
+          : undefined;
+      if (due) {
+        const result = await withCancellation(
+          this.requestAbandonment(due.session),
+          signal,
+        );
+        signal?.throwIfAborted();
+        if (result === "abandoned") this.stopForAbandonment(signal);
+        // A controller that committed first keeps its semantics; poll again.
+        continue;
+      }
       await this.keepHandoffBrowsersAlive(
         current.flatMap(({ session, state }) =>
           HANDOFF_KEEPALIVE_STATES.has(state.state) &&

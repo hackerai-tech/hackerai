@@ -1,4 +1,7 @@
-import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../lib/ai/browser-handoff/constants";
+import {
+  BROWSER_HANDOFF_RESUME_GRACE_MS,
+  BROWSER_SESSION_MAX_LIFETIME_MS,
+} from "../lib/ai/browser-handoff/constants";
 import { v } from "convex/values";
 import {
   mutation,
@@ -8,7 +11,10 @@ import {
 } from "./lib/serviceFunctions";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
-import { effectiveBrowserHandoffState } from "./lib/browserHandoffState";
+import {
+  browserHandoffAbandonAfter,
+  effectiveBrowserHandoffState,
+} from "./lib/browserHandoffState";
 import { syncGoalInputTiming } from "./lib/goalInputTiming";
 
 async function syncParentGoalTiming(
@@ -59,6 +65,8 @@ const privateSession = v.object({
   state,
   grantExpiresAt: v.union(v.number(), v.null()),
   controlledSessionName: v.union(v.string(), v.null()),
+  // Parent runs only: when an uncontrolled handoff may be closed as abandoned.
+  abandonAfter: v.optional(v.number()),
   expiresAt: v.number(),
   updatedAt: v.number(),
 });
@@ -264,7 +272,13 @@ export const getForBackend = query({
       args.allowEnded,
     );
     if (!row) return null;
+    // Child runs return their own result lifecycle and never get a deadline.
+    const abandonAfter =
+      row.agent_id === "parent" && row.state !== "closed"
+        ? browserHandoffAbandonAfter(row)
+        : null;
     return {
+      ...(abandonAfter !== null && { abandonAfter }),
       runActive: await currentOwner(ctx, row),
       // Match requestWait's fulfilled-duplicate predicate without reading notes.
       hasCompletedTakeover: !!row.exit_note_ids?.length,
@@ -325,7 +339,10 @@ export const beginTakeoverForBackend = mutation({
       args.grant.length < 32 ||
       (row.input_expires_at ?? 0) > Date.now() ||
       (!["agent", "waiting", "recovery"].includes(row.state) &&
-        !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now()) &&
+        !(
+          row.state === "resuming" &&
+          row.updated_at + BROWSER_HANDOFF_RESUME_GRACE_MS <= Date.now()
+        ) &&
         !(
           ["human", "claiming"].includes(row.state) &&
           (row.grant_expires_at ?? 0) <= Date.now()
@@ -487,7 +504,10 @@ export const beginResumeForBackend = mutation({
     if (
       !row ||
       (!["human", "recovery", "claiming"].includes(row.state) &&
-        !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now())) ||
+        !(
+          row.state === "resuming" &&
+          row.updated_at + BROWSER_HANDOFF_RESUME_GRACE_MS <= Date.now()
+        )) ||
       (row.input_expires_at ?? 0) > Date.now()
     )
       return false;
@@ -575,6 +595,41 @@ export const closeForBackend = mutation({
       await syncParentGoalTiming(ctx, row);
     }
     return null;
+  },
+});
+
+/**
+ * Release the owning parent run from a handoff nobody controls once its
+ * deadline passes. Eligibility is rechecked in this transaction: a takeover,
+ * renewed grant or resume that commits first defeats it, and every later
+ * takeover/resume sees the closed row. The receipt makes a retried or
+ * concurrent request for the same still-owned row return the committed result.
+ */
+export const abandonForBackend = mutation({
+  args: serviceSessionArgs,
+  returns: v.union(v.literal("abandoned"), v.literal("not_due"), v.null()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getSession(ctx, args.sessionId, args.userId, true);
+    if (!row || row.agent_id !== "parent" || !(await ownsActiveRun(ctx, row)))
+      return null;
+    if (row.abandoned_at !== undefined) return "abandoned";
+    const now = Date.now();
+    if (row.state === "closed" || row.expires_at <= now) return null;
+    const deadline = browserHandoffAbandonAfter(row, now);
+    if (deadline === null || deadline > now) return "not_due";
+    await ctx.db.patch(row._id, {
+      state: "closed",
+      grant: undefined,
+      grant_expires_at: undefined,
+      controlled_session_name: undefined,
+      input_id: undefined,
+      input_expires_at: undefined,
+      abandoned_at: now,
+      updated_at: now,
+    });
+    await syncParentGoalTiming(ctx, row);
+    return "abandoned";
   },
 });
 

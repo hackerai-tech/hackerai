@@ -2812,6 +2812,66 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
+    it("holds queued work after an abandoned Cloud browser handoff and allows Goal Resume", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      mockRouteParams = { id: "abandoned-handoff" };
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockRestoredChat = {
+        id: "abandoned-handoff",
+        sandbox_type: "e2b",
+        default_model_slug: "agent",
+        active_trigger_run_id: "handoff-run",
+      };
+      mockSavedGoal = {
+        state: "running",
+        activeRunId: "handoff-run",
+        generation: 4,
+        objective: "Complete the form",
+        criteria: ["Form complete"],
+        sandboxPreference: "e2b",
+      };
+      const view = () => (
+        <TestWrapper>
+          <RecoveryQueueProbe />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(
+        screen.getByRole("button", { name: "Queue recovery draft" }),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "paused",
+        activeRunId: undefined,
+      };
+      mockRestoredChat = {
+        ...mockRestoredChat,
+        active_trigger_run_id: undefined,
+        finish_reason: "browser-handoff-abandoned",
+      };
+      await act(async () => rerender(view()));
+      const resume = await screen.findByRole("button", { name: "Resume goal" });
+      await waitFor(() => expect(resume).toBeEnabled());
+      expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+
+      fireEvent.click(resume);
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+      expect(mockSendMessage.mock.calls[0]?.[1]).toMatchObject({
+        body: { goal: { action: "resume", expectedGeneration: 4 } },
+      });
+    });
+
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
       render(
         <TestWrapper>

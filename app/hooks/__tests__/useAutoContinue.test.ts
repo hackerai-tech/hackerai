@@ -94,25 +94,33 @@ describe("useAutoContinue", () => {
     },
   );
 
-  it("drops queued continuation when a persisted local stop arrives and stays idle after reconnect", () => {
-    const sendMessage = jest.fn();
-    const params = buildParams({ sendMessage, sandboxPreference: "desktop" });
-    const { result, rerender } = renderHook(
-      (p: UseAutoContinueParams) => useTestHarness(p),
-      {
-        initialProps: params,
-        wrapper: createWrapper(),
-      },
-    );
-    pushAutoContinue(result);
-    rerender({ ...params, finishReason: "local-connection-lost" });
-    act(() => jest.advanceTimersByTime(1000));
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(result.current.isAutoContinuing).toBe(false);
-    rerender(params);
-    act(() => jest.advanceTimersByTime(1000));
-    expect(sendMessage).not.toHaveBeenCalled();
-  });
+  it.each([
+    { finishReason: "local-connection-lost", sandboxPreference: "desktop" },
+    { finishReason: "browser-handoff-abandoned", sandboxPreference: "e2b" },
+  ])(
+    "drops a received continuation when a persisted $finishReason stop arrives and stays idle afterward",
+    ({ finishReason, sandboxPreference }) => {
+      const sendMessage = jest.fn();
+      const params = buildParams({ sendMessage, sandboxPreference });
+      const { result, rerender } = renderHook(
+        (p: UseAutoContinueParams) => useTestHarness(p),
+        {
+          initialProps: params,
+          wrapper: createWrapper(),
+        },
+      );
+      pushAutoContinue(result);
+      rerender({ ...params, finishReason });
+      act(() => jest.advanceTimersByTime(1000));
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(result.current.isAutoContinuing).toBe(false);
+      expect(result.current.isAutoResuming).toBe(false);
+      expect(result.current.autoContinueCount).toBe(0);
+      rerender(params);
+      act(() => jest.advanceTimersByTime(1000));
+      expect(sendMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it("sets isAutoResuming to true when data-auto-continue arrives", () => {
     const params = buildParams({ status: "streaming" });

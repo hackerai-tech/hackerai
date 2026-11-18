@@ -1346,6 +1346,7 @@ export type AgentAbortSource =
   | "user_wait_timeout"
   | "user_wait_failed"
   | "approval_timeout"
+  | "browser_handoff_abandoned"
   | "user_stop"
   | "request_cancel"
   | "unknown";
@@ -1368,6 +1369,8 @@ export function resolveAgentAbortSource({
   stopSource?: import("@/lib/chat/agent-stop-signal").AgentStopSignalSource;
 }): AgentAbortSource | undefined {
   if (outcome !== "aborted") return undefined;
+  if (stopSource === "browser_handoff_abandoned")
+    return "browser_handoff_abandoned";
   if (stoppedDueToBudgetExhaustion) return "budget_exhausted";
   if (stoppedDueToAgentRunSpendCap) return "agent_spend_cap";
   if (stoppedDueToElapsedTimeout) return "elapsed_timeout";

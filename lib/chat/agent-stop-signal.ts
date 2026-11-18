@@ -1,6 +1,7 @@
 type DirectStopSource =
   | "local_connection_lost"
   | "browser_ownership_lost"
+  | "browser_handoff_abandoned"
   | "wait_for_user"
   | "wait_for_user_timeout"
   | "trigger_platform"
