@@ -167,10 +167,7 @@ function waitForRetry(
   });
 }
 
-/**
- * PUTs the file with bounded retries. `signal` cancels the transfer, including
- * an attempt in flight; `scopeSignal` only stops new attempts from starting.
- */
+/** PUTs the file with bounded retries while the transfer and sign-in scope are active. */
 export async function putBrowserFile(
   file: File,
   uploadUrl: string,
@@ -187,8 +184,9 @@ export async function putBrowserFile(
     signal.throwIfAborted();
     scopeSignal?.throwIfAborted();
     const request = new AbortController();
-    const abort = () => request.abort(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
+    const removeAbort = listenForAbort(stopSignals, (reason) =>
+      request.abort(reason),
+    );
     const timeout = setTimeout(() => request.abort(), timeoutMs);
     try {
       const response = await fetch(uploadUrl, {
@@ -219,7 +217,7 @@ export async function putBrowserFile(
       if (!failure.retryable || attempt === 2) throw failure;
     } finally {
       clearTimeout(timeout);
-      signal.removeEventListener("abort", abort);
+      removeAbort();
     }
     await waitForRetry(1_000 * (attempt + 1), stopSignals);
   }

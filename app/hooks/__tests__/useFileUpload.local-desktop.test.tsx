@@ -327,6 +327,45 @@ describe("useFileUpload desktop-local agent attachments", () => {
     expect(saveFile).not.toHaveBeenCalled();
   });
 
+  it("does not attach a completed local paste to a different account's draft", async () => {
+    const auth = (id: string) =>
+      ({ user: { id } }) as ReturnType<typeof useAuth>;
+    jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+    let finishWrite!: (
+      metadata: NonNullable<
+        Awaited<ReturnType<typeof writeGeneratedTextAttachment>>
+      >,
+    ) => void;
+    jest.mocked(writeGeneratedTextAttachment).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useFileUpload("agent"));
+    let started!: Promise<boolean>;
+    await act(async () => {
+      started = result.current.handlePastedTextAttachment("x".repeat(5000));
+    });
+    expect(writeGeneratedTextAttachment).toHaveBeenCalledTimes(1);
+
+    jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+    rerender();
+    await act(async () => {
+      finishWrite({
+        path: "/synthetic/generated.txt",
+        name: "Pasted text.txt",
+        mediaType: "text/plain",
+        size: 5000,
+        lastModified: 1,
+      });
+      expect(await started).toBe(false);
+    });
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(removeGeneratedTextAttachment).not.toHaveBeenCalled();
+  });
+
   it("updates generated pasted text locally without uploading edited content", async () => {
     const previousUpload = {
       file: {

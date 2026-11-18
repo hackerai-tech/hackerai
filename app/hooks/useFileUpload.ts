@@ -184,6 +184,7 @@ const fileFromBase64 = (
 
 export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const webPickerSignalRef = useRef<AbortSignal | undefined>(undefined);
   const maxFilesLimit = getMaxFilesLimitForMode(mode);
   const {
     uploadedFiles,
@@ -751,7 +752,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           fileName,
           content,
         );
-        if (!localMetadata) {
+        // A completed local write belongs to the original scope. Preserve its
+        // contents without adding it to a draft under a different account.
+        if (!localMetadata || selectionSignal?.aborted) {
           return false;
         }
 
@@ -1058,10 +1061,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const handleFileUploadEvent = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
+    const pickerSignal = webPickerSignalRef.current;
+    webPickerSignalRef.current = undefined;
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    await processFiles(Array.from(selectedFiles));
+    if (!pickerSignal?.aborted) {
+      await processFiles(Array.from(selectedFiles));
+    }
 
     // Clear the input
     if (fileInputRef.current) {
@@ -1360,6 +1367,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     } else {
       input.removeAttribute("capture");
     }
+    webPickerSignalRef.current = uploadScopeRef.current?.signal;
     input.click();
   };
 

@@ -919,14 +919,15 @@ describe("browser attachment recovery", () => {
     },
   );
 
-  it("does not save metadata for a PUT that finishes after the account changes", async () => {
-    let finishPut!: (response: unknown) => void;
+  it("aborts the active PUT when the sign-in scope changes", async () => {
     let putSignal!: AbortSignal;
     (global.fetch as jest.Mock).mockImplementation(
       (_url, options) =>
-        new Promise((resolve) => {
+        new Promise((_resolve, reject) => {
           putSignal = options.signal;
-          finishPut = resolve;
+          putSignal.addEventListener("abort", () => reject(putSignal.reason), {
+            once: true,
+          });
         }),
     );
     const { result, rerender } = renderHook(() => useHarness(), {
@@ -937,11 +938,13 @@ describe("browser attachment recovery", () => {
         select([file("report.txt")]),
       );
     });
+    expect(putSignal.aborted).toBe(false);
+
     authState = { user: { id: "user-b" }, organizationId: "org-a" };
     rerender();
-    // A PUT already in flight is not cancelled; only new work stops.
-    expect(putSignal.aborted).toBe(false);
-    await act(async () => finishPut({ ok: true }));
+    await tick();
+    expect(putSignal.aborted).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(saveFile).not.toHaveBeenCalled();
     expect(result.current.uploadedFiles[0]).toMatchObject(INTERRUPTED);
   });
@@ -1034,6 +1037,28 @@ describe("browser attachment recovery", () => {
     });
     await act(async () => reservations[0].resolve());
     expect(generateS3UploadUrlAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a browser picker result from a previous sign-in scope", async () => {
+    const { result, rerender } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    const input = document.createElement("input");
+    input.type = "file";
+    result.current.picker.fileInputRef.current = input;
+    const openPicker = jest.spyOn(input, "click").mockImplementation(() => {});
+    act(() => result.current.picker.handleAttachClick());
+    expect(openPicker).toHaveBeenCalledTimes(1);
+
+    authState = { user: { id: "user-b" }, organizationId: "org-a" };
+    rerender();
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("old.txt")]),
+      );
+    });
+    expect(result.current.uploadedFiles).toEqual([]);
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
   });
 
   it("discards a file selected before the account changes during validation", async () => {
