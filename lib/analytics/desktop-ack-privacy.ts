@@ -24,9 +24,11 @@ import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
+  DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
+  readDesktopInvocationUnknownDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
@@ -230,6 +232,13 @@ export function sanitizeDesktopAckEvent<
       event.properties,
       invocationRejection,
     );
+    // The unknown class joins only a validated `unknown` class from the
+    // authorized command set; no unknown property is read without one. It
+    // likewise survives only as the validated data copy and drops alone.
+    const invocationUnknown = readDesktopInvocationUnknownDiagnostic(
+      event.properties,
+      invocationRejection,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -246,7 +255,8 @@ export function sanitizeDesktopAckEvent<
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) &&
-            !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
+            !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key) &&
+            !DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -289,6 +299,7 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, invocationAdmission);
     if (invocationSpawnHint)
       Object.assign(event.properties, invocationSpawnHint);
+    if (invocationUnknown) Object.assign(event.properties, invocationUnknown);
   }
   delete event.$set;
   delete event.$set_once;

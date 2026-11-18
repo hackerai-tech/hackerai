@@ -18,11 +18,16 @@ import {
 import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import {
+  applyDesktopRuntimeIdentity,
+  startDesktopRuntimeIdentityLookup,
+} from "@/lib/analytics/desktop-runtime-identity";
 import { DESKTOP_TERMINAL_ERROR_PROPERTIES } from "@/lib/analytics/desktop-terminal-error-diagnostics";
 import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
+  DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
@@ -6651,6 +6656,8 @@ describe("native authorization send receipt", () => {
       version?: string;
       commandIds?: string[];
       acknowledged?: boolean;
+      /** Extra command fields, such as a private cwd canary. */
+      command?: Record<string, unknown>;
       afterStart?: (bridge: DesktopSandboxBridge) => void;
       beforeAck?: (bridge: DesktopSandboxBridge) => Promise<void>;
     } = {},
@@ -6703,6 +6710,7 @@ describe("native authorization send receipt", () => {
             command: "PRIVATE COMMAND",
             authorizationId,
             targetConnectionId: "conn-123",
+            ...options.command,
             ...(acknowledged && {
               outputProtocol: "ack-v1",
               operationChannel: true,
@@ -9871,14 +9879,31 @@ describe("native authorization send receipt", () => {
     const emit = (call: NativeCall, chunk: Record<string, unknown>) =>
       (call.onEvent as MockChannel).onmessage!(chunk);
     const running = "Command is already running";
+    // stream_lifecycle.rs admission denials, verbatim.
+    const pageReplaced =
+      "Desktop page was replaced before this command started";
+    const priorCleanup =
+      "Desktop is still stopping commands from a previous page. Retry shortly.";
+    const stopUnconfirmed =
+      "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
     const groupKeys = (properties: Record<string, unknown> = {}) =>
       Object.keys(properties).filter(
         (key) =>
           DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) ||
           DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) ||
           DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key) ||
+          DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key) ||
           DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
       );
+    const unknownOf = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).some((key) =>
+        DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key),
+      )
+        ? {
+            version: properties.desktop_invocation_unknown_version,
+            class: properties.desktop_invocation_unknown_class,
+          }
+        : null;
     const spawnHintOf = (properties: Record<string, unknown> = {}) =>
       Object.keys(properties).some((key) =>
         DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
@@ -9908,9 +9933,19 @@ describe("native authorization send receipt", () => {
           }
         : null;
 
-    // Every row names its hint: a shorter row would make Jest pass `done`.
+    // Every row names its hint and unknown class: a shorter row would make
+    // Jest pass `done`.
     it.each<
-      [string, string, unknown, string, string, string | null, string | null]
+      [
+        string,
+        string,
+        unknown,
+        string,
+        string,
+        string | null,
+        string | null,
+        string | null,
+      ]
     >([
       [
         "a reported 0.0.73 approval rejection",
@@ -9918,6 +9953,7 @@ describe("native authorization send receipt", () => {
         "Desktop operation was not authorized",
         "authorization_not_approved",
         "authorized_native",
+        null,
         null,
         null,
       ],
@@ -9929,6 +9965,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         null,
+        null,
       ],
       [
         "a current spawn failure",
@@ -9938,6 +9975,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         "code_2",
+        null,
       ],
       [
         "a spawn failure with an unlisted OS code",
@@ -9947,6 +9985,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         "unrecognized",
+        null,
       ],
       [
         "a spawn failure without an OS code",
@@ -9956,6 +9995,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         "unrecognized",
+        null,
       ],
       [
         "an unlisted rejection",
@@ -9965,6 +10005,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         null,
+        "other_string",
       ],
       [
         "a published legacy spawn failure",
@@ -9974,6 +10015,7 @@ describe("native authorization send receipt", () => {
         "published_legacy_native",
         null,
         "code_193",
+        null,
       ],
       // The six fixed execution admission templates, as Tauri rejects them.
       [
@@ -9984,6 +10026,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         "update_state_unavailable",
         null,
+        null,
       ],
       [
         "an update installing rejection",
@@ -9992,6 +10035,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "update_installing",
+        null,
         null,
       ],
       [
@@ -10002,6 +10046,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         "stdin_size_limit",
         null,
+        null,
       ],
       [
         "a stdin encoding rejection",
@@ -10010,6 +10055,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "stdin_encoding_invalid",
+        null,
         null,
       ],
       [
@@ -10020,6 +10066,7 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         "command_state_lock_poisoned",
         null,
+        null,
       ],
       [
         "a duplicate command rejection",
@@ -10028,6 +10075,7 @@ describe("native authorization send receipt", () => {
         "execution_admission",
         "authorized_native",
         "command_already_running",
+        null,
         null,
       ],
       [
@@ -10038,6 +10086,7 @@ describe("native authorization send receipt", () => {
         "published_legacy_native",
         "stdin_size_limit",
         null,
+        null,
       ],
       [
         "a changed admission template",
@@ -10047,10 +10096,114 @@ describe("native authorization send receipt", () => {
         "authorized_native",
         null,
         null,
+        "other_string",
+      ],
+      // The three stream_lifecycle.rs denials, as Tauri rejects them. A
+      // reported version never gates the class: the same text classifies
+      // alike under any authorized native app.
+      [
+        "a page replacement denial",
+        "0.0.82",
+        pageReplaced,
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "lifecycle_page_replaced",
+      ],
+      [
+        "a prior cleanup denial",
+        "0.0.82",
+        priorCleanup,
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "lifecycle_prior_cleanup_pending",
+      ],
+      [
+        "an unconfirmed stop denial",
+        "0.0.82",
+        stopUnconfirmed,
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "lifecycle_stop_unconfirmed",
+      ],
+      [
+        "an unconfirmed stop denial from another reported version",
+        "0.0.80",
+        stopUnconfirmed,
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "lifecycle_stop_unconfirmed",
+      ],
+      [
+        "an Error page replacement denial",
+        "0.0.82",
+        new Error(pageReplaced),
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "lifecycle_page_replaced",
+      ],
+      [
+        "an unlisted Error rejection",
+        "0.0.82",
+        new Error("PRIVATE Error rejection"),
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "other_error_message",
+      ],
+      [
+        "an over-long rejection",
+        "0.0.82",
+        `${stopUnconfirmed}${" PRIVATE".repeat(200)}`,
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "message_over_limit",
+      ],
+      [
+        "an unreadable rejection",
+        "0.0.82",
+        { message: pageReplaced },
+        "unknown",
+        "authorized_native",
+        null,
+        null,
+        "message_unavailable",
+      ],
+      // A legacy command set never carries the unknown class.
+      [
+        "a published legacy lifecycle-text rejection",
+        "0.0.72",
+        stopUnconfirmed,
+        "unknown",
+        "published_legacy_native",
+        null,
+        null,
+        null,
       ],
     ])(
       "classifies %s without changing the product frame",
-      async (_case, version, rejection, reason, adapter, admission, hint) => {
+      async (
+        _case,
+        version,
+        rejection,
+        reason,
+        adapter,
+        admission,
+        hint,
+        unknownClass,
+      ) => {
         const message =
           rejection instanceof Error ? rejection.message : String(rejection);
         const { calls, replies } = await run(() => Promise.reject(rejection), {
@@ -10088,6 +10241,9 @@ describe("native authorization send receipt", () => {
         expect(spawnHintOf(final.properties)).toEqual(
           hint ? { version: 1, hint } : null,
         );
+        expect(unknownOf(final.properties)).toEqual(
+          unknownClass ? { version: 1, class: unknownClass } : null,
+        );
         const enriched = sanitizeDesktopAckEvent({
           ...final,
           properties: { ...final.properties, $current_url: "PRIVATE" },
@@ -10101,17 +10257,21 @@ describe("native authorization send receipt", () => {
         expect(spawnHintOf(enriched.properties)).toEqual(
           spawnHintOf(final.properties),
         );
+        expect(unknownOf(enriched.properties)).toEqual(
+          unknownOf(final.properties),
+        );
         const serialized = JSON.stringify([captures(), enriched]);
         expect(serialized).not.toContain("PRIVATE");
         expect(serialized).not.toContain(message);
       },
     );
 
-    it.each<[string, string, object | null, object | null]>([
+    it.each<[string, string, object | null, object | null, object | null]>([
       [
         "Invalid command stdin encoding",
         "execution_admission",
         { version: 1, reason: "stdin_encoding_invalid" },
+        null,
         null,
       ],
       [
@@ -10119,10 +10279,18 @@ describe("native authorization send receipt", () => {
         "spawn_failed",
         null,
         { version: 1, hint: "code_267" },
+        null,
+      ],
+      [
+        priorCleanup,
+        "unknown",
+        null,
+        null,
+        { version: 1, class: "lifecycle_prior_cleanup_pending" },
       ],
     ])(
       "reads the rejection's own message %p once for every class",
-      async (message, reason, admission, hint) => {
+      async (message, reason, admission, hint, unknownClass) => {
         let descriptorReads = 0;
         const rejection = new Proxy(new Error(message), {
           getOwnPropertyDescriptor(target, key) {
@@ -10143,8 +10311,130 @@ describe("native authorization send receipt", () => {
         });
         expect(admissionOf(finals()[0].properties)).toEqual(admission);
         expect(spawnHintOf(finals()[0].properties)).toEqual(hint);
+        expect(unknownOf(finals()[0].properties)).toEqual(unknownClass);
       },
     );
+
+    it("delivers the unknown pair from one rejection without private command content", async () => {
+      const cwd = "/Users/PRIVATE-CWD/project";
+      const canary = "PRIVATE-CANARY https://PRIVATE.example/x";
+      const host = window as unknown as Record<string, unknown>;
+      const previous = {
+        internals: host.__TAURI_INTERNALS__,
+        os: host.__TAURI_OS_PLUGIN_INTERNALS__,
+      };
+      const { calls, replies } = await run(() => Promise.reject(canary), {
+        version: "0.0.82",
+        command: { cwd },
+      });
+      // One selected authorized invocation, the original product frame.
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        cmd: "execute_authorized_stream_command",
+        authorizationId,
+        message: expect.objectContaining({ cwd }),
+      });
+      expect(sequencedFrames(replies[0])).toEqual([
+        {
+          type: "error",
+          message: canary,
+          commandId: "auth-send",
+          sequence: 0,
+          outputProtocol: "ack-v1",
+        },
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      expect(final.properties).toMatchObject({
+        outcome: "acknowledged",
+        terminalType: "error",
+        telemetry_sample_rate: 1,
+        desktop_terminal_error_kind: "invocation_rejected",
+        desktop_invocation_rejection_reason: "unknown",
+        desktop_invocation_rejection_adapter: "authorized_native",
+      });
+      expect(unknownOf(final.properties)).toEqual({
+        version: 1,
+        class: "other_string",
+      });
+      // The SDK before_send order: privacy projection, then measured identity.
+      try {
+        host.__TAURI_INTERNALS__ = {};
+        host.__TAURI_OS_PLUGIN_INTERNALS__ = { platform: "windows" };
+        await startDesktopRuntimeIdentityLookup();
+        const sent = applyDesktopRuntimeIdentity(
+          sanitizeDesktopAckEvent({
+            ...final,
+            properties: {
+              ...final.properties,
+              $current_url: "https://PRIVATE.example/chat",
+              cwd,
+              command: "PRIVATE COMMAND",
+              authorizationId,
+            },
+            $set: { email: "PRIVATE" },
+          }),
+        );
+        expect(sent.properties).toMatchObject({
+          native_platform: "windows",
+          desktop_invocation_rejection_reason: "unknown",
+          desktop_invocation_unknown_version: 1,
+          desktop_invocation_unknown_class: "other_string",
+        });
+        for (const serialized of [
+          JSON.stringify(captures()),
+          JSON.stringify(sent),
+        ]) {
+          expect(serialized).not.toContain("PRIVATE");
+          expect(serialized).not.toContain(authorizationId);
+          expect(serialized).not.toContain("https://");
+        }
+      } finally {
+        host.__TAURI_INTERNALS__ = previous.internals;
+        host.__TAURI_OS_PLUGIN_INTERNALS__ = previous.os;
+      }
+    });
+
+    it("keeps an unsampled first lifecycle rejection at the diagnostic rate", async () => {
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+      try {
+        await run(() => reject(stopUnconfirmed));
+      } finally {
+        jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
+      }
+      expect(
+        captures().filter(
+          (event) => event.event === "desktop_ack_command_started",
+        ),
+      ).toEqual([]);
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0]).toMatchObject({
+        dedupeKey: JSON.stringify(["conn-123", "auth-send"]),
+        properties: { telemetry_sampled: false, telemetry_sample_rate: 1 },
+      });
+      expect(unknownOf(finals()[0].properties)).toEqual({
+        version: 1,
+        class: "lifecycle_stop_unconfirmed",
+      });
+    });
+
+    it("reports no unknown class when only the legacy command rejects with a lifecycle message", async () => {
+      const { calls } = await run(async (call) => {
+        if (call.cmd === "execute_authorized_stream_command")
+          throw "Command execute_authorized_stream_command not found";
+        return reject(pageReplaced);
+      });
+      expect(calls.map((call) => call.cmd)).toEqual([
+        "execute_authorized_stream_command",
+        "execute_stream_command",
+      ]);
+      expect(rejectionOf(finals()[0].properties)).toEqual({
+        version: 1,
+        reason: "unknown",
+        adapter: "compatibility_native",
+      });
+      expect(unknownOf(finals()[0].properties)).toBeNull();
+    });
 
     it("keeps an unsampled first spawn rejection at the diagnostic rate", async () => {
       jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
@@ -10199,7 +10489,7 @@ describe("native authorization send receipt", () => {
       },
     );
 
-    it.each([running, spawn])(
+    it.each([running, spawn, stopUnconfirmed])(
       "never reads a refinement of %p before a command set is selected",
       async (message) => {
         const { calls, replies } = await run(
@@ -10227,6 +10517,7 @@ describe("native authorization send receipt", () => {
         });
         expect(admissionOf(finals()[0].properties)).toBeNull();
         expect(spawnHintOf(finals()[0].properties)).toBeNull();
+        expect(unknownOf(finals()[0].properties)).toBeNull();
       },
     );
 
@@ -10356,30 +10647,54 @@ describe("native authorization send receipt", () => {
           desktop_terminal_error_kind: "native_process_error",
         },
       ],
+      [
+        "a native exit before a lifecycle denial",
+        (call) => emit(call, { type: "exit", exitCode: 0 }),
+        stopUnconfirmed,
+        { terminalType: "exit", terminalExitCode: 0 },
+      ],
+      [
+        "a native timeout before a lifecycle denial",
+        (call) => emit(call, { type: "error", message: timeout }),
+        pageReplaced,
+        {
+          terminalType: "error",
+          desktop_terminal_error_kind: "native_command_timeout",
+        },
+      ],
     ])(
       "never attaches a rejection that follows %s",
       async (_case, first, message, expected) => {
         // An attachable class and refinement, were it the first terminal.
-        await run(async (call) => {
+        const { replies } = await run(async (call) => {
           first(call);
           return reject(message);
         });
+        // The first terminal alone reaches the product wire.
+        expect(sequencedFrames(replies[0])).toHaveLength(1);
         expect(finals()).toHaveLength(1);
         expect(finals()[0].properties).toMatchObject(expected);
         expect(rejectionOf(finals()[0].properties)).toBeNull();
         expect(admissionOf(finals()[0].properties)).toBeNull();
         expect(spawnHintOf(finals()[0].properties)).toBeNull();
+        expect(unknownOf(finals()[0].properties)).toBeNull();
       },
     );
 
-    it.each([running, spawn])(
-      "drops a rejection %p observed under another analytics owner",
-      async (message) => {
+    it.each<[string, string | null]>([
+      [running, "another-user"],
+      [spawn, "another-user"],
+      [stopUnconfirmed, "another-user"],
+      // Consent withdrawn while the invocation rejects.
+      [pageReplaced, null],
+    ])(
+      "drops a rejection %p observed under analytics owner %p",
+      async (message, owner) => {
         const identity = jest.mocked(getIdentifiedAnalyticsUserId);
         try {
           await run(
             async () => {
-              identity.mockReturnValue("another-user");
+              identity.mockReturnValue(owner);
               return reject(message);
             },
             {
@@ -10405,6 +10720,9 @@ describe("native authorization send receipt", () => {
       ["bridge stop", spawn],
       ["transport disconnect", spawn],
       ["replacement connection", spawn],
+      ["bridge stop", stopUnconfirmed],
+      ["transport disconnect", priorCleanup],
+      ["replacement connection", pageReplaced],
     ])(
       "never attaches a rejection that arrives after %s (%p)",
       async (mode, message) => {
