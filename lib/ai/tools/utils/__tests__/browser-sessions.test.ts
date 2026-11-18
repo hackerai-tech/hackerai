@@ -588,6 +588,30 @@ describe("abandoned parent browser handoff", () => {
     await run.finish();
   });
 
+  it("stays parked while a committed abandonment receipt is unavailable across retry batches", async () => {
+    const run = await parentRun();
+    await run.requestWait();
+    const gate = run.gate();
+    let attempts = 0;
+    run.intercept.abandonForBackend = async (commit) => {
+      const result = await commit();
+      if (++attempts <= 6) throw new TypeError("fetch failed");
+      return result;
+    };
+
+    await jest.advanceTimersByTimeAsync(MINUTES_30 + 2_000);
+    expect(run.row().state).toBe("closed");
+    expect(run.closeCalls()).toBe(6);
+    expect(gate.done).toBe(false);
+    expect(run.lost).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(gate.error).toBeInstanceOf(BrowserHandoffAbandonedError);
+    expect(run.closeCalls()).toBe(7);
+    expect(run.lost).not.toHaveBeenCalled();
+    await run.finish();
+  });
+
   it("reports a close another gate observes before its response as abandonment, not ownership loss", async () => {
     const run = await parentRun();
     await run.requestWait();

@@ -684,6 +684,11 @@ export class BrowserSessions {
           );
           signal?.throwIfAborted();
           if (receipt === "abandoned") this.stopForAbandonment(signal);
+          if (receipt === "unknown") {
+            // The close may have committed. Stay parked until we can classify it.
+            await abortableDelay(ABANDON_RECHECK_MS, signal);
+            continue;
+          }
         }
         // Fail closed before any action, but let the owning worker settle its
         // already-produced output/usage as cancellation instead of provider error.
