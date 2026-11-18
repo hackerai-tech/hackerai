@@ -10795,13 +10795,14 @@ describe("native authorization send receipt", () => {
         message: expect.objectContaining({ cwd }),
         includeStreamFenceOrigin: true,
         includeStreamFenceCleanup: true,
+        includeStreamFenceWindowsTaskkill: true,
       });
-      expect(Object.keys(calls[0].message as object)).not.toContain(
+      for (const optIn of [
         "includeStreamFenceOrigin",
-      );
-      expect(Object.keys(calls[0].message as object)).not.toContain(
         "includeStreamFenceCleanup",
-      );
+        "includeStreamFenceWindowsTaskkill",
+      ])
+        expect(Object.keys(calls[0].message as object)).not.toContain(optIn);
       // The product error is the exact original string, as one terminal.
       expect(sequencedFrames(replies[0])).toEqual([
         {
@@ -11038,6 +11039,7 @@ describe("native authorization send receipt", () => {
       });
       expect(calls[1]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceCleanup");
+      expect(calls[1]).not.toHaveProperty("includeStreamFenceWindowsTaskkill");
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11054,6 +11056,7 @@ describe("native authorization send receipt", () => {
       expect(calls.map((call) => call.cmd)).toEqual(["execute_stream_command"]);
       expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
+      expect(calls[0]).not.toHaveProperty("includeStreamFenceWindowsTaskkill");
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
       ]);
@@ -11068,6 +11071,9 @@ describe("native authorization send receipt", () => {
         expect(calls).toHaveLength(1);
         expect(calls[0]).not.toHaveProperty("includeStreamFenceOrigin");
         expect(calls[0]).not.toHaveProperty("includeStreamFenceCleanup");
+        expect(calls[0]).not.toHaveProperty(
+          "includeStreamFenceWindowsTaskkill",
+        );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: stopUnconfirmed }),
         ]);
@@ -11379,6 +11385,182 @@ describe("native authorization send receipt", () => {
         expect(fenceKeys(byCommand.older)).toEqual(Object.keys(stopGroup));
         expect(fenceKeys(byCommand.cancel)).toEqual(Object.keys(fenceGroup));
       });
+
+      describe("Windows taskkill receipt", () => {
+        const tree = { version: 1, failure: "tree_unconfirmed" };
+        const treeGroup = {
+          ...stopGroup,
+          desktop_stream_fence_cleanup_version: 1,
+          desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+        };
+        // The opted-in shape: the tree_unconfirmed sibling beside the closed
+        // taskkill receipt, as Tauri delivers the command's JSON error.
+        const withTaskkill = (
+          streamFenceWindowsTaskkill: unknown,
+          cleanup: unknown = tree,
+        ) => ({ ...withCleanup(cleanup), streamFenceWindowsTaskkill });
+
+        it.each<[unknown, Record<string, unknown>]>([
+          [
+            { version: 1, outcome: "nonzero_exit", exitCode: 128 },
+            {
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              desktop_stream_fence_windows_taskkill_exit_code: 128,
+            },
+          ],
+          [
+            { version: 1, outcome: "output_error" },
+            {
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "output_error",
+            },
+          ],
+        ])(
+          "unwraps the exact message and joins %j to its tree_unconfirmed stop",
+          async (receipt, taskkillGroup) => {
+            const cwd = "/Users/PRIVATE-CWD/project";
+            const { calls, replies } = await run(
+              () => Promise.reject(withTaskkill(receipt)),
+              { version: "0.0.85", command: { cwd } },
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+              cmd: "execute_authorized_stream_command",
+              includeStreamFenceOrigin: true,
+              includeStreamFenceCleanup: true,
+              includeStreamFenceWindowsTaskkill: true,
+            });
+            expect(sequencedFrames(replies[0])).toEqual([
+              {
+                type: "error",
+                message: stopUnconfirmed,
+                commandId: "auth-send",
+                sequence: 0,
+                outputProtocol: "ack-v1",
+              },
+            ]);
+            const expected = { ...treeGroup, ...taskkillGroup };
+            expect(finals()).toHaveLength(1);
+            const final = finals()[0];
+            expect(final.properties).toMatchObject({
+              outcome: "acknowledged",
+              terminalAcknowledged: true,
+              telemetry_sample_rate: 1,
+              desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+              ...expected,
+            });
+            expect(fenceKeys(final.properties)).toEqual(Object.keys(expected));
+            const enriched = sanitizeDesktopAckEvent({
+              ...final,
+              properties: {
+                ...final.properties,
+                $current_url: "PRIVATE",
+                cwd,
+                command: "PRIVATE COMMAND",
+                pid: 4242,
+              },
+              $set: { email: "PRIVATE" },
+            });
+            expect(enriched.properties).toMatchObject(expected);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            expect(enriched.properties).not.toHaveProperty("pid");
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain(authorizationId);
+            expect(serialized).not.toContain(stopUnconfirmed);
+            expect(serialized).not.toContain("streamFence");
+          },
+        );
+
+        // [case, native rejection, expected fence groups]
+        it.each<[string, () => unknown, Record<string, unknown>]>([
+          [
+            "the prior tree_unconfirmed shape",
+            () => withCleanup(tree),
+            treeGroup,
+          ],
+          [
+            "a zero code",
+            () =>
+              withTaskkill({
+                version: 1,
+                outcome: "nonzero_exit",
+                exitCode: 0,
+              }),
+            treeGroup,
+          ],
+          [
+            "a code beside output_error",
+            () =>
+              withTaskkill({
+                version: 1,
+                outcome: "output_error",
+                exitCode: 1,
+              }),
+            treeGroup,
+          ],
+          [
+            "an extra private field",
+            () =>
+              withTaskkill({
+                version: 1,
+                outcome: "output_error",
+                stderr: "PRIVATE",
+              }),
+            treeGroup,
+          ],
+          [
+            "an unsupported version",
+            () => withTaskkill({ version: 2, outcome: "output_error" }),
+            treeGroup,
+          ],
+          [
+            "a receipt beside another cleanup failure",
+            () =>
+              withTaskkill(
+                { version: 1, outcome: "output_error" },
+                { version: 1, failure: "leader_wait_timed_out" },
+              ),
+            {
+              ...stopGroup,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: "leader_wait_timed_out",
+            },
+          ],
+        ])(
+          "keeps the exact message and only the prior groups for %s",
+          async (_case, native, expected) => {
+            const { replies } = await run(() => Promise.reject(native()));
+            expect(sequencedFrames(replies[0])).toEqual([
+              expect.objectContaining({
+                type: "error",
+                message: stopUnconfirmed,
+                sequence: 0,
+              }),
+            ]);
+            expect(finals()).toHaveLength(1);
+            const properties = finals()[0].properties;
+            expect(properties).toMatchObject(expected);
+            expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+            const enriched = sanitizeDesktopAckEvent({
+              ...finals()[0],
+              properties: { ...properties },
+            });
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain("streamFence");
+            expect(serialized).not.toContain(
+              "desktop_stream_fence_windows_taskkill",
+            );
+          },
+        );
+      });
     });
   });
 
@@ -11431,6 +11613,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationResponseReadDiagnostic",
         "includeStreamFenceOrigin",
         "includeStreamFenceCleanup",
+        "includeStreamFenceWindowsTaskkill",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

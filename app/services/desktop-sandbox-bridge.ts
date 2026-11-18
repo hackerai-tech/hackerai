@@ -76,6 +76,7 @@ import {
   type DesktopInvocationUnknownDiagnostic,
   type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
+  type NativeStreamFenceWindowsTaskkill,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -1529,7 +1530,8 @@ export class DesktopSandboxBridge {
     // command carries it in its own exact unconfirmed-stop rejection, and it
     // joins only that rejection as this invocation's first terminal. An
     // `owner_stop_requested` origin's cleanup failure rides the same rejection
-    // and latch.
+    // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
+    // receipt.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's
@@ -1552,6 +1554,8 @@ export class DesktopSandboxBridge {
     let responseReadOpen = true;
     let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
     let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
+      null;
+    let streamFenceWindowsTaskkill: NativeStreamFenceWindowsTaskkill | null =
       null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
@@ -1614,6 +1618,7 @@ export class DesktopSandboxBridge {
                 invocationUnknown,
                 streamFenceOrigin,
                 streamFenceCleanupFailure,
+                streamFenceWindowsTaskkill,
               )
             : null;
         onSettled(
@@ -1867,10 +1872,12 @@ export class DesktopSandboxBridge {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
               // Outside the signed message; never sent to a legacy command.
-              // The cleanup opt-in is only ever offered with the origin one.
+              // The cleanup opt-in is only ever offered with the origin one,
+              // and the taskkill opt-in only with both.
               ...(streamFenceOffered && {
                 includeStreamFenceOrigin: true,
                 includeStreamFenceCleanup: true,
+                includeStreamFenceWindowsTaskkill: true,
               }),
             },
             invocationTrace,
@@ -1892,6 +1899,7 @@ export class DesktopSandboxBridge {
         if (latchTerminal("invocation_rejected")) {
           streamFenceOrigin = fenceRejection?.origin ?? null;
           streamFenceCleanupFailure = fenceRejection?.cleanupFailure ?? null;
+          streamFenceWindowsTaskkill = fenceRejection?.windowsTaskkill ?? null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);

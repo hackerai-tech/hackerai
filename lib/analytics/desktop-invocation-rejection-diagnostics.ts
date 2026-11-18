@@ -502,6 +502,41 @@ const STREAM_FENCE_CLEANUP_FAILURES = [
 export type DesktopStreamFenceCleanupFailure =
   (typeof STREAM_FENCE_CLEANUP_FAILURES)[number];
 
+/** Only this cleanup failure can carry a Windows taskkill receipt. */
+const STREAM_FENCE_TASKKILL_FAILURE = "tree_unconfirmed";
+
+/** A closed class of how the real Windows `taskkill` step of an
+ * `owner_stop_requested` stop with `tree_unconfirmed` failed: a nonzero exit
+ * status, or an error collecting its output. It never names the process, the
+ * command, its output or an OS error; only a `nonzero_exit` may carry the
+ * signed 32-bit status code itself. */
+const STREAM_FENCE_TASKKILL_OUTCOMES = [
+  "nonzero_exit",
+  "output_error",
+] as const;
+
+export type DesktopStreamFenceWindowsTaskkillOutcome =
+  (typeof STREAM_FENCE_TASKKILL_OUTCOMES)[number];
+
+/** A nonzero signed 32-bit exit status, as Rust's `ExitStatus::code`. */
+function isNonzeroI32(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value !== 0 &&
+    value >= -0x8000_0000 &&
+    value <= 0x7fff_ffff
+  );
+}
+
+export type NativeStreamFenceWindowsTaskkill =
+  | {
+      readonly outcome: "nonzero_exit";
+      /** Absent when the status had no code. */
+      readonly exitCode?: number;
+    }
+  | { readonly outcome: "output_error"; readonly exitCode?: never };
+
 /** A plain object's own string keys, or null for anything else or any symbol.
  * Never runs a getter and never throws. */
 function plainOwnKeys(value: unknown): string[] | null {
@@ -556,8 +591,14 @@ function readClosedOwnData(
 
 const STREAM_FENCE_REJECTION_KEYS = ["message", "streamFence"] as const;
 const STREAM_FENCE_CLEANUP_KEY = "streamFenceCleanup";
+const STREAM_FENCE_TASKKILL_KEY = "streamFenceWindowsTaskkill";
 const STREAM_FENCE_ORIGIN_KEYS = ["version", "origin"] as const;
 const STREAM_FENCE_CLEANUP_KEYS = ["version", "failure"] as const;
+const STREAM_FENCE_TASKKILL_KEYS = ["version", "outcome"] as const;
+const STREAM_FENCE_TASKKILL_CODE_KEYS = [
+  ...STREAM_FENCE_TASKKILL_KEYS,
+  "exitCode",
+] as const;
 
 export interface NativeStreamFenceRejection {
   /** Always exactly the public `STOP_UNCONFIRMED` message. */
@@ -567,6 +608,32 @@ export interface NativeStreamFenceRejection {
   /** Present only beside an `owner_stop_requested` origin, for the closed v1
    * `streamFenceCleanup` sibling. */
   readonly cleanupFailure?: DesktopStreamFenceCleanupFailure;
+  /** Present only beside a `tree_unconfirmed` cleanup failure, for the closed
+   * v1 `streamFenceWindowsTaskkill` sibling. */
+  readonly windowsTaskkill?: NativeStreamFenceWindowsTaskkill;
+}
+
+/** The closed v1 taskkill receipt in `receipt`: exactly `{ version: 1,
+ * outcome }`, or `{ version: 1, outcome: "nonzero_exit", exitCode }` with a
+ * nonzero signed 32-bit code; otherwise null. Never throws. */
+function parseStreamFenceWindowsTaskkill(
+  receipt: unknown,
+): NativeStreamFenceWindowsTaskkill | null {
+  const own = plainOwnKeys(receipt);
+  const withCode = own?.length === STREAM_FENCE_TASKKILL_CODE_KEYS.length;
+  const values = readClosedOwnData(
+    receipt,
+    withCode ? STREAM_FENCE_TASKKILL_CODE_KEYS : STREAM_FENCE_TASKKILL_KEYS,
+  );
+  if (!values || values[0] !== 1) return null;
+  const [, outcome, exitCode] = values;
+  let parsed: NativeStreamFenceWindowsTaskkill | null = null;
+  if (withCode) {
+    if (outcome === "nonzero_exit" && isNonzeroI32(exitCode))
+      parsed = { outcome, exitCode };
+  } else if (outcome === "nonzero_exit" || outcome === "output_error")
+    parsed = { outcome };
+  return parsed && Object.freeze(parsed);
 }
 
 /** The closed v1 cleanup failure in `cleanup`, or null. Never throws. */
@@ -585,21 +652,27 @@ function parseStreamFenceCleanup(
  * properties `message`, exactly the public fence message, and `streamFence`,
  * `{ version: 1, origin }` with a listed origin, optionally beside a
  * `streamFenceCleanup` sibling, `{ version: 1, failure }` with a listed
- * failure. Any other value, including every string rejection, is null, so the
- * caller keeps the rejection exactly as received. A malformed `streamFence`
- * keeps only the exact message; a malformed cleanup, or one beside any other
- * origin, which is then never read, keeps the exact message and origin. Never
- * throws; a getter never runs. */
+ * failure, and beside that sibling optionally a `streamFenceWindowsTaskkill`
+ * sibling, the closed v1 taskkill receipt. Any other value, including every
+ * string rejection, is null, so the caller keeps the rejection exactly as
+ * received. A malformed `streamFence` keeps only the exact message; a
+ * malformed cleanup, or one beside any other origin, which is then never read,
+ * keeps the exact message and origin; a malformed taskkill receipt, or one
+ * beside any other cleanup failure, which is then never read, keeps the exact
+ * message, origin and cleanup failure. Never throws; a getter never runs. */
 export function parseNativeStreamFenceRejection(
   error: unknown,
 ): NativeStreamFenceRejection | null {
   const own = plainOwnKeys(error);
-  const sibling =
-    own?.length === STREAM_FENCE_REJECTION_KEYS.length + 1 &&
-    own.includes(STREAM_FENCE_CLEANUP_KEY);
+  const sibling = own?.includes(STREAM_FENCE_CLEANUP_KEY) === true;
+  const taskkillSibling =
+    sibling && own?.includes(STREAM_FENCE_TASKKILL_KEY) === true;
   if (
     !own ||
-    own.length !== STREAM_FENCE_REJECTION_KEYS.length + (sibling ? 1 : 0) ||
+    own.length !==
+      STREAM_FENCE_REJECTION_KEYS.length +
+        (sibling ? 1 : 0) +
+        (taskkillSibling ? 1 : 0) ||
     !STREAM_FENCE_REJECTION_KEYS.every((key) => own.includes(key))
   )
     return null;
@@ -619,10 +692,17 @@ export function parseNativeStreamFenceRejection(
           readOwnDataValues(error as object, [STREAM_FENCE_CLEANUP_KEY])?.[0],
         )
       : null;
+  const windowsTaskkill =
+    taskkillSibling && cleanupFailure === STREAM_FENCE_TASKKILL_FAILURE
+      ? parseStreamFenceWindowsTaskkill(
+          readOwnDataValues(error as object, [STREAM_FENCE_TASKKILL_KEY])?.[0],
+        )
+      : null;
   return Object.freeze({
     message: STOP_UNCONFIRMED_MESSAGE,
     origin,
     ...(cleanupFailure && { cleanupFailure }),
+    ...(windowsTaskkill && { windowsTaskkill }),
   });
 }
 
@@ -636,15 +716,33 @@ interface DesktopStreamFenceCleanupGroup {
   readonly desktop_stream_fence_cleanup_failure: DesktopStreamFenceCleanupFailure;
 }
 
-/** The fence origin pair, and only beside `owner_stop_requested` the complete
- * cleanup pair. */
+interface DesktopStreamFenceWindowsTaskkillGroup {
+  readonly desktop_stream_fence_windows_taskkill_version: 1;
+  readonly desktop_stream_fence_windows_taskkill_outcome: DesktopStreamFenceWindowsTaskkillOutcome;
+  /** Only for a `nonzero_exit` outcome whose status had a code. */
+  readonly desktop_stream_fence_windows_taskkill_exit_code?: number;
+}
+
+interface NoStreamFenceWindowsTaskkillGroup {
+  readonly desktop_stream_fence_windows_taskkill_version?: never;
+  readonly desktop_stream_fence_windows_taskkill_outcome?: never;
+  readonly desktop_stream_fence_windows_taskkill_exit_code?: never;
+}
+
+/** The fence origin pair, only beside `owner_stop_requested` the complete
+ * cleanup pair, and only beside its `tree_unconfirmed` failure the complete
+ * Windows taskkill group. */
 export type DesktopStreamFenceDiagnostic = DesktopStreamFenceOriginGroup &
   (
-    | DesktopStreamFenceCleanupGroup
-    | {
+    | (DesktopStreamFenceCleanupGroup &
+        (
+          | DesktopStreamFenceWindowsTaskkillGroup
+          | NoStreamFenceWindowsTaskkillGroup
+        ))
+    | ({
         readonly desktop_stream_fence_cleanup_version?: never;
         readonly desktop_stream_fence_cleanup_failure?: never;
-      }
+      } & NoStreamFenceWindowsTaskkillGroup)
   );
 
 const STREAM_FENCE_PROPERTIES = [
@@ -657,12 +755,53 @@ const STREAM_FENCE_CLEANUP_PROPERTIES = [
   "desktop_stream_fence_cleanup_failure",
 ] as const satisfies readonly (keyof DesktopStreamFenceCleanupGroup)[];
 
-/** Both pairs: the final whitelist strips every one and re-adds only the
+const STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY =
+  "desktop_stream_fence_windows_taskkill_exit_code";
+
+const STREAM_FENCE_TASKKILL_PROPERTIES = [
+  "desktop_stream_fence_windows_taskkill_version",
+  "desktop_stream_fence_windows_taskkill_outcome",
+] as const satisfies readonly (keyof DesktopStreamFenceWindowsTaskkillGroup)[];
+
+/** Every group: the final whitelist strips every one and re-adds only the
  * validated copy. */
 export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
   ...STREAM_FENCE_PROPERTIES,
   ...STREAM_FENCE_CLEANUP_PROPERTIES,
+  ...STREAM_FENCE_TASKKILL_PROPERTIES,
+  STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
 ]);
+
+/** A taskkill outcome and code, each still to be validated. */
+interface UncheckedWindowsTaskkill {
+  readonly outcome: unknown;
+  readonly exitCode?: unknown;
+}
+
+/** The complete taskkill group for a listed outcome, with the code only for a
+ * `nonzero_exit` and only when it is a nonzero signed 32-bit integer; an
+ * `undefined` code is an absent one. Any other combination is null. */
+function windowsTaskkillGroup(
+  outcome: unknown,
+  exitCode: unknown,
+): DesktopStreamFenceWindowsTaskkillGroup | null {
+  const known = STREAM_FENCE_TASKKILL_OUTCOMES.find(
+    (value) => value === outcome,
+  );
+  if (!known) return null;
+  if (exitCode === undefined)
+    return {
+      desktop_stream_fence_windows_taskkill_version: 1,
+      desktop_stream_fence_windows_taskkill_outcome: known,
+    };
+  return known === "nonzero_exit" && isNonzeroI32(exitCode)
+    ? {
+        desktop_stream_fence_windows_taskkill_version: 1,
+        desktop_stream_fence_windows_taskkill_outcome: known,
+        desktop_stream_fence_windows_taskkill_exit_code: exitCode,
+      }
+    : null;
+}
 
 /** Only the authorized command's exact unconfirmed-stop rejection, already
  * validated as both groups, can carry a fence origin. */
@@ -680,12 +819,15 @@ function refinesStopUnconfirmed(
 /** The complete fence group, or null unless it refines a complete authorized
  * `lifecycle_stop_unconfirmed` rejection with a listed origin. Only an
  * `owner_stop_requested` origin adds the complete cleanup pair, for a listed
- * failure; any other failure value leaves the origin pair alone. */
+ * failure; any other failure value leaves the origin pair alone. Only its
+ * `tree_unconfirmed` failure adds the complete taskkill group, for a listed
+ * outcome and valid code; anything else leaves both pairs alone. */
 export function desktopStreamFenceDiagnostic(
   rejection: DesktopInvocationRejectionDiagnostic | null,
   unknown: DesktopInvocationUnknownDiagnostic | null,
   origin: unknown,
   cleanupFailure: unknown = null,
+  windowsTaskkill: UncheckedWindowsTaskkill | null = null,
 ): DesktopStreamFenceDiagnostic | null {
   if (!refinesStopUnconfirmed(rejection, unknown)) return null;
   const known = STREAM_FENCE_ORIGINS.find((value) => value === origin);
@@ -694,19 +836,21 @@ export function desktopStreamFenceDiagnostic(
     known === STREAM_FENCE_CLEANUP_ORIGIN
       ? STREAM_FENCE_CLEANUP_FAILURES.find((value) => value === cleanupFailure)
       : undefined;
+  const taskkill =
+    failure === STREAM_FENCE_TASKKILL_FAILURE && windowsTaskkill
+      ? windowsTaskkillGroup(windowsTaskkill.outcome, windowsTaskkill.exitCode)
+      : null;
   const pair = {
     desktop_stream_fence_version: 1,
     desktop_stream_fence_origin: known,
   } as const;
-  return Object.freeze(
-    failure
-      ? {
-          ...pair,
-          desktop_stream_fence_cleanup_version: 1 as const,
-          desktop_stream_fence_cleanup_failure: failure,
-        }
-      : pair,
-  );
+  if (!failure) return Object.freeze(pair);
+  const cleanup = {
+    ...pair,
+    desktop_stream_fence_cleanup_version: 1,
+    desktop_stream_fence_cleanup_failure: failure,
+  } as const;
+  return Object.freeze(taskkill ? { ...cleanup, ...taskkill } : cleanup);
 }
 
 /** Own data values of `keys` on any property bag; a missing key or accessor
@@ -726,7 +870,10 @@ function ownDataValuesOrUndefined(
  * `lifecycle_stop_unconfirmed` groups, or nothing at all. No property is read
  * without them. The cleanup pair is read only beside a validated
  * `owner_stop_requested` origin on an acknowledged terminal, and an invalid
- * one drops alone. A getter never runs; a throwing proxy reads as nothing. */
+ * one drops alone. The taskkill group is read only beside a validated
+ * `tree_unconfirmed` cleanup pair, and an invalid one, including a code beside
+ * `output_error` or an accessor code, drops alone. A getter never runs; a
+ * throwing proxy reads as nothing. */
 export function readDesktopStreamFenceDiagnostic(
   source: unknown,
   rejection: DesktopInvocationRejectionDiagnostic | null,
@@ -758,21 +905,54 @@ export function readDesktopStreamFenceDiagnostic(
     fence.desktop_stream_fence_origin !== STREAM_FENCE_CLEANUP_ORIGIN
   )
     return fence;
+  let cleaned: DesktopStreamFenceDiagnostic | null;
   try {
     const [version, failure] = ownDataValuesOrUndefined(
       source,
       STREAM_FENCE_CLEANUP_PROPERTIES,
     );
-    return version === 1
-      ? desktopStreamFenceDiagnostic(
-          rejection,
-          unknown,
-          fence.desktop_stream_fence_origin,
-          failure,
-        )
-      : fence;
+    cleaned =
+      version === 1
+        ? desktopStreamFenceDiagnostic(
+            rejection,
+            unknown,
+            fence.desktop_stream_fence_origin,
+            failure,
+          )
+        : fence;
   } catch {
     return fence;
+  }
+  if (
+    cleaned?.desktop_stream_fence_cleanup_failure !==
+    STREAM_FENCE_TASKKILL_FAILURE
+  )
+    return cleaned;
+  try {
+    const [version, outcome] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_TASKKILL_PROPERTIES,
+    );
+    if (version !== 1) return cleaned;
+    // An absent code is no code; a present one must be a valid data value.
+    const code = Object.getOwnPropertyDescriptor(
+      source,
+      STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
+    );
+    if (code && (!("value" in code) || code.value === undefined))
+      return cleaned;
+    // An invalid group leaves exactly the validated pairs.
+    return (
+      desktopStreamFenceDiagnostic(
+        rejection,
+        unknown,
+        cleaned.desktop_stream_fence_origin,
+        cleaned.desktop_stream_fence_cleanup_failure,
+        { outcome, exitCode: code?.value },
+      ) ?? cleaned
+    );
+  } catch {
+    return cleaned;
   }
 }
 

@@ -3939,6 +3939,201 @@ describe("invocation rejection message class", () => {
           expect(sanitized).toEqual({ ...coarse, ...stopOrigin });
           expect(gets).toBe(0);
         });
+
+        describe("Windows taskkill receipt", () => {
+          const treePairs = {
+            ...stopOrigin,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+          } as const;
+          const taskkill = {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+            desktop_stream_fence_windows_taskkill_exit_code: -1,
+          } as const;
+
+          it("keeps the unsampled group beside its tree_unconfirmed pair through capture and before_send", () => {
+            jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+            const expected = { ...treePairs, ...taskkill };
+            const final = settle({
+              ...fenced,
+              // Private extras on the same carrier never survive the copy.
+              streamFence: { ...expected, pid: 4242, stderr: "PRIVATE" },
+            });
+            expect(final?.properties).toMatchObject({
+              ...expected,
+              telemetry_sampled: false,
+              telemetry_sample_rate: 1,
+            });
+            expect(fenceKeys(final!.properties)).toHaveLength(7);
+            const enriched = sanitize({
+              ...final!.properties,
+              pid: 4242,
+              command: "PRIVATE",
+            });
+            expect(enriched).toMatchObject(expected);
+            expect(fenceKeys(enriched)).toHaveLength(7);
+            expect(enriched).not.toHaveProperty("pid");
+            expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+          });
+
+          it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+            [
+              "a code beside output_error",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "output_error",
+              },
+            ],
+            [
+              "a zero code",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_exit_code: 0,
+              },
+            ],
+            [
+              "a private outcome",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "PRIVATE",
+              },
+            ],
+            [
+              "another cleanup failure",
+              {
+                ...treePairs,
+                desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+              },
+              taskkill,
+            ],
+            [
+              "a malformed cleanup pair",
+              stopOrigin,
+              {
+                ...treePairs,
+                ...taskkill,
+                desktop_stream_fence_cleanup_version: 2,
+              },
+            ],
+          ])("keeps exactly the prior pairs for %s", (_case, kept, carried) => {
+            const final = settle({
+              ...fenced,
+              streamFence: { ...kept, ...carried },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(kept));
+            expect(final?.properties).toMatchObject(kept);
+            expect(sanitize({ ...coarse, ...kept, ...carried })).toEqual({
+              ...coarse,
+              ...kept,
+            });
+          });
+
+          it("never keeps the group on an unacknowledged terminal", () => {
+            const final = settle({
+              ...fenced,
+              outcome: "incomplete",
+              reason: "deadline_exceeded",
+              terminalAcknowledged: false,
+              streamFence: { ...treePairs, ...taskkill },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(stopOrigin),
+            );
+            expect(
+              fenceKeys(
+                sanitize({
+                  ...coarse,
+                  terminalAcknowledged: false,
+                  ...treePairs,
+                  ...taskkill,
+                }),
+              ),
+            ).toEqual(Object.keys(stopOrigin));
+          });
+
+          describe("final acknowledgement projection", () => {
+            // The coarse fields without the flag; each case supplies its own.
+            const unflagged = Object.fromEntries(
+              Object.entries(coarse).filter(
+                ([key]) => key !== "terminalAcknowledged",
+              ),
+            );
+            const project = (properties: Record<string, unknown>) =>
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties,
+              }).properties!;
+
+            it.each([true, false])(
+              "keeps an ordinary own %s flag and joins only its groups",
+              (flag) => {
+                expect(
+                  project({
+                    ...unflagged,
+                    terminalAcknowledged: flag,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+                ).toEqual({
+                  ...unflagged,
+                  terminalAcknowledged: flag,
+                  ...(flag ? { ...treePairs, ...taskkill } : stopOrigin),
+                });
+              },
+            );
+
+            it.each<[string, () => Record<string, unknown>]>([
+              [
+                "an inherited",
+                () =>
+                  Object.assign(Object.create({ terminalAcknowledged: true }), {
+                    ...unflagged,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+              ],
+              [
+                "a non-enumerable",
+                () =>
+                  Object.defineProperty(
+                    { ...unflagged, ...treePairs, ...taskkill },
+                    "terminalAcknowledged",
+                    { value: true, enumerable: false },
+                  ),
+              ],
+            ])(
+              "omits %s true flag and keeps exactly the origin pair",
+              (_case, properties) => {
+                const projected = project(properties());
+                expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+                expect(projected).not.toHaveProperty("terminalAcknowledged");
+              },
+            );
+
+            it("never runs an accessor true flag and omits it with both receipts", () => {
+              let gets = 0;
+              const accessor = Object.defineProperty(
+                { ...unflagged, ...treePairs, ...taskkill },
+                "terminalAcknowledged",
+                {
+                  enumerable: true,
+                  get() {
+                    gets++;
+                    return true;
+                  },
+                },
+              );
+              const projected = project(accessor);
+              expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+              expect(projected).not.toHaveProperty("terminalAcknowledged");
+              expect(gets).toBe(0);
+            });
+          });
+        });
       });
     });
   });
