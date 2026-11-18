@@ -7,6 +7,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useConvex } from "convex/react";
+import { useState } from "react";
 import { MessageSearchDialog } from "../MessageSearchDialog";
 
 const mockRouterPush = jest.fn();
@@ -80,6 +81,28 @@ describe("MessageSearchDialog", () => {
     jest.useRealTimers();
   });
 
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "keeps search open for a composing Escape (%j)",
+    (composition) => {
+      function Search() {
+        const [open, setOpen] = useState(true);
+        return (
+          <MessageSearchDialog isOpen={open} onClose={() => setOpen(false)} />
+        );
+      }
+
+      render(<Search />);
+      const input = screen.getByPlaceholderText("Search messages...");
+      const dialog = screen.getByRole("dialog", { name: "Search Messages" });
+      fireEvent.keyDown(input, { key: "Escape", ...composition });
+      expect(dialog).toBeVisible();
+      expect(input).toHaveFocus();
+
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(dialog).not.toBeInTheDocument();
+    },
+  );
+
   it("uses one-shot search and clears it when the dialog closes", async () => {
     const query = useConvex().query as jest.Mock;
     query.mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
@@ -135,6 +158,27 @@ describe("MessageSearchDialog", () => {
 
     expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-destination");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a clipped search excerpt from splitting an emoji", async () => {
+    const query = useConvex().query as jest.Mock;
+    const prefix = `search ${"a".repeat(192)}`;
+    query.mockResolvedValue({
+      page: [makeSearchResult("emoji", `${prefix}😀tail`)],
+      isDone: true,
+      continueCursor: "",
+    });
+
+    render(<MessageSearchDialog isOpen={true} onClose={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("Search messages..."), {
+      target: { value: "search" },
+    });
+    await runDebounce();
+
+    expect(
+      await screen.findByText("search", { selector: "mark" }),
+    ).toBeVisible();
+    expect(screen.getByText(`${"a".repeat(192)}...`)).toBeVisible();
   });
 
   it("ignores stale results when the query changes", async () => {
