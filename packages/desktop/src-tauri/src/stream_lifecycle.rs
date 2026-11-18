@@ -125,6 +125,8 @@ pub(crate) struct FenceCleanupReceipt {
 /// How the Windows taskkill stop failed, for a stop request whose only
 /// unconfirmed check was that stop. Carried only beside its `tree_unconfirmed`
 /// cleanup receipt, in that same rejection, and only when separately opted in.
+/// Version 2 is version 1 plus the closed root report, only for a nonzero
+/// exit whose code the OS reported, and only when separately opted in again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FenceWindowsTaskkillReceipt {
@@ -133,6 +135,9 @@ pub(crate) struct FenceWindowsTaskkillReceipt {
     // Present only for a nonzero exit whose code the OS reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<NonZeroI32>,
+    // Present only in version 2.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_report: Option<TaskkillRootReport>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -142,17 +147,51 @@ enum TaskkillOutcome {
     OutputError,
 }
 
+/// Whether taskkill's own output was exactly its report that the requested
+/// root PID was not found, under its not-found exit code. Every other output,
+/// language or code is `unclassified`, never a confirmation of anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskkillRootReport {
+    RequestedPidNotFound,
+    Unclassified,
+}
+
 impl From<TaskkillFailure> for FenceWindowsTaskkillReceipt {
+    /// The exact version 1 receipt, as before: a classified report keeps
+    /// only its nonzero exit and code.
     fn from(failure: TaskkillFailure) -> Self {
         let (outcome, exit_code) = match failure {
             TaskkillFailure::NonzeroExit(code) => (TaskkillOutcome::NonzeroExit, code),
+            TaskkillFailure::RequestedPidNotFound => (
+                TaskkillOutcome::NonzeroExit,
+                Some(crate::platform::TASKKILL_NOT_FOUND_EXIT),
+            ),
             TaskkillFailure::OutputError => (TaskkillOutcome::OutputError, None),
         };
         Self {
             version: 1,
             outcome,
             exit_code,
+            root_report: None,
         }
+    }
+}
+
+impl FenceWindowsTaskkillReceipt {
+    /// The version 2 receipt, only for a nonzero exit whose code the OS
+    /// reported; otherwise None, so the caller keeps version 1.
+    fn with_root_report(failure: TaskkillFailure) -> Option<Self> {
+        let root_report = match failure {
+            TaskkillFailure::RequestedPidNotFound => TaskkillRootReport::RequestedPidNotFound,
+            TaskkillFailure::NonzeroExit(Some(_)) => TaskkillRootReport::Unclassified,
+            TaskkillFailure::NonzeroExit(None) | TaskkillFailure::OutputError => return None,
+        };
+        Some(Self {
+            version: 2,
+            root_report: Some(root_report),
+            ..Self::from(failure)
+        })
     }
 }
 
@@ -162,6 +201,8 @@ pub(crate) struct FenceReceipts {
     pub(crate) origin: FenceOriginReceipt,
     pub(crate) cleanup: Option<FenceCleanupReceipt>,
     pub(crate) windows_taskkill: Option<FenceWindowsTaskkillReceipt>,
+    /// The same failure's version 2 receipt, when it has one.
+    pub(crate) windows_taskkill_root_report: Option<FenceWindowsTaskkillReceipt>,
 }
 
 /// The first unconfirmed outcome. Its origin, cleanup leg and taskkill failure
@@ -306,7 +347,8 @@ impl StreamLifecycle {
     /// receipt, or None while admission is not fenced. Beside it, only for an
     /// explicit stop request whose unconfirmed leg was recorded with that
     /// origin, the leg's closed v1 receipt, and only for a `tree_unconfirmed`
-    /// leg from the Windows taskkill path, that failure's closed v1 receipt.
+    /// leg from the Windows taskkill path, that failure's closed v1 receipt,
+    /// and its closed v2 receipt when it has one.
     pub(crate) fn fence_receipts(&self) -> Option<FenceReceipts> {
         self.state().fence.map(|fence| FenceReceipts {
             origin: FenceOriginReceipt {
@@ -318,6 +360,9 @@ impl StreamLifecycle {
                 failure,
             }),
             windows_taskkill: fence.taskkill.map(FenceWindowsTaskkillReceipt::from),
+            windows_taskkill_root_report: fence
+                .taskkill
+                .and_then(FenceWindowsTaskkillReceipt::with_root_report),
         })
     }
 
@@ -786,27 +831,58 @@ mod tests {
     #[test]
     fn stream_lifecycle_windows_taskkill_receipt_serializes_only_its_closed_schema() {
         use serde_json::json;
-        for (failure, wire) in [
+        let report = |code: i32, class: &str| {
+            json!({
+                "version": 2,
+                "outcome": "nonzero_exit",
+                "exitCode": code,
+                "rootReport": class,
+            })
+        };
+        // [failure, exact v1 receipt, v2 receipt when it has one]
+        for (failure, v1, v2) in [
             (
                 TaskkillFailure::NonzeroExit(NonZeroI32::new(128)),
                 json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 128 }),
+                Some(report(128, "unclassified")),
+            ),
+            (
+                TaskkillFailure::NonzeroExit(NonZeroI32::new(255)),
+                json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 255 }),
+                Some(report(255, "unclassified")),
             ),
             (
                 TaskkillFailure::NonzeroExit(NonZeroI32::new(-1_073_741_510)),
                 json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": -1_073_741_510 }),
+                Some(report(-1_073_741_510, "unclassified")),
+            ),
+            // The classified report keeps the exact v1 bytes of its exit.
+            (
+                TaskkillFailure::RequestedPidNotFound,
+                json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 128 }),
+                Some(report(128, "requested_pid_not_found")),
             ),
             (
                 TaskkillFailure::NonzeroExit(None),
                 json!({ "version": 1, "outcome": "nonzero_exit" }),
+                None,
             ),
             (
                 TaskkillFailure::OutputError,
                 json!({ "version": 1, "outcome": "output_error" }),
+                None,
             ),
         ] {
             assert_eq!(
                 serde_json::to_value(FenceWindowsTaskkillReceipt::from(failure)).unwrap(),
-                wire
+                v1,
+                "{failure:?}"
+            );
+            assert_eq!(
+                FenceWindowsTaskkillReceipt::with_root_report(failure)
+                    .map(|receipt| serde_json::to_value(receipt).unwrap()),
+                v2,
+                "{failure:?}"
             );
         }
     }
@@ -1026,11 +1102,11 @@ mod unix_tests {
             async move { started(lifecycle.launch(lifecycle.admit(), id, &mut cmd).await) }
         };
 
-        // A later stop's tree-only leg with its taskkill failure.
+        // A later stop's tree-only leg with its classified taskkill report.
         let later_tree_stop = || {
             Some(Fence::stop_requested(
                 CleanupFailure::TreeUnconfirmed,
-                Some(TaskkillFailure::OutputError),
+                Some(TaskkillFailure::RequestedPidNotFound),
             ))
         };
 
@@ -1078,6 +1154,13 @@ mod unix_tests {
         assert_eq!(
             windows_taskkill(&tree),
             Some(TaskkillFailure::NonzeroExit(None).into())
+        );
+        // Its codeless exit has no root report, and the later stop's
+        // classified report never supplies one.
+        assert_eq!(
+            tree.fence_receipts()
+                .and_then(|receipts| receipts.windows_taskkill_root_report),
+            None
         );
 
         // A later stop never backfills a leg or taskkill failure onto an

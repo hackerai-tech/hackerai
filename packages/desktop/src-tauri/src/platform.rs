@@ -292,11 +292,20 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskkillFailure {
-    /// It exited unsuccessfully, with its nonzero code when the OS reported one.
+    /// It exited unsuccessfully, with its nonzero code when the OS reported
+    /// one, and reported nothing this matcher classifies.
     NonzeroExit(Option<std::num::NonZeroI32>),
+    /// It exited with `TASKKILL_NOT_FOUND_EXIT` and its only output was its own
+    /// English report that the requested root PID was not found. A command
+    /// report only: never evidence about that process's descendants.
+    RequestedPidNotFound,
     /// It could not be spawned or its completion could not be collected.
     OutputError,
 }
+
+/// The only exit code that can carry `RequestedPidNotFound`.
+pub(crate) const TASKKILL_NOT_FOUND_EXIT: std::num::NonZeroI32 =
+    std::num::NonZeroI32::new(128).unwrap();
 
 /// `cancel_process_tree`, which delegates here: Ok only when confirmed stopped.
 /// An unconfirmed outcome carries the closed failure only from the Windows
@@ -327,13 +336,12 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
 
     #[cfg(windows)]
     let stopped = taskkill_outcome(
+        pid,
         tokio::process::Command::new(windows_system_executable("taskkill.exe"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .await
-            // Only the status: captured output is never read.
-            .map(|output| output.status),
+            .await,
     )
     .map_err(Some);
 
@@ -346,19 +354,47 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
     stopped
 }
 
-/// Confirmed only by a successful exit, as before; otherwise which of the two
-/// existing failures occurred.
+/// Confirmed only by a successful exit, as before, whose output is never read.
+/// Otherwise which failure occurred. The captured output of a
+/// `TASKKILL_NOT_FOUND_EXIT` exit is only compared here, then dropped; no
+/// byte of it, nor the PID, leaves this function.
 #[cfg(any(windows, test))]
 fn taskkill_outcome(
-    result: std::io::Result<std::process::ExitStatus>,
+    pid: u32,
+    result: std::io::Result<std::process::Output>,
 ) -> Result<(), TaskkillFailure> {
     match result {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(TaskkillFailure::NonzeroExit(
-            status.code().and_then(std::num::NonZeroI32::new),
-        )),
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let code = output.status.code().and_then(std::num::NonZeroI32::new);
+            if code == Some(TASKKILL_NOT_FOUND_EXIT)
+                && reports_requested_pid_not_found(pid, &output.stdout, &output.stderr)
+            {
+                Err(TaskkillFailure::RequestedPidNotFound)
+            } else {
+                Err(TaskkillFailure::NonzeroExit(code))
+            }
+        }
         Err(_) => Err(TaskkillFailure::OutputError),
     }
+}
+
+/// True only when exactly one channel is nonempty and is, in full, taskkill's
+/// English report for this exact decimal PID, optionally ending in one LF or
+/// CRLF. Another language, PID, line, byte or encoding is unclassified. The
+/// comparison is bounded by the expected line's length.
+#[cfg(any(windows, test))]
+fn reports_requested_pid_not_found(pid: u32, stdout: &[u8], stderr: &[u8]) -> bool {
+    let report = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, false) => stderr,
+        (false, true) => stdout,
+        _ => return false,
+    };
+    let line = report
+        .strip_suffix(b"\r\n")
+        .or_else(|| report.strip_suffix(b"\n"))
+        .unwrap_or(report);
+    line == format!("ERROR: The process \"{pid}\" not found.").as_bytes()
 }
 
 #[cfg(unix)]
@@ -379,23 +415,43 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
     use std::os::windows::process::ExitStatusExt;
-    use std::process::ExitStatus;
+    use std::process::{ExitStatus, Output};
+
+    #[cfg(unix)]
+    fn exited(code: u8) -> ExitStatus {
+        ExitStatus::from_raw(i32::from(code) << 8)
+    }
+    #[cfg(windows)]
+    fn exited(code: u8) -> ExitStatus {
+        ExitStatus::from_raw(u32::from(code))
+    }
+
+    fn output(status: ExitStatus, stdout: &[u8], stderr: &[u8]) -> Output {
+        Output {
+            status,
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    /// A synthetic requested PID; never a real process.
+    const PID: u32 = 4242;
+    const REPORT: &[u8] = b"ERROR: The process \"4242\" not found.\r\n";
 
     #[test]
     fn taskkill_outcome_keeps_its_confirmation_and_separates_exit_from_output_error() {
-        #[cfg(unix)]
-        let exited = |code: u8| ExitStatus::from_raw(i32::from(code) << 8);
-        #[cfg(windows)]
-        let exited = |code: u8| ExitStatus::from_raw(u32::from(code));
+        let silent = |status| std::io::Result::Ok(output(status, b"", b""));
         let mut cases = vec![
-            // Only a successful exit confirms the tree stopped.
-            (Ok(exited(0)), Ok(())),
+            // Only a successful exit confirms the tree stopped, even beside
+            // the not-found report.
+            (silent(exited(0)), Ok(())),
+            (Ok(output(exited(0), b"", REPORT)), Ok(())),
             (
-                Ok(exited(1)),
+                silent(exited(1)),
                 Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(1))),
             ),
             (
-                Ok(exited(128)),
+                silent(exited(128)),
                 Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(128))),
             ),
             (
@@ -403,23 +459,126 @@ mod tests {
                 Err(TaskkillFailure::OutputError),
             ),
         ];
-        // An unsuccessful status without a code stays a nonzero exit.
+        // An unsuccessful status without a code stays a nonzero exit, even
+        // beside the not-found report.
         #[cfg(unix)]
         cases.push((
-            Ok(ExitStatus::from_raw(libc::SIGKILL)),
+            Ok(output(ExitStatus::from_raw(libc::SIGKILL), b"", REPORT)),
             Err(TaskkillFailure::NonzeroExit(None)),
         ));
         // Windows codes keep their signed 32-bit value.
         #[cfg(windows)]
         cases.push((
-            Ok(ExitStatus::from_raw(0xC000_013A)),
+            silent(ExitStatus::from_raw(0xC000_013A)),
             Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(
                 -1_073_741_510,
             ))),
         ));
         for (result, expected) in cases {
             let label = format!("{result:?}");
-            assert_eq!(taskkill_outcome(result), expected, "{label}");
+            assert_eq!(taskkill_outcome(PID, result), expected, "{label}");
         }
+    }
+
+    #[test]
+    fn taskkill_outcome_classifies_only_its_exact_requested_pid_not_found_report() {
+        let not_found = Err(TaskkillFailure::RequestedPidNotFound);
+        let unclassified = Err(TaskkillFailure::NonzeroExit(NonZeroI32::new(128)));
+        let line = b"ERROR: The process \"4242\" not found.";
+        let with = |suffix: &[u8]| [line.as_slice(), suffix].concat();
+        let cases: Vec<(&str, Vec<u8>, Vec<u8>, _)> = vec![
+            // The verified synthetic report, on either channel alone.
+            ("stderr crlf", vec![], REPORT.to_vec(), not_found),
+            ("stdout crlf", REPORT.to_vec(), vec![], not_found),
+            ("stderr lf", vec![], with(b"\n"), not_found),
+            ("stderr bare", vec![], line.to_vec(), not_found),
+            // Anything else under exit 128 is unclassified.
+            ("silent", vec![], vec![], unclassified),
+            (
+                "both channels",
+                REPORT.to_vec(),
+                REPORT.to_vec(),
+                unclassified,
+            ),
+            (
+                "other channel",
+                b"SUCCESS".to_vec(),
+                REPORT.to_vec(),
+                unclassified,
+            ),
+            (
+                "other pid",
+                vec![],
+                b"ERROR: The process \"4243\" not found.\r\n".to_vec(),
+                unclassified,
+            ),
+            (
+                "zero-padded pid",
+                vec![],
+                b"ERROR: The process \"04242\" not found.\r\n".to_vec(),
+                unclassified,
+            ),
+            (
+                "longer pid",
+                vec![],
+                b"ERROR: The process \"42420\" not found.\r\n".to_vec(),
+                unclassified,
+            ),
+            (
+                "localized",
+                vec![],
+                b"FEHLER: Der Prozess \"4242\" wurde nicht gefunden.\r\n".to_vec(),
+                unclassified,
+            ),
+            (
+                "another error",
+                vec![],
+                b"ERROR: The process \"4242\" could not be terminated.\r\n".to_vec(),
+                unclassified,
+            ),
+            ("two newlines", vec![], with(b"\r\n\r\n"), unclassified),
+            (
+                "second line",
+                vec![],
+                with(b"\r\nSUCCESS\r\n"),
+                unclassified,
+            ),
+            ("bare cr", vec![], with(b"\r"), unclassified),
+            ("trailing space", vec![], with(b" \r\n"), unclassified),
+            ("trailing nul", vec![], with(b"\0"), unclassified),
+            (
+                "leading newline",
+                vec![],
+                [b"\r\n".as_slice(), REPORT].concat(),
+                unclassified,
+            ),
+            (
+                "lowercase",
+                vec![],
+                b"error: the process \"4242\" not found.\r\n".to_vec(),
+                unclassified,
+            ),
+        ];
+        for (label, stdout, stderr, expected) in cases {
+            assert_eq!(
+                taskkill_outcome(PID, Ok(output(exited(128), &stdout, &stderr))),
+                expected,
+                "{label}"
+            );
+        }
+        // The exact report under any other nonzero code is unclassified.
+        for code in [1u8, 127, 129, 255] {
+            let expected = TaskkillFailure::NonzeroExit(NonZeroI32::new(i32::from(code)));
+            assert_eq!(
+                taskkill_outcome(PID, Ok(output(exited(code), b"", REPORT))),
+                Err(expected),
+                "{code}"
+            );
+        }
+        // The report must name the requested PID itself.
+        assert_eq!(
+            taskkill_outcome(4243, Ok(output(exited(128), b"", REPORT))),
+            unclassified
+        );
     }
 }
