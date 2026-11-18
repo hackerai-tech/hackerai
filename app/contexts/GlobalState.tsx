@@ -186,6 +186,8 @@ interface GlobalStateType {
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
+  // Increments whenever initializeChat or initializeNewChat starts a navigation.
+  getChatNavigationRevision: () => number;
 
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
@@ -473,6 +475,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const chatNavigationHandlerRef = useRef<
     ((nextChatId: string) => void) | null
   >(null);
+  // Advanced synchronously by chat navigation entry points, before the
+  // destination route commits, so async work can tell a newer navigation won.
+  const chatNavigationRevisionRef = useRef(0);
   const entitlementRefreshUserRef = useRef<string | null>(null);
   const entitlementRefreshFailureRef = useRef<{
     userId: string;
@@ -1233,6 +1238,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   }, [setMessageQueue]);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
+    chatNavigationRevisionRef.current += 1;
     chatNavigationHandlerRef.current?.(chatId);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
@@ -1242,6 +1248,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeNewChat = useCallback(() => {
+    chatNavigationRevisionRef.current += 1;
     // Allow chat component to reset its local state immediately
     if (chatResetRef.current) {
       chatResetRef.current();
@@ -1251,6 +1258,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setActiveProjectId(null);
     resetSandboxPreference();
   }, [resetSandboxPreference]);
+
+  const getChatNavigationRevision = useCallback(
+    () => chatNavigationRevisionRef.current,
+    [],
+  );
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1397,6 +1409,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
+    getChatNavigationRevision,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
