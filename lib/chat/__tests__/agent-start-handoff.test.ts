@@ -218,6 +218,62 @@ it.each(["finish", "abort"])(
   },
 );
 
+it("keeps the original run after a temporary status 503 and polls again on its cadence", async () => {
+  const originalResponse = globalThis.Response;
+  // jsdom lacks Response; the real stream still drives lifecycle callbacks.
+  globalThis.Response = class {
+    constructor(public body: ReadableStream<Uint8Array>) {}
+  } as unknown as typeof Response;
+  jest.useFakeTimers();
+  try {
+    jest.mocked(fetch).mockResolvedValueOnce(handleResponse("run-polled"));
+    // The status route's bounded ownership read timed out once.
+    jest
+      .mocked(retrieveTriggerRunStatus)
+      .mockRejectedValueOnce(
+        new Error("Trigger run status request failed: 503"),
+      )
+      .mockResolvedValueOnce("EXECUTING")
+      .mockResolvedValueOnce("CANCELED");
+    // A quiet stream that stays open until the reader is aborted.
+    jest
+      .mocked(readTriggerRunStream)
+      .mockImplementation((_runId, _streamId, options) =>
+        (async function* () {
+          await new Promise((resolve) =>
+            options.signal?.addEventListener("abort", resolve, { once: true }),
+          );
+        })(),
+      );
+    const onRunClosed = jest.fn();
+    const response = await fetchAgentLongStream(init(), undefined, onRunClosed);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(retrieveTriggerRunStatus).toHaveBeenCalledTimes(1);
+    expect(onRunClosed).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(9_999);
+    expect(retrieveTriggerRunStatus).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(retrieveTriggerRunStatus).toHaveBeenCalledTimes(2);
+    expect(onRunClosed).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    // Every poll asks about the same run; only a real terminal status ends it.
+    expect(
+      jest.mocked(retrieveTriggerRunStatus).mock.calls.map(([runId]) => runId),
+    ).toEqual(["run-polled", "run-polled", "run-polled"]);
+    const reader = response.body!.getReader();
+    while (!(await reader.read()).done) {
+      /* Drain the real stream. */
+    }
+    expect(onRunClosed).toHaveBeenCalledTimes(1);
+    expect(onRunClosed).toHaveBeenCalledWith("run-polled");
+  } finally {
+    jest.useRealTimers();
+    globalThis.Response = originalResponse;
+  }
+});
+
 describe("Agent start HTTP 413 diagnostics", () => {
   const EVENT = "agent_start_http413_diagnostic";
   const REQUEST_ID = "iad1::8x2kq-1794094000000-0123456789ab";

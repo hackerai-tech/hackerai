@@ -6,6 +6,7 @@ import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
 import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
+import { withAgentConvexScope } from "@/lib/api/agent-convex";
 
 import { recoverCrashedAgentRun } from "./agent-crash-recovery";
 import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
@@ -59,29 +60,35 @@ const clearTerminalAgentRun = async ({
   userId: string;
   runId: string;
   recoveredCrash?: boolean;
-}) => {
-  const chat = await getChatById({ id: chatId });
-  if (
-    !chat ||
-    chat.user_id !== userId ||
-    chat.active_trigger_run_id !== runId
-  ) {
-    return "stale" as const;
-  }
+}) =>
+  // A fresh bounded client: the ownership read's budget is already spent, and
+  // a stalled cleanup must still end as a retryable failure before Vercel's.
+  withAgentConvexScope("statusTerminalCleanup", async (convex) => {
+    const chat = await getChatById({ id: chatId }, convex);
+    if (
+      !chat ||
+      chat.user_id !== userId ||
+      chat.active_trigger_run_id !== runId
+    ) {
+      return "stale" as const;
+    }
 
-  await closeAgentApprovalSession(
-    chat.active_agent_approval_session_id,
-    "agent-run-terminal",
-  );
-  return await setActiveTriggerRun({
-    chatId,
-    triggerRunId: null,
-    approvalSessionId: null,
-    expectedRunId: runId,
-    ...(recoveredCrash ? { recoveredCrash } : {}),
-    clearApprovalPending: true,
+    await closeAgentApprovalSession(
+      chat.active_agent_approval_session_id,
+      "agent-run-terminal",
+    );
+    return await setActiveTriggerRun(
+      {
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: runId,
+        ...(recoveredCrash ? { recoveredCrash } : {}),
+        clearApprovalPending: true,
+      },
+      convex,
+    );
   });
-};
 
 export const createAgentStatusPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
@@ -160,7 +167,13 @@ export const createAgentStatusPost =
       userId = authContext.userId;
 
       stage = "get_chat";
-      const chat = await getChatById({ id: chatId });
+      // Bound the ownership read, including a connection that never returns
+      // headers. Its typed 503 is nonterminal: the browser keeps this run and
+      // polls again, and nothing about the run is read or changed first.
+      const ownedChatId = chatId;
+      const chat = await withAgentConvexScope("statusOwnershipRead", (convex) =>
+        getChatById({ id: ownedChatId }, convex),
+      );
       if (!chat) {
         return new NextResponse("Chat not found", { status: 404 });
       }

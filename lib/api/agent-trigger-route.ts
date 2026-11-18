@@ -1,8 +1,12 @@
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
-import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
-import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import {
+  isConvexOutcomeUnknownError,
+  type ConvexCallScope,
+} from "@/lib/db/convex-client";
+import { withAgentConvexScope } from "@/lib/api/agent-convex";
+import { getGoal, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import type { GoalReconciliationStep } from "@/lib/goals/reconciliation-diagnostics";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
@@ -450,14 +454,63 @@ type StartedAgentRunAccess = {
   approvalSessionPublicAccessToken?: string;
 };
 
+const AGENT_RUN_ASSOCIATION_UNCONFIRMED = "unconfirmed";
+
+/** A started run may own its chat: keep its goal, run, Session and ownership. */
+const isAgentRunAssociationUnconfirmed = (error: unknown): boolean =>
+  error instanceof ChatSDKError &&
+  error.metadata?.agent_run_association === AGENT_RUN_ASSOCIATION_UNCONFIRMED;
+
+/**
+ * Confirm the original association from an independent, bounded read. Even a
+ * different owner is inconclusive: that owner can detach before the pending
+ * write reaches its fence.
+ */
+const confirmStartedRunAssociation = async ({
+  chatId,
+  userId,
+  runId,
+  approvalSessionId,
+  goalGeneration,
+}: {
+  chatId: string;
+  userId: string;
+  runId: string;
+  approvalSessionId: string | undefined;
+  goalGeneration?: number;
+}): Promise<boolean> =>
+  // A fresh budget: the failed write's deadline may already be spent.
+  withAgentConvexScope("startAssociationReadBack", async (convex) => {
+    const chat = await getChatById({ id: chatId }, convex);
+    if (
+      !chat ||
+      chat.user_id !== userId ||
+      chat.deletion_started_at !== undefined ||
+      chat.active_trigger_run_id !== runId ||
+      (chat.active_agent_approval_session_id ?? null) !==
+        (approvalSessionId ?? null)
+    )
+      return false;
+    if (goalGeneration === undefined) return true;
+    const savedGoal = await getGoal(chatId, userId, convex);
+    return (
+      savedGoal != null &&
+      savedGoal.deletedAt === undefined &&
+      savedGoal.generation === goalGeneration &&
+      (savedGoal.activeRunId === undefined || savedGoal.activeRunId === runId)
+    );
+  }).catch(() => false);
+
 export const finalizeStartedAgentRun = async ({
   expectedRunId = null,
   chatId,
+  userId,
   runId,
   approvalSessionId,
   goal,
 }: {
   chatId: string;
+  userId: string;
   runId: string;
   approvalSessionId: string | undefined;
   goal?: { userId: string; generation: number };
@@ -468,6 +521,9 @@ export const finalizeStartedAgentRun = async ({
     | "associate_run"
     | "cancel_previous_run"
     | "close_previous_session" = "create_tokens";
+  let access: StartedAgentRunAccess | undefined;
+  // Once sent, the association write can commit even if its response is lost.
+  let associationSent = false;
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
@@ -485,11 +541,20 @@ export const finalizeStartedAgentRun = async ({
             })
           : Promise.resolve(undefined),
       ]);
+    access = {
+      publicAccessToken,
+      ...(approvalSessionPublicAccessToken
+        ? { approvalSessionPublicAccessToken }
+        : {}),
+    };
 
     failureStage = "associate_run";
     let expectedApprovalSessionId: string | null = null;
     if (!goal) {
-      const previousChat = await getChatById({ id: chatId });
+      const previousChat = await withAgentConvexScope(
+        "startPreviousOwnerRead",
+        (convex) => getChatById({ id: chatId }, convex),
+      );
       const previousRunId = previousChat?.active_trigger_run_id ?? null;
       expectedApprovalSessionId =
         previousChat?.active_agent_approval_session_id ?? null;
@@ -523,25 +588,40 @@ export const finalizeStartedAgentRun = async ({
     }
 
     failureStage = "associate_run";
-    // Goal startup has its own generation fence and must not reattach a worker
-    // that already finished. Ordinary sends atomically replace the prior owner.
-    const association = goal
-      ? (await goalConvex().mutation(goalApi.agentGoals.associateStartedRun, {
-          serviceKey: goalServiceKey(),
-          chatId,
-          runId,
-          approvalSessionId,
-          ...goal,
-        }))
-        ? { previousRunId: null, previousApprovalSessionId: null }
-        : "stale"
-      : await replaceActiveTriggerRun({
-          expectedRunId,
-          expectedApprovalSessionId,
-          chatId,
-          triggerRunId: runId,
-          approvalSessionId: approvalSessionId ?? null,
-        });
+    // An isolated client: an unrelated chat's pending write on the process
+    // singleton cannot hold this admission's association in the SDK queue.
+    associationSent = true;
+    const association = await withAgentConvexScope(
+      "startAssociation",
+      async (convex) => {
+        // Goal startup has its own generation fence and must not reattach a
+        // worker that already finished. Ordinary sends atomically replace the
+        // prior owner.
+        return goal
+          ? (await convex.client.mutation(
+              goalApi.agentGoals.associateStartedRun,
+              {
+                serviceKey: goalServiceKey(),
+                chatId,
+                runId,
+                approvalSessionId,
+                ...goal,
+              },
+            ))
+            ? { previousRunId: null, previousApprovalSessionId: null }
+            : ("stale" as const)
+          : await replaceActiveTriggerRun(
+              {
+                expectedRunId,
+                expectedApprovalSessionId,
+                chatId,
+                triggerRunId: runId,
+                approvalSessionId: approvalSessionId ?? null,
+              },
+              convex,
+            );
+      },
+    );
     if (association === "stale") {
       throw new ChatSDKError(
         "bad_request:api",
@@ -557,13 +637,55 @@ export const finalizeStartedAgentRun = async ({
       );
     }
 
-    return {
-      publicAccessToken,
-      ...(approvalSessionPublicAccessToken
-        ? { approvalSessionPublicAccessToken }
-        : {}),
-    };
+    return access;
   } catch (error) {
+    // A lost response is not a rejection. Decide it before any cleanup that
+    // would cancel, close or detach a run the chat may already own.
+    if (
+      access &&
+      failureStage === "associate_run" &&
+      isConvexOutcomeUnknownError(error)
+    ) {
+      const associated = await confirmStartedRunAssociation({
+        chatId,
+        userId,
+        runId,
+        approvalSessionId,
+        goalGeneration: goal?.generation,
+      });
+      try {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "agent_run_association_read_back",
+            service: "hackerai-web",
+            timestamp: new Date().toISOString(),
+            read_back_outcome: associated ? "associated" : "inconclusive",
+            association_sent: associationSent,
+            goal_association: goal !== undefined,
+            chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(
+              chatId,
+            )
+              ? chatId
+              : undefined,
+            trigger_run_id: /^run_[a-z0-9]{20,64}$/.test(runId)
+              ? runId
+              : undefined,
+          }),
+        );
+      } catch {
+        // Optional diagnostics must not change the association decision.
+      }
+      if (associated) return access;
+      // The association may still commit. If the previous-owner read failed
+      // first, an idempotent dispatch can still have returned an existing run.
+      // In either case keep its run, Session and ownership for reconnect.
+      throw new ChatSDKError(
+        "offline:api",
+        "The Agent run started, but its link to this chat could not be confirmed. Reload the chat to reconnect to it before sending again.",
+        { agent_run_association: AGENT_RUN_ASSOCIATION_UNCONFIRMED },
+      );
+    }
     // A started run must never be returned when its chat association fails.
     // Close both resources because Session close and run cancellation are
     // independently idempotent and either one may already be terminal.
@@ -573,13 +695,18 @@ export const finalizeStartedAgentRun = async ({
         "agent-run-association-failed",
       ),
       cancelAgentTriggerRun(runId),
-      setActiveTriggerRun({
-        chatId,
-        triggerRunId: null,
-        approvalSessionId: null,
-        expectedRunId: runId,
-        clearApprovalPending: true,
-      }),
+      withAgentConvexScope("startCleanup", (convex) =>
+        setActiveTriggerRun(
+          {
+            chatId,
+            triggerRunId: null,
+            approvalSessionId: null,
+            expectedRunId: runId,
+            clearApprovalPending: true,
+          },
+          convex,
+        ),
+      ),
     ]);
     try {
       const associationRejection =
@@ -704,10 +831,12 @@ export const createAgentTriggerPost = ({
       const goal = reservedGoal;
       reservedGoal = undefined;
       try {
-        await goalConvex().mutation(goalApi.agentGoals.failDispatch, {
-          serviceKey: goalServiceKey(),
-          ...goal,
-        });
+        await withAgentConvexScope("startGoalRelease", (convex) =>
+          convex.client.mutation(goalApi.agentGoals.failDispatch, {
+            serviceKey: goalServiceKey(),
+            ...goal,
+          }),
+        );
       } catch {
         // A persistence outage leaves the goal fenced for explicit recovery.
       }
@@ -833,7 +962,9 @@ export const createAgentTriggerPost = ({
       // soon as possible after the suspension check succeeds.
       stage = "load_chat_and_preferences";
       const [existingChat, userCustomization] = await Promise.all([
-        getChatById({ id: chatId }),
+        withAgentConvexScope("startChatRead", (convex) =>
+          getChatById({ id: chatId }, convex),
+        ),
         getUserCustomization({ userId }),
       ]);
       if (
@@ -866,9 +997,16 @@ export const createAgentTriggerPost = ({
       }
       stage = "reconcile_goal";
       const existingGoal = existingChat
-        ? await reconcileGoal(chatId, userId, (step) => {
-            goalReconciliationStep = step;
-          })
+        ? await withAgentConvexScope("startGoalReconciliation", (convex) =>
+            reconcileGoal(
+              chatId,
+              userId,
+              (step) => {
+                goalReconciliationStep = step;
+              },
+              convex,
+            ),
+          )
         : null;
       // Later local guards did not fail inside a reconciliation step.
       goalReconciliationStep = undefined;
@@ -1022,11 +1160,11 @@ export const createAgentTriggerPost = ({
         localDesktopAttachmentsPrepared = true;
       }
 
-      const reserveGoal = async () => {
+      const reserveGoal = async (persistence: ConvexCallScope) => {
         if (!goalRequest) return;
         const savedGoal =
           goalRequest.action === "start"
-            ? await goalConvex().mutation(goalApi.agentGoals.start, {
+            ? await persistence.client.mutation(goalApi.agentGoals.start, {
                 serviceKey: goalServiceKey(),
                 chatId,
                 userId,
@@ -1043,7 +1181,7 @@ export const createAgentTriggerPost = ({
                 permissionMode: agentPermissionMode,
                 selectedModel: selectedModelOverride ?? "auto",
               })
-            : await goalConvex().mutation(goalApi.agentGoals.control, {
+            : await persistence.client.mutation(goalApi.agentGoals.control, {
                 serviceKey: goalServiceKey(),
                 chatId,
                 userId,
@@ -1061,37 +1199,47 @@ export const createAgentTriggerPost = ({
         );
       };
 
-      // Fence an existing goal before writing input that a queued worker could
-      // otherwise consume. New chats must exist before reserving their goal.
-      if (existingChat) await reserveGoal();
-      stage = "persist_user_message";
-      await handleInitialChatAndUserMessage({
-        chatId,
-        userId,
-        messages: messagesForPersistence,
-        regenerate,
-        chat: existingChat ?? null,
-        isHidden: isAutoContinue ? true : undefined,
-        projectId: projectContext.projectId,
-        sandboxType: sandboxPreference ?? "e2b",
-        onPersistenceStep: (step) => {
-          initialPersistenceStep = step;
-        },
-      });
-      initialPersistenceStep = undefined;
-
-      if (!existingChat) await reserveGoal();
-      if (reservedGoal && goalRequest?.action === "start") {
-        const goalMessage = messagesForPersistence.findLast(
-          (m) => m.role === "user",
+      // One isolated, bounded client runs this admission's pre-dispatch writes
+      // in order. Started after Desktop attachment uploads so they cannot
+      // spend it, and outside the singleton's queue so another chat's pending
+      // write cannot hold them.
+      await withAgentConvexScope("startPersistence", async (persistence) => {
+        // Fence an existing goal before writing input that a queued worker
+        // could otherwise consume. New chats must exist before reserving.
+        if (existingChat) await reserveGoal(persistence);
+        stage = "persist_user_message";
+        await handleInitialChatAndUserMessage(
+          {
+            chatId,
+            userId,
+            messages: messagesForPersistence,
+            regenerate,
+            chat: existingChat ?? null,
+            isHidden: isAutoContinue ? true : undefined,
+            projectId: projectContext.projectId,
+            sandboxType: sandboxPreference ?? "e2b",
+            onPersistenceStep: (step) => {
+              initialPersistenceStep = step;
+            },
+          },
+          persistence,
         );
-        if (goalMessage)
-          await goalConvex().mutation(goalApi.agentGoals.markMessage, {
-            serviceKey: goalServiceKey(),
-            ...reservedGoal,
-            messageId: goalMessage.id,
-          });
-      }
+        initialPersistenceStep = undefined;
+
+        if (!existingChat) await reserveGoal(persistence);
+        const goal = reservedGoal;
+        if (goal && goalRequest?.action === "start") {
+          const goalMessage = messagesForPersistence.findLast(
+            (m) => m.role === "user",
+          );
+          if (goalMessage)
+            await persistence.client.mutation(goalApi.agentGoals.markMessage, {
+              serviceKey: goalServiceKey(),
+              ...goal,
+              messageId: goalMessage.id,
+            });
+        }
+      });
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =
@@ -1334,6 +1482,7 @@ export const createAgentTriggerPost = ({
         await finalizeStartedAgentRun({
           expectedRunId: existingChat?.active_trigger_run_id ?? null,
           chatId,
+          userId,
           runId,
           approvalSessionId,
           goal: reservedGoal,
@@ -1371,6 +1520,9 @@ export const createAgentTriggerPost = ({
       });
       return response;
     } catch (error) {
+      // The dispatched worker may already own this generation; failing its
+      // dispatch would fence out the run the chat can still reconnect to.
+      if (isAgentRunAssociationUnconfirmed(error)) reservedGoal = undefined;
       await releaseReservedGoal();
       return handleAgentRouteError({
         error,

@@ -178,13 +178,16 @@ describe("agent status route", () => {
         "approval-1",
         "agent-run-terminal",
       );
-      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
-        chatId: "chat-1",
-        triggerRunId: null,
-        approvalSessionId: null,
-        expectedRunId: "run-1",
-        clearApprovalPending: true,
-      });
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+        {
+          chatId: "chat-1",
+          triggerRunId: null,
+          approvalSessionId: null,
+          expectedRunId: "run-1",
+          clearApprovalPending: true,
+        },
+        expect.anything(),
+      );
       expect(mockRecover).not.toHaveBeenCalled();
     },
   );
@@ -330,6 +333,7 @@ describe("agent status route", () => {
     await pending;
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
       expect.objectContaining({ expectedRunId: "run-1", recoveredCrash: true }),
+      expect.anything(),
     );
     mockSetActiveTriggerRun.mockClear();
     mockRecover.mockRejectedValueOnce(
@@ -402,7 +406,11 @@ describe("agent status route", () => {
       status: "EXECUTING",
       terminal: false,
     });
-    expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
+    // The ownership read always carries its own bounded client.
+    expect(mockGetChatById).toHaveBeenCalledWith(
+      { id: "chat-1" },
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     // Exactly one read of the owned active run, with only the body callback.
     expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
     const [readRunId, readOptions] = mockRunsRetrieve.mock.calls[0] as [
@@ -462,13 +470,16 @@ describe("agent status route", () => {
       "approval-session-1",
       "agent-run-terminal",
     );
-    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      triggerRunId: null,
-      approvalSessionId: null,
-      expectedRunId: "run-1",
-      clearApprovalPending: true,
-    });
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      {
+        chatId: "chat-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: "run-1",
+        clearApprovalPending: true,
+      },
+      expect.anything(),
+    );
   });
 
   it("does not reveal status for a chat owned by another user", async () => {

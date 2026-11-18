@@ -1,6 +1,6 @@
 import { captureGoalLifecycle } from "./analytics";
 import { api } from "@/convex/_generated/api";
-import { getConvexClient } from "@/lib/db/convex-client";
+import { getConvexClient, type ConvexCallScope } from "@/lib/db/convex-client";
 import PostHogClient from "@/app/posthog";
 import { getCurrentAgentEntitlementContext } from "@/lib/db/actions";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
@@ -26,12 +26,16 @@ export const goalServiceKey = () => {
 export async function getGoal(
   chatId: string,
   userId: string,
+  scope?: ConvexCallScope,
 ): Promise<Doc<"agent_goals"> | null> {
-  return getConvexClient().query(api.agentGoals.getForBackend, {
-    serviceKey: goalServiceKey(),
-    chatId,
-    userId,
-  });
+  return (scope?.client ?? getConvexClient()).query(
+    api.agentGoals.getForBackend,
+    {
+      serviceKey: goalServiceKey(),
+      chatId,
+      userId,
+    },
+  );
 }
 export async function assertGoalExecutionAllowed(
   payload: GoalExecutionContext,
@@ -130,6 +134,9 @@ export async function reconcileGoal(
   chatId: string,
   userId: string,
   onStep?: (step: GoalReconciliationStep) => void,
+  // Bounds this reconciliation's Convex reads and writes; omitted callers keep
+  // the shared client.
+  scope?: ConvexCallScope,
 ) {
   // Diagnostics name the step in progress; they cannot alter reconciliation.
   const enter = (step: GoalReconciliationStep) => {
@@ -140,7 +147,7 @@ export async function reconcileGoal(
     }
   };
   enter("get_goal");
-  const goal = await getGoal(chatId, userId);
+  const goal = await getGoal(chatId, userId, scope);
   if (!goal?.activeRunId) return goal;
   enter("retrieve_run");
   const { runs } = await import("@trigger.dev/sdk");
@@ -164,24 +171,30 @@ export async function reconcileGoal(
   )
     return goal;
   enter("finish_goal");
-  const settled = await getConvexClient().mutation(api.agentGoals.finish, {
-    serviceKey: goalServiceKey(),
-    chatId,
-    userId,
-    runId: goal.activeRunId,
-    canceled: run.status === "CANCELED",
-    failed: run.status !== "CANCELED",
-    usageExhausted: false,
-  });
+  const settled = await (scope?.client ?? getConvexClient()).mutation(
+    api.agentGoals.finish,
+    {
+      serviceKey: goalServiceKey(),
+      chatId,
+      userId,
+      runId: goal.activeRunId,
+      canceled: run.status === "CANCELED",
+      failed: run.status !== "CANCELED",
+      usageExhausted: false,
+    },
+  );
   enter("clear_active_run");
   const { setActiveTriggerRun } = await import("@/lib/db/actions");
-  await setActiveTriggerRun({
-    chatId,
-    triggerRunId: null,
-    approvalSessionId: null,
-    expectedRunId: goal.activeRunId,
-    clearApprovalPending: true,
-  });
+  await setActiveTriggerRun(
+    {
+      chatId,
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedRunId: goal.activeRunId,
+      clearApprovalPending: true,
+    },
+    scope,
+  );
   if (settled) {
     enter("capture_lifecycle");
     await captureGoalLifecycle(
@@ -192,5 +205,5 @@ export async function reconcileGoal(
     return settled;
   }
   enter("reload_goal");
-  return await getGoal(chatId, userId);
+  return await getGoal(chatId, userId, scope);
 }

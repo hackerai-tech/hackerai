@@ -137,7 +137,8 @@ describe("reconcileGoal step observation", () => {
         usageExhausted: false,
       }),
     );
-    expect(clear).toHaveBeenCalledWith({
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear.mock.calls[0][0]).toEqual({
       chatId: "chat",
       triggerRunId: null,
       approvalSessionId: null,
