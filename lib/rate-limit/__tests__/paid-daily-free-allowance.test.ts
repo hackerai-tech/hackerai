@@ -61,6 +61,11 @@ describe("paid daily free allowance", () => {
           return [1, "ok", nextRequests, costUsed];
         }
 
+        if (args.length === 1) {
+          // Mirrors the read-only exact-token ownership check.
+          return readRedisKey(keys[0]) === String(args[0]) ? 1 : 0;
+        }
+
         if (args.length === 3) {
           const [costKey, reservationKey] = keys;
           const [costPointsRaw, _ttlMs, token] = args;
@@ -478,6 +483,187 @@ describe("paid daily free allowance", () => {
     await expect(
       mod.recordPaidDailyFreeAllowanceCost("user_123", 0.1, replacement),
     ).resolves.toMatchObject({ recorded: true, nextCostDollars: 0.1 });
+  });
+
+  describe("resuming an admitted run after a user wait", () => {
+    const snapshotRedis = () => ({
+      store: new Map(redisStore),
+      expiry: new Map(redisExpiry),
+    });
+
+    it("confirms the exact original lease without renewing or spending, then settles its original day", async () => {
+      const mod = getIsolatedModule();
+      jest.setSystemTime(new Date("2026-06-11T23:30:00.000Z"));
+      const admitted =
+        await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+      expect(admitted.allowed).toBe(true);
+
+      // The reply arrives after UTC midnight, hours into the run.
+      jest.setSystemTime(new Date("2026-06-12T03:00:00.000Z"));
+      const before = snapshotRedis();
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: true });
+      expect(snapshotRedis()).toEqual(before);
+
+      // Another request is still serialized behind the resumed run's lease.
+      await expect(
+        mod.reservePaidDailyFreeAllowanceRequest(askContext),
+      ).resolves.toMatchObject({
+        allowed: false,
+        blockReason: "request_in_progress",
+      });
+      await expect(
+        mod.recordPaidDailyFreeAllowanceCost("user_123", 0.2, admitted),
+      ).resolves.toMatchObject({ recorded: true, nextCostDollars: 0.2 });
+      expect(
+        readRedisKey(
+          mod.getPaidDailyFreeAllowanceKeys("user_123", "2026-06-11").costKey,
+        ),
+      ).toBe(2_000);
+    });
+
+    it("rejects a lease that expired during the wait, even after a replacement is admitted", async () => {
+      const mod = getIsolatedModule();
+      const admitted =
+        await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+
+      jest.setSystemTime(new Date("2026-06-11T18:06:00.000Z"));
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+
+      const replacement =
+        await mod.reservePaidDailyFreeAllowanceRequest(askContext);
+      expect(replacement.allowed).toBe(true);
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          replacement,
+        ),
+      ).resolves.toEqual({ owned: true });
+    });
+
+    it("rejects a settled lease and a different token for the live lease", async () => {
+      const mod = getIsolatedModule();
+      const admitted =
+        await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+      const forged = {
+        ...admitted,
+        redisReservation: {
+          ...admitted.redisReservation!,
+          token: "another-token",
+        },
+      };
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          forged,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "another_user",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+
+      await mod.recordPaidDailyFreeAllowanceCost("user_123", 0.05, admitted);
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+    });
+
+    it("fails closed when Redis cannot verify a real lease", async () => {
+      const mod = getIsolatedModule();
+      const admitted =
+        await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+
+      mockRedis.eval.mockRejectedValueOnce(new Error("redis down"));
+      await expect(
+        mod.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "redis_unavailable" });
+
+      // A local process losing Redis cannot skip a lease it really holds.
+      mockCreateRedisClient.mockReturnValue(null);
+      await expect(
+        getIsolatedModule().verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "redis_unavailable" });
+    });
+
+    it("accepts a lease-less run only when it was admitted locally without Redis", async () => {
+      mockCreateRedisClient.mockReturnValue(null);
+      const local = getIsolatedModule();
+      const admitted =
+        await local.reservePaidDailyFreeAllowanceRequest(agentContext);
+      expect(admitted).toMatchObject({
+        allowed: true,
+        status: { rateLimitSkipped: true },
+      });
+      expect(admitted.redisReservation).toBeUndefined();
+      await expect(
+        local.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: true });
+
+      const unmarked = {
+        ...admitted,
+        status: { ...admitted.status, rateLimitSkipped: undefined },
+      };
+      await expect(
+        local.verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          unmarked,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+      await expect(
+        local.verifyPaidDailyFreeAllowanceReservationOwnership("user_123", {
+          ...admitted,
+          allowed: false,
+        }),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+
+      process.env.NODE_ENV = "production";
+      await expect(
+        getIsolatedModule().verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+
+      // Redis appearing later leaves nothing to verify against.
+      process.env.NODE_ENV = "test";
+      mockCreateRedisClient.mockReturnValue(mockRedis);
+      await expect(
+        getIsolatedModule().verifyPaidDailyFreeAllowanceReservationOwnership(
+          "user_123",
+          admitted,
+        ),
+      ).resolves.toEqual({ owned: false, reason: "reservation_unavailable" });
+    });
   });
 
   it("respects a date-scoped lease owned by an older worker", async () => {
