@@ -14,6 +14,11 @@ const LOCAL_STOP_REASONS = [
   "setup_error",
   "presence_timeout",
   "observer_recovery_expired",
+  // A Desktop host that proved its native session may return in the window.
+  "selected_host_recovery_expired",
+  "desktop_session_replaced",
+  "desktop_session_unverified",
+  "desktop_command_unreconciled",
   "watched_connection_replaced",
   "selected_connection_unavailable",
   "local_recovery_requested",
@@ -33,7 +38,7 @@ export type LocalStopDetails = {
   lastPositivePresenceAgeMs?: number;
   /**
    * First winning observer callback's code; its namespace depends on the
-   * reason. An expired recovery has no callback, so it carries none.
+   * reason. An expired recovery or failed session proof has no callback.
    */
   callbackCode?: number;
   /** Public observer client state before the watcher's own disconnect. */

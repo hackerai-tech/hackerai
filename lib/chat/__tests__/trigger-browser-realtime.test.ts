@@ -264,6 +264,59 @@ describe("readTriggerRunStream recovery", () => {
     expect(requestHeaders(fetchMock, 2)["Last-Event-ID"]).toBe("4");
   });
 
+  it("releases each rejected response before retrying, refreshing or failing", async () => {
+    jest.spyOn(Math, "random").mockReturnValue(0);
+    const caller = new AbortController();
+    const requestSignals: AbortSignal[] = [];
+    const releasedBeforeNextRequest: boolean[] = [];
+    const queuedResponses = [
+      response(503),
+      response(401),
+      streamResponse("7", { value: "recovered" }),
+      response(404),
+    ];
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async (_url, init) => {
+        const previousSignal = requestSignals.at(-1);
+        if (previousSignal)
+          releasedBeforeNextRequest.push(previousSignal.aborted);
+        requestSignals.push(init?.signal as AbortSignal);
+        return queuedResponses.shift() as Response;
+      });
+    global.fetch = fetchMock;
+    let unauthorizedReleasedBeforeRefresh: boolean | undefined;
+    const refreshAccessToken = jest
+      .fn<() => Promise<string>>()
+      .mockImplementation(async () => {
+        unauthorizedReleasedBeforeRefresh = requestSignals[1]?.aborted;
+        return "fresh-run-token";
+      });
+    const values: unknown[] = [];
+
+    await expect(
+      collectInto(
+        readTriggerRunStream("run_123", "ui", {
+          accessToken: "expired-run-token",
+          refreshAccessToken,
+          signal: caller.signal,
+        }),
+        values,
+      ),
+    ).rejects.toThrow("Trigger stream request failed: 404");
+
+    expect(values).toEqual([{ value: "recovered" }]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    // 503 released before the retry; 401 released before the refresh.
+    expect(releasedBeforeNextRequest.slice(0, 2)).toEqual([true, true]);
+    expect(unauthorizedReleasedBeforeRefresh).toBe(true);
+    expect(requestSignals[3]?.aborted).toBe(true);
+    expect(requestHeaders(fetchMock, 3)["Last-Event-ID"]).toBe("7");
+    // Releasing an HTTP response must not cancel the caller's Agent run.
+    expect(caller.signal.aborted).toBe(false);
+  });
+
   it("stops without reconnecting when the caller aborts during a read", async () => {
     const controller = new AbortController();
     let requestSignal: AbortSignal | undefined;

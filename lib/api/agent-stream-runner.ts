@@ -857,6 +857,8 @@ export type AgentStreamContext = {
     getSandboxType(toolName: string): string | undefined;
     getSandboxInfo?(): import("@/types").SandboxInfo | null;
     supportsInteractivePty?(): Promise<boolean>;
+    /** Fresh verification of the run's watched local host before completion. */
+    confirmLocalConnection?(signal?: AbortSignal): Promise<void>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
@@ -3466,8 +3468,34 @@ export async function createAgentStream(
       // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
       if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
-      const { finishReason, usage, response } = finishResult;
+      // Close terminals first: a confirmed exit is a known outcome, so an
+      // open healthy session never reads as uncertain work below.
+      await ptySessionManager
+        .closeAll(ctx.chatId)
+        .catch((err) =>
+          console.error("[agent-stream] PTY closeAll (onFinish) failed:", err),
+        );
+      // A model can finish while its selected host is recovering. Completion
+      // waits for fresh proof of the same session, or for the loss; a stop,
+      // budget or timeout never waits on the host.
+      let localConnectionLoss: LocalConnectionLostError | undefined;
+      if (
+        !abortSignal.aborted &&
+        ctx.getHardTimeoutReason() === null &&
+        !state.stoppedDueToElapsedTimeout &&
+        !state.stoppedDueToBudgetExhaustion &&
+        !state.stoppedDueToAgentRunSpendCap
+      ) {
+        try {
+          await ctx.sandboxManager.confirmLocalConnection?.(abortSignal);
+        } catch (error) {
+          if (error instanceof LocalConnectionLostError)
+            localConnectionLoss = error;
+          else if (!abortSignal.aborted) throw error;
+        }
+      }
       const hardReason = ctx.getHardTimeoutReason();
+      const { finishReason, usage, response } = finishResult;
       if (
         hardReason === null &&
         state.postSummarizationContinuationActive &&
@@ -3490,6 +3518,7 @@ export async function createAgentStream(
         });
       }
       if (
+        localConnectionLoss ||
         ctx.abortController.signal.reason instanceof LocalConnectionLostError
       ) {
         state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
@@ -3599,11 +3628,6 @@ export async function createAgentStream(
         settled: true,
       });
 
-      await ptySessionManager
-        .closeAll(ctx.chatId)
-        .catch((err) =>
-          console.error("[agent-stream] PTY closeAll (onFinish) failed:", err),
-        );
       if (
         historyEnabled &&
         historyToSave &&

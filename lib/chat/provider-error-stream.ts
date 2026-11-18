@@ -25,8 +25,14 @@ const isAttemptTerminal = (chunk: UIMessageChunk) =>
  *   unsettled, so a terminal chunk is never dropped without a scheduled retry.
  *
  * Settling is one-shot. Create one deferral per attempt; never share it.
+ *
+ * `publishImmediately` names an `error` that can never be recovered and must
+ * be shown at once (a trusted local safety-read failure). When it returns true
+ * for an arriving `error`, the attempt is released then and there.
  */
-export function createProviderErrorDeferral() {
+export function createProviderErrorDeferral(
+  options: { publishImmediately?: () => boolean } = {},
+) {
   let settlement: "pending" | "released" | "discarded" = "pending";
   let held: UIMessageChunk[] | undefined;
   let publish: ((chunk: UIMessageChunk) => void) | undefined;
@@ -60,7 +66,14 @@ export function createProviderErrorDeferral() {
           };
         },
         transform(chunk, controller) {
-          if (held) held.push(chunk);
+          if (
+            settlement === "pending" &&
+            chunk.type === "error" &&
+            options.publishImmediately?.()
+          ) {
+            settle("released");
+            controller.enqueue(chunk);
+          } else if (held) held.push(chunk);
           else if (settlement === "pending" && isAttemptTerminal(chunk))
             held = [chunk];
           else if (settlement === "discarded" && isAttemptTerminal(chunk))

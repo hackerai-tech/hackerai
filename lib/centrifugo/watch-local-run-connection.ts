@@ -6,6 +6,17 @@ import {
   presenceHasConnectionId,
 } from "./presence";
 import {
+  DESKTOP_SESSION_CHALLENGE,
+  MAX_RECONCILED_COMMANDS,
+  newDesktopSessionNonce,
+  parseDesktopSessionProof,
+  readPublisherConnectionId,
+  sameDesktopSession,
+  type DesktopDispatchGate,
+  type DesktopSessionIdentity,
+  type PublishedDesktopCommand,
+} from "./desktop-session";
+import {
   LocalConnectionLostError,
   readCallbackCode,
   readClientState,
@@ -18,13 +29,17 @@ import {
 // session may restore availability, but must never revive the interrupted run.
 const PRESENCE_INTERVAL_MS = 5_000;
 const PRESENCE_TIMEOUT_MS = 10_000;
-// Once the selected host is verified, an outage of this observer alone may
-// recover. The window is fixed at its first interruption: neither SDK retries
-// nor failed lookups extend it, and only a new positive lookup ends it.
+// Once the selected host is verified, an outage may recover. The window is
+// fixed at its first interruption: neither SDK retries, failed lookups nor
+// failed proofs extend it, and only fresh verification ends it.
 const OBSERVER_RECOVERY_MS = 15_000;
 // The SDK owns every reconnect and resubscribe; cap its jittered backoff so
 // several attempts fit in the window.
 const MAX_RETRY_DELAY_MS = 3_000;
+// Only after a proven Desktop baseline: look up and challenge again quickly.
+const SESSION_RECOVERY_CHECK_MS = 1_000;
+const SESSION_PROOF_TIMEOUT_MS = 3_000;
+const MAX_BASELINE_ATTEMPTS = 3;
 
 function readClock(read: () => number): number | undefined {
   try {
@@ -65,17 +80,51 @@ type Recovery = {
   monotonicDeadline?: number;
   /** The interrupting close, kept past the SDK's own new sockets. */
   close: SocketClose;
+  /** The selected host itself was seen leaving, not just this observer. */
+  hostDeparted: boolean;
+};
+
+type Challenge = {
+  nonce: string;
+  /** The interruption epoch it was issued in; a later one supersedes it. */
+  epoch: number;
+  /** Commands published before it was issued; empty for the baseline. */
+  commands: readonly PublishedDesktopCommand[];
+  timer: ReturnType<typeof setTimeout>;
+};
+
+export type LocalRunConnectionWatch = DesktopDispatchGate & {
+  /** Normal completion, or the owner's own stop with its cause. Idempotent. */
+  stop(cause?: Error): void;
+  /**
+   * Settles only after a verification that starts now: a fresh presence
+   * lookup, plus a fresh session proof once a Desktop baseline exists. A
+   * cached ready state never satisfies it. Shares the fixed recovery window;
+   * rejects with the loss, a monitoring stop, or the signal's reason.
+   */
+  confirmReady(signal?: AbortSignal): Promise<void>;
+};
+
+/** Desktop hosts only: the run's published commands, read when reconciling. */
+export type DesktopSessionReconciliation = {
+  publishedCommands(): readonly PublishedDesktopCommand[];
 };
 
 export function watchLocalRunConnection({
   userId,
   connectionId,
   onLost,
+  desktopSession,
 }: {
   userId: string;
   connectionId: string;
   onLost: (error: LocalConnectionLostError) => void;
-}): () => void {
+  /**
+   * Omitted for CLI hosts: they never answer a session challenge, so any
+   * departure of the selected host stops the run as before.
+   */
+  desktopSession?: DesktopSessionReconciliation;
+}): LocalRunConnectionWatch {
   let stopped = false;
   let client: Centrifuge | undefined;
   let subscription: Subscription | undefined;
@@ -85,11 +134,27 @@ export function watchLocalRunConnection({
   // Bumped by every subscription change and lookup: only the current lookup
   // of the current subscription may report, and its timers die with it.
   let generation = 0;
+  // Bumped only by interruptions: a session proof answers one epoch.
+  let epoch = 0;
   let subscribed = false;
   let everSubscribed = false;
   let hadPositivePresence = false;
   let lastPositivePresenceAt: number | undefined;
   let clientStateAtStop: LocalStopClientState | undefined;
+  // Readiness is live state: any interruption clears it before its handler
+  // returns, so a dispatch can never pass on an earlier verification.
+  let ready = false;
+  let terminal: unknown;
+  const waiters = new Set<{
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>();
+  // Host grace exists only once the native session proved its identity while
+  // positively present; without it, a departure stops the run.
+  let baseline: DesktopSessionIdentity | undefined;
+  let baselineAttempts = 0;
+  let baselineUnsupported = false;
+  let challenge: Challenge | undefined;
   // Only the current socket attempt's own close listener, and its pair if the
   // native close preceded the first stop. Never the reason, URL or frames.
   let socketWatch: SocketWatch | undefined;
@@ -121,48 +186,74 @@ export function watchLocalRunConnection({
       // Without its EventTarget API the socket is simply not observed.
     }
   };
-  const stop = () => {
-    if (stopped) return;
+  const markReady = () => {
+    ready = true;
+    for (const waiter of [...waiters]) waiter.resolve();
+  };
+  const clearChallenge = () => {
+    clearTimeout(challenge?.timer);
+    challenge = undefined;
+  };
+  const dispose = () => {
+    if (stopped) return false;
     stopped = true;
+    ready = false;
     unwatchSocket();
     clearTimeout(timer);
     clearTimeout(deadline);
     clearTimeout(recovery?.timer);
+    clearChallenge();
     subscription?.removeAllListeners();
     client?.removeAllListeners();
     // Before our own disconnect, which would always report "disconnected".
     clientStateAtStop = readClientState(client);
     client?.disconnect();
+    return true;
   };
-  // The first cause wins; stop() makes every later trigger a no-op.
+  const rejectWaiters = (error: unknown) => {
+    terminal = error;
+    for (const waiter of [...waiters]) waiter.reject(error);
+  };
+  const stop = (cause?: Error) => {
+    if (!dispose()) return;
+    rejectWaiters(
+      cause ?? new Error("Local run connection monitoring has stopped."),
+    );
+  };
+  // The first cause wins; dispose() makes every later trigger a no-op.
   const lost = (
     reason: LocalStopReason,
     observed?: { context?: unknown; close: SocketClose },
   ) => {
-    if (stopped) return;
-    stop();
+    if (!dispose()) return;
     const now = monotonicNow();
-    onLost(
-      new LocalConnectionLostError(reason, {
-        connectionId,
-        hadPositivePresence,
-        lastPositivePresenceAgeMs:
-          now === undefined || lastPositivePresenceAt === undefined
-            ? undefined
-            : now - lastPositivePresenceAt,
-        // Only the observer's own state; never a callback reason or channel.
-        ...(observed && {
-          callbackCode: readCallbackCode(observed.context),
-          clientState: clientStateAtStop,
-          ...observed.close,
-        }),
+    const error = new LocalConnectionLostError(reason, {
+      connectionId,
+      hadPositivePresence,
+      lastPositivePresenceAgeMs:
+        now === undefined || lastPositivePresenceAt === undefined
+          ? undefined
+          : now - lastPositivePresenceAt,
+      // Only the observer's own state; never a callback reason or channel.
+      ...(observed && {
+        callbackCode: readCallbackCode(observed.context),
+        clientState: clientStateAtStop,
+        ...observed.close,
       }),
-    );
+    });
+    rejectWaiters(error);
+    onLost(error);
   };
   const callbackLost = (reason: LocalStopReason, context: unknown) =>
     lost(reason, { context, close: socketClose });
   const expire = () => {
-    if (recovery) lost("observer_recovery_expired", { close: recovery.close });
+    if (recovery)
+      lost(
+        recovery.hostDeparted
+          ? "selected_host_recovery_expired"
+          : "observer_recovery_expired",
+        { close: recovery.close },
+      );
   };
   // Either clock passing the deadline ends it, even if its timer is late.
   const recoveryExpired = ({ wallDeadline, monotonicDeadline }: Recovery) => {
@@ -177,12 +268,18 @@ export function watchLocalRunConnection({
         monotonic >= monotonicDeadline)
     );
   };
-  // Invalidates the current lookup and its timers. Only the first
+  const scheduleCheck = (delay: number) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => void check(), delay);
+  };
+  // Invalidates the current lookup, proof and readiness. Only the first
   // interruption of an outage starts its window.
   const interrupt = () => {
     generation++;
-    clearTimeout(timer);
+    epoch++;
+    ready = false;
     clearTimeout(deadline);
+    clearChallenge();
     if (!recovery) {
       const wall = wallNow();
       const monotonic = monotonicNow();
@@ -195,16 +292,153 @@ export function watchLocalRunConnection({
             ? undefined
             : monotonic + OBSERVER_RECOVERY_MS,
         close: socketClose,
+        hostDeparted: false,
       };
     }
-    // A subscription that is still current is looked up at the normal cadence.
+    clearTimeout(timer);
+    // A subscription that is still current is looked up again.
     if (subscribed)
-      timer = setTimeout(() => void check(), PRESENCE_INTERVAL_MS);
+      scheduleCheck(
+        baseline ? SESSION_RECOVERY_CHECK_MS : PRESENCE_INTERVAL_MS,
+      );
   };
   // Before verification any observer failure still stops the run.
   const unconfirmed = (reason: LocalStopReason) => {
     if (hadPositivePresence) interrupt();
     else lost(reason);
+  };
+  // A socket or presence return is never proof of the same native session:
+  // only a proven baseline lets the host itself return within the window.
+  const hostDeparted = (
+    reason: "selected_host_left" | "selected_presence_absent",
+  ) => {
+    if (!baseline) {
+      lost(reason);
+      return;
+    }
+    interrupt();
+    recovery!.hostDeparted = true;
+  };
+  const challengeSession = () => {
+    if (stopped || challenge || !subscription || !desktopSession) return;
+    let commands: readonly PublishedDesktopCommand[] = [];
+    if (baseline) {
+      try {
+        commands = [...desktopSession.publishedCommands()];
+      } catch {
+        lost("desktop_command_unreconciled");
+        return;
+      }
+      if (commands.length > MAX_RECONCILED_COMMANDS) {
+        lost("desktop_command_unreconciled");
+        return;
+      }
+    } else {
+      baselineAttempts++;
+    }
+    const issued: Challenge = {
+      nonce: newDesktopSessionNonce(),
+      epoch,
+      commands,
+      // An unanswered challenge only frees the slot; the next lookup retries
+      // within the same fixed window.
+      timer: setTimeout(() => {
+        if (challenge === issued) challenge = undefined;
+      }, SESSION_PROOF_TIMEOUT_MS),
+    };
+    challenge = issued;
+    subscription
+      .publish({
+        type: DESKTOP_SESSION_CHALLENGE,
+        nonce: issued.nonce,
+        targetConnectionId: connectionId,
+        commandIds: commands.map((command) => command.commandId),
+      })
+      .catch(() => {
+        if (challenge === issued) clearChallenge();
+      });
+  };
+  const acceptProof = (data: unknown, info: unknown) => {
+    const answered = challenge;
+    if (stopped || !answered || answered.epoch !== epoch) return;
+    const proof = parseDesktopSessionProof(data);
+    if (
+      !proof ||
+      proof.nonce !== answered.nonce ||
+      proof.connectionId !== connectionId ||
+      // Only the relay's own record of the publisher, from its signed
+      // connection token, is authority; a payload field never is.
+      readPublisherConnectionId(info) !== connectionId
+    )
+      return;
+    clearChallenge();
+    if (!baseline) {
+      if (recovery) return;
+      if (proof.unavailable) baselineUnsupported = true;
+      else
+        baseline = Object.freeze({
+          launchId: proof.launchId,
+          pageGeneration: proof.pageGeneration,
+        });
+      return;
+    }
+    if (!recovery) return;
+    if (recoveryExpired(recovery)) {
+      expire();
+      return;
+    }
+    if (proof.unavailable) {
+      lost("desktop_session_unverified");
+      return;
+    }
+    if (!sameDesktopSession(proof, baseline)) {
+      lost("desktop_session_replaced");
+      return;
+    }
+    // Every command published before the challenge must still have its
+    // output owned by this session, or have already delivered all of it.
+    // Execution is never requested again.
+    const retained = new Set(proof.retainedCommandIds);
+    let current: readonly PublishedDesktopCommand[];
+    try {
+      current = [...desktopSession!.publishedCommands()];
+    } catch {
+      lost("desktop_command_unreconciled");
+      return;
+    }
+    const named = new Set(answered.commands.map((each) => each.commandId));
+    for (const command of current) {
+      let complete = false;
+      try {
+        complete = command.outputComplete();
+      } catch {
+        complete = false;
+      }
+      if (complete) continue;
+      if (!named.has(command.commandId) || !retained.has(command.commandId)) {
+        lost("desktop_command_unreconciled");
+        return;
+      }
+    }
+    clearTimeout(recovery.timer);
+    recovery = undefined;
+    hadPositivePresence = true;
+    lastPositivePresenceAt = monotonicNow();
+    // The host's subscription may have changed while this receiver's did
+    // not: request replay explicitly rather than wait for a gap.
+    for (const command of current) {
+      if (!retained.has(command.commandId)) continue;
+      try {
+        command.resumeOutput();
+      } catch {
+        // The command's own deadline still bounds a failed request.
+      }
+    }
+    // Supersede any lookup in flight; monitoring resumes at its cadence.
+    generation++;
+    clearTimeout(deadline);
+    scheduleCheck(PRESENCE_INTERVAL_MS);
+    markReady();
   };
   const check = async () => {
     if (stopped || !subscribed) return;
@@ -224,21 +458,35 @@ export function watchLocalRunConnection({
     if (stopped || current !== generation) return;
     clearTimeout(deadline);
     if (!presenceHasConnectionId(presence, connectionId)) {
-      lost("selected_presence_absent");
+      hostDeparted("selected_presence_absent");
+      return;
+    }
+    if (recovery && recoveryExpired(recovery)) {
+      expire();
+      return;
+    }
+    if (recovery && baseline) {
+      // Present again, but unproven: readiness waits for the session proof.
+      challengeSession();
+      scheduleCheck(SESSION_RECOVERY_CHECK_MS);
       return;
     }
     if (recovery) {
-      if (recoveryExpired(recovery)) {
-        expire();
-        return;
-      }
       clearTimeout(recovery.timer);
       recovery = undefined;
     }
     hadPositivePresence = true;
     // Unavailable now: omit the age rather than report a stale timestamp.
     lastPositivePresenceAt = monotonicNow();
-    timer = setTimeout(() => void check(), PRESENCE_INTERVAL_MS);
+    markReady();
+    if (
+      desktopSession &&
+      !baseline &&
+      !baselineUnsupported &&
+      baselineAttempts < MAX_BASELINE_ATTEMPTS
+    )
+      challengeSession();
+    scheduleCheck(PRESENCE_INTERVAL_MS);
   };
   // The SDK's own reconnect or resubscribe: during setup its retries are
   // bounded by the setup deadline, and before verification they still stop.
@@ -246,6 +494,26 @@ export function watchLocalRunConnection({
     subscribed = false;
     if (hadPositivePresence) interrupt();
     else if (everSubscribed) callbackLost(reason, context);
+  };
+
+  const waitUntilReady = (signal?: AbortSignal): Promise<void> => {
+    if (terminal !== undefined) return Promise.reject(terminal);
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (ready) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => settle(() => reject(signal!.reason));
+      const settle = (finish: () => void) => {
+        waiters.delete(waiter);
+        signal?.removeEventListener("abort", onAbort);
+        finish();
+      };
+      const waiter = {
+        resolve: () => settle(resolve),
+        reject: (error: unknown) => settle(() => reject(error)),
+      };
+      waiters.add(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   };
 
   // Also bound initial token/subscription setup and a relay that goes silent.
@@ -286,8 +554,22 @@ export function watchLocalRunConnection({
     });
     subscription.on("leave", (event) => {
       if (getConnectionIdFromPresenceClient(event.info) === connectionId)
-        lost("selected_host_left");
+        hostDeparted("selected_host_left");
     });
+    if (desktopSession) {
+      subscription.on("join", (event) => {
+        if (
+          recovery &&
+          baseline &&
+          subscribed &&
+          getConnectionIdFromPresenceClient(event.info) === connectionId
+        )
+          void check();
+      });
+      subscription.on("publication", (context) =>
+        acceptProof(context.data, context.info),
+      );
+    }
     subscription.on("subscribing", (context) =>
       reconnecting("subscription_reconnecting", context),
     );
@@ -305,5 +587,30 @@ export function watchLocalRunConnection({
     subscription.subscribe();
     client.connect();
   })().catch(() => lost("setup_error"));
-  return stop;
+  return {
+    stop,
+    isReady: () => ready,
+    waitUntilReady,
+    confirmReady: (signal?: AbortSignal) => {
+      if (terminal !== undefined) return Promise.reject(terminal);
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      // Invalidate even an unready lookup/proof: it may have started before
+      // this completion boundary. interrupt preserves an existing deadline.
+      if (baseline) interrupt();
+      else {
+        generation++;
+        epoch++;
+        ready = false;
+        clearChallenge();
+        clearTimeout(timer);
+      }
+      void check();
+      return waitUntilReady(signal);
+    },
+    // Only a Desktop host can recover; a forgotten uncertain execution must
+    // never let it, or later dispatch, proceed.
+    ...(desktopSession && {
+      failUncertainExecution: () => lost("desktop_command_unreconciled"),
+    }),
+  };
 }

@@ -6,6 +6,7 @@ jest.mock("ai", () => ({
 
 import { generateText } from "ai";
 
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import {
   AUXILIARY_VISION_SLUG,
   DEEPSEEK_V4_FLASH_VISION_SLUG,
@@ -82,6 +83,70 @@ describe("auxiliary vision", () => {
       else expect(warnings[0]).not.toHaveProperty("provider_status_code");
       expect(warnings[0]).not.toHaveProperty("response_finish_reason");
       expect(JSON.stringify(warnings)).not.toMatch(/PRIVATE|private\.invalid/);
+    },
+  );
+
+  it.each([
+    ["disconnect", undefined, "stream_terminated"],
+    ["rate limit", 429, "rate_limited"],
+    ["5xx", 503, "provider_5xx"],
+  ] as const)(
+    "retries an unmarked %s once but never a local browser read failure",
+    async (_kind, statusCode, category) => {
+      const failure = () =>
+        Object.assign(new TypeError("fetch failed"), {
+          statusCode,
+          cause: Object.assign(new Error("read ECONNRESET"), {
+            code: "ECONNRESET",
+          }),
+        });
+      const success = { text: "A login form.", usage: {} };
+      const local = Object.freeze(failure());
+      try {
+        rethrowBrowserHandoffReadError(local);
+      } catch {
+        // Branded by identity, as the browser safety read does.
+      }
+      const wrap = (inner: unknown) =>
+        new Error("terminated", { cause: inner });
+      for (const unmarked of [failure(), wrap(failure())]) {
+        const unmarkedRunner = jest
+          .fn()
+          .mockRejectedValueOnce(unmarked)
+          .mockResolvedValueOnce(success);
+        await expect(
+          describeImageWithAuxiliaryVision({
+            image: "data:image/png;base64,aW1hZ2U=",
+            mediaType: "image/png",
+            source: "attachment",
+            modelRunner: unmarkedRunner,
+          }),
+        ).resolves.toMatchObject({ description: "A login form." });
+        expect(unmarkedRunner).toHaveBeenCalledTimes(2);
+      }
+
+      for (const rejected of [local, wrap(local)]) {
+        (console.warn as jest.Mock).mockClear();
+        const localRunner = jest
+          .fn()
+          .mockRejectedValueOnce(rejected)
+          .mockResolvedValueOnce(success);
+        await expect(
+          describeImageWithAuxiliaryVision({
+            image: "data:image/png;base64,aW1hZ2U=",
+            mediaType: "image/png",
+            source: "attachment",
+            modelRunner: localRunner,
+          }),
+        ).rejects.toBe(rejected);
+        expect(localRunner).toHaveBeenCalledTimes(1);
+        expect(
+          JSON.parse(String((console.warn as jest.Mock).mock.calls[0][0])),
+        ).toMatchObject({
+          provider_error_category: category,
+          will_retry: false,
+        });
+      }
     },
   );
 

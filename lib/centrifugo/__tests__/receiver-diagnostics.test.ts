@@ -310,6 +310,123 @@ describe("receiver diagnostics", () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  const ownerKeys = [
+    "attachment_local_copy_owner_version",
+    "attachment_local_copy_owner_stage",
+  ];
+
+  it.each([
+    "shell_detection",
+    "source_native_path_conversion",
+    "destination_native_path_conversion",
+    "directory_and_copy",
+  ] as const)(
+    "records the %s local-copy owner on the first started event only",
+    (stage) => {
+      const log = jest.spyOn(console, "info").mockImplementation(() => {});
+      const diagnostics = createReceiverDiagnostics(
+        {
+          enabled: true,
+          commandId: "id",
+          requestedBackground: false,
+          requestedTimeoutMs: 30_000,
+          attachmentLocalCopyOwnerStage: stage,
+        },
+        idleState,
+      );
+      diagnostics.start();
+      diagnostics.start();
+      diagnostics.transition("connected");
+      diagnostics.finish("terminal_ack_published");
+      const records = log.mock.calls.map(([value]) => JSON.parse(value));
+      // Independent of, and alongside, the existing request intent group.
+      expect(records[0]).toMatchObject({
+        phase: "started",
+        request_intent_version: 1,
+        attachment_local_copy_owner_version: 1,
+        attachment_local_copy_owner_stage: stage,
+      });
+      expect(records.map((record) => record.phase)).toEqual([
+        "started",
+        "started",
+        "connected",
+        "cleanup",
+      ]);
+      for (const record of records.slice(1))
+        for (const key of ownerKeys) expect(record).not.toHaveProperty(key);
+    },
+  );
+
+  it.each([
+    ["no owner", {}],
+    ["unknown stage", { attachmentLocalCopyOwnerStage: "PRIVATE_STAGE" }],
+    ["download stage", { attachmentLocalCopyOwnerStage: "detect_shell" }],
+    ["numeric stage", { attachmentLocalCopyOwnerStage: 1 }],
+    [
+      "boxed stage",
+      { attachmentLocalCopyOwnerStage: new String("directory_and_copy") },
+    ],
+  ])("omits the whole local-copy owner group for %s", (_name, owner) => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const diagnostics = createReceiverDiagnostics(
+      { enabled: true, commandId: "id", ...(owner as object) },
+      idleState,
+    );
+    diagnostics.start();
+    diagnostics.finish("deadline");
+    const records = log.mock.calls.map(([value]) => JSON.parse(value));
+    expect(records.map((record) => record.phase)).toEqual([
+      "started",
+      "cleanup",
+    ]);
+    for (const record of records)
+      for (const key of ownerKeys) expect(record).not.toHaveProperty(key);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE");
+  });
+
+  it("keeps request intent and lifecycle logs when reading the owner throws", () => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const context = {
+      enabled: true,
+      commandId: "id",
+      requestedBackground: true,
+      requestedTimeoutMs: 1,
+    };
+    Object.defineProperty(context, "attachmentLocalCopyOwnerStage", {
+      enumerable: true,
+      get() {
+        throw new Error("PRIVATE_GETTER");
+      },
+    });
+    const diagnostics = createReceiverDiagnostics(context, idleState);
+    expect(() => {
+      diagnostics.start();
+      diagnostics.finish("deadline");
+    }).not.toThrow();
+    const records = log.mock.calls.map(([value]) => JSON.parse(value));
+    expect(records[0]).toMatchObject({
+      phase: "started",
+      request_intent_version: 1,
+    });
+    for (const key of ownerKeys) expect(records[0]).not.toHaveProperty(key);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_GETTER");
+  });
+
+  it("does not emit a local-copy owner when receiver logs are disabled", () => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const diagnostics = createReceiverDiagnostics(
+      {
+        enabled: false,
+        commandId: "id",
+        attachmentLocalCopyOwnerStage: "directory_and_copy",
+      },
+      idleState,
+    );
+    diagnostics.start();
+    diagnostics.finish("deadline");
+    expect(log).not.toHaveBeenCalled();
+  });
+
   it("does not emit for legacy transports and tolerates a failing log sink", () => {
     const log = jest.spyOn(console, "info").mockImplementation(() => {
       throw new Error("sink down");

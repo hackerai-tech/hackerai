@@ -18,6 +18,7 @@ const VALID_PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64",
 );
+const PDF_BYTES = Buffer.from("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n%%EOF\n", "latin1");
 const CLOSE_DEADLINE_MS = 2000;
 
 // Each route flushes its headers; rejection routes then leave the body open
@@ -34,6 +35,17 @@ const routes: Record<string, (res: ServerResponse) => void> = {
     res.writeHead(503, { "content-type": "text/plain" });
     res.write("temporarily unavailable");
   },
+  "/unavailable.pdf": (res) => {
+    res.writeHead(503, { "content-type": "text/plain" });
+    res.write("temporarily unavailable");
+  },
+  "/report.pdf": (res) => {
+    res.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-length": String(PDF_BYTES.byteLength),
+    });
+    res.end(PDF_BYTES);
+  },
   "/valid.png": (res) => {
     res.writeHead(200, {
       "content-type": "image/png",
@@ -44,15 +56,21 @@ const routes: Record<string, (res: ServerResponse) => void> = {
 };
 
 const withStorageFixture = async (
-  run: (responseClosed: Promise<void>) => Promise<void>,
+  run: (
+    responseClosed: Promise<void>,
+    requestedPaths: string[],
+  ) => Promise<void>,
 ) => {
   let markClosed!: () => void;
   const responseClosed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
+  const requestedPaths: string[] = [];
   const server = createServer((req, res) => {
     res.on("close", markClosed);
-    const route = routes[new URL(req.url ?? "/", "http://fixture").pathname];
+    const { pathname } = new URL(req.url ?? "/", "http://fixture");
+    requestedPaths.push(pathname);
+    const route = routes[pathname];
     if (route) route(res);
     else res.writeHead(404).end();
   });
@@ -74,7 +92,7 @@ const withStorageFixture = async (
         init,
       );
     };
-    await run(responseClosed);
+    await run(responseClosed, requestedPaths);
   } finally {
     globalThis.fetch = nativeFetch;
     server.closeAllConnections();
@@ -96,14 +114,13 @@ const closedWithinDeadline = async (closed: Promise<void>) => {
   }
 };
 
-const storedImage = (path: string) => {
+const signedUrl = (path: string) =>
+  `${STORAGE_ORIGIN}${path}?X-Amz-Signature=${SIGNATURE}`;
+
+const storedFile = (path: string, mediaType = "image/png") => {
+  const name = mediaType === "image/png" ? "photo.png" : "report.pdf";
   mockConvexAction.mockResolvedValue([
-    {
-      url: `${STORAGE_ORIGIN}${path}?X-Amz-Signature=${SIGNATURE}`,
-      sizeBytes: 2 * 1024 * 1024,
-      mediaType: "image/png",
-      name: "photo.png",
-    },
+    { url: signedUrl(path), sizeBytes: 2 * 1024 * 1024, mediaType, name },
   ]);
   return [
     {
@@ -111,18 +128,13 @@ const storedImage = (path: string) => {
       role: "user",
       parts: [
         { type: "text", text: "what is this?" },
-        {
-          type: "file",
-          mediaType: "image/png",
-          fileId: "file_photo",
-          name: "photo.png",
-        },
+        { type: "file", mediaType, fileId: "file_stored", name },
       ],
     },
   ] as any;
 };
 
-describe("processMessageFiles image downloads over real HTTP", () => {
+describe("processMessageFiles attachment downloads over real HTTP", () => {
   const consoleSpies: jest.SpyInstance[] = [];
 
   beforeEach(() => {
@@ -148,7 +160,7 @@ describe("processMessageFiles image downloads over real HTTP", () => {
     async ({ path, mode }) => {
       await withStorageFixture(async (responseClosed) => {
         const result = await processMessageFiles(
-          storedImage(path),
+          storedFile(path),
           mode,
           "user123",
           mode === "agent" ? "/home/user/upload" : undefined,
@@ -167,7 +179,7 @@ describe("processMessageFiles image downloads over real HTTP", () => {
   it("still validates a completed PNG download", async () => {
     await withStorageFixture(async () => {
       const result = await processMessageFiles(
-        storedImage("/valid.png"),
+        storedFile("/valid.png"),
         "ask",
         "user123",
         undefined,
@@ -177,8 +189,67 @@ describe("processMessageFiles image downloads over real HTTP", () => {
       expect(result.messages[0].parts[1]).toMatchObject({
         type: "file",
         mediaType: "image/png",
-        url: `${STORAGE_ORIGIN}/valid.png?X-Amz-Signature=${SIGNATURE}`,
+        url: signedUrl("/valid.png"),
       });
+    });
+  });
+
+  it("keeps the signed URL and closes an unavailable Ask PDF response", async () => {
+    await withStorageFixture(async (responseClosed) => {
+      const result = await processMessageFiles(
+        storedFile("/unavailable.pdf", "application/pdf"),
+        "ask",
+        "user123",
+        undefined,
+        "pro",
+      );
+
+      expect(result.messages[0].parts[1]).toMatchObject({
+        type: "file",
+        mediaType: "application/pdf",
+        url: signedUrl("/unavailable.pdf"),
+      });
+      expect(await closedWithinDeadline(responseClosed)).toBe(true);
+    });
+  });
+
+  it("inlines a completed Ask PDF download as exact base64 bytes", async () => {
+    await withStorageFixture(async () => {
+      const result = await processMessageFiles(
+        storedFile("/report.pdf", "application/pdf"),
+        "ask",
+        "user123",
+        undefined,
+        "pro",
+      );
+
+      expect(result.messages[0].parts[1]).toMatchObject({
+        type: "file",
+        mediaType: "application/pdf",
+        url: `data:application/pdf;base64,${PDF_BYTES.toString("base64")}`,
+      });
+    });
+  });
+
+  it("passes Agent PDFs through by signed URL without downloading them", async () => {
+    await withStorageFixture(async (_responseClosed, requestedPaths) => {
+      const result = await processMessageFiles(
+        storedFile("/report.pdf", "application/pdf"),
+        "agent",
+        "user123",
+        "/home/user/upload",
+        "pro",
+      );
+
+      expect(requestedPaths).toEqual([]);
+      expect(result.messages[0].parts[1]).toMatchObject({
+        type: "file",
+        mediaType: "application/pdf",
+        url: signedUrl("/report.pdf"),
+      });
+      expect(result.sandboxFiles).toEqual([
+        expect.objectContaining({ kind: "url", url: signedUrl("/report.pdf") }),
+      ]);
     });
   });
 });

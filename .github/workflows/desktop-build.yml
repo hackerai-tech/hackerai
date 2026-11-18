@@ -264,6 +264,9 @@ jobs:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
+          # Retry transient Apple timestamp/authentication failures in the same
+          # workspace, retaining the completed Rust build and all signing checks.
+          retryAttempts: ${{ matrix.platform == 'macos-15-intel' && '2' || '0' }}
 
       - name: Sign Debian updater packages
         if: startsWith(matrix.platform, 'ubuntu')
@@ -320,7 +323,7 @@ jobs:
 
               echo "$SUBMIT_OUTPUT"
               echo "Stapling notarization ticket to $DMG..."
-              xcrun stapler staple "$DMG"
+              bash .github/scripts/staple-notarization.sh "$DMG"
 
               echo "Verifying notarization..."
               spctl --assess --type open --context context:primary-signature -v "$DMG" || true
@@ -492,7 +495,7 @@ jobs:
 
           echo "$SUBMIT_OUTPUT"
           echo "Stapling notarization ticket..."
-          xcrun stapler staple "$UNIVERSAL_APP"
+          bash .github/scripts/staple-notarization.sh "$UNIVERSAL_APP"
 
           rm universal-app.zip
 

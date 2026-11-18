@@ -35,6 +35,8 @@ const recoverableQueries = new Set([
   "browserHandoffs:getForBackend",
   "browserHandoffs:getExitNotesForBackend",
   "userSuspensions:getActiveByUser",
+  "findingHunts:getHistoryForBackend",
+  "findingAgentRetests:getHistoryForBackend",
 ]);
 
 export function reserveServiceQueryRecovery(
@@ -54,7 +56,15 @@ export function reserveServiceQueryRecovery(
     !["fetch failed", "terminated"].includes(error.message)
   )
     return;
-  const cause = error.cause as { code?: unknown } | undefined;
-  if (cause?.code !== "ECONNRESET" && cause?.code !== "UND_ERR_SOCKET") return;
+  const code = (error.cause as { code?: unknown } | undefined)?.code;
+  // A request timeout before any response is admitted only for the signed goal
+  // read. Timed-out response bodies and "terminated" timeouts stay excluded.
+  const goalRequestTimeout =
+    code === "ETIMEDOUT" &&
+    functionName === "agentGoals:getForBackend" &&
+    statusCode === undefined &&
+    error.message === "fetch failed";
+  if (code !== "ECONNRESET" && code !== "UND_ERR_SOCKET" && !goalRequestTimeout)
+    return;
   return serviceQueryRecoveryRuntime[serviceQueryRecoveryKey]?.();
 }

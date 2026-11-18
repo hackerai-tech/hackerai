@@ -179,6 +179,7 @@ const jsonBody = (value: unknown) =>
 const preview = (
   fresh: boolean,
   requestId = "iad1::qa123-1794060000000-abcdef123456",
+  diagnosticQuery = "",
 ) =>
   get(
     {
@@ -186,7 +187,7 @@ const preview = (
         "x-vercel-id": requestId,
       }),
       nextUrl: new URL(
-        `https://preview.example/api/agent/browser/test${fresh ? "?fresh=1" : ""}`,
+        `https://preview.example/api/agent/browser/test?${fresh ? "fresh=1&" : ""}${diagnosticQuery}`,
       ),
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
@@ -402,6 +403,125 @@ it("adds capture suboperation context to the single existing GET failure event",
   expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
     "PRIVATE",
   );
+});
+
+const reportedPreviewQuery = (mask = "65", reader = "B".repeat(40)) =>
+  new URLSearchParams({
+    preview_diag_v: "1",
+    preview_activation: mask,
+    preview_reader: reader,
+  }).toString();
+
+it.each(["lookup", "connect", "read-active", "capture"])(
+  "adds only the atomic untrusted client context to the existing %s diagnostic",
+  async (failure) => {
+    mockFailure = failure;
+    const original = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "a".repeat(40);
+    try {
+      const response = await preview(true, undefined, reportedPreviewQuery());
+      expect(response.status).toBe(503);
+      expect(phLogger.info).toHaveBeenCalledTimes(1);
+      const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+      expect(fields).toMatchObject({
+        preview_client_context: JSON.stringify([1, 65, "b".repeat(40)]),
+        web_build_commit: "a".repeat(40),
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+        fresh_requested: true,
+      });
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    } finally {
+      if (original === undefined)
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = original;
+    }
+  },
+);
+
+it.each([
+  "",
+  "preview_diag_v=1",
+  `${reportedPreviewQuery()}&preview_diag_v=1`,
+  `${reportedPreviewQuery()}&preview_activation=65`,
+  `${reportedPreviewQuery()}&preview_reader=${"b".repeat(40)}`,
+  reportedPreviewQuery("065"),
+  reportedPreviewQuery("24"),
+  reportedPreviewQuery("256"),
+  reportedPreviewQuery("65", "PRIVATE_TOKEN"),
+  reportedPreviewQuery().replace("preview_diag_v=1", "preview_diag_v=2"),
+])(
+  "preserves the baseline503 and omits an invalid or legacy diagnostic group (%s)",
+  async (query) => {
+    const response = await preview(
+      false,
+      undefined,
+      `${query}&unrelated=PRIVATE_COMMAND_URL_NOTE_COOKIE`,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(fields).not.toHaveProperty("preview_client_context");
+    expect(fields).toMatchObject({
+      failure_stage: "capture_frame",
+      browser_session_id: mockSessionId,
+      trigger_run_id: `run_${"a".repeat(26)}`,
+      fresh_requested: false,
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["", 200],
+  ["auth", 401],
+  ["missing", 404],
+  ["identity", 409],
+])(
+  "keeps status%s/%s and zero unavailable events with spoofed reported metadata",
+  async (failure, status) => {
+    mockFailure = String(failure);
+    mockState = "human";
+    expect(
+      (await preview(true, undefined, reportedPreviewQuery("0", "unknown")))
+        .status,
+    ).toBe(status);
+    expect(phLogger.info).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps a closed410 outcome and no diagnostic even with a valid reported context", async () => {
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
+  expect((await preview(false, undefined, reportedPreviewQuery())).status).toBe(
+    410,
+  );
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it("omits the entire optional context at exhausted diagnostic headroom without displacing baseline fields", async () => {
+  mockCapture.mockImplementationOnce(async (...args: unknown[]) => {
+    const observe = args[5] as (context: unknown) => void;
+    observe(
+      Object.fromEntries(
+        Array.from({ length: 71 }, (_, i) => [`capture_fixture_${i}`, i]),
+      ),
+    );
+    throw new Error("PRIVATE capture fixture");
+  });
+  const response = await preview(false, undefined, reportedPreviewQuery());
+  expect(response.status).toBe(503);
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).not.toHaveProperty("preview_client_context");
+  expect(fields).toMatchObject({
+    request_id: "iad1::qa123-1794060000000-abcdef123456",
+    trigger_run_id: `run_${"a".repeat(26)}`,
+  });
+  expect(fields).toHaveProperty("web_build_commit");
+  expect(JSON.stringify(fields)).not.toContain("PRIVATE");
 });
 
 const take = () =>
@@ -834,10 +954,10 @@ it.each([undefined, "1"])(
   },
 );
 
-const diagnosticPost = (body: Record<string, unknown>) =>
+const diagnosticPost = (body: Record<string, unknown>, diagnosticQuery = "") =>
   post(
     {
-      url: "https://preview.example/api/agent/browser/test",
+      url: `https://preview.example/api/agent/browser/test?${diagnosticQuery}`,
       headers: new Headers({
         origin: "https://preview.example",
         "content-type": "application/json",
@@ -847,6 +967,26 @@ const diagnosticPost = (body: Record<string, unknown>) =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+it("ignores client GET context on POST and preserves its existing failure diagnostic", async () => {
+  const response = await diagnosticPost(
+    { action: "take", browserSessionName: "default" },
+    reportedPreviewQuery(),
+  );
+  expect(response.status).toBe(503);
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({ action: "take", failure_stage: "capture_frame" }),
+  );
+  expect(jest.mocked(phLogger.info).mock.calls[0][1]).not.toHaveProperty(
+    "preview_client_context",
+  );
+  expect(mockMutation).toHaveBeenCalledWith(
+    "abortTakeoverForBackend",
+    expect.any(Object),
+  );
+});
 
 it.each(["take", "resume"])(
   "preserves %s rollback and attaches the existing capture helper's finite failure context",

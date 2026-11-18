@@ -27,6 +27,7 @@ import {
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
 import { createProviderErrorDeferral } from "@/lib/chat/provider-error-stream";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
@@ -1969,6 +1970,7 @@ export const createChatHandler = () => {
               if (
                 !isRetryWithFallback &&
                 !userStopSignal.signal.aborted &&
+                !isTrustedBrowserHandoffReadFailure(error) &&
                 (shouldRecoverAbliterationApiError ||
                   (isProviderApiError(error) &&
                     !(error instanceof AbliterationVisionError) &&
@@ -2074,7 +2076,11 @@ export const createChatHandler = () => {
 
             // onFinish below drops this attempt's terminal error/finish only
             // once its retry is merged; otherwise they are published unchanged.
-            const primaryProviderErrors = createProviderErrorDeferral();
+            // A failed local safety read is never recovered: publish it at once.
+            const primaryProviderErrors = createProviderErrorDeferral({
+              publishImmediately: () =>
+                isTrustedBrowserHandoffReadFailure(state.providerError),
+            });
             const mergePrimaryStream = (
               stream: Parameters<typeof writer.merge>[0],
             ) => {
@@ -2234,7 +2240,12 @@ export const createChatHandler = () => {
                       state.providerError ??
                       new Error("Direct vision route failed");
 
+                    // Provider recovery cannot repair a failed local browser
+                    // safety read; fence it before any model selection.
                     primaryProviderRecovery: if (
+                      !isTrustedBrowserHandoffReadFailure(
+                        state.providerError,
+                      ) &&
                       !uncertainToolOutcome &&
                       (!loopTriggeredRetry || loopContinuation !== undefined) &&
                       (shouldRecoverAbliterationStreamError ||
@@ -2600,9 +2611,14 @@ export const createChatHandler = () => {
                                 const retryAssistant = retryMessages.findLast(
                                   (message) => message.role === "assistant",
                                 );
+                                // A failed local safety read is the terminal
+                                // error; never replace it with a provider empty answer.
                                 const retryEmptyResponse =
                                   !retryAborted &&
                                   !userStopSignal.signal.aborted &&
+                                  !isTrustedBrowserHandoffReadFailure(
+                                    state.providerError,
+                                  ) &&
                                   isTerminalEmptyAssistantResponse(
                                     retryAssistant?.parts ?? [],
                                     state.streamFinishReason,
@@ -2672,9 +2688,20 @@ export const createChatHandler = () => {
                                   isProviderContentFilterFinishReason(
                                     state.streamFinishReason,
                                   );
+                                // A local browser safety read can fail during a
+                                // fallback leg; it is terminal, never success.
+                                // A failed prepareStep never sets an "error"
+                                // finish reason, so the error itself decides.
+                                const retryTerminalTrustedLocalReadError =
+                                  !retryAborted &&
+                                  isTrustedBrowserHandoffReadFailure(
+                                    state.providerError,
+                                  );
                                 const outcome = retryAborted
                                   ? "aborted"
-                                  : providerContentBlocked || retryEmptyResponse
+                                  : providerContentBlocked ||
+                                      retryTerminalTrustedLocalReadError ||
+                                      retryEmptyResponse
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
@@ -2738,6 +2765,7 @@ export const createChatHandler = () => {
                                 });
                                 if (
                                   providerContentBlocked ||
+                                  retryTerminalTrustedLocalReadError ||
                                   retryEmptyResponse
                                 ) {
                                   chatLogger!.emitUnexpectedError(
@@ -2925,10 +2953,13 @@ export const createChatHandler = () => {
                     // held terminal chunks before any trailing writes.
                     primaryProviderErrors.release();
 
+                    // A failed local safety read is the terminal error; a
+                    // stale "stop" must not replace it with a provider empty answer.
                     if (
                       terminalEmptyResponse &&
                       !isAborted &&
-                      !userStopSignal.signal.aborted
+                      !userStopSignal.signal.aborted &&
+                      !isTrustedBrowserHandoffReadFailure(state.providerError)
                     ) {
                       state.streamFinishReason = "error";
                       state.providerError = new Error(
@@ -3077,9 +3108,17 @@ export const createChatHandler = () => {
                       isProviderContentFilterFinishReason(
                         state.streamFinishReason,
                       );
+                    // A failed local browser safety read is never recovered
+                    // above, so its terminal error cannot be reported as success.
+                    // A failed prepareStep never sets an "error" finish reason
+                    // (it is unset or a completed step's), so the error decides.
+                    const terminalTrustedLocalReadError =
+                      !isAborted &&
+                      isTrustedBrowserHandoffReadFailure(state.providerError);
                     const outcome = isAborted
                       ? "aborted"
                       : finalProviderContentBlocked ||
+                          terminalTrustedLocalReadError ||
                           visionSummaryRecoveryFailure ||
                           (terminalEmptyResponse &&
                             state.streamFinishReason === "error")
@@ -3138,6 +3177,7 @@ export const createChatHandler = () => {
                       );
                     } else if (
                       finalProviderContentBlocked ||
+                      terminalTrustedLocalReadError ||
                       (terminalEmptyResponse &&
                         state.streamFinishReason === "error")
                     ) {

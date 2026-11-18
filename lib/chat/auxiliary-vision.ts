@@ -9,6 +9,7 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import {
   extractErrorDetails,
   getProviderErrorCategory,
@@ -367,6 +368,7 @@ export async function describeImageWithAuxiliaryVision({
         attempt === 0 &&
         !abortSignal?.aborted &&
         canRetry() &&
+        !isTrustedBrowserHandoffReadFailure(failure) &&
         (isRetriableProviderStreamDisconnectError(failure) ||
           category === "rate_limited");
       console.warn(

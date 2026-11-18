@@ -20,6 +20,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { isShortcutTargetBlocked } from "@/lib/keyboard-shortcuts";
 import { MemoizedMarkdown } from "../MemoizedMarkdown";
 
 export function UserInputQuestionPanel({
@@ -80,11 +81,14 @@ export function UserInputQuestionPanel({
         event.repeat
       )
         return;
+      // Text fields, selects, menus, and dialogs own their number keys
+      // (e.g. typeahead), so only claim keys typed elsewhere.
       if (
-        event.target instanceof Element &&
-        event.target.closest(
-          'input, textarea, [contenteditable=true], [role="dialog"], [role="alertdialog"], dialog',
-        )
+        isShortcutTargetBlocked(event) ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            'input, textarea, select, [contenteditable=true], [role="combobox"], [role="listbox"], [role="menu"], [role="menubar"], [role^="menuitem"], [role="dialog"], [role="alertdialog"], dialog',
+          ))
       )
         return;
       if (!/^[1-9]$/.test(event.key)) return;

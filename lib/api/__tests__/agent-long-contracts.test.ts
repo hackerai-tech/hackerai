@@ -1803,10 +1803,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
-      /hasCandidate:\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
+      /hasCandidate:\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
-      /const nextContinuation\s*=\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
+      /const nextContinuation\s*=\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
@@ -1844,7 +1844,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
     );
     expect(chatHandlerSrc).toMatch(
-      /if \(\s*!uncertainToolOutcome &&\s*\(!loopTriggeredRetry \|\| loopContinuation !== undefined\) &&\s*\(shouldRecoverAbliterationStreamError/,
+      /primaryProviderRecovery: if \(\s*!isTrustedBrowserHandoffReadFailure\(\s*state\.providerError,\s*\) &&\s*!uncertainToolOutcome &&\s*\(!loopTriggeredRetry \|\| loopContinuation !== undefined\) &&\s*\(shouldRecoverAbliterationStreamError/,
     );
   });
 

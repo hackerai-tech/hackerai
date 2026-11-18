@@ -454,6 +454,161 @@ describe("generateTitleFromUserMessage", () => {
     );
   });
 
+  // Scope: the shared redactor's recognized credential patterns, not every
+  // possible secret. Fixtures are synthetic.
+  describe("credential redaction", () => {
+    const CANARY = "SYNTHETIC_TITLE_CANARY_90341";
+
+    const credentials = [
+      ["a password assignment", `password=${CANARY}`],
+      ["a quoted multi-word password", `password="synthetic phrase ${CANARY}"`],
+      ["an authorization header", `Authorization: Bearer ${CANARY}`],
+      ["a bare bearer credential", `Bearer ${CANARY}`],
+      [
+        "an environment assignment",
+        `EXAMPLE_DATABASE_URL=postgres://synthetic:${CANARY}@db.example/app`,
+      ],
+      ["a provider key", `sk-${CANARY}`],
+      [
+        "a signed URL",
+        `https://bucket.example/report.pdf?X-Amz-Signature=${CANARY}`,
+      ],
+    ] as const;
+
+    const runWithWriter = async (message: string) => {
+      const write = jest.fn();
+      const writer = { write } as unknown as UIMessageStreamWriter;
+      const persist = jest.fn(async (_title: string) => undefined);
+      const onCost = jest.fn();
+      const title = await generateTitleFromUserMessageWithWriter(
+        makeMessage(message),
+        writer,
+        persist,
+        onCost,
+      );
+      const prompt = (
+        mockGenerateText.mock.calls[0][0] as {
+          messages: [{ content: string }];
+        }
+      ).messages[0].content;
+      return { title, prompt, streamed: write.mock.calls, persist, onCost };
+    };
+
+    it.each(credentials)(
+      "keeps %s out of the prompt and the generated title",
+      async (_name, credential) => {
+        mockGenerateText.mockResolvedValue({
+          output: { title: `Debug ${credential}` },
+          usage: { raw: { cost: 0.0021 } },
+        });
+
+        const { title, prompt, streamed, persist, onCost } =
+          await runWithWriter(`${credential} breaks login`);
+
+        expect(prompt).toContain("breaks login");
+        expect(prompt).not.toContain(CANARY);
+        expect(title).toMatch(/^Debug .*\[Redacted/);
+        expect(title).not.toContain(CANARY);
+        expect(streamed).toEqual([
+          [{ type: "data-title", data: { chatTitle: title }, transient: true }],
+        ]);
+        expect(persist.mock.calls).toEqual([[title]]);
+        expect(onCost).toHaveBeenCalledWith(0.0021);
+      },
+    );
+
+    it.each(credentials)(
+      "keeps %s out of the prompt and the fallback title",
+      async (_name, credential) => {
+        mockGenerateText.mockRejectedValue(
+          new APICallError({
+            message: "provider unavailable",
+            url: "https://provider.example/",
+            requestBodyValues: {},
+            statusCode: 503,
+          }),
+        );
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+        try {
+          const { title, prompt, streamed, persist, onCost } =
+            await runWithWriter(`${credential} breaks login`);
+
+          expect(prompt).not.toContain(CANARY);
+          expect(title).toMatch(/\[Redacted.* breaks login$/);
+          expect(title).not.toContain(CANARY);
+          expect(streamed).toEqual([
+            [
+              {
+                type: "data-title",
+                data: { chatTitle: title },
+                transient: true,
+              },
+            ],
+          ]);
+          expect(persist.mock.calls).toEqual([[title]]);
+          expect(onCost).not.toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("unwraps a quoted generated title before redacting its credential", async () => {
+      mockGenerateText.mockResolvedValue({
+        output: { title: `"Fix login password=${CANARY}"` },
+      });
+
+      await expect(
+        generateTitleFromUserMessage(makeMessage("login check")),
+      ).resolves.toBe('Fix login password="[Redacted]"');
+    });
+
+    it("redacts before the prompt's middle truncation can drop the field name", async () => {
+      mockGenerateText.mockResolvedValue({ output: { title: "Long Input" } });
+      // The value alone opens the kept tail; its key falls in the dropped middle.
+      const keptTail = `${CANARY} ${"b".repeat(3998 - CANARY.length - 1)}`;
+      const message = `${"a".repeat(5000)} password=${keptTail}`;
+
+      await generateTitleFromUserMessage(makeMessage(message));
+
+      const prompt = (
+        mockGenerateText.mock.calls[0][0] as {
+          messages: [{ content: string }];
+        }
+      ).messages[0].content;
+      const context = prompt.split("### User Message:\n")[1];
+      expect(context.length).toBeLessThanOrEqual(8000);
+      expect(context.startsWith("a".repeat(3998))).toBe(true);
+      expect(context.endsWith("b".repeat(3000))).toBe(true);
+      expect(prompt).not.toContain(CANARY);
+    });
+
+    it("keeps ordinary token vocabulary and security identifiers", async () => {
+      const message = "JWT token refresh CVE-2024-3094 tokenCount=42";
+      mockGenerateText.mockResolvedValueOnce({
+        output: { title: "OAuth password reset max_tokens=4096" },
+      });
+
+      await expect(
+        generateTitleFromUserMessage(makeMessage(message)),
+      ).resolves.toBe("OAuth password reset max_tokens=4096");
+      expect(mockGenerateText.mock.calls[0][0].messages[0].content).toContain(
+        `### User Message:\n${message}`,
+      );
+
+      mockGenerateText.mockRejectedValueOnce(new Error("provider failed"));
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          generateTitleFromUserMessage(makeMessage(message)),
+        ).resolves.toBe(message);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   it("persists the generated title after streaming it to the header", async () => {
     mockGenerateText.mockResolvedValue({
       output: { title: "Sidebar Title Update" },
@@ -634,4 +789,69 @@ describe("generateTitleFromUserMessageWithWriter with the installed AI SDK", () 
     expect(persist).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledWith("Costed Title");
   });
+
+  it.each(["succeeds", "fails"] as const)(
+    "keeps a synthetic credential out of the provider prompt and delivered title when the model %s",
+    async (outcome) => {
+      const canary = "SYNTHETIC_TITLE_CANARY_90341";
+      const generateWithWriter = loadWithInstalledSdk();
+      const providerPrompts: string[] = [];
+      useTitleModel(
+        new MockLanguageModelV3({
+          doGenerate: async ({ prompt }) => {
+            providerPrompts.push(JSON.stringify(prompt));
+            if (outcome === "fails") {
+              throw new Error("synthetic provider failure");
+            }
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ title: `Login password=${canary}` }),
+                },
+              ],
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: {
+                inputTokens: {
+                  total: 120,
+                  noCache: 120,
+                  cacheRead: undefined,
+                  cacheWrite: undefined,
+                },
+                outputTokens: { total: 6, text: 6, reasoning: undefined },
+              },
+              warnings: [],
+            };
+          },
+        }),
+      );
+      const write = jest.fn();
+      const writer = { write } as unknown as UIMessageStreamWriter;
+      const persist = jest.fn(async (_title: string) => undefined);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const title = await generateWithWriter(
+          makeMessage(`password=${canary} rejected at login`),
+          writer,
+          persist,
+        );
+
+        expect(providerPrompts.length).toBeGreaterThanOrEqual(1);
+        expect(providerPrompts.join("\n")).toContain("rejected at login");
+        expect(providerPrompts.join("\n")).not.toContain(canary);
+        expect(title).toBe(
+          outcome === "succeeds"
+            ? 'Login password="[Redacted]"'
+            : 'password="[Redacted]" rejected at login',
+        );
+        expect(write.mock.calls).toEqual([
+          [{ type: "data-title", data: { chatTitle: title }, transient: true }],
+        ]);
+        expect(persist.mock.calls).toEqual([[title]]);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 });

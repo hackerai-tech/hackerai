@@ -32,8 +32,10 @@ import {
 import {
   getDraftAttachmentsById,
   getDraftContentById,
+  isDraftGoalModeById,
   removeDraft,
   removeDraftAttachments,
+  setDraftGoalMode,
   upsertDraftAttachments,
   type ConversationDraftAttachment,
 } from "@/lib/utils/client-storage";
@@ -43,7 +45,11 @@ import {
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
+import { CloudWorkspaceRegionChoice } from "../CloudWorkspaceRegionChoice";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
@@ -83,12 +89,6 @@ import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-san
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { useChatStarters } from "@/app/contexts/ChatStartersContext";
-import type { ChatStarter } from "@/lib/chat/starter-prompts";
-import { ChatStarterSuggestions } from "./ChatStarterSuggestions";
-import { useChatStarterAttribution } from "@/app/hooks/useChatStarterAttribution";
-import type { StarterPersistedTurn } from "@/lib/analytics/chat-starters";
-import type { SubmitAttribution } from "@/app/hooks/useChatHandlers";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -103,10 +103,7 @@ interface ChatInputProps {
     e: React.FormEvent,
     inputOverride?: string,
     structuredReply?: boolean,
-    attribution?: SubmitAttribution,
   ) => void | boolean | Promise<void | boolean>;
-  /** Persisted state of this chat's latest turn, for starter attribution. */
-  starterPersistedTurn?: StarterPersistedTurn | null;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
@@ -310,7 +307,6 @@ const ChatInputContent = ({
   hasActiveGoalRun = false,
   pauseGoalOnSend = false,
   onSubmit,
-  starterPersistedTurn,
   onStop,
   onReconnect,
   onSendNow,
@@ -368,7 +364,6 @@ const ChatInputContent = ({
   const { user } = useAuth();
   const input = useComposerInput();
   const { setInput, getInput } = useComposerActions();
-  const chatStarters = useChatStarters();
   const isOnline = useOnlineStatus();
   const isOffline = offlineProtection && !isOnline;
   const {
@@ -406,6 +401,11 @@ const ChatInputContent = ({
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [submissionPending, setSubmissionPending] = useState(false);
+  // The chat whose first submission left the empty new-chat draft and is
+  // still awaiting admission.
+  const [pendingNewChatSubmission, setPendingNewChatSubmission] = useState<
+    string | null
+  >(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
@@ -571,11 +571,21 @@ const ChatInputContent = ({
     }
   };
 
-  const draftId = isEmptyNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  // The optimistic user message makes a new chat non-empty before admission.
+  // Keep its draft (text, attachments and Goal mode) until the submission
+  // settles: a refused start removes that message and must find it intact.
+  const draftId =
+    isEmptyNewChat ||
+    (isNewChat && !!chatId && pendingNewChatSubmission === chatId)
+      ? "new"
+      : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);
+  // A new chat whose unconfirmed goal start kept its message; its Goal mode
+  // moves with the draft when the composer adopts that chat.
+  const goalCarryChatIdRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
@@ -799,6 +809,14 @@ const ChatInputContent = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      // Runs before useComposerGoalMode reads the adopted draft's flag.
+      if (goalCarryChatIdRef.current === draftId) {
+        goalCarryChatIdRef.current = null;
+        if (isDraftGoalModeById("new")) {
+          setDraftGoalMode(draftId, true);
+          setDraftGoalMode("new", false);
+        }
+      }
       if (isSubmittingAttachmentsRef.current) {
         uploadedFilesRef.current = [];
         removeDraft("new");
@@ -965,6 +983,35 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
+  // A workspace-selection refusal belongs to the chat, environment and Goal
+  // mode that sent it. Any change there makes its Retry unsafe (for example,
+  // a goal Retry becoming an ordinary send), so drop the selector.
+  const workspaceRecoveryScope = JSON.stringify([
+    chatId ?? null,
+    chatMode,
+    sandboxPreference ?? null,
+    goalMode,
+  ]);
+  const workspaceRecoveryScopeRef = useRef(workspaceRecoveryScope);
+  // Counts scope changes, so leaving and returning to an identical scope still
+  // invalidates a refusal that arrives late from the earlier visit.
+  const workspaceRecoveryGenerationRef = useRef(0);
+  const [workspaceRecovery, setWorkspaceRecovery] = useState<{
+    scope: string;
+    attempt: number;
+  } | null>(null);
+  useEffect(() => {
+    if (workspaceRecoveryScopeRef.current !== workspaceRecoveryScope)
+      workspaceRecoveryGenerationRef.current += 1;
+    workspaceRecoveryScopeRef.current = workspaceRecoveryScope;
+    setWorkspaceRecovery((current) =>
+      current && current.scope !== workspaceRecoveryScope ? null : current,
+    );
+  }, [workspaceRecoveryScope]);
+  const clearWorkspaceRecovery = (scope: string) =>
+    setWorkspaceRecovery((current) =>
+      current?.scope === scope ? null : current,
+    );
   const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
   const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
     useState<string | null>(null);
@@ -1166,74 +1213,6 @@ const ChatInputContent = ({
       messageQueue.length > 0,
   });
 
-  // Starters only fill an idle, empty first composer. Any draft, attachment,
-  // notice, pending work or unresolved state hides them without remounting it.
-  const starterMode = chatMode === "agent" ? "agent" : "ask";
-  const starterPresentation =
-    chatStarters?.enabled && user && chatStarters.userId === user.id
-      ? chatStarters.presentation
-      : null;
-  const showChatStarters =
-    starterPresentation !== null &&
-    isMobile !== undefined &&
-    isEmptyNewChat &&
-    !landingAppearance &&
-    chatModeAccessResolved &&
-    !isCheckingProPlan &&
-    status === "ready" &&
-    !isGenerating &&
-    input === "" &&
-    uploadedFiles.length === 0 &&
-    !isUploadingFiles &&
-    !submissionPending &&
-    !isStoppingAgent &&
-    !isOffline &&
-    !isReconnecting &&
-    !effectiveSendDisabledReason &&
-    !selectedComputerUnavailable &&
-    !computerConnectionPending &&
-    !approvalRequest &&
-    !isWaitingForReply &&
-    !questionKey &&
-    !goalMode &&
-    !showGoalSuggestion &&
-    !hasActiveGoalRun &&
-    !pauseGoalOnSend &&
-    !rateLimitWarning &&
-    messageQueue.length === 0 &&
-    !editingQueuedMessageId;
-
-  const starterAttribution = useChatStarterAttribution({
-    userId: user?.id,
-    draftId,
-    chatMode: starterMode,
-    input,
-    getInput,
-    persistedTurn: starterPersistedTurn,
-  });
-
-  const selectChatStarter = (starter: ChatStarter) => {
-    // Read the latest composer and saved draft, not this render's snapshot,
-    // so a fast edit or restored draft is never replaced.
-    if (
-      getInput() !== "" ||
-      getUploadedFiles().length > 0 ||
-      (getDraftContentById(draftId) ?? "") !== "" ||
-      getDraftAttachmentsById(draftId).length > 0
-    )
-      return;
-    // Each accepted selection is its own event with a stable selection ID.
-    if (starterPresentation)
-      starterAttribution.recordSelection(starter, starterPresentation);
-    setInput(starter.prompt);
-    requestAnimationFrame(() => {
-      const textarea = composerTextareaRef.current;
-      if (!textarea) return;
-      textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
@@ -1316,37 +1295,27 @@ const ChatInputContent = ({
       isSubmittingRef.current = true;
       const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
+      if (draftId === "new" && chatId) setPendingNewChatSubmission(chatId);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
+      const submittedScope = workspaceRecoveryScope;
+      const submittedGeneration = workspaceRecoveryGenerationRef.current;
+      goalCarryChatIdRef.current = null;
       const submittedDraftAttachments = JSON.stringify(
         getDraftAttachmentsById(draftId),
       );
-      // Only an ordinary send from an idle composer can carry a starter's
-      // attribution; queued, goal and reply submissions end it instead.
-      const starterSubmission = starterAttribution.prepareSubmission({
-        ordinary:
-          !isGoalSubmission &&
-          !isWaitingForReply &&
-          !hasActiveGoalRun &&
-          !pauseGoalOnSend &&
-          status === "ready",
-        text: submittedInput,
-      });
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
         const goalInput = isGoalSubmission ? `/goal start ${input}` : undefined;
-        const accepted = await (starterSubmission.attribution
-          ? onSubmit(e, goalInput, false, starterSubmission.attribution)
-          : onSubmit(e, goalInput));
-        starterSubmission.settle(accepted === false ? "refused" : "accepted");
+        const accepted = await onSubmit(e, goalInput);
         if (isGoalSubmission)
           captureGoalComposerAction(
             accepted === false ? "submit_refused" : "submit_accepted",
           );
         finishPredictionSubmission(accepted !== false);
-        // Keep starters collapsed before the history list reflects this chat.
-        if (accepted !== false) chatStarters?.markFirstSubmission();
+        if (accepted !== false && isMountedRef.current)
+          clearWorkspaceRecovery(submittedScope);
         if (accepted !== false && isGoalSubmission) setGoalMode(false);
         const unchanged =
           getInput() === submittedInput &&
@@ -1388,9 +1357,26 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
-        starterSubmission.settle("error");
+        const workspaceRefusal = isGoalWorkspaceSelectionRefusal(error);
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
+        if (workspaceRefusal) {
+          if (isGoalSubmission) captureGoalComposerAction("submit_refused");
+          // Nothing was admitted: keep the draft and offer the selector, but
+          // only where this request came from.
+          if (
+            isMountedRef.current &&
+            workspaceRecoveryScopeRef.current === submittedScope &&
+            workspaceRecoveryGenerationRef.current === submittedGeneration
+          )
+            setWorkspaceRecovery((current) => ({
+              scope: submittedScope,
+              attempt: (current?.attempt ?? 0) + 1,
+            }));
+          return;
+        }
+        // An unconfirmed or failed retry must not keep inviting another one.
+        if (isMountedRef.current) clearWorkspaceRecovery(submittedScope);
         if (error instanceof GoalSubmissionUnconfirmedError) {
           reportUnconfirmedGoalSubmission(error);
           return;
@@ -1403,7 +1389,16 @@ const ChatInputContent = ({
         console.error("Failed to submit message:", error);
       } finally {
         isSubmittingRef.current = false;
-        if (isMountedRef.current) setSubmissionPending(false);
+        if (isMountedRef.current) {
+          setSubmissionPending(false);
+          // An admitted chat now moves to its own draft; the existing
+          // new-chat transition clears the submitted draft at that point.
+          // If Goal mode is still on (the start was not confirmed and its
+          // message stays), that draft keeps Goal mode as it moves too.
+          if (draftId === "new" && chatId && isDraftGoalModeById("new"))
+            goalCarryChatIdRef.current = chatId;
+          setPendingNewChatSubmission(null);
+        }
       }
     } else if (isGoalSubmission) {
       captureGoalComposerAction(
@@ -1471,6 +1466,25 @@ const ChatInputContent = ({
           className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
+          {workspaceRecovery?.scope === workspaceRecoveryScope && (
+            <div className="mb-2 bg-background">
+              <CloudWorkspaceRegionChoice
+                // Each refusal reloads the options with a fresh token.
+                key={workspaceRecovery.attempt}
+                onRetry={() =>
+                  void handleSubmit({
+                    preventDefault: () => {},
+                  } as React.FormEvent)
+                }
+                onCancel={() => {
+                  // Dismissing also invalidates a pending Retry's refusal so
+                  // it cannot reopen the card. The request itself continues.
+                  workspaceRecoveryGenerationRef.current += 1;
+                  clearWorkspaceRecovery(workspaceRecoveryScope);
+                }}
+              />
+            </div>
+          )}
           {isOffline && (
             <div
               role="status"
@@ -1866,21 +1880,6 @@ const ChatInputContent = ({
             />
           </div>
         </div>
-
-        {showChatStarters && chatStarters && starterPresentation && (
-          <div
-            className={`min-w-0 shrink-0 ${isMobile ? "order-1" : "order-3"}`}
-          >
-            <ChatStarterSuggestions
-              key={chatStarters.userId}
-              mode={starterMode}
-              presentation={starterPresentation}
-              layout={isMobile ? "mobile" : "desktop"}
-              onSelect={selectChatStarter}
-              onExposed={chatStarters.recordExposure}
-            />
-          </div>
-        )}
       </div>
     </div>
   );

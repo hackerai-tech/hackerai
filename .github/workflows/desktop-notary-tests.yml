@@ -5,6 +5,7 @@ on:
     paths:
       - .github/scripts/*notary*.py
       - .github/scripts/*universal-dmg.sh
+      - .github/scripts/staple-notarization.sh
       - .github/workflows/desktop-build.yml
       - .github/workflows/desktop-notary-tests.yml
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - .github/scripts/*notary*.py
       - .github/scripts/*universal-dmg.sh
+      - .github/scripts/staple-notarization.sh
       - .github/workflows/desktop-build.yml
       - .github/workflows/desktop-notary-tests.yml
 

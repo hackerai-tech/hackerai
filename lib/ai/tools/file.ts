@@ -1632,8 +1632,16 @@ export const createFile = (
               existingContent = await sandbox.files.read(path, {
                 user: "user" as const,
               });
-            } catch {
-              // File doesn't exist, start with empty content
+            } catch (error) {
+              // Only a probe-confirmed missing file may start empty. Writing the
+              // appended text alone over an unread existing file would erase it.
+              if (existingState.kind !== "missing") {
+                if (context.auxiliaryVision?.isAborted?.()) throw error;
+                return {
+                  error: `Cannot append to ${path} because its existing content could not be read. No write was attempted.`,
+                  executionOutcome: "not_executed" as const,
+                };
+              }
             }
 
             // Append directly without adding extra newline - agent controls exact content

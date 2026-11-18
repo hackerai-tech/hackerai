@@ -1,5 +1,6 @@
 import type { AnySandbox } from "@/types";
-import { isE2BSandbox } from "./sandbox-types";
+import type { AttachmentLocalCopyOwnerStage } from "@/lib/centrifugo/receiver-diagnostics";
+import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
 
 export type AttachmentCommandFailureContext = {
   attachment_command_diagnostic_version: 1;
@@ -90,7 +91,9 @@ export function throwIfAttachmentAborted(
   signal?.throwIfAborted();
 }
 
-/** Run only this attachment's command; cancellation must not kill a shared sandbox. */
+/** Run only this attachment's command; cancellation must not kill a shared sandbox.
+ * `copyOwnerStage` is server-internal and reaches only the Centrifugo receiver;
+ * provider SDK options keep their exact shape. */
 export async function runAttachmentCommand(
   sandbox: AnySandbox,
   command: string,
@@ -100,13 +103,16 @@ export async function runAttachmentCommand(
     timeoutMs?: number;
     requestTimeoutMs?: number;
   },
+  copyOwnerStage?: AttachmentLocalCopyOwnerStage,
 ) {
   signal?.throwIfAborted();
   if (!signal) {
     try {
-      return await (options
-        ? sandbox.commands.run(command, options)
-        : sandbox.commands.run(command));
+      return await (copyOwnerStage && isCentrifugoSandbox(sandbox)
+        ? sandbox.commands.run(command, options, copyOwnerStage)
+        : options
+          ? sandbox.commands.run(command, options)
+          : sandbox.commands.run(command));
     } catch (error) {
       try {
         if (isE2BSandbox(sandbox))
@@ -119,7 +125,9 @@ export async function runAttachmentCommand(
   }
   if (!isE2BSandbox(sandbox)) {
     try {
-      return await sandbox.commands.run(command, { ...options, signal });
+      return await (copyOwnerStage
+        ? sandbox.commands.run(command, { ...options, signal }, copyOwnerStage)
+        : sandbox.commands.run(command, { ...options, signal }));
     } catch (error) {
       if (
         signal.aborted &&

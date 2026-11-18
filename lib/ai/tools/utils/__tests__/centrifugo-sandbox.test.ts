@@ -48,6 +48,7 @@ import {
 } from "../persistence-failure";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
+  LocalCommandDispatchError,
   LocalCommandRelayUnsubscribedError,
   isLocalCommandRelayUnsubscribedError,
   getLocalFileRequestFailure,
@@ -498,6 +499,128 @@ describe("CentrifugoSandbox", () => {
     await expect(result).resolves.toMatchObject({ exitCode: 130 });
     expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  describe("a fragmented command whose host becomes unverified mid-publication", () => {
+    /** The run's live readiness, opened, closed and failed by the test. */
+    function controllableGate() {
+      let ready = true;
+      const waiters = new Set<{
+        resolve: () => void;
+        reject: (error: unknown) => void;
+      }>();
+      return {
+        gate: {
+          isReady: () => ready,
+          waitUntilReady: (signal?: AbortSignal) =>
+            new Promise<void>((resolve, reject) => {
+              const waiter = { resolve, reject };
+              waiters.add(waiter);
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  waiters.delete(waiter);
+                  reject(signal.reason);
+                },
+                { once: true },
+              );
+            }),
+          failUncertainExecution: jest.fn(),
+        },
+        close: () => {
+          ready = false;
+        },
+        open: () => {
+          ready = true;
+          for (const waiter of [...waiters]) waiter.resolve();
+          waiters.clear();
+        },
+        fail: (error: Error) => {
+          for (const waiter of [...waiters]) waiter.reject(error);
+          waiters.clear();
+        },
+      };
+    }
+
+    /** Starts a large Desktop command and holds its first fragment's publish. */
+    async function publishFirstFragment() {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const readiness = controllableGate();
+      sandbox.setDispatchGate(readiness.gate);
+      // Large enough for several actual transport fragments.
+      const result = sandbox.commands.run(`printf '${"x".repeat(80_000)}'`);
+      void result.catch(() => {});
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      let releaseFirst!: () => void;
+      control.publish = jest
+        .fn()
+        .mockImplementationOnce(
+          () => new Promise<void>((resolve) => (releaseFirst = resolve)),
+        )
+        .mockResolvedValue(undefined);
+      mockClients[0].newSubscription.mockImplementationOnce(() => {
+        mockSubscriptions.push(control);
+        return control;
+      });
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      // The host becomes unverified while the first fragment is in flight.
+      readiness.close();
+      releaseFirst();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      const indexes = () =>
+        control.publish.mock.calls.map(([fragment]) => fragment.index);
+      return { result, readiness, mockClient: mockClients[0], indexes };
+    }
+
+    it("continues only once verified, each fragment exactly once", async () => {
+      const { readiness, indexes, mockClient } = await publishFirstFragment();
+      readiness.open();
+      await jest.advanceTimersByTimeAsync(0);
+      const sent = indexes();
+      expect(sent.length).toBeGreaterThan(2);
+      expect(sent).toEqual([...sent.keys()]);
+      expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+      mockClient.emit("disconnected", { reason: "test teardown" });
+    });
+
+    it.each([
+      [
+        "the host is lost",
+        ({ readiness }: Awaited<ReturnType<typeof publishFirstFragment>>) =>
+          readiness.fail(new Error("local connection lost")),
+      ],
+      [
+        "the receiver ends",
+        ({ mockClient }: Awaited<ReturnType<typeof publishFirstFragment>>) =>
+          mockClient.emit("disconnected", { reason: "relay closed" }),
+      ],
+    ])(
+      "never sends the rest when %s, and stops the run for the partial request",
+      async (_name, end) => {
+        const started = await publishFirstFragment();
+        end(started);
+        await expect(started.result).rejects.toBeDefined();
+        started.readiness.open();
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(started.indexes()).toEqual([0]);
+        expect(
+          started.readiness.gate.failUncertainExecution,
+        ).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 
   it.each(["setup timeout", "publish denied"])(
@@ -2873,6 +2996,7 @@ describe("CentrifugoSandbox", () => {
         expect.objectContaining({
           displayName: "Preparing: prefix\\report.txt",
         }),
+        "directory_and_copy",
       );
     });
 
@@ -6282,6 +6406,19 @@ describe("CentrifugoSandbox", () => {
       attachment_command_receiver_first_message_observed:
         observed.firstMessage ?? false,
     });
+    const clientErrorGroup = (
+      type: string,
+      code: number | string,
+      temporary: boolean | string,
+      connectionLimitPredicate: boolean,
+    ) => ({
+      attachment_command_receiver_client_error_version: 1,
+      attachment_command_receiver_client_error_type: type,
+      attachment_command_receiver_client_error_code: code,
+      attachment_command_receiver_client_error_temporary: temporary,
+      attachment_command_receiver_client_error_connection_limit_predicate:
+        connectionLimitPredicate,
+    });
     // An earlier test replaces the client factory with auto-replying clients;
     // these receivers must only observe what each test emits.
     let previousFactory: ReturnType<
@@ -6470,14 +6607,172 @@ describe("CentrifugoSandbox", () => {
         expect(sub.publish).not.toHaveBeenCalled();
         expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
         expect(client.disconnect).toHaveBeenCalledTimes(1);
-        expect(receiverFields(error)).toEqual(
-          receiver(reason, { connected: true }),
-        );
+        expect(receiverFields(error)).toEqual({
+          ...receiver(reason, { connected: true }),
+          // Only the selected client_error carries its closed SDK detail.
+          ...(reason === "client_error" &&
+            clientErrorGroup("connect", "other", "unavailable", false)),
+        });
         expect(
           JSON.stringify(getAttachmentDownloadFailureContext(error)),
         ).not.toContain("PRIVATE");
       },
     );
+
+    const CONNECTION_LIMIT_MESSAGE =
+      "Centrifugo connection limit reached. The server has too many active connections. Please try again later.";
+    it.each([
+      [
+        "a message-only connection limit",
+        {
+          type: "connect",
+          error: {
+            code: 3501,
+            message: "PRIVATE connection limit reached",
+            temporary: false,
+          },
+        },
+        CONNECTION_LIMIT_MESSAGE,
+        true,
+        clientErrorGroup("connect", "other", false, true),
+      ],
+      [
+        "the public connection-limit code",
+        { type: "connect", error: { code: 4503, message: "PRIVATE_REASON" } },
+        CONNECTION_LIMIT_MESSAGE,
+        true,
+        clientErrorGroup("connect", 4503, "unavailable", true),
+      ],
+      [
+        "a temporary connect rejection",
+        {
+          type: "connect",
+          error: { code: 3500, message: "PRIVATE_REASON", temporary: true },
+        },
+        "Centrifugo client error: PRIVATE_REASON",
+        true,
+        clientErrorGroup("connect", "other", true, false),
+      ],
+      [
+        "a pre-dispatch transport failure",
+        { type: "transport", error: { code: 2, message: "PRIVATE_REASON" } },
+        "Centrifugo client error: PRIVATE_REASON",
+        true,
+        clientErrorGroup("transport", 2, "unavailable", false),
+      ],
+      [
+        "a non-temporary SDK connect code",
+        {
+          type: "connect",
+          error: { code: 3, message: "PRIVATE_REASON", temporary: false },
+        },
+        "Centrifugo client error: PRIVATE_REASON",
+        true,
+        clientErrorGroup("connect", 3, false, false),
+      ],
+      [
+        "another SDK error type",
+        {
+          type: "configuration",
+          error: { code: 7, message: "PRIVATE_REASON" },
+        },
+        "Centrifugo client error: PRIVATE_REASON",
+        false,
+        clientErrorGroup("other", 7, "unavailable", false),
+      ],
+    ] as const)(
+      "attaches closed client-error detail to the exact rejection for %s",
+      async (_name, ctx, message, retryable, group) => {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox(false);
+        const rejection = sandbox.commands
+          .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+          .catch((error: unknown) => error);
+        const { client, sub } = await nextReceiver();
+        client.emit("connected");
+        client.emit("error", ctx);
+        const error = await rejection;
+        // Original rejection identity, message and retry classification.
+        expect(rejections).toEqual([error]);
+        expect(error).toBeInstanceOf(LocalCommandDispatchError);
+        expect(error).toMatchObject({ dispatched: false, retryable });
+        expect(error.message).toBe(message);
+        expect(error.cause).toBeInstanceOf(Error);
+        expect(error.cause.message).toBe(message);
+        expect(sub.publish).not.toHaveBeenCalled();
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(receiverFields(error)).toEqual({
+          ...receiver("client_error", { connected: true }),
+          ...group,
+        });
+        expect(receiverFields(error.cause)).toEqual({});
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toMatch(/PRIVATE|limit reached/);
+      },
+    );
+
+    it("settles the original client-error outcome before the descriptor snapshot can reach SDK traps", async () => {
+      const { sandbox, rejections, nextReceiver } = receiverSandbox(false);
+      const rejection = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+        .catch((error: unknown) => error);
+      const { client } = await nextReceiver();
+      const target: Record<string, unknown> = {
+        type: "configuration",
+        error: { code: 7, message: "PRIVATE_REASON" },
+      };
+      // A descriptor trap that would make the failure look retryable.
+      const ctx = new Proxy(target, {
+        getOwnPropertyDescriptor(object, key) {
+          object.type = "transport";
+          return Reflect.getOwnPropertyDescriptor(object, key);
+        },
+      });
+      client.emit("error", ctx);
+      const error = await rejection;
+      expect(rejections).toEqual([error]);
+      expect(error).toBeInstanceOf(LocalCommandDispatchError);
+      expect(error).toMatchObject({ dispatched: false, retryable: false });
+      expect(error.message).toBe("Centrifugo client error: PRIVATE_REASON");
+      expect(receiverFields(error)).toMatchObject({
+        attachment_command_receiver_reason: "client_error",
+        attachment_command_receiver_client_error_version: 1,
+      });
+    });
+
+    it("records no client-error detail for an SDK-owned reconnect or a later error", async () => {
+      const { sandbox, rejections, nextReceiver } = receiverSandbox(false);
+      const rejection = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+        .catch((error: unknown) => error);
+      const { client, sub } = await nextReceiver();
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+      // A post-dispatch transport retry is not terminal.
+      client.emit("error", {
+        type: "transport",
+        error: { code: 2, message: "PRIVATE_REASON" },
+      });
+      await jest.advanceTimersByTimeAsync(6_001);
+      const error = await rejection;
+      expect(error.message).toContain("Command timeout after 6000ms");
+      // An error after settlement cannot replace the selected rejection.
+      client.emit("error", {
+        type: "connect",
+        error: { code: 4503, message: "PRIVATE connection limit" },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(rejections).toEqual([error]);
+      expect(receiverFields(error)).toEqual(
+        receiver("deadline", {
+          subscribed: true,
+          publicationStarted: true,
+          publishCompleted: true,
+        }),
+      );
+    });
 
     it("marks only the exhausted final setup attempt with its own receiver observations", async () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -6710,6 +7005,87 @@ describe("CentrifugoSandbox", () => {
           ).toEqual(expected);
           expect(JSON.stringify(fields)).not.toMatch(
             /PRIVATE|private\.example|hidden|command -v|conn-1/,
+          );
+        }
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+        event.mockRestore();
+      }
+    });
+
+    it("carries a local copy's closed client-error detail to existing staging sinks", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const pending = uploadSandboxFiles(
+          [
+            {
+              kind: "localPath",
+              path: "/home/PRIVATE_USER/PRIVATE_SOURCE.pdf",
+              localPath: PRIVATE_PATH,
+            },
+          ],
+          async () => sandbox,
+          {
+            logContext: {
+              service: "agent-long",
+              requestId: "run-copy",
+              userId: "user-1",
+              chatId: "chat-copy",
+            },
+          },
+        );
+        const { client } = await nextReceiver();
+        client.emit("error", {
+          type: "connect",
+          error: { code: 3500, message: "PRIVATE_REASON", temporary: false },
+        });
+        const result = await pending;
+        expect(result.failedCount).toBe(1);
+        expect(rejections).toHaveLength(1);
+        expect(sandbox.commands.run).toHaveBeenCalledWith(
+          expect.stringContaining("cp -f"),
+          expect.any(Object),
+          "directory_and_copy",
+        );
+
+        const records = (spy: jest.SpyInstance, name: string) =>
+          spy.mock.calls
+            .map(([value]) => {
+              try {
+                return JSON.parse(value);
+              } catch {
+                return {};
+              }
+            })
+            .filter((record) => record.event === name);
+        const events = (name: string) =>
+          event.mock.calls
+            .filter(([eventName]) => eventName === name)
+            .map(([, fields]) => fields);
+        const sinks = [
+          ...events("sandbox_attachment_failure_diagnostics"),
+          ...records(warn, "sandbox_attachment_failure_diagnostics"),
+          ...events("sandbox_attachment_staging_failed"),
+          ...records(error, "sandbox_attachment_staging_failed"),
+          getSandboxUploadFailureMetadata(result),
+        ];
+        expect(sinks).toHaveLength(5);
+        for (const sink of sinks) {
+          const fields = Object.fromEntries(
+            Object.entries(sink ?? {}).filter(([key]) =>
+              key.startsWith("attachment_command_receiver_"),
+            ),
+          );
+          expect(fields).toEqual({
+            ...receiver("client_error", {}),
+            ...clientErrorGroup("connect", "other", false, false),
+          });
+          expect(JSON.stringify(fields)).not.toMatch(
+            /PRIVATE|limit reached|client error:|cp -f|conn-1/,
           );
         }
       } finally {
@@ -9324,6 +9700,250 @@ describe("CentrifugoSandbox", () => {
         sandbox.files.copyLocal("/tmp/source.pdf", "/tmp/dest.pdf"),
       ).resolves.toBeUndefined();
       expect(run).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("local copy receiver owner diagnostics", () => {
+    const ownerKeys = [
+      "attachment_local_copy_owner_version",
+      "attachment_local_copy_owner_stage",
+    ];
+    const windowsShellOutput = (command: string) =>
+      command === "echo $BASH_VERSION"
+        ? "5.2.37(1)-release\n"
+        : (gitBashMountResult(command)?.stdout ?? "");
+    // Receivers must observe only what each test answers.
+    let previousFactory: ReturnType<
+      ReturnType<typeof jest.mocked<typeof Centrifuge>>["getMockImplementation"]
+    >;
+    beforeEach(() => {
+      const factory = jest.mocked(Centrifuge);
+      previousFactory = factory.getMockImplementation();
+      factory.mockImplementation(() => {
+        const client = new MockCentrifugeClient();
+        mockClients.push(client);
+        return client as unknown as Centrifuge;
+      });
+    });
+    afterEach(() => {
+      if (previousFactory)
+        jest.mocked(Centrifuge).mockImplementation(previousFactory);
+    });
+
+    it("records each issued copy stage on its own first Desktop receiver start", async () => {
+      let id = 0;
+      crypto.randomUUID = jest.fn(
+        () => `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
+      ) as any;
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+          osInfo: {
+            platform: "win32",
+            arch: "x64",
+            release: "10.0.22631",
+            hostname: "PRIVATE_HOST",
+          },
+        },
+        defaultConfig,
+      );
+      const seen = new Set<MockCentrifugeClient>();
+      const issued: { commandId: string; command: string }[] = [];
+      // Answer the next isolated command through the existing ack-v1 sender.
+      const answerNext = async () => {
+        const active = (sandbox as any).activeClients as MockCentrifugeClient[];
+        const next = () => active.find((client) => !seen.has(client));
+        for (let tick = 0; tick < 20 && !next(); tick++)
+          await jest.advanceTimersByTimeAsync(0);
+        const client = next()!;
+        seen.add(client);
+        const reply: MockSubscription =
+          client.newSubscription.mock.results[0].value;
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        const control: MockSubscription =
+          client.newSubscription.mock.results[1].value;
+        const { commandId, command } = control.publish.mock.calls[0][0];
+        issued.push({ commandId, command });
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId },
+        });
+        const sender = new AcknowledgedCommandOutput(
+          commandId,
+          Date.now() + 5000,
+          async (frame) => {
+            reply.emit("publication", { data: frame });
+          },
+          () => true,
+        );
+        reply.publish.mockImplementation(async (message) => {
+          if (message.type === "command_output_ack")
+            sender.acknowledge(message.sequence);
+        });
+        const stdout = windowsShellOutput(command);
+        if (stdout) sender.append({ type: "stdout", data: stdout });
+        sender.append({ type: "exit", exitCode: 0 });
+        await jest.advanceTimersByTimeAsync(1000);
+        await sender.delivered;
+      };
+
+      const first = sandbox.files.copyLocal(
+        "/tmp/PRIVATE_SOURCE.pdf",
+        "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+      );
+      for (let i = 0; i < 4; i++) await answerNext();
+      await expect(first).resolves.toBeUndefined();
+      // Cached shell and a native source path issue no setup command.
+      const second = sandbox.files.copyLocal(
+        "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf",
+        "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+      );
+      for (let i = 0; i < 2; i++) await answerNext();
+      await expect(second).resolves.toBeUndefined();
+      const generic = sandbox.commands.run("PRIVATE_COMMAND");
+      await answerNext();
+      await expect(generic).resolves.toMatchObject({ exitCode: 0 });
+
+      expect(issued.map(({ command }) => command)).toEqual([
+        "echo $BASH_VERSION",
+        "/usr/bin/cygpath -w -- '/tmp/PRIVATE_SOURCE.pdf'",
+        "/usr/bin/cygpath -w -- '/tmp/hackerai-upload/PRIVATE_DEST.pdf'",
+        "mkdir -p '/c/temp/hackerai-upload' && cp -f '/c/temp/PRIVATE_SOURCE.pdf' '/c/temp/hackerai-upload/PRIVATE_DEST.pdf'",
+        "/usr/bin/cygpath -w -- '/tmp/hackerai-upload/PRIVATE_DEST.pdf'",
+        "mkdir -p '/c/temp/hackerai-upload' && cp -f '/c/Users/PRIVATE_USER/PRIVATE_SOURCE.pdf' '/c/temp/hackerai-upload/PRIVATE_DEST.pdf'",
+        "PRIVATE_COMMAND",
+      ]);
+      const records = receiverRecords();
+      const started = records.filter((record) => record.phase === "started");
+      expect(
+        started.map((record) => [
+          record.command_id,
+          record.attachment_local_copy_owner_version,
+          record.attachment_local_copy_owner_stage,
+        ]),
+      ).toEqual(
+        [
+          "shell_detection",
+          "source_native_path_conversion",
+          "destination_native_path_conversion",
+          "directory_and_copy",
+          "destination_native_path_conversion",
+          "directory_and_copy",
+          undefined,
+        ].map((stage, index) => [issued[index].commandId, stage && 1, stage]),
+      );
+      // Existing request intent is unchanged on the same first record.
+      for (const record of started)
+        expect(record).toMatchObject({
+          request_intent_version: 1,
+          request_background: false,
+          request_timeout_ms: 30_000,
+        });
+      for (const record of records.filter(
+        (record) => record.phase !== "started",
+      ))
+        for (const key of ownerKeys) expect(record).not.toHaveProperty(key);
+      expect(JSON.stringify(records)).not.toMatch(
+        /PRIVATE|hackerai-upload|cygpath|BASH_VERSION|\/c\/|\/tmp|C:/,
+      );
+    });
+
+    it("keeps each overlapping copy's role through shell probes, conversions and setup retries", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "win32",
+            arch: "x64",
+            release: "10.0.19045",
+            hostname: "WIN-DEV",
+          },
+        });
+        const calls: {
+          args: unknown[];
+          resolve: (value: unknown) => void;
+          reject: (error: unknown) => void;
+        }[] = [];
+        (sandbox as any).commands.run = jest.fn(
+          (...args: unknown[]) =>
+            new Promise((resolve, reject) =>
+              calls.push({ args, resolve, reject }),
+            ),
+        );
+        const answer = async (index: number) => {
+          calls[index].resolve({
+            stdout: windowsShellOutput(calls[index].args[0] as string),
+            stderr: "",
+            exitCode: 0,
+          });
+          await jest.advanceTimersByTimeAsync(0);
+        };
+        const X = "/tmp/PRIVATE_X.pdf";
+        const Y = "/tmp/PRIVATE_Y.pdf";
+        // The same path is a source for one copy and a destination for the other.
+        const copyA = sandbox.files.copyLocal(X, Y);
+        const copyB = sandbox.files.copyLocal(Y, X);
+        await jest.advanceTimersByTimeAsync(0);
+        expect(calls).toHaveLength(2);
+        await answer(1); // B's probe; B then converts Y as its source (2).
+        await answer(0); // A's probe; A then converts X as its source (3).
+        await answer(3); // A then converts Y as its destination (4).
+        // B's source conversion times out once and is retried (5).
+        calls[2].reject(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE));
+        await jest.advanceTimersByTimeAsync(0);
+        await jest.advanceTimersByTimeAsync(500);
+        await answer(4); // A then copies (6).
+        await answer(5); // B then converts X as its destination (7).
+        await answer(7); // B then copies (8).
+        await answer(6);
+        await answer(8);
+        await expect(Promise.all([copyA, copyB])).resolves.toEqual([
+          undefined,
+          undefined,
+        ]);
+        const cygpath = (path: string) => `/usr/bin/cygpath -w -- '${path}'`;
+        expect(calls.map(({ args }) => [args[0], args[2]])).toEqual([
+          ["echo $BASH_VERSION", "shell_detection"],
+          ["echo $BASH_VERSION", "shell_detection"],
+          [cygpath(Y), "source_native_path_conversion"],
+          [cygpath(X), "source_native_path_conversion"],
+          [cygpath(Y), "destination_native_path_conversion"],
+          [cygpath(Y), "source_native_path_conversion"],
+          [
+            "mkdir -p '/c/temp' && cp -f '/c/temp/PRIVATE_X.pdf' '/c/temp/PRIVATE_Y.pdf'",
+            "directory_and_copy",
+          ],
+          [cygpath(X), "destination_native_path_conversion"],
+          [
+            "mkdir -p '/c/temp' && cp -f '/c/temp/PRIVATE_Y.pdf' '/c/temp/PRIVATE_X.pdf'",
+            "directory_and_copy",
+          ],
+        ]);
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        // Other callers of the same shell context never carry a copy owner.
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).curlCaps = {
+          retryAllErrors: true,
+          retryConnrefused: true,
+          sslNoRevoke: true,
+        };
+        const download = sandbox.files.downloadFromUrl(
+          "https://example.com/PRIVATE",
+          X,
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        await answer(9);
+        await answer(10);
+        await expect(download).resolves.toBeUndefined();
+        expect(calls).toHaveLength(11);
+        for (const { args } of calls.slice(9)) expect(args).toHaveLength(2);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

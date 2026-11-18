@@ -115,6 +115,15 @@ redis.call("PEXPIRE", costKey, ttlMs)
 return nextCost
 `;
 
+// Read-only: compares inside Redis so the token is never deserialized or
+// returned, and never renews, replaces, or settles the lease.
+const VERIFY_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return 1
+end
+return 0
+`;
+
 export type PaidDailyFreeAllowanceUnavailableReason =
   | "unsupported_model"
   | "unsupported_subscription"
@@ -495,6 +504,60 @@ export async function reservePaidDailyFreeAllowanceRequest(
       },
     }),
   };
+}
+
+export type PaidDailyFreeAllowanceReservationOwnership =
+  | { owned: true }
+  | {
+      owned: false;
+      reason: "reservation_unavailable" | "redis_unavailable";
+    };
+
+/**
+ * Whether an admitted run still holds its exact original lease. A run that
+ * resumes after waiting for the user keeps spending against the reservation
+ * and cap it was admitted with; a lost, replaced, or settled lease means
+ * another request may own the allowance, so the caller must stop instead of
+ * reserving again or falling back to other billing.
+ */
+export async function verifyPaidDailyFreeAllowanceReservationOwnership(
+  userId: string,
+  reservation: PaidDailyFreeAllowanceReservation,
+): Promise<PaidDailyFreeAllowanceReservationOwnership> {
+  if (!reservation.allowed) {
+    return { owned: false, reason: "reservation_unavailable" };
+  }
+
+  const redis = getRedisClient();
+  const lease = reservation.redisReservation;
+  if (!lease) {
+    // Only a local run admitted without Redis has no lease to verify.
+    const admittedWithoutRedis =
+      process.env.NODE_ENV !== "production" &&
+      reservation.status.rateLimitSkipped === true &&
+      !redis;
+    return admittedWithoutRedis
+      ? { owned: true }
+      : { owned: false, reason: "reservation_unavailable" };
+  }
+  if (!redis) return { owned: false, reason: "redis_unavailable" };
+
+  const { reservationKey } = getPaidDailyFreeAllowanceKeys(
+    userId,
+    lease.bucket,
+  );
+  try {
+    const matched = await redis.eval(
+      VERIFY_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT,
+      [reservationKey],
+      [lease.token],
+    );
+    return Number(matched) === 1
+      ? { owned: true }
+      : { owned: false, reason: "reservation_unavailable" };
+  } catch {
+    return { owned: false, reason: "redis_unavailable" };
+  }
 }
 
 export async function recordPaidDailyFreeAllowanceCost(

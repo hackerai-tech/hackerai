@@ -1,6 +1,5 @@
 "use client";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
-import { getStarterPersistedTurn } from "@/lib/analytics/chat-starters";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import {
@@ -69,6 +68,7 @@ import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
   GoalSubmissionUnconfirmedError,
   isGoalAdmissionRefused,
+  isGoalWorkspaceSelectionRefusal,
 } from "@/lib/chat/goal-submission";
 import {
   cancelAgentLongRealtimeStreams,
@@ -121,7 +121,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
@@ -136,7 +136,7 @@ import {
 } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
-import { finalizeNewChatRoute } from "./chat-route";
+import { finalizeNewChatRoute, getRouteChatIdFromPathname } from "./chat-route";
 import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
 import { useChatPerformance } from "@/app/hooks/useChatPerformance";
 import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
@@ -268,17 +268,29 @@ export function getExistingChatLoadState({
 const shouldReleaseStreamedTitle = (
   streamedTitle: string | null,
   persistedTitle: string | null | undefined,
-): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+  titleManuallyEdited: boolean | undefined,
+): boolean =>
+  Boolean(
+    streamedTitle && (titleManuallyEdited || persistedTitle === streamedTitle),
+  );
 
 export function useStreamedChatTitle(
   persistedTitle: string | null | undefined,
+  titleManuallyEdited?: boolean,
 ) {
   const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
   // The streamed title only bridges the gap until Convex receives the same
-  // generated title. This guarded adjustment restarts the current render
-  // before children commit with a stale title source.
-  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+  // generated title, or the owner's rename supersedes it. This guarded
+  // adjustment restarts the current render before children commit with a
+  // stale title source.
+  if (
+    shouldReleaseStreamedTitle(
+      streamedTitle,
+      persistedTitle,
+      titleManuallyEdited,
+    )
+  ) {
     setStreamedTitle(null);
   }
 
@@ -554,7 +566,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
-  const routeChatId = params?.id as string | undefined;
+  const pathname = usePathname();
+  // The URL owns the displayed chat. Back/Forward can restore the home-page
+  // tree (no dynamic params) at a /c/<id> URL saved by finalizeNewChatRoute.
+  const routeChatId =
+    (pathname
+      ? getRouteChatIdFromPathname(pathname)
+      : (params?.id as string | undefined)) ?? undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
   const computerSidebarOverlay = useComputerSidebarOverlay();
@@ -757,6 +775,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
+  // Committed before the route sync below so a new chat started while the old
+  // saved URL is still visible is not mistaken for a route change.
+  const committedChatIdRef = useCommittedRef(chatId);
+  // Only chats adopted from the URL may resume a server stream. A draft that
+  // gains its saved URL already owns its in-flight request.
+  const [routeAdoptedChatId, setRouteAdoptedChatId] = useState<
+    string | undefined
+  >(routeChatId);
+  const lastSyncedRouteChatIdRef = useRef<string | undefined | null>(null);
+  const freshChatIdAwaitingHomeRef = useRef<string | null>(null);
 
   useEffect(() => {
     clearAgentApprovalSession();
@@ -860,25 +888,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatData && (chatData as any).id === chatId ? chatData : undefined;
   const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
     chatDataForCurrentChat?.title,
+    chatDataForCurrentChat?.title_manually_edited,
   );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
-
-  // Sync local chat state from URL (single source of truth)
-  useLayoutEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      resetSandboxPreference();
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -949,12 +962,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Convert paginated Convex messages to UI format for useChat and useAutoResume
   // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages = useServerMessages(paginatedMessageResults);
-  // IDs and completion fields only, from the subscriptions above.
-  const starterPersistedTurn = useMemo(
-    () =>
-      getStarterPersistedTurn(chatId, chatDataForCurrentChat, serverMessages),
-    [chatId, chatDataForCurrentChat, serverMessages],
-  );
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
@@ -1561,8 +1568,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ) {
         goalAdmissionRef.current.rejected =
           isGoalAdmissionRefused(displayError);
-        goalAdmissionRef.current.error =
-          displayError instanceof ChatSDKError
+        // Keep the structured refusal so the composer can offer the selector.
+        goalAdmissionRef.current.error = isGoalWorkspaceSelectionRefusal(
+          displayError,
+        )
+          ? displayError
+          : displayError instanceof ChatSDKError
             ? new Error(
                 formatTaskUiCopy(
                   typeof displayError.cause === "string"
@@ -1937,6 +1948,43 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     [clearDataStream, setIsAutoResuming],
   );
 
+  useLayoutEffect(() => {
+    if (lastSyncedRouteChatIdRef.current === routeChatId) return;
+    const isInitialSync = lastSyncedRouteChatIdRef.current === null;
+    lastSyncedRouteChatIdRef.current = routeChatId;
+    const freshChatId = freshChatIdAwaitingHomeRef.current;
+    freshChatIdAwaitingHomeRef.current = null;
+    const currentChatId = committedChatIdRef.current;
+    // Keep the mounted draft when its saved URL or explicit New Task
+    // navigation commits. A history traversal still changes ownership.
+    if (
+      !isInitialSync &&
+      (routeChatId === currentChatId ||
+        (routeChatId === undefined && currentChatId === freshChatId))
+    ) {
+      return;
+    }
+
+    const nextChatId = routeChatId ?? uuidv4();
+    // Back/Forward can switch chats within the same mounted home page.
+    if (!isInitialSync && activeChatIdRef.current !== nextChatId) {
+      stopActiveBrowserStream(nextChatId);
+    }
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (!routeChatId) resetSandboxPreference();
+    wasNewChatRef.current = !routeChatId;
+    setChatId(nextChatId);
+    setIsExistingChat(!!routeChatId);
+    setRouteAdoptedChatId(routeChatId);
+  }, [
+    routeChatId,
+    committedChatIdRef,
+    resetSandboxPreference,
+    setStreamedTitle,
+    stopActiveBrowserStream,
+  ]);
+
   useEffect(() => {
     setChatNavigationHandler(stopActiveBrowserStream);
     return () => setChatNavigationHandler(null);
@@ -2292,6 +2340,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     const reset = () => {
       const nextChatId = uuidv4();
+      freshChatIdAwaitingHomeRef.current = nextChatId;
       stopActiveBrowserStream(nextChatId);
       setMessages([]);
       setChatId(nextChatId);
@@ -3018,7 +3067,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
-        autoResume={autoResume}
+        autoResume={autoResume || routeAdoptedChatId === chatId}
         serverMessages={serverMessages}
         resumeStream={resumeStream}
         setMessages={setMessages}
@@ -3212,7 +3261,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     }
 
                     onSubmit={handleSubmit}
-                    starterPersistedTurn={starterPersistedTurn}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}

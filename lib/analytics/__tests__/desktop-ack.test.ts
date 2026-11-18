@@ -48,9 +48,11 @@ import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
+  DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
 jest.mock("../client", () => ({
@@ -3122,6 +3124,344 @@ describe("invocation rejection message class", () => {
       expect(reads).toBe(0);
     });
   });
+
+  describe("unknown invocation class", () => {
+    const authorizedUnknown: DesktopInvocationRejectionDiagnostic = {
+      ...rejection,
+      desktop_invocation_rejection_reason: "unknown",
+    };
+    const unknown: DesktopInvocationUnknownDiagnostic = {
+      desktop_invocation_unknown_version: 1,
+      desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+    };
+    const stopMessage =
+      "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
+    const unknownKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key),
+      );
+
+    it.each([
+      "lifecycle_page_replaced",
+      "lifecycle_prior_cleanup_pending",
+      "lifecycle_stop_unconfirmed",
+      "other_string",
+      "other_error_message",
+      "message_over_limit",
+      "message_unavailable",
+    ])(
+      "keeps the %s pair beside the class and kind through capture and before_send",
+      (cls) => {
+        const pair = { ...unknown, desktop_invocation_unknown_class: cls };
+        const final = settle({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          // Private extras on the same carrier never survive the copy.
+          invocationUnknown: { ...pair, message: stopMessage, cwd: "PRIVATE" },
+        });
+        const expected = { ...rejectedKind, ...authorizedUnknown, ...pair };
+        expect(final?.properties).toMatchObject(expected);
+        expect(unknownKeys(final!.properties)).toHaveLength(2);
+        const enriched = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: {
+            ...final!.properties,
+            $current_url: "PRIVATE URL",
+            message: stopMessage,
+          },
+          $set: { email: "PRIVATE" },
+          $set_once: { email: "PRIVATE" },
+        });
+        expect(enriched.properties).toMatchObject(expected);
+        expect(unknownKeys(enriched.properties)).toHaveLength(2);
+        // Unrelated normal fields still pass the existing allowlist.
+        expect(enriched.properties).toMatchObject({
+          commandId: "command",
+          connectionId: "connection",
+          outcome: "acknowledged",
+        });
+        expect(enriched).not.toHaveProperty("$set");
+        expect(enriched).not.toHaveProperty("$set_once");
+        const serialized = JSON.stringify([final, enriched]);
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain("confirm an earlier command");
+      },
+    );
+
+    it("keeps an unsampled unknown pair at the diagnostic rate under the same key", () => {
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: unknown,
+      });
+      expect(final).toMatchObject({
+        dedupeKey: JSON.stringify(["connection", "command"]),
+        properties: {
+          ...authorizedUnknown,
+          ...unknown,
+          telemetry_sampled: false,
+          telemetry_sample_rate: 1,
+        },
+      });
+      expect(capture.mock.calls.map(([event]) => event.event)).not.toContain(
+        "desktop_ack_command_started",
+      );
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["a missing version", { desktop_invocation_unknown_version: undefined }],
+      ["a string version", { desktop_invocation_unknown_version: "1" }],
+      ["an unsupported version", { desktop_invocation_unknown_version: 2 }],
+      ["a missing class", { desktop_invocation_unknown_class: undefined }],
+      ["a private class", { desktop_invocation_unknown_class: "PRIVATE" }],
+      ["the coarse reason", { desktop_invocation_unknown_class: "unknown" }],
+      [
+        "a raw lifecycle message",
+        { desktop_invocation_unknown_class: stopMessage },
+      ],
+    ])("drops only the unknown pair for %s", (_case, change) => {
+      const invalid = { ...unknown, ...change };
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: invalid,
+      });
+      expect(final?.properties).toMatchObject({
+        ...rejectedKind,
+        ...authorizedUnknown,
+      });
+      expect(unknownKeys(final!.properties)).toEqual([]);
+      expect(
+        sanitize({
+          terminalType: "error",
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...invalid,
+        }),
+      ).toEqual({
+        terminalType: "error",
+        ...rejectedKind,
+        ...authorizedUnknown,
+      });
+      expect(JSON.stringify(final)).not.toContain("PRIVATE");
+      expect(JSON.stringify(final)).not.toContain("confirm an earlier");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["another class", { invocationRejection: rejection }],
+      [
+        "an authorized spawn class",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_reason: "spawn_failed",
+          },
+        },
+      ],
+      [
+        "an authorized admission class",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_reason: "execution_admission",
+          },
+        },
+      ],
+      [
+        "a compatibility unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "compatibility_native",
+          },
+        },
+      ],
+      [
+        "a published legacy unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "published_legacy_native",
+          },
+        },
+      ],
+      [
+        "an unselected unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "not_selected",
+          },
+        },
+      ],
+      [
+        "an invalid class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_version: "1",
+          },
+        },
+      ],
+      ["no class", { invocationRejection: undefined }],
+      [
+        "a native timeout kind",
+        {
+          terminalError: {
+            ...rejectedKind,
+            desktop_terminal_error_kind: "native_command_timeout",
+          },
+        },
+      ],
+      ["no kind", { terminalError: undefined }],
+      ["an exit", { terminalType: "exit", terminalExitCode: 0 }],
+    ])("never attaches the unknown pair to %s", (_case, change) => {
+      const settlement = {
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: unknown,
+        ...change,
+      };
+      const final = settle(settlement);
+      expect(unknownKeys(final!.properties)).toEqual([]);
+      const {
+        terminalError: kind,
+        invocationRejection,
+        invocationUnknown,
+        ...rest
+      } = settlement;
+      const sanitized = sanitize({
+        ...rest,
+        ...(kind as object),
+        ...(invocationRejection as object),
+        ...(invocationUnknown as object),
+      });
+      expect(unknownKeys(sanitized)).toEqual([]);
+      // The coarse class is unaffected by the pair it did not admit.
+      expect(rejectionKeys(sanitized)).toEqual(
+        rejectionKeys(final!.properties),
+      );
+    });
+
+    it("never attaches the unknown pair to a start or summary", () => {
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          unknownKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: {
+                terminalType: "error",
+                ...rejectedKind,
+                ...authorizedUnknown,
+                ...unknown,
+              },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("strips hostile unknown keys before any value access at capture or before_send", () => {
+      let reads = 0;
+      const withAccessors = (target: Record<string, unknown>) => {
+        for (const key of DESKTOP_INVOCATION_UNKNOWN_PROPERTIES)
+          Object.defineProperty(target, key, {
+            enumerable: true,
+            get() {
+              reads++;
+              return key.endsWith("version") ? 1 : "lifecycle_page_replaced";
+            },
+          });
+        return target;
+      };
+      const fail = () => {
+        throw new Error("PRIVATE");
+      };
+      for (const invocationUnknown of [
+        withAccessors({}),
+        new Proxy(
+          { ...unknown },
+          { get: fail, getOwnPropertyDescriptor: fail },
+        ),
+      ]) {
+        const final = settle({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          invocationUnknown,
+        });
+        expect(final?.properties).toMatchObject(authorizedUnknown);
+        expect(unknownKeys(final!.properties)).toEqual([]);
+      }
+      // Both inside and outside the gate, a raw key is never read or kept.
+      for (const coarse of [authorizedUnknown, rejection]) {
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: withAccessors({
+            terminalType: "error",
+            ...rejectedKind,
+            ...coarse,
+          }),
+        }).properties!;
+        expect(sanitized).toEqual({
+          terminalType: "error",
+          ...rejectedKind,
+          ...coarse,
+        });
+      }
+      // An inherited pair is not the event's own data.
+      const inherited = Object.assign(Object.create(unknown as object), {
+        terminalType: "error",
+        ...rejectedKind,
+        ...authorizedUnknown,
+      }) as Record<string, unknown>;
+      expect(
+        unknownKeys(
+          sanitizeDesktopAckEvent({
+            event: "desktop_ack_command_settled",
+            properties: inherited,
+          }).properties,
+        ),
+      ).toEqual([]);
+      expect(reads).toBe(0);
+    });
+
+    it.each<[string, string | null]>([
+      ["an owner change", "another-user"],
+      ["withdrawn consent", null],
+    ])(
+      "never emits the unknown pair after %s before settlement",
+      (_case, next) => {
+        capture.mockClear();
+        const settleFinal = telemetry.start({
+          connectionId: "connection",
+          commandId: "command",
+        });
+        identity.mockReturnValue(next);
+        settleFinal({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          invocationUnknown: unknown,
+        } as never);
+        expect(
+          capture.mock.calls.filter(
+            ([event]) => event.event === "desktop_ack_command_settled",
+          ),
+        ).toEqual([]);
+        expect(JSON.stringify(capture.mock.calls)).not.toContain(
+          "desktop_invocation_unknown",
+        );
+      },
+    );
+  });
 });
 
 describe("volume reduction and reliability counters", () => {
@@ -3488,6 +3828,40 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       ),
     ).toEqual([]);
     expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+  });
+
+  it("keeps the unknown class pair with measured identity, not a reported version", () => {
+    const unknownPair: DesktopInvocationUnknownDiagnostic = {
+      desktop_invocation_unknown_version: 1,
+      desktop_invocation_unknown_class: "lifecycle_page_replaced",
+    };
+    const coarse: DesktopInvocationRejectionDiagnostic = {
+      desktop_invocation_rejection_version: 1,
+      desktop_invocation_rejection_reason: "unknown",
+      desktop_invocation_rejection_adapter: "authorized_native",
+    };
+    telemetry.start({ connectionId: "connection", commandId: "unknown" })({
+      ...result,
+      terminalType: "error",
+      terminalExitCode: null,
+      terminalError: {
+        desktop_terminal_error_diagnostic_version: 1,
+        desktop_terminal_error_kind: "invocation_rejected",
+      },
+      invocationRejection: coarse,
+      invocationUnknown: unknownPair,
+    } as never);
+    const final = capture.mock.calls.at(-1)![0];
+    const sent = send(final.event, {
+      ...final.properties!,
+      // A caller-reported version neither replaces the measured identity nor
+      // affects the class.
+      native_app_version: "0.0.82",
+      message: "Desktop page was replaced before this command started",
+    });
+    expect(sent).toMatchObject({ ...coarse, ...unknownPair, ...measured });
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+    expect(JSON.stringify(sent)).not.toContain("page was replaced");
   });
 
   it("attributes unreceipted nonzero finals and unsampled summaries", () => {

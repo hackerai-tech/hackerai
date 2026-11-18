@@ -10,6 +10,7 @@ on:
       - ".github/scripts/prepare-desktop-release.sh"
       - ".github/scripts/*universal-dmg.sh"
       - ".github/scripts/redact-notary-output.py"
+      - ".github/scripts/staple-notarization.sh"
 
 permissions:
   contents: read

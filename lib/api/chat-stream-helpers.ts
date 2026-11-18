@@ -84,6 +84,7 @@ import {
   extractErrorDetails,
   getProviderStatusCode,
 } from "@/lib/utils/error-utils";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 /**
  * Check if messages contain file attachments
@@ -1381,7 +1382,9 @@ export async function injectNotesIntoMessages(
   } catch (error) {
     logger.warn("Failed to fetch notes, continuing without them", {
       userId: opts.userId,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactSensitiveErrorMessage(
+        error instanceof Error ? error.message : String(error),
+      ),
     });
     return messages;
   }
@@ -1477,7 +1480,9 @@ export async function refreshNotesInModelMessages(
   } catch (error) {
     logger.warn("Failed to refresh notes in prepareStep, continuing without", {
       userId: opts.userId,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactSensitiveErrorMessage(
+        error instanceof Error ? error.message : String(error),
+      ),
     });
     return messages;
   }

@@ -19,6 +19,7 @@
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
+import { awaitDispatchReadiness } from "@/lib/centrifugo/desktop-session";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -199,6 +200,20 @@ export async function createCentrifugoPtyHandle(
   let recordedPayloadBytesEstimate = 0;
   let recordedUnmatchedPayloadBytesEstimate = 0;
   const reassembler = new CentrifugoMessageReassembler();
+  // The owning run's live host readiness; absent outside a watched run.
+  const gate = sandbox.getDispatchGate();
+  // Ends readiness waits on kill or teardown; never a published operation.
+  const dispatchAbort = new AbortController();
+  let unregisterPublished: (() => void) | undefined;
+  // PTY output is unsequenced and has no replay, so an active session can
+  // never be reconciled after its host leaves: recovery stops the run.
+  const markPublished = () => {
+    unregisterPublished ??= sandbox.registerPublishedOperation({
+      commandId: sessionId,
+      outputComplete: () => false,
+      resumeOutput: () => {},
+    });
+  };
 
   const client = new Centrifuge(sandbox.getWsUrl(), {
     token,
@@ -223,9 +238,19 @@ export async function createCentrifugoPtyHandle(
     recordedUnmatchedPayloadBytesEstimate = unmatchedPayloadBytesEstimate;
   };
 
+  // Only an observed exit proves the session ended. A creation error can
+  // follow native execution (e.g. no returned PID), even before pty_ready.
+  let outcomeKnown = false;
   const cleanup = () => {
     if (cleanedUp) return;
     cleanedUp = true;
+    dispatchAbort.abort();
+    // The shell may still run, or (with an exit seen while the host is
+    // unverified) unsequenced output may be missing: stop the run before
+    // forgetting the session. A verified host's exit stays a normal end.
+    if (unregisterPublished && (!outcomeKnown || (gate && !gate.isReady())))
+      gate?.failUncertainExecution?.();
+    unregisterPublished?.();
     recordTraffic();
     if (subscription) {
       try {
@@ -247,7 +272,12 @@ export async function createCentrifugoPtyHandle(
   // don't see "[object Object]" from String(err).
   const publish = async (payload: PtyOutgoingPayload): Promise<void> => {
     if (!subscription) throw new Error(`${LOG_PREFIX} subscription not ready`);
+    // Creation and input run commands; kill and resize stay available while
+    // the host is unverified. Nothing here is ever published twice.
+    const gated = payload.type === "pty_create" || payload.type === "pty_input";
+    let publishing = false;
     try {
+      if (gated) await awaitDispatchReadiness(gate, dispatchAbort.signal);
       const authorizationId = desktop
         ? await authorizeDesktopOperation(
             userId,
@@ -255,11 +285,24 @@ export async function createCentrifugoPtyHandle(
             payload as unknown as Record<string, unknown>,
           )
         : undefined;
+      if (gated) {
+        // Readiness may have lapsed during authorization: read it again in
+        // the tick that publishes.
+        while (gate && !gate.isReady())
+          await gate.waitUntilReady(dispatchAbort.signal);
+        dispatchAbort.signal.throwIfAborted();
+        if (payload.type === "pty_create") markPublished();
+      }
+      publishing = true;
       await subscription.publish({
         ...payload,
         ...(authorizationId ? { authorizationId } : {}),
       });
     } catch (err) {
+      // Input that may have reached the shell, unconfirmed, is an unknown
+      // execution. A failure before publication never is.
+      if (payload.type === "pty_input" && publishing)
+        gate?.failUncertainExecution?.();
       if (err instanceof Error) throw err;
       const msg =
         typeof err === "string"
@@ -304,6 +347,8 @@ export async function createCentrifugoPtyHandle(
         sessionId,
         targetConnectionId: connectionId,
       };
+      // Stop any input still waiting for readiness; kill itself is ungated.
+      dispatchAbort.abort();
       try {
         await publish(payload);
       } catch (err) {
@@ -407,6 +452,7 @@ export async function createCentrifugoPtyHandle(
           }
 
           case "pty_exit":
+            outcomeKnown = true;
             resolveExitedOnce({ exitCode: msg.exitCode });
             cleanup();
             break;
@@ -466,9 +512,10 @@ export async function createCentrifugoPtyHandle(
             createPayload as unknown as Record<string, unknown>,
             () => !cleanedUp,
             subscription!,
-            undefined,
+            markPublished,
             undefined,
             desktop,
+            { gate, signal: dispatchAbort.signal },
           )
         : publish(createPayload);
       dispatch.catch((err: unknown) => {

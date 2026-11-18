@@ -435,16 +435,24 @@ describe("Finding hunt tools", () => {
   it("reads history only for reports in the current chat", async () => {
     history.mockResolvedValue({ available: false });
     const { createGetFindingHunts } = await tools();
+    const abortSignal = new AbortController().signal;
     const result = await createGetFindingHunts(context).execute!(
       { finding_id: "finding-other" },
-      options,
+      { ...options, abortSignal },
     );
-    expect(history).toHaveBeenCalledWith({
+    expect(history).toHaveBeenCalledTimes(1);
+    const { signal, ...args } = history.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(args).toEqual({
       userId: "user-1",
       chatId: "chat-1",
       findingId: "finding-other",
       limit: 5,
     });
+    // This call's own cancellation reaches the read and any recovery retry.
+    expect(signal).toBe(abortSignal);
     expect(result).toMatchObject({ success: false, error: "not_found" });
   });
 });

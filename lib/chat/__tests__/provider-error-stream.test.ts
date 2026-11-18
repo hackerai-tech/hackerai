@@ -257,8 +257,9 @@ describe("attempt terminal deferral", () => {
     attempt: UIMessageChunk[],
     action: (deferral: ReturnType<typeof createProviderErrorDeferral>) => void,
     trailing: UIMessageChunk[] = [],
+    options?: Parameters<typeof createProviderErrorDeferral>[0],
   ) {
-    const deferral = createProviderErrorDeferral();
+    const deferral = createProviderErrorDeferral(options);
     const filter = deferral.filter<UIMessageChunk>();
     const writer = filter.writable.getWriter();
     const reader = filter.readable.getReader();
@@ -350,5 +351,53 @@ describe("attempt terminal deferral", () => {
     const deferral = createProviderErrorDeferral();
     deferral.filter();
     expect(() => deferral.filter()).toThrow("owns one attempt stream");
+  });
+
+  // Once released, a trailing chunk passes straight through; its completed
+  // write proves every chunk before it was read before settlement.
+  const trailer: UIMessageChunk = {
+    type: "message-metadata",
+    messageMetadata: { barrier: true },
+  };
+
+  it("publishes an error named for immediate publication at once, unhideable", async () => {
+    const publishImmediately = jest.fn(() => true);
+    const { beforeSettlement, output } = await settle(
+      [...failed, trailer],
+      (deferral) => deferral.discard(),
+      [],
+      { publishImmediately },
+    );
+    expect(beforeSettlement.slice(0, failed.length)).toEqual(failed);
+    expect(output).toEqual([...failed, trailer]);
+    // Consulted only for the error itself, not for ordinary or finish chunks.
+    expect(publishImmediately).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an earlier held finish before an immediate error, in order", async () => {
+    const heldFinishThenError: UIMessageChunk[] = [
+      ...succeeded,
+      { type: "error", errorText: "local read failed" },
+    ];
+    const { beforeSettlement } = await settle(
+      [...heldFinishThenError, trailer],
+      () => {},
+      [],
+      { publishImmediately: () => true },
+    );
+    expect(beforeSettlement.slice(0, heldFinishThenError.length)).toEqual(
+      heldFinishThenError,
+    );
+  });
+
+  it("keeps deferring when the immediate-publication predicate declines", async () => {
+    const { beforeSettlement, output } = await settle(
+      failed,
+      (deferral) => deferral.discard(),
+      [],
+      { publishImmediately: () => false },
+    );
+    expect(beforeSettlement).toEqual(failed.slice(0, 3));
+    expect(output).toEqual(failed.filter((chunk) => !isTerminal(chunk)));
   });
 });

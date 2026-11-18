@@ -40,6 +40,7 @@ const mockEnabled = jest.fn(),
 
 const get = (findingId: string | null) =>
   ({
+    signal: new AbortController().signal,
     nextUrl: {
       searchParams: new URLSearchParams(findingId ? { findingId } : {}),
     },
@@ -92,11 +93,13 @@ describe("/api/finding-hunts", () => {
       },
       hunts,
     });
-    const response = await route.GET(get("finding-1"));
-    expect(mockHistory).toHaveBeenCalledWith({
-      userId: "owner",
-      findingId: "finding-1",
-    });
+    const request = get("finding-1");
+    const response = await route.GET(request);
+    // Default bound, no chat restriction; the request cancels the read.
+    expect(mockHistory).toHaveBeenCalledTimes(1);
+    const { signal, ...args } = mockHistory.mock.calls[0][0];
+    expect(args).toEqual({ userId: "owner", findingId: "finding-1" });
+    expect(signal).toBe(request.signal);
     expect(await response.json()).toEqual({
       enabled: true,
       chat_title: "Scan",

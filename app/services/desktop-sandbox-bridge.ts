@@ -3,6 +3,14 @@ import {
   wasDesktopRunStopped,
 } from "./desktop-command-cancellation";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import {
+  DESKTOP_SESSION_CHALLENGE,
+  answerDesktopSessionChallenge,
+  parseDesktopSessionChallenge,
+  readDesktopSessionIdentity,
+  type DesktopSessionChallenge,
+  type DesktopSessionIdentity,
+} from "@/lib/centrifugo/desktop-session";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import {
@@ -59,9 +67,11 @@ import {
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
+  desktopInvocationUnknownDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -343,6 +353,7 @@ type OutputControl = {
 
 type TargetedIncomingMessage =
   | OutputControl
+  | DesktopSessionChallenge
   | CommandMessage
   | CommandCancelMessage
   | FileRequestMessage
@@ -367,6 +378,7 @@ function isTargetedIncomingMessage(
       type === "command_cancel" ||
       type === "command_output_ack" ||
       type === "command_output_resume" ||
+      type === DESKTOP_SESSION_CHALLENGE ||
       type === "file_stat" ||
       type === "file_read" ||
       type === "file_write" ||
@@ -589,6 +601,9 @@ export class DesktopSandboxBridge {
   private nativeVersionLookup: DesktopNativeVersionLookup = "unobserved";
   private nativePlatform = "unknown";
   private nativeLifecycle: NativeLifecycleTelemetry = {};
+  /** Native identity proven at startup; older binaries have none. */
+  private nativeSession: DesktopSessionIdentity | undefined;
+  private sessionChallengeInFlight = false;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -846,6 +861,7 @@ export class DesktopSandboxBridge {
     this.nativeFileIpcAvailable = null;
     this.nativeFileIpcFailure = undefined;
     this.nativeLifecycle = {};
+    this.nativeSession = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1127,6 +1143,12 @@ export class DesktopSandboxBridge {
           break;
         }
 
+        case DESKTOP_SESSION_CHALLENGE:
+          void this.answerSessionChallenge(message).catch(() => {
+            console.error("[DesktopSandboxBridge] Session proof failed");
+          });
+          break;
+
         case "command_cancel":
           this.handleCommandCancel(message as CommandCancelMessage).catch(
             (err) => {
@@ -1401,6 +1423,7 @@ export class DesktopSandboxBridge {
             lifecycle?: unknown;
           }>("get_desktop_os_info");
           this.nativeLifecycle = nativeLifecycleTelemetry(native.lifecycle);
+          this.nativeSession = readDesktopSessionIdentity(native.lifecycle);
           // Registration validates exactly these fields; never forward extras.
           return {
             platform: normalizeSandboxPlatform(native.platform),
@@ -1535,13 +1558,14 @@ export class DesktopSandboxBridge {
       terminalErrorKind = errorKind;
       return true;
     };
-    // The rejection's message class, and its admission or spawn refinement,
-    // join only that recorded kind. The trace reports the command set the
-    // existing adapter selected.
+    // The rejection's message class, and its admission, spawn or unknown
+    // refinement, join only that recorded kind. The trace reports the command
+    // set the existing adapter selected.
     const invocationTrace: FileStatReceiverTrace = {};
     let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
     let invocationAdmission: DesktopInvocationAdmissionDiagnostic | null = null;
     let invocationSpawnHint: DesktopInvocationSpawnHintDiagnostic | null = null;
+    let invocationUnknown: DesktopInvocationUnknownDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1578,6 +1602,7 @@ export class DesktopSandboxBridge {
                 invocationRejection,
                 ...(invocationAdmission && { invocationAdmission }),
                 ...(invocationSpawnHint && { invocationSpawnHint }),
+                ...(invocationUnknown && { invocationUnknown }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1838,6 +1863,11 @@ export class DesktopSandboxBridge {
             invocationSpawnHint = desktopInvocationSpawnHintDiagnostic(
               invocationRejection,
               rejection.spawnOsCodeHint,
+            );
+            // Only an authorized `unknown` group admits it.
+            invocationUnknown = desktopInvocationUnknownDiagnostic(
+              invocationRejection,
+              rejection.unknownClass,
             );
           } else
             invocationRejection = desktopInvocationRejectionDiagnostic(
@@ -2767,6 +2797,47 @@ export class DesktopSandboxBridge {
       });
     } catch (error) {
       await this.publishFileError(requestId, error, reply);
+    }
+  }
+
+  /**
+   * Answer the run observer's challenge on this connection with identity read
+   * from native code now and this session's retained command output. This
+   * never invokes execution. One answer at a time bounds native reads.
+   */
+  private async answerSessionChallenge(message: unknown): Promise<void> {
+    const challenge = parseDesktopSessionChallenge(message);
+    const connectionId = this.connectionId;
+    const generation = this.startupGeneration;
+    const queue = this.publishQueue;
+    if (!challenge || !connectionId || !queue || this.sessionChallengeInFlight)
+      return;
+    this.sessionChallengeInFlight = true;
+    try {
+      const proof = await answerDesktopSessionChallenge(challenge, {
+        connectionId,
+        startup: this.nativeSession,
+        readNativeOsInfo: async () => {
+          const { invoke } = await import("@tauri-apps/api/core");
+          return invoke<unknown>("get_desktop_os_info");
+        },
+        // An entry stays mapped until native invocation settles, even after
+        // its window closed (e.g. overflow): only a live window is retained.
+        retainsOutput: (commandId) =>
+          this.acknowledgedOutputs.get(commandId)?.resumable === true,
+      });
+      // A late answer from a stopped or replaced bridge is never published.
+      if (
+        !proof ||
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation ||
+        this.publishQueue !== queue
+      )
+        return;
+      await queue.publish(proof as unknown as Record<string, unknown>);
+    } finally {
+      this.sessionChallengeInFlight = false;
     }
   }
 

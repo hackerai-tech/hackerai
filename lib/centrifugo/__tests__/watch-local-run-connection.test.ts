@@ -1,10 +1,14 @@
 import { EventEmitter } from "events";
-import { watchLocalRunConnection } from "../watch-local-run-connection";
+import {
+  watchLocalRunConnection,
+  type DesktopSessionReconciliation,
+} from "../watch-local-run-connection";
 import { getLocalStopDiagnostic } from "@/lib/chat/local-connection-stop";
 
 const mockSubscription = Object.assign(new EventEmitter(), {
   presence: jest.fn(),
   subscribe: jest.fn(),
+  publish: jest.fn(),
 });
 const mockClient = Object.assign(new EventEmitter(), {
   state: "connected",
@@ -61,6 +65,7 @@ beforeEach(() => {
     mockClient.state = "disconnected";
   });
   mockSubscription.presence.mockResolvedValue(online);
+  mockSubscription.publish.mockResolvedValue(undefined);
   process.env.CENTRIFUGO_WS_URL = "ws://localhost";
   NativeSocket.created = [];
   globalThis.WebSocket = NativeSocket as unknown as typeof WebSocket;
@@ -71,22 +76,23 @@ afterEach(() => {
   Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
 });
 
-function watch() {
+function watch(desktopSession?: DesktopSessionReconciliation) {
   const onLost = jest.fn();
-  const stop = watchLocalRunConnection({
+  const controller = watchLocalRunConnection({
     userId: "u",
     connectionId: SELECTED,
     onLost,
+    desktopSession,
   });
   const cause = () => {
     expect(onLost).toHaveBeenCalledTimes(1);
     return getLocalStopDiagnostic(onLost.mock.calls[0][0]);
   };
-  return { onLost, stop, cause };
+  return { onLost, stop: controller.stop, controller, cause };
 }
 
-async function start() {
-  const watcher = watch();
+async function start(desktopSession?: DesktopSessionReconciliation) {
+  const watcher = watch(desktopSession);
   await flush();
   // The SDK opens its socket before the subscription completes.
   const socket = sdkSocket("ws://localhost");
@@ -941,6 +947,210 @@ test.each([
     expect(JSON.stringify(cause())).not.toContain("PRIVATE");
   },
 );
+
+describe("dispatch readiness", () => {
+  const pending = (promise: Promise<unknown>) => {
+    const state = { settled: false, error: undefined as unknown };
+    promise.then(
+      () => (state.settled = true),
+      (error) => Object.assign(state, { settled: true, error }),
+    );
+    return state;
+  };
+
+  test("admits only while the host is verified, and a loss rejects waiters with its cause", async () => {
+    const watcher = watch();
+    const first = pending(watcher.controller.waitUntilReady());
+    await flush();
+    expect(watcher.controller.isReady()).toBe(false);
+    mockSubscription.emit("subscribed");
+    await flush();
+    expect(first).toEqual({ settled: true, error: undefined });
+
+    // An observer interruption clears readiness before its handler returns.
+    mockClient.state = "connecting";
+    mockSubscription.emit("subscribing", { code: 1 });
+    expect(watcher.controller.isReady()).toBe(false);
+    const second = pending(watcher.controller.waitUntilReady());
+    mockClient.state = "connected";
+    mockSubscription.emit("subscribed");
+    await flush();
+    expect(second).toEqual({ settled: true, error: undefined });
+
+    mockSubscription.emit("subscribing", { code: 2500 });
+    const third = pending(watcher.controller.waitUntilReady());
+    mockSubscription.emit("leave", {
+      info: { connInfo: { connectionId: SELECTED } },
+    });
+    await flush();
+    const lost = watcher.onLost.mock.calls[0][0];
+    expect(third.error).toBe(lost);
+    await expect(watcher.controller.waitUntilReady()).rejects.toBe(lost);
+  });
+
+  test("normal completion and abort end a wait promptly", async () => {
+    const watcher = watch();
+    const aborted = new AbortController();
+    const canceled = pending(watcher.controller.waitUntilReady(aborted.signal));
+    const completed = pending(watcher.controller.waitUntilReady());
+    aborted.abort(new Error("Stop"));
+    await flush();
+    expect((canceled.error as Error).message).toBe("Stop");
+    expect(completed.settled).toBe(false);
+    const cause = new Error("run finished");
+    watcher.stop(cause);
+    await flush();
+    expect(completed.error).toBe(cause);
+    expect(watcher.onLost).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+});
+
+describe("a Desktop session proof", () => {
+  const LAUNCH = "c".repeat(32);
+  const proof = (nonce: unknown, overrides: object = {}) => ({
+    type: "desktop_session_proof",
+    nonce,
+    connectionId: SELECTED,
+    launchId: LAUNCH,
+    pageGeneration: 1,
+    retainedCommandIds: ["running"],
+    ...overrides,
+  });
+  const fromHost = { connInfo: { connectionId: SELECTED } };
+  const challenges = () =>
+    mockSubscription.publish.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "desktop_session_challenge");
+
+  test("restores readiness only for the current challenge, answered by the selected host", async () => {
+    const running = {
+      commandId: "running",
+      outputComplete: () => false,
+      resumeOutput: jest.fn(),
+    };
+    const { controller, onLost } = await start({
+      publishedCommands: () => [running],
+    });
+    const [baseline] = challenges();
+    expect(baseline).toMatchObject({
+      targetConnectionId: SELECTED,
+      commandIds: [],
+    });
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce, { retainedCommandIds: [] }),
+      info: fromHost,
+    });
+
+    // The selected host leaves and returns: presence alone proves nothing.
+    mockSubscription.emit("leave", { info: fromHost });
+    expect(onLost).not.toHaveBeenCalled();
+    expect(controller.isReady()).toBe(false);
+    mockSubscription.emit("join", { info: fromHost });
+    await flush();
+    const recovery = challenges().at(-1);
+    expect(recovery).toMatchObject({ commandIds: ["running"] });
+    expect(recovery.nonce).not.toBe(baseline.nonce);
+
+    for (const [data, info] of [
+      [proof(baseline.nonce), fromHost],
+      [proof(recovery.nonce), { connInfo: { connectionId: "other" } }],
+      // No relay-attached publisher, or only unsigned channel info.
+      [proof(recovery.nonce), undefined],
+      [proof(recovery.nonce), { chanInfo: { connectionId: SELECTED } }],
+      [proof(recovery.nonce, { connectionId: "other" }), fromHost],
+      [proof(recovery.nonce, { pageGeneration: "1" }), fromHost],
+    ])
+      mockSubscription.emit("publication", { data, info });
+    expect(controller.isReady()).toBe(false);
+    expect(running.resumeOutput).not.toHaveBeenCalled();
+
+    mockSubscription.emit("publication", {
+      data: proof(recovery.nonce),
+      info: fromHost,
+    });
+    expect(controller.isReady()).toBe(true);
+    expect(running.resumeOutput).toHaveBeenCalledTimes(1);
+    // A replayed answer cannot act again.
+    mockSubscription.emit("publication", {
+      data: proof(recovery.nonce),
+      info: fromHost,
+    });
+    expect(running.resumeOutput).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(onLost).not.toHaveBeenCalled();
+  });
+
+  test("a challenge superseded by a later interruption cannot be answered", async () => {
+    const { controller, cause } = await start({ publishedCommands: () => [] });
+    const [baseline] = challenges();
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce),
+      info: fromHost,
+    });
+    mockSubscription.emit("leave", { info: fromHost });
+    mockSubscription.emit("join", { info: fromHost });
+    await flush();
+    const stale = challenges().at(-1);
+    mockSubscription.emit("leave", { info: fromHost });
+    mockSubscription.emit("publication", {
+      data: proof(stale.nonce),
+      info: fromHost,
+    });
+    expect(controller.isReady()).toBe(false);
+    // Lookups keep finding no host until the fixed window ends.
+    mockSubscription.presence.mockResolvedValue({ clients: {} });
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(cause()?.reason).toBe("selected_host_recovery_expired");
+  });
+
+  test.each([
+    ["no relay-attached publisher", undefined],
+    ["another connection's publication", { connInfo: { connectionId: "x" } }],
+  ])(
+    "a baseline answered with %s grants no host grace",
+    async (_name, info) => {
+      const { cause } = await start({ publishedCommands: () => [] });
+      const [baseline] = challenges();
+      mockSubscription.emit("publication", {
+        data: proof(baseline.nonce),
+        info,
+      });
+      mockSubscription.emit("leave", { info: fromHost });
+      expect(cause()?.reason).toBe("selected_host_left");
+    },
+  );
+
+  test("an uncertain execution latches a loss that rejects readiness, but never relabels an earlier stop", async () => {
+    const { controller, cause } = await start({ publishedCommands: () => [] });
+    const waiting = controller.waitUntilReady();
+    expect(controller.isReady()).toBe(true);
+    controller.failUncertainExecution!();
+    expect(cause()?.reason).toBe("desktop_command_unreconciled");
+    expect(controller.isReady()).toBe(false);
+    await expect(waiting).resolves.toBeUndefined();
+    await expect(controller.waitUntilReady()).rejects.toMatchObject({
+      name: "LocalConnectionLostError",
+    });
+
+    // After the run's own stop, a late uncertain cleanup changes nothing.
+    const later = watch({ publishedCommands: () => [] });
+    later.stop(new Error("user stop"));
+    later.controller.failUncertainExecution!();
+    expect(later.onLost).not.toHaveBeenCalled();
+    await expect(later.controller.waitUntilReady()).rejects.toThrow(
+      "user stop",
+    );
+  });
+
+  test("a CLI host never receives a challenge and stops on departure", async () => {
+    expect(watch().controller.failUncertainExecution).toBeUndefined();
+    const { cause } = await start();
+    expect(mockSubscription.publish).not.toHaveBeenCalled();
+    mockSubscription.emit("leave", { info: fromHost });
+    expect(cause()?.reason).toBe("selected_host_left");
+  });
+});
 
 test("a subscription error before verification still stops", async () => {
   mockSubscription.presence.mockImplementation(() => new Promise(() => {}));

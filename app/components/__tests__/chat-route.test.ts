@@ -1,4 +1,21 @@
-import { finalizeNewChatRoute } from "../chat-route";
+import {
+  finalizeNewChatRoute,
+  getRouteChatIdFromPathname,
+} from "../chat-route";
+
+describe("getRouteChatIdFromPathname", () => {
+  it.each([
+    ["/c/chat-a", "chat-a"],
+    ["/c/chat%20a/share", "chat a"],
+    ["/c/%E0%A4%A", "%E0%A4%A"],
+    ["/", null],
+    ["/c/", null],
+    ["/findings", null],
+    [null, null],
+  ])("reads %p as %p", (pathname, expected) => {
+    expect(getRouteChatIdFromPathname(pathname)).toBe(expected);
+  });
+});
 
 describe("finalizeNewChatRoute", () => {
   beforeEach(() => {

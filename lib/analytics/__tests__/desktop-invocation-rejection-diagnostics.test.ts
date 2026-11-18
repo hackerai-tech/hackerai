@@ -4,17 +4,27 @@ import {
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
+  desktopInvocationUnknownDiagnostic,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
+  readDesktopInvocationUnknownDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
-const unclassified = {
+const unclassified = (unknownClass: string) => ({
   reason: "unknown",
   admission: null,
   spawnOsCodeHint: null,
-};
+  unknownClass,
+});
+
+// stream_lifecycle.rs, verbatim.
+const PAGE_REPLACED = "Desktop page was replaced before this command started";
+const PRIOR_CLEANUP =
+  "Desktop is still stopping commands from a previous page. Retry shortly.";
+const STOP_UNCONFIRMED =
+  "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
 
 describe("classifyNativeInvocationRejection", () => {
   // The native apps' fixed rejection messages and their message classes.
@@ -82,7 +92,12 @@ describe("classifyNativeInvocationRejection", () => {
       "command_already_running",
     ],
   ])("classifies %p as %s and %s", (message, reason, admission) => {
-    const expected = { reason, admission, spawnOsCodeHint: null };
+    const expected = {
+      reason,
+      admission,
+      spawnOsCodeHint: null,
+      unknownClass: null,
+    };
     expect(classifyNativeInvocationRejection(message)).toBe(reason);
     expect(classifyNativeInvocationRejectionMessage(message)).toEqual(expected);
     // A real Error's own message is read the same way.
@@ -131,6 +146,7 @@ describe("classifyNativeInvocationRejection", () => {
       reason: "spawn_failed",
       admission: null,
       spawnOsCodeHint: hint,
+      unknownClass: null,
     };
     expect(classifyNativeInvocationRejectionMessage(message)).toEqual(expected);
     expect(
@@ -138,67 +154,119 @@ describe("classifyNativeInvocationRejection", () => {
     ).toEqual(expected);
   });
 
-  it("hints nothing for a spawn suffix outside a bounded spawn message", () => {
-    for (const message of [
-      // One character over the bound.
-      `Failed to spawn: ${"x".repeat(995)} (os error 2)`,
-      "PRIVATE Failed to spawn: x (os error 2)",
-      "failed to spawn: x (os error 2)",
-      "Process error: x (os error 2)",
-      "Desktop operation was not authorized (os error 2)",
-    ])
+  it.each<[string, string]>([
+    // One character over the bound.
+    [`Failed to spawn: ${"x".repeat(995)} (os error 2)`, "message_over_limit"],
+    ["PRIVATE Failed to spawn: x (os error 2)", "other_string"],
+    ["failed to spawn: x (os error 2)", "other_string"],
+    ["Process error: x (os error 2)", "other_string"],
+    ["Desktop operation was not authorized (os error 2)", "other_string"],
+  ])(
+    "hints nothing for a spawn suffix outside a bounded spawn message %p",
+    (message, unknownClass) => {
       expect(classifyNativeInvocationRejectionMessage(message)).toEqual(
-        unclassified,
+        unclassified(unknownClass),
       );
-  });
+    },
+  );
 
-  it.each<[string, unknown]>([
-    ["a trailing space", "Desktop operation was not authorized "],
-    ["a leading space", " Desktop operation was not authorized"],
-    ["a trailing newline", "Invalid Desktop operation authorization\n"],
-    ["a case change", "desktop operation was not authorized"],
-    ["a truncated message", "Desktop operation was not"],
-    ["an appended suffix", "Invalid Desktop operation PRIVATE"],
-    ["a spawn message without its separator", "Failed to spawn PRIVATE"],
-    ["a lower-case spawn message", "failed to spawn: PRIVATE"],
-    ["an embedded spawn message", "PRIVATE Failed to spawn: x"],
-    ["an over-long spawn message", `Failed to spawn: ${"PRIVATE".repeat(200)}`],
+  it.each<[string, unknown, string]>([
+    [
+      "a trailing space",
+      "Desktop operation was not authorized ",
+      "other_string",
+    ],
+    [
+      "a leading space",
+      " Desktop operation was not authorized",
+      "other_string",
+    ],
+    [
+      "a trailing newline",
+      "Invalid Desktop operation authorization\n",
+      "other_string",
+    ],
+    ["a case change", "desktop operation was not authorized", "other_string"],
+    ["a truncated message", "Desktop operation was not", "other_string"],
+    ["an appended suffix", "Invalid Desktop operation PRIVATE", "other_string"],
+    [
+      "a spawn message without its separator",
+      "Failed to spawn PRIVATE",
+      "other_string",
+    ],
+    ["a lower-case spawn message", "failed to spawn: PRIVATE", "other_string"],
+    ["an embedded spawn message", "PRIVATE Failed to spawn: x", "other_string"],
+    [
+      "an over-long spawn message",
+      `Failed to spawn: ${"PRIVATE".repeat(200)}`,
+      "message_over_limit",
+    ],
     // Tauri runtime and stream-event messages are not rejection classes here.
     [
       "a Tauri ACL message",
       "Command execute_authorized_stream_command not allowed by ACL",
+      "other_string",
     ],
-    ["a Tauri missing command", "Command execute_stream_command not found"],
-    ["a native timeout event", "Command timed out after 30000ms"],
-    ["a native process event", "Process error: PRIVATE"],
-    ["an empty message", ""],
-    ["undefined", undefined],
-    ["null", null],
-    ["a number", 42],
+    [
+      "a Tauri missing command",
+      "Command execute_stream_command not found",
+      "other_string",
+    ],
+    [
+      "a native timeout event",
+      "Command timed out after 30000ms",
+      "other_string",
+    ],
+    ["a native process event", "Process error: PRIVATE", "other_string"],
+    ["an empty message", "", "other_string"],
+    ["undefined", undefined, "message_unavailable"],
+    ["null", null, "message_unavailable"],
+    ["a number", 42, "message_unavailable"],
     [
       "a plain object with a known message",
       { message: "Desktop operation was not authorized" },
+      "message_unavailable",
     ],
     [
       "an object that stringifies to a known message",
       { toString: () => "Desktop operation was not authorized" },
+      "message_unavailable",
     ],
     // Changed admission templates never fall back to a nearby class.
-    ["a punctuated admission message", "Command is already running."],
-    ["a sized stdin message", "Command stdin exceeds limit: 4096"],
-    ["a truncated update message", "Desktop is installing an update."],
-    ["a lower-case admission message", "command is already running"],
+    [
+      "a punctuated admission message",
+      "Command is already running.",
+      "other_string",
+    ],
+    [
+      "a sized stdin message",
+      "Command stdin exceeds limit: 4096",
+      "other_string",
+    ],
+    [
+      "a truncated update message",
+      "Desktop is installing an update.",
+      "other_string",
+    ],
+    [
+      "a lower-case admission message",
+      "command is already running",
+      "other_string",
+    ],
     [
       "an over-long admission message",
       `Command is already running${" ".repeat(1024)}`,
+      "message_over_limit",
     ],
     [
       "a plain object with an admission message",
       { message: "Invalid command stdin encoding" },
+      "message_unavailable",
     ],
     [
       "an object that stringifies to an admission message",
       { toString: () => "Command stdin exceeds limit" },
+      "message_unavailable",
     ],
     [
       "an Error inheriting an admission message",
@@ -207,11 +275,12 @@ describe("classifyNativeInvocationRejection", () => {
         InheritedError.prototype.message = "Command is already running";
         return new InheritedError();
       })(),
+      "message_unavailable",
     ],
-  ])("classifies %s as unknown", (_case, error) => {
+  ])("classifies %s as unknown", (_case, error, unknownClass) => {
     expect(classifyNativeInvocationRejection(error)).toBe("unknown");
     expect(classifyNativeInvocationRejectionMessage(error)).toEqual(
-      unclassified,
+      unclassified(unknownClass),
     );
   });
 
@@ -242,6 +311,13 @@ describe("classifyNativeInvocationRejection", () => {
         return "Failed to spawn: x (os error 5)";
       },
     });
+    const lifecycleGetter = new Error(PAGE_REPLACED);
+    Object.defineProperty(lifecycleGetter, "message", {
+      get() {
+        reads++;
+        return STOP_UNCONFIRMED;
+      },
+    });
     const fail = () => {
       throw new Error("PRIVATE");
     };
@@ -249,6 +325,7 @@ describe("classifyNativeInvocationRejection", () => {
       new GetterError(),
       stringified,
       spawnGetter,
+      lifecycleGetter,
       {
         toString() {
           reads++;
@@ -265,13 +342,371 @@ describe("classifyNativeInvocationRejection", () => {
         get: fail,
         getOwnPropertyDescriptor: fail,
       }),
+      new Proxy(new Error(PRIOR_CLEANUP), {
+        get: fail,
+        getOwnPropertyDescriptor: fail,
+      }),
     ]) {
       expect(classifyNativeInvocationRejection(error)).toBe("unknown");
       expect(classifyNativeInvocationRejectionMessage(error)).toEqual(
-        unclassified,
+        unclassified("message_unavailable"),
       );
     }
     expect(reads).toBe(0);
+  });
+});
+
+describe("unknown invocation class", () => {
+  // The three stream_lifecycle.rs admission denials as Tauri rejects them, and
+  // as an Error's own data message; the coarse reason stays `unknown`.
+  it.each<[string, string]>([
+    [PAGE_REPLACED, "lifecycle_page_replaced"],
+    [PRIOR_CLEANUP, "lifecycle_prior_cleanup_pending"],
+    [STOP_UNCONFIRMED, "lifecycle_stop_unconfirmed"],
+  ])("classifies the exact lifecycle message %p as %s", (message, cls) => {
+    for (const error of [message, new Error(message)]) {
+      expect(classifyNativeInvocationRejection(error)).toBe("unknown");
+      expect(classifyNativeInvocationRejectionMessage(error)).toEqual(
+        unclassified(cls),
+      );
+    }
+  });
+
+  // Exact equality only: near misses are another message, never a guess.
+  it.each<[string, string]>([
+    ["a prefix", "Desktop page was replaced"],
+    ["the first stop sentence", STOP_UNCONFIRMED.split(". ")[0] + "."],
+    ["a trailing space", `${PAGE_REPLACED} `],
+    ["a trailing newline", `${PRIOR_CLEANUP}\n`],
+    ["a leading space", ` ${STOP_UNCONFIRMED}`],
+    ["a case change", PAGE_REPLACED.toLowerCase()],
+    ["a missing final period", PRIOR_CLEANUP.slice(0, -1)],
+    ["a wrapped message", `Error: ${PAGE_REPLACED}`],
+    ["an appended detail", `${STOP_UNCONFIRMED} PRIVATE`],
+    ["two concatenated messages", `${PAGE_REPLACED}${PRIOR_CLEANUP}`],
+    ["an unrelated private string", "PRIVATE canary /Users/PRIVATE/cwd"],
+  ])("classifies %s as another message by its source", (_case, message) => {
+    expect(classifyNativeInvocationRejectionMessage(message)).toEqual(
+      unclassified("other_string"),
+    );
+    expect(
+      classifyNativeInvocationRejectionMessage(new Error(message)),
+    ).toEqual(unclassified("other_error_message"));
+  });
+
+  it("keeps a coarse class for a spawn message quoting a lifecycle message", () => {
+    expect(
+      classifyNativeInvocationRejectionMessage(
+        `Failed to spawn: ${PAGE_REPLACED}`,
+      ),
+    ).toEqual({
+      reason: "spawn_failed",
+      admission: null,
+      spawnOsCodeHint: "unrecognized",
+      unknownClass: null,
+    });
+  });
+
+  it("bounds an unlisted message at exactly 1024 characters", () => {
+    for (const [length, cls] of [
+      [1024, "other_string"],
+      [1025, "message_over_limit"],
+    ] as const) {
+      const message = "x".repeat(length);
+      expect(classifyNativeInvocationRejectionMessage(message)).toEqual(
+        unclassified(cls),
+      );
+      expect(
+        classifyNativeInvocationRejectionMessage(new Error(message)),
+      ).toEqual(
+        unclassified(
+          cls === "other_string" ? "other_error_message" : "message_over_limit",
+        ),
+      );
+    }
+    // An over-long message is never compared, even with a lifecycle start.
+    expect(
+      classifyNativeInvocationRejectionMessage(
+        STOP_UNCONFIRMED.padEnd(1025, " "),
+      ),
+    ).toEqual(unclassified("message_over_limit"));
+  });
+
+  it.each<[string, () => unknown]>([
+    [
+      "an Error inheriting a lifecycle message",
+      () => {
+        class InheritedError extends Error {}
+        InheritedError.prototype.message = PAGE_REPLACED;
+        return new InheritedError();
+      },
+    ],
+    [
+      "an Error whose own message is not a string",
+      () => {
+        const error = new Error("x");
+        Object.defineProperty(error, "message", { value: 42 });
+        return error;
+      },
+    ],
+    ["a plain lifecycle object", () => ({ message: PAGE_REPLACED })],
+    ["a boxed lifecycle string", () => Object(PAGE_REPLACED) as unknown],
+    ["a symbol", () => Symbol(PAGE_REPLACED)],
+    [
+      "a cyclic plain object",
+      () => {
+        const value: Record<string, unknown> = { message: STOP_UNCONFIRMED };
+        value.self = value;
+        return value;
+      },
+    ],
+  ])("classifies %s as message_unavailable", (_case, make) => {
+    expect(classifyNativeInvocationRejectionMessage(make())).toEqual(
+      unclassified("message_unavailable"),
+    );
+  });
+
+  it("reads a cyclic Error's own message without following its cause", () => {
+    const error = new Error(STOP_UNCONFIRMED) as Error & { cause?: unknown };
+    error.cause = error;
+    expect(classifyNativeInvocationRejectionMessage(error)).toEqual(
+      unclassified("lifecycle_stop_unconfirmed"),
+    );
+  });
+
+  it("reads the message descriptor once and never its value through get", () => {
+    let descriptorReads = 0;
+    let gets = 0;
+    const counted = new Proxy(new Error(PRIOR_CLEANUP), {
+      get(target, key, receiver) {
+        gets++;
+        return Reflect.get(target, key, receiver);
+      },
+      getOwnPropertyDescriptor(target, key) {
+        if (key === "message") descriptorReads++;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    expect(classifyNativeInvocationRejectionMessage(counted)).toEqual(
+      unclassified("lifecycle_prior_cleanup_pending"),
+    );
+    expect(descriptorReads).toBe(1);
+    expect(gets).toBe(0);
+  });
+
+  it("never echoes the message in any class", () => {
+    const canary = "PRIVATE canary C:\\Users\\PRIVATE";
+    for (const error of [
+      canary,
+      new Error(canary),
+      canary.repeat(100),
+      { message: canary },
+    ])
+      expect(
+        JSON.stringify(classifyNativeInvocationRejectionMessage(error)),
+      ).not.toContain("PRIVATE");
+  });
+});
+
+describe("desktopInvocationUnknownDiagnostic", () => {
+  const classes = [
+    "lifecycle_page_replaced",
+    "lifecycle_prior_cleanup_pending",
+    "lifecycle_stop_unconfirmed",
+    "other_string",
+    "other_error_message",
+    "message_over_limit",
+    "message_unavailable",
+  ];
+  const authorizedUnknown = desktopInvocationRejectionDiagnostic(
+    "unknown",
+    "authorized_native",
+  );
+
+  it.each(classes)("refines an authorized unknown with %s", (cls) => {
+    const group = desktopInvocationUnknownDiagnostic(authorizedUnknown, cls);
+    expect(group).toEqual({
+      desktop_invocation_unknown_version: 1,
+      desktop_invocation_unknown_class: cls,
+    });
+    expect(Object.isFrozen(group)).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    ["no class", null],
+    [
+      "a compatibility unknown",
+      desktopInvocationRejectionDiagnostic("unknown", "compatibility_native"),
+    ],
+    [
+      "a published legacy unknown",
+      desktopInvocationRejectionDiagnostic(
+        "unknown",
+        "published_legacy_native",
+      ),
+    ],
+    [
+      "an unselected unknown",
+      desktopInvocationRejectionDiagnostic("unknown", "not_selected"),
+    ],
+    [
+      "an authorized spawn failure",
+      desktopInvocationRejectionDiagnostic("spawn_failed", "authorized_native"),
+    ],
+    [
+      "an authorized admission rejection",
+      desktopInvocationRejectionDiagnostic(
+        "execution_admission",
+        "authorized_native",
+      ),
+    ],
+    [
+      "an authorized approval rejection",
+      desktopInvocationRejectionDiagnostic(
+        "authorization_not_approved",
+        "authorized_native",
+      ),
+    ],
+  ])("never refines %s", (_case, rejection) => {
+    for (const cls of classes)
+      expect(
+        desktopInvocationUnknownDiagnostic(
+          rejection as DesktopInvocationRejectionDiagnostic | null,
+          cls,
+        ),
+      ).toBeNull();
+  });
+
+  it.each<[string, unknown]>([
+    ["no class", null],
+    ["an undefined class", undefined],
+    ["the coarse reason", "unknown"],
+    ["a raw lifecycle message", PAGE_REPLACED],
+    ["a private value", "PRIVATE"],
+    ["a number", 1],
+  ])("builds nothing for %s", (_case, cls) => {
+    expect(
+      desktopInvocationUnknownDiagnostic(authorizedUnknown, cls),
+    ).toBeNull();
+  });
+});
+
+describe("readDesktopInvocationUnknownDiagnostic", () => {
+  const authorizedUnknown = desktopInvocationRejectionDiagnostic(
+    "unknown",
+    "authorized_native",
+  );
+  const group = {
+    desktop_invocation_unknown_version: 1,
+    desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+  };
+
+  it("copies only the complete group's data values", () => {
+    const read = readDesktopInvocationUnknownDiagnostic(
+      { ...group, message: STOP_UNCONFIRMED, cwd: "PRIVATE" },
+      authorizedUnknown,
+    );
+    expect(read).toEqual(group);
+    expect(Object.isFrozen(read)).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    ["no source", undefined],
+    ["a string source", "PRIVATE"],
+    ["an empty bag", {}],
+    [
+      "a missing class",
+      { ...group, desktop_invocation_unknown_class: undefined },
+    ],
+    [
+      "a missing version",
+      { ...group, desktop_invocation_unknown_version: undefined },
+    ],
+    ["a string version", { ...group, desktop_invocation_unknown_version: "1" }],
+    [
+      "an unsupported version",
+      { ...group, desktop_invocation_unknown_version: 2 },
+    ],
+    [
+      "a raw lifecycle message as class",
+      { ...group, desktop_invocation_unknown_class: STOP_UNCONFIRMED },
+    ],
+    [
+      "an unlisted class",
+      { ...group, desktop_invocation_unknown_class: "lifecycle_other" },
+    ],
+    [
+      "an inherited group",
+      Object.create(group as object) as Record<string, unknown>,
+    ],
+  ])("reads nothing for %s", (_case, source) => {
+    expect(
+      readDesktopInvocationUnknownDiagnostic(source, authorizedUnknown),
+    ).toBeNull();
+  });
+
+  it("never reads a source without a validated authorized unknown class", () => {
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    const hostile = new Proxy(
+      { ...group },
+      { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+    );
+    let reads = 0;
+    const counted = new Proxy(
+      { ...group },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          reads++;
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    for (const other of [
+      null,
+      desktopInvocationRejectionDiagnostic("unknown", "not_selected"),
+      desktopInvocationRejectionDiagnostic("unknown", "compatibility_native"),
+      desktopInvocationRejectionDiagnostic("spawn_failed", "authorized_native"),
+      // A forged unvalidated group naming another adapter never qualifies.
+      {
+        desktop_invocation_rejection_version: 1,
+        desktop_invocation_rejection_reason: "unknown",
+        desktop_invocation_rejection_adapter: "legacy_loopback",
+      } as unknown as DesktopInvocationRejectionDiagnostic,
+    ]) {
+      expect(readDesktopInvocationUnknownDiagnostic(hostile, other)).toBeNull();
+      expect(readDesktopInvocationUnknownDiagnostic(counted, other)).toBeNull();
+    }
+    expect(reads).toBe(0);
+  });
+
+  it("never runs an accessor and survives a throwing proxy", () => {
+    let reads = 0;
+    const accessor = { ...group };
+    Object.defineProperty(accessor, "desktop_invocation_unknown_class", {
+      enumerable: true,
+      get() {
+        reads++;
+        return "lifecycle_page_replaced";
+      },
+    });
+    expect(
+      readDesktopInvocationUnknownDiagnostic(accessor, authorizedUnknown),
+    ).toBeNull();
+    expect(reads).toBe(0);
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    expect(
+      readDesktopInvocationUnknownDiagnostic(
+        new Proxy(
+          { ...group },
+          { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+        ),
+        authorizedUnknown,
+      ),
+    ).toBeNull();
   });
 });
 
