@@ -432,7 +432,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
       "completes",
       (finish: (outcome: unknown) => void) =>
         finish({
-          path: "/synthetic/pasted_content.txt",
+          path: "/synthetic/late_pasted_content.txt",
           name: "pasted_content.txt",
           mediaType: "text/plain",
           size: 6,
@@ -494,6 +494,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
         uploading: false,
         uploaded: false,
         retryable: false,
+        localPath: "/synthetic/pasted_content.txt",
         error: "Upload interrupted. Remove and attach the file again.",
       });
       expect(storedFiles[0].file).toMatchObject({ size: 6 });

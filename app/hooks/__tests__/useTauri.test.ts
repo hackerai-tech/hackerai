@@ -4,7 +4,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import {
   DESKTOP_UPDATE_URL,
+  getLocalFileMetadata,
   navigateToAuth,
+  pickLocalFiles,
   pickLocalFolder,
   readLocalFile,
   writeGeneratedTextAttachment,
@@ -170,6 +172,43 @@ describe("local attachment feedback after the caller's scope ends", () => {
       readLocalFile("/tmp/logo.png", new AbortController().signal),
     ).resolves.toBe(null);
     expect(mockToastError).toHaveBeenCalledWith("Failed to read local file");
+  });
+
+  it("reports a metadata failure only for a current selection", async () => {
+    const stale = new AbortController();
+    failAfterAbort(stale);
+    await expect(
+      getLocalFileMetadata("/tmp/logo.png", stale.signal),
+    ).resolves.toBeNull();
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    mockInvoke.mockRejectedValue(new Error("metadata failed"));
+    await expect(
+      getLocalFileMetadata("/tmp/logo.png", new AbortController().signal),
+    ).resolves.toBeNull();
+    expect(mockToastError).toHaveBeenCalledWith(
+      "Failed to read local file metadata",
+    );
+  });
+
+  it("does not open a legacy picker when the original scope ends first", async () => {
+    const stale = new AbortController();
+    mockDialogOpen.mockClear();
+    mockInvoke.mockImplementation(async () => {
+      stale.abort();
+      throw new Error("command not registered");
+    });
+    await expect(pickLocalFiles(stale.signal)).resolves.toEqual([]);
+    expect(mockDialogOpen).not.toHaveBeenCalled();
+    expect(mockToastError).not.toHaveBeenCalled();
+
+    mockInvoke.mockRejectedValue(new Error("command not registered"));
+    mockDialogOpen.mockResolvedValueOnce(["/tmp/logo.png"]);
+    await expect(pickLocalFiles(new AbortController().signal)).resolves.toEqual(
+      ["/tmp/logo.png"],
+    );
+    expect(mockDialogOpen).toHaveBeenCalledTimes(1);
   });
 
   it("still writes pasted text but reports failure only for the current scope", async () => {

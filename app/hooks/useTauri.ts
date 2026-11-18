@@ -185,13 +185,15 @@ export type LocalTextFileData = LocalFileMetadata & {
   content: string;
 };
 
-export async function pickLocalFiles(): Promise<string[]> {
-  if (!detectTauri()) return [];
+export async function pickLocalFiles(signal?: AbortSignal): Promise<string[]> {
+  if (!detectTauri() || signal?.aborted) return [];
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return [];
     return await invoke<string[]>("pick_local_files");
   } catch (error) {
+    if (signal?.aborted) return [];
     // Keep older installed binaries usable until they receive the native
     // picker update. A new binary's ACL denial must not select this fallback.
     if (!/not found|unknown command|not registered/i.test(String(error))) {
@@ -203,6 +205,7 @@ export async function pickLocalFiles(): Promise<string[]> {
 
   try {
     const dialog = await import("@tauri-apps/plugin-dialog");
+    if (signal?.aborted) return [];
     const selected = await dialog.open({
       multiple: true,
       directory: false,
@@ -210,6 +213,7 @@ export async function pickLocalFiles(): Promise<string[]> {
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   } catch (err) {
+    if (signal?.aborted) return [];
     console.error("[Tauri] Failed to pick local files:", err);
     toast.error("Failed to open file picker");
     return [];
@@ -235,15 +239,18 @@ export async function pickLocalFolder(): Promise<string | null> {
 
 export async function getLocalFileMetadata(
   path: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileMetadata | null> {
-  if (!detectTauri()) return null;
+  if (!detectTauri() || signal?.aborted) return null;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return null;
     return await invoke<LocalFileMetadata>("get_local_file_metadata", {
       path,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to read local file metadata:", err);
     toast.error("Failed to read local file metadata");
     return null;

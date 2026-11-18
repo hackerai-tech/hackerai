@@ -946,8 +946,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         if (selectionSignal?.aborted) return;
         let metadata: Awaited<ReturnType<typeof getLocalFileMetadata>>;
         try {
-          metadata = await getLocalFileMetadata(path);
+          metadata = await getLocalFileMetadata(path, selectionSignal);
         } catch (error) {
+          if (selectionSignal?.aborted) return;
           logLocalAttachmentDebug("local-metadata-error", {
             fileName: getFilenameFromPath(path),
             error: error instanceof Error ? error.message : String(error),
@@ -1389,7 +1390,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
     if (shouldUseLocalDesktopAttachments) {
       const selectionSignal = uploadScopeRef.current?.signal;
-      pickLocalFiles()
+      pickLocalFiles(selectionSignal)
         .then(async (paths) => {
           logLocalAttachmentDebug("local-picker-result", {
             selectedCount: paths.length,
@@ -1399,6 +1400,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           }
         })
         .catch((error) => {
+          if (selectionSignal?.aborted) return;
           logLocalAttachmentDebug("local-picker-error", {
             error: error instanceof Error ? error.message : String(error),
           });
