@@ -19,7 +19,8 @@
 //!
 //! Admission fails closed: once any owner cannot confirm its group stopped,
 //! members may still be running, so no further streamed command starts in this
-//! native process.
+//! native process. The fence keeps the closed origin of the path that set it
+//! first, for an optional diagnostic only; it never changes admission.
 
 use std::collections::{HashMap, HashSet};
 use std::process::ExitStatus;
@@ -72,6 +73,30 @@ pub(crate) struct Admission(u64);
 /// Resolves to whether the owner confirmed its process tree stopped.
 pub(crate) type Cleanup = watch::Receiver<Option<bool>>;
 
+/// Which existing path first set the admission fence: a closed class of the
+/// code path, never the process, its output or an OS error. It names the
+/// owner's bounded final outcome or the cancellation wait, not why the tree
+/// could not be confirmed stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FenceOrigin {
+    OwnerTimeout,
+    OwnerProcessError,
+    OwnerStopRequested,
+    OwnerDeliveryFailed,
+    /// The owner was released before `run` recorded a final outcome.
+    OwnerOutcomeMissing,
+    CancelWaitTimeout,
+}
+
+/// Sent once, only with an exact `STOP_UNCONFIRMED` rejection, on its own
+/// optional channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FenceOriginReceipt {
+    version: u8,
+    origin: FenceOrigin,
+}
+
 struct Running {
     serial: u64,
     generation: u64,
@@ -87,7 +112,8 @@ struct State {
     // Keep cancellation until app exit, including IPCs that arrive before launch.
     canceled: HashSet<String>,
     // Set once and never cleared: an owner could not confirm its tree stopped.
-    unconfirmed: bool,
+    // The first origin wins; admission only asks whether it is set.
+    fence: Option<FenceOrigin>,
 }
 
 pub(crate) struct StreamLifecycle {
@@ -118,11 +144,14 @@ struct Completion {
     command_id: String,
     serial: u64,
     outcome: watch::Sender<Option<bool>>,
-    confirmed: bool,
+    /// None only once `run` confirmed the tree stopped. Until `run` records its
+    /// final outcome, a released owner is unconfirmed with a missing outcome.
+    unconfirmed: Option<FenceOrigin>,
 }
 
 impl Drop for Completion {
     fn drop(&mut self) {
+        let confirmed = self.unconfirmed.is_none();
         {
             let mut state = self.lifecycle.state();
             if state
@@ -134,15 +163,17 @@ impl Drop for Completion {
             }
             // Fence admission under the same lock that releases the entry, so no
             // launch can observe the slot free without also seeing the fence.
-            state.unconfirmed |= !self.confirmed;
+            if let Some(origin) = self.unconfirmed {
+                state.fence.get_or_insert(origin);
+            }
         }
-        if !self.confirmed {
+        if !confirmed {
             // Descendants may still be writing. Keep updates fenced, as an
             // unconfirmed explicit cancellation does.
             self.lifecycle.update_gate.block_for_unconfirmed_command();
         }
         // Publish after removal so a waiting launch never observes this entry again.
-        self.outcome.send_replace(Some(self.confirmed));
+        self.outcome.send_replace(Some(confirmed));
     }
 }
 
@@ -161,9 +192,17 @@ impl StreamLifecycle {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    fn fence_unconfirmed(&self) {
-        self.state().unconfirmed = true;
+    fn fence_unconfirmed(&self, origin: FenceOrigin) {
+        self.state().fence.get_or_insert(origin);
         self.update_gate.block_for_unconfirmed_command();
+    }
+
+    /// The first recorded origin of the admission fence, as its closed v1
+    /// receipt, or None while admission is not fenced.
+    pub(crate) fn fence_origin_receipt(&self) -> Option<FenceOriginReceipt> {
+        self.state()
+            .fence
+            .map(|origin| FenceOriginReceipt { version: 1, origin })
     }
 
     /// Capture synchronously while the IPC is dispatched. An async command body
@@ -213,7 +252,7 @@ impl StreamLifecycle {
                 if admission.0 != state.generation {
                     return Err(PAGE_REPLACED.to_string());
                 }
-                if state.unconfirmed {
+                if state.fence.is_some() {
                     return Err(STOP_UNCONFIRMED.to_string());
                 }
                 let current = state.generation;
@@ -249,7 +288,7 @@ impl StreamLifecycle {
                             command_id: command_id.to_string(),
                             serial,
                             outcome,
-                            confirmed: false,
+                            unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing),
                         },
                     }));
                 }
@@ -285,7 +324,7 @@ impl StreamLifecycle {
             Ok(confirmed) => confirmed,
             // An owner that has not answered is an unknown outcome.
             Err(_) => {
-                self.fence_unconfirmed();
+                self.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
                 false
             }
         }
@@ -352,26 +391,28 @@ pub(crate) async fn run(
             }
         }
     };
-    completion.confirmed = match ended {
+    // Assigned only once the bounded cleanup below has finished, so an owner
+    // released while it is still pending keeps `OwnerOutcomeMissing`.
+    completion.unconfirmed = match ended {
         Ended::Exited(status) => {
             let _ = on_event.send(StreamEvent::Exit {
                 exit_code: status.code().unwrap_or(-1),
             });
-            true
+            None
         }
         Ended::ProcessError(e) => {
             let confirmed = crate::platform::graceful_kill(&mut child).await;
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Process error: {}", e),
             });
-            confirmed
+            unless_confirmed(confirmed, FenceOrigin::OwnerProcessError)
         }
         Ended::TimedOut => {
             let confirmed = crate::platform::graceful_kill(&mut child).await;
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Command timed out after {}ms", timeout.as_millis()),
             });
-            confirmed
+            unless_confirmed(confirmed, FenceOrigin::OwnerTimeout)
         }
         Ended::StopRequested => {
             let (confirmed, status) = terminate_owned(&mut child).await;
@@ -383,11 +424,18 @@ pub(crate) async fn run(
                     message: "Desktop could not confirm the command stopped".to_string(),
                 },
             });
-            confirmed
+            unless_confirmed(confirmed, FenceOrigin::OwnerStopRequested)
         }
         // The receiver is gone: stop producing output nobody can deliver.
-        Ended::DeliveryFailed => terminate_owned(&mut child).await.0,
+        Ended::DeliveryFailed => unless_confirmed(
+            terminate_owned(&mut child).await.0,
+            FenceOrigin::OwnerDeliveryFailed,
+        ),
     };
+}
+
+fn unless_confirmed(confirmed: bool, origin: FenceOrigin) -> Option<FenceOrigin> {
+    (!confirmed).then_some(origin)
 }
 
 async fn stop_requested(stop: &mut watch::Receiver<bool>) {
@@ -514,6 +562,26 @@ mod tests {
             Some(r#"{"type":"exit","exitCode":0}"#)
         );
         assert!(lifecycle.state().running.is_empty());
+    }
+
+    #[test]
+    fn stream_lifecycle_fence_origin_receipt_serializes_only_its_closed_schema() {
+        for (origin, wire) in [
+            (FenceOrigin::OwnerTimeout, "owner_timeout"),
+            (FenceOrigin::OwnerProcessError, "owner_process_error"),
+            (FenceOrigin::OwnerStopRequested, "owner_stop_requested"),
+            (FenceOrigin::OwnerDeliveryFailed, "owner_delivery_failed"),
+            (FenceOrigin::OwnerOutcomeMissing, "owner_outcome_missing"),
+            (FenceOrigin::CancelWaitTimeout, "cancel_wait_timeout"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(FenceOriginReceipt { version: 1, origin }).unwrap(),
+                serde_json::json!({ "version": 1, "origin": wire })
+            );
+            // An unconfirmed owner reports its own path; a confirmed one none.
+            assert_eq!(unless_confirmed(false, origin), Some(origin));
+            assert_eq!(unless_confirmed(true, origin), None);
+        }
     }
 }
 
@@ -653,9 +721,17 @@ mod unix_tests {
         assert!(terminate_owned(&mut child).await.0);
         assert!(!group_alive(leader));
         assert!(!process_alive(descendant));
+        assert_eq!(lifecycle.fence_origin_receipt(), None);
         drop(completion);
 
         assert_eq!(successor.await.unwrap().as_deref(), Some(STOP_UNCONFIRMED));
+        // Released before `run` recorded any outcome.
+        assert_eq!(
+            lifecycle
+                .fence_origin_receipt()
+                .map(|receipt| receipt.origin),
+            Some(FenceOrigin::OwnerOutcomeMissing)
+        );
         // The fence is durable: a later page's fresh admission still fails.
         let mut later = platform::build_command(
             &format!("printf 'later\\n' >> {}", quoted(&scratch.path("runs"))),
@@ -673,6 +749,155 @@ mod unix_tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(lines(&scratch.path("runs")), ["old"]);
         assert!(gate.install().is_err(), "updates must stay fenced too");
+    }
+
+    fn private_gate() -> &'static UpdateGate {
+        Box::leak(Box::new(UpdateGate::default()))
+    }
+
+    /// Stop the test-owned tree exactly, then release ownership with `origin`
+    /// as `run`'s recorded final outcome, or confirmed when None.
+    async fn release(owned: OwnedCommand, origin: Option<FenceOrigin>) {
+        let OwnedCommand {
+            mut child,
+            mut completion,
+            ..
+        } = owned;
+        assert!(terminate_owned(&mut child).await.0);
+        completion.unconfirmed = origin;
+    }
+
+    fn origin(lifecycle: &StreamLifecycle) -> Option<FenceOrigin> {
+        lifecycle
+            .fence_origin_receipt()
+            .map(|receipt| receipt.origin)
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_fence_keeps_its_first_origin_and_confirmed_owners_record_none() {
+        let scratch = Scratch::new();
+        let gate = private_gate();
+        let lifecycle = Arc::new(StreamLifecycle::with_update_gate(gate));
+        let mut owners = Vec::new();
+        for id in ["confirmed", "first", "second"] {
+            let mut cmd = platform::build_command(&long_tree(&scratch, id), None, None);
+            owners.push(started(
+                lifecycle.launch(lifecycle.admit(), id, &mut cmd).await,
+            ));
+        }
+        let mut owners = owners.into_iter();
+
+        // A confirmed owner records nothing and leaves admission and updates open.
+        release(owners.next().unwrap(), None).await;
+        assert_eq!(origin(&lifecycle), None);
+        assert!(gate.install().is_ok(), "a confirmed owner fenced updates");
+        let mut cmd = platform::build_command("true", None, None);
+        let (channel, _) = collecting_channel();
+        run(
+            started(
+                lifecycle
+                    .launch(lifecycle.admit(), "admitted", &mut cmd)
+                    .await,
+            ),
+            None,
+            Duration::from_secs(30),
+            &channel,
+        )
+        .await;
+        assert_eq!(origin(&lifecycle), None);
+
+        // The first unconfirmed outcome wins over a later owner and a later
+        // cancellation wait timeout, and is never cleared.
+        release(owners.next().unwrap(), Some(FenceOrigin::OwnerTimeout)).await;
+        release(
+            owners.next().unwrap(),
+            Some(FenceOrigin::OwnerDeliveryFailed),
+        )
+        .await;
+        lifecycle.fence_unconfirmed(FenceOrigin::CancelWaitTimeout);
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::OwnerTimeout));
+        assert!(gate.install().is_err(), "updates must stay fenced");
+        let mut cmd = platform::build_command("true", None, None);
+        assert_eq!(
+            lifecycle
+                .launch(lifecycle.admit(), "later", &mut cmd)
+                .await
+                .err()
+                .as_deref(),
+            Some(STOP_UNCONFIRMED)
+        );
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::OwnerTimeout));
+        assert!(lifecycle.state().running.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_cancel_wait_timeout_keeps_its_origin_after_the_owner_confirms() {
+        let scratch = Scratch::new();
+        let gate = private_gate();
+        let lifecycle = Arc::new(StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command(&long_tree(&scratch, "held"), None, None);
+        // Launched but not yet run: its owner cannot answer the stop request.
+        let owned = started(lifecycle.launch(lifecycle.admit(), "held", &mut cmd).await);
+        let leader = owned.child.id().unwrap();
+        wait_for_file(&scratch.path("runs")).await;
+
+        // Waits the full existing CANCEL_WAIT before reporting unconfirmed.
+        assert!(!lifecycle.cancel("held").await);
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::CancelWaitTimeout));
+
+        // The owner then confirms its stop; the fence and its origin remain.
+        let (channel, _) = collecting_channel();
+        run(owned, None, Duration::from_secs(120), &channel).await;
+        assert!(!group_alive(leader));
+        assert!(lifecycle.state().running.is_empty());
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::CancelWaitTimeout));
+        let mut cmd = platform::build_command("true", None, None);
+        assert_eq!(
+            lifecycle
+                .launch(lifecycle.admit(), "after", &mut cmd)
+                .await
+                .err()
+                .as_deref(),
+            Some(STOP_UNCONFIRMED)
+        );
+        assert!(gate.install().is_err(), "updates must stay fenced");
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_recorded_origin_keeps_admission_priority() {
+        let scratch = Scratch::new();
+        let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+        let stale = lifecycle.admit();
+        let mut cmd = platform::build_command(&long_tree(&scratch, "old"), None, None);
+        let owned = started(lifecycle.launch(stale, "old", &mut cmd).await);
+        wait_for_file(&scratch.path("runs")).await;
+        release(owned, Some(FenceOrigin::OwnerStopRequested)).await;
+        assert!(lifecycle.cancel("tombstoned").await);
+        lifecycle.invalidate();
+
+        let marker = scratch.path("ran");
+        let command = format!("printf 'ran\\n' >> {}", quoted(&marker));
+        let attempt = |id: &'static str, admission: Admission| {
+            let lifecycle = lifecycle.clone();
+            let mut cmd = platform::build_command(&command, None, None);
+            async move { lifecycle.launch(admission, id, &mut cmd).await }
+        };
+        // Cancellation, then page replacement, then the fence, as before.
+        assert!(matches!(
+            attempt("tombstoned", stale).await,
+            Ok(Launch::Canceled)
+        ));
+        assert_eq!(
+            attempt("stale", stale).await.err().as_deref(),
+            Some(PAGE_REPLACED)
+        );
+        assert_eq!(
+            attempt("fresh", lifecycle.admit()).await.err().as_deref(),
+            Some(STOP_UNCONFIRMED)
+        );
+        assert_eq!(origin(&lifecycle), Some(FenceOrigin::OwnerStopRequested));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!marker.exists(), "a fenced command ran");
     }
 
     #[tokio::test]

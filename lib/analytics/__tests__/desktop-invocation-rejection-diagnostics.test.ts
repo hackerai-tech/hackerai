@@ -5,11 +5,15 @@ import {
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
   desktopInvocationUnknownDiagnostic,
+  desktopStreamFenceDiagnostic,
+  parseNativeStreamFenceOrigin,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
 const unclassified = (unknownClass: string) => ({
@@ -705,6 +709,263 @@ describe("readDesktopInvocationUnknownDiagnostic", () => {
           { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
         ),
         authorizedUnknown,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("stream fence origin", () => {
+  const origins = [
+    "owner_timeout",
+    "owner_process_error",
+    "owner_stop_requested",
+    "owner_delivery_failed",
+    "owner_outcome_missing",
+    "cancel_wait_timeout",
+  ];
+  const authorizedUnknown = desktopInvocationRejectionDiagnostic(
+    "unknown",
+    "authorized_native",
+  );
+  const stopUnconfirmed = desktopInvocationUnknownDiagnostic(
+    authorizedUnknown,
+    "lifecycle_stop_unconfirmed",
+  );
+  const group = {
+    desktop_stream_fence_version: 1,
+    desktop_stream_fence_origin: "owner_timeout",
+  };
+
+  it.each(origins)("parses and joins the closed %s receipt", (origin) => {
+    const parsed = parseNativeStreamFenceOrigin({ version: 1, origin });
+    expect(parsed).toBe(origin);
+    const diagnostic = desktopStreamFenceDiagnostic(
+      authorizedUnknown,
+      stopUnconfirmed,
+      parsed,
+    );
+    expect(diagnostic).toEqual({
+      desktop_stream_fence_version: 1,
+      desktop_stream_fence_origin: origin,
+    });
+    expect(Object.isFrozen(diagnostic)).toBe(true);
+  });
+
+  it.each<[string, () => unknown]>([
+    ["null", () => null],
+    ["a string", () => "owner_timeout"],
+    ["an array", () => [1, "owner_timeout"]],
+    ["an unlisted origin", () => ({ version: 1, origin: "PRIVATE" })],
+    ["a numeric origin", () => ({ version: 1, origin: 0 })],
+    ["an unsupported version", () => ({ version: 2, origin: "owner_timeout" })],
+    ["a string version", () => ({ version: "1", origin: "owner_timeout" })],
+    ["a missing version", () => ({ origin: "owner_timeout" })],
+    ["a missing origin", () => ({ version: 1 })],
+    [
+      "an extra field",
+      () => ({ version: 1, origin: "owner_timeout", pid: 4242 }),
+    ],
+    [
+      "an extra symbol",
+      () => ({ version: 1, origin: "owner_timeout", [Symbol("x")]: 1 }),
+    ],
+    [
+      "an inherited receipt",
+      () => Object.create({ version: 1, origin: "owner_timeout" }),
+    ],
+    [
+      "a null-prototype receipt",
+      () =>
+        Object.assign(Object.create(null), {
+          version: 1,
+          origin: "owner_timeout",
+        }),
+    ],
+  ])("parses nothing from %s", (_case, value) => {
+    expect(parseNativeStreamFenceOrigin(value())).toBeNull();
+  });
+
+  it("never runs a receipt accessor and survives a throwing proxy", () => {
+    let reads = 0;
+    const accessor = { version: 1 } as Record<string, unknown>;
+    Object.defineProperty(accessor, "origin", {
+      enumerable: true,
+      get() {
+        reads++;
+        return "owner_timeout";
+      },
+    });
+    expect(parseNativeStreamFenceOrigin(accessor)).toBeNull();
+    expect(reads).toBe(0);
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    expect(
+      parseNativeStreamFenceOrigin(
+        new Proxy(
+          { version: 1, origin: "owner_timeout" },
+          {
+            getPrototypeOf: fail,
+            ownKeys: fail,
+            get: fail,
+            getOwnPropertyDescriptor: fail,
+          },
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it.each<[string, unknown, unknown]>([
+    ["no rejection", null, stopUnconfirmed],
+    ["no unknown class", authorizedUnknown, null],
+    [
+      "a page replacement class",
+      authorizedUnknown,
+      desktopInvocationUnknownDiagnostic(
+        authorizedUnknown,
+        "lifecycle_page_replaced",
+      ),
+    ],
+    [
+      "a prior cleanup class",
+      authorizedUnknown,
+      desktopInvocationUnknownDiagnostic(
+        authorizedUnknown,
+        "lifecycle_prior_cleanup_pending",
+      ),
+    ],
+    [
+      "an other string class",
+      authorizedUnknown,
+      desktopInvocationUnknownDiagnostic(authorizedUnknown, "other_string"),
+    ],
+    [
+      "a compatibility unknown",
+      desktopInvocationRejectionDiagnostic("unknown", "compatibility_native"),
+      stopUnconfirmed,
+    ],
+    [
+      "a published legacy unknown",
+      desktopInvocationRejectionDiagnostic(
+        "unknown",
+        "published_legacy_native",
+      ),
+      stopUnconfirmed,
+    ],
+    [
+      "an authorized approval rejection",
+      desktopInvocationRejectionDiagnostic(
+        "authorization_not_approved",
+        "authorized_native",
+      ),
+      stopUnconfirmed,
+    ],
+    [
+      "a forged unknown group of another version",
+      authorizedUnknown,
+      {
+        desktop_invocation_unknown_version: 2,
+        desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+      },
+    ],
+  ])("never joins %s", (_case, rejection, unknown) => {
+    const groups = [
+      rejection as DesktopInvocationRejectionDiagnostic | null,
+      unknown as DesktopInvocationUnknownDiagnostic | null,
+    ] as const;
+    for (const origin of origins) {
+      expect(desktopStreamFenceDiagnostic(...groups, origin)).toBeNull();
+      expect(
+        readDesktopStreamFenceDiagnostic(
+          { ...group, desktop_stream_fence_origin: origin },
+          ...groups,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("reads only the complete group's own data values within the gate", () => {
+    const read = readDesktopStreamFenceDiagnostic(
+      { ...group, message: "PRIVATE", pid: 4242 },
+      authorizedUnknown,
+      stopUnconfirmed,
+    );
+    expect(read).toEqual(group);
+    expect(Object.isFrozen(read)).toBe(true);
+    for (const source of [
+      undefined,
+      "PRIVATE",
+      {},
+      { ...group, desktop_stream_fence_version: 2 },
+      { ...group, desktop_stream_fence_version: "1" },
+      { ...group, desktop_stream_fence_origin: "PRIVATE" },
+      { ...group, desktop_stream_fence_origin: undefined },
+      Object.create(group),
+    ])
+      expect(
+        readDesktopStreamFenceDiagnostic(
+          source,
+          authorizedUnknown,
+          stopUnconfirmed,
+        ),
+      ).toBeNull();
+  });
+
+  it("never reads a source outside the gate or runs an accessor within it", () => {
+    let reads = 0;
+    const counted = new Proxy(
+      { ...group },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          reads++;
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    const pageReplaced = desktopInvocationUnknownDiagnostic(
+      authorizedUnknown,
+      "lifecycle_page_replaced",
+    );
+    expect(
+      readDesktopStreamFenceDiagnostic(
+        counted,
+        authorizedUnknown,
+        pageReplaced,
+      ),
+    ).toBeNull();
+    expect(
+      readDesktopStreamFenceDiagnostic(counted, null, stopUnconfirmed),
+    ).toBeNull();
+    expect(reads).toBe(0);
+
+    let gets = 0;
+    const accessor = { ...group } as Record<string, unknown>;
+    Object.defineProperty(accessor, "desktop_stream_fence_origin", {
+      enumerable: true,
+      get() {
+        gets++;
+        return "owner_timeout";
+      },
+    });
+    expect(
+      readDesktopStreamFenceDiagnostic(
+        accessor,
+        authorizedUnknown,
+        stopUnconfirmed,
+      ),
+    ).toBeNull();
+    expect(gets).toBe(0);
+    const fail = () => {
+      throw new Error("PRIVATE");
+    };
+    expect(
+      readDesktopStreamFenceDiagnostic(
+        new Proxy(
+          { ...group },
+          { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+        ),
+        authorizedUnknown,
+        stopUnconfirmed,
       ),
     ).toBeNull();
   });

@@ -468,6 +468,126 @@ export function desktopInvocationUnknownDiagnostic(
     : null;
 }
 
+/** The native stream fence's first origin: a closed class of the existing
+ * code path that first set the process-lifetime fence. It names the owner's
+ * bounded final outcome or the cancellation wait, never the process, its
+ * output, an OS error, or why the tree could not be confirmed stopped. */
+const STREAM_FENCE_ORIGINS = [
+  "owner_timeout",
+  "owner_process_error",
+  "owner_stop_requested",
+  "owner_delivery_failed",
+  "owner_outcome_missing",
+  "cancel_wait_timeout",
+] as const;
+
+export type DesktopStreamFenceOrigin = (typeof STREAM_FENCE_ORIGINS)[number];
+
+const STREAM_FENCE_RECEIPT_KEYS = ["version", "origin"] as const;
+
+/** Copy only the closed native v1 receipt: a plain object whose only own
+ * properties are the data properties `version` (1) and a listed `origin`.
+ * Never throws; a getter never runs. */
+export function parseNativeStreamFenceOrigin(
+  value: unknown,
+): DesktopStreamFenceOrigin | null {
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    )
+      return null;
+    const own = Object.getOwnPropertyNames(value);
+    if (
+      own.length !== STREAM_FENCE_RECEIPT_KEYS.length ||
+      Object.getOwnPropertySymbols(value).length > 0 ||
+      !STREAM_FENCE_RECEIPT_KEYS.every((key) => own.includes(key))
+    )
+      return null;
+    const [version, origin] = STREAM_FENCE_RECEIPT_KEYS.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    if (version !== 1) return null;
+    return STREAM_FENCE_ORIGINS.find((known) => known === origin) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DesktopStreamFenceDiagnostic {
+  readonly desktop_stream_fence_version: 1;
+  readonly desktop_stream_fence_origin: DesktopStreamFenceOrigin;
+}
+
+const STREAM_FENCE_PROPERTIES = [
+  "desktop_stream_fence_version",
+  "desktop_stream_fence_origin",
+] as const satisfies readonly (keyof DesktopStreamFenceDiagnostic)[];
+
+export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set(
+  STREAM_FENCE_PROPERTIES,
+);
+
+/** Only the authorized command's exact unconfirmed-stop rejection, already
+ * validated as both groups, can carry a fence origin. */
+function refinesStopUnconfirmed(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  unknown: DesktopInvocationUnknownDiagnostic | null,
+): boolean {
+  return (
+    refinesAuthorizedUnknown(rejection) &&
+    unknown?.desktop_invocation_unknown_version === 1 &&
+    unknown.desktop_invocation_unknown_class === "lifecycle_stop_unconfirmed"
+  );
+}
+
+/** The complete fence group, or null unless it refines a complete authorized
+ * `lifecycle_stop_unconfirmed` rejection with a listed origin. */
+export function desktopStreamFenceDiagnostic(
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  unknown: DesktopInvocationUnknownDiagnostic | null,
+  origin: unknown,
+): DesktopStreamFenceDiagnostic | null {
+  if (!refinesStopUnconfirmed(rejection, unknown)) return null;
+  const known = STREAM_FENCE_ORIGINS.find((value) => value === origin);
+  return known
+    ? Object.freeze({
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: known,
+      })
+    : null;
+}
+
+/** Read the complete fence group from any property bag's own data properties,
+ * joined to already validated authorized `unknown` and
+ * `lifecycle_stop_unconfirmed` groups, or nothing at all. No property is read
+ * without them. A getter never runs; a throwing proxy reads as nothing. */
+export function readDesktopStreamFenceDiagnostic(
+  source: unknown,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  unknown: DesktopInvocationUnknownDiagnostic | null,
+): DesktopStreamFenceDiagnostic | null {
+  if (
+    !refinesStopUnconfirmed(rejection, unknown) ||
+    typeof source !== "object" ||
+    source === null
+  )
+    return null;
+  try {
+    const [version, origin] = STREAM_FENCE_PROPERTIES.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    return version === 1
+      ? desktopStreamFenceDiagnostic(rejection, unknown, origin)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read the complete unknown class group from any property bag's own data
  * properties, joined to an already validated authorized `unknown` group, or
  * nothing at all. No property is read without that group. A getter never

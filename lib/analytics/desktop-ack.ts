@@ -38,10 +38,12 @@ import {
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -86,6 +88,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** The same message's closed unknown class; only joined to a valid
    * `unknown` rejection class from the authorized command set. */
   invocationUnknown?: DesktopInvocationUnknownDiagnostic;
+  /** The native stream fence's first origin; only joined to a valid
+   * authorized `lifecycle_stop_unconfirmed` unknown class. */
+  streamFence?: DesktopStreamFenceDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -367,6 +372,11 @@ export class DesktopAckTelemetry {
         result.invocationUnknown,
         invocationRejection,
       );
+      const streamFence = readDesktopStreamFenceDiagnostic(
+        result.streamFence,
+        invocationRejection,
+        invocationUnknown,
+      );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -413,6 +423,7 @@ export class DesktopAckTelemetry {
           ...invocationAdmission,
           ...invocationSpawnHint,
           ...invocationUnknown,
+          ...streamFence,
         },
         dedupeKey,
       );

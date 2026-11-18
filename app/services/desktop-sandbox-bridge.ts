@@ -68,10 +68,13 @@ import {
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
   desktopInvocationUnknownDiagnostic,
+  desktopStreamFenceDiagnostic,
+  parseNativeStreamFenceOrigin,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceOrigin,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -1520,7 +1523,10 @@ export class DesktopSandboxBridge {
     // v1, cause and transport receipts that describe the same IO error. The
     // connector snapshot has its own channel and latch and joins only the v1
     // receipt. The JSON read snapshot has its own channel and latch, and joins
-    // only a `json_error` response receipt; either may arrive first.
+    // only a `json_error` response receipt; either may arrive first. The
+    // native stream fence origin has its own channel and latch, independent of
+    // every authorization channel, and joins only this invocation's first
+    // terminal: an authorized `lifecycle_stop_unconfirmed` rejection.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     const receiptFenced = () =>
@@ -1536,6 +1542,8 @@ export class DesktopSandboxBridge {
     let responseOpen = true;
     let mitigationOpen = true;
     let responseReadOpen = true;
+    let streamFenceOpen = true;
+    let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -1589,7 +1597,16 @@ export class DesktopSandboxBridge {
         responseOpen = false;
         mitigationOpen = false;
         responseReadOpen = false;
+        streamFenceOpen = false;
         terminalLatched = true;
+        const streamFence =
+          terminalErrorKind === "invocation_rejected"
+            ? desktopStreamFenceDiagnostic(
+                invocationRejection,
+                invocationUnknown,
+                streamFenceOrigin,
+              )
+            : null;
         onSettled(
           {
             ...settlement,
@@ -1603,6 +1620,7 @@ export class DesktopSandboxBridge {
                 ...(invocationAdmission && { invocationAdmission }),
                 ...(invocationSpawnHint && { invocationSpawnHint }),
                 ...(invocationUnknown && { invocationUnknown }),
+                ...(streamFence && { streamFence }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1657,6 +1675,7 @@ export class DesktopSandboxBridge {
     let ioChannel: object | undefined;
     let connectorChannel: object | undefined;
     let responseReadChannel: object | undefined;
+    let streamFenceChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1783,6 +1802,20 @@ export class DesktopSandboxBridge {
             responseReadChannel = undefined;
           }
         }
+        // Independent of every authorization channel: native sends it only
+        // with its exact unconfirmed-stop launch rejection.
+        try {
+          const channel = new Channel<unknown>();
+          channel.onmessage = (value) => {
+            if (!streamFenceOpen) return;
+            streamFenceOpen = false;
+            if (receiptFenced()) return;
+            streamFenceOrigin = parseNativeStreamFenceOrigin(value);
+          };
+          streamFenceChannel = channel;
+        } catch {
+          streamFenceChannel = undefined;
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1838,6 +1871,9 @@ export class DesktopSandboxBridge {
               }),
               ...(responseReadChannel && {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
+              }),
+              ...(streamFenceChannel && {
+                onStreamFenceDiagnostic: streamFenceChannel,
               }),
             },
             invocationTrace,
@@ -1916,6 +1952,7 @@ export class DesktopSandboxBridge {
         ioChannel,
         connectorChannel,
         responseReadChannel,
+        streamFenceChannel,
       ]) {
         try {
           (
