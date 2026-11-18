@@ -2963,7 +2963,7 @@ describe("Chat Component Integration", () => {
       expect(draft).toHaveValue("follow-up draft");
     });
 
-    it("does not undo a new chat started while the saved URL is still visible", async () => {
+    it("keeps a fresh streaming chat when its home navigation commits", async () => {
       const uuid = jest.requireMock<{ v4: jest.Mock }>("uuid");
       let nextId = 0;
       uuid.v4.mockImplementation(() => `generated-${++nextId}`);
@@ -3003,10 +3003,13 @@ describe("Chat Component Integration", () => {
         expect(mockChatHandlerArgs.isExistingChat).toBe(false);
         expect(window.location.pathname).toBe(`/c/${savedId}`);
 
+        mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+        await act(async () => rerender(view()));
         window.history.pushState({}, "", "/");
         await act(async () => rerender(view()));
-        expect(mockChatHandlerArgs.chatId).not.toBe(savedId);
+        expect(mockChatHandlerArgs.chatId).toBe(freshId);
         expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+        expect(mockStop).not.toHaveBeenCalled();
       } finally {
         uuid.v4.mockImplementation(() => "queued-message-id");
       }

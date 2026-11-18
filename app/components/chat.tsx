@@ -784,6 +784,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     string | undefined
   >(routeChatId);
   const lastSyncedRouteChatIdRef = useRef<string | undefined | null>(null);
+  const freshChatIdAwaitingHomeRef = useRef<string | null>(null);
 
   useEffect(() => {
     clearAgentApprovalSession();
@@ -1951,8 +1952,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     if (lastSyncedRouteChatIdRef.current === routeChatId) return;
     const isInitialSync = lastSyncedRouteChatIdRef.current === null;
     lastSyncedRouteChatIdRef.current = routeChatId;
-    // The current draft gained its saved URL. Keep its stream and composer.
-    if (!isInitialSync && routeChatId === committedChatIdRef.current) return;
+    const freshChatId = freshChatIdAwaitingHomeRef.current;
+    freshChatIdAwaitingHomeRef.current = null;
+    const currentChatId = committedChatIdRef.current;
+    // Keep the mounted draft when its saved URL or explicit New Task
+    // navigation commits. A history traversal still changes ownership.
+    if (
+      !isInitialSync &&
+      (routeChatId === currentChatId ||
+        (routeChatId === undefined && currentChatId === freshChatId))
+    ) {
+      return;
+    }
 
     const nextChatId = routeChatId ?? uuidv4();
     // Back/Forward can switch chats within the same mounted home page.
@@ -2329,6 +2340,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     const reset = () => {
       const nextChatId = uuidv4();
+      freshChatIdAwaitingHomeRef.current = nextChatId;
       stopActiveBrowserStream(nextChatId);
       setMessages([]);
       setChatId(nextChatId);
