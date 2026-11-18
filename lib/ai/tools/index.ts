@@ -97,6 +97,9 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  /** Parent Agent runs only: stop after an abandoned handoff was committed.
+   * Omitting it keeps an uncontrolled handoff holding the run. */
+  onBrowserHandoffAbandoned?: () => void;
   /** Expose Agent retest history tools only when the caller has already
    * evaluated the finding retest rollout for this user. The tools re-check
    * the flag and fail closed on every call. */
@@ -295,6 +298,7 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
+        runtimePolicy.onBrowserHandoffAbandoned,
       )
     : undefined;
   const context: ToolContext = {

@@ -12,6 +12,7 @@ import {
   assertCloudWorkspaceAvailable,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -913,13 +914,17 @@ export const createAgentTriggerPost = ({
           organizationId,
         }),
       ]);
+      // A stale client may still send its automatic continuation after the
+      // run saved a stop that only the user can resume.
       if (
         isAutomaticContinuation &&
-        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+        requiresManualAgentResume(existingChat?.finish_reason)
       ) {
         throw new ChatSDKError(
           "bad_request:api",
-          "The local connection was lost. Resume manually from the chat when your computer is connected.",
+          existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+            ? "The local connection was lost. Resume manually from the chat when your computer is connected."
+            : "Browser takeover was not completed in time. Resume manually from the chat when you're ready.",
         );
       }
       const isNewChat = !existingChat && !regenerate && !isAutoContinue;

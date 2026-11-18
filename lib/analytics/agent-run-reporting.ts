@@ -16,6 +16,7 @@ import {
   LOCAL_CONNECTION_LOST_FINISH_REASON,
   localStopAnalyticsProperties,
 } from "@/lib/chat/local-connection-stop";
+import { BROWSER_HANDOFF_ABANDONED_FINISH_REASON } from "@/lib/ai/browser-handoff/constants";
 
 type RunEvent =
   | "hackerai-agent_run"
@@ -129,6 +130,7 @@ const TERMINAL_FINISH_REASONS = [
   "other",
   "unknown",
   LOCAL_CONNECTION_LOST_FINISH_REASON,
+  BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
 ];
 const TERMINAL_ABORT_SOURCES = [
   "budget_exhausted",
@@ -137,6 +139,7 @@ const TERMINAL_ABORT_SOURCES = [
   "user_wait_timeout",
   "user_wait_failed",
   "approval_timeout",
+  "browser_handoff_abandoned",
   "user_stop",
   "request_cancel",
   "unknown",

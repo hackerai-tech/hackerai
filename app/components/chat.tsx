@@ -6,7 +6,10 @@ import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
 } from "@/app/hooks/useCloudRecoveryAdmission";
-import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import {
+  BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
+  requiresManualAgentResume,
+} from "@/lib/chat/manual-agent-resume";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart } from "ai";
@@ -2804,8 +2807,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       persistedGoal?.state !== "running" &&
       !agentLongRunId &&
       !activeTriggerRunId &&
-      chatDataForCurrentChat?.finish_reason !==
-        LOCAL_CONNECTION_LOST_FINISH_REASON &&
+      // Hold queued messages until the user explicitly resumes this stop.
+      !requiresManualAgentResume(chatDataForCurrentChat?.finish_reason) &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2978,6 +2981,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     ["queued", "running", "needs_approval"].includes(
       persistedGoal?.state ?? "",
     );
+  // A Goal settles its own abandoned handoff run as paused. Its existing Goal
+  // Resume is the only continuation, so the transcript notice has no button.
+  // Goal claims record run-owned message IDs, which survive cancellation.
+  const lastAssistantMessageId = messages.findLast(
+    (message) => message.role === "assistant",
+  )?.id;
+  const isBrowserHandoffAbandoned =
+    chatDataForCurrentChat?.finish_reason ===
+    BROWSER_HANDOFF_ABANDONED_FINISH_REASON;
+  const goalOwnsAbandonedRun =
+    isBrowserHandoffAbandoned &&
+    !!persistedGoal &&
+    ["queued", "running", "waiting", "needs_approval", "paused"].includes(
+      persistedGoal.state,
+    ) &&
+    (!!persistedGoal.activeRunId ||
+      (!!lastAssistantMessageId &&
+        !!persistedGoal.evidenceSources?.some(
+          (source) =>
+            source.messageId === lastAssistantMessageId ||
+            source.runId === lastAssistantMessageId,
+        )));
   const pauseGoalOnSend = [
     "queued",
     "running",
@@ -3032,6 +3057,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         status === "ready" &&
         !activeTriggerRunId &&
         (messageQueue.length === 0 ||
+          // This stop deliberately holds queued messages until a manual resume.
+          isBrowserHandoffAbandoned ||
           persistedGoal?.state === "blocked" ||
           persistedGoal?.state === "needs_input")
       }
@@ -3173,7 +3200,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       setMessages={setMessages}
                       onRegenerate={handleRegenerate}
                       onRetry={handleRetry}
-                      onContinue={handleContinue}
+                      onContinue={
+                        goalOwnsAbandonedRun ? undefined : handleContinue
+                      }
                       onReconnect={resumeStream}
                       onEditMessage={handleEditMessage}
                       onBranchMessage={handleBranchMessage}

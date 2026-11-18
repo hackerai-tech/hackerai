@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
 import type { ChatStatus, MessageMetadata, Todo } from "@/types";
 import {
   useDataStreamState,
@@ -115,11 +115,11 @@ export function useAutoContinue({
   // the signal arrives after the stream has already ended (status already "ready").
   useEffect(() => {
     if (
-      finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON ||
+      requiresManualAgentResume(finishReason) ||
       (sendDisabledReason && sandboxPreference !== "e2b")
     ) {
-      // Never retain a pending automatic continuation across a local disconnect.
-      // Reopening Desktop restores availability, not permission to resume work.
+      // Never retain a pending automatic continuation across a local disconnect
+      // or an abandoned browser handoff. Only the user's Resume continues it.
       if (
         autoContinueRunScheduledRef.current &&
         !autoContinueRunStartedRef.current

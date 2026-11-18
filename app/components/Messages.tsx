@@ -1,5 +1,6 @@
 import type { LimitRescueRequest } from "@/types/chat";
 import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
 import { FinishReasonNotice } from "./FinishReasonNotice";
 import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
 import {
@@ -953,12 +954,14 @@ export const Messages = ({
       </div>
     ) : null;
 
-  const showLocalStopWithoutAssistant =
-    finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+  // A manual-resume stop before the turn saved an assistant message has no
+  // last-message notice to attach to, so its Resume notice renders here.
+  const showManualResumeWithoutAssistant =
+    requiresManualAgentResume(finishReason) &&
     status !== "streaming" &&
     (lastAssistantMessageIndex ?? -1) <= (lastUserMessageIndex ?? -1);
   const timelineFooter =
-    showLocalStopWithoutAssistant ||
+    showManualResumeWithoutAssistant ||
     showSummarizationSeparately ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots ||
@@ -967,7 +970,7 @@ export const Messages = ({
         className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px]"
         data-testid="messages-timeline-footer"
       >
-        {showLocalStopWithoutAssistant && (
+        {showManualResumeWithoutAssistant && (
           <FinishReasonNotice
             finishReason={finishReason}
             mode={mode}

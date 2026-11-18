@@ -407,13 +407,16 @@ describe("elapsedTimeExceeds", () => {
   });
 });
 
-test("local disconnection overrides every automatic continuation flag", () => {
-  expect(
-    getAgentAutoContinueStopSource({
-      finishReason: "local-connection-lost",
-      stoppedDueToTokenExhaustion: true,
-      stoppedDueToElapsedTimeout: true,
-      stoppedDueToPostSummarizationIncomplete: true,
-    }),
-  ).toBeNull();
-});
+test.each(["local-connection-lost", "browser-handoff-abandoned"])(
+  "%s overrides every automatic continuation flag",
+  (finishReason) => {
+    expect(
+      getAgentAutoContinueStopSource({
+        finishReason,
+        stoppedDueToTokenExhaustion: true,
+        stoppedDueToElapsedTimeout: true,
+        stoppedDueToPostSummarizationIncomplete: true,
+      }),
+    ).toBeNull();
+  },
+);
