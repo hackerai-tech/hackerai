@@ -3,6 +3,14 @@ import {
   wasDesktopRunStopped,
 } from "./desktop-command-cancellation";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import {
+  DESKTOP_SESSION_CHALLENGE,
+  answerDesktopSessionChallenge,
+  parseDesktopSessionChallenge,
+  readDesktopSessionIdentity,
+  type DesktopSessionChallenge,
+  type DesktopSessionIdentity,
+} from "@/lib/centrifugo/desktop-session";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import {
@@ -59,9 +67,17 @@ import {
   desktopInvocationAdmissionDiagnostic,
   desktopInvocationRejectionDiagnostic,
   desktopInvocationSpawnHintDiagnostic,
+  desktopInvocationUnknownDiagnostic,
+  desktopStreamFenceDiagnostic,
+  parseNativeStreamFenceRejection,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceCancelWaitOwnerPhase,
+  type DesktopStreamFenceCleanupFailure,
+  type DesktopStreamFenceOrigin,
+  type NativeStreamFenceWindowsTaskkill,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
@@ -343,6 +359,7 @@ type OutputControl = {
 
 type TargetedIncomingMessage =
   | OutputControl
+  | DesktopSessionChallenge
   | CommandMessage
   | CommandCancelMessage
   | FileRequestMessage
@@ -367,6 +384,7 @@ function isTargetedIncomingMessage(
       type === "command_cancel" ||
       type === "command_output_ack" ||
       type === "command_output_resume" ||
+      type === DESKTOP_SESSION_CHALLENGE ||
       type === "file_stat" ||
       type === "file_read" ||
       type === "file_write" ||
@@ -589,6 +607,9 @@ export class DesktopSandboxBridge {
   private nativeVersionLookup: DesktopNativeVersionLookup = "unobserved";
   private nativePlatform = "unknown";
   private nativeLifecycle: NativeLifecycleTelemetry = {};
+  /** Native identity proven at startup; older binaries have none. */
+  private nativeSession: DesktopSessionIdentity | undefined;
+  private sessionChallengeInFlight = false;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -846,6 +867,7 @@ export class DesktopSandboxBridge {
     this.nativeFileIpcAvailable = null;
     this.nativeFileIpcFailure = undefined;
     this.nativeLifecycle = {};
+    this.nativeSession = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1127,6 +1149,12 @@ export class DesktopSandboxBridge {
           break;
         }
 
+        case DESKTOP_SESSION_CHALLENGE:
+          void this.answerSessionChallenge(message).catch(() => {
+            console.error("[DesktopSandboxBridge] Session proof failed");
+          });
+          break;
+
         case "command_cancel":
           this.handleCommandCancel(message as CommandCancelMessage).catch(
             (err) => {
@@ -1401,6 +1429,7 @@ export class DesktopSandboxBridge {
             lifecycle?: unknown;
           }>("get_desktop_os_info");
           this.nativeLifecycle = nativeLifecycleTelemetry(native.lifecycle);
+          this.nativeSession = readDesktopSessionIdentity(native.lifecycle);
           // Registration validates exactly these fields; never forward extras.
           return {
             platform: normalizeSandboxPlatform(native.platform),
@@ -1497,9 +1526,24 @@ export class DesktopSandboxBridge {
     // v1, cause and transport receipts that describe the same IO error. The
     // connector snapshot has its own channel and latch and joins only the v1
     // receipt. The JSON read snapshot has its own channel and latch, and joins
-    // only a `json_error` response receipt; either may arrive first.
+    // only a `json_error` response receipt; either may arrive first. The
+    // native stream fence origin is no callback: an opted-in authorized
+    // command carries it in its own exact unconfirmed-stop rejection, and it
+    // joins only that rejection as this invocation's first terminal. An
+    // `owner_stop_requested` origin's cleanup failure rides the same rejection
+    // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
+    // receipt, and a `cancel_wait_timeout` origin's owner phase.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
+    // The same gate as the optional channels: only an identified owner's
+    // invocation of an authorized-capable native app offers the opt-in.
+    const streamFenceOffered =
+      Boolean(receiptOwner) &&
+      !usesPublishedLegacyDesktopCommands(nativeAppVersion);
+    // The owner phase is scoped to Windows Desktop: no other platform offers
+    // it, so no other platform ever reports it.
+    const streamFenceOwnerPhaseOffered =
+      streamFenceOffered && this.nativePlatform === "windows";
     const receiptFenced = () =>
       this.isStoppingOrStopped ||
       this.operationRouter !== router ||
@@ -1513,6 +1557,13 @@ export class DesktopSandboxBridge {
     let responseOpen = true;
     let mitigationOpen = true;
     let responseReadOpen = true;
+    let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
+    let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
+      null;
+    let streamFenceWindowsTaskkill: NativeStreamFenceWindowsTaskkill | null =
+      null;
+    let streamFenceOwnerPhase: DesktopStreamFenceCancelWaitOwnerPhase | null =
+      null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -1535,13 +1586,14 @@ export class DesktopSandboxBridge {
       terminalErrorKind = errorKind;
       return true;
     };
-    // The rejection's message class, and its admission or spawn refinement,
-    // join only that recorded kind. The trace reports the command set the
-    // existing adapter selected.
+    // The rejection's message class, and its admission, spawn or unknown
+    // refinement, join only that recorded kind. The trace reports the command
+    // set the existing adapter selected.
     const invocationTrace: FileStatReceiverTrace = {};
     let invocationRejection: DesktopInvocationRejectionDiagnostic | null = null;
     let invocationAdmission: DesktopInvocationAdmissionDiagnostic | null = null;
     let invocationSpawnHint: DesktopInvocationSpawnHintDiagnostic | null = null;
+    let invocationUnknown: DesktopInvocationUnknownDiagnostic | null = null;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1566,6 +1618,17 @@ export class DesktopSandboxBridge {
         mitigationOpen = false;
         responseReadOpen = false;
         terminalLatched = true;
+        const streamFence =
+          terminalErrorKind === "invocation_rejected"
+            ? desktopStreamFenceDiagnostic(
+                invocationRejection,
+                invocationUnknown,
+                streamFenceOrigin,
+                streamFenceCleanupFailure,
+                streamFenceWindowsTaskkill,
+                streamFenceOwnerPhase,
+              )
+            : null;
         onSettled(
           {
             ...settlement,
@@ -1578,6 +1641,8 @@ export class DesktopSandboxBridge {
                 invocationRejection,
                 ...(invocationAdmission && { invocationAdmission }),
                 ...(invocationSpawnHint && { invocationSpawnHint }),
+                ...(invocationUnknown && { invocationUnknown }),
+                ...(streamFence && { streamFence }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1814,16 +1879,47 @@ export class DesktopSandboxBridge {
               ...(responseReadChannel && {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
               }),
+              // Outside the signed message; never sent to a legacy command.
+              // The cleanup opt-in is only ever offered with the origin one,
+              // the taskkill opt-in only with both, and its root report
+              // opt-in only with all three. An older native app ignores it
+              // and keeps the v1 taskkill receipt, which is still accepted.
+              ...(streamFenceOffered && {
+                includeStreamFenceOrigin: true,
+                includeStreamFenceCleanup: true,
+                includeStreamFenceWindowsTaskkill: true,
+                includeStreamFenceWindowsTaskkillRootReport: true,
+              }),
+              // Only with the origin opt-in, and only to Windows Desktop. An
+              // older native app ignores it and keeps the origin alone.
+              ...(streamFenceOwnerPhaseOffered && {
+                includeStreamFenceCancelWaitOwnerPhase: true,
+              }),
             },
             invocationTrace,
           );
         }
-      } catch (error) {
+      } catch (caught) {
         invocationRejected = true;
+        // Only the authorized command offered the opt-in can carry the fence
+        // origin in its rejection; it is unwrapped to the exact original
+        // message. Every other rejection is kept exactly as received.
+        const fenceRejection =
+          streamFenceOffered && invocationTrace.adapter === "authorized_native"
+            ? parseNativeStreamFenceRejection(caught)
+            : null;
+        const error: unknown = fenceRejection ? fenceRejection.message : caught;
         // Classified before append can settle; the product message is unchanged.
         // A failure before any command set was selected is never read as a
         // native message.
         if (latchTerminal("invocation_rejected")) {
+          streamFenceOrigin = fenceRejection?.origin ?? null;
+          streamFenceCleanupFailure = fenceRejection?.cleanupFailure ?? null;
+          streamFenceWindowsTaskkill = fenceRejection?.windowsTaskkill ?? null;
+          // Never kept unless this invocation offered it.
+          streamFenceOwnerPhase = streamFenceOwnerPhaseOffered
+            ? (fenceRejection?.cancelWaitOwnerPhase ?? null)
+            : null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.
             const rejection = classifyNativeInvocationRejectionMessage(error);
@@ -1838,6 +1934,11 @@ export class DesktopSandboxBridge {
             invocationSpawnHint = desktopInvocationSpawnHintDiagnostic(
               invocationRejection,
               rejection.spawnOsCodeHint,
+            );
+            // Only an authorized `unknown` group admits it.
+            invocationUnknown = desktopInvocationUnknownDiagnostic(
+              invocationRejection,
+              rejection.unknownClass,
             );
           } else
             invocationRejection = desktopInvocationRejectionDiagnostic(
@@ -2767,6 +2868,47 @@ export class DesktopSandboxBridge {
       });
     } catch (error) {
       await this.publishFileError(requestId, error, reply);
+    }
+  }
+
+  /**
+   * Answer the run observer's challenge on this connection with identity read
+   * from native code now and this session's retained command output. This
+   * never invokes execution. One answer at a time bounds native reads.
+   */
+  private async answerSessionChallenge(message: unknown): Promise<void> {
+    const challenge = parseDesktopSessionChallenge(message);
+    const connectionId = this.connectionId;
+    const generation = this.startupGeneration;
+    const queue = this.publishQueue;
+    if (!challenge || !connectionId || !queue || this.sessionChallengeInFlight)
+      return;
+    this.sessionChallengeInFlight = true;
+    try {
+      const proof = await answerDesktopSessionChallenge(challenge, {
+        connectionId,
+        startup: this.nativeSession,
+        readNativeOsInfo: async () => {
+          const { invoke } = await import("@tauri-apps/api/core");
+          return invoke<unknown>("get_desktop_os_info");
+        },
+        // An entry stays mapped until native invocation settles, even after
+        // its window closed (e.g. overflow): only a live window is retained.
+        retainsOutput: (commandId) =>
+          this.acknowledgedOutputs.get(commandId)?.resumable === true,
+      });
+      // A late answer from a stopped or replaced bridge is never published.
+      if (
+        !proof ||
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation ||
+        this.publishQueue !== queue
+      )
+        return;
+      await queue.publish(proof as unknown as Record<string, unknown>);
+    } finally {
+      this.sessionChallengeInFlight = false;
     }
   }
 

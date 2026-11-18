@@ -101,6 +101,7 @@ export {
   hasPaidDailyFreeAllowanceConsent,
   reservePaidDailyFreeAllowanceRequest,
   recordPaidDailyFreeAllowanceCost,
+  verifyPaidDailyFreeAllowanceReservationOwnership,
   paidDailyFreeAllowanceStatusToMetadata,
   getPaidDailyFreeAllowanceKeys,
   getPaidDailyFreeAllowanceCostLimitDollars,

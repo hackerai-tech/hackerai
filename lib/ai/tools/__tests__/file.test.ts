@@ -11,6 +11,9 @@ jest.mock("@/lib/logger", () => ({
   logger: { error: jest.fn() },
 }));
 
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFile, createFileEdit, createFileWrite } from "../file";
 import {
   getSandboxUploadedFileUrl,
@@ -716,6 +719,117 @@ describe("file tool large text safety", () => {
 
     expect(result.content).toContain("full diff preview was skipped");
     expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+});
+
+describe("file tool small-file append on a real file", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "hackerai-file-append-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  // The state probe and file reads/writes act on the real temporary file. Only
+  // the Python process is replaced: the probe answer is computed from the same
+  // file with the probe script's contract (missing/not_file/file + size).
+  function makeFsBackedSandbox() {
+    const commandRun = jest.fn(
+      async (_command: string, opts: { envs: Record<string, string> }) => {
+        const target = opts.envs.HACKERAI_FILE_STATE_PATH;
+        try {
+          const info = await stat(target);
+          const payload = info.isFile()
+            ? { kind: "file", path: target, sizeBytes: info.size }
+            : { kind: "not_file", path: target };
+          return { stdout: JSON.stringify(payload), stderr: "", exitCode: 0 };
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          return {
+            stdout: JSON.stringify({ kind: "missing", path: target }),
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+      },
+    );
+    const read = jest.fn((path: string) => readFile(path, "utf8"));
+    const write = jest.fn((path: string, content: string) =>
+      writeFile(path, content, "utf8"),
+    );
+    const sandbox = {
+      commands: { run: commandRun },
+      files: {
+        read,
+        write,
+        remove: jest.fn(async () => undefined),
+        list: jest.fn(),
+      },
+    };
+    return { sandbox, read, write };
+  }
+
+  test("refuses to write when reading an existing file fails", async () => {
+    const target = join(tempDir, "notes.txt");
+    const original = Buffer.from("keep line one\r\nkeep line two\r\n", "utf8");
+    await writeFile(target, original);
+    const { sandbox, read, write } = makeFsBackedSandbox();
+    read.mockRejectedValueOnce(
+      new Error("relay read timed out after 30000ms (request id abc123)"),
+    );
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "append",
+      path: target,
+      brief: "Append a note",
+      text: "appended\n",
+    })) as { error?: string; content?: string; executionOutcome?: string };
+
+    expect(result.executionOutcome).toBe("not_executed");
+    expect(result.error).not.toContain("request id abc123");
+    expect(result).not.toHaveProperty("content");
+    expect(write).not.toHaveBeenCalled();
+    expect((await readFile(target)).equals(original)).toBe(true);
+  });
+
+  test("creates a file that the state probe confirmed missing", async () => {
+    const target = join(tempDir, "new.txt");
+    const { sandbox } = makeFsBackedSandbox();
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "append",
+      path: target,
+      brief: "Create by appending",
+      text: "first line\n",
+    })) as { content: string };
+
+    expect(result.content).toBe(`File appended: ${target}`);
+    expect(await readFile(target, "utf8")).toBe("first line\n");
+  });
+
+  test("appends after existing CRLF text without changing it", async () => {
+    const target = join(tempDir, "crlf.txt");
+    await writeFile(target, "alpha\r\nbeta\r\n", "utf8");
+    const { sandbox } = makeFsBackedSandbox();
+    const tool = createFile(makeContext(sandbox));
+
+    const result = (await runTool(tool, {
+      action: "append",
+      path: target,
+      brief: "Append CRLF lines",
+      text: "gamma\ndelta\n",
+    })) as { content: string; originalContent: string };
+
+    expect(result.content).toBe(`File appended: ${target}`);
+    expect(result.originalContent).toBe("alpha\r\nbeta\r\n");
+    expect(await readFile(target, "utf8")).toBe(
+      "alpha\r\nbeta\r\ngamma\r\ndelta\r\n",
+    );
   });
 });
 

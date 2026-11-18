@@ -23,6 +23,10 @@ import {
 import { api } from "@/convex/_generated/api";
 import { normalizeBrowserInputBatch } from "@/lib/ai/browser-handoff/input";
 import {
+  previewActivationMask,
+  previewCaptureUrl,
+} from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
+import {
   readBrowserRelay,
   sendBrowserRelayInput,
 } from "@/lib/ai/browser-handoff/relay-client";
@@ -260,6 +264,18 @@ export function AgentBrowserPreview({
     session?.state === "human" ||
     session?.state === "recovery" ||
     session?.state === "resuming";
+  // Diagnostic-only copy of those committed sources, read when a capture GET is
+  // dispatched. Kept out of the polling effect so it never restarts its timers.
+  const activationMask = previewActivationMask({
+    browserRequested,
+    fullScreen,
+    hasTakenControl,
+    sessionState: session?.state,
+  });
+  const activationMaskRef = useRef(activationMask);
+  useLayoutEffect(() => {
+    activationMaskRef.current = activationMask;
+  }, [activationMask]);
 
   useLayoutEffect(() => {
     onVisibilityChange?.(showPreview);
@@ -385,11 +401,19 @@ export function AgentBrowserPreview({
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
-        const response = await fetch(fresh ? `${endpoint}?fresh=1` : endpoint, {
-          cache: "no-store",
-          credentials: "same-origin",
-          signal: controller.signal,
-        });
+        const response = await fetch(
+          previewCaptureUrl(
+            endpoint,
+            fresh,
+            activationMaskRef.current,
+            process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT,
+          ),
+          {
+            cache: "no-store",
+            credentials: "same-origin",
+            signal: controller.signal,
+          },
+        );
         const data = await response.json();
         // A stream/viewport response arriving during capture is newer than
         // this request. Its image and connection state must win.

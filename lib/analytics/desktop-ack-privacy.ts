@@ -24,9 +24,13 @@ import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
+  DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
+  DESKTOP_STREAM_FENCE_PROPERTIES,
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
+  readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
@@ -139,6 +143,23 @@ const SUMMARY_PROPERTIES = new Set([
   "pendingAtEnd",
 ]);
 
+/** One snapshot of `key` as an enumerable own data value, or null for an
+ * absent, inherited, non-enumerable or accessor key. Never runs a getter and
+ * never throws. */
+function enumerableOwnData(
+  source: object,
+  key: string,
+): { readonly value: unknown } | null {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor?.enumerable && "value" in descriptor
+      ? { value: descriptor.value }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Strip SDK enrichment from command details and cross-command summaries. */
 export function sanitizeDesktopAckEvent<
   T extends {
@@ -230,11 +251,42 @@ export function sanitizeDesktopAckEvent<
       event.properties,
       invocationRejection,
     );
+    // The unknown class joins only a validated `unknown` class from the
+    // authorized command set; no unknown property is read without one. It
+    // likewise survives only as the validated data copy and drops alone.
+    const invocationUnknown = readDesktopInvocationUnknownDiagnostic(
+      event.properties,
+      invocationRejection,
+    );
+    // The stream fence origin joins only validated authorized unknown and
+    // `lifecycle_stop_unconfirmed` groups; no fence property is read without
+    // them. It likewise survives only as the validated data copy and drops
+    // alone. Its cleanup pair is read only beside a validated
+    // `owner_stop_requested` origin on an acknowledged terminal, and an
+    // invalid one drops alone, leaving the origin pair. Its Windows taskkill
+    // group is read only beside a validated `tree_unconfirmed` cleanup pair,
+    // and an invalid one drops alone, leaving both pairs. Its owner phase
+    // pair is read only beside a validated `cancel_wait_timeout` origin on an
+    // acknowledged terminal, and an invalid one drops alone.
+    // The acknowledgement that admits them is the same single snapshot that
+    // is emitted: an inherited or accessor flag never admits them, is never
+    // run and never survives the copy below.
+    const acknowledgement =
+      event.event === "desktop_ack_delivery_summary"
+        ? null
+        : enumerableOwnData(event.properties, "terminalAcknowledged");
+    const streamFence = readDesktopStreamFenceDiagnostic(
+      event.properties,
+      invocationRejection,
+      invocationUnknown,
+      acknowledgement?.value === true,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
         .filter(
           (key) =>
+            key !== "terminalAcknowledged" &&
             !NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key) &&
@@ -246,7 +298,9 @@ export function sanitizeDesktopAckEvent<
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) &&
-            !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key),
+            !DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES.has(key) &&
+            !DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key) &&
+            !DESKTOP_STREAM_FENCE_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -265,6 +319,8 @@ export function sanitizeDesktopAckEvent<
                 isDesktopAckStopSource(value))),
         ),
     );
+    if (acknowledgement)
+      event.properties.terminalAcknowledged = acknowledgement.value;
     // Copy the same validated send snapshot used by the joined receipts.
     if (nativeAuthorizationDiagnostic)
       Object.assign(event.properties, nativeAuthorizationDiagnostic);
@@ -289,6 +345,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, invocationAdmission);
     if (invocationSpawnHint)
       Object.assign(event.properties, invocationSpawnHint);
+    if (invocationUnknown) Object.assign(event.properties, invocationUnknown);
+    if (streamFence) Object.assign(event.properties, streamFence);
   }
   delete event.$set;
   delete event.$set_once;

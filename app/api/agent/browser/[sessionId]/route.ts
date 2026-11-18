@@ -5,6 +5,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
+import { withPreviewClientContext } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
   normalizeBrowserInput,
@@ -95,7 +96,7 @@ const unavailableGet = (
         : undefined;
     const requestId = request.headers.get("x-vercel-id");
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
-    phLogger.info("agent_browser_preview_get_unavailable", {
+    const fields = {
       diagnostic_version: 1,
       failure_stage: stage,
       preview_state: state === "loading" ? "loading" : "disconnected",
@@ -147,7 +148,11 @@ const unavailableGet = (
           ? { trigger_run_id: session.runId }
           : {}),
       }),
-    });
+    };
+    phLogger.info(
+      "agent_browser_preview_get_unavailable",
+      withPreviewClientContext(fields, request.nextUrl.searchParams),
+    );
     after(async () => {
       try {
         await phLogger.flush();

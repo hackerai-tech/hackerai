@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+
 import {
   buildMissingSubagentResultRecoveryMessage,
   canRecoverMissingSubagentResult,
@@ -89,6 +91,55 @@ describe("subagent runtime recovery", () => {
         hasStepsRemaining: false,
       }).shouldRetry,
     ).toBe(false);
+  });
+
+  it("does not admit a local browser read failure to provider recovery", () => {
+    const failure = (statusCode?: number) =>
+      Object.freeze(
+        Object.assign(new TypeError("fetch failed"), {
+          statusCode,
+          cause: Object.assign(new Error("read ECONNRESET"), {
+            code: "ECONNRESET",
+          }),
+        }),
+      );
+    const localRead = (statusCode?: number) => {
+      try {
+        rethrowBrowserHandoffReadError(failure(statusCode));
+      } catch (error) {
+        return error;
+      }
+    };
+    const shapes = [
+      (inner: unknown) => inner,
+      (inner: unknown) => new Error("terminated", { cause: inner }),
+    ];
+    for (const [statusCode, category] of [
+      [undefined, "stream_terminated"],
+      [429, "rate_limited"],
+      [503, "provider_5xx"],
+    ] as const) {
+      for (const shape of shapes) {
+        expect(
+          getSubagentProviderRetryDecision(
+            shape(failure(statusCode)),
+            0,
+            healthyRuntime,
+          ),
+        ).toMatchObject({ category, shouldRetry: true });
+        expect(
+          getSubagentProviderRetryDecision(
+            shape(localRead(statusCode)),
+            0,
+            healthyRuntime,
+          ),
+        ).toEqual({ category, shouldRetry: false, delayMs: 0 });
+      }
+    }
+    // Provider-only scope: structured-result recovery keeps its own contract.
+    expect(
+      getSubagentResultRecoveryRetryDecision(localRead(), 0, healthyRuntime),
+    ).toMatchObject({ shouldRetry: true, delayMs: 750 });
   });
 
   it("allows one bounded missing-result recovery with a tool-specific nudge", () => {

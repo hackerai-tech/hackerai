@@ -186,6 +186,9 @@ interface GlobalStateType {
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
+  // Tracks chat navigation before its destination route commits.
+  markChatNavigationStarted: () => void;
+  getChatNavigationRevision: () => number;
 
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
@@ -210,6 +213,7 @@ type GlobalStateActionsType = Pick<
   | "closeSidebar"
   | "initializeChat"
   | "initializeNewChat"
+  | "markChatNavigationStarted"
   | "setActiveProjectId"
   | "setChatSidebarOpen"
   | "setSandboxPreference"
@@ -473,6 +477,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const chatNavigationHandlerRef = useRef<
     ((nextChatId: string) => void) | null
   >(null);
+  // Advanced synchronously by chat navigation entry points, before the
+  // destination route commits, so async work can tell a newer navigation won.
+  const chatNavigationRevisionRef = useRef(0);
   const entitlementRefreshUserRef = useRef<string | null>(null);
   const entitlementRefreshFailureRef = useRef<{
     userId: string;
@@ -1232,16 +1239,24 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setEditingQueuedMessageId(null);
   }, [setMessageQueue]);
 
-  const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
-    chatNavigationHandlerRef.current?.(chatId);
-    // Don't clear input here - let ChatInput restore draft automatically
-    // setInput("");  // Removed - ChatInput will handle draft restoration
-    setTodos([]);
-    setIsTodoPanelExpanded(false);
-    setActiveProjectId(null);
+  const markChatNavigationStarted = useCallback(() => {
+    chatNavigationRevisionRef.current += 1;
   }, []);
 
+  const initializeChat = useCallback(
+    (chatId: string, _fromRoute?: boolean) => {
+      markChatNavigationStarted();
+      chatNavigationHandlerRef.current?.(chatId);
+      // Let ChatInput restore the draft for the destination.
+      setTodos([]);
+      setIsTodoPanelExpanded(false);
+      setActiveProjectId(null);
+    },
+    [markChatNavigationStarted],
+  );
+
   const initializeNewChat = useCallback(() => {
+    markChatNavigationStarted();
     // Allow chat component to reset its local state immediately
     if (chatResetRef.current) {
       chatResetRef.current();
@@ -1250,7 +1265,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
     resetSandboxPreference();
-  }, [resetSandboxPreference]);
+  }, [markChatNavigationStarted, resetSandboxPreference]);
+
+  const getChatNavigationRevision = useCallback(
+    () => chatNavigationRevisionRef.current,
+    [],
+  );
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1338,6 +1358,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       closeSidebar,
       initializeChat,
       initializeNewChat,
+      markChatNavigationStarted,
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
@@ -1346,6 +1367,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       closeSidebar,
       initializeChat,
       initializeNewChat,
+      markChatNavigationStarted,
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
@@ -1397,6 +1419,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
+    markChatNavigationStarted,
+    getChatNavigationRevision,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,

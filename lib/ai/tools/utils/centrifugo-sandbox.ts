@@ -3,6 +3,8 @@ import {
   recordAttachmentDownloadBoundary,
   recordAttachmentCommandReceiver,
   recordAttachmentCommandSetupAttempt,
+  readAttachmentCommandReceiverClientError,
+  type AttachmentCommandReceiverClientError,
   type AttachmentDownloadBoundary,
   type AttachmentDownloadShellContextObservation,
 } from "./attachment-download-diagnostics";
@@ -26,6 +28,7 @@ import {
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
+  type AttachmentLocalCopyOwnerStage,
 } from "@/lib/centrifugo/receiver-diagnostics";
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import {
@@ -39,6 +42,13 @@ import {
 } from "./attachment-command";
 import { recordLocalCopyFailure } from "./local-copy-failure-context";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
+import {
+  DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_PROOF,
+  type DesktopDispatchGate,
+  type PublishedDesktopCommand,
+} from "@/lib/centrifugo/desktop-session";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
 
@@ -108,6 +118,8 @@ const VALID_MESSAGE_TYPES = new Set([
 const IGNORED_MESSAGE_TYPES = new Set([
   "command_output_ack",
   "command_output_resume",
+  DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_PROOF,
   "file_stat",
   "file_read",
   "file_write",
@@ -137,6 +149,9 @@ const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
+
+/** Which path of a local copy issued a setup command. */
+type LocalCopyRole = "source" | "destination";
 
 /** Classify rejected conversion output without retaining any path or output text. */
 function nativePathOutputShape(value: string) {
@@ -459,6 +474,13 @@ export class CentrifugoSandbox extends EventEmitter {
   >();
   private readonly reportedNativePathFailures =
     new Set<NativePathResolutionFailure>();
+  /** The owning run's live host readiness, checked before each publication. */
+  private dispatchGate?: DesktopDispatchGate;
+  /** Commands whose execution publication began and that have not settled. */
+  private readonly publishedCommands = new Map<
+    string,
+    PublishedDesktopCommand
+  >();
 
   constructor(
     private userId: string,
@@ -494,6 +516,37 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getWorkingDirectory(): string | undefined {
     return this.workingDirectory;
+  }
+
+  /**
+   * Admit new command and file publications only while the owning run's
+   * selected host is verified. Undefined restores ungated dispatch.
+   */
+  setDispatchGate(gate: DesktopDispatchGate | undefined): void {
+    this.dispatchGate = gate;
+  }
+
+  /** The owning run's readiness, for transports that publish on their own. */
+  getDispatchGate(): DesktopDispatchGate | undefined {
+    return this.dispatchGate;
+  }
+
+  /** In-flight commands to reconcile after the selected host returns. */
+  getPublishedCommands(): PublishedDesktopCommand[] {
+    return [...this.publishedCommands.values()];
+  }
+
+  /**
+   * Record an operation whose execution publication began, until it settles.
+   * One without replayable output reports outputComplete() false, so a host
+   * return while it is active stops the run for manual Resume.
+   */
+  registerPublishedOperation(operation: PublishedDesktopCommand): () => void {
+    this.publishedCommands.set(operation.commandId, operation);
+    return () => {
+      if (this.publishedCommands.get(operation.commandId) === operation)
+        this.publishedCommands.delete(operation.commandId);
+    };
   }
 
   supportsPty(): boolean {
@@ -973,6 +1026,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
+          const gate = this.dispatchGate;
           try {
             if (isolated) {
               await dispatchIsolatedOperation(
@@ -988,8 +1042,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 },
                 probe && ((phase) => noteFileProbe(probe, { phase })),
                 this.connectionInfo.isDesktop === true,
+                { gate, signal },
               );
             } else {
+              while (gate && !gate.isReady()) await gate.waitUntilReady(signal);
+              signal?.throwIfAborted();
+              if (settled) return;
               noteFileProbe(probe, {
                 phase: "shared_publish",
                 publicationStarted: true,
@@ -1047,6 +1105,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         signal?: AbortSignal;
         onCancelReady?: (cancel: () => Promise<boolean>) => void;
       },
+      /** Server-internal diagnostics only; never published to the host. */
+      copyOwnerStage?: AttachmentLocalCopyOwnerStage,
     ): Promise<{
       stdout: string;
       stderr: string;
@@ -1097,7 +1157,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       const result = await new Promise<CommandResult>((resolve, fail) => {
         let commandPublicationStarted = false;
-        const reject = (error: unknown, retryable = false) => {
+        const reject = (
+          error: unknown,
+          retryable = false,
+          // Only the terminal client_error branch supplies this snapshot.
+          clientError?: AttachmentCommandReceiverClientError,
+        ) => {
           const rejection = isLocalCommandRelayUnsubscribedError(error)
             ? error
             : new LocalCommandDispatchError(
@@ -1114,6 +1179,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               publicationStarted: commandPublicationStarted,
               publishCompleted: Boolean(tPublished),
               firstMessageObserved: Boolean(tFirstMessage),
+              ...(clientError && { clientError }),
             });
           fail(rejection);
         };
@@ -1143,6 +1209,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         let terminalCursorPublished = false;
         let terminalReceivedDuringCancellation = false;
         let completeTerminal: (() => void) | undefined;
+        // Desktop retains this command's output only when it was requested.
+        const requestsAcknowledgedOutput =
+          isolated && this.connectionInfo.isDesktop === true;
+        const gate = this.dispatchGate;
+        // Ends only readiness waits before publication starts; never a
+        // published command, whose Stop goes to the host.
+        const dispatchAbort = new AbortController();
         const diagnostics = createReceiverDiagnostics(
           {
             commandId,
@@ -1151,6 +1224,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             // Requested execution intent, not maxWaitTime's delivery window.
             requestedBackground: opts?.background === true,
             requestedTimeoutMs: timeout,
+            attachmentLocalCopyOwnerStage: copyOwnerStage,
           },
           () => ({
             sequence: lastStreamSequence,
@@ -1162,8 +1236,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         diagnostics.start();
         const sendOutputCursor = async (
           type: "command_output_ack" | "command_output_resume",
+          // A host that returned may hold output this receiver never saw.
+          requested = false,
         ) => {
-          if (!subscription || settled || !acknowledgedOutput) return;
+          if (
+            !subscription ||
+            settled ||
+            !(acknowledgedOutput || (requested && requestsAcknowledgedOutput))
+          )
+            return;
           // A preceding output ACK may complete after terminal receipt. Only
           // a successfully published terminal cursor can release its receiver.
           const sequence = lastStreamSequence;
@@ -1218,9 +1299,31 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         let tFirstMessage = 0;
         let cleanupReason: ReceiverCleanupReason | undefined;
 
+        const published: PublishedDesktopCommand = {
+          commandId,
+          // Sequenced frames are accepted only in order, so a received
+          // terminal means every frame before it was received too.
+          outputComplete: () => acknowledgedOutput && terminalReceived,
+          resumeOutput: () => {
+            void sendOutputCursor("command_output_resume", true);
+          },
+        };
+        let unregisterPublished: (() => void) | undefined;
+        const markPublicationStarted = () => {
+          commandPublicationStarted = true;
+          unregisterPublished ??= this.registerPublishedOperation(published);
+        };
+
         const cleanup = (reason: ReceiverCleanupReason) => {
           cleanupReason = reason;
           diagnostics.finish(reason);
+          // Published, but neither a terminal nor a confirmed cancellation
+          // arrived: execution may continue. Stop the run before forgetting
+          // it, so no recovery or later dispatch can proceed past it.
+          if (unregisterPublished && !terminalReceived && reason !== "canceled")
+            gate?.failUncertainExecution?.();
+          unregisterPublished?.();
+          dispatchAbort.abort();
           clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the
           // cancellation timers. Confirmed cancellation resolves true first.
@@ -1318,7 +1421,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             diagnostics.transition("cancel_requested");
           }
           if (!publishedCommand || !subscription) {
-            if (commandPublishInFlight) return;
+            if (commandPublishInFlight) {
+              // Still unpublished: end any readiness wait now. Once
+              // publication starts, Stop waits for it and targets the host.
+              if (!commandPublicationStarted) dispatchAbort.abort();
+              return;
+            }
             resolveCanceled();
             return;
           }
@@ -1803,7 +1911,6 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 : {}),
             };
 
-            if (!isolated) commandPublicationStarted = true;
             commandPublishInFlight = true;
 
             (async () => {
@@ -1815,13 +1922,22 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   commandMessage as unknown as Record<string, unknown>,
                   () => !settled,
                   subscription!,
-                  () => {
-                    commandPublicationStarted = true;
-                  },
+                  markPublicationStarted,
                   diagnostics.dispatchPhase,
                   this.connectionInfo.isDesktop === true,
+                  { gate, signal: dispatchAbort.signal },
                 );
-              } else if (opts?.stdin === undefined) {
+                return;
+              }
+              // The same live admission as isolated dispatch, read in the
+              // tick that starts publication.
+              while (gate && !gate.isReady())
+                await gate.waitUntilReady(dispatchAbort.signal);
+              dispatchAbort.signal.throwIfAborted();
+              if (settled)
+                throw new Error("Command ended before dispatch completed");
+              markPublicationStarted();
+              if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);
@@ -1843,6 +1959,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               })
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
+                if (!settled && !commandPublicationStarted) {
+                  // Nothing reached the host: a pending Stop completes here,
+                  // and a lost selected host keeps its own cause.
+                  if (cancelRequested || opts?.signal?.aborted) {
+                    resolveCanceled();
+                    return;
+                  }
+                  if (err instanceof LocalConnectionLostError) {
+                    settled = true;
+                    cleanup("dispatch_failed");
+                    reject(err);
+                    return;
+                  }
+                }
                 if (
                   !settled &&
                   isolated &&
@@ -1939,19 +2069,25 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             const msg = ctx.error?.message ?? "unknown";
             const isConnectionLimit =
               msg.includes("connection limit") || ctx.error?.code === 4503;
-            reject(
-              new Error(
-                isConnectionLimit
-                  ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
-                  : `Centrifugo client error: ${msg}`,
-              ),
-              isConnectionLimit ||
-                ctx.type === "transport" ||
-                (ctx.type === "connect" &&
-                  (ctx.error.code < 100 ||
-                    ("temporary" in ctx.error &&
-                      ctx.error.temporary === true))),
+            const error = new Error(
+              isConnectionLimit
+                ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
+                : `Centrifugo client error: ${msg}`,
             );
+            const retryable =
+              isConnectionLimit ||
+              ctx.type === "transport" ||
+              (ctx.type === "connect" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true)));
+            // Only after the original outcome is settled: descriptor reads can
+            // reach SDK-context traps, so they must not affect it. Closed
+            // values plus the predicate above; never the message.
+            const clientError = readAttachmentCommandReceiverClientError(
+              ctx,
+              isConnectionLimit,
+            );
+            reject(error, retryable, clientError);
           }
         });
 
@@ -2023,13 +2159,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     path: string,
     signal?: AbortSignal,
     nativePaths?: Map<string, string>,
+    copyRole?: LocalCopyRole,
   ): Promise<string> {
     signal?.throwIfAborted();
     if (!this.isWindows()) return path;
     if (
       path.startsWith("/") &&
       !path.startsWith("//") &&
-      (await this.detectShell(signal)) === "bash"
+      (await this.detectShell(signal, copyRole)) === "bash"
     ) {
       const cached = nativePaths?.get(path);
       if (cached !== undefined) return cached;
@@ -2037,7 +2174,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       // Use its installed utility, independent of PATH or project executables.
       const result = await this.runSetupCommand(
         `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
-        { signal },
+        {
+          signal,
+          copyOwnerStage: copyRole && `${copyRole}_native_path_conversion`,
+        },
       );
       const resolved = result.stdout.replace(/\r?\n$/, "");
       if (
@@ -2157,7 +2297,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
    * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
-  async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
+  async detectShell(
+    signal?: AbortSignal,
+    /** Set only by a local copy, to attribute a probe it actually issues. */
+    copyRole?: LocalCopyRole,
+  ): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
     const declaredPlatform = this.connectionInfo.osInfo?.platform;
@@ -2171,6 +2315,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const probe = await this.runSetupCommand("echo $BASH_VERSION", {
       signal,
       displayName: "",
+      copyOwnerStage: copyRole && "shell_detection",
     });
     if (probe.exitCode !== 0) {
       throw persistenceCommandError("Failed to detect local shell", probe);
@@ -2185,6 +2330,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       displayName?: string;
       timeoutMs?: number;
       signal?: AbortSignal;
+      /** Reused by each attempt; every attempt is its own command. */
+      copyOwnerStage?: AttachmentLocalCopyOwnerStage;
     } = {},
   ): Promise<CommandResult> {
     for (let attempt = 1; attempt <= SETUP_COMMAND_MAX_ATTEMPTS; attempt++) {
@@ -2197,6 +2344,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             timeoutMs: options.timeoutMs ?? SETUP_COMMAND_TIMEOUT_MS,
             displayName: options.displayName ?? "",
           },
+          options.copyOwnerStage,
         );
         options.signal?.throwIfAborted();
         return result;
@@ -2235,6 +2383,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     rawPath: string,
     signal?: AbortSignal,
     observation?: AttachmentDownloadShellContextObservation,
+    copyRole?: LocalCopyRole,
   ): Promise<{
     useBash: boolean;
     path: string;
@@ -2243,13 +2392,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     escapeValue: (value: string) => string;
   }> {
     if (observation) observation.stage = "detect_shell";
-    const shell = await this.detectShell(signal);
+    const shell = await this.detectShell(signal, copyRole);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
     if (observation) observation.stage = "native_path_conversion";
     const nativePath = await this.toNativePath(
       this.resolveWorkingPath(rawPath),
       signal,
+      undefined,
+      copyRole,
     );
     const path =
       useBash && this.isWindows()
@@ -3023,8 +3174,19 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       options?: { signal?: AbortSignal },
     ): Promise<void> => {
       options?.signal?.throwIfAborted();
-      const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
-      const destCtx = await this.shellContext(destRawPath, options?.signal);
+      // Each role attributes only the setup commands it actually issues.
+      const sourceCtx = await this.shellContext(
+        sourceRawPath,
+        options?.signal,
+        undefined,
+        "source",
+      );
+      const destCtx = await this.shellContext(
+        destRawPath,
+        options?.signal,
+        undefined,
+        "destination",
+      );
       const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
@@ -3039,6 +3201,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
         : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
 
+      // One combined mutation; never split into separate directory/copy stages.
       const result = await runAttachmentCommand(
         this,
         `${mkdirPart} ${copyPart}`,
@@ -3046,6 +3209,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         {
           displayName: `Preparing: ${fileName}`,
         },
+        "directory_and_copy",
       );
       options?.signal?.throwIfAborted();
       if (result.exitCode !== 0) {

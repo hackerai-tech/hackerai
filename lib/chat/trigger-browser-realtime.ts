@@ -370,6 +370,10 @@ export async function* readTriggerRunStream<T>(
         clearTimeout(fetchTimeoutId);
 
         if (!response.ok) {
+          // The status is all this reader needs from a rejected response.
+          // Abort only this attempt so its unread body is released before the
+          // retry wait, token refresh or terminal error; the run stays active.
+          fetchAbortController.abort();
           if (AUTHORIZATION_FAILURE_STATUSES.has(response.status)) {
             if (
               !options.refreshAccessToken ||

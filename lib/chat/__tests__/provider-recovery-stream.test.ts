@@ -1,4 +1,7 @@
-import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import {
+  isTrustedBrowserHandoffReadFailure,
+  rethrowBrowserHandoffReadError,
+} from "@/lib/ai/browser-handoff/read-error";
 import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import {
   createUIMessageStream,
@@ -618,5 +621,12 @@ it("keeps safety-read ownership through real SDK prepareStep error delivery", as
     model: "unknown",
     cause: failure,
   });
-  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
+  // The category stays stream_terminated (above), but a trusted local read is
+  // never a retriable provider disconnect, directly or via its terminal wrapper.
+  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(false);
+  expect(isRetriableProviderStreamDisconnectError(terminal)).toBe(false);
+  expect(isTrustedBrowserHandoffReadFailure(observed.mock.calls[0][0])).toBe(
+    true,
+  );
+  expect(isTrustedBrowserHandoffReadFailure(terminal)).toBe(true);
 });

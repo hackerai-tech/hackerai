@@ -12,6 +12,7 @@ import {
   refreshNotesInModelMessages,
   getAppendedNotesUpdate,
 } from "@/lib/api/chat-stream-helpers";
+import { logger } from "@/lib/logger";
 
 // ── Mock external dependencies used by refreshNotesInModelMessages ──────────
 
@@ -441,6 +442,109 @@ describe("injectNotesIntoMessages", () => {
     expect(mockGetNotes).toHaveBeenCalledTimes(1);
     const text = (result[0].parts[0] as { text: string }).text;
     expect(text).toContain("Preloaded");
+  });
+});
+
+// ── Lookup failure warnings ─────────────────────────────────────────────────
+
+describe("notes lookup failure warnings", () => {
+  // Synthetic credentials only; never real values.
+  const INITIAL_SECRET = "synthetic-initial-notes-credential-0001";
+  const REFRESH_SECRET = "synthetic-refresh-notes-credential-0002";
+
+  let consoleWarn: jest.SpyInstance;
+
+  beforeEach(() => {
+    mockGetNotes.mockReset();
+    // Route the mocked warn through the real serializer so the assertions
+    // cover the JSON that is actually emitted.
+    const actual =
+      jest.requireActual<typeof import("@/lib/logger")>("@/lib/logger");
+    (logger.warn as jest.Mock).mockImplementation(actual.logger.warn);
+    consoleWarn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    (logger.warn as jest.Mock).mockReset();
+    consoleWarn.mockRestore();
+  });
+
+  function emittedWarnings(): Array<{
+    raw: string;
+    parsed: Record<string, unknown>;
+  }> {
+    return consoleWarn.mock.calls.map(([raw]) => ({
+      raw: raw as string,
+      parsed: JSON.parse(raw as string),
+    }));
+  }
+
+  it("redacts a credential from a failed initial preloaded lookup", async () => {
+    const messages = [
+      {
+        id: "u1",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "hello" }],
+      },
+    ];
+    const snapshot = JSON.parse(JSON.stringify(messages));
+
+    const result = await injectNotesIntoMessages(messages, {
+      userId: "user-1",
+      subscription: "pro",
+      shouldIncludeNotes: true,
+      preloadedNotes: Promise.reject(
+        new Error(`Notes backend unavailable api_key=${INITIAL_SECRET}`),
+      ),
+    });
+
+    expect(result).toBe(messages);
+    expect(messages).toEqual(snapshot);
+    expect(mockGetNotes).not.toHaveBeenCalled();
+
+    const warnings = emittedWarnings();
+    expect(warnings).toHaveLength(1);
+    const [{ raw, parsed }] = warnings;
+    expect(raw).not.toContain(INITIAL_SECRET);
+    expect(parsed).toMatchObject({
+      level: "warn",
+      message: "Failed to fetch notes, continuing without them",
+      userId: "user-1",
+    });
+    expect(parsed.error).toContain("Notes backend unavailable");
+    expect(parsed.error).toContain("[Redacted]");
+  });
+
+  it("redacts a credential from a non-Error midstream refresh failure", async () => {
+    const messages = [
+      { role: "user", content: `hi\n\n${buildNotesReminder("Kept Note")}` },
+      { role: "assistant", content: "response" },
+    ];
+    const snapshot = JSON.parse(JSON.stringify(messages));
+    mockGetNotes.mockRejectedValue(
+      `Notes refresh timed out token=${REFRESH_SECRET}`,
+    );
+
+    const result = await refreshNotesInModelMessages(messages, {
+      userId: "user-1",
+      subscription: "pro",
+      shouldIncludeNotes: true,
+    });
+
+    expect(result).toBe(messages);
+    expect(messages).toEqual(snapshot);
+
+    const warnings = emittedWarnings();
+    expect(warnings).toHaveLength(1);
+    const [{ raw, parsed }] = warnings;
+    expect(raw).not.toContain(REFRESH_SECRET);
+    expect(parsed).toMatchObject({
+      level: "warn",
+      message: "Failed to refresh notes in prepareStep, continuing without",
+      userId: "user-1",
+    });
+    expect(parsed.error).toContain("Notes refresh timed out");
+    expect(parsed.error).toContain("[Redacted]");
   });
 });
 

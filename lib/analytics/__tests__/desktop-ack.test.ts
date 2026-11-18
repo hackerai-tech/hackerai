@@ -48,9 +48,13 @@ import {
   DESKTOP_INVOCATION_ADMISSION_PROPERTIES,
   DESKTOP_INVOCATION_REJECTION_PROPERTIES,
   DESKTOP_INVOCATION_SPAWN_HINT_PROPERTIES,
+  DESKTOP_INVOCATION_UNKNOWN_PROPERTIES,
+  DESKTOP_STREAM_FENCE_PROPERTIES,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceDiagnostic,
 } from "../desktop-invocation-rejection-diagnostics";
 
 jest.mock("../client", () => ({
@@ -3122,6 +3126,1307 @@ describe("invocation rejection message class", () => {
       expect(reads).toBe(0);
     });
   });
+
+  describe("unknown invocation class", () => {
+    const authorizedUnknown: DesktopInvocationRejectionDiagnostic = {
+      ...rejection,
+      desktop_invocation_rejection_reason: "unknown",
+    };
+    const unknown: DesktopInvocationUnknownDiagnostic = {
+      desktop_invocation_unknown_version: 1,
+      desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+    };
+    const stopMessage =
+      "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
+    const unknownKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        DESKTOP_INVOCATION_UNKNOWN_PROPERTIES.has(key),
+      );
+
+    it.each([
+      "lifecycle_page_replaced",
+      "lifecycle_prior_cleanup_pending",
+      "lifecycle_stop_unconfirmed",
+      "other_string",
+      "other_error_message",
+      "message_over_limit",
+      "message_unavailable",
+    ])(
+      "keeps the %s pair beside the class and kind through capture and before_send",
+      (cls) => {
+        const pair = { ...unknown, desktop_invocation_unknown_class: cls };
+        const final = settle({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          // Private extras on the same carrier never survive the copy.
+          invocationUnknown: { ...pair, message: stopMessage, cwd: "PRIVATE" },
+        });
+        const expected = { ...rejectedKind, ...authorizedUnknown, ...pair };
+        expect(final?.properties).toMatchObject(expected);
+        expect(unknownKeys(final!.properties)).toHaveLength(2);
+        const enriched = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: {
+            ...final!.properties,
+            $current_url: "PRIVATE URL",
+            message: stopMessage,
+          },
+          $set: { email: "PRIVATE" },
+          $set_once: { email: "PRIVATE" },
+        });
+        expect(enriched.properties).toMatchObject(expected);
+        expect(unknownKeys(enriched.properties)).toHaveLength(2);
+        // Unrelated normal fields still pass the existing allowlist.
+        expect(enriched.properties).toMatchObject({
+          commandId: "command",
+          connectionId: "connection",
+          outcome: "acknowledged",
+        });
+        expect(enriched).not.toHaveProperty("$set");
+        expect(enriched).not.toHaveProperty("$set_once");
+        const serialized = JSON.stringify([final, enriched]);
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain("confirm an earlier command");
+      },
+    );
+
+    it("keeps an unsampled unknown pair at the diagnostic rate under the same key", () => {
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: unknown,
+      });
+      expect(final).toMatchObject({
+        dedupeKey: JSON.stringify(["connection", "command"]),
+        properties: {
+          ...authorizedUnknown,
+          ...unknown,
+          telemetry_sampled: false,
+          telemetry_sample_rate: 1,
+        },
+      });
+      expect(capture.mock.calls.map(([event]) => event.event)).not.toContain(
+        "desktop_ack_command_started",
+      );
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["a missing version", { desktop_invocation_unknown_version: undefined }],
+      ["a string version", { desktop_invocation_unknown_version: "1" }],
+      ["an unsupported version", { desktop_invocation_unknown_version: 2 }],
+      ["a missing class", { desktop_invocation_unknown_class: undefined }],
+      ["a private class", { desktop_invocation_unknown_class: "PRIVATE" }],
+      ["the coarse reason", { desktop_invocation_unknown_class: "unknown" }],
+      [
+        "a raw lifecycle message",
+        { desktop_invocation_unknown_class: stopMessage },
+      ],
+    ])("drops only the unknown pair for %s", (_case, change) => {
+      const invalid = { ...unknown, ...change };
+      const final = settle({
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: invalid,
+      });
+      expect(final?.properties).toMatchObject({
+        ...rejectedKind,
+        ...authorizedUnknown,
+      });
+      expect(unknownKeys(final!.properties)).toEqual([]);
+      expect(
+        sanitize({
+          terminalType: "error",
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...invalid,
+        }),
+      ).toEqual({
+        terminalType: "error",
+        ...rejectedKind,
+        ...authorizedUnknown,
+      });
+      expect(JSON.stringify(final)).not.toContain("PRIVATE");
+      expect(JSON.stringify(final)).not.toContain("confirm an earlier");
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["another class", { invocationRejection: rejection }],
+      [
+        "an authorized spawn class",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_reason: "spawn_failed",
+          },
+        },
+      ],
+      [
+        "an authorized admission class",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_reason: "execution_admission",
+          },
+        },
+      ],
+      [
+        "a compatibility unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "compatibility_native",
+          },
+        },
+      ],
+      [
+        "a published legacy unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "published_legacy_native",
+          },
+        },
+      ],
+      [
+        "an unselected unknown class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_adapter: "not_selected",
+          },
+        },
+      ],
+      [
+        "an invalid class",
+        {
+          invocationRejection: {
+            ...authorizedUnknown,
+            desktop_invocation_rejection_version: "1",
+          },
+        },
+      ],
+      ["no class", { invocationRejection: undefined }],
+      [
+        "a native timeout kind",
+        {
+          terminalError: {
+            ...rejectedKind,
+            desktop_terminal_error_kind: "native_command_timeout",
+          },
+        },
+      ],
+      ["no kind", { terminalError: undefined }],
+      ["an exit", { terminalType: "exit", terminalExitCode: 0 }],
+    ])("never attaches the unknown pair to %s", (_case, change) => {
+      const settlement = {
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: unknown,
+        ...change,
+      };
+      const final = settle(settlement);
+      expect(unknownKeys(final!.properties)).toEqual([]);
+      const {
+        terminalError: kind,
+        invocationRejection,
+        invocationUnknown,
+        ...rest
+      } = settlement;
+      const sanitized = sanitize({
+        ...rest,
+        ...(kind as object),
+        ...(invocationRejection as object),
+        ...(invocationUnknown as object),
+      });
+      expect(unknownKeys(sanitized)).toEqual([]);
+      // The coarse class is unaffected by the pair it did not admit.
+      expect(rejectionKeys(sanitized)).toEqual(
+        rejectionKeys(final!.properties),
+      );
+    });
+
+    it("never attaches the unknown pair to a start or summary", () => {
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          unknownKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: {
+                terminalType: "error",
+                ...rejectedKind,
+                ...authorizedUnknown,
+                ...unknown,
+              },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("strips hostile unknown keys before any value access at capture or before_send", () => {
+      let reads = 0;
+      const withAccessors = (target: Record<string, unknown>) => {
+        for (const key of DESKTOP_INVOCATION_UNKNOWN_PROPERTIES)
+          Object.defineProperty(target, key, {
+            enumerable: true,
+            get() {
+              reads++;
+              return key.endsWith("version") ? 1 : "lifecycle_page_replaced";
+            },
+          });
+        return target;
+      };
+      const fail = () => {
+        throw new Error("PRIVATE");
+      };
+      for (const invocationUnknown of [
+        withAccessors({}),
+        new Proxy(
+          { ...unknown },
+          { get: fail, getOwnPropertyDescriptor: fail },
+        ),
+      ]) {
+        const final = settle({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          invocationUnknown,
+        });
+        expect(final?.properties).toMatchObject(authorizedUnknown);
+        expect(unknownKeys(final!.properties)).toEqual([]);
+      }
+      // Both inside and outside the gate, a raw key is never read or kept.
+      for (const coarse of [authorizedUnknown, rejection]) {
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: withAccessors({
+            terminalType: "error",
+            ...rejectedKind,
+            ...coarse,
+          }),
+        }).properties!;
+        expect(sanitized).toEqual({
+          terminalType: "error",
+          ...rejectedKind,
+          ...coarse,
+        });
+      }
+      // An inherited pair is not the event's own data.
+      const inherited = Object.assign(Object.create(unknown as object), {
+        terminalType: "error",
+        ...rejectedKind,
+        ...authorizedUnknown,
+      }) as Record<string, unknown>;
+      expect(
+        unknownKeys(
+          sanitizeDesktopAckEvent({
+            event: "desktop_ack_command_settled",
+            properties: inherited,
+          }).properties,
+        ),
+      ).toEqual([]);
+      expect(reads).toBe(0);
+    });
+
+    it.each<[string, string | null]>([
+      ["an owner change", "another-user"],
+      ["withdrawn consent", null],
+    ])(
+      "never emits the unknown pair after %s before settlement",
+      (_case, next) => {
+        capture.mockClear();
+        const settleFinal = telemetry.start({
+          connectionId: "connection",
+          commandId: "command",
+        });
+        identity.mockReturnValue(next);
+        settleFinal({
+          ...terminalError,
+          terminalError: rejectedKind,
+          invocationRejection: authorizedUnknown,
+          invocationUnknown: unknown,
+        } as never);
+        expect(
+          capture.mock.calls.filter(
+            ([event]) => event.event === "desktop_ack_command_settled",
+          ),
+        ).toEqual([]);
+        expect(JSON.stringify(capture.mock.calls)).not.toContain(
+          "desktop_invocation_unknown",
+        );
+      },
+    );
+
+    describe("stream fence origin", () => {
+      const fence: DesktopStreamFenceDiagnostic = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_process_error",
+      };
+      const fenceKeys = (properties: Record<string, unknown> = {}) =>
+        Object.keys(properties).filter((key) =>
+          DESKTOP_STREAM_FENCE_PROPERTIES.has(key),
+        );
+      const fenced = {
+        ...terminalError,
+        terminalError: rejectedKind,
+        invocationRejection: authorizedUnknown,
+        invocationUnknown: unknown,
+        streamFence: fence,
+      };
+      const stopOrigin = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_stop_requested",
+      } as const;
+      const cleanup = {
+        desktop_stream_fence_cleanup_version: 1,
+        desktop_stream_fence_cleanup_failure: "leader_wait_timed_out",
+      } as const;
+      const stopFence: DesktopStreamFenceDiagnostic = {
+        ...stopOrigin,
+        ...cleanup,
+      };
+
+      it("keeps an unsampled group beside the unknown pair through capture and before_send", () => {
+        jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+        const final = settle({
+          ...fenced,
+          // Private extras on the same carrier never survive the copy.
+          streamFence: { ...fence, pid: 4242, message: "PRIVATE" },
+        });
+        const expected = {
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+          ...fence,
+        };
+        // Sampling is unchanged: the diagnostic final keeps its rate and key.
+        expect(final).toMatchObject({
+          dedupeKey: JSON.stringify(["connection", "command"]),
+          properties: {
+            ...expected,
+            telemetry_sampled: false,
+            telemetry_sample_rate: 1,
+          },
+        });
+        expect(fenceKeys(final!.properties)).toHaveLength(2);
+        const enriched = sanitize({ ...final!.properties, pid: 4242 });
+        expect(enriched).toMatchObject(expected);
+        expect(fenceKeys(enriched)).toHaveLength(2);
+        expect(enriched).not.toHaveProperty("pid");
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        ["a missing version", { desktop_stream_fence_version: undefined }],
+        ["a string version", { desktop_stream_fence_version: "1" }],
+        ["an unsupported version", { desktop_stream_fence_version: 2 }],
+        ["a missing origin", { desktop_stream_fence_origin: undefined }],
+        ["a private origin", { desktop_stream_fence_origin: "PRIVATE" }],
+        ["a numeric origin", { desktop_stream_fence_origin: 1 }],
+      ])("drops only the fence group for %s", (_case, change) => {
+        const invalid = { ...fence, ...change };
+        const final = settle({ ...fenced, streamFence: invalid });
+        expect(final?.properties).toMatchObject({
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        });
+        expect(fenceKeys(final!.properties)).toEqual([]);
+        expect(
+          sanitize({
+            terminalType: "error",
+            ...rejectedKind,
+            ...authorizedUnknown,
+            ...unknown,
+            ...invalid,
+          }),
+        ).toEqual({
+          terminalType: "error",
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        });
+      });
+
+      it.each<[string, Record<string, unknown>]>([
+        [
+          "a page replacement class",
+          {
+            invocationUnknown: {
+              ...unknown,
+              desktop_invocation_unknown_class: "lifecycle_page_replaced",
+            },
+          },
+        ],
+        [
+          "an other string class",
+          {
+            invocationUnknown: {
+              ...unknown,
+              desktop_invocation_unknown_class: "other_string",
+            },
+          },
+        ],
+        ["no unknown pair", { invocationUnknown: undefined }],
+        [
+          "a compatibility unknown class",
+          {
+            invocationRejection: {
+              ...authorizedUnknown,
+              desktop_invocation_rejection_adapter: "compatibility_native",
+            },
+          },
+        ],
+        [
+          "a published legacy unknown class",
+          {
+            invocationRejection: {
+              ...authorizedUnknown,
+              desktop_invocation_rejection_adapter: "published_legacy_native",
+            },
+          },
+        ],
+        ["an approval rejection", { invocationRejection: rejection }],
+        [
+          "a native timeout kind",
+          {
+            terminalError: {
+              ...rejectedKind,
+              desktop_terminal_error_kind: "native_command_timeout",
+            },
+          },
+        ],
+        ["an exit", { terminalType: "exit", terminalExitCode: 1 }],
+      ])("never attaches the group to %s", (_case, change) => {
+        // Neither the origin pair nor a stop's cleanup pair.
+        for (const carried of [fence, stopFence]) {
+          const settlement = { ...fenced, streamFence: carried, ...change };
+          const final = settle(settlement);
+          expect(fenceKeys(final!.properties)).toEqual([]);
+          const {
+            terminalError: kind,
+            invocationRejection,
+            invocationUnknown,
+            streamFence,
+            ...rest
+          } = settlement;
+          const sanitized = sanitize({
+            ...rest,
+            ...(kind as object),
+            ...(invocationRejection as object),
+            ...(invocationUnknown as object),
+            ...(streamFence as object),
+          });
+          expect(fenceKeys(sanitized)).toEqual([]);
+        }
+      });
+
+      it("never attaches the group to a start or summary", () => {
+        for (const event of [
+          "desktop_ack_command_started",
+          "desktop_ack_delivery_summary",
+        ])
+          expect(
+            fenceKeys(
+              sanitizeDesktopAckEvent({
+                event,
+                properties: {
+                  terminalType: "error",
+                  ...rejectedKind,
+                  ...authorizedUnknown,
+                  ...unknown,
+                  ...fence,
+                },
+              }).properties,
+            ),
+          ).toEqual([]);
+      });
+
+      it("strips hostile fence keys before any value access at capture or before_send", () => {
+        let reads = 0;
+        const withAccessors = (target: Record<string, unknown>) => {
+          for (const key of DESKTOP_STREAM_FENCE_PROPERTIES)
+            Object.defineProperty(target, key, {
+              enumerable: true,
+              get() {
+                reads++;
+                return key.endsWith("version") ? 1 : "owner_timeout";
+              },
+            });
+          return target;
+        };
+        const fail = () => {
+          throw new Error("PRIVATE");
+        };
+        for (const streamFence of [
+          withAccessors({}),
+          new Proxy(
+            { ...fence },
+            { get: fail, getOwnPropertyDescriptor: fail },
+          ),
+        ]) {
+          const final = settle({ ...fenced, streamFence });
+          expect(final?.properties).toMatchObject(unknown);
+          expect(fenceKeys(final!.properties)).toEqual([]);
+        }
+        // Both inside and outside the gate, a raw key is never read or kept.
+        for (const pair of [
+          unknown,
+          { ...unknown, desktop_invocation_unknown_class: "other_string" },
+        ]) {
+          const sanitized = sanitizeDesktopAckEvent({
+            event: "desktop_ack_command_settled",
+            properties: withAccessors({
+              terminalType: "error",
+              ...rejectedKind,
+              ...authorizedUnknown,
+              ...pair,
+            }),
+          }).properties!;
+          expect(sanitized).toEqual({
+            terminalType: "error",
+            ...rejectedKind,
+            ...authorizedUnknown,
+            ...pair,
+          });
+        }
+        // An inherited group is not the event's own data.
+        const inherited = Object.assign(Object.create(fence as object), {
+          terminalType: "error",
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        }) as Record<string, unknown>;
+        expect(
+          fenceKeys(
+            sanitizeDesktopAckEvent({
+              event: "desktop_ack_command_settled",
+              properties: inherited,
+            }).properties,
+          ),
+        ).toEqual([]);
+        expect(reads).toBe(0);
+      });
+
+      describe("stop cleanup failure", () => {
+        const failures = [
+          "tree_unconfirmed",
+          "leader_wait_timed_out",
+          "leader_wait_failed",
+          "tree_and_leader_wait_timed_out",
+          "tree_and_leader_wait_failed",
+        ] as const;
+        const coarse = {
+          terminalType: "error",
+          terminalAcknowledged: true,
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        };
+
+        it.each(failures)(
+          "keeps the unsampled %s pair beside its stop origin through capture and before_send",
+          (failure) => {
+            jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+            const expected = {
+              ...stopOrigin,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: failure,
+            };
+            const final = settle({
+              ...fenced,
+              // Private extras on the same carrier never survive the copy.
+              streamFence: { ...expected, pid: 4242, message: "PRIVATE" },
+            });
+            // Sampling is unchanged: the diagnostic final keeps its rate.
+            expect(final?.properties).toMatchObject({
+              ...rejectedKind,
+              ...authorizedUnknown,
+              ...unknown,
+              ...expected,
+              telemetry_sampled: false,
+              telemetry_sample_rate: 1,
+            });
+            expect(fenceKeys(final!.properties)).toHaveLength(4);
+            const enriched = sanitize({ ...final!.properties, pid: 4242 });
+            expect(enriched).toMatchObject(expected);
+            expect(fenceKeys(enriched)).toHaveLength(4);
+            expect(enriched).not.toHaveProperty("pid");
+            expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+          },
+        );
+
+        it.each<[string, Record<string, unknown>]>([
+          ["no cleanup pair", {}],
+          [
+            "a missing version",
+            { desktop_stream_fence_cleanup_failure: "tree_unconfirmed" },
+          ],
+          ["a missing failure", { desktop_stream_fence_cleanup_version: 1 }],
+          [
+            "a string version",
+            { ...cleanup, desktop_stream_fence_cleanup_version: "1" },
+          ],
+          [
+            "an unsupported version",
+            { ...cleanup, desktop_stream_fence_cleanup_version: 2 },
+          ],
+          [
+            "a private failure",
+            { ...cleanup, desktop_stream_fence_cleanup_failure: "PRIVATE" },
+          ],
+          [
+            "a numeric failure",
+            { ...cleanup, desktop_stream_fence_cleanup_failure: 1 },
+          ],
+        ])("keeps exactly the origin pair for %s", (_case, carried) => {
+          const final = settle({
+            ...fenced,
+            streamFence: { ...stopOrigin, ...carried },
+          });
+          expect(fenceKeys(final!.properties)).toEqual(Object.keys(stopOrigin));
+          expect(final?.properties).toMatchObject(stopOrigin);
+          expect(sanitize({ ...coarse, ...stopOrigin, ...carried })).toEqual({
+            ...coarse,
+            ...stopOrigin,
+          });
+        });
+
+        // Cleanup keys as getters; the proxy also counts their descriptor
+        // reads. An event's own keys are always enumerated by before_send, so
+        // there only a getter run counts.
+        const counted = (target: Record<string, unknown>) => {
+          const reads = { count: 0 };
+          for (const key of Object.keys(cleanup))
+            Object.defineProperty(target, key, {
+              enumerable: true,
+              get() {
+                reads.count++;
+                return cleanup[key as keyof typeof cleanup];
+              },
+            });
+          const proxy = new Proxy(target, {
+            getOwnPropertyDescriptor(object, key) {
+              if (typeof key === "string" && key in cleanup) reads.count++;
+              return Reflect.getOwnPropertyDescriptor(object, key);
+            },
+          });
+          return { target, proxy, reads };
+        };
+
+        it.each([
+          "owner_timeout",
+          "owner_process_error",
+          "owner_delivery_failed",
+          "owner_outcome_missing",
+          "cancel_wait_timeout",
+        ])(
+          "never reads or keeps a cleanup pair beside the %s origin",
+          (origin) => {
+            const otherOrigin = {
+              ...stopOrigin,
+              desktop_stream_fence_origin: origin,
+            };
+            // A complete data pair beside it is still never kept.
+            expect(
+              fenceKeys(sanitize({ ...coarse, ...otherOrigin, ...cleanup })),
+            ).toEqual(Object.keys(otherOrigin));
+            const carrier = counted({ ...otherOrigin });
+            const final = settle({ ...fenced, streamFence: carrier.proxy });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(otherOrigin),
+            );
+            expect(final?.properties).toMatchObject(otherOrigin);
+            const event = counted({ ...coarse, ...otherOrigin });
+            expect(
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties: event.target,
+              }).properties,
+            ).toEqual({ ...coarse, ...otherOrigin });
+            expect(carrier.reads.count + event.reads.count).toBe(0);
+          },
+        );
+
+        it.each<[string, unknown]>([
+          ["an unacknowledged terminal", false],
+          ["a missing acknowledgement", undefined],
+          ["a string acknowledgement", "true"],
+        ])(
+          "never reads or keeps the cleanup pair on %s",
+          (_case, terminalAcknowledged) => {
+            // A complete data pair is still never kept.
+            expect(
+              fenceKeys(
+                sanitize({ ...coarse, terminalAcknowledged, ...stopFence }),
+              ),
+            ).toEqual(Object.keys(stopOrigin));
+            const carrier = counted({ ...stopOrigin });
+            const final = settle({
+              ...fenced,
+              outcome: "incomplete",
+              reason: "deadline_exceeded",
+              terminalAcknowledged,
+              streamFence: carrier.proxy,
+            });
+            expect(final?.properties).toMatchObject(stopOrigin);
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(stopOrigin),
+            );
+            const event = counted({
+              ...coarse,
+              terminalAcknowledged,
+              ...stopOrigin,
+            });
+            expect(
+              fenceKeys(
+                sanitizeDesktopAckEvent({
+                  event: "desktop_ack_command_settled",
+                  properties: event.target,
+                }).properties,
+              ),
+            ).toEqual(Object.keys(stopOrigin));
+            expect(carrier.reads.count + event.reads.count).toBe(0);
+          },
+        );
+
+        it("keeps the origin pair when the cleanup pair is hostile", () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          let gets = 0;
+          const accessors = { ...stopOrigin } as Record<string, unknown>;
+          for (const key of Object.keys(cleanup))
+            Object.defineProperty(accessors, key, {
+              enumerable: true,
+              get() {
+                gets++;
+                return cleanup[key as keyof typeof cleanup];
+              },
+            });
+          // Throws only once a cleanup key is read, after the origin pair.
+          const throwing = new Proxy(
+            { ...stopOrigin, ...cleanup },
+            {
+              get: fail,
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && key in cleanup) fail();
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          for (const streamFence of [accessors, throwing]) {
+            const final = settle({ ...fenced, streamFence });
+            expect(final?.properties).toMatchObject(stopOrigin);
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(stopOrigin),
+            );
+          }
+          const sanitized = sanitizeDesktopAckEvent({
+            event: "desktop_ack_command_settled",
+            properties: Object.defineProperties(
+              { ...coarse, ...stopOrigin } as Record<string, unknown>,
+              Object.getOwnPropertyDescriptors(accessors),
+            ),
+          }).properties;
+          expect(sanitized).toEqual({ ...coarse, ...stopOrigin });
+          expect(gets).toBe(0);
+        });
+
+        describe("Windows taskkill receipt", () => {
+          const treePairs = {
+            ...stopOrigin,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+          } as const;
+          const taskkill = {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+            desktop_stream_fence_windows_taskkill_exit_code: -1,
+          } as const;
+
+          it("keeps the unsampled group beside its tree_unconfirmed pair through capture and before_send", () => {
+            jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+            const expected = { ...treePairs, ...taskkill };
+            const final = settle({
+              ...fenced,
+              // Private extras on the same carrier never survive the copy.
+              streamFence: { ...expected, pid: 4242, stderr: "PRIVATE" },
+            });
+            expect(final?.properties).toMatchObject({
+              ...expected,
+              telemetry_sampled: false,
+              telemetry_sample_rate: 1,
+            });
+            expect(fenceKeys(final!.properties)).toHaveLength(7);
+            const enriched = sanitize({
+              ...final!.properties,
+              pid: 4242,
+              command: "PRIVATE",
+            });
+            expect(enriched).toMatchObject(expected);
+            expect(fenceKeys(enriched)).toHaveLength(7);
+            expect(enriched).not.toHaveProperty("pid");
+            expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+          });
+
+          it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+            [
+              "a code beside output_error",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "output_error",
+              },
+            ],
+            [
+              "a zero code",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_exit_code: 0,
+              },
+            ],
+            [
+              "a private outcome",
+              treePairs,
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "PRIVATE",
+              },
+            ],
+            [
+              "another cleanup failure",
+              {
+                ...treePairs,
+                desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+              },
+              taskkill,
+            ],
+            [
+              "a malformed cleanup pair",
+              stopOrigin,
+              {
+                ...treePairs,
+                ...taskkill,
+                desktop_stream_fence_cleanup_version: 2,
+              },
+            ],
+          ])("keeps exactly the prior pairs for %s", (_case, kept, carried) => {
+            const final = settle({
+              ...fenced,
+              streamFence: { ...kept, ...carried },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(kept));
+            expect(final?.properties).toMatchObject(kept);
+            expect(sanitize({ ...coarse, ...kept, ...carried })).toEqual({
+              ...coarse,
+              ...kept,
+            });
+          });
+
+          describe("root report pair", () => {
+            const withoutRoot = {
+              ...taskkill,
+              desktop_stream_fence_windows_taskkill_exit_code: 128,
+            } as const;
+            const root = {
+              desktop_stream_fence_windows_taskkill_root_report_version: 1,
+              desktop_stream_fence_windows_taskkill_root_report:
+                "requested_pid_not_found",
+            } as const;
+            const notFound = { ...withoutRoot, ...root } as const;
+
+            it("keeps the unsampled pair beside its code through capture and before_send", () => {
+              jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+              const expected = { ...treePairs, ...notFound };
+              const final = settle({
+                ...fenced,
+                streamFence: {
+                  ...expected,
+                  stderr: 'ERROR: The process "PRIVATE" not found.',
+                  pid: 4242,
+                },
+              });
+              expect(final?.properties).toMatchObject({
+                ...expected,
+                telemetry_sample_rate: 1,
+              });
+              expect(fenceKeys(final!.properties)).toHaveLength(9);
+              const enriched = sanitize({
+                ...final!.properties,
+                pid: 4242,
+                command: "PRIVATE",
+              });
+              expect(enriched).toMatchObject(expected);
+              expect(fenceKeys(enriched)).toHaveLength(9);
+              expect(final!.properties).not.toHaveProperty("pid");
+              expect(enriched).not.toHaveProperty("pid");
+              expect(JSON.stringify([final, enriched])).not.toContain(
+                "PRIVATE",
+              );
+            });
+
+            it.each<[string, Record<string, unknown>]>([
+              [
+                "not found beside exit 255",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_exit_code: 255,
+                },
+              ],
+              [
+                "a private report",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_root_report: "PRIVATE",
+                },
+              ],
+              [
+                "an unsupported version",
+                {
+                  ...notFound,
+                  desktop_stream_fence_windows_taskkill_root_report_version: 2,
+                },
+              ],
+            ])("drops only the pair for %s", (_case, carried) => {
+              const kept = {
+                ...treePairs,
+                ...withoutRoot,
+                desktop_stream_fence_windows_taskkill_exit_code:
+                  carried.desktop_stream_fence_windows_taskkill_exit_code,
+              };
+              const final = settle({
+                ...fenced,
+                streamFence: { ...treePairs, ...carried },
+              });
+              expect(fenceKeys(final!.properties)).toEqual(Object.keys(kept));
+              expect(final?.properties).toMatchObject(kept);
+              expect(sanitize({ ...coarse, ...treePairs, ...carried })).toEqual(
+                { ...coarse, ...kept },
+              );
+            });
+
+            it("never keeps the pair without a code or on an unacknowledged terminal", () => {
+              const codeless = {
+                desktop_stream_fence_windows_taskkill_version: 1,
+                desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              };
+              expect(
+                sanitize({ ...coarse, ...treePairs, ...codeless, ...root }),
+              ).toEqual({
+                ...coarse,
+                ...treePairs,
+                ...codeless,
+              });
+              expect(
+                fenceKeys(
+                  sanitize({
+                    ...coarse,
+                    terminalAcknowledged: false,
+                    ...treePairs,
+                    ...notFound,
+                  }),
+                ),
+              ).toEqual(Object.keys(stopOrigin));
+            });
+          });
+
+          it("never keeps the group on an unacknowledged terminal", () => {
+            const final = settle({
+              ...fenced,
+              outcome: "incomplete",
+              reason: "deadline_exceeded",
+              terminalAcknowledged: false,
+              streamFence: { ...treePairs, ...taskkill },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(stopOrigin),
+            );
+            expect(
+              fenceKeys(
+                sanitize({
+                  ...coarse,
+                  terminalAcknowledged: false,
+                  ...treePairs,
+                  ...taskkill,
+                }),
+              ),
+            ).toEqual(Object.keys(stopOrigin));
+          });
+
+          describe("final acknowledgement projection", () => {
+            // The coarse fields without the flag; each case supplies its own.
+            const unflagged = Object.fromEntries(
+              Object.entries(coarse).filter(
+                ([key]) => key !== "terminalAcknowledged",
+              ),
+            );
+            const project = (properties: Record<string, unknown>) =>
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties,
+              }).properties!;
+
+            it.each([true, false])(
+              "keeps an ordinary own %s flag and joins only its groups",
+              (flag) => {
+                expect(
+                  project({
+                    ...unflagged,
+                    terminalAcknowledged: flag,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+                ).toEqual({
+                  ...unflagged,
+                  terminalAcknowledged: flag,
+                  ...(flag ? { ...treePairs, ...taskkill } : stopOrigin),
+                });
+              },
+            );
+
+            it.each<[string, () => Record<string, unknown>]>([
+              [
+                "an inherited",
+                () =>
+                  Object.assign(Object.create({ terminalAcknowledged: true }), {
+                    ...unflagged,
+                    ...treePairs,
+                    ...taskkill,
+                  }),
+              ],
+              [
+                "a non-enumerable",
+                () =>
+                  Object.defineProperty(
+                    { ...unflagged, ...treePairs, ...taskkill },
+                    "terminalAcknowledged",
+                    { value: true, enumerable: false },
+                  ),
+              ],
+            ])(
+              "omits %s true flag and keeps exactly the origin pair",
+              (_case, properties) => {
+                const projected = project(properties());
+                expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+                expect(projected).not.toHaveProperty("terminalAcknowledged");
+              },
+            );
+
+            it("never runs an accessor true flag and omits it with both receipts", () => {
+              let gets = 0;
+              const accessor = Object.defineProperty(
+                { ...unflagged, ...treePairs, ...taskkill },
+                "terminalAcknowledged",
+                {
+                  enumerable: true,
+                  get() {
+                    gets++;
+                    return true;
+                  },
+                },
+              );
+              const projected = project(accessor);
+              expect(projected).toEqual({ ...unflagged, ...stopOrigin });
+              expect(projected).not.toHaveProperty("terminalAcknowledged");
+              expect(gets).toBe(0);
+            });
+          });
+        });
+      });
+
+      describe("cancel wait owner phase", () => {
+        const timedOut = {
+          desktop_stream_fence_version: 1,
+          desktop_stream_fence_origin: "cancel_wait_timeout",
+        } as const;
+        const phasePair = {
+          desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+          desktop_stream_fence_cancel_wait_owner_phase: "owner_streaming",
+        } as const;
+        const coarse = {
+          terminalType: "error",
+          terminalAcknowledged: true,
+          ...rejectedKind,
+          ...authorizedUnknown,
+          ...unknown,
+        };
+
+        it.each([
+          "owner_pending",
+          "owner_streaming",
+          "stop_cleanup_tree_and_leader_pending",
+          "stop_cleanup_tree_pending",
+          "stop_cleanup_leader_pending",
+          "owner_cleanup",
+          "terminal_delivery",
+          "released",
+        ])(
+          "keeps the unsampled %s pair beside its timeout origin through capture and before_send",
+          (phase) => {
+            jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+            const expected = {
+              ...timedOut,
+              desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+              desktop_stream_fence_cancel_wait_owner_phase: phase,
+            };
+            const final = settle({
+              ...fenced,
+              // Private extras on the same carrier never survive the copy.
+              streamFence: { ...expected, pid: 4242, elapsedMs: 987_654_321 },
+            });
+            expect(final?.properties).toMatchObject({
+              ...unknown,
+              ...expected,
+              telemetry_sampled: false,
+              telemetry_sample_rate: 1,
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(expected));
+            const enriched = sanitize({ ...final!.properties, pid: 4242 });
+            expect(enriched).toMatchObject(expected);
+            expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+            expect(enriched).not.toHaveProperty("pid");
+            expect(JSON.stringify([final, enriched])).not.toContain(
+              "987654321",
+            );
+          },
+        );
+
+        it.each<[string, Record<string, unknown>]>([
+          ["no phase pair", {}],
+          [
+            "a missing version",
+            {
+              desktop_stream_fence_cancel_wait_owner_phase: "owner_streaming",
+            },
+          ],
+          [
+            "a missing phase",
+            { desktop_stream_fence_cancel_wait_owner_phase_version: 1 },
+          ],
+          [
+            "a string version",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase_version: "1",
+            },
+          ],
+          [
+            "an unsupported version",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase_version: 2,
+            },
+          ],
+          [
+            "a private phase",
+            {
+              ...phasePair,
+              desktop_stream_fence_cancel_wait_owner_phase: "PRIVATE",
+            },
+          ],
+        ])("keeps exactly the origin pair for %s", (_case, carried) => {
+          const final = settle({
+            ...fenced,
+            streamFence: { ...timedOut, ...carried },
+          });
+          expect(fenceKeys(final!.properties)).toEqual(Object.keys(timedOut));
+          expect(sanitize({ ...coarse, ...timedOut, ...carried })).toEqual({
+            ...coarse,
+            ...timedOut,
+          });
+        });
+
+        // Phase keys as getters; the proxy also counts their descriptor reads.
+        const counted = (target: Record<string, unknown>) => {
+          const reads = { count: 0 };
+          for (const key of Object.keys(phasePair))
+            Object.defineProperty(target, key, {
+              enumerable: true,
+              get() {
+                reads.count++;
+                return phasePair[key as keyof typeof phasePair];
+              },
+            });
+          const proxy = new Proxy(target, {
+            getOwnPropertyDescriptor(object, key) {
+              if (typeof key === "string" && key in phasePair) reads.count++;
+              return Reflect.getOwnPropertyDescriptor(object, key);
+            },
+          });
+          return { target, proxy, reads };
+        };
+
+        it.each([
+          "owner_timeout",
+          "owner_process_error",
+          "owner_stop_requested",
+          "owner_delivery_failed",
+          "owner_outcome_missing",
+        ])(
+          "never reads or keeps a phase pair beside the %s origin",
+          (origin) => {
+            const otherOrigin = {
+              ...timedOut,
+              desktop_stream_fence_origin: origin,
+            };
+            expect(
+              fenceKeys(sanitize({ ...coarse, ...otherOrigin, ...phasePair })),
+            ).toEqual(Object.keys(otherOrigin));
+            const carrier = counted({ ...otherOrigin });
+            const final = settle({ ...fenced, streamFence: carrier.proxy });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(otherOrigin),
+            );
+            const event = counted({ ...coarse, ...otherOrigin });
+            expect(
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties: event.target,
+              }).properties,
+            ).toEqual({ ...coarse, ...otherOrigin });
+            expect(carrier.reads.count + event.reads.count).toBe(0);
+          },
+        );
+
+        it.each<[string, unknown]>([
+          ["an unacknowledged terminal", false],
+          ["a missing acknowledgement", undefined],
+          ["a string acknowledgement", "true"],
+        ])(
+          "never reads or keeps the phase pair on %s",
+          (_case, terminalAcknowledged) => {
+            expect(
+              fenceKeys(
+                sanitize({
+                  ...coarse,
+                  terminalAcknowledged,
+                  ...timedOut,
+                  ...phasePair,
+                }),
+              ),
+            ).toEqual(Object.keys(timedOut));
+            const carrier = counted({ ...timedOut });
+            const final = settle({
+              ...fenced,
+              terminalAcknowledged,
+              streamFence: carrier.proxy,
+            });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(timedOut));
+            expect(carrier.reads.count).toBe(0);
+          },
+        );
+      });
+    });
+  });
 });
 
 describe("volume reduction and reliability counters", () => {
@@ -3488,6 +4793,40 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       ),
     ).toEqual([]);
     expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+  });
+
+  it("keeps the unknown class pair with measured identity, not a reported version", () => {
+    const unknownPair: DesktopInvocationUnknownDiagnostic = {
+      desktop_invocation_unknown_version: 1,
+      desktop_invocation_unknown_class: "lifecycle_page_replaced",
+    };
+    const coarse: DesktopInvocationRejectionDiagnostic = {
+      desktop_invocation_rejection_version: 1,
+      desktop_invocation_rejection_reason: "unknown",
+      desktop_invocation_rejection_adapter: "authorized_native",
+    };
+    telemetry.start({ connectionId: "connection", commandId: "unknown" })({
+      ...result,
+      terminalType: "error",
+      terminalExitCode: null,
+      terminalError: {
+        desktop_terminal_error_diagnostic_version: 1,
+        desktop_terminal_error_kind: "invocation_rejected",
+      },
+      invocationRejection: coarse,
+      invocationUnknown: unknownPair,
+    } as never);
+    const final = capture.mock.calls.at(-1)![0];
+    const sent = send(final.event, {
+      ...final.properties!,
+      // A caller-reported version neither replaces the measured identity nor
+      // affects the class.
+      native_app_version: "0.0.82",
+      message: "Desktop page was replaced before this command started",
+    });
+    expect(sent).toMatchObject({ ...coarse, ...unknownPair, ...measured });
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+    expect(JSON.stringify(sent)).not.toContain("page was replaced");
   });
 
   it("attributes unreceipted nonzero finals and unsampled summaries", () => {

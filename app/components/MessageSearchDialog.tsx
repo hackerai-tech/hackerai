@@ -66,7 +66,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const { user } = useAuth();
   const router = useRouter();
   const convex = useConvex();
-  const { setChatSidebarOpen, closeSidebar } = useGlobalStateActions();
+  const { setChatSidebarOpen, closeSidebar, markChatNavigationStarted } =
+    useGlobalStateActions();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -311,13 +312,15 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
       setChatSidebarOpen(false);
     }
 
+    markChatNavigationStarted();
     router.push(`/c/${chatId}`);
     onClose();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      onClose();
+  // During text composition, Escape belongs to the input method.
+  const handleEscapeKeyDown = (e: KeyboardEvent) => {
+    if (e.isComposing || e.keyCode === 229) {
+      e.preventDefault();
     }
   };
 
@@ -364,7 +367,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
   const truncateContent = (content: string, maxLength: number = 200) => {
     if (content.length <= maxLength) return content;
-    return content.slice(0, maxLength) + "...";
+    // Drop a surrogate pair that would straddle the cut instead of rendering half of it.
+    const end =
+      (content.codePointAt(maxLength - 1) ?? 0) > 0xffff
+        ? maxLength - 1
+        : maxLength;
+    return content.slice(0, end) + "...";
   };
 
   const getMatchIcon = () => {
@@ -378,7 +386,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent
         className="flex flex-col max-w-[680px] w-full h-[440px] p-0 gap-0"
-        onKeyDown={handleKeyDown}
+        onEscapeKeyDown={handleEscapeKeyDown}
         showCloseButton={false}
       >
         <DialogHeader className="border-b flex-shrink-0 p-0">

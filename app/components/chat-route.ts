@@ -1,3 +1,16 @@
+export const getRouteChatIdFromPathname = (
+  pathname: string | null | undefined,
+): string | null => {
+  const match = pathname?.match(/^\/c\/([^/?#]+)/);
+  const routeChatId = match?.[1];
+  if (!routeChatId) return null;
+  try {
+    return decodeURIComponent(routeChatId);
+  } catch {
+    return routeChatId;
+  }
+};
+
 type FinalizeNewChatRouteOptions = {
   chatId: string;
   isAbort: boolean;

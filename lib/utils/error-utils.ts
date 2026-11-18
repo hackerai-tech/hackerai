@@ -2,7 +2,10 @@ import {
   getOpenRouterBodyFailureContext,
   getOpenRouterStreamErrorContext,
 } from "@/lib/utils/openrouter-stream-error-context";
-import { isBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import {
+  isBrowserHandoffReadError,
+  isTrustedBrowserHandoffReadFailure,
+} from "@/lib/ai/browser-handoff/read-error";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 /** A canceled signal alone does not establish that an unrelated error is cancellation. */
@@ -600,6 +603,9 @@ export const isProviderStreamTerminatedError = (error: unknown): boolean =>
 export const isRetriableProviderStreamDisconnectError = (
   error: unknown,
 ): boolean => {
+  // A failed local browser safety read is not a provider disconnect, whatever
+  // its category or any origin string says; callers still fence other branches.
+  if (isTrustedBrowserHandoffReadFailure(error)) return false;
   const details = extractErrorDetails(error);
   const category = getProviderErrorCategory(details);
   // SSE errors use `code`, while HTTP errors use `statusCode`. Preserve the

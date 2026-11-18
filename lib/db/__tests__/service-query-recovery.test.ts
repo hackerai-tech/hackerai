@@ -208,37 +208,61 @@ it("recovers an actual SDK read after a reset, retaining scoped proofs and its r
   ).not.toContain(secret);
 });
 
-it("recovers a signed goal read while preserving owner and chat arguments", async () => {
-  const bodies: Record<string, unknown>[] = [];
-  globalThis.fetch = jest.fn(async (_url, init) => {
-    bodies.push(JSON.parse(String(init?.body)).args[0]);
-    if (bodies.length === 1) throw reset();
-    return new Response(
-      JSON.stringify({ status: "success", value: null, logLines: [] }),
-    );
+// Exact pre-response request timeout admitted only for the signed goal read.
+const timedOut = () =>
+  new TypeError("fetch failed", {
+    cause: Object.assign(new Error("connect timeout"), { code: "ETIMEDOUT" }),
   });
-  const client = createServiceConvexClient(deployment);
-  await expect(
-    runWithServiceQueryRecovery(() =>
-      client.query(makeFunctionReference<"query">("agentGoals:getForBackend"), {
-        serviceKey: secret,
-        userId: "owner",
-        chatId: "owned-chat",
-      }),
-    ),
-  ).resolves.toBeNull();
-  expect(bodies).toHaveLength(2);
-  for (const body of bodies) {
-    expect(body).toMatchObject({ userId: "owner", chatId: "owned-chat" });
-    expect(
-      await verifyServiceArgs(
-        { deployment, name: "agentGoals:getForBackend", type: "query" },
-        body,
-        secret,
+const goalReference = makeFunctionReference<"query">(
+  "agentGoals:getForBackend",
+);
+
+it.each([
+  ["a reset", reset],
+  ["a pre-response request timeout", timedOut],
+])(
+  "recovers a signed goal read after %s, preserving owner and chat arguments",
+  async (_label, failure) => {
+    const goal = { chatId: "owned-chat", status: "active", generation: 1 };
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = jest.fn(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)).args[0]);
+      if (bodies.length === 1) throw failure();
+      return new Response(
+        JSON.stringify({ status: "success", value: goal, logLines: [] }),
+      );
+    });
+    const client = createServiceConvexClient(deployment);
+    await expect(
+      runWithServiceQueryRecovery(() =>
+        client.query(goalReference, {
+          serviceKey: secret,
+          userId: "owner",
+          chatId: "owned-chat",
+        }),
       ),
-    ).toBe(true);
-  }
-});
+    ).resolves.toEqual(goal);
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      expect(body).toMatchObject({ userId: "owner", chatId: "owned-chat" });
+      expect(
+        await verifyServiceArgs(
+          { deployment, name: "agentGoals:getForBackend", type: "query" },
+          body,
+          secret,
+        ),
+      ).toBe(true);
+    }
+    expect(
+      jsonEvents()
+        .filter((entry) => entry.event === "convex_service_query_recovery")
+        .map((entry) => entry.outcome),
+    ).toEqual(["scheduled", "response_received"]);
+    expect(
+      JSON.stringify([...warn.mock.calls, ...info.mock.calls]),
+    ).not.toContain(secret);
+  },
+);
 
 const terminatedBody = () => {
   const response = new Response('{"status":"success","value":');
@@ -561,6 +585,143 @@ it.each(historyQueries)(
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   },
 );
+
+const withTimeoutCause = (code: string) =>
+  Object.assign(new Error("timeout"), { code });
+it.each([
+  ["chats:getChatById", "request", timedOut()],
+  ["userSuspensions:getActiveByUser", "request", timedOut()],
+  ["agentGoals:getForBackend", "HTTP 200 body", timedOut()],
+  [
+    "agentGoals:getForBackend",
+    "HTTP 200 body",
+    new TypeError("terminated", { cause: withTimeoutCause("ETIMEDOUT") }),
+  ],
+  [
+    "agentGoals:getForBackend",
+    "request",
+    new TypeError("terminated", { cause: withTimeoutCause("ETIMEDOUT") }),
+  ],
+  [
+    "agentGoals:getForBackend",
+    "request",
+    new Error("fetch failed", { cause: withTimeoutCause("ETIMEDOUT") }),
+  ],
+  [
+    "agentGoals:getForBackend",
+    "request",
+    Object.assign(new TypeError("fetch failed"), { code: "ETIMEDOUT" }),
+  ],
+  [
+    "agentGoals:getForBackend",
+    "request",
+    new TypeError("fetch failed", {
+      cause: withTimeoutCause("UND_ERR_CONNECT_TIMEOUT"),
+    }),
+  ],
+  [
+    "agentGoals:getForBackend",
+    "request",
+    new DOMException("The operation timed out.", "TimeoutError"),
+  ],
+] as const)(
+  "sends %s once after an ineligible %s timeout (%p)",
+  async (name, stage, failure) => {
+    globalThis.fetch = jest.fn(async () => {
+      if (stage === "request") throw failure;
+      const partial = new Response('{"status":"success","value":');
+      jest.spyOn(partial, "text").mockRejectedValue(failure);
+      return partial;
+    });
+    const client = createServiceConvexClient(deployment);
+    await expect(
+      runWithServiceQueryRecovery(() =>
+        client.query(makeFunctionReference<"query">(name), {
+          serviceKey: secret,
+          userId: "owner",
+          chatId: "owned-chat",
+        }),
+      ),
+    ).rejects.toBe(failure);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each(["mutation", "action", "query_at_ts"])(
+  "never replays a goal %s after a request timeout",
+  async (endpoint) => {
+    const failure = timedOut();
+    const transport = jest.fn(throwing(failure));
+    const fetch = createServiceFetch(deployment, transport);
+    await expect(
+      runWithServiceQueryRecovery(() =>
+        fetch(`${deployment}/api/${endpoint}`, {
+          method: "POST",
+          body: JSON.stringify({
+            path: "agentGoals:getForBackend",
+            format: "convex_encoded_json",
+            args: [{}],
+          }),
+        }),
+      ),
+    ).rejects.toBe(failure);
+    expect(transport).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("shares two extra reads between goal timeouts and other resets across nested scopes", async () => {
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    const { path } = JSON.parse(String(init?.body));
+    throw path === "agentGoals:getForBackend" ? timedOut() : reset();
+  });
+  const client = createServiceConvexClient(deployment);
+  // Three goal timeouts and one reset: without goal admission only the reset
+  // could recover (5 sends); a per-goal allowance would exceed 6.
+  const reads = [
+    ...["chat-a", "chat-b", "chat-c"].map(
+      (chatId) => [goalReference, chatId] as const,
+    ),
+    [reference, "none"] as const,
+  ];
+  const results = await runWithServiceQueryRecovery(() =>
+    Promise.allSettled(
+      reads.map(([query, chatId]) =>
+        runWithServiceQueryRecovery(() =>
+          client.query(query, { serviceKey: secret, userId: "owner", chatId }),
+        ),
+      ),
+    ),
+  );
+  expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+  const sends: Record<string, number> = {};
+  for (const [, init] of (globalThis.fetch as jest.Mock).mock.calls) {
+    const { path, args } = JSON.parse(String(init.body));
+    const key = `${path}:${args[0].chatId}`;
+    sends[key] = (sends[key] ?? 0) + 1;
+  }
+  expect(Object.keys(sends)).toHaveLength(4);
+  expect(Math.max(...Object.values(sends))).toBe(2);
+  // Each read still rejects with its own transport failure, not a substitute.
+  expect(
+    results.map((result) =>
+      result.status === "rejected"
+        ? [result.reason?.message, result.reason?.cause?.code]
+        : result.status,
+    ),
+  ).toEqual([
+    ["fetch failed", "ETIMEDOUT"],
+    ["fetch failed", "ETIMEDOUT"],
+    ["fetch failed", "ETIMEDOUT"],
+    ["fetch failed", "ECONNRESET"],
+  ]);
+  expect(
+    jsonEvents().filter(
+      (entry) =>
+        entry.event === "convex_service_query_recovery" &&
+        entry.outcome === "scheduled",
+    ),
+  ).toHaveLength(2);
+});
 
 it("honors cancellation during backoff before issuing another request", async () => {
   const abort = new AbortController();

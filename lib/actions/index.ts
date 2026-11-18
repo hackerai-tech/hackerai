@@ -16,6 +16,7 @@ import {
   isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
@@ -100,13 +101,9 @@ const unwrapQuotedTitle = (title: string): string => {
   return inner.includes(quote) ? title : inner;
 };
 
-const normalizeTitle = (title: unknown): string | undefined => {
-  if (typeof title !== "string") return undefined;
-
-  const normalized = unwrapQuotedTitle(
-    title.replace(/\s+/g, " ").trim(),
-  ).trim();
-
+/** Fold whitespace and apply the length limit to already-redacted text. */
+const finishRedactedTitle = (title: string): string | undefined => {
+  const normalized = title.replace(/\s+/g, " ").trim();
   if (!normalized) return undefined;
 
   let end = MAX_GENERATED_TITLE_LENGTH;
@@ -114,18 +111,31 @@ const normalizeTitle = (title: unknown): string | undefined => {
   return normalized.substring(0, end);
 };
 
-const fallbackTitleFromMessage = (message: string): string | undefined => {
+const normalizeGeneratedTitle = (title: unknown): string | undefined => {
+  if (typeof title !== "string") return undefined;
+  // Unwrap first: an unquoted redacted value would absorb the closing quote.
+  // Redact before folding or truncation can separate a value from its field.
+  const normalized = finishRedactedTitle(
+    redactSensitiveErrorMessage(unwrapQuotedTitle(title.trim())),
+  );
+  // A bare schema label carries no information about the chat.
+  return normalized?.toLowerCase() === "title" ? undefined : normalized;
+};
+
+const fallbackTitleFromRedactedMessage = (
+  message: string,
+): string | undefined => {
   const normalized = message.replace(/\s+/g, " ").trim();
   if (!normalized) return undefined;
 
-  return normalizeTitle(
-    normalized.split(" ").slice(0, FALLBACK_TITLE_WORD_LIMIT).join(" "),
+  return finishRedactedTitle(
+    unwrapQuotedTitle(
+      normalized.split(" ").slice(0, FALLBACK_TITLE_WORD_LIMIT).join(" "),
+    ),
   );
 };
 
-export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
-  message: string,
-) => `### Task:
+const buildTitlePromptFromRedactedMessage = (message: string) => `### Task:
 You are a helpful assistant that generates short, concise chat titles for an AI penetration testing assistant based on the first user message.
 
 ### Instructions:
@@ -134,6 +144,9 @@ You are a helpful assistant that generates short, concise chat titles for an AI 
 
 ### User Message:
 ${truncateMiddle(message, 8000)}`;
+
+export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (message: string) =>
+  buildTitlePromptFromRedactedMessage(redactSensitiveErrorMessage(message));
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
@@ -164,7 +177,10 @@ export const generateTitleFromUserMessage = async (
     return IMAGE_ONLY_CHAT_TITLE;
   }
 
-  const fallbackTitle = fallbackTitleFromMessage(textContent);
+  // Remove credentials the shared redactor recognizes (not every possible
+  // secret) once, before the prompt and fallback truncate the text.
+  const redactedText = redactSensitiveErrorMessage(textContent);
+  const fallbackTitle = fallbackTitleFromRedactedMessage(redactedText);
 
   try {
     const result = await generateText({
@@ -194,7 +210,7 @@ export const generateTitleFromUserMessage = async (
       messages: [
         {
           role: "user",
-          content: DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE(textContent),
+          content: buildTitlePromptFromRedactedMessage(redactedText),
         },
       ],
     });
@@ -204,7 +220,7 @@ export const generateTitleFromUserMessage = async (
       onCost?.(costDollars);
     }
 
-    return normalizeTitle(result.output?.title) ?? fallbackTitle;
+    return normalizeGeneratedTitle(result.output?.title) ?? fallbackTitle;
   } catch (error) {
     // SDK errors can contain prompts, provider responses, and credentials.
     // Keep fallback diagnostics limited to fixed categories/kinds and HTTP status.

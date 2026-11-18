@@ -36,6 +36,12 @@ export interface SandboxManager {
   stopOnLocalDisconnect?(
     onLost: (error: LocalConnectionLostError) => void,
   ): () => void;
+  /**
+   * Before a run completes, freshly verify its watched local connection.
+   * Resolves when no connection is watched; rejects with the run's
+   * LocalConnectionLostError on loss, or with the signal's reason.
+   */
+  confirmLocalConnection?(signal?: AbortSignal): Promise<void>;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;

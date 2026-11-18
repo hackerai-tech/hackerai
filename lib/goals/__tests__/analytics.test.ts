@@ -82,6 +82,31 @@ test("records pre-snapshot failures without inventing persisted state", async ()
   expect(capture.mock.calls[0][0].properties.state).toBeUndefined();
 });
 
+test("adds a versioned dispatcher phase only to dispatch_failed without changing its identity", async () => {
+  const failed = { ...context, goalGeneration: 4 };
+  await captureGoalLifecycle("dispatch_failed", failed);
+  await captureGoalLifecycle("dispatch_failed", {
+    ...failed,
+    dispatchPhase: "task_trigger",
+  });
+  await captureGoalLifecycle("schedule_failed", {
+    ...failed,
+    dispatchPhase: "task_trigger",
+  });
+  const [legacy, phased, scheduled] = capture.mock.calls.map(([e]) => e);
+  expect(legacy.properties).not.toHaveProperty("dispatch_phase");
+  expect(legacy.properties).not.toHaveProperty("dispatch_phase_version");
+  expect(phased.properties).toMatchObject({
+    action: "dispatch_failed",
+    dispatch_phase: "task_trigger",
+    dispatch_phase_version: 1,
+  });
+  expect(phased.event).toBe(legacy.event);
+  expect(phased.uuid).toBe(legacy.uuid);
+  expect(scheduled.properties).not.toHaveProperty("dispatch_phase");
+  expect(scheduled.properties).not.toHaveProperty("dispatch_phase_version");
+});
+
 test.each(["constructor", "capture", "shutdown-sync", "shutdown-async"])(
   "%s failure cannot fail goal execution",
   async (failure) => {

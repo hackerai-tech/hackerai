@@ -80,6 +80,7 @@ import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
 import { useSidebarTaskUnreadCompletion } from "@/app/hooks/useSidebarTaskUnreadCompletion";
 import type { SidebarInputReason } from "./sidebar-chat-status";
+import { getRouteChatIdFromPathname } from "./chat-route";
 
 interface ChatItemProps {
   id: string;
@@ -104,17 +105,6 @@ const CHAT_OPTION_DESTRUCTIVE_ITEM_CLASS =
   "h-9 gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-normal text-destructive focus:bg-destructive/10 focus:text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive";
 const CHAT_OPTIONS_SEPARATOR_CLASS = "mx-1 my-1 bg-border/80";
 const CHAT_OPTION_ICON_CLASS = "size-4 shrink-0 text-foreground/75";
-
-const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
-  const match = pathname?.match(/^\/c\/([^/?#]+)/);
-  const routeChatId = match?.[1];
-  if (!routeChatId) return null;
-  try {
-    return decodeURIComponent(routeChatId);
-  } catch {
-    return routeChatId;
-  }
-};
 
 const ChatItem: React.FC<ChatItemProps> = ({
   id,
@@ -154,6 +144,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
+    getChatNavigationRevision,
     optimisticChatId,
     setOptimisticChatId,
   } = useGlobalState();
@@ -293,6 +284,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleDeleteConfirm = async () => {
     if (isDeleting) return;
     setIsDeleting(true);
+    // Deletion can outlive this row and the route. A chat navigation started
+    // meanwhile advances this revision before its route commits.
+    const navigationRevision = getChatNavigationRevision();
 
     try {
       await confirmDeletion(
@@ -311,8 +305,13 @@ const ChatItem: React.FC<ChatItemProps> = ({
       // Remove draft from localStorage immediately after successful deletion
       removeDraft(id);
 
-      // If we're deleting the currently active chat, navigate to home
-      if (isCurrentlyActive) {
+      // Return home only if the deleted chat still owns navigation: it was
+      // active, the live route still shows it, and no newer navigation began.
+      if (
+        isCurrentlyActive &&
+        getRouteChatIdFromPathname(window.location.pathname) === id &&
+        getChatNavigationRevision() === navigationRevision
+      ) {
         initializeNewChat();
         router.push("/");
       }

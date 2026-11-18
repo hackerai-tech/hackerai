@@ -123,6 +123,31 @@ it("does not change an answer from number keys inside an open dialog", () => {
   expect(props.onSelect).not.toHaveBeenCalled();
 });
 
+it("leaves number keys to a focused select or menu", () => {
+  render(
+    <>
+      <UserInputQuestionPanel {...props} />
+      <select aria-label="Severity">
+        <option>1</option>
+        <option>2</option>
+      </select>
+      <div role="menu">
+        <div role="menuitem" tabIndex={-1}>
+          Rename
+        </div>
+      </div>
+    </>,
+  );
+  const select = screen.getByRole("combobox", { name: "Severity" });
+  const menuItem = screen.getByRole("menuitem", { name: "Rename" });
+  for (const target of [select, menuItem]) {
+    expect(fireEvent.keyDown(target, { key: "2" })).toBe(true);
+  }
+  expect(props.onSelect).not.toHaveBeenCalled();
+  expect(fireEvent.keyDown(document.body, { key: "2" })).toBe(false);
+  expect(props.onSelect).toHaveBeenCalledWith("b");
+});
+
 it("makes an overflowing question readable without changing the selected answer", () => {
   const scrollHeight = jest
     .spyOn(HTMLElement.prototype, "scrollHeight", "get")

@@ -716,7 +716,7 @@ it("settles a displaced browser owner as cancellation without executing its queu
 });
 
 it.each(["waitForAgentControl", "getExitNotes"] as const)(
-  "retains %s read provenance without changing the transport failure or retry eligibility",
+  "retains the identical %s transport failure while excluding provider recovery",
   async (readMethod) => {
     const { sessions } = await owner();
     const failure = Object.freeze(
@@ -726,7 +726,7 @@ it.each(["waitForAgentControl", "getExitNotes"] as const)(
         }),
       }),
     );
-    const eligibleBefore = isRetriableProviderStreamDisconnectError(failure);
+    expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
     mockQuery.mockRejectedValue(failure);
     await expect(sessions[readMethod]()).rejects.toBe(failure);
     expect(mockQuery).toHaveBeenCalledTimes(1);
@@ -734,9 +734,7 @@ it.each(["waitForAgentControl", "getExitNotes"] as const)(
       errorOrigin: "browser_handoff_read",
       errorCode: "ECONNRESET",
     });
-    expect(isRetriableProviderStreamDisconnectError(failure)).toBe(
-      eligibleBefore,
-    );
+    expect(isRetriableProviderStreamDisconnectError(failure)).toBe(false);
     const terminal = wrapProviderTerminalError(failure, {
       model: "previous/model",
       openRouterMetadata: {

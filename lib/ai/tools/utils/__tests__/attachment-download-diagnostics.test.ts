@@ -6,6 +6,7 @@ import {
   recordAttachmentCommandReceiver,
   recordAttachmentDownloadRoute,
   recordAttachmentCommandSetupAttempt,
+  readAttachmentCommandReceiverClientError,
   type AttachmentCommandReceiver,
 } from "../attachment-download-diagnostics";
 
@@ -1439,4 +1440,294 @@ it("reports only the final rejection's receiver context when an earlier failure 
     attachment_command_receiver_reason: "deadline",
     attachment_command_setup_attempt: 2,
   });
+});
+
+const clientErrorKeys = [
+  "attachment_command_receiver_client_error_version",
+  "attachment_command_receiver_client_error_type",
+  "attachment_command_receiver_client_error_code",
+  "attachment_command_receiver_client_error_temporary",
+  "attachment_command_receiver_client_error_connection_limit_predicate",
+];
+const clientErrorFields = (error: unknown) =>
+  Object.fromEntries(
+    Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+      ([key]) => clientErrorKeys.includes(key),
+    ),
+  );
+const clientErrorReceiver: AttachmentCommandReceiver = {
+  ...deadlineReceiver,
+  reason: "client_error",
+  subscribedObserved: false,
+  publicationStarted: false,
+  publishCompleted: false,
+};
+
+it.each([
+  [
+    "a non-temporary connect rejection",
+    { type: "connect", error: { code: 3500, temporary: false } },
+    { type: "connect", code: "other", temporary: false },
+  ],
+  [
+    "a temporary transport failure",
+    { type: "transport", error: { code: 2, temporary: true } },
+    { type: "transport", code: 2, temporary: true },
+  ],
+  [
+    "the public connection-limit code",
+    { type: "connect", error: { code: 4503 } },
+    { type: "connect", code: 4503, temporary: "unavailable" },
+  ],
+  [
+    "the lowest code",
+    { type: "connect", error: { code: 0 } },
+    { type: "connect", code: 0 },
+  ],
+  [
+    "the highest SDK code",
+    { type: "connect", error: { code: 99 } },
+    { type: "connect", code: 99 },
+  ],
+  ["the first server code", { error: { code: 100 } }, { code: "other" }],
+  ["a negative code", { error: { code: -1 } }, { code: "other" }],
+  ["a fractional code", { error: { code: 1.5 } }, { code: "other" }],
+  ["a NaN code", { error: { code: NaN } }, { code: "other" }],
+  ["an infinite code", { error: { code: Infinity } }, { code: "other" }],
+  ["a numeric string code", { error: { code: "4503" } }, {}],
+  ["an object code", { error: { code: { valueOf: () => 4503 } } }, {}],
+  ["another SDK error type", { type: "subscribe" }, { type: "other" }],
+  ["a numeric type", { type: 7 }, {}],
+  ["a string temporary flag", { error: { temporary: "true" } }, {}],
+  ["a missing error", { type: "connect" }, { type: "connect" }],
+  [
+    "a primitive error",
+    { type: "transport", error: "PRIVATE" },
+    { type: "transport" },
+  ],
+  ["an absent context", undefined, {}],
+  ["a primitive context", "PRIVATE", {}],
+])("snapshots only closed SDK fields for %s", (_name, ctx, expected) => {
+  expect(readAttachmentCommandReceiverClientError(ctx, false)).toEqual({
+    type: "unavailable",
+    code: "unavailable",
+    temporary: "unavailable",
+    connectionLimitPredicate: false,
+    ...expected,
+  });
+});
+
+it("records the supplied connection-limit predicate without re-deriving it from the code", () => {
+  // The receiver's computed predicate is the single source; the reader never
+  // recomputes it from the code (or reads the message).
+  expect(
+    readAttachmentCommandReceiverClientError(
+      { type: "connect", error: { code: 3501, temporary: false } },
+      true,
+    ),
+  ).toMatchObject({ code: "other", connectionLimitPredicate: true });
+  expect(
+    readAttachmentCommandReceiverClientError(
+      { type: "connect", error: { code: 4503 } },
+      false,
+    ),
+  ).toMatchObject({ code: 4503, connectionLimitPredicate: false });
+});
+
+it("reads only own data fields of the SDK context without invoking getters or traps", () => {
+  const getter = jest.fn(() => {
+    throw new Error("PRIVATE_GETTER");
+  });
+  const error = { message: "PRIVATE_MESSAGE" };
+  for (const key of ["code", "temporary", "message"])
+    Object.defineProperty(error, key, { enumerable: true, get: getter });
+  const ctx = Object.defineProperty({ error }, "type", {
+    enumerable: true,
+    get: getter,
+  });
+  // Inherited values are not the SDK's own context.
+  const inherited = Object.create({ type: "connect", error: { code: 1 } });
+  const trap = jest.fn(() => {
+    throw new Error("PRIVATE_TRAP");
+  });
+  const hostile = new Proxy(
+    {},
+    { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, has: trap },
+  );
+  for (const value of [ctx, inherited, hostile])
+    expect(readAttachmentCommandReceiverClientError(value, true)).toEqual({
+      type: "unavailable",
+      code: "unavailable",
+      temporary: "unavailable",
+      connectionLimitPredicate: true,
+    });
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it("binds a complete closed client-error group only to a client_error receiver", () => {
+  const error = Object.freeze(new Error("PRIVATE_ORIGINAL"));
+  recordAttachmentCommandReceiver(error, {
+    ...clientErrorReceiver,
+    clientError: {
+      type: "connect",
+      code: 4503,
+      temporary: false,
+      connectionLimitPredicate: true,
+    },
+  });
+  expect(getAttachmentDownloadFailureContext(error)).toEqual({
+    attachment_command_receiver_version: 1,
+    attachment_command_receiver_reason: "client_error",
+    attachment_command_receiver_connected_observed: true,
+    attachment_command_receiver_subscribed_observed: false,
+    attachment_command_receiver_publication_started: false,
+    attachment_command_receiver_publish_completed: false,
+    attachment_command_receiver_first_message_observed: false,
+    attachment_command_receiver_client_error_version: 1,
+    attachment_command_receiver_client_error_type: "connect",
+    attachment_command_receiver_client_error_code: 4503,
+    attachment_command_receiver_client_error_temporary: false,
+    attachment_command_receiver_client_error_connection_limit_predicate: true,
+  });
+  expect(Object.keys(error)).toEqual([]);
+
+  const other = new Error("PRIVATE_OTHER");
+  recordAttachmentCommandReceiver(other, {
+    ...deadlineReceiver,
+    clientError: {
+      type: "transport",
+      code: 1,
+      temporary: true,
+      connectionLimitPredicate: false,
+    },
+  });
+  expect(clientErrorFields(other)).toEqual({});
+  expect(getAttachmentDownloadFailureContext(other)).toMatchObject({
+    attachment_command_receiver_reason: "deadline",
+  });
+});
+
+it.each([
+  ["an unknown type", { type: "PRIVATE" }],
+  ["an unlisted code", { code: 4504 }],
+  ["a numeric string code", { code: "4503" }],
+  ["a non-finite code", { code: Infinity }],
+  ["a string temporary flag", { temporary: "false" }],
+  ["a string predicate", { connectionLimitPredicate: "true" }],
+  ["a missing predicate", { connectionLimitPredicate: undefined }],
+])("omits the whole client-error group for %s", (_name, change) => {
+  const error = new Error("PRIVATE_ORIGINAL");
+  recordAttachmentCommandReceiver(error, {
+    ...clientErrorReceiver,
+    clientError: {
+      type: "connect",
+      code: 3,
+      temporary: true,
+      connectionLimitPredicate: false,
+      ...(change as object),
+    } as never,
+  });
+  expect(clientErrorFields(error)).toEqual({});
+  // The existing receiver fields are still recorded.
+  expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+    attachment_command_receiver_version: 1,
+    attachment_command_receiver_reason: "client_error",
+  });
+  expect(
+    JSON.stringify(getAttachmentDownloadFailureContext(error)),
+  ).not.toMatch(/PRIVATE/);
+});
+
+it("validates the client-error group from own data fields without invoking getters", () => {
+  const getter = jest.fn(() => "connect");
+  const clientError = Object.defineProperty(
+    { code: 1, temporary: true, connectionLimitPredicate: false },
+    "type",
+    { enumerable: true, get: getter },
+  );
+  const error = new Error();
+  recordAttachmentCommandReceiver(error, {
+    ...clientErrorReceiver,
+    clientError: clientError as never,
+  });
+  expect(getter).not.toHaveBeenCalled();
+  expect(clientErrorFields(error)).toEqual({});
+  expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+    attachment_command_receiver_reason: "client_error",
+  });
+});
+
+it("clears an earlier client-error group when a reused rejection is recorded again", () => {
+  const reused = Object.freeze(new Error("PRIVATE_REUSED"));
+  const group = {
+    type: "transport",
+    code: 2,
+    temporary: true,
+    connectionLimitPredicate: false,
+  } as const;
+  recordAttachmentCommandReceiver(reused, {
+    ...clientErrorReceiver,
+    clientError: group,
+  });
+  recordAttachmentCommandSetupAttempt(reused, 2);
+  const copy = copyAttachmentDownloadFailureContext(reused, new Error());
+  const expected = {
+    attachment_command_receiver_client_error_version: 1,
+    attachment_command_receiver_client_error_type: "transport",
+    attachment_command_receiver_client_error_code: 2,
+    attachment_command_receiver_client_error_temporary: true,
+    attachment_command_receiver_client_error_connection_limit_predicate: false,
+  };
+  expect(clientErrorFields(copy)).toEqual(expected);
+
+  // A later reason on the same rejection never keeps the earlier detail.
+  recordAttachmentCommandReceiver(reused, deadlineReceiver);
+  expect(clientErrorFields(reused)).toEqual({});
+  expect(getAttachmentDownloadFailureContext(reused)).toMatchObject({
+    attachment_command_receiver_reason: "deadline",
+    attachment_command_setup_attempt: 2,
+  });
+
+  // An invalid replacement group does not partially inherit the earlier one.
+  recordAttachmentCommandReceiver(reused, {
+    ...clientErrorReceiver,
+    clientError: group,
+  });
+  recordAttachmentCommandReceiver(reused, {
+    ...clientErrorReceiver,
+    clientError: { ...group, code: 4504 } as never,
+  });
+  expect(clientErrorFields(reused)).toEqual({});
+
+  // The copy keeps its own complete group.
+  expect(clientErrorFields(copy)).toEqual(expected);
+});
+
+it("retains the client-error group through later route and boundary records but not a result overwrite", () => {
+  const error = new Error("PRIVATE_ORIGINAL");
+  recordAttachmentCommandReceiver(error, {
+    ...clientErrorReceiver,
+    clientError: {
+      type: "connect",
+      code: "other",
+      temporary: "unavailable",
+      connectionLimitPredicate: true,
+    },
+  });
+  recordAttachmentDownloadBoundary(error, {
+    phase: "http_client",
+    attempt: 0,
+    resultState: "not_observed",
+  });
+  recordAttachmentDownloadRoute(error, "native_method");
+  expect(clientErrorFields(error)).toEqual({
+    attachment_command_receiver_client_error_version: 1,
+    attachment_command_receiver_client_error_type: "connect",
+    attachment_command_receiver_client_error_code: "other",
+    attachment_command_receiver_client_error_temporary: "unavailable",
+    attachment_command_receiver_client_error_connection_limit_predicate: true,
+  });
+  // A returned-result failure replaces earlier rejection context entirely.
+  recordAttachmentDownloadFailure(error, input);
+  expect(clientErrorFields(error)).toEqual({});
 });

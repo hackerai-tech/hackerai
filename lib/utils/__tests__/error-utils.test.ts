@@ -1,4 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import {
   isCancellationError,
   classifyProviderOverflowError,
@@ -819,6 +820,64 @@ describe("SSE upstream abort recovery", () => {
     expect(
       extractErrorDetails(error("messages[1].private_payload")),
     ).not.toHaveProperty("providerErrorParam");
+  });
+});
+
+describe("trusted browser read failures are not provider disconnects", () => {
+  const disconnect = (cause: unknown = new Error("read ECONNRESET")) =>
+    Object.assign(new TypeError("fetch failed"), { cause });
+  const brand = <T extends object>(error: T): T => {
+    try {
+      rethrowBrowserHandoffReadError(error);
+    } catch {
+      // Branded by identity, exactly as the browser safety read does.
+    }
+    return error;
+  };
+  const auxiliaryTimeout = () =>
+    Object.assign(new Error("Image analysis timed out after 20000ms"), {
+      name: "AuxiliaryVisionTimeoutError",
+      origin: "auxiliary_vision",
+    });
+
+  it("declines direct, wrapped and retry-history local reads without reclassifying them", () => {
+    const local = Object.freeze(brand(disconnect()));
+    for (const failure of [
+      local,
+      new Error("terminated", { cause: local }),
+      retryError([local]),
+    ]) {
+      expect(isRetriableProviderStreamDisconnectError(failure)).toBe(false);
+    }
+    expect(isRetriableProviderStreamDisconnectError(disconnect())).toBe(true);
+    expect(getProviderErrorCategory(extractErrorDetails(local))).toBe(
+      "stream_terminated",
+    );
+    expect(Object.isFrozen(local)).toBe(true);
+  });
+
+  it("declines a local read whose diagnostic origin is masked by a nested auxiliary wrapper", () => {
+    const masked = brand(disconnect(auxiliaryTimeout()));
+    // The computed origin is diagnostic only and names the wrong owner here.
+    expect(extractErrorDetails(masked).errorOrigin).toBe("auxiliary_vision");
+    expect(isRetriableProviderStreamDisconnectError(masked)).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(disconnect(auxiliaryTimeout())),
+    ).toBe(true);
+  });
+
+  it("keeps spoofed origin strings on genuine provider failures retriable", () => {
+    for (const spoofed of [
+      {
+        code: 503,
+        message: "terminated",
+        origin: "browser_handoff_read",
+        errorOrigin: "browser_handoff_read",
+      },
+      Object.assign(disconnect(), { origin: "browser_handoff_read" }),
+    ]) {
+      expect(isRetriableProviderStreamDisconnectError(spoofed)).toBe(true);
+    }
   });
 });
 

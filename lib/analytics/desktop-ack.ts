@@ -37,9 +37,13 @@ import {
   readDesktopInvocationAdmissionDiagnostic,
   readDesktopInvocationRejectionDiagnostic,
   readDesktopInvocationSpawnHintDiagnostic,
+  readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -81,6 +85,14 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** The same message's OS code hint; only joined to a valid `spawn_failed`
    * rejection class from a selected native command set. */
   invocationSpawnHint?: DesktopInvocationSpawnHintDiagnostic;
+  /** The same message's closed unknown class; only joined to a valid
+   * `unknown` rejection class from the authorized command set. */
+  invocationUnknown?: DesktopInvocationUnknownDiagnostic;
+  /** The native stream fence's first origin; only joined to a valid
+   * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
+   * failure is reported only for `owner_stop_requested` on an acknowledged
+   * terminal. */
+  streamFence?: DesktopStreamFenceDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -358,6 +370,22 @@ export class DesktopAckTelemetry {
         result.invocationSpawnHint,
         invocationRejection,
       );
+      const invocationUnknown = readDesktopInvocationUnknownDiagnostic(
+        result.invocationUnknown,
+        invocationRejection,
+      );
+      // Its cleanup pair joins only an `owner_stop_requested` origin on an
+      // acknowledged terminal, its taskkill group only that pair's
+      // `tree_unconfirmed` failure, and its root report pair only that
+      // group's code; its owner phase pair joins only a `cancel_wait_timeout`
+      // origin on an acknowledged terminal; otherwise the prior pairs alone,
+      // as before.
+      const streamFence = readDesktopStreamFenceDiagnostic(
+        result.streamFence,
+        invocationRejection,
+        invocationUnknown,
+        result.terminalAcknowledged === true,
+      );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -403,6 +431,8 @@ export class DesktopAckTelemetry {
           ...invocationRejection,
           ...invocationAdmission,
           ...invocationSpawnHint,
+          ...invocationUnknown,
+          ...streamFence,
         },
         dedupeKey,
       );

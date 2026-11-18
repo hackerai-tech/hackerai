@@ -7,6 +7,7 @@ use std::thread;
 use tauri::ipc::Channel;
 
 use crate::platform;
+use crate::stream_utf8::Utf8Stream;
 
 pub(crate) type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -310,26 +311,28 @@ fn supervise_pty(
     let reader_output_closed = output_closed.clone();
     let reader_shutdown = shutdown.clone();
     let reader_thread = thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            if reader_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
+        let deliver = |chunk: String| {
+            let closed = reader_output_closed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if *closed {
+                return false;
             }
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let closed = reader_output_closed
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if *closed {
-                        break;
-                    }
-                    if output_channel.send(chunk).is_err() {
-                        reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-                        break;
-                    }
-                }
+            if output_channel.send(chunk).is_err() {
+                reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            true
+        };
+        let mut buf = [0u8; 4096];
+        let mut text = Utf8Stream::default();
+        let reached_eof = loop {
+            if reader_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                break false;
+            }
+            let chunk = match reader.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(n) => text.decode(&buf[..n]),
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::Interrupted {
                         continue;
@@ -342,12 +345,23 @@ fn supervise_pty(
                     // Unix PTYs can report EIO instead of EOF after the slave closes.
                     #[cfg(unix)]
                     if e.raw_os_error() == Some(libc::EIO) {
-                        break;
+                        break true;
                     }
                     log::warn!("PTY reader failed: {}", e.kind());
                     reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-                    break;
+                    break false;
                 }
+            };
+            if let Some(chunk) = chunk {
+                if !deliver(chunk) {
+                    break false;
+                }
+            }
+        };
+        // Output ended mid-scalar: report it like any other malformed bytes.
+        if reached_eof {
+            if let Some(tail) = text.finish() {
+                deliver(tail);
             }
         }
     });
@@ -487,6 +501,55 @@ mod tests {
             // Cleanup after natural completion is idempotent.
             manager.kill("completion").unwrap();
         }
+    }
+
+    #[test]
+    fn interactive_output_preserves_utf8_across_reads() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        // The shell writes the first two bytes of a euro sign, then blocks until
+        // the test has received the printable prefix, so the continuation byte
+        // can only arrive in a later read. Output ends on a truncated scalar.
+        manager
+            .create(
+                "utf8".into(),
+                "stty -echo && printf 'pty:\\342\\202' && read -r reply && \
+                 printf '\\254|tail:\\342\\202'"
+                    .into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        let mut output = String::new();
+        let mut released = false;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let exit_code = loop {
+            let data = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(data) => data,
+                Err(error) => {
+                    manager.stop_all();
+                    panic!("PTY did not complete: {error}");
+                }
+            };
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                if value["type"] == "exit" {
+                    break value["exitCode"].as_i64().unwrap();
+                }
+            }
+            assert!(!data.is_empty(), "empty data event");
+            output.push_str(&data);
+            if !released && output.contains("pty:") {
+                released = true;
+                PtyManager::write_input(manager.input_writer("utf8").unwrap(), "go\n").unwrap();
+            }
+        };
+        assert_eq!(exit_code, 0);
+        // The truncated scalar at natural EOF is reported once, before exit.
+        assert_eq!(output, "pty:€|tail:\u{FFFD}");
+        assert!(manager.sessions.lock().unwrap().is_empty());
     }
 
     #[test]

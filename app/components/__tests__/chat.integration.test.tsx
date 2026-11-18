@@ -17,11 +17,15 @@ import {
 } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import { readFileSync } from "node:fs";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
 import { toast } from "sonner";
 
 jest.mock("uuid", () => ({
-  v4: () => "queued-message-id",
+  v4: jest.fn(() => "queued-message-id"),
 }));
 
 // ===== IMPORTANT: Mock all dependencies BEFORE importing Chat =====
@@ -149,8 +153,10 @@ jest.mock("@ai-sdk/react", () => ({
 
 jest.mock("next/navigation", () => ({
   useParams: jest.fn(() => mockRouteParams),
+  // Next.js integrates native history updates into usePathname, while a
+  // restored or replaced home-page tree keeps its original params.
   usePathname: jest.fn(() =>
-    mockRouteParams.id ? `/c/${mockRouteParams.id}` : "/",
+    mockRouteParams.id ? `/c/${mockRouteParams.id}` : window.location.pathname,
   ),
   useRouter: jest.fn(() => ({
     push: mockRouterPush,
@@ -354,7 +360,11 @@ jest.mock("../ComputerSidebar", () => ({
 
 jest.mock("../ChatHeader", () => ({
   __esModule: true,
-  default: () => <div data-testid="chat-header">Chat Header</div>,
+  default: ({ chatTitle }: { chatTitle?: string | null }) => (
+    <div data-testid="chat-header" data-title={chatTitle ?? ""}>
+      Chat Header
+    </div>
+  ),
 }));
 
 jest.mock("../Sidebar", () => ({
@@ -517,10 +527,15 @@ const QueueEditingHarness = ({
 
 const ChatTitleHandoffHarness = ({
   persistedTitle,
+  titleManuallyEdited,
 }: {
   persistedTitle: string;
+  titleManuallyEdited?: boolean;
 }) => {
-  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(persistedTitle);
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
+    persistedTitle,
+    titleManuallyEdited,
+  );
 
   return (
     <>
@@ -971,6 +986,34 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("chat-title")).toHaveTextContent(
         "Renamed title",
       );
+    });
+
+    it("shows a manual rename over a pending or late streamed title", () => {
+      const { rerender } = render(
+        <ChatTitleHandoffHarness persistedTitle="New Chat" />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      // The rename keeps the placeholder text, so the persisted string alone
+      // does not change; only the manual marker does.
+      rerender(
+        <ChatTitleHandoffHarness
+          persistedTitle="New Chat"
+          titleManuallyEdited
+        />,
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent("New Chat");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent("New Chat");
     });
 
     it("should render new chat with welcome message", () => {
@@ -2362,6 +2405,48 @@ describe("Chat Component Integration", () => {
       });
     });
 
+    it("keeps the workspace selection refusal structured for the composer", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      mockSendMessage.mockImplementationOnce(async () => {
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          onError: (error: Error) => void;
+        };
+        const {
+          CloudWorkspaceSelectionRequiredError,
+        } = require("@/lib/ai/tools/utils/cloud-workspace-selection-error");
+        options.onError(new CloudWorkspaceSelectionRequiredError());
+      });
+      const toastError = jest.spyOn(toast, "error");
+      let rejection: unknown;
+      try {
+        await act(async () => {
+          rejection = await mockChatHandlerArgs.sendGoalMessage!({
+            text: "Map the lab",
+          }).catch((error: unknown) => error);
+        });
+        // The composer needs the refusal metadata to offer the selector.
+        expect(isGoalWorkspaceSelectionRefusal(rejection)).toBe(true);
+        expect(rejection).not.toBeInstanceOf(GoalSubmissionUnconfirmedError);
+        expect(toastError).not.toHaveBeenCalled();
+        // A confirmed refusal removes the unsaved optimistic bubble.
+        const update = mockSetMessages.mock.calls.at(-1)![0] as (
+          messages: { id: string }[],
+        ) => { id: string }[];
+        const payload = (
+          mockSendMessage.mock.calls.at(-1) as unknown as [{ id: string }]
+        )[0];
+        expect(update([{ id: payload.id }])).toEqual([]);
+      } finally {
+        toastError.mockRestore();
+      }
+    });
+
     it("releases a rejected goal submission when its persistence lookup cannot reconnect", async () => {
       jest.useFakeTimers();
       try {
@@ -2756,6 +2841,212 @@ describe("Chat Component Integration", () => {
           "Queued: 1",
         );
       });
+    });
+  });
+
+  describe("History route ownership", () => {
+    const { useAutoResume: mockUseAutoResume } = jest.requireMock<{
+      useAutoResume: jest.Mock;
+    }>("../../hooks/useAutoResume");
+    const lastAutoResume = () =>
+      mockUseAutoResume.mock.calls.at(-1)![0] as {
+        chatId: string;
+        autoResume: boolean;
+      };
+
+    it("loads saved chats when Back/Forward restores the home route tree at their URLs", async () => {
+      // Back/Forward restores the tree captured before replaceState saved the
+      // chat: HomePageClient renders without a dynamic id in its params.
+      window.history.replaceState({}, "", "/c/chat-a");
+      mockRestoredChat = { id: "chat-a", default_model_slug: "ask" };
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      expect(mockRouteParams.id).toBeUndefined();
+      expect(mockChatHandlerArgs.chatId).toBe("chat-a");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+      expect(mockUseChat.mock.calls.at(-1)![0]).toMatchObject({
+        id: "chat-a",
+      });
+      expect(lastAutoResume()).toMatchObject({
+        chatId: "chat-a",
+        autoResume: true,
+      });
+      expect(mockStop).not.toHaveBeenCalled();
+
+      // Another history entry for a distinct saved chat keeps the same tree.
+      window.history.pushState({}, "", "/c/chat-b");
+      mockRestoredChat = { id: "chat-b", default_model_slug: "ask" };
+      await act(async () => rerender(view()));
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      expect(mockChatHandlerArgs.chatId).toBe("chat-b");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+      expect(lastAutoResume()).toMatchObject({
+        chatId: "chat-b",
+        autoResume: true,
+      });
+
+      window.history.pushState({}, "", "/");
+      mockRestoredChat = undefined;
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "ready" });
+      await act(async () => rerender(view()));
+      expect(mockChatHandlerArgs.chatId).toBe("queued-message-id");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+      expect(lastAutoResume()).toMatchObject({ autoResume: false });
+    });
+
+    it("keeps the mounted Ask stream, title, workspace and draft when its new chat gains the saved URL", async () => {
+      mockDesktopState = { chatMode: "ask" };
+      global.fetch = jest
+        .fn<typeof fetch>()
+        .mockResolvedValue({ ok: true } as Response);
+      const view = () => (
+        <TestWrapper>
+          <RecoveryComputerPicker />
+          <SelectedComputerProbe />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Use Local QA" }));
+      expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+        "desktop",
+      );
+      const draft = screen.getByRole("textbox", { name: "Test draft" });
+      fireEvent.change(draft, { target: { value: "follow-up draft" } });
+      const id = mockChatHandlerArgs.chatId;
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+      await act(async () => rerender(view()));
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      act(() =>
+        options.onData({
+          type: "data-title",
+          data: { chatTitle: "Streamed title" },
+        }),
+      );
+      expect(screen.getByTestId("chat-header")).toHaveAttribute(
+        "data-title",
+        "Streamed title",
+      );
+
+      await act(async () => {
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ chatId: id, messages: [] }),
+        });
+      });
+      await act(async () => rerender(view()));
+
+      expect(window.location.pathname).toBe(`/c/${id}`);
+      expect(mockChatHandlerArgs.chatId).toBe(id);
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+      expect(mockUseChat.mock.calls.at(-1)![0]).toMatchObject({ id });
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(lastAutoResume()).toMatchObject({ chatId: id, autoResume: false });
+      expect(screen.getByTestId("chat-header")).toHaveAttribute(
+        "data-title",
+        "Streamed title",
+      );
+      expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+        "desktop",
+      );
+      // The same composer element still owns the in-progress draft.
+      expect(screen.getByRole("textbox", { name: "Test draft" })).toBe(draft);
+      expect(draft).toHaveValue("follow-up draft");
+    });
+
+    it("keeps a fresh streaming chat when its home navigation commits", async () => {
+      const uuid = jest.requireMock<{ v4: jest.Mock }>("uuid");
+      let nextId = 0;
+      uuid.v4.mockImplementation(() => `generated-${++nextId}`);
+      try {
+        mockDesktopState = { chatMode: "ask" };
+        global.fetch = jest
+          .fn<typeof fetch>()
+          .mockResolvedValue({ ok: true } as Response);
+        const view = () => (
+          <TestWrapper>
+            <SelectedComputerProbe />
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        const savedId = mockChatHandlerArgs.chatId;
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          transport: {
+            fetch: (url: string, init: RequestInit) => Promise<Response>;
+          };
+        };
+        await act(async () => {
+          await options.transport.fetch("/api/chat", {
+            method: "POST",
+            body: JSON.stringify({ chatId: savedId, messages: [] }),
+          });
+        });
+        expect(window.location.pathname).toBe(`/c/${savedId}`);
+
+        // New chat resets local state before its router navigation commits.
+        fireEvent.click(
+          screen.getByRole("button", { name: "Start fresh chat" }),
+        );
+        await act(async () => rerender(view()));
+        const freshId = mockChatHandlerArgs.chatId;
+        expect(freshId).not.toBe(savedId);
+        expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+        expect(window.location.pathname).toBe(`/c/${savedId}`);
+
+        mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+        await act(async () => rerender(view()));
+        window.history.pushState({}, "", "/");
+        await act(async () => rerender(view()));
+        expect(mockChatHandlerArgs.chatId).toBe(freshId);
+        expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+        expect(mockStop).not.toHaveBeenCalled();
+      } finally {
+        uuid.v4.mockImplementation(() => "queued-message-id");
+      }
+    });
+  });
+
+  describe("Chat route transition rendering", () => {
+    // Keep these source checks with the integration suite so related-test
+    // selection includes them when chat.tsx changes.
+    const chatSource = readFileSync(require.resolve("../chat"), "utf8");
+
+    it("updates route ownership and replaces stale messages in layout effects", () => {
+      const layoutEffects = Array.from(
+        chatSource.matchAll(
+          /^  useLayoutEffect\(\(\) => \{\n([\s\S]*?)^  \},/gm,
+        ),
+        ([, body]) => body,
+      );
+
+      expect(layoutEffects).toContainEqual(
+        expect.stringMatching(/\brouteChatId\b[\s\S]*\bsetChatId\(/),
+      );
+      expect(layoutEffects).toContainEqual(
+        expect.stringMatching(
+          /\bmessagesChatIdRef\b[\s\S]*\bsetMessages\(serverMessages\)/,
+        ),
+      );
+    });
+
+    it("shows an explicit loading state instead of hiding stale messages", () => {
+      expect(chatSource).toContain('data-testid="chat-timeline-loading"');
+      expect(chatSource).toContain("Loading task…");
+      expect(chatSource).toMatch(/<Messages\s+key=\{chatId\}/);
+      expect(chatSource).not.toMatch(
+        /isInitialExistingChatLoad\s*\?\s*"opacity-0"/,
+      );
     });
   });
 

@@ -46,7 +46,8 @@ import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-sub
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { createProviderErrorDeferral } from "@/lib/chat/provider-error-stream";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -157,6 +158,7 @@ import {
   replaceUsageSettlementState,
   shouldSettleUsageMidRun,
   reservePaidDailyFreeAllowanceRequest,
+  verifyPaidDailyFreeAllowanceReservationOwnership,
   type PaidDailyFreeAllowanceReservation,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
@@ -3012,15 +3014,42 @@ export const agentLongTask = task({
                   currentlyAllowedModel,
                   currentEntitlement.subscription,
                 );
-              await checkRateLimitCapacity(
-                userId,
-                mode,
-                currentEntitlement.subscription,
-                currentModelExtraUsageConfig,
-                selectedModel,
-                currentEntitlement.organizationId,
-                freeQuotaSubject,
-              );
+              const admittedAllowanceReservation =
+                paidDailyFreeAllowanceReservation;
+              if (admittedAllowanceReservation) {
+                // Included capacity was already exhausted when this run was
+                // admitted; it continues only on its original lease and cap.
+                const ownership =
+                  await verifyPaidDailyFreeAllowanceReservationOwnership(
+                    userId,
+                    admittedAllowanceReservation,
+                  );
+                if (!ownership.owned) {
+                  triggerLogger.warn(
+                    "[agent-long] daily allowance lease unavailable after user wait",
+                    {
+                      chatId,
+                      userId,
+                      runId: ctx.run.id,
+                      reason: ownership.reason,
+                    },
+                  );
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The daily allowance for this run is no longer available.",
+                  );
+                }
+              } else {
+                await checkRateLimitCapacity(
+                  userId,
+                  mode,
+                  currentEntitlement.subscription,
+                  currentModelExtraUsageConfig,
+                  selectedModel,
+                  currentEntitlement.organizationId,
+                  freeQuotaSubject,
+                );
+              }
               if (currentEntitlement.subscription === "free") {
                 await checkFreeMonthlyCostLimit(freeUsageSubject);
                 const lock = await acquireFreeRunConcurrencyLock(
@@ -3634,9 +3663,12 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
+                // A failed local safety read ended this leg; a stale step
+                // finish reason must not admit it to completion judging.
                 if (
                   activeGoal &&
                   !userStopSignal.signal.aborted &&
+                  !isTrustedBrowserHandoffReadFailure(state.providerError) &&
                   ["stop", "tool-calls"].includes(
                     state.streamFinishReason ?? "",
                   )
@@ -4546,16 +4578,22 @@ export const agentLongTask = task({
                 retryAborted = true;
                 state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
               }
-              const finalization = classifyAgentRetryFinalization({
-                messages: retryMessages.map((message) =>
-                  message.role === "assistant"
-                    ? stripAgentLongHeartbeatParts(message)
-                    : message,
-                ),
-                finishReason: state.streamFinishReason,
-                finishContinuationAttempted,
-                aborted: retryAborted || userStopSignal.signal.aborted,
-              });
+              // A failed local safety read already ended this leg; it is
+              // neither a provider empty answer nor a finished continuation.
+              const finalization = isTrustedBrowserHandoffReadFailure(
+                state.providerError,
+              )
+                ? undefined
+                : classifyAgentRetryFinalization({
+                    messages: retryMessages.map((message) =>
+                      message.role === "assistant"
+                        ? stripAgentLongHeartbeatParts(message)
+                        : message,
+                    ),
+                    finishReason: state.streamFinishReason,
+                    finishContinuationAttempted,
+                    aborted: retryAborted || userStopSignal.signal.aborted,
+                  });
               if (finalization === "finish_continuation_limit") {
                 appendAgentFinishContinuationLimit(
                   retryMessages,
@@ -4793,6 +4831,7 @@ export const agentLongTask = task({
               if (
                 !isRetryWithFallback &&
                 !userStopSignal.signal.aborted &&
+                !isTrustedBrowserHandoffReadFailure(error) &&
                 (shouldRecoverAbliterationApiError ||
                   (isProviderApiError(error) &&
                     !isInvalidImageInputError(error) &&
@@ -4891,22 +4930,17 @@ export const agentLongTask = task({
               }
             }
 
+            // onFinish below drops this attempt's terminal error/finish only
+            // once its retry is merged; otherwise they are published unchanged.
+            // A failed local safety read is never recovered: publish it at once.
+            const primaryProviderErrors = createProviderErrorDeferral({
+              publishImmediately: () =>
+                isTrustedBrowserHandoffReadFailure(state.providerError),
+            });
             const mergePrimaryStream = (
               stream: Parameters<typeof writer.merge>[0],
             ) => {
-              writer.merge(
-                stream.pipeThrough(
-                  createRecoverableProviderErrorFilter(
-                    () =>
-                      !isRetryWithFallback &&
-                      shouldRetryAbliterationError(
-                        activeAbliteratedExperiment,
-                        activeModelName,
-                        userStopSignal.signal,
-                      ),
-                  ),
-                ),
-              );
+              writer.merge(stream.pipeThrough(primaryProviderErrors.filter()));
             };
 
             mergePrimaryStream(
@@ -5178,7 +5212,13 @@ export const agentLongTask = task({
                         alreadyRetried: isRetryWithFallback,
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
+                        // Provider recovery cannot repair a failed local
+                        // browser safety read, whichever error recorded it.
                         hasCandidate:
+                          !isTrustedBrowserHandoffReadFailure(
+                            streamError,
+                            state.providerError,
+                          ) &&
                           !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
                           (!loopTriggeredRetry ||
@@ -5594,6 +5634,16 @@ export const agentLongTask = task({
                             ? [blockedProviderModel]
                             : undefined,
                         );
+                        // This retry's onFinish settles its own terminal chunks:
+                        // dropped only when the final retry is merged.
+                        const retryProviderErrors = createProviderErrorDeferral(
+                          {
+                            publishImmediately: () =>
+                              isTrustedBrowserHandoffReadFailure(
+                                state.providerError,
+                              ),
+                          },
+                        );
 
                         writer.merge(
                           withAgentLongStreamHeartbeat(
@@ -5648,6 +5698,10 @@ export const agentLongTask = task({
                                         (message.parts?.length ?? 0) > 0,
                                     );
                                   const nextContinuation =
+                                    !isTrustedBrowserHandoffReadFailure(
+                                      streamError,
+                                      state.providerError,
+                                    ) &&
                                     isTerminalProviderStreamError(state) &&
                                     isRetriableProviderStreamDisconnectError(
                                       state.providerError,
@@ -5851,10 +5905,12 @@ export const agentLongTask = task({
                                         userStopSignal.signal,
                                       ),
                                     );
+                                    retryProviderErrors.discard();
                                     finalRetryScheduled = true;
                                     return;
                                   }
 
+                                  retryProviderErrors.release();
                                   await finalizeRetryStream({
                                     retryMessages,
                                     retryAborted,
@@ -5869,22 +5925,29 @@ export const agentLongTask = task({
                               },
                             }),
                             userStopSignal.signal,
-                          ),
+                          ).pipeThrough(retryProviderErrors.filter()),
                         );
+                        primaryProviderErrors.discard();
                         retryScheduled = true;
                         return;
                       }
 
+                      // No recovery (success, declined or Stop): publish the
+                      // held terminal chunks before any trailing writes.
+                      primaryProviderErrors.release();
                       stopLocalConnectionWatch?.();
                       if (localConnectionLost()) {
                         isAborted = true;
                         state.streamFinishReason =
                           LOCAL_CONNECTION_LOST_FINISH_REASON;
                       }
+                      // A failed local safety read is the terminal error; a
+                      // stale "stop" must not replace it with a provider empty answer.
                       if (
                         terminalEmptyResponse &&
                         !isAborted &&
-                        !userStopSignal.signal.aborted
+                        !userStopSignal.signal.aborted &&
+                        !isTrustedBrowserHandoffReadFailure(state.providerError)
                       ) {
                         state.streamFinishReason = "error";
                         state.providerError = new Error(
