@@ -87,6 +87,7 @@ interface RenderNoticeProps {
   finishReason?: string;
   continueDisabledReason?: string;
   mode?: ChatMode;
+  lastSavedStep?: "request" | "agent-progress" | "conversation";
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (selectedModelOverride?: SelectedModel) => void;
 }
@@ -110,13 +111,39 @@ function renderNotice(
 
 describe("FinishReasonNotice", () => {
   it.each([
+    [
+      "request",
+      "Last visible: your request above. No Agent result is shown for this turn.",
+    ],
+    ["agent-progress", "Last visible: Agent progress shown above."],
+  ] as const)(
+    "identifies the last visible %s without claiming an unconfirmed save",
+    (lastSavedStep, expected) => {
+      renderNotice({
+        finishReason: "local-connection-lost",
+        mode: "agent",
+        lastSavedStep,
+        onContinue: jest.fn(),
+      });
+
+      expect(screen.getByRole("status")).toHaveTextContent(expected);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Only work still visible after reload is confirmed saved.",
+      );
+      expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+    },
+  );
+  it.each([
     {
       finishReason: "local-connection-lost",
-      reason: "The connection to your computer was lost, so this run stopped.",
+      reason: "Run stopped: lost connection to the selected computer.",
+      // A stop mid-command must not read as if that command completed.
+      detail: "A command that was running may not have finished.",
     },
     {
       finishReason: "browser-handoff-abandoned",
-      reason: "The Agent paused while waiting for the browser handoff.",
+      reason: "Browser handoff ended before the Agent continued.",
+      detail: "Browser actions, like signing in, may need to be repeated.",
     },
   ])("waits for one manual Resume after $finishReason", async (stop) => {
     let finishResume!: () => void;
@@ -136,6 +163,7 @@ describe("FinishReasonNotice", () => {
       continueDisabledReason: "Reconnect the selected computer.",
     });
     expect(screen.getByRole("status")).toHaveTextContent(stop.reason);
+    expect(screen.getByRole("status")).toHaveTextContent(stop.detail);
     expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Resume" }),
@@ -163,7 +191,7 @@ describe("FinishReasonNotice", () => {
       { isAutoContinuing: true },
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent(/connection.*lost/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/lost connection/i);
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(onContinue).toHaveBeenCalledTimes(1);
@@ -176,7 +204,7 @@ describe("FinishReasonNotice", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Saved progress is available. You may need to reopen the browser.",
+      "Browser actions, like signing in, may need to be repeated.",
     );
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });

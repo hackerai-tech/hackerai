@@ -24,6 +24,8 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   goalControl?: React.ReactNode;
   goalMenu?: AttachmentButtonProps["goalMenu"];
   onAttachClick: AttachmentButtonProps["onAttachClick"];
+  /** Confirm before moving a chat that already has messages elsewhere. */
+  confirmEnvironmentChange?: boolean;
 }
 
 export function ChatInputToolbar({
@@ -32,6 +34,7 @@ export function ChatInputToolbar({
   goalMenu,
   onAttachClick,
   attachmentsDisabled = false,
+  confirmEnvironmentChange = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -120,6 +123,7 @@ export function ChatInputToolbar({
                   <SandboxSelector
                     value={sandboxPreference}
                     onChange={setSandboxPreference}
+                    confirmEnvironmentChange={confirmEnvironmentChange}
                     size="toolbar"
                   />
                 </div>

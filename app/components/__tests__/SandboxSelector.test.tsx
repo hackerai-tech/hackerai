@@ -24,6 +24,7 @@ const mockGlobalState = {
     | undefined,
   desktopBridgeStatus: "connecting",
   desktopEnvironmentId: undefined as string | undefined,
+  setAgentPermissionMode: jest.fn(),
 };
 let mockPresenceConnections: Array<{
   connectionId: string;
@@ -103,6 +104,7 @@ describe("SandboxSelector", () => {
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
     mockGlobalState.desktopEnvironmentId = undefined;
+    mockGlobalState.setAgentPermissionMode.mockClear();
     mockPresenceConnections = [];
     global.fetch = jest.fn().mockImplementation(async () => ({
       ok: true,
@@ -309,6 +311,112 @@ describe("SandboxSelector", () => {
       expect(onChange).toHaveBeenCalledWith("e2b");
     },
   );
+
+  describe("moving a chat with messages to another environment", () => {
+    const remoteKali = {
+      connectionId: "remote-kali",
+      isDesktop: false,
+      name: "Kali VM",
+      osInfo: { hostname: "4p3x" },
+    };
+    const openMenuAndPick = (trigger: RegExp | string, option: string) => {
+      fireEvent.click(screen.getByRole("button", { name: trigger }));
+      fireEvent.click(
+        within(screen.getByRole("dialog")).getByRole("button", {
+          name: option,
+        }),
+      );
+    };
+
+    beforeEach(() => {
+      mockGlobalState.subscription = "pro";
+      mockGlobalState.desktopBridgeStatus = "connected";
+      mockGlobalState.localConnections = [remoteKali];
+    });
+
+    it("keeps the selection, permissions, and keyboard position when the move is cancelled", async () => {
+      const onChange = jest.fn();
+      render(
+        <SandboxSelector
+          value="remote-kali"
+          onChange={onChange}
+          confirmEnvironmentChange
+        />,
+      );
+      openMenuAndPick("4p3x (remote-k)", "Cloud");
+
+      const confirm = screen.getByRole("alertdialog", {
+        name: "Switch this chat to Cloud?",
+      });
+      expect(confirm).toHaveTextContent(
+        /Saved conversation.*Your instructions/,
+      );
+      expect(confirm).toHaveTextContent(
+        /Files in the current environment.*Running processes.*Browser sign-ins/,
+      );
+      expect(onChange).not.toHaveBeenCalled();
+
+      fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+      );
+      expect(onChange).not.toHaveBeenCalled();
+      expect(mockGlobalState.setAgentPermissionMode).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "4p3x (remote-k)" }),
+      ).toHaveFocus();
+    });
+
+    it("switches once and resets permissions to Ask for approval after confirming", () => {
+      const onChange = jest.fn();
+      render(
+        <SandboxSelector
+          value="remote-kali"
+          onChange={onChange}
+          confirmEnvironmentChange
+        />,
+      );
+      openMenuAndPick("4p3x (remote-k)", "Cloud");
+      fireEvent.click(
+        within(screen.getByRole("alertdialog")).getByRole("button", {
+          name: "Switch environment",
+        }),
+      );
+
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("e2b");
+      expect(mockGlobalState.setAgentPermissionMode).toHaveBeenCalledWith(
+        "ask_approval",
+      );
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+
+    it("reselects the current environment without asking", () => {
+      const onChange = jest.fn();
+      render(
+        <SandboxSelector
+          value="remote-kali"
+          onChange={onChange}
+          confirmEnvironmentChange
+        />,
+      );
+      openMenuAndPick("4p3x (remote-k)", "4p3x (remote-k)");
+
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(onChange).toHaveBeenCalledWith("remote-kali");
+      expect(mockGlobalState.setAgentPermissionMode).not.toHaveBeenCalled();
+    });
+
+    it("changes directly without confirmation outside a chat with messages", () => {
+      const onChange = jest.fn();
+      render(<SandboxSelector value="remote-kali" onChange={onChange} />);
+      openMenuAndPick("4p3x (remote-k)", "Cloud");
+
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(onChange).toHaveBeenCalledWith("e2b");
+      expect(mockGlobalState.setAgentPermissionMode).not.toHaveBeenCalled();
+    });
+  });
 
   it("does not select a remote runner without live relay presence", async () => {
     const onChange = jest.fn();
