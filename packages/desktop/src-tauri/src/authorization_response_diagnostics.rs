@@ -25,12 +25,14 @@
 //! immediately before the existing send until its response headers were
 //! available, then from immediately before the existing JSON read until its
 //! failure was observed. Neither is reqwest's internal deadline, its remaining
-//! budget or any server time.
+//! budget or any server time. Only with its own opt-in, that timing also
+//! carries the existing connector snapshot copied when the headers arrived.
 
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
+use crate::authorization_connector_diagnostics::{ConnectorPhaseProbe, ConnectorPhaseSnapshot};
 use crate::authorization_send_diagnostics::{OriginClass, MAX_SOURCE_LINKS};
 
 /// The original fixed public errors, unchanged.
@@ -169,24 +171,34 @@ fn bounded_elapsed_ms(elapsed: Duration) -> u64 {
 /// the same response, so every earlier shape is frozen. Both durations are
 /// client monotonic readings bounded to 0..=60000ms; they say when headers
 /// arrived and how long the read waited, not where reqwest's deadline was.
+///
+/// Only an opted-in invocation's timing can carry `connector`: the existing
+/// connector snapshot as those headers arrived, either one returned
+/// connection (its time within `headers_elapsed_ms`) or several calls. It is
+/// never a written or delivered request, and DNS, TCP and TLS are not
+/// distinguished. Without it the v1 shape is unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseReadTiming {
     version: u8,
     headers_elapsed_ms: u64,
     read_elapsed_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connector: Option<ConnectorPhaseSnapshot>,
 }
 
 /// Started immediately before the existing send, and only when the response,
 /// read and timing observers all exist, so no other request takes a reading.
 pub struct ResponseReadClock<H> {
     send_started: Instant,
+    connector: Option<ConnectorPhaseProbe>,
     observer: H,
 }
 
 /// The same clock once the send returned a response with its headers.
 pub struct ResponseHeadersClock<H> {
     headers_elapsed: Duration,
+    connector: Option<ConnectorPhaseSnapshot>,
     observer: H,
 }
 
@@ -201,14 +213,26 @@ impl<H: FnOnce(ResponseReadTiming)> ResponseReadClock<H> {
         }
         timing_observer.map(|observer| Self {
             send_started: Instant::now(),
+            connector: None,
             observer,
         })
     }
 
-    /// Call as soon as the existing send's future resolved with a response.
+    /// Only for an invocation that opted in to the connector refinement.
+    pub fn with_connector(self, connector: Option<ConnectorPhaseProbe>) -> Self {
+        Self { connector, ..self }
+    }
+
+    /// Call as soon as the existing send's future resolved with a response,
+    /// before its body is read or any observer runs. The connector record is
+    /// copied here, once; a later connector call cannot change it.
     pub fn headers_received(self) -> ResponseHeadersClock<H> {
+        let headers_elapsed = self.send_started.elapsed();
         ResponseHeadersClock {
-            headers_elapsed: self.send_started.elapsed(),
+            headers_elapsed,
+            connector: self
+                .connector
+                .and_then(|probe| probe.at_headers(headers_elapsed)),
             observer: self.observer,
         }
     }
@@ -437,6 +461,7 @@ where
                 version: 1,
                 headers_elapsed_ms: bounded_elapsed_ms(clock.headers_elapsed),
                 read_elapsed_ms: bounded_elapsed_ms(read_elapsed),
+                connector: clock.connector,
             };
             let observer = clock.observer;
             let _ = catch_unwind(AssertUnwindSafe(|| observer(timing)));
@@ -1523,6 +1548,7 @@ mod tests {
                 version: 1,
                 headers_elapsed_ms: 0,
                 read_elapsed_ms: 60_000,
+                connector: None,
             })
             .unwrap(),
             serde_json::json!({ "version": 1, "headersElapsedMs": 0, "readElapsedMs": 60_000 })
@@ -1567,6 +1593,183 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(posts.load(Ordering::SeqCst), 1);
+    }
+
+    /// What one connector-wired check observed: its result, each timing's
+    /// wire form, the send-failure connector snapshots and the POSTs.
+    type ConnectorTimed = (Result<(), String>, Vec<serde_json::Value>, usize, usize);
+
+    /// One check wired as in `redeem_authorized_message_observed` with the
+    /// connector channel: the layered client, the send-failure join and every
+    /// response observer. Only `opt_in` gives the read clock the probe.
+    async fn check_timed_connector(
+        response: Vec<u8>,
+        hold: bool,
+        budget: Duration,
+        opt_in: bool,
+    ) -> ConnectorTimed {
+        use crate::authorization_connector_diagnostics::{
+            observe_connector, with_connector_phase, ConnectorPhaseReport,
+        };
+        use crate::authorization_send_diagnostics::{
+            observed_send, SendFailureCause, SendFailureReceipt, SendTransportDetail,
+        };
+        let (url, posts) = serve(response, hold).await;
+        let (_, observer) = recorder();
+        let observer = Some(observer);
+        let read_observer = Some(|_: ResponseReadSnapshot| {});
+        let timings = Arc::new(Mutex::new(Vec::new()));
+        let recorded = timings.clone();
+        let timing_observer = move |timing: ResponseReadTiming| {
+            recorded
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(timing).unwrap())
+        };
+        let send_snapshots = Arc::new(AtomicUsize::new(0));
+        let counted = send_snapshots.clone();
+        let (builder, report) = observe_connector(
+            reqwest::Client::builder()
+                .timeout(budget)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy(),
+            Some(move |_: ConnectorPhaseSnapshot| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        let probe = report
+            .as_ref()
+            .filter(|_| opt_in)
+            .map(ConnectorPhaseReport::probe);
+        let request = builder
+            .build()
+            .unwrap()
+            .post(&url)
+            .json(&serde_json::json!({ "id": "synthetic", "digest": "synthetic" }));
+        let send_failure_observer = with_connector_phase(
+            None::<fn(SendFailureReceipt, SendFailureCause, SendTransportDetail)>,
+            report,
+        );
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let clock = ResponseReadClock::start(&observer, &read_observer, Some(timing_observer))
+                .map(|clock| clock.with_connector(probe));
+            let response = observed_send(request, OriginClass::Localhost, send_failure_observer)
+                .await
+                .expect("the fixture answers");
+            let headers = clock.map(ResponseReadClock::headers_received);
+            observed_approval(
+                response,
+                OriginClass::Localhost,
+                observer,
+                read_observer,
+                headers,
+            )
+            .await
+        })
+        .await
+        .expect("the check ends within the client budget");
+        // Give an unexpected retry or late report time to arrive.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let timings = timings.lock().unwrap().clone();
+        (
+            result,
+            timings,
+            send_snapshots.load(Ordering::SeqCst),
+            posts.load(Ordering::SeqCst),
+        )
+    }
+
+    fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    #[tokio::test]
+    async fn only_an_opted_in_read_timeout_carries_the_connector_snapshot_from_its_headers() {
+        let held = Duration::from_millis(300);
+        let (result, timings, send_snapshots, posts) =
+            check_timed_connector(truncated_ok(), true, held, true).await;
+        assert_eq!(result, Err(INVALID_RESPONSE.to_string()));
+        // An answered POST is never a send failure: no send-side snapshot.
+        assert_eq!((send_snapshots, posts), (0, 1));
+        assert_eq!(timings.len(), 1, "{timings:?}");
+        let wire = &timings[0];
+        println!("observed read timing with connector: {wire}");
+        assert_eq!(
+            sorted_keys(wire),
+            ["connector", "headersElapsedMs", "readElapsedMs", "version"]
+        );
+        // The fresh client's one loopback connection, returned before the
+        // headers, so its time is within theirs.
+        let connector = &wire["connector"];
+        assert_eq!(
+            sorted_keys(connector),
+            ["attempts", "elapsedMs", "phase", "version"]
+        );
+        assert_eq!(connector["version"], 1);
+        assert_eq!(connector["phase"], "connected");
+        assert_eq!(connector["attempts"], 1);
+        let connected = connector["elapsedMs"].as_u64().unwrap();
+        let headers = wire["headersElapsedMs"].as_u64().unwrap();
+        assert!(connected <= headers, "{wire}");
+        let text = wire.to_string();
+        for private in [PRIVATE, "127.0.0.1", "synthetic", "authorized-operation"] {
+            assert!(!text.contains(private), "{text}");
+        }
+
+        // Without the opt-in, the same timeout keeps exactly the v1 shape.
+        let (result, timings, send_snapshots, posts) =
+            check_timed_connector(truncated_ok(), true, held, false).await;
+        assert_eq!(result, Err(INVALID_RESPONSE.to_string()));
+        assert_eq!((send_snapshots, posts), (0, 1));
+        assert_eq!(timings.len(), 1, "{timings:?}");
+        assert_eq!(
+            sorted_keys(&timings[0]),
+            ["headersElapsedMs", "readElapsedMs", "version"]
+        );
+
+        // Every other outcome keeps its result and reports neither a timing
+        // nor a send-side snapshot, even opted in.
+        let eight = Duration::from_secs(8);
+        for (response, hold, budget, expected) in [
+            (
+                json("200 OK", &[], r#"{"approved":true}"#),
+                false,
+                eight,
+                Ok(()),
+            ),
+            (
+                json("200 OK", &[], r#"{"approved":false}"#),
+                false,
+                eight,
+                Err(NOT_AUTHORIZED.to_string()),
+            ),
+            (
+                json("200 OK", &[], "{"),
+                false,
+                eight,
+                Err(INVALID_RESPONSE.to_string()),
+            ),
+            (
+                truncated_ok(),
+                false,
+                eight,
+                Err(INVALID_RESPONSE.to_string()),
+            ),
+            (
+                held_forbidden(&[]),
+                true,
+                held,
+                Err(NOT_AUTHORIZED.to_string()),
+            ),
+        ] {
+            let (result, timings, send_snapshots, posts) =
+                check_timed_connector(response, hold, budget, true).await;
+            assert_eq!(result, expected);
+            assert!(timings.is_empty(), "{timings:?}");
+            assert_eq!((send_snapshots, posts), (0, 1));
+        }
     }
 
     #[test]
