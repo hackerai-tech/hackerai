@@ -2260,3 +2260,144 @@ describe("project finding membership and evidence basis", () => {
     expect(tables.findings[0].project_id).toBe("project-2");
   });
 });
+
+describe("saved finding decisions in current summaries", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("projects a dismissal only to its owner's exact current summaries", async () => {
+    const api = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const saved = await (api.createFindingForBackend as any).handler(
+      ctx,
+      createArgs({ report: report({ title: "Sensitive data in help text" }) }),
+    );
+    tables.findings.push({
+      _id: "findings-other",
+      finding_id: "other-finding",
+      user_id: "other-user",
+      chat_id: "chat-other",
+      title: "Private other report",
+      status: "closed",
+      closure_reason: "false_positive",
+      closure_context: "Other user's private reason.",
+    });
+    await api.closeFinding.handler(ctx, {
+      findingId: saved.finding_id,
+      reason: "false_positive",
+      context: "Synthetic public help text, not sensitive data.",
+    });
+
+    const summaries = await (api.getFindingSummaries as any).handler(ctx, {
+      findingIds: [
+        saved.finding_id,
+        saved.finding_id,
+        "other-finding",
+        "missing-finding",
+      ],
+    });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      finding_id: saved.finding_id,
+      title: "Sensitive data in help text",
+      status: "closed",
+      disposition: {
+        kind: "dismissed",
+        label: "Dismissed",
+        reason: "Synthetic public help text, not sensitive data.",
+      },
+    });
+    // Legacy absent evidence stays absent; the decision is not evidence.
+    expect(summaries[0].evidence_status).toBeUndefined();
+    expect(JSON.stringify(summaries)).not.toMatch(
+      /Other user's private reason|poc_script_code|technical_analysis/,
+    );
+
+    const listed = await (api.listFindings as any).handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+    });
+    expect(listed.page).toEqual([
+      expect.objectContaining({
+        finding_id: saved.finding_id,
+        disposition: expect.objectContaining({ label: "Dismissed" }),
+      }),
+    ]);
+
+    const other = createMockCtx(tables, "other-user").ctx;
+    expect(
+      await (api.getFindingSummaries as any).handler(other, {
+        findingIds: [saved.finding_id],
+      }),
+    ).toEqual([]);
+    const signedOut = createMockCtx(tables, "").ctx;
+    expect(
+      await (api.getFindingSummaries as any).handler(signedOut, {
+        findingIds: [saved.finding_id],
+      }),
+    ).toEqual([]);
+    await expect(
+      (api.getFindingSummaries as any).handler(ctx, {
+        findingIds: Array.from({ length: 26 }, (_, i) => `finding-${i}`),
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("labels a material correction Corrected while it stays active and inconclusive", async () => {
+    const api = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const saved = await (api.createFindingForBackend as any).handler(
+      ctx,
+      createArgs(),
+    );
+    const row = tables.findings[0];
+    const update = (reason: string, changes: Record<string, unknown>) =>
+      (api.updateFindingForBackend as any).handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        messageId: "update-message",
+        toolCallId: "update-call",
+        update: {
+          finding_id: saved.finding_id,
+          expected_updated_at: row.updated_at,
+          reason,
+          changes,
+        },
+      });
+    expect(
+      await update("Error text is a code, not a stack trace.", {
+        impact: "Only a generic error code and request ID are shown.",
+        evidence_status: "inconclusive",
+        evidence_status_reason: "The original capture was not re-checked.",
+      }),
+    ).toMatchObject({ success: true });
+    // A no-op update is not a newer correction.
+    expect(
+      await update("No change", {
+        impact: "Only a generic error code and request ID are shown.",
+      }),
+    ).toMatchObject({ success: true });
+    expect(row.correction_history.at(-1).changed_fields).toEqual([]);
+
+    const [summary] = await (api.getFindingSummaries as any).handler(ctx, {
+      findingIds: [saved.finding_id],
+    });
+    expect(summary).toMatchObject({
+      status: "active",
+      evidence_status: "inconclusive",
+      disposition: {
+        kind: "corrected",
+        label: "Corrected",
+        reason: "Error text is a code, not a stack trace.",
+      },
+    });
+    const listed = await (api.listReportsForBackend as any).handler(ctx, {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+      paginationOpts: { numItems: 25, cursor: null },
+    });
+    expect(listed.reports[0].disposition).toMatchObject({ label: "Corrected" });
+  });
+});

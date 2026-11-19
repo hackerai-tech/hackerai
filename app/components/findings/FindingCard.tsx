@@ -3,8 +3,13 @@
 import { ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FindingEvidenceStatus } from "@/lib/findings/evidence-status";
-import type { FindingSeverity } from "@/types/finding";
+import {
+  findingStatusLabel,
+  type FindingDisposition,
+} from "@/lib/findings/disposition";
+import type { FindingSeverity, FindingStatus } from "@/types/finding";
 import { FindingEvidenceBadge } from "./FindingEvidenceBadge";
+import { FindingStatusPill } from "./FindingDecision";
 
 const severityClasses: Record<FindingSeverity, string> = {
   critical: "border-red-500/30 bg-red-500/10 text-red-500",
@@ -28,12 +33,18 @@ export const getFindingSeverityClasses = (severity: FindingSeverity) =>
 export const getFindingSeverityDotClasses = (severity: FindingSeverity) =>
   severityDotClasses[severity];
 
+const capitalize = (value: string) =>
+  value.charAt(0).toUpperCase() + value.slice(1);
+
 export function FindingCard({
   title,
   target,
   severity,
   cvssScore,
   evidenceStatus,
+  status,
+  disposition,
+  footer,
   onClick,
   className,
 }: {
@@ -46,60 +57,114 @@ export function FindingCard({
    * persisted record has no evidence basis and renders "Not recorded".
    */
   evidenceStatus?: FindingEvidenceStatus | null;
+  /** Current saved lifecycle; omit while the persisted record is unknown. */
+  status?: FindingStatus;
+  disposition?: FindingDisposition;
+  /** Rendered below the card header, outside the open-finding button. */
+  footer?: React.ReactNode;
   onClick?: () => void;
   className?: string;
 }) {
+  const closed = status === "closed";
+  // A recorded decision or closure takes the header slot; severity moves to
+  // the metadata row so it never reads as the decision.
+  const showStatus = disposition !== undefined || closed;
+  const severityLabel = `${severity} · ${cvssScore.toFixed(1)}`;
+  const severityChip = (
+    <span
+      className={cn(
+        "shrink-0 rounded-md border px-2 py-1 text-[11px] font-semibold uppercase leading-none",
+        severityClasses[severity],
+      )}
+    >
+      {severityLabel}
+    </span>
+  );
+
   const content = (
     <>
       <div
         className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-lg border",
-          severityClasses[severity],
+          closed
+            ? "border-border bg-muted/40 text-muted-foreground"
+            : severityClasses[severity],
         )}
       >
         <ShieldAlert className="size-4" aria-hidden="true" />
       </div>
       <div className="min-w-0 flex-1 text-left">
-        <div className="truncate text-sm font-medium text-foreground">
+        <div
+          className={cn(
+            "truncate text-sm font-medium",
+            closed ? "text-foreground/85" : "text-foreground",
+          )}
+        >
           {title}
         </div>
         <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
           {target}
         </div>
-        {evidenceStatus !== undefined ? (
-          <div className="mt-1.5 flex min-w-0 flex-wrap">
-            <FindingEvidenceBadge status={evidenceStatus ?? undefined} />
+        {evidenceStatus !== undefined || showStatus ? (
+          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {evidenceStatus !== undefined ? (
+              <FindingEvidenceBadge status={evidenceStatus ?? undefined} />
+            ) : null}
+            {status === "active" && !disposition ? (
+              <span className="text-xs text-muted-foreground">
+                {findingStatusLabel({ status }, disposition)}
+              </span>
+            ) : null}
+            {showStatus ? (
+              closed ? (
+                <span className="text-xs text-muted-foreground">
+                  Reported {capitalize(severity)} · {cvssScore.toFixed(1)}
+                </span>
+              ) : (
+                severityChip
+              )
+            ) : null}
           </div>
         ) : null}
       </div>
-      <div
-        className={cn(
-          "shrink-0 rounded-md border px-2 py-1 text-[11px] font-semibold uppercase",
-          severityClasses[severity],
-        )}
-      >
-        {severity} · {cvssScore.toFixed(1)}
-      </div>
+      {showStatus ? (
+        <FindingStatusPill
+          disposition={disposition}
+          label={findingStatusLabel({ status }, disposition)}
+        />
+      ) : (
+        severityChip
+      )}
     </>
   );
 
-  const classes = cn(
-    "flex w-full max-w-xl items-center gap-3 rounded-xl border border-border bg-muted/20 p-3",
+  const headClasses = cn(
+    "flex w-full items-start gap-3 p-3",
+    !showStatus && evidenceStatus === undefined && "items-center",
     onClick &&
-      "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-    className,
+      "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
   );
 
-  return onClick ? (
-    <button
-      type="button"
-      className={classes}
-      onClick={onClick}
-      aria-label={`Open finding: ${title}`}
+  return (
+    <div
+      className={cn(
+        "@container w-full max-w-xl overflow-hidden rounded-xl border border-border bg-muted/20",
+        className,
+      )}
     >
-      {content}
-    </button>
-  ) : (
-    <div className={classes}>{content}</div>
+      {onClick ? (
+        <button
+          type="button"
+          className={headClasses}
+          onClick={onClick}
+          aria-label={`Open finding: ${title}`}
+        >
+          {content}
+        </button>
+      ) : (
+        <div className={headClasses}>{content}</div>
+      )}
+      {footer}
+    </div>
   );
 }

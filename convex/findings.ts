@@ -42,6 +42,7 @@ import {
   closeFindingInputSchema,
   type FindingStatus,
 } from "../lib/findings/lifecycle";
+import { getFindingDisposition } from "../lib/findings/disposition";
 import type { Doc } from "./_generated/dataModel";
 
 const MAX_SEARCH_LENGTH = 200;
@@ -333,6 +334,7 @@ const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => {
   const category =
     finding.category ??
     deriveFindingCategory({ cwe: finding.cwe, title: finding.title });
+  const disposition = getFindingDisposition(finding);
 
   return {
     finding_id: finding.finding_id,
@@ -350,6 +352,7 @@ const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => {
     ...(finding.evidence_status
       ? { evidence_status: finding.evidence_status }
       : {}),
+    ...(disposition ? { disposition } : {}),
   };
 };
 
@@ -1064,8 +1067,55 @@ const reportSummaryFields = {
       v.literal("inconclusive"),
     ),
   ),
+  disposition: v.optional(
+    v.object({
+      kind: v.union(
+        v.literal("dismissed"),
+        v.literal("closed"),
+        v.literal("corrected"),
+      ),
+      label: v.string(),
+      reason: v.string(),
+      decided_at: v.optional(v.number()),
+    }),
+  ),
 };
 const reportSummaryValidator = v.object(reportSummaryFields);
+
+const MAX_SUMMARY_FINDING_IDS = 25;
+
+/**
+ * Current owner-scoped summaries for the exact IDs a historical report list
+ * recorded, so the transcript shows live metadata instead of its snapshot.
+ * Missing, deleted or other users' findings are omitted, never guessed.
+ */
+export const getFindingSummaries = query({
+  args: { findingIds: v.array(v.string()) },
+  returns: v.array(reportSummaryValidator),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    if (args.findingIds.length > MAX_SUMMARY_FINDING_IDS)
+      throw new ConvexError({
+        code: "TOO_MANY_FINDINGS",
+        message: `Request at most ${MAX_SUMMARY_FINDING_IDS} findings`,
+      });
+    const findingIds = [...new Set(args.findingIds)];
+    const summaries = await Promise.all(
+      findingIds.map(async (findingId) => {
+        const finding = await getFindingByPublicId(ctx, findingId);
+        if (!finding || finding.user_id !== identity.subject) return null;
+        const chat = await getChat(ctx, finding.chat_id);
+        return {
+          ...toFindingSummary(finding, chat?.title ?? "Deleted chat"),
+          updated_at: finding.updated_at,
+        };
+      }),
+    );
+    return summaries.filter((summary) => summary !== null);
+  },
+});
 const reportDetailValidator = v.object({
   ...reportSummaryFields,
   description: v.string(),

@@ -199,7 +199,7 @@ describe("FindingDetail", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
-    expect(screen.getByText("Active")).toBeVisible();
+    expect(screen.getByText("Unreviewed")).toBeVisible();
     // The agent-reported evidence basis stays visible as quiet header text.
     expect(screen.getByText("Not recorded")).toHaveAttribute(
       "title",
@@ -354,9 +354,7 @@ describe("FindingDetail", () => {
         context: "Could not reproduce after validating tenant scope.",
       });
     });
-    await waitFor(() =>
-      expect(screen.getAllByText("Closed").length).toBeGreaterThan(0),
-    );
+    await waitFor(() => expect(screen.getByText("Dismissed")).toBeVisible());
     expect(screen.getByText("False positive")).toBeVisible();
     expect(
       screen.getByText("Could not reproduce after validating tenant scope."),

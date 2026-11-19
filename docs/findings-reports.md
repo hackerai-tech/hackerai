@@ -24,6 +24,12 @@ label unless the Agent supplies a fresh status and reason together. Retesting
 prepares an editable request in the original chat; it neither starts work nor
 closes a finding automatically and preserves existing drafts.
 
+Linked cards in private chats and Findings summaries read the saved decision.
+A false-positive closure is Dismissed, and a revised active report is Corrected.
+Unreviewed means there is no saved correction or closure decision. Closed reports
+are excluded from the active severity counts. The original transcript remains
+available.
+
 Selected exports retrieve each exact, authorized saved record. Missing records
 fail the whole export. Reports are limited to 50 findings and 8 MiB of structured
 input; the limits reject rather than truncate. They describe selected findings,
@@ -31,6 +37,9 @@ not full assessment coverage. Markdown, HTML, JSON, SARIF and PDF retain evidenc
 limitations, correction/closure context and source provenance. These private
 exports can include PoCs and captures; public shared-chat projections remain
 separate.
+
+Download PDF on a linked card exports that saved finding. Each PDF includes
+its generated date, the decision and evidence limitations as of export time.
 
 HTML is self-contained, escaped and has no active report links, images or scripts.
 SARIF keeps evidence basis, lifecycle and the complete record in result properties;
