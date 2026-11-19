@@ -14,6 +14,7 @@ import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
 
 const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
+const mockSetSidebarContent = jest.fn();
 const mockCloseSidebar = jest.fn();
 const mockRetrySubagentRealtime = jest.fn();
 let mockSubagentRealtime: ReturnType<
@@ -73,6 +74,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     sidebarContent: mockSidebarContent,
     closeSidebar: mockCloseSidebar,
     openSidebar: mockOpenSidebar,
+    setSidebarContent: mockSetSidebarContent,
   }),
 }));
 
@@ -1265,7 +1267,7 @@ describe("ComputerSidebar reconnect behavior", () => {
 
     childStatus = "completed";
     rerender(<ComputerSidebar messages={[parentMessage]} status="streaming" />);
-    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(mockSetSidebarContent).not.toHaveBeenCalled();
 
     rerender(
       <ComputerSidebar
@@ -1287,13 +1289,15 @@ describe("ComputerSidebar reconnect behavior", () => {
       />,
     );
 
-    expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect(mockSetSidebarContent).toHaveBeenCalledWith(
       expect.objectContaining({
         toolCallId: "parent-tool-2",
         command: "git status",
       }),
     );
-    expect(mockOpenSidebar.mock.calls.at(-1)?.[0]).not.toHaveProperty("origin");
+    expect(mockSetSidebarContent.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+      "origin",
+    );
   });
 
   it("keeps a historical subagent command pinned after completion", () => {

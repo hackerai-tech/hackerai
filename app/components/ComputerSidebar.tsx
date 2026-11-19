@@ -1484,6 +1484,7 @@ const SubagentComputerSidebar = ({
   closeSidebar,
   parentMessages,
   openSidebar,
+  replaceSidebarContent,
   origin,
   sidebarContent,
   onBrowserContinue,
@@ -1493,6 +1494,8 @@ const SubagentComputerSidebar = ({
   closeSidebar: () => void;
   parentMessages: any[];
   openSidebar: (content: SidebarContent) => void;
+  /** Background replacement that is not an explicit open request. */
+  replaceSidebarContent: (content: SidebarContent) => void;
   origin: SidebarSubagentOrigin;
   sidebarContent: SidebarContent;
 }) => {
@@ -1586,8 +1589,9 @@ const SubagentComputerSidebar = ({
     }
 
     handedOffToParentRef.current = true;
-    openSidebar(nextParentTool);
-  }, [active, openSidebar, parentToolExecutions, run]);
+    // Automatic handoff keeps whichever Computer tab the user last selected.
+    replaceSidebarContent(nextParentTool);
+  }, [active, replaceSidebarContent, parentToolExecutions, run]);
 
   return (
     <ComputerSidebarBase
@@ -1721,25 +1725,6 @@ export const ComputerSidebar: React.FC<{
       closeSidebar();
   }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
 
-  // Keep only the draft controller alive while closed, not browser viewers or polls.
-  if (!sidebarOpen && !tabsEnabled) return null;
-
-  if (editorChatId) {
-    return (
-      <AgentGoalEditor
-        key={editorChatId}
-        chatId={editorChatId}
-        onClose={closeGoalEditor}
-        continueGoal={editorChatId === chatId ? continueGoal : undefined}
-        draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
-        onDraftChange={keepGoalDraft}
-        stopRunBeforeControl={
-          editorChatId === chatId ? stopGoalRunBeforeControl : undefined
-        }
-      />
-    );
-  }
-
   const subagents =
     sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)
       ? sidebarContent
@@ -1748,7 +1733,26 @@ export const ComputerSidebar: React.FC<{
     sidebarOpen && sidebarContent?.origin?.kind === "subagent"
       ? sidebarContent.origin
       : null;
-  const hasNestedView = !!subagents || !!origin;
+  // The Goal editor and subagent views hide Computer without unmounting its tabs.
+  const hasNestedView = !!editorChatId || !!subagents || !!origin;
+  // Opens aimed at a nested view are not Computer open requests; otherwise a later
+  // background return to Computer would replay them and leave the selected tab.
+  const [openRequests, setOpenRequests] = useState({
+    seen: sidebarOpenRequest,
+    workspace: sidebarOpenRequest,
+  });
+  if (openRequests.seen !== sidebarOpenRequest) {
+    setOpenRequests({
+      seen: sidebarOpenRequest,
+      workspace:
+        sidebarOpen && !hasNestedView
+          ? sidebarOpenRequest
+          : openRequests.workspace,
+    });
+  }
+
+  // Keep only the draft controller alive while closed, not browser viewers or polls.
+  if (!sidebarOpen && !tabsEnabled) return null;
 
   return (
     <>
@@ -1758,7 +1762,7 @@ export const ComputerSidebar: React.FC<{
           messages={messages ?? []}
           open={sidebarOpen && !hasNestedView}
           selection={hasNestedView ? null : sidebarContent}
-          openRequest={sidebarOpenRequest}
+          openRequest={openRequests.workspace}
           onClose={closeSidebar}
           renderActivity={(content, visible) => (
             <ComputerSidebarBase
@@ -1776,7 +1780,19 @@ export const ComputerSidebar: React.FC<{
           )}
         />
       )}
-      {subagents ? (
+      {editorChatId ? (
+        <AgentGoalEditor
+          key={editorChatId}
+          chatId={editorChatId}
+          onClose={closeGoalEditor}
+          continueGoal={editorChatId === chatId ? continueGoal : undefined}
+          draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
+          onDraftChange={keepGoalDraft}
+          stopRunBeforeControl={
+            editorChatId === chatId ? stopGoalRunBeforeControl : undefined
+          }
+        />
+      ) : subagents ? (
         <SubagentsSidebar
           key={subagents.toolCallId}
           content={subagents}
@@ -1790,6 +1806,7 @@ export const ComputerSidebar: React.FC<{
           closeSidebar={closeSidebar}
           parentMessages={messages ?? []}
           openSidebar={openSidebar}
+          replaceSidebarContent={setSidebarContent}
           origin={origin}
           sidebarContent={sidebarContent}
         />

@@ -5,6 +5,7 @@ import type { ChatMessage, SidebarContent } from "@/types";
 const mockRegenerate = jest.fn();
 const mockSetMessages = jest.fn();
 const mockOpenSidebar = jest.fn();
+const mockSetSidebarContent = jest.fn();
 const mockCloseSidebar = jest.fn();
 let mockSidebarOpen = false;
 let mockSidebarContent: SidebarContent | null = null;
@@ -37,6 +38,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     sidebarOpen: mockSidebarOpen,
     sidebarContent: mockSidebarContent,
     openSidebar: mockOpenSidebar,
+    setSidebarContent: mockSetSidebarContent,
     closeSidebar: mockCloseSidebar,
   }),
 }));
@@ -122,12 +124,13 @@ describe("useChatHandlers regeneration sidebar reconciliation", () => {
       await regenerateFromRenderedMessage();
     });
 
-    expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect(mockSetSidebarContent).toHaveBeenCalledWith(
       expect.objectContaining({
         toolCallId: "tool-previous",
         content: "previous output",
       }),
     );
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
     expect(mockCloseSidebar).not.toHaveBeenCalled();
   });
 

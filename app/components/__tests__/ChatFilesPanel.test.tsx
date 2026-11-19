@@ -230,6 +230,43 @@ it("resolves a fresh signed URL on each click instead of retrying an expired one
   );
 });
 
+it("opens the browser picker before any network work and skips it entirely when canceled", async () => {
+  const picker = jest.fn(async () => {
+    throw new DOMException("canceled", "AbortError");
+  });
+  (window as { showSaveFilePicker?: unknown }).showSaveFilePicker = picker;
+  getUrl.mockResolvedValue("https://signed/report");
+  global.fetch = signedOnlyFetch({
+    "https://signed/report": bytesResponse(pdfBytes),
+  }) as unknown as typeof fetch;
+  fireEvent.click(await openPersistedReport());
+  await waitFor(() =>
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "workspace_file_download",
+      { source: "chat", outcome: "canceled" },
+    ),
+  );
+  expect(picker).toHaveBeenCalledTimes(1);
+  expect(getUrl).not.toHaveBeenCalled();
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+  // A chosen destination then resolves the signed URL and transfers the bytes.
+  const write = jest.fn();
+  picker.mockImplementationOnce(
+    async () =>
+      ({
+        createWritable: async () => ({ write, close: jest.fn() }),
+      }) as never,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Download saved file" }));
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(picker.mock.invocationCallOrder[1]).toBeLessThan(
+    getUrl.mock.invocationCallOrder[0],
+  );
+  expect(Array.from(write.mock.calls[0][0])).toEqual(Array.from(pdfBytes));
+});
+
 it.each([
   ["canceled", () => mockSaveBinary.mockResolvedValue(null), null],
   [

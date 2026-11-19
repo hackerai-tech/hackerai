@@ -173,7 +173,9 @@ it("reopens an older saved report outside loaded history and downloads its exact
     filename: "report.pdf",
     mimeType: "application/pdf",
   });
-  expect(Array.from(options.content)).toEqual(Array.from(bytes));
+  // The downloader loads bytes only after its save picker has opened.
+  expect(mockGetUrl).not.toHaveBeenCalled();
+  expect(Array.from(await options.content())).toEqual(Array.from(bytes));
   expect(mockGetUrl).toHaveBeenCalledWith({ fileId: "file-pdf" });
   expect(
     (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url)),

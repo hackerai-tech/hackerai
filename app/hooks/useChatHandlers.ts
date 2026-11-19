@@ -197,7 +197,7 @@ export const useChatHandlers = ({
     selectedModel,
     sidebarOpen,
     sidebarContent,
-    openSidebar,
+    setSidebarContent,
     closeSidebar,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
@@ -1417,7 +1417,8 @@ export const useChatHandlers = ({
       if (!nextSidebarContent) {
         closeSidebar();
       } else if (nextSidebarContent !== currentSidebarContent) {
-        openSidebar(nextSidebarContent);
+        // Replace content without an open request so a selected Files tab stays.
+        setSidebarContent(nextSidebarContent);
       }
     }
   };

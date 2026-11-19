@@ -180,6 +180,7 @@ interface GlobalStateType {
   getInput: () => string;
   clearInput: () => void;
   clearUploadedFiles: () => void;
+  /** Explicit user open; Computer selects the matching tab. Background replacement uses setSidebarContent. */
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   consumeBrowserTakeoverRequest: (requestId: string) => void;

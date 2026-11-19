@@ -150,16 +150,16 @@ export function CapturedFilePreview({
           content: file.text,
         });
       else if (file.saved?.fileId) {
-        // Signed URLs expire; resolve a fresh one from the stored file on every attempt.
-        const url = await getUrl({ fileId: file.saved.fileId });
-        if (!url) throw new Error("Saved file is unavailable.");
-        const bytes = await readBounded(
-          await fetch(url),
-          WORKSPACE_DOWNLOAD_LIMIT,
-        );
+        const fileId = file.saved.fileId;
         result = await downloadFile({
           filename,
-          content: bytes,
+          // Loaded after the browser picker opens, which needs the click's activation.
+          // Signed URLs expire; resolve a fresh one from the stored file on every attempt.
+          content: async () => {
+            const url = await getUrl({ fileId });
+            if (!url) throw new Error("Saved file is unavailable.");
+            return readBounded(await fetch(url), WORKSPACE_DOWNLOAD_LIMIT);
+          },
           mimeType: file.saved.mediaType || "application/octet-stream",
         });
       } else throw new Error("This file has no saved download.");

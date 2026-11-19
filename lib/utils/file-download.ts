@@ -9,11 +9,18 @@ import {
 /**
  * Options for file download/save operations.
  */
+type DownloadContent = string | Uint8Array<ArrayBuffer>;
+
 interface DownloadFileOptions {
   /** The suggested filename for the save dialog */
   filename: string;
-  /** UTF-8 text or exact binary bytes. */
-  content: string | Uint8Array<ArrayBuffer>;
+  /**
+   * UTF-8 text or exact binary bytes. Pass a loader when the content needs
+   * network work: the browser save picker requires the click's transient
+   * activation, so it opens first and the loader runs only after a
+   * destination is chosen. Loader errors reject the call; nothing is written.
+   */
+  content: DownloadContent | (() => Promise<DownloadContent>);
   /** MIME type for the blob fallback (default: "text/plain") */
   mimeType?: string;
 }
@@ -55,13 +62,18 @@ export async function downloadFile({
   content,
   mimeType = "text/plain",
 }: DownloadFileOptions): Promise<DownloadFileResult> {
+  const load = async () =>
+    typeof content === "function" ? content() : content;
+
   // Tauri: cancellation is a successful no-op, distinct from a failed write.
+  // The native dialog has no activation requirement, so load first.
   if (isTauriEnvironment()) {
+    const data = await load();
     try {
       const filePath =
-        typeof content === "string"
-          ? await saveFileToLocal(filename, content)
-          : await saveBinaryFileToLocal(filename, content);
+        typeof data === "string"
+          ? await saveFileToLocal(filename, data)
+          : await saveBinaryFileToLocal(filename, data);
       if (filePath) {
         toast.success("File saved successfully", {
           action: {
@@ -88,9 +100,18 @@ export async function downloadFile({
   }
 
   // File System Access API (native save dialog)
-  try {
-    if ("showSaveFilePicker" in window) {
-      const fileHandle = await (
+  if ("showSaveFilePicker" in window) {
+    const failed = (err: unknown): DownloadFileResult => {
+      // User cancelled the save dialog — not an error
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return { outcome: "canceled" };
+      }
+      toast.error("Failed to save file");
+      return { outcome: "failed" };
+    };
+    let fileHandle: FileSystemFileHandle;
+    try {
+      fileHandle = await (
         window as Window & {
           showSaveFilePicker: (options: {
             suggestedName: string;
@@ -99,25 +120,25 @@ export async function downloadFile({
       ).showSaveFilePicker({
         suggestedName: filename,
       });
-
+    } catch (err) {
+      return failed(err);
+    }
+    const data = await load();
+    try {
       const writable = await fileHandle.createWritable();
-      await writable.write(content);
+      await writable.write(data);
       await writable.close();
       toast.success("File saved successfully");
       return { outcome: "success" };
+    } catch (err) {
+      return failed(err);
     }
-  } catch (err) {
-    // User cancelled the save dialog — not an error
-    if (err instanceof DOMException && err.name === "AbortError") {
-      return { outcome: "canceled" };
-    }
-    toast.error("Failed to save file");
-    return { outcome: "failed" };
   }
 
   // Blob download fallback
+  const data = await load();
   try {
-    const blob = new Blob([content], { type: mimeType });
+    const blob = new Blob([data], { type: mimeType });
     startBlobDownload(blob, filename);
     toast.success("File downloaded successfully");
     return { outcome: "initiated" };
