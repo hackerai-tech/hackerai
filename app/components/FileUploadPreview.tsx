@@ -18,9 +18,9 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  canPreviewImageInline,
   fileToBase64,
   formatFileSize,
-  isImageFile,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
 import { FileContentViewer } from "./FileContentViewer";
@@ -217,6 +217,7 @@ export const FileUploadPreview = ({
   );
 
   useEffect(() => {
+    let cancelled = false;
     const loadPreviews = async () => {
       const previews: FilePreview[] = [];
 
@@ -231,7 +232,10 @@ export const FileUploadPreview = ({
 
         // Generate base64 preview for images - this will show immediately while uploading
         if (
-          isImageFile(uploadedFile.file) &&
+          canPreviewImageInline(
+            uploadedFile.file.type,
+            uploadedFile.file.name,
+          ) &&
           isBrowserFile(uploadedFile.file)
         ) {
           const fileKey = generateFileKey(uploadedFile.file);
@@ -258,7 +262,7 @@ export const FileUploadPreview = ({
         previews.push(preview);
       }
 
-      setFilePreviews(previews);
+      if (!cancelled) setFilePreviews(previews);
     };
 
     if (uploadedFiles && uploadedFiles.length > 0) {
@@ -267,6 +271,10 @@ export const FileUploadPreview = ({
       setFilePreviews([]);
       // Don't clear cache when no files - we might get the same files back
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [uploadedFiles, generateFileKey]);
 
   useEffect(() => {
@@ -339,6 +347,10 @@ export const FileUploadPreview = ({
               const canEditGeneratedText = Boolean(
                 generatedText && onUpdateGeneratedTextFile,
               );
+              const showsInlineImage = canPreviewImageInline(
+                filePreview.file.type,
+                filePreview.file.name,
+              );
               const canShowGeneratedTextInField = Boolean(
                 generatedText &&
                 onShowGeneratedTextInField &&
@@ -349,7 +361,7 @@ export const FileUploadPreview = ({
               return (
                 <div
                   key={`${filePreview.file.name}-${index}`}
-                  className="group text-token-text-primary relative inline-block text-sm"
+                  className="group text-token-text-primary relative inline-block max-w-full shrink-0 text-sm"
                   data-testid="attached-file"
                 >
                   <div
@@ -358,17 +370,22 @@ export const FileUploadPreview = ({
                         ? "border-red-500 border-2 bg-red-50 dark:bg-red-950/20"
                         : isGeneratedPastedText
                           ? "bg-input-chat border-border/80"
-                          : isImageFile(filePreview.file)
+                          : showsInlineImage
                             ? "bg-background"
                             : "bg-primary"
                     }`}
                   >
                     <div
                       className={
-                        isImageFile(filePreview.file)
-                          ? hasMultipleFiles
-                            ? "h-14.5 w-14.5"
-                            : "h-36 w-36"
+                        showsInlineImage &&
+                        (filePreview.preview ||
+                          filePreview.loading ||
+                          filePreview.error)
+                          ? filePreview.error
+                            ? "size-[100px]"
+                            : hasMultipleFiles
+                              ? "h-14.5 w-14.5"
+                              : "size-[min(9rem,25dvh)]"
                           : ""
                       }
                     >
@@ -378,7 +395,7 @@ export const FileUploadPreview = ({
                         </div>
                       ) : isGeneratedPastedText ? (
                         <div
-                          className="relative w-72 p-2"
+                          className="relative w-72 max-w-full p-2"
                           title={`Text · ${formatFileSize(filePreview.file.size)}`}
                         >
                           <button
@@ -471,7 +488,7 @@ export const FileUploadPreview = ({
                           </div>
                         </div>
                       ) : filePreview.error ? (
-                        isImageFile(filePreview.file) ? (
+                        showsInlineImage ? (
                           <div className="h-full w-full flex items-center justify-center min-h-[100px]">
                             <div className="flex flex-col items-center gap-2 p-3">
                               <div className="rounded-full bg-red-500 p-2">
@@ -483,7 +500,7 @@ export const FileUploadPreview = ({
                             </div>
                           </div>
                         ) : (
-                          <div className="p-2 w-80">
+                          <div className="p-2 w-80 max-w-full">
                             <div className="flex flex-row items-center gap-2">
                               <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center bg-red-500">
                                 <X className="h-6 w-6 text-white" />
@@ -534,7 +551,7 @@ export const FileUploadPreview = ({
                               uploadedFile?.localPath,
                             )
                           }
-                          className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                          className="w-80 max-w-full p-2 pr-8 text-left transition-colors hover:bg-accent"
                           aria-label={`View ${filePreview.file.name}`}
                         >
                           <div className="flex flex-row items-center gap-2">

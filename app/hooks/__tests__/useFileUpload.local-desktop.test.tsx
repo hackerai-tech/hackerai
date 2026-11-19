@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { ConvexError } from "convex/values";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useFileUpload } from "../useFileUpload";
 import {
   getLocalFileMetadata,
@@ -10,10 +11,35 @@ import {
   writeGeneratedTextAttachment,
 } from "@/app/hooks/useTauri";
 import { toast } from "sonner";
+import type { UploadedFileState } from "@/types/file";
 
-const addUploadedFile = jest.fn();
-const updateUploadedFile = jest.fn();
-const removeUploadedFile = jest.fn();
+// Mirrors GlobalState's synchronous membership, read by getUploadedFiles().
+let storedFiles: UploadedFileState[] = [];
+const matches = (
+  item: UploadedFileState,
+  index: number,
+  target: number | UploadedFileState["file"],
+) => (typeof target === "number" ? index === target : item.file === target);
+const addUploadedFile = jest.fn((file: UploadedFileState) => {
+  storedFiles = [...storedFiles, file];
+});
+const updateUploadedFile = jest.fn(
+  (
+    target: number | UploadedFileState["file"],
+    updates: Partial<UploadedFileState>,
+  ) => {
+    storedFiles = storedFiles.map((item, index) =>
+      matches(item, index, target) ? { ...item, ...updates } : item,
+    );
+  },
+);
+const removeUploadedFile = jest.fn(
+  (target: number | UploadedFileState["file"]) => {
+    storedFiles = storedFiles.filter(
+      (item, index) => !matches(item, index, target),
+    );
+  },
+);
 const deleteFile = jest.fn();
 const saveFile = jest.fn();
 const generateS3UploadUrlAction = jest.fn();
@@ -22,6 +48,7 @@ let globalState: any;
 
 jest.mock("convex/react", () => ({
   useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
+  useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   useMutation: () => deleteFile,
   useAction: (action: unknown) =>
     String(action).includes("generateS3UploadUrlAction")
@@ -81,10 +108,15 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest
+      .mocked(useAuth)
+      .mockReturnValue({ user: null } as ReturnType<typeof useAuth>);
     (isTauriEnvironment as jest.Mock).mockReturnValue(true);
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
+    storedFiles = [];
     globalState = {
       uploadedFiles: [],
+      getUploadedFiles: () => storedFiles,
       addUploadedFile,
       updateUploadedFile,
       removeUploadedFile,
@@ -113,6 +145,60 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   afterAll(() => {
     global.fetch = originalFetch;
+  });
+
+  it("discards files from a native picker opened before the account changed", async () => {
+    const auth = (id: string) =>
+      ({ user: { id } }) as ReturnType<typeof useAuth>;
+    jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+    let finishPicker!: (paths: string[]) => void;
+    jest.mocked(pickLocalFiles).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPicker = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useFileUpload("agent"));
+    act(() => result.current.handleAttachClick());
+
+    jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+    rerender();
+    await act(async () => finishPicker(["/synthetic/attachment.png"]));
+
+    expect(getLocalFileMetadata).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
+  });
+
+  it("opens camera and unrestricted photos/files without leaking picker settings", () => {
+    (isTauriEnvironment as jest.Mock).mockReturnValue(false);
+    globalState.sandboxPreference = "cloud";
+    const { result } = renderHook(() => useFileUpload("agent"));
+    const input = document.createElement("input");
+    input.type = "file";
+    result.current.fileInputRef.current = input;
+    const selections: unknown[] = [];
+    jest.spyOn(input, "click").mockImplementation(() => {
+      selections.push({
+        accept: input.accept,
+        capture: input.getAttribute("capture"),
+        multiple: input.multiple,
+      });
+    });
+
+    act(() => {
+      result.current.handleAttachClick("camera");
+      result.current.handleAttachClick("files");
+      result.current.handleAttachClick();
+    });
+
+    expect(selections).toEqual([
+      { accept: "image/*", capture: "environment", multiple: false },
+      { accept: "", capture: null, multiple: true },
+      { accept: "", capture: null, multiple: true },
+    ]);
+    expect(pickLocalFiles).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
   });
 
   it("keeps an attachment visible when deletion fails", async () => {
@@ -221,6 +307,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
       expect.any(String),
       "Pasted text.txt",
       pastedText,
+      expect.any(AbortSignal),
     );
     expect(addUploadedFile).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -239,6 +326,45 @@ describe("useFileUpload desktop-local agent attachments", () => {
     );
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("does not attach a completed local paste to a different account's draft", async () => {
+    const auth = (id: string) =>
+      ({ user: { id } }) as ReturnType<typeof useAuth>;
+    jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+    let finishWrite!: (
+      metadata: NonNullable<
+        Awaited<ReturnType<typeof writeGeneratedTextAttachment>>
+      >,
+    ) => void;
+    jest.mocked(writeGeneratedTextAttachment).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useFileUpload("agent"));
+    let started!: Promise<boolean>;
+    await act(async () => {
+      started = result.current.handlePastedTextAttachment("x".repeat(5000));
+    });
+    expect(writeGeneratedTextAttachment).toHaveBeenCalledTimes(1);
+
+    jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+    rerender();
+    await act(async () => {
+      finishWrite({
+        path: "/synthetic/generated.txt",
+        name: "Pasted text.txt",
+        mediaType: "text/plain",
+        size: 5000,
+        lastModified: 1,
+      });
+      expect(await started).toBe(false);
+    });
+    expect(addUploadedFile).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(removeGeneratedTextAttachment).not.toHaveBeenCalled();
   });
 
   it("updates generated pasted text locally without uploading edited content", async () => {
@@ -295,10 +421,86 @@ describe("useFileUpload desktop-local agent attachments", () => {
       "paste_1",
       "pasted_content.txt",
       "edited",
+      expect.any(AbortSignal),
     );
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      "completes",
+      (finish: (outcome: unknown) => void) =>
+        finish({
+          path: "/synthetic/late_pasted_content.txt",
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          size: 6,
+          lastModified: 2000,
+        }),
+    ],
+    ["returns no result", (finish: (outcome: unknown) => void) => finish(null)],
+  ])(
+    "does not publish a local text edit that %s after the account changes",
+    async (_outcome, settle) => {
+      const auth = (id: string) =>
+        ({ user: { id } }) as ReturnType<typeof useAuth>;
+      jest.mocked(useAuth).mockReturnValue(auth("user-a"));
+      const previousUpload: UploadedFileState = {
+        file: {
+          name: "pasted_content.txt",
+          type: "text/plain",
+          size: 8,
+          lastModified: 1000,
+        },
+        uploading: false,
+        uploaded: true,
+        storage: "local-desktop",
+        generatedSource: "pasted-text",
+        generatedTextAttachmentId: "paste_1",
+        localAttachmentId: "paste_1",
+        localPath: "/synthetic/pasted_content.txt",
+        tokens: 0,
+        generatedTextAttachment: { id: "paste_1", content: "original" },
+      };
+      globalState.uploadedFiles = [previousUpload];
+      storedFiles = [previousUpload];
+      let finishWrite!: (outcome: unknown) => void;
+      jest.mocked(writeGeneratedTextAttachment).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishWrite = resolve as (outcome: unknown) => void;
+        }) as ReturnType<typeof writeGeneratedTextAttachment>,
+      );
+      const { result, rerender } = renderHook(() => useFileUpload("agent"));
+
+      act(() => result.current.handleUpdateGeneratedTextFile(0, "edited"));
+      const writeSignal = jest.mocked(writeGeneratedTextAttachment).mock
+        .calls[0][3] as AbortSignal;
+      expect(storedFiles[0]).toMatchObject({ uploading: true });
+
+      jest.mocked(useAuth).mockReturnValue(auth("user-b"));
+      globalState.uploadedFiles = storedFiles;
+      await act(async () => rerender());
+      expect(writeSignal.aborted).toBe(true);
+      expect(storedFiles[0]).toMatchObject({
+        uploading: false,
+        uploaded: false,
+      });
+      await act(async () => settle(finishWrite));
+
+      // The initiated write still settles; only this pending entry stops.
+      expect(storedFiles).toHaveLength(1);
+      expect(storedFiles[0]).toMatchObject({
+        uploading: false,
+        uploaded: false,
+        retryable: false,
+        localPath: "/synthetic/pasted_content.txt",
+        error: "Upload interrupted. Remove and attach the file again.",
+      });
+      expect(storedFiles[0].file).toMatchObject({ size: 6 });
+      expect(toast.error).not.toHaveBeenCalled();
+    },
+  );
 
   it("finishes a local text edit after an earlier attachment is removed", async () => {
     const firstUpload = {

@@ -22,10 +22,15 @@ import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
 import {
   generateS3DownloadUrl,
+  getS3ObjectMetadataFailure,
   getS3ObjectSizeBytes,
   getStoredS3Location,
 } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
+import {
+  assertExpectedUploadScope,
+  expectedUploadScopeValidator,
+} from "./lib/fileUploadScope";
 import type {
   FileItemChunk,
   SupportedFileType,
@@ -668,6 +673,7 @@ export const saveFile = action({
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
     skipTokenValidation: v.optional(v.boolean()),
+    expectedUploadScope: expectedUploadScopeValidator,
     mode: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
@@ -709,6 +715,7 @@ export const saveFile = action({
           message: "Unauthorized: User not authenticated",
         });
       }
+      assertExpectedUploadScope(user, args.expectedUploadScope);
       actingUserId = user.subject;
       entitlements = parseEntitlements(user.entitlements);
 
@@ -1185,10 +1192,16 @@ export const saveSandboxGeneratedFile = action({
         throw error;
       }
       if (stage === "verification") {
+        // Exception reporting retains only this payload, so carry finite HEAD
+        // details that distinguish recurring storage verification failures.
+        const storageFailure = getS3ObjectMetadataFailure(error);
         throw new ConvexError({
           code: "GENERATED_FILE_VERIFICATION_FAILED",
           message:
             "The uploaded file could not be verified in storage. Retry delivery before sharing it.",
+          generated_file_verification_diagnostic_version: 1,
+          storage_failure_reason: storageFailure.reason,
+          storage_http_status: storageFailure.httpStatus,
         });
       }
       throw new ConvexError({

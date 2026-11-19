@@ -1,0 +1,12 @@
+diff --git a/dist/wasm-inlined.mjs b/dist/wasm-inlined.mjs
+index 9a7222d3c3a1730fb1397cf05dda90edeeb8de98..23fd8a6b7e21f4c776418196b637c3b8426d04fd 100644
+--- a/dist/wasm-inlined.mjs
++++ b/dist/wasm-inlined.mjs
+@@ -3,6 +3,6 @@
+ const wasmBinaryPromise = new Response(
+   new Blob([binary]).stream().pipeThrough(new DecompressionStream("gzip"))
+-).bytes();
++).arrayBuffer().then((buffer) => new Uint8Array(buffer));
+ const getWasmInstance = async (info) => {
+   return WebAssembly.instantiate(await wasmBinaryPromise, info).then((wasm) => wasm.instance.exports);
+ };

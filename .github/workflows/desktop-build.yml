@@ -1,31 +1,32 @@
 name: Build Desktop App
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "packages/desktop/**"
-      - ".github/workflows/desktop-build.yml"
-      - ".github/scripts/prepare-desktop-release.sh"
-      - ".github/scripts/*universal-dmg.sh"
-      - ".github/scripts/redact-notary-output.py"
-    tags:
-      - "desktop-v*"
-  workflow_dispatch:
+  # Both events load this workflow from the default branch, including after a
+  # push request. This keeps signing credentials away from branch workflow code.
+  workflow_run:
+    workflows: [Request Desktop Build]
+    types: [completed]
+    branches: [main]
+  repository_dispatch:
+    types: [desktop_build]
 
 env:
   APP_URL: https://hackerai.co
 
 jobs:
   prepare:
+    if: >-
+      github.event_name == 'repository_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.repository.full_name == github.repository &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag_name }}
-      should_release: ${{ steps.version.outputs.should_release }}
 
     steps:
       - name: Checkout repository
@@ -36,44 +37,44 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then
-            # Triggered by tag push
-            TAG_NAME="${GITHUB_REF_NAME}"
-            VERSION="${TAG_NAME#desktop-v}"
-            if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              echo "Invalid desktop release tag: $TAG_NAME" >&2
+          # Main push and default-branch manual runs build the next patch as a
+          # candidate. Only the separate promotion workflow creates a release.
+          LATEST_TAG="$(git tag --list 'desktop-v*' --sort=-version:refname | sed -n '1p')"
+          if [[ -z "$LATEST_TAG" ]]; then
+            VERSION="0.0.1"
+          elif [[ "$LATEST_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            LATEST_RELEASE_TAG="$(gh api "repos/${GH_REPO}/releases/latest" --jq '.tag_name')"
+            if [[ "$LATEST_TAG" != "$LATEST_RELEASE_TAG" ]]; then
+              echo "Highest Desktop tag $LATEST_TAG differs from latest published release $LATEST_RELEASE_TAG" >&2
               exit 1
             fi
-            echo "Using existing tag: $TAG_NAME"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-            echo "should_release=true" >> $GITHUB_OUTPUT
+            VERSION="${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
           else
-            # Main and manual runs build the next patch as a promotable release
-            # candidate. The separate promotion workflow can publish these
-            # exact signed artifacts later without rebuilding them.
-            LATEST_TAG="$(git tag --list 'desktop-v*' --sort=-version:refname | sed -n '1p')"
-            if [[ -z "$LATEST_TAG" ]]; then
-              VERSION="0.0.1"
-            elif [[ "$LATEST_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              MAJOR="${BASH_REMATCH[1]}"
-              MINOR="${BASH_REMATCH[2]}"
-              PATCH="${BASH_REMATCH[3]}"
-              VERSION="${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
-            else
-              echo "Latest desktop tag is not a stable semver tag: $LATEST_TAG" >&2
-              exit 1
-            fi
-
-            TAG_NAME="desktop-v$VERSION"
-            echo "Building promotable candidate: $TAG_NAME"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "Latest desktop tag is not a stable semver tag: $LATEST_TAG" >&2
+            exit 1
           fi
+
+          TAG_NAME="desktop-v$VERSION"
+          if git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            echo "Candidate tag already exists: $TAG_NAME" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Candidate release already exists: $TAG_NAME" >&2
+            exit 1
+          fi
+          echo "Building promotable candidate: $TAG_NAME"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -84,10 +85,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          # The Rust target selects the output architecture on this Intel host.
+          - platform: macos-15-intel
             target: aarch64-apple-darwin
             name: macOS-arm64
-          - platform: macos-latest
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             name: macOS-x64
           - platform: ubuntu-22.04
@@ -121,7 +123,7 @@ jobs:
 
       - name: Get pnpm store directory
         shell: bash
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
         id: pnpm-cache
 
       - name: Setup pnpm cache
@@ -133,7 +135,7 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install Rust stable (Linux, Windows)
-        if: matrix.platform != 'macos-latest'
+        if: matrix.platform != 'macos-15-intel'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: stable
@@ -143,7 +145,7 @@ jobs:
           cache: false
 
       - name: Install Rust stable (macOS - pinned rustup-init)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-15-intel'
         shell: bash
         env:
           RUSTUP_VERSION: 1.29.0
@@ -195,7 +197,9 @@ jobs:
 
       - name: Install dependencies (Ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu')
+        timeout-minutes: 15
         run: |
+          bash .github/scripts/prefer-ubuntu-apt-mirror.sh
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
@@ -220,7 +224,7 @@ jobs:
           grep version tauri.conf.json
 
       - name: Import Apple certificate
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-15-intel'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -260,9 +264,25 @@ jobs:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
+          # Retry transient Apple timestamp/authentication failures in the same
+          # workspace, retaining the completed Rust build and all signing checks.
+          retryAttempts: ${{ matrix.platform == 'macos-15-intel' && '2' || '0' }}
+
+      - name: Sign Debian updater packages
+        if: startsWith(matrix.platform, 'ubuntu')
+        working-directory: packages/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          packages=(src-tauri/target/"$TARGET"/release/bundle/deb/*.deb)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          pnpm tauri signer sign "${packages[0]}"
 
       - name: Notarize macOS DMG
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-15-intel'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -303,7 +323,7 @@ jobs:
 
               echo "$SUBMIT_OUTPUT"
               echo "Stapling notarization ticket to $DMG..."
-              xcrun stapler staple "$DMG"
+              bash .github/scripts/staple-notarization.sh "$DMG"
 
               echo "Verifying notarization..."
               spctl --assess --type open --context context:primary-signature -v "$DMG" || true
@@ -343,7 +363,7 @@ jobs:
 
   build-macos-universal:
     needs: [prepare, build]
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     permissions:
       contents: read
 
@@ -475,7 +495,7 @@ jobs:
 
           echo "$SUBMIT_OUTPUT"
           echo "Stapling notarization ticket..."
-          xcrun stapler staple "$UNIVERSAL_APP"
+          bash .github/scripts/staple-notarization.sh "$UNIVERSAL_APP"
 
           rm universal-app.zip
 
@@ -514,234 +534,3 @@ jobs:
           path: HackerAI-universal.dmg
           if-no-files-found: error
           retention-days: 7
-
-  create-release:
-    needs: [prepare, build, build-macos-universal]
-    runs-on: ubuntu-latest
-    if: needs.prepare.outputs.should_release == 'true'
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: artifacts
-
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release-files
-
-          find artifacts -name "*.dmg" -exec cp {} release-files/ \;
-          find artifacts -name "*.app.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.app.tar.gz.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.nsis.zip" -exec cp {} release-files/ \;
-          find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.exe" -exec cp {} release-files/ \;
-          find artifacts -name "*.deb" -exec cp {} release-files/ \;
-
-          echo "Files in release-files before creating aliases:"
-          ls -la release-files/ | grep -E "(AppImage|exe|deb)" || echo "No AppImage, exe, or deb files found"
-
-          # Create fixed-name aliases for download page (no version in filename)
-          # Linux x64 AppImage
-          LINUX_X64_APPIMAGE=$(ls release-files/*_amd64.AppImage 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux x64 AppImage: pattern '*_amd64.AppImage'"
-          echo "Found: $LINUX_X64_APPIMAGE"
-          if [ -n "$LINUX_X64_APPIMAGE" ] && [ -f "$LINUX_X64_APPIMAGE" ]; then
-            cp "$LINUX_X64_APPIMAGE" release-files/HackerAI-linux-x64.AppImage
-            echo "Created alias: HackerAI-linux-x64.AppImage from $(basename "$LINUX_X64_APPIMAGE")"
-          else
-            echo "WARNING: Linux x64 AppImage not found for alias creation"
-          fi
-
-          # Linux ARM64 AppImage
-          LINUX_ARM64_APPIMAGE=$(ls release-files/*_aarch64.AppImage 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux ARM64 AppImage: pattern '*_aarch64.AppImage'"
-          echo "Found: $LINUX_ARM64_APPIMAGE"
-          if [ -n "$LINUX_ARM64_APPIMAGE" ] && [ -f "$LINUX_ARM64_APPIMAGE" ]; then
-            cp "$LINUX_ARM64_APPIMAGE" release-files/HackerAI-linux-arm64.AppImage
-            echo "Created alias: HackerAI-linux-arm64.AppImage from $(basename "$LINUX_ARM64_APPIMAGE")"
-          else
-            echo "WARNING: Linux ARM64 AppImage not found for alias creation"
-          fi
-
-          # Linux x64 deb
-          LINUX_X64_DEB=$(ls release-files/*_amd64.deb 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux x64 deb: pattern '*_amd64.deb'"
-          echo "Found: $LINUX_X64_DEB"
-          if [ -n "$LINUX_X64_DEB" ] && [ -f "$LINUX_X64_DEB" ]; then
-            cp "$LINUX_X64_DEB" release-files/HackerAI-linux-x64.deb
-            echo "Created alias: HackerAI-linux-x64.deb from $(basename "$LINUX_X64_DEB")"
-          else
-            echo "WARNING: Linux x64 deb not found for alias creation"
-          fi
-
-          # Linux ARM64 deb
-          LINUX_ARM64_DEB=$(ls release-files/*_arm64.deb 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux ARM64 deb: pattern '*_arm64.deb'"
-          echo "Found: $LINUX_ARM64_DEB"
-          if [ -n "$LINUX_ARM64_DEB" ] && [ -f "$LINUX_ARM64_DEB" ]; then
-            cp "$LINUX_ARM64_DEB" release-files/HackerAI-linux-arm64.deb
-            echo "Created alias: HackerAI-linux-arm64.deb from $(basename "$LINUX_ARM64_DEB")"
-          else
-            echo "WARNING: Linux ARM64 deb not found for alias creation"
-          fi
-
-          # Windows exe
-          WIN_EXE=$(ls release-files/*_x64-setup.exe 2>/dev/null | head -1 || echo "")
-          echo "Looking for Windows exe: pattern '*_x64-setup.exe'"
-          echo "Found: $WIN_EXE"
-          if [ -n "$WIN_EXE" ] && [ -f "$WIN_EXE" ]; then
-            cp "$WIN_EXE" release-files/HackerAI-windows-x64.exe
-            echo "Created alias: HackerAI-windows-x64.exe from $(basename "$WIN_EXE")"
-          else
-            echo "WARNING: Windows exe not found for alias creation"
-          fi
-
-          echo "Release files:"
-          ls -la release-files/
-          
-          # Verify fixed-name aliases exist
-          echo "Verifying fixed-name aliases..."
-          if [ ! -f "release-files/HackerAI-linux-x64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-x64.AppImage alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-arm64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-arm64.AppImage alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
-            echo "ERROR: HackerAI-windows-x64.exe alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-x64.deb" ]; then
-            echo "ERROR: HackerAI-linux-x64.deb alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-arm64.deb" ]; then
-            echo "ERROR: HackerAI-linux-arm64.deb alias not created!"
-            exit 1
-          fi
-          echo "All fixed-name aliases verified successfully!"
-
-      - name: Generate latest.json for updater
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          cat > release-files/latest.json << EOF
-          {
-            "version": "$VERSION",
-            "notes": "See release notes on GitHub",
-            "pub_date": "$DATE",
-            "platforms": {}
-          }
-          EOF
-
-          PLATFORMS='{}'
-
-          MACOS_FILE=$(ls release-files/*aarch64*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$MACOS_FILE" ]; then
-            MACOS_FILE=$(ls release-files/*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          fi
-          if [ -n "$MACOS_FILE" ] && [ -f "$MACOS_FILE" ]; then
-            MACOS_BASENAME=$(basename "$MACOS_FILE")
-            SIG=$(cat "${MACOS_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${MACOS_BASENAME}" --arg sig "$SIG" '. + {"darwin-aarch64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          MACOS_X64_FILE=$(ls release-files/*x86_64*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$MACOS_X64_FILE" ]; then
-            MACOS_X64_FILE="$MACOS_FILE"
-          fi
-          if [ -n "$MACOS_X64_FILE" ] && [ -f "$MACOS_X64_FILE" ]; then
-            MACOS_X64_BASENAME=$(basename "$MACOS_X64_FILE")
-            SIG=$(cat "${MACOS_X64_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${MACOS_X64_BASENAME}" --arg sig "$SIG" '. + {"darwin-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          LINUX_FILE=$(ls release-files/*_amd64.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$LINUX_FILE" ]; then
-            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | { grep -v aarch64 || true; } | head -1 || echo "")
-          fi
-          if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
-            LINUX_BASENAME=$(basename "$LINUX_FILE")
-            SIG=$(cat "${LINUX_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_BASENAME}" --arg sig "$SIG" '. + {"linux-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          LINUX_ARM_FILE=$(ls release-files/*aarch64*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -n "$LINUX_ARM_FILE" ] && [ -f "$LINUX_ARM_FILE" ]; then
-            LINUX_ARM_BASENAME=$(basename "$LINUX_ARM_FILE")
-            SIG=$(cat "${LINUX_ARM_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_ARM_BASENAME}" --arg sig "$SIG" '. + {"linux-aarch64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          WIN_FILE=$(ls release-files/*.nsis.zip 2>/dev/null | head -1 || echo "")
-          if [ -n "$WIN_FILE" ] && [ -f "$WIN_FILE" ]; then
-            WIN_BASENAME=$(basename "$WIN_FILE")
-            SIG=$(cat "${WIN_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${WIN_BASENAME}" --arg sig "$SIG" '. + {"windows-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          jq --argjson platforms "$PLATFORMS" '.platforms = $platforms' release-files/latest.json > release-files/latest.json.tmp
-          mv release-files/latest.json.tmp release-files/latest.json
-
-          echo "Generated latest.json:"
-          cat release-files/latest.json
-
-      - name: Create Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
-        run: |
-          echo "Creating release for tag: $TAG_NAME"
-          
-          # Verify fixed-name aliases exist before uploading
-          echo "Verifying fixed-name aliases before upload..."
-          if [ ! -f "release-files/HackerAI-linux-x64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-x64.AppImage not found!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-arm64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-arm64.AppImage not found!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
-            echo "ERROR: HackerAI-windows-x64.exe not found!"
-            exit 1
-          fi
-          
-          echo "All fixed-name aliases verified. Uploading release files..."
-          gh release create "$TAG_NAME" \
-            --title "HackerAI Desktop $TAG_NAME" \
-            --draft \
-            --generate-notes \
-            release-files/*

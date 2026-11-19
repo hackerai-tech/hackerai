@@ -1,7 +1,7 @@
 /**
  * Controlled CLI benchmark, using the product's real session manager.
  * Prerequisite: a disposable Linux Docker container with Chromium, Python 3,
- * Node and agent-browser@0.26.0. No application credentials/config required.
+ * Node and agent-browser. No application credentials/config required.
  * Usage: pnpm exec tsx scripts/benchmark-browser-workflows.mts <container>
  * The fixture listens on 4173 inside that container; publish it only on loopback
  * if you want to inspect it with the built-in Browser. Remove the container after.
@@ -68,6 +68,7 @@ const owner = new BrowserSessions();
 const other = new BrowserSessions();
 let expiryDirectory: string | undefined;
 try {
+  const browserVersion = (await shell("agent-browser --version")).trim();
   await exec(docker, [
     "cp",
     fileURLToPath(
@@ -168,6 +169,18 @@ try {
     `test ! -e ${quote(checkpoint)} && test -f ${quote(checkpoint + ".enc")} && test "$(stat -c %a ${quote(checkpoint + ".enc")})" = 600`,
   );
   await command("alice", "close");
+  // close acknowledges before the daemon's graceful shutdown completes.
+  // Observe its exit before restore so the command cannot reach a closing socket.
+  await shell(
+    `python3 -c ${quote(`import pathlib, time
+root = pathlib.Path(${JSON.stringify(env.AGENT_BROWSER_SOCKET_DIR)})
+deadline = time.monotonic() + 5
+while any((root / name).exists() for name in ('alice.sock', 'alice.pid')):
+    if time.monotonic() >= deadline:
+        raise RuntimeError('Browser daemon did not finish closing')
+    time.sleep(0.02)
+`)}`,
+  );
   await command("alice", "state", "load", checkpoint + ".enc");
   await command("alice", "open", `${base}/account`);
   assert.match(await text("alice"), /alice/);
@@ -204,9 +217,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 2500));
   await shell(`test ! -e ${quote(expiryDirectory)}`);
   record("independent expiry after missing worker cleanup");
-  console.log(
-    JSON.stringify({ browser: "agent-browser@0.26.0", checks }, null, 2),
-  );
+  console.log(JSON.stringify({ browser: browserVersion, checks }, null, 2));
 } finally {
   await Promise.all([owner.cleanup(), other.cleanup()]);
   if (expiryDirectory)

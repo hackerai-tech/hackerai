@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
 import type { ChatStatus, MessageMetadata, Todo } from "@/types";
 import {
   useDataStreamState,
@@ -8,14 +9,17 @@ import {
   type ScopedDataUIPart,
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
+import {
+  AUTO_CONTINUE_PROMPT,
+  MAX_AUTO_CONTINUES,
+} from "@/lib/chat/agent-auto-continue-policy";
 
-export const MAX_AUTO_CONTINUES = 1;
-export const AUTO_CONTINUE_PROMPT =
-  "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
+export { AUTO_CONTINUE_PROMPT, MAX_AUTO_CONTINUES };
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
 
 export interface UseAutoContinueParams {
   sendDisabledReason?: string;
+  finishReason?: string;
   chatId: string;
   status: ChatStatus;
   chatMode: string;
@@ -41,6 +45,7 @@ export function useAutoContinue({
   agentPermissionMode,
   selectedModel,
   sendDisabledReason,
+  finishReason,
 }: UseAutoContinueParams) {
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
@@ -109,6 +114,26 @@ export function useAutoContinue({
   // Depends on both `status` and `dataStream` so it re-evaluates when
   // the signal arrives after the stream has already ended (status already "ready").
   useEffect(() => {
+    if (
+      requiresManualAgentResume(finishReason) ||
+      (sendDisabledReason && sandboxPreference !== "e2b")
+    ) {
+      // Never retain a pending automatic continuation across a local disconnect
+      // or an abandoned browser handoff. Only the user's Resume continues it.
+      if (
+        autoContinueRunScheduledRef.current &&
+        !autoContinueRunStartedRef.current
+      ) {
+        autoContinueCountRef.current = Math.max(
+          0,
+          autoContinueCountRef.current - 1,
+        );
+        setAutoContinueCount(autoContinueCountRef.current);
+      }
+      clearAutoContinueLifecycle();
+      setIsAutoResuming(false);
+      return;
+    }
     if (sendDisabledReason) {
       const keepPending =
         pendingAutoContinueRef.current || autoContinueRunScheduledRef.current;
@@ -181,6 +206,8 @@ export function useAutoContinue({
   }, [
     status,
     sendDisabledReason,
+    finishReason,
+    sandboxPreference,
     dataStream,
     chatMode,
     hasManuallyStoppedRef,

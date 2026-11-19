@@ -186,4 +186,196 @@ describe("replaceVendorCostWindow", () => {
     });
     expect(rows[0].billed_cost_dollars).toBeUndefined();
   });
+
+  it("recognizes provisional provider spend without pretending it is invoiced", async () => {
+    const { ctx, rows } = makeCtx();
+    await replace(ctx, {
+      vendor: "posthog",
+      rows: [
+        {
+          day: "2026-08-30",
+          serviceName: "product-analytics",
+          serviceCategory: "analytics",
+          billingCurrency: "USD",
+          costStatus: "estimated",
+          effectiveCostDollars: 12,
+          sourcePeriodStart: "2026-08-30T00:00:00.000Z",
+          sourcePeriodEnd: "2026-08-31T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(rows[0]).toMatchObject({
+      recognized_cost_dollars: 12,
+      gross_profit_impact_dollars: -12,
+      cost_status: "estimated",
+    });
+    expect(rows[0].billed_cost_dollars).toBeUndefined();
+    await expect(
+      replace(ctx, { vendor: "vercel", rows: [] }),
+    ).resolves.toMatchObject({ deleted: 0 });
+    expect(rows).toHaveLength(1);
+  });
+  it.each([undefined, NaN, Infinity])(
+    "rejects an unknown estimated amount (%s) without replacing known cost",
+    async (amount) => {
+      const { ctx, rows } = makeCtx();
+      await replace(ctx);
+      const invalid = {
+        day: "2026-08-30",
+        serviceName: "product-analytics",
+        serviceCategory: "analytics",
+        billingCurrency: "USD",
+        costStatus: "estimated",
+        effectiveCostDollars: amount,
+        sourcePeriodStart: "2026-08-30T00:00:00.000Z",
+        sourcePeriodEnd: "2026-08-31T00:00:00.000Z",
+      };
+      await expect(replace(ctx, { rows: [invalid] })).rejects.toThrow();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].recognized_cost_dollars).toBe(12.5);
+      expect(ctx.db.delete).not.toHaveBeenCalled();
+      expect(ctx.db.patch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves an explicit zero estimate", async () => {
+    const { ctx, rows } = makeCtx();
+    await replace(ctx, {
+      vendor: "posthog",
+      rows: [
+        {
+          day: "2026-08-30",
+          serviceName: "product-analytics",
+          serviceCategory: "analytics",
+          billingCurrency: "USD",
+          costStatus: "estimated",
+          effectiveCostDollars: 0,
+          sourcePeriodStart: "2026-08-30T00:00:00.000Z",
+          sourcePeriodEnd: "2026-08-31T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(rows[0]).toMatchObject({
+      effective_cost_dollars: 0,
+      recognized_cost_dollars: 0,
+    });
+  });
+
+  it("keeps priced Convex charges and its hourly usage meters in separate replacement scopes", async () => {
+    const { replaceCostRows } = await import("../platformCosts");
+    const { ctx, rows } = makeCtx();
+    const common = {
+      vendor: "convex" as const,
+      startDay: "2026-08-30",
+      endDay: "2026-08-30",
+      observedAt: Date.now(),
+    };
+    const charge = {
+      day: "2026-08-30",
+      serviceName: "team-billing",
+      serviceCategory: "database",
+      billingCurrency: "USD",
+      costStatus: "billed" as const,
+      billedCostDollars: 2,
+      sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+      sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+    };
+    await replaceCostRows(ctx, { ...common, scope: "charges", rows: [charge] });
+    await replace(ctx, {
+      ...common,
+      rows: [
+        {
+          ...charge,
+          serviceName: "database-bandwidth",
+          costStatus: "metered",
+          billedCostDollars: undefined,
+          usageQuantity: 5,
+          usageUnit: "GB",
+        },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    const repeat = await replaceCostRows(ctx, {
+      ...common,
+      scope: "charges",
+      rows: [charge],
+    });
+    expect(repeat).toEqual({
+      inserted: 0,
+      updated: 0,
+      deleted: 0,
+      unchanged: 1,
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((n, row) => n + row.recognized_cost_dollars, 0)).toBe(2);
+  });
+
+  it("rejects an unknown billed amount before changing an existing expense", async () => {
+    const { ctx, rows } = makeCtx();
+    await replace(ctx);
+    await expect(
+      replace(ctx, {
+        rows: [
+          {
+            day: "2026-08-30",
+            serviceName: "billing",
+            serviceCategory: "database",
+            costStatus: "billed",
+            sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+            sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    ).rejects.toThrow("billedCostDollars");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].recognized_cost_dollars).toBe(12.5);
+  });
+  it("a partial Convex invoice history cannot discard an issued receipt in an estimated daily row", async () => {
+    const { replaceCostRows } = await import("../platformCosts");
+    const { ctx, rows } = makeCtx();
+    const args = {
+      vendor: "convex" as const,
+      scope: "charges" as const,
+      startDay: "2026-08-30",
+      endDay: "2026-08-30",
+      observedAt: Date.now(),
+    };
+    const charge = {
+      day: "2026-08-30",
+      serviceName: "team-billing:1",
+      serviceCategory: "database",
+      billingCurrency: "USD",
+      costStatus: "estimated" as const,
+      effectiveCostDollars: 2,
+      sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+      sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+      costBasis: "billing_period_allocation" as const,
+      billingReference: "ISSUED-1,EXAMPLE-DRAFT",
+    };
+    await replaceCostRows(ctx, { ...args, rows: [charge] });
+    await expect(
+      replaceCostRows(ctx, {
+        ...args,
+        rows: [
+          {
+            ...charge,
+            effectiveCostDollars: 0,
+            billingReference: "EXAMPLE-DRAFT",
+          },
+        ],
+      }),
+    ).rejects.toThrow("omits a previously recorded");
+    expect(rows[0].recognized_cost_dollars).toBe(2);
+    await replaceCostRows(ctx, {
+      ...args,
+      rows: [
+        {
+          ...charge,
+          effectiveCostDollars: 0,
+          billingReference: "ISSUED-1,ISSUED-2",
+        },
+      ],
+    });
+    expect(rows[0].recognized_cost_dollars).toBe(0);
+  });
 });

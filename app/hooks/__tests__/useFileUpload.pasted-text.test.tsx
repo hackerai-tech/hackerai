@@ -1,10 +1,35 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useFileUpload } from "../useFileUpload";
 import { toast } from "sonner";
+import type { UploadedFileState } from "@/types/file";
 
-const addUploadedFile = jest.fn();
-const updateUploadedFile = jest.fn();
-const removeUploadedFile = jest.fn();
+// Mirrors GlobalState's synchronous membership, read by getUploadedFiles().
+let storedFiles: UploadedFileState[] = [];
+const matches = (
+  item: UploadedFileState,
+  index: number,
+  target: number | UploadedFileState["file"],
+) => (typeof target === "number" ? index === target : item.file === target);
+const addUploadedFile = jest.fn((file: UploadedFileState) => {
+  storedFiles = [...storedFiles, file];
+});
+const updateUploadedFile = jest.fn(
+  (
+    target: number | UploadedFileState["file"],
+    updates: Partial<UploadedFileState>,
+  ) => {
+    storedFiles = storedFiles.map((item, index) =>
+      matches(item, index, target) ? { ...item, ...updates } : item,
+    );
+  },
+);
+const removeUploadedFile = jest.fn(
+  (target: number | UploadedFileState["file"]) => {
+    storedFiles = storedFiles.filter(
+      (item, index) => !matches(item, index, target),
+    );
+  },
+);
 const deleteFile = jest.fn();
 const saveFile = jest.fn();
 const generateS3UploadUrlAction = jest.fn();
@@ -13,6 +38,7 @@ let globalState: any;
 
 jest.mock("convex/react", () => ({
   useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
+  useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   useMutation: () => deleteFile,
   useAction: (action: unknown) =>
     String(action).includes("generateS3UploadUrlAction")
@@ -81,8 +107,10 @@ describe("useFileUpload generated pasted text attachments", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
+    storedFiles = [];
     globalState = {
       uploadedFiles: [],
+      getUploadedFiles: () => storedFiles,
       addUploadedFile,
       updateUploadedFile,
       removeUploadedFile,
@@ -278,6 +306,7 @@ describe("useFileUpload generated pasted text attachments", () => {
       },
     };
     globalState.uploadedFiles = [previousUpload];
+    storedFiles = [previousUpload];
     global.fetch = jest
       .fn()
       .mockResolvedValue({ ok: false, statusText: "upload failed" }) as any;

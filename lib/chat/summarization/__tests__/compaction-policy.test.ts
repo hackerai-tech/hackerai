@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockConfigured = jest.fn(() => true);
+const mockInferenceConfigured = jest.fn(() => false);
 const mockFlag = jest.fn<() => Promise<boolean | null>>();
 const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
@@ -11,6 +12,12 @@ jest.mock("@/lib/ai/abliteration", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: mockEvent },
   getPostHogBooleanFlagDecisionForUser: mockFlag,
+}));
+jest.mock("@/lib/ai/inference", () => ({
+  ...jest.requireActual<typeof import("@/lib/ai/inference")>(
+    "@/lib/ai/inference",
+  ),
+  isInferenceConfigured: mockInferenceConfigured,
 }));
 const {
   CompactionModelPolicy,
@@ -30,8 +37,82 @@ const context = {
 describe("compaction model assignment and telemetry", () => {
   beforeEach(() => {
     mockConfigured.mockReturnValue(true);
+    mockInferenceConfigured.mockReturnValue(false);
     mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
+  });
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "uses Inference first for %s compaction in Ask and Agent",
+    async (subscription) => {
+      mockInferenceConfigured.mockReturnValue(true);
+      mockFlag.mockResolvedValue(true);
+      for (const mode of ["ask", "agent"] as const) {
+        const policy = new CompactionModelPolicy({
+          ...context,
+          subscription,
+          mode,
+        });
+        const assignment = await policy.resolve();
+        expect(assignment).toMatchObject({
+          model: "model-inference-cyber",
+          fallbackModel: "model-abliterated",
+          policy: "inference_abliteration_fallback_v1",
+        });
+        expect(await policy.resolve()).toBe(assignment);
+        policy.start(assignment, "durable");
+        expect(mockEvent).toHaveBeenLastCalledWith(
+          "compaction_model_started",
+          expect.objectContaining({
+            assigned_model: "model-inference-cyber",
+            compaction_flag_key: "inference_cyber_v1",
+            compaction_flag_enabled: true,
+            compaction_moderation_routed: false,
+          }),
+        );
+      }
+    },
+  );
+  it.each([
+    ["hackerai-pro", "pro_inference_context_v1"],
+    ["hackerai-max", "max_inference_context_v1"],
+  ] as const)(
+    "retains %s expanded context and Abliteration recovery",
+    async (selectedModel, policy) => {
+      mockInferenceConfigured.mockReturnValue(true);
+      mockFlag.mockResolvedValue(true);
+      expect(
+        await new CompactionModelPolicy({
+          ...context,
+          selectedModel,
+          expandedAgentContext: true,
+        }).resolve(),
+      ).toMatchObject({
+        model: "model-inference-cyber",
+        fallbackModel: "model-abliterated-large-v2",
+        expandedAgentContext: true,
+        policy,
+      });
+    },
+  );
+  it.each([false, null])(
+    "restores the previous policy when Inference flag is %s",
+    async (flag) => {
+      mockInferenceConfigured.mockReturnValue(true);
+      mockFlag.mockResolvedValueOnce(flag).mockResolvedValueOnce(false);
+      expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
+        model: "model-abliterated",
+        policy: COMPACTION_POLICY_VERSION,
+      });
+    },
+  );
+  it("does not require the fallback credential to use Inference", async () => {
+    mockInferenceConfigured.mockReturnValue(true);
+    mockConfigured.mockReturnValue(false);
+    mockFlag.mockResolvedValue(true);
+    expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
+      model: "model-inference-cyber",
+      fallbackModel: "model-glm-5.3-flash",
+    });
   });
   it("records safe provider rejection facts without response content", async () => {
     const policy = new CompactionModelPolicy(context);
@@ -151,6 +232,66 @@ describe("compaction model assignment and telemetry", () => {
       );
     },
   );
+  it.each([
+    [false, "model-abliterated-large-v2", "paid_480k_large_v2_context_v1"],
+    [true, "model-inference-cyber", "paid_480k_inference_context_v1"],
+  ] as const)(
+    "gives paid 480K runs expanded summaries in their own cohort (inference=%s)",
+    async (inference, model, expectedPolicy) => {
+      mockInferenceConfigured.mockReturnValue(inference);
+      mockFlag.mockResolvedValue(inference);
+      for (const selectedModel of [
+        undefined,
+        "auto",
+        "hackerai-standard",
+      ] as const) {
+        const policy = new CompactionModelPolicy({
+          ...context,
+          selectedModel,
+          agentContextPolicy: "paid_480k",
+        });
+        const assignment = await policy.resolve();
+        expect(assignment).toMatchObject({
+          model,
+          expandedAgentContext: true,
+          policy: expectedPolicy,
+        });
+        policy.start(assignment, "run_scoped").finish("completed", model);
+        expect(mockEvent).toHaveBeenLastCalledWith(
+          "compaction_model_finished",
+          expect.objectContaining({ compaction_policy: expectedPolicy }),
+        );
+      }
+      expect(JSON.stringify(mockEvent.mock.calls)).not.toContain(
+        "paid_agent_context",
+      );
+    },
+  );
+  it("keeps baseline, Ask and explicit Pro/Max compaction out of the paid cohort", async () => {
+    const baseline = await new CompactionModelPolicy({
+      ...context,
+      agentContextPolicy: "baseline",
+    }).resolve();
+    expect(baseline).toMatchObject({
+      model: "model-abliterated",
+      policy: COMPACTION_POLICY_VERSION,
+    });
+    expect(baseline.expandedAgentContext).toBeUndefined();
+    const ask = await new CompactionModelPolicy({
+      ...context,
+      mode: "ask",
+      agentContextPolicy: "paid_480k",
+    }).resolve();
+    expect(ask.expandedAgentContext).toBeUndefined();
+    expect(ask.policy).toBe(COMPACTION_POLICY_VERSION);
+    expect(
+      await new CompactionModelPolicy({
+        ...context,
+        selectedModel: "hackerai-pro",
+        agentContextPolicy: "expanded",
+      }).resolve(),
+    ).toMatchObject({ policy: "pro_large_v2_context_v1" });
+  });
   it("starts with GLM when Abliteration credentials are missing", async () => {
     mockConfigured.mockReturnValue(false);
     expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({

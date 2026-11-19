@@ -10,7 +10,6 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
-import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -21,6 +20,7 @@ import {
   type QueueBehavior,
   type SandboxPreference,
   isChatMode,
+  isSidebarTerminal,
   normalizeSelectedModelForSubscription,
 } from "@/types/chat";
 import type { Todo } from "@/types";
@@ -62,8 +62,6 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
-import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
-import { environmentPreference } from "@/lib/sandbox/environment";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -72,17 +70,10 @@ import {
 const ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
 const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
-type SurveyActivation = {
-  chatId: string;
-  userMessageId: string;
-  mode: "ask" | "agent";
-};
-
 interface GlobalStateType {
-  surveyActivation: SurveyActivation | null;
-  setSurveyActivation: (activation: SurveyActivation | null) => void;
   // File upload state
   uploadedFiles: UploadedFileState[];
+  getUploadedFiles: () => UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
   removeUploadedFile: (target: number | UploadedFileState["file"]) => void;
@@ -139,7 +130,9 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
-  queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  queueChatId: string | null;
+  selectMessageQueue: (chatId: string) => void;
+  queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
@@ -176,7 +169,7 @@ interface GlobalStateType {
   // Active local sandbox connections, shared to avoid duplicate Convex subscriptions
   localConnections: LocalSandboxConnection[] | undefined;
 
-  // The sandbox preference to use for free agent mode (desktop or first remote connection ID)
+  // The embedded Desktop default for free Agent mode, when present.
   defaultLocalSandboxPreference: SandboxPreference | null;
 
   // Model selection
@@ -189,10 +182,14 @@ interface GlobalStateType {
   clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
+  consumeBrowserTakeoverRequest: (requestId: string) => void;
   closeSidebar: () => void;
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
+  // Tracks chat navigation before its destination route commits.
+  markChatNavigationStarted: () => void;
+  getChatNavigationRevision: () => number;
 
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
@@ -217,6 +214,7 @@ type GlobalStateActionsType = Pick<
   | "closeSidebar"
   | "initializeChat"
   | "initializeNewChat"
+  | "markChatNavigationStarted"
   | "setActiveProjectId"
   | "setChatSidebarOpen"
   | "setSandboxPreference"
@@ -244,7 +242,6 @@ interface LocalSandboxConnection {
     release: string;
     hostname: string;
   };
-  lastSeen: number;
   isDesktop: boolean;
   capabilities: {
     commands: boolean;
@@ -265,30 +262,34 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     refreshAuth,
   } = useAuth();
   const { refresh: refreshAccessToken } = useAccessToken();
-  // A new task changes from / to /c/:id and remounts Chat. Keep only the
-  // current submission in the shared layout; never persist it across reloads.
-  const [surveySubmission, setSurveySubmission] = useState<
-    (SurveyActivation & { userId: string }) | null
-  >(null);
-  const userId = user?.id;
-  const setSurveyActivation = useCallback(
-    (activation: SurveyActivation | null) => {
-      setSurveySubmission(
-        activation && userId ? { ...activation, userId } : null,
-      );
-    },
-    [userId],
-  );
-  useEffect(() => {
-    setSurveySubmission(null);
-  }, [userId, organizationId]);
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
   const shownReferralRewardNotificationsRef = useRef(new Set<string>());
   const initialSavedChatModeRef = useRef<ChatMode | null>(null);
   const hasUserSelectedModeThisSessionRef = useRef(false);
   const agentFirstDefaultAppliedRef = useRef(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadedFileState[]>(
+    [],
+  );
+  const uploadedFilesRef = useRef<UploadedFileState[]>([]);
+  const getUploadedFiles = useCallback(() => uploadedFilesRef.current, []);
+  // Admission and composer cleanup must observe attachment changes immediately,
+  // before React publishes the corresponding render.
+  const setUploadedFiles = useCallback(
+    (
+      update:
+        | UploadedFileState[]
+        | ((files: UploadedFileState[]) => UploadedFileState[]),
+    ) => {
+      const next =
+        typeof update === "function"
+          ? update(uploadedFilesRef.current)
+          : update;
+      uploadedFilesRef.current = next;
+      setUploadedFilesState(next);
+    },
+    [],
+  );
   const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
@@ -478,6 +479,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const chatNavigationHandlerRef = useRef<
     ((nextChatId: string) => void) | null
   >(null);
+  // Advanced synchronously by chat navigation entry points, before the
+  // destination route commits, so async work can tell a newer navigation won.
+  const chatNavigationRevisionRef = useRef(0);
   const entitlementRefreshUserRef = useRef<string | null>(null);
   const entitlementRefreshFailureRef = useRef<{
     userId: string;
@@ -494,11 +498,33 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setHasUserDismissedRateLimitWarning,
   ] = useState(false);
 
-  // Message queue state (for Agent mode queueing)
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  // Keep held work with its account/chat across client-side navigation. This is
+  // session memory, not durable delivery; callbacks retain their original key.
+  const [queueChatId, setQueueChatId] = useState<string | null>(null);
+  const queueKey = JSON.stringify([user?.id ?? null, queueChatId]);
+  const queuesRef = useRef(new Map<string, QueuedMessage[]>());
+  const [, refreshQueues] = useState(0);
+  const messageQueue = queuesRef.current.get(queueKey) ?? [];
+  const setMessageQueue = useCallback(
+    (
+      update: QueuedMessage[] | ((queue: QueuedMessage[]) => QueuedMessage[]),
+    ) => {
+      const current = queuesRef.current.get(queueKey) ?? [];
+      const next = typeof update === "function" ? update(current) : update;
+      if (next.length) queuesRef.current.set(queueKey, next);
+      else queuesRef.current.delete(queueKey);
+      refreshQueues((version) => version + 1);
+    },
+    [queueKey],
+  );
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
     string | null
   >(null);
+
+  const selectMessageQueue = useCallback((chatId: string) => {
+    setQueueChatId(chatId);
+    setEditingQueuedMessageId(null);
+  }, []);
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
@@ -513,7 +539,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
-    hasExplicitSandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
     desktopBridgeActive,
@@ -531,7 +556,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   // Check for available local sandbox connections
   const localConnections = useQuery(
-    api.localSandbox.listConnections,
+    api.localSandbox.listConnectionDetails,
     user ? undefined : "skip",
   );
   const hasLocalSandbox = useMemo(
@@ -545,12 +570,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         return desktopEnvironmentId
           ? `desktop-environment:${desktopEnvironmentId}`
           : "desktop";
-      const firstRemote = localConnections?.find((c) => !c.isDesktop);
-      if (firstRemote) return environmentPreference(firstRemote);
-      const firstDesktop = localConnections?.find((c) => c.isDesktop);
-      if (firstDesktop) return environmentPreference(firstDesktop);
       return null;
-    }, [desktopBridgeActive, desktopEnvironmentId, localConnections]);
+    }, [desktopBridgeActive, desktopEnvironmentId]);
 
   const entitlementRefreshRequested =
     typeof window !== "undefined" &&
@@ -773,27 +794,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [agentOnlyActive],
   );
-
-  const pathname = usePathname();
-  useEffect(() => {
-    setSurveySubmission((submission) =>
-      submission && pathname === `/c/${submission.chatId}` ? submission : null,
-    );
-  }, [pathname]);
-  useAutoSelectNewRemoteConnection({
-    connections: localConnections,
-    enabled: Boolean(user),
-    isNewChat: pathname === "/",
-    hasExplicitSandboxPreference,
-    chatMode: accessibleChatMode,
-    setChatMode,
-    subscription: paidAgentSubscription,
-    freeSubscriptionResolved,
-    sandboxPreference,
-    setSandboxPreference,
-    selectedModel,
-    setSelectedModel: setSelectedModelState,
-  });
 
   useEffect(() => {
     if (!agentOnlyActive) return;
@@ -1139,9 +1139,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     (file) => file.uploading || file.error,
   );
 
-  const addUploadedFile = useCallback((file: UploadedFileState) => {
-    setUploadedFiles((prev) => [...prev, file]);
-  }, []);
+  const addUploadedFile = useCallback(
+    (file: UploadedFileState) => {
+      setUploadedFiles((prev) => [...prev, file]);
+    },
+    [setUploadedFiles],
+  );
 
   const removeUploadedFile = useCallback(
     (target: number | UploadedFileState["file"]) => {
@@ -1151,7 +1154,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   const updateUploadedFile = useCallback(
@@ -1167,40 +1170,41 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   // Message queue handlers
   const queueMessage = useCallback(
     (text: string, files?: FileMessagePart[]) => {
-      setMessageQueue((prev) => {
-        // Limit queue size to 10 messages
-        if (prev.length >= 10) {
-          toast.error("Queue is full", {
-            description:
-              "Please wait for queued messages to send before adding more.",
-          });
-          return prev;
-        }
-
-        const newMessage: QueuedMessage = {
-          id: uuidv4(),
-          text,
-          files,
-          timestamp: Date.now(),
-        };
-        return [...prev, newMessage];
-      });
+      if ((queuesRef.current.get(queueKey)?.length ?? 0) >= 10) {
+        toast.error("Queue is full", {
+          description:
+            "Please wait for queued messages to send before adding more.",
+        });
+        return undefined;
+      }
+      const id = uuidv4();
+      const newMessage: QueuedMessage = {
+        id,
+        text,
+        files,
+        timestamp: Date.now(),
+      };
+      setMessageQueue((prev) => [...prev, newMessage]);
+      return id;
     },
-    [],
+    [queueKey, setMessageQueue],
   );
 
-  const removeQueuedMessage = useCallback((id: string) => {
-    setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
-    setEditingQueuedMessageId((currentId) =>
-      currentId === id ? null : currentId,
-    );
-  }, []);
+  const removeQueuedMessage = useCallback(
+    (id: string) => {
+      setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+      setEditingQueuedMessageId((currentId) =>
+        currentId === id ? null : currentId,
+      );
+    },
+    [setMessageQueue],
+  );
 
   const setQueuedMessageDelivery = useCallback(
     (
@@ -1216,34 +1220,45 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setMessageQueue],
   );
 
-  const updateQueuedMessage = useCallback((id: string, text: string) => {
-    setMessageQueue((prev) =>
-      prev.map((message) =>
-        message.id === id && !message.deliveryStatus
-          ? { ...message, text }
-          : message,
-      ),
-    );
-  }, []);
+  const updateQueuedMessage = useCallback(
+    (id: string, text: string) => {
+      setMessageQueue((prev) =>
+        prev.map((message) =>
+          message.id === id && !message.deliveryStatus
+            ? { ...message, text }
+            : message,
+        ),
+      );
+    },
+    [setMessageQueue],
+  );
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
     setEditingQueuedMessageId(null);
+  }, [setMessageQueue]);
+
+  const markChatNavigationStarted = useCallback(() => {
+    chatNavigationRevisionRef.current += 1;
   }, []);
 
-  const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
-    chatNavigationHandlerRef.current?.(chatId);
-    // Don't clear input here - let ChatInput restore draft automatically
-    // setInput("");  // Removed - ChatInput will handle draft restoration
-    setTodos([]);
-    setIsTodoPanelExpanded(false);
-    setActiveProjectId(null);
-  }, []);
+  const initializeChat = useCallback(
+    (chatId: string, _fromRoute?: boolean) => {
+      markChatNavigationStarted();
+      chatNavigationHandlerRef.current?.(chatId);
+      // Let ChatInput restore the draft for the destination.
+      setTodos([]);
+      setIsTodoPanelExpanded(false);
+      setActiveProjectId(null);
+    },
+    [markChatNavigationStarted],
+  );
 
   const initializeNewChat = useCallback(() => {
+    markChatNavigationStarted();
     // Allow chat component to reset its local state immediately
     if (chatResetRef.current) {
       chatResetRef.current();
@@ -1252,7 +1267,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
     resetSandboxPreference();
-  }, [resetSandboxPreference]);
+  }, [markChatNavigationStarted, resetSandboxPreference]);
+
+  const getChatNavigationRevision = useCallback(
+    () => chatNavigationRevisionRef.current,
+    [],
+  );
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1282,6 +1302,18 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
+
+  const consumeBrowserTakeoverRequest = useCallback((requestId: string) => {
+    setSidebarContent((current) => {
+      if (
+        !current ||
+        !isSidebarTerminal(current) ||
+        current.browserTakeoverRequest?.requestId !== requestId
+      )
+        return current;
+      return { ...current, browserTakeoverRequest: undefined };
+    });
+  }, []);
 
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
@@ -1329,6 +1361,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       closeSidebar,
       initializeChat,
       initializeNewChat,
+      markChatNavigationStarted,
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
@@ -1337,6 +1370,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       closeSidebar,
       initializeChat,
       initializeNewChat,
+      markChatNavigationStarted,
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
@@ -1344,10 +1378,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   const value: GlobalStateType = {
-    surveyActivation:
-      surveySubmission?.userId === userId ? surveySubmission : null,
-    setSurveyActivation,
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     addUploadedFile,
     removeUploadedFile,
@@ -1386,10 +1418,13 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     clearUploadedFiles,
     openSidebar,
     updateSidebarContent,
+    consumeBrowserTakeoverRequest,
     closeSidebar,
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
+    markChatNavigationStarted,
+    getChatNavigationRevision,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
@@ -1408,6 +1443,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setHasUserDismissedRateLimitWarning,
 
     messageQueue,
+    queueChatId,
+    selectMessageQueue,
     queueMessage,
     updateQueuedMessage,
     editingQueuedMessageId,

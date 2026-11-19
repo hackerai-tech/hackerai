@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import cancelSubscription from "@/lib/actions/cancel-subscription";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,8 @@ function parseCancelSubscriptionInput(
 }
 
 export async function POST(request: NextRequest) {
+  const rejection = rejectUnsafeRequest(request, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const body = await request.json().catch(() => null);
     const input = parseCancelSubscriptionInput(body);

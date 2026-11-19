@@ -9,6 +9,7 @@ import {
   isCentrifugoSandbox,
   isE2BSandbox,
 } from "./sandbox-types";
+import { getSandboxFileName } from "./platform-utils";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -19,6 +20,11 @@ import {
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 import { getLocalFileRequestFailure } from "./local-sandbox-errors";
+import { SandboxFileNotFoundError } from "./sandbox-file-errors";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
@@ -44,6 +50,14 @@ export type GeneratedFileUploadPhase =
 
 export type NativeStatFailureReason =
   "stat_failed" | "file_missing" | "not_regular_file" | "invalid_file_size";
+
+export type GeneratedFileTransferAttemptFailure = ReturnType<
+  typeof getUploadFailureDiagnostics
+> & {
+  transfer_attempt_kind: "native" | "command";
+  transfer_exit_code: number | null;
+  sandbox_type: "cloud" | "desktop" | "remote-connection";
+};
 
 /**
  * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
@@ -164,7 +178,7 @@ async function getSandboxFileSize(
       const metadata = await sandbox.files.stat(fullPath);
       if (metadata.kind === "missing") {
         failureReason = "file_missing";
-        throw new Error(`File not found: ${fullPath}`);
+        throw new SandboxFileNotFoundError(fullPath);
       }
       if (metadata.kind !== "file") {
         failureReason = "not_regular_file";
@@ -215,7 +229,7 @@ async function getSandboxFileSize(
   let statResult: SandboxCommandResult;
   try {
     statResult = await sandbox.commands.run(
-      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then printf 'File not found: %s\\n' ${quotedPath} >&2; exit 66; fi; stat -Lc%s ${quotedPath} 2>/dev/null || stat -Lf%z ${quotedPath}`,
+      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then stat_error=$(LC_ALL=C stat -L ${quotedPath} 2>&1); stat_code=$?; if [ "$stat_code" -ne 0 ]; then printf '%s\\n' "$stat_error" >&2; case "$stat_error" in *': No such file or directory') exit 66;; esac; exit "$stat_code"; fi; fi; stat -Lc%s ${quotedPath} 2>/dev/null || stat -Lf%z ${quotedPath}`,
       { ...commandOptions, displayName: "" } as typeof commandOptions & {
         displayName?: string;
       },
@@ -230,7 +244,7 @@ async function getSandboxFileSize(
           event: "sandbox_generated_file_size_command_threw",
           service: "chat-handler",
           ...getSandboxLogFields(sandbox),
-          file_name: getFileNameFromPath(fullPath),
+          file_name: getFileNameFromPath(sandbox, fullPath),
           file_path: fullPath,
           error: errorToLog(error),
         },
@@ -249,15 +263,19 @@ async function getSandboxFileSize(
     event: "sandbox_generated_file_size_failed",
     service: "chat-handler",
     ...getSandboxLogFields(sandbox),
-    file_name: getFileNameFromPath(fullPath),
+    file_name: getFileNameFromPath(sandbox, fullPath),
     file_path: fullPath,
     stat_exit_code: statResult.exitCode,
     stat_stderr: statResult.stderr?.slice(0, 500),
     stat_stdout: statResult.stdout?.slice(0, 500),
   });
+  // The metadata command reserves 66 for stat's explicit ENOENT diagnostic.
+  // A false shell existence check alone can also mean an inaccessible parent.
+  if (statResult.exitCode === 66) throw new SandboxFileNotFoundError(fullPath);
   throw formatFileSizeFailure(fullPath, statResult);
 }
 
+/** Keep cmd.exe metadata failures unclassified: they do not prove source absence. */
 async function getWindowsSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
@@ -269,7 +287,9 @@ async function getWindowsSandboxFileSize(
   // The relay may set env vars earlier in the same cmd.exe /C command.
   // Enable delayed expansion in a child: inline SETLOCAL has no effect outside
   // a batch file. Keep the path in env so shell metacharacters remain data.
-  const winCommand = `cmd /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
+  // Resolve the child interpreter from Windows itself. A bare `cmd` can run a
+  // cmd.bat supplied by the project in the relay's working directory.
+  const winCommand = `"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
   let winResult: SandboxCommandResult;
   try {
     winResult = await sandbox.commands.run(winCommand, {
@@ -292,7 +312,7 @@ async function getWindowsSandboxFileSize(
           event: "sandbox_generated_file_size_windows_command_threw",
           service: "chat-handler",
           ...getSandboxLogFields(sandbox),
-          file_name: getFileNameFromPath(fullPath),
+          file_name: getFileNameFromPath(sandbox, fullPath),
           file_path: fullPath,
           error: errorToLog(error),
         },
@@ -310,7 +330,7 @@ async function getWindowsSandboxFileSize(
     event: "sandbox_generated_file_size_failed",
     service: "chat-handler",
     ...getSandboxLogFields(sandbox),
-    file_name: getFileNameFromPath(fullPath),
+    file_name: getFileNameFromPath(sandbox, fullPath),
     file_path: fullPath,
     windows_exit_code: winResult.exitCode,
     windows_stderr: winResult.stderr?.slice(0, 500),
@@ -351,8 +371,11 @@ function errorToLog(error: unknown) {
   return { message: String(error) };
 }
 
-function getFileNameFromPath(fullPath: string): string {
-  return fullPath.split(/[/\\]/).pop() || "file";
+function getFileNameFromPath(sandbox: AnySandbox, fullPath: string): string {
+  return getSandboxFileName(
+    fullPath,
+    isCentrifugoSandbox(sandbox) && sandbox.isWindows(),
+  );
 }
 
 type SandboxCommandResult = {
@@ -419,9 +442,54 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   fullPath: string;
   uploadUrl: string;
   mediaType: string;
+  onFailure?: (
+    failure: GeneratedFileTransferAttemptFailure,
+  ) => void | Promise<void>;
 }): Promise<void> {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
-  const fileName = getFileNameFromPath(fullPath);
+  const fileName = getFileNameFromPath(sandbox, fullPath);
+  const sandboxType = getSandboxLogFields(sandbox).sandbox_type;
+  const reportFailure = (
+    kind: GeneratedFileTransferAttemptFailure["transfer_attempt_kind"],
+    error: unknown,
+    exitCode: number | null = null,
+  ) => {
+    if (!args.onFailure) return;
+    // A failed diagnostic getter must not hide an uncertain attempt from the
+    // signature refresh decision. Still report it once with an unknown exit.
+    try {
+      if (
+        exitCode === null &&
+        error instanceof Error &&
+        "exitCode" in error &&
+        typeof error.exitCode === "number"
+      ) {
+        exitCode = error.exitCode;
+      }
+    } catch {
+      exitCode = null;
+    }
+    try {
+      void Promise.resolve(
+        args.onFailure({
+          transfer_attempt_kind: kind,
+          sandbox_type: sandboxType,
+          transfer_exit_code:
+            typeof exitCode === "number" &&
+            Number.isInteger(exitCode) &&
+            exitCode >= 0 &&
+            exitCode <= 255
+              ? exitCode
+              : null,
+          ...getUploadFailureDiagnostics(uploadUrl, error),
+        }),
+      ).catch(() => {
+        // Optional analytics must not replace the upload's result or error.
+      });
+    } catch {
+      // Preserve frozen/native errors and the existing fallback decision.
+    }
+  };
 
   if (
     !isE2BSandbox(sandbox) &&
@@ -432,6 +500,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
       return;
     } catch (error) {
+      reportFailure("native", error);
       logger.warn("sandbox_generated_file_native_upload_failed", {
         event: "sandbox_generated_file_native_upload_failed",
         service: "chat-handler",
@@ -439,6 +508,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         file_name: fileName,
         file_path: fullPath,
         media_type: mediaType,
+        ...getUploadFailureDiagnostics(uploadUrl, error),
         error: errorToLog(error),
       });
       // The Windows adapter already selected its available HTTP client. The
@@ -448,7 +518,11 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   }
 
   let result: SandboxCommandResult;
-  const uploadCommand = `curl -fsSL -X PUT -H ${shellQuote(`Content-Type: ${mediaType}`)} --data-binary @${shellQuote(fullPath)} ${shellQuote(uploadUrl)}`;
+  const uploadCommand = buildPosixCurlUploadCommand(
+    fullPath,
+    uploadUrl,
+    mediaType,
+  );
   try {
     result = await sandbox.commands.run(
       `${uploadCommand}; status=$?; printf '\\n${SANDBOX_UPLOAD_STATUS_MARKER}%s\\n' "$status"; exit 0`,
@@ -462,6 +536,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
     if (commandResult) {
       result = commandResult;
     } else {
+      reportFailure("command", error);
       logger.error(
         "sandbox_generated_file_upload_failed",
         error instanceof Error ? error : undefined,
@@ -472,6 +547,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
           file_name: fileName,
           file_path: fullPath,
           media_type: mediaType,
+          ...getUploadFailureDiagnostics(uploadUrl, error),
           error: errorToLog(error),
         },
       );
@@ -482,6 +558,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   result = parseUploadResult(result);
 
   if (result.exitCode !== 0) {
+    reportFailure("command", result.stderr || result.stdout, result.exitCode);
     logger.error("sandbox_generated_file_upload_failed", undefined, {
       event: "sandbox_generated_file_upload_failed",
       service: "chat-handler",
@@ -490,6 +567,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       file_path: fullPath,
       media_type: mediaType,
       exit_code: result.exitCode,
+      ...getUploadFailureDiagnostics(uploadUrl, result.stderr || result.stdout),
       stderr: result.stderr?.slice(0, 500),
       stdout: result.stdout?.slice(0, 500),
     });
@@ -507,6 +585,9 @@ export async function uploadSandboxFileToConvex(args: {
   onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
   onNativeStatFailure?: (
     reason: NativeStatFailureReason,
+  ) => void | Promise<void>;
+  onTransferAttemptFailure?: (
+    failure: GeneratedFileTransferAttemptFailure,
   ) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
   const recordPhase = (phase: GeneratedFileUploadPhase) => {
@@ -535,13 +616,14 @@ export async function uploadSandboxFileToConvex(args: {
 
   const { sandbox, userId, fullPath } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
-  const name = args.name || getFileNameFromPath(fullPath);
   recordPhase("file_metadata");
-  const fileSize = await getSandboxFileSize(
+  let fileSize = await getSandboxFileSize(
     sandbox,
     fullPath,
     args.onNativeStatFailure,
   );
+  // Metadata discovery also resolves legacy relays that omit their platform.
+  const name = args.name || getFileNameFromPath(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
       event: "sandbox_generated_file_too_large",
@@ -560,65 +642,109 @@ export async function uploadSandboxFileToConvex(args: {
   let uploadUrl: string;
   let s3Key: string;
   let storageLocation: S3StorageLocation;
-  try {
-    recordPhase("upload_url");
-    const generatedUrl = args.storageRegion
-      ? await generateS3UploadUrl(
-          name,
-          mediaType,
-          userId,
-          fileSize,
-          args.storageRegion,
-        )
-      : await generateS3UploadUrl(name, mediaType, userId, fileSize);
-    uploadUrl = generatedUrl.uploadUrl;
-    s3Key = generatedUrl.s3Key;
-    storageLocation = generatedUrl.storageLocation;
-  } catch (error) {
-    logger.error(
-      "sandbox_generated_file_upload_url_failed",
-      error instanceof Error ? error : undefined,
-      {
-        event: "sandbox_generated_file_upload_url_failed",
-        service: "chat-handler",
-        user_id: userId,
-        file_name: name,
-        file_path: fullPath,
-        media_type: mediaType,
-        size_bytes: fileSize,
-        ...getSandboxLogFields(sandbox),
-        error: errorToLog(error),
-      },
-    );
-    throw error;
-  }
+  let refreshedSize = false;
+  while (true) {
+    try {
+      recordPhase("upload_url");
+      const generatedUrl = args.storageRegion
+        ? await generateS3UploadUrl(
+            name,
+            mediaType,
+            userId,
+            fileSize,
+            args.storageRegion,
+          )
+        : await generateS3UploadUrl(name, mediaType, userId, fileSize);
+      uploadUrl = generatedUrl.uploadUrl;
+      s3Key = generatedUrl.s3Key;
+      storageLocation = generatedUrl.storageLocation;
+    } catch (error) {
+      logger.error(
+        "sandbox_generated_file_upload_url_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_upload_url_failed",
+          service: "chat-handler",
+          user_id: userId,
+          file_name: name,
+          file_path: fullPath,
+          media_type: mediaType,
+          size_bytes: fileSize,
+          ...getSandboxLogFields(sandbox),
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
 
-  try {
-    recordPhase("transfer");
-    await uploadGeneratedFileFromSandboxToUrl({
-      sandbox,
-      fullPath,
-      uploadUrl,
-      mediaType,
-    });
-  } catch (error) {
-    logger.error(
-      "sandbox_generated_file_upload_to_url_failed",
-      error instanceof Error ? error : undefined,
-      {
-        event: "sandbox_generated_file_upload_to_url_failed",
-        service: "chat-handler",
-        user_id: userId,
-        file_name: name,
-        file_path: fullPath,
-        media_type: mediaType,
-        size_bytes: fileSize,
-        s3_key: s3Key,
-        ...getSandboxLogFields(sandbox),
-        error: errorToLog(error),
-      },
-    );
-    throw error;
+    const transferFailures: GeneratedFileTransferAttemptFailure[] = [];
+    try {
+      recordPhase("transfer");
+      await uploadGeneratedFileFromSandboxToUrl({
+        sandbox,
+        fullPath,
+        uploadUrl,
+        mediaType,
+        onFailure: (failure) => {
+          transferFailures.push(failure);
+          return args.onTransferAttemptFailure?.(failure);
+        },
+      });
+      break;
+    } catch (error) {
+      // Content-Length is signed before the sandbox reads the file. A growing
+      // report can invalidate that signature. Re-sign only a confirmed rejection
+      // with a changed size; a TLS/reset failure has an unknown upload outcome.
+      if (
+        !refreshedSize &&
+        transferFailures.length > 0 &&
+        transferFailures.every(
+          (failure) =>
+            failure.upload_reported_http_status === 403 &&
+            failure.upload_reported_storage_code === "SignatureDoesNotMatch",
+        )
+      ) {
+        const latestSize = await getSandboxFileSize(sandbox, fullPath).catch(
+          () => null,
+        );
+        if (latestSize !== null && latestSize !== fileSize) {
+          recordPhase("file_metadata");
+          if (latestSize > MAX_GENERATED_FILE_SIZE_BYTES) {
+            logger.warn("sandbox_generated_file_too_large", {
+              event: "sandbox_generated_file_too_large",
+              service: "chat-handler",
+              user_id: userId,
+              file_name: name,
+              media_type: mediaType,
+              size_bytes: latestSize,
+              limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
+              ...getSandboxLogFields(sandbox),
+            });
+          }
+          assertSandboxFileSizeAllowed(name, latestSize);
+          fileSize = latestSize;
+          refreshedSize = true;
+          continue;
+        }
+      }
+      logger.error(
+        "sandbox_generated_file_upload_to_url_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_upload_to_url_failed",
+          service: "chat-handler",
+          user_id: userId,
+          file_name: name,
+          file_path: fullPath,
+          media_type: mediaType,
+          size_bytes: fileSize,
+          s3_key: s3Key,
+          ...getSandboxLogFields(sandbox),
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
   }
 
   try {

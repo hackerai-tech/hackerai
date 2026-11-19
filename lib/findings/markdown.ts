@@ -1,3 +1,4 @@
+import { findingEvidenceLabel } from "./evidence-status";
 import type { FindingDetailRecord } from "@/types/finding";
 
 // Keep embedded fences in PoCs and patches from closing the report's code block.
@@ -13,6 +14,10 @@ const codeBlock = (code: string) => {
 /** Export the saved finding without another model call or sandbox execution. */
 export function renderFindingMarkdown(finding: FindingDetailRecord): string {
   const sections: Array<[string, string | undefined]> = [
+    [
+      "Evidence basis",
+      `${findingEvidenceLabel(finding.evidence_status)}. Agent-reported assessment, not independent verification.\n\n${finding.evidence_status_reason ?? "The evidence basis was not recorded for this report; no runtime reproduction is inferred."}`,
+    ],
     ["Description", finding.description],
     ["Impact", finding.impact],
     ["Evidence", codeBlock(finding.evidence)],

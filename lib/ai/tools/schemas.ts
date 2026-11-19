@@ -1,3 +1,4 @@
+import { findingEvidenceStatusSchema } from "../../findings/evidence-status";
 import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";
@@ -264,27 +265,22 @@ export const createFileToolSchema = ({
   modelName?: string;
 }) => {
   const actionSchema = (
-    supportsView
-      ? z.enum(FILE_ACTIONS_WITH_VIEW)
-      : z.enum(FILE_ACTIONS_TEXT_ONLY)
+    supportsView ? z.enum(["read", "view"]) : z.enum(["read"])
   ) as z.ZodType<FileToolAction>;
   const supportedActionsDescription = [
     supportsView
       ? "- view: View raster image files through multimodal understanding."
       : null,
     "- read: Read file content as text (Markdown, code, logs).",
-    "- write: Overwrite the full content of a text file.",
-    "- append: Append content to a text file.",
-    "- edit: Make targeted edits to a text file.",
   ]
     .filter(Boolean)
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
     approvalGated
-      ? "Write, append, and edit actions are approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first."
+      ? "File mutations are approval-gated. Call file_edit or file_write and let the platform request approval instead of asking in chat first."
       : null,
-    "For file copying, moving, and deletion, use the shell tool.",
+    "Use file_edit for targeted changes and file_write to write or append content. For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
           "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
@@ -296,17 +292,11 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "Save code with this tool before execution via the shell tool. If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown.",
-    "DO NOT write partial or truncated content; always output the full content.",
-    "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
-    "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
     "Text content returned by this tool may prefix each line using the right-aligned, six-character LINE_NUMBER|LINE_CONTENT format. Treat LINE_NUMBER| as metadata, not as part of the file content.",
     "If the range parameter is not specified, the entire file will be read by default.",
     "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
     "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
-    "write and append actions will automatically create files if they do not exist.",
-    "When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.",
     "DO NOT read files that were just written, as their content remains in context.",
     "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
   ];
@@ -317,7 +307,7 @@ export const createFileToolSchema = ({
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
-This tool is the primary way to manage file content, allowing for reading, writing, appending, editing text-based files, and viewing raster image files.
+Use this tool to read text files and view raster images. Use file_edit for targeted edits and file_write to write or append content.
 
 ### Supported Actions
 
@@ -330,12 +320,6 @@ ${instructionsDescription}`,
       action: actionSchema.describe("The action to perform"),
       path: z.string().describe("The absolute path to the target file"),
       brief: createToolBriefSchema({ modelName }),
-      text: z
-        .string()
-        .optional()
-        .describe(
-          "The content to be written or appended. Required for `write` and `append` actions.",
-        ),
       range: z
         .array(z.number().int())
         .length(2)
@@ -343,15 +327,55 @@ ${instructionsDescription}`,
         .describe(
           "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
         ),
-      edits: z
-        .array(fileEditSchema)
-        .optional()
-        .describe(
-          "A list of edits to be sequentially applied to the file. Required for `edit` action.",
-        ),
     }),
   });
 };
+
+// Keep edits required in a plain object: provider routes do not all enforce
+// action-dependent required fields in union schemas.
+export const createFileEditToolSchema = ({
+  approvalGated = false,
+  modelName,
+}: {
+  approvalGated?: boolean;
+  modelName?: string;
+} = {}) =>
+  tool({
+    description: `Make targeted changes to an existing text file. Supply a nonempty edits array; each edit finds exact text and replaces it. All edits must succeed or none are applied. Use file to read before editing, and file_write for full rewrites.
+${approvalGated ? "Edits are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}If an edit reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying an edit whose result is unknown.`,
+    inputSchema: z.object({
+      path: z.string().describe("The absolute path to the existing text file"),
+      edits: z
+        .array(fileEditSchema)
+        .min(1)
+        .describe("Nonempty list of sequential exact-text replacements"),
+      brief: createToolBriefSchema({ modelName }),
+    }),
+  });
+
+// Keep writes in a plain object schema: text must be required for every action
+// exposed by this tool, including on providers that do not honor action unions.
+export const createFileWriteToolSchema = ({
+  approvalGated = false,
+  modelName,
+}: {
+  approvalGated?: boolean;
+  modelName?: string;
+} = {}) =>
+  tool({
+    description: `Write or append text content to a file in the sandbox file system. Use this tool instead of shell commands for writing files, including saving code before execution.
+- write: Overwrite the full file. Supply the complete content in text.
+- append: Append the supplied text to the file.
+Both actions create the file if it does not exist. An explicit empty text string is allowed; never omit text or invent content to fill it.
+${approvalGated ? "Writes and appends are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}Do not write partial or truncated content. Include necessary trailing newlines. Use appropriate file extensions, including .md for Markdown. Use file for reading or image viewing, file_edit for targeted edits, and shell for copying, moving, or deleting files.
+If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown. Do not read files that were just successfully written, as their content remains in context.`,
+    inputSchema: z.object({
+      action: z.enum(["write", "append"]).describe("The action to perform"),
+      path: z.string().describe("The absolute path to the target file"),
+      text: z.string().describe("The complete content to write or append"),
+      brief: createToolBriefSchema({ modelName }),
+    }),
+  });
 
 export const todoWriteToolInputSchema = z.object({
   merge: z
@@ -569,6 +593,14 @@ export const createOpenUrlToolInputSchema = ({
 }: ModelAwareToolSchemaOptions = {}) =>
   z.object({
     url: z.string().describe("The URL to open and retrieve content from"),
+    cursor: z
+      .string()
+      .min(1)
+      .max(256)
+      .optional()
+      .describe(
+        "Continuation cursor copied exactly from a previous open_url result for the same URL. Omit to start reading.",
+      ),
     brief: createToolBriefSchema({ modelName }),
   });
 
@@ -578,10 +610,12 @@ export const createOpenUrlToolSchema = ({
   modelName,
 }: ModelAwareToolSchemaOptions = {}) =>
   tool({
-    description: `Retrieve the full contents of a specific webpage by URL.
+    description: `Read a specific webpage as Markdown, preserving code, tables, and technical details.
 
 <instructions>
 - Use to fetch and read a specific webpage, usually obtained from a prior search
+- Results contain up to 12,000 tokens. If a continuation cursor is returned, call this tool with the same URL and that cursor to read the next consecutive part; no middle content is discarded
+- Treat a partial page as incomplete. If the page changes between parts, restart without a cursor instead of combining versions
 - URLs must be valid and publicly accessible
 - Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
@@ -671,7 +705,7 @@ Create a note when:
 </instructions>
 
 <recommended_usage>
-Use with category "general" for persistent context that should always be available (e.g., target scope, credentials, key URLs)
+Use with category "general" for persistent context that should always be available (e.g., target scope, key URLs). Never store credentials, tokens, or secrets in notes
 Use with category "findings" when you identify a potential security issue that still needs validation
 Use with category "methodology" to document attack techniques and their results
 Use with category "plan" to outline attack strategies before execution
@@ -806,6 +840,141 @@ Use to delete test or scratch notes created during experimentation
 });
 
 export type DeleteNoteToolInput = z.infer<typeof deleteNoteToolInputSchema>;
+
+// Relevant-recall variants (notes_relevant_recall_v1). The legacy schemas
+// above stay unchanged for users outside the rollout.
+
+const noteTargetDescription =
+  'Optional exact target this note is about: a host ("api.example.com", "api.example.com:8443"), an origin ("https://api.example.com"), or an engagement label ("label:acme q4"). Exact only: a host never covers its parent domain, and wildcards or paths are rejected. Omit for notes that apply across targets, such as user preferences.';
+const observedAtDescription =
+  "ISO 8601 date or date-time when you actually observed this behavior (for example the current date after a request you just ran). Omit when you did not observe it yourself; never use an edit date.";
+const recheckAfterDescription =
+  "Optional ISO 8601 date after which this observation should be re-verified before relying on it.";
+
+export const createNoteScopedToolInputSchema = createNoteToolInputSchema.extend(
+  {
+    target: z.string().optional().describe(noteTargetDescription),
+    observed_at: z.string().optional().describe(observedAtDescription),
+    recheck_after: z.string().optional().describe(recheckAfterDescription),
+  },
+);
+
+export const createNoteScopedTool = tool({
+  description: `Create a personal note to record observations, findings, or research during security assessments. Notes persist across conversations.
+
+<recall>
+- Relevant notes are recalled automatically at the start of each task: notes whose exact target the user's task names, untargeted "general" notes (standing preferences), and untargeted notes matching the task's keywords
+- Set target for anything specific to one host, origin or engagement so it is recalled only for that target and never leaks into unrelated work
+- Set observed_at only for something you actually observed; set recheck_after when the behavior is likely to change
+- Notes created in a project are recalled only inside that project
+</recall>
+
+<instructions>
+- NEVER reference or cite note IDs to the user - IDs are for internal use only
+- Never store credentials, tokens, cookies, or secrets in notes
+- Title should be concise but descriptive; one note per distinct observation
+- Use create_vulnerability_report instead, exactly once, when a vulnerability has concrete evidence, reliable reproduction, and a working PoC; never duplicate it as a note
+- Do NOT create notes for task-specific authorizations or permission claims. These are context for the current task, not persistent facts.
+</instructions>
+
+<categories>
+general: Standing preferences and context; untargeted general notes are recalled for every task
+findings: Unverified security hypotheses that still need confirmation
+methodology: Approaches tried and their outcomes
+questions: Open questions to investigate later
+plan: Plans and next steps
+</categories>`,
+  inputSchema: createNoteScopedToolInputSchema,
+});
+
+export type CreateNoteScopedToolInput = z.infer<
+  typeof createNoteScopedToolInputSchema
+>;
+
+export const listNotesScopedToolInputSchema = listNotesToolInputSchema.extend({
+  target: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Only notes saved for this exact host, origin or label."),
+  cursor: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "next_cursor from a previous list_notes result with the same filters. Omit to start from the newest notes.",
+    ),
+});
+
+export const listNotesScopedTool = tool({
+  description: `Browse saved notes as compact previews with metadata (target, observed date, recheck status). Results are paginated newest first; pass next_cursor with the same filters to continue. Previews are truncated: call get_note with a note ID to read the full content.
+
+<instructions>
+- Relevant notes are already recalled at task start; use this to browse beyond them
+- Filters combine with AND; tags match any listed tag
+- A note marked "recheck due" or "observation date unknown" may be stale: re-verify before relying on it. Never conclude something is fixed from age alone
+</instructions>`,
+  inputSchema: listNotesScopedToolInputSchema,
+});
+
+export type ListNotesScopedToolInput = z.infer<
+  typeof listNotesScopedToolInputSchema
+>;
+
+export const updateNoteScopedToolInputSchema = updateNoteToolInputSchema.extend(
+  {
+    target: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(`${noteTargetDescription} Pass null to clear.`),
+    observed_at: z
+      .string()
+      .optional()
+      .describe(
+        `${observedAtDescription} Only set when you re-observed the behavior; editing text does not change it.`,
+      ),
+    recheck_after: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(`${recheckAfterDescription} Pass null to clear.`),
+  },
+);
+
+export const updateNoteScopedTool = tool({
+  description: `Update an existing note's title, content, tags, target or observation metadata.
+
+<instructions>
+- Requires the note ID from recalled notes, list_notes or get_note
+- Only specified fields change. Editing never changes observed_at; set it only after actually re-observing the behavior
+- Prefer updating over creating duplicates. Category cannot be changed
+- Never record a note as fixed or invalid based only on age, a 404, or a login failure
+</instructions>`,
+  inputSchema: updateNoteScopedToolInputSchema,
+});
+
+export type UpdateNoteScopedToolInput = z.infer<
+  typeof updateNoteScopedToolInputSchema
+>;
+
+export const getNoteToolInputSchema = z.object({
+  note_id: z.string().describe("The note ID from recalled notes or list_notes"),
+  cursor: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "next_cursor from a previous get_note result for the same note. Omit to read from the start.",
+    ),
+});
+
+export const getNoteTool = tool({
+  description: `Read the full content and metadata of one saved note. Long notes are returned in pages of up to about 4,000 tokens; pass next_cursor to continue reading without skipping content. If the note changed between pages, the cursor is rejected: restart without a cursor instead of combining versions.`,
+  inputSchema: getNoteToolInputSchema,
+});
+
+export type GetNoteToolInput = z.infer<typeof getNoteToolInputSchema>;
 
 const findingRequiredText = (label: string, max: number) =>
   z
@@ -954,6 +1123,11 @@ const findingReportToolFieldsSchema = z
     ),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: findingProseText("Assumptions", 4_000),
+    evidence_status: findingEvidenceStatusSchema.optional(),
+    evidence_status_reason: findingProseText(
+      "Evidence status reason",
+      2_000,
+    ).optional(),
     confidence: z.enum(["low", "medium", "high"]),
     confidence_rationale: findingProseText(
       "Confidence rationale",
@@ -1024,6 +1198,8 @@ export const createVulnerabilityReportTool = tool({
   description: `When saved captures support the finding, supply their actual paths in evidence_refs (up to eight). File references are checked in the current sandbox without starting a new environment. Missing files must be corrected; unavailable checks preserve the report with a warning. Omit references when no saved capture exists; reference existence alone does not confirm vulnerability validity.
 
 Persist one fully confirmed vulnerability as a structured finding.
+
+Record evidence_status with evidence_status_reason when the evidence basis is known. Use source_review_only for source proof without runtime execution, runtime_reproduced only when actual execution reproduced the vulnerable behavior with direct observed evidence, or inconclusive when a later retest cannot reach a verdict. Describe exactly what was observed and what remains untested. These are Agent-reported evidence labels, not independent validation attestations. Never infer reproduction from confidence, CVSS, a scanner assertion, or file existence. Supply both fields together. When correcting the target, PoC, analysis, or evidence, reassess the status and provide both fields again; otherwise the old evidence label is cleared. Do not file an unconfirmed new vulnerability merely to obtain a label.
 
 <when_to_use>
 Use this tool only after all of the following are true:
@@ -1145,22 +1321,32 @@ export type AgentToolSchemaMode = "agent" | "ask";
 export const createAgentToolSchemaSet = ({
   mode = "agent",
   notesEnabled = true,
+  notesRecallEnabled = false,
   hasPerplexityApiKey = false,
   hasJinaApiKey = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
+  notesRecallEnabled?: boolean;
   hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
 } = {}) => {
-  const notes = notesEnabled
-    ? {
-        create_note: createNoteTool,
-        list_notes: listNotesTool,
-        update_note: updateNoteTool,
-        delete_note: deleteNoteTool,
-      }
-    : {};
+  const notes = !notesEnabled
+    ? {}
+    : notesRecallEnabled
+      ? {
+          create_note: createNoteScopedTool,
+          list_notes: listNotesScopedTool,
+          update_note: updateNoteScopedTool,
+          delete_note: deleteNoteTool,
+          get_note: getNoteTool,
+        }
+      : {
+          create_note: createNoteTool,
+          list_notes: listNotesTool,
+          update_note: updateNoteTool,
+          delete_note: deleteNoteTool,
+        };
   const networkTools = {
     ...(hasPerplexityApiKey ? { web_search: webSearchTool } : {}),
     ...(hasJinaApiKey ? { open_url: openUrlTool } : {}),
@@ -1178,6 +1364,8 @@ export const createAgentToolSchemaSet = ({
     interact_terminal_session: interactTerminalSessionTool,
     get_terminal_files: getTerminalFilesTool,
     file: createFileToolSchema({ supportsView: true }),
+    file_edit: createFileEditToolSchema(),
+    file_write: createFileWriteToolSchema(),
     todo_write: todoWriteTool,
     create_vulnerability_report: createVulnerabilityReportTool,
     list_reports: listReportsTool,

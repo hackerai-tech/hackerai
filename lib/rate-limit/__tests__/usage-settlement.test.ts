@@ -31,10 +31,10 @@ describe("usage-settlement", () => {
     expect(
       shouldSettleUsageMidRun({
         state,
-        currentCostDollars: 0.085,
+        currentCostDollars: 0.08,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.085)).toBe(105);
+    expect(getUnsettledUsagePoints(state, 0.08)).toBe(40);
   });
 
   it("settles without trusting the remaining balance captured at run start", () => {

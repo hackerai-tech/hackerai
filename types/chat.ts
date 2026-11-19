@@ -277,12 +277,22 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  /** One explicit user click; discarded when the sidebar selection closes. */
+  browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Structured process exit code, available after command completion. */
+  exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
-    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
+    | "reviewing"
+    | "awaiting_approval"
+    | "executing"
+    | "completed"
+    | "failed"
+    | "interrupted"
+    | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;
@@ -335,17 +345,31 @@ export type NoteCategory = (typeof VALID_NOTE_CATEGORIES)[number];
 export interface SidebarNote {
   note_id: string;
   title: string;
+  /** Full content, or a truncated preview when `preview_truncated` is set. */
   content: string;
   category: NoteCategory;
   tags: string[];
   updated_at: number;
+  /** Present on legacy list outputs. */
+  _creationTime?: number;
+  /** Relevant-recall metadata; absent on legacy outputs. */
+  target?: string;
+  observed_at?: number;
+  recheck?: "recheck_due" | "observation_date_unknown";
+  preview_truncated?: boolean;
+  /** get_note: this is one page of a longer note. */
+  partial_content?: boolean;
 }
 
 export interface SidebarNotes {
-  action: "create" | "list" | "update" | "delete";
+  action: "create" | "list" | "update" | "delete" | "get";
   notes: SidebarNote[];
   totalCount: number;
+  /** list: more matching notes exist beyond this bounded page. */
+  hasMore?: boolean;
   isExecuting: boolean;
+  /** The action ended in a failure; shown instead of an empty result. */
+  error?: string;
   toolCallId: string;
   /** For create/update/delete - the affected note title */
   affectedTitle?: string;
@@ -433,7 +457,14 @@ export const isSidebarWorkspaceFiles = (
 ): content is SidebarWorkspaceFiles =>
   "kind" in content && content.kind === "workspace-files";
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarWorkspaceFiles
   | SidebarFile
   | SidebarTerminal
@@ -538,12 +569,14 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export type MessageMetadata = {
+  goal?: { sent?: boolean; achievedElapsedMs?: number };
   feedbackType?: "positive" | "negative";
   isAutoContinue?: boolean;
   mode?: "agent" | "ask";
   createdAt?: number;
   generationStartedAt?: number;
   generationTimeMs?: number;
+  recoverySourceMessageId?: string;
 };
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
@@ -553,7 +586,6 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
 };
 
 export type RateLimitInfo = {
-  freeDailyCost?: boolean;
   remaining: number;
   resetTime: Date;
   limit: number;
@@ -563,6 +595,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  /** Durable operation identity of the initial wallet debit, if any. */
+  extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };

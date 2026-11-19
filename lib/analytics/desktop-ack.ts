@@ -1,12 +1,52 @@
+import { v4 as uuidv4 } from "uuid";
+import { sampleDiagnosticOperation } from "./diagnostic-sampling";
 import {
   captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
 } from "./client";
 import type { AcknowledgedCommandSettlement } from "../centrifugo/acknowledged-command-output";
 import {
+  isDesktopAckAge,
   isDesktopAckStopSource,
   type DesktopAckStopSource,
 } from "./desktop-ack-privacy";
+import {
+  readNativeAuthorizationCause,
+  readNativeAuthorizationConnector,
+  readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationIo,
+  readNativeAuthorizationMitigation,
+  readNativeAuthorizationResponse,
+  readNativeAuthorizationResponseRead,
+  readNativeAuthorizationResponseReadTiming,
+  readNativeAuthorizationTransport,
+  type NativeAuthorizationCauseDiagnostic,
+  type NativeAuthorizationConnectorDiagnostic,
+  type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationIoDiagnostic,
+  type NativeAuthorizationMitigationDiagnostic,
+  type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationResponseReadDiagnostic,
+  type NativeAuthorizationResponseReadTimingDiagnostic,
+  type NativeAuthorizationTransportDiagnostic,
+} from "./native-authorization-diagnostics";
+import {
+  readDesktopTerminalErrorDiagnostic,
+  type DesktopTerminalErrorDiagnostic,
+} from "./desktop-terminal-error-diagnostics";
+import {
+  readDesktopInvocationAdmissionDiagnostic,
+  readDesktopInvocationRejectionDiagnostic,
+  readDesktopInvocationSpawnHintDiagnostic,
+  readDesktopInvocationUnknownDiagnostic,
+  readDesktopStreamFenceDiagnostic,
+  type DesktopInvocationAdmissionDiagnostic,
+  type DesktopInvocationRejectionDiagnostic,
+  type DesktopInvocationSpawnHintDiagnostic,
+  type DesktopInvocationUnknownDiagnostic,
+  type DesktopStreamFenceDiagnostic,
+} from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
   connectionId: string | null;
@@ -15,59 +55,402 @@ interface DesktopAckContext {
   triggerRunId?: string;
 }
 
-/** A start/final pair for identified clients; absent finals remain unknown. */
-export function startDesktopAckTelemetry(context: DesktopAckContext) {
-  const userId = getIdentifiedAnalyticsUserId();
-  const commit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
-  const properties = {
-    schemaVersion: 1,
-    outputProtocol: "ack-v1",
-    connectionId: context.connectionId,
-    commandId: context.commandId,
-    ...(context.chatId && { chatId: context.chatId }),
-    ...(context.triggerRunId && { triggerRunId: context.triggerRunId }),
-    ...(/^[a-f0-9]{40}$/i.test(commit ?? "") && {
-      hackerai_frontend_build_commit: commit,
-    }),
+type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
+  terminalExitCode?: number | null;
+  /** Same-invocation native send receipt; only for a terminal error. */
+  nativeAuthorization?: NativeAuthorizationDiagnostic;
+  /** Same-invocation closed IO cause; only joined to a valid send receipt. */
+  nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
+  /** Same-invocation transport detail; only joined to a valid send receipt. */
+  nativeAuthorizationTransport?: NativeAuthorizationTransportDiagnostic;
+  /** Same first IO error's supplement; only joined to valid send, cause and
+   * unmapped transport groups that describe it. */
+  nativeAuthorizationIo?: NativeAuthorizationIoDiagnostic;
+  /** Same send failure's connector snapshot; only joined to a valid send
+   * receipt. */
+  nativeAuthorizationConnector?: NativeAuthorizationConnectorDiagnostic;
+  /** Same-invocation approval rejection; independent of the send groups. */
+  nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
+  /** Same response's mitigation marker; only joined to a valid response. */
+  nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
+  /** Same response's failed JSON read; only joined to a valid `json_error`
+   * response. */
+  nativeAuthorizationResponseRead?: NativeAuthorizationResponseReadDiagnostic;
+  /** Same read timeout's timing; only joined to a valid `timeout` read, its
+   * 2xx `json_error` response and an `authorization_response_invalid`
+   * rejection class. */
+  nativeAuthorizationResponseReadTiming?: NativeAuthorizationResponseReadTimingDiagnostic;
+  /** Same invocation's first terminal error source; only for a terminal error. */
+  terminalError?: DesktopTerminalErrorDiagnostic;
+  /** The same invocation's rejection message class; only joined to a valid
+   * `invocation_rejected` terminal error kind. */
+  invocationRejection?: DesktopInvocationRejectionDiagnostic;
+  /** The same message's admission class; only joined to a valid
+   * `execution_admission` rejection class. */
+  invocationAdmission?: DesktopInvocationAdmissionDiagnostic;
+  /** The same message's OS code hint; only joined to a valid `spawn_failed`
+   * rejection class from a selected native command set. */
+  invocationSpawnHint?: DesktopInvocationSpawnHintDiagnostic;
+  /** The same message's closed unknown class; only joined to a valid
+   * `unknown` rejection class from the authorized command set. */
+  invocationUnknown?: DesktopInvocationUnknownDiagnostic;
+  /** The native stream fence's first origin; only joined to a valid
+   * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
+   * failure is reported only for `owner_stop_requested` on an acknowledged
+   * terminal. */
+  streamFence?: DesktopStreamFenceDiagnostic;
+};
+
+const emptyCounts = () => ({
+  startedCount: 0,
+  settledCount: 0,
+  acknowledgedCount: 0,
+  canceledCount: 0,
+  incompleteCount: 0,
+  terminalErrorCount: 0,
+  nonzeroExitCount: 0,
+  retryEvidenceCount: 0,
+  retryEvidenceAcknowledgedCount: 0,
+  bufferLimitCount: 0,
+  deadlineExceededCount: 0,
+  ownershipLostCount: 0,
+  stoppedCount: 0,
+  publishFailureCount: 0,
+  replayCount: 0,
+  resumeCount: 0,
+});
+
+/** Unsampled delivery counters, sampled pairs, and all exceptional finals.
+ * Owned by one bridge; never retain command contents or an unbounded ID map.
+ */
+export class DesktopAckTelemetry {
+  private owner: string | null = null;
+  private generation = 0;
+  private sessionId = "";
+  private sequence = 0;
+  private properties: Record<string, unknown> = {};
+  private counts = emptyCounts();
+  private pending = 0;
+  private pendingAtStart = 0;
+  private windowStartedAt = 0;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribe: (() => void) | null = null;
+  private onPageHide = () => this.flush();
+  private onVisibility = () => {
+    if (document.visibilityState === "hidden") this.flush();
   };
-  const dedupeKey = `${context.connectionId}:${context.commandId}`;
-  const capture = (event: string, fields: Record<string, unknown>) => {
-    // Never attribute an old command to a replacement signed-in account.
-    if (!userId || getIdentifiedAnalyticsUserId() !== userId) return;
+
+  private markActivity() {
+    if (this.counts.startedCount === 0 && this.counts.settledCount === 0)
+      this.windowStartedAt = Date.now();
+  }
+
+  private scheduleFlush() {
+    if (this.timer) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, 60_000);
+  }
+
+  private capture(
+    event: string,
+    properties: Record<string, unknown>,
+    dedupeKey: string,
+  ) {
+    if (!this.owner || getIdentifiedAnalyticsUserId() !== this.owner)
+      return false;
     try {
-      captureQueuedAuthenticatedEvent({ event, properties: fields, dedupeKey });
+      return captureQueuedAuthenticatedEvent({ event, properties, dedupeKey });
     } catch {
-      // Analytics is best effort and must not alter command delivery.
+      return false;
     }
-  };
-  capture("desktop_ack_command_started", properties);
-  let settled = false;
-  return (
-    result: Readonly<AcknowledgedCommandSettlement>,
-    stopSource?: DesktopAckStopSource,
-  ) => {
-    if (settled) return;
-    settled = true;
-    capture("desktop_ack_command_settled", {
-      ...properties,
-      outcome: result.outcome,
-      reason: result.reason,
-      ...(result.reason === "stopped" &&
-        result.outcome === "incomplete" &&
-        isDesktopAckStopSource(stopSource) && { stopSource }),
-      observedFrames: result.observedFrames,
-      enqueuedFrames: result.enqueuedFrames,
-      acknowledgedFrames: result.acknowledgedFrames,
-      publishAttempts: result.publishAttempts,
-      replayAttempts: result.replayAttempts,
-      publishFailures: result.publishFailures,
-      resumeRequests: result.resumeRequests,
-      pendingFrames: result.pendingFrames,
-      pendingBytes: result.pendingBytes,
-      peakPendingBytes: result.peakPendingBytes,
-      terminalType: result.terminalType,
-      terminalAcknowledged: result.terminalAcknowledged,
-      durationMs: result.durationMs,
-    });
-  };
+  }
+
+  flush() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (!this.owner || getIdentifiedAnalyticsUserId() !== this.owner) {
+      this.reset();
+      return;
+    }
+    if (this.counts.startedCount === 0 && this.counts.settledCount === 0)
+      return;
+    if (
+      this.capture(
+        "desktop_ack_delivery_summary",
+        {
+          ...this.properties,
+          ...this.counts,
+          telemetrySessionId: this.sessionId,
+          windowSequence: this.sequence,
+          telemetry_sample_rate: 1,
+          pendingAtStart: this.pendingAtStart,
+          pendingAtEnd: this.pending,
+          windowStartedAt: new Date(this.windowStartedAt).toISOString(),
+          windowEndedAt: new Date().toISOString(),
+        },
+        `${this.sessionId}:${this.sequence}`,
+      )
+    ) {
+      this.sequence++;
+      this.counts = emptyCounts();
+      this.pendingAtStart = this.pending;
+      this.windowStartedAt = Date.now();
+    } else {
+      this.scheduleFlush();
+    }
+  }
+
+  private reset() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    if (typeof window !== "undefined")
+      window.removeEventListener("pagehide", this.onPageHide);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", this.onVisibility);
+    this.owner = null;
+    this.counts = emptyCounts();
+    this.pending = this.pendingAtStart = 0;
+    this.generation++;
+  }
+
+  dispose() {
+    this.flush();
+    this.reset();
+  }
+
+  start(context: DesktopAckContext) {
+    const userId = getIdentifiedAnalyticsUserId();
+    if (!userId) return () => {};
+    if (
+      this.owner !== userId ||
+      this.properties.connectionId !== context.connectionId
+    ) {
+      this.dispose();
+      this.owner = userId;
+      this.sessionId = uuidv4();
+      this.sequence = 0;
+      this.windowStartedAt = Date.now();
+      const commit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      this.properties = {
+        schemaVersion: 2,
+        outputProtocol: "ack-v1",
+        connectionId: context.connectionId,
+        ...(/^[a-f0-9]{40}$/i.test(commit ?? "") && {
+          hackerai_frontend_build_commit: commit,
+        }),
+      };
+      this.unsubscribe = subscribeAuthenticatedAnalytics(() => {
+        if (getIdentifiedAnalyticsUserId() !== this.owner) this.reset();
+      });
+      if (typeof window !== "undefined")
+        window.addEventListener("pagehide", this.onPageHide);
+      if (typeof document !== "undefined")
+        document.addEventListener("visibilitychange", this.onVisibility);
+    }
+    const generation = this.generation;
+    const dedupeKey = JSON.stringify([context.connectionId, context.commandId]);
+    const sampled = sampleDiagnosticOperation(dedupeKey);
+    const properties = {
+      ...this.properties,
+      commandId: context.commandId,
+      ...(context.chatId && { chatId: context.chatId }),
+      ...(context.triggerRunId && { triggerRunId: context.triggerRunId }),
+      telemetry_sampled: sampled,
+    };
+    this.markActivity();
+    this.counts.startedCount++;
+    this.pending++;
+    this.scheduleFlush();
+    if (sampled)
+      this.capture(
+        "desktop_ack_command_started",
+        {
+          ...properties,
+          telemetry_sample_rate: 0.1,
+        },
+        dedupeKey,
+      );
+    let settled = false;
+    return (
+      result: DesktopAckSettlement,
+      stopSource?: DesktopAckStopSource,
+    ) => {
+      if (settled) return;
+      settled = true;
+      if (
+        generation !== this.generation ||
+        getIdentifiedAnalyticsUserId() !== userId
+      )
+        return;
+      const recovery =
+        result.publishFailures > 0 ||
+        result.replayAttempts > 0 ||
+        result.resumeRequests > 0;
+      const diagnostic =
+        recovery ||
+        result.outcome !== "acknowledged" ||
+        result.reason !== "terminal_ack" ||
+        !result.terminalAcknowledged ||
+        result.terminalType !== "exit" ||
+        result.terminalExitCode !== 0 ||
+        result.durationMs >= 30_000;
+      this.markActivity();
+      this.pending--;
+      this.counts.settledCount++;
+      if (result.outcome === "acknowledged") this.counts.acknowledgedCount++;
+      if (result.outcome === "canceled") this.counts.canceledCount++;
+      if (result.outcome === "incomplete") this.counts.incompleteCount++;
+      if (result.terminalType === "error") this.counts.terminalErrorCount++;
+      if (
+        typeof result.terminalExitCode === "number" &&
+        result.terminalExitCode !== 0
+      )
+        this.counts.nonzeroExitCount++;
+      if (recovery) {
+        this.counts.retryEvidenceCount++;
+        if (result.outcome === "acknowledged")
+          this.counts.retryEvidenceAcknowledgedCount++;
+      }
+      if (result.reason === "buffer_limit") this.counts.bufferLimitCount++;
+      if (result.reason === "deadline_exceeded")
+        this.counts.deadlineExceededCount++;
+      if (result.reason === "ownership_lost") this.counts.ownershipLostCount++;
+      if (result.reason === "stopped") this.counts.stoppedCount++;
+      this.counts.publishFailureCount += result.publishFailures;
+      this.counts.replayCount += result.replayAttempts;
+      this.counts.resumeCount += result.resumeRequests;
+      this.scheduleFlush();
+      if (!sampled && !diagnostic) return;
+      const nativeAuthorization =
+        result.terminalType === "error"
+          ? readNativeAuthorizationDiagnostic(result.nativeAuthorization)
+          : null;
+      const nativeAuthorizationCause = nativeAuthorization
+        ? readNativeAuthorizationCause(result.nativeAuthorizationCause)
+        : null;
+      const nativeAuthorizationTransport = nativeAuthorization
+        ? readNativeAuthorizationTransport(result.nativeAuthorizationTransport)
+        : null;
+      const nativeAuthorizationIo = readNativeAuthorizationIo(
+        result.nativeAuthorizationIo,
+        {
+          diagnostic: nativeAuthorization,
+          cause: nativeAuthorizationCause,
+          transport: nativeAuthorizationTransport,
+        },
+      );
+      const nativeAuthorizationConnector = nativeAuthorization
+        ? readNativeAuthorizationConnector(result.nativeAuthorizationConnector)
+        : null;
+      const nativeAuthorizationResponse =
+        result.terminalType === "error"
+          ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
+          : null;
+      const nativeAuthorizationMitigation = nativeAuthorizationResponse
+        ? readNativeAuthorizationMitigation(
+            result.nativeAuthorizationMitigation,
+          )
+        : null;
+      const nativeAuthorizationResponseRead =
+        readNativeAuthorizationResponseRead(
+          result.nativeAuthorizationResponseRead,
+          nativeAuthorizationResponse,
+        );
+      const terminalError =
+        result.terminalType === "error"
+          ? readDesktopTerminalErrorDiagnostic(result.terminalError)
+          : null;
+      const invocationRejection =
+        terminalError?.desktop_terminal_error_kind === "invocation_rejected"
+          ? readDesktopInvocationRejectionDiagnostic(result.invocationRejection)
+          : null;
+      const nativeAuthorizationResponseReadTiming =
+        readNativeAuthorizationResponseReadTiming(
+          result.nativeAuthorizationResponseReadTiming,
+          nativeAuthorizationResponse,
+          nativeAuthorizationResponseRead,
+          invocationRejection,
+        );
+      const invocationAdmission = readDesktopInvocationAdmissionDiagnostic(
+        result.invocationAdmission,
+        invocationRejection,
+      );
+      const invocationSpawnHint = readDesktopInvocationSpawnHintDiagnostic(
+        result.invocationSpawnHint,
+        invocationRejection,
+      );
+      const invocationUnknown = readDesktopInvocationUnknownDiagnostic(
+        result.invocationUnknown,
+        invocationRejection,
+      );
+      // Its cleanup pair joins only an `owner_stop_requested` origin on an
+      // acknowledged terminal, its taskkill group only that pair's
+      // `tree_unconfirmed` failure, its root report pair only that group's
+      // code, and its stop request source pair only that report beside the
+      // not-found code, of either class; its owner phase pair joins only a
+      // `cancel_wait_timeout` origin on an acknowledged terminal; otherwise
+      // the prior pairs alone, as before.
+      const streamFence = readDesktopStreamFenceDiagnostic(
+        result.streamFence,
+        invocationRejection,
+        invocationUnknown,
+        result.terminalAcknowledged === true,
+      );
+      this.capture(
+        "desktop_ack_command_settled",
+        {
+          ...properties,
+          telemetry_sample_rate: diagnostic ? 1 : 0.1,
+          outcome: result.outcome,
+          reason: result.reason,
+          ...(result.reason === "stopped" &&
+            result.outcome === "incomplete" &&
+            isDesktopAckStopSource(stopSource) && { stopSource }),
+          observedFrames: result.observedFrames,
+          enqueuedFrames: result.enqueuedFrames,
+          acknowledgedFrames: result.acknowledgedFrames,
+          publishAttempts: result.publishAttempts,
+          replayAttempts: result.replayAttempts,
+          publishFailures: result.publishFailures,
+          resumeRequests: result.resumeRequests,
+          pendingFrames: result.pendingFrames,
+          pendingBytes: result.pendingBytes,
+          peakPendingBytes: result.peakPendingBytes,
+          terminalType: result.terminalType,
+          terminalExitCode: result.terminalExitCode ?? null,
+          terminalAcknowledged: result.terminalAcknowledged,
+          durationMs: result.durationMs,
+          ...(isDesktopAckAge(result.oldestPendingAgeMs) && {
+            oldestPendingAgeMs: result.oldestPendingAgeMs,
+          }),
+          ...(isDesktopAckAge(result.lastAcknowledgementAgeMs) && {
+            lastAcknowledgementAgeMs: result.lastAcknowledgementAgeMs,
+          }),
+          ...(isDesktopAckAge(result.publishInFlightAgeMs) && {
+            publishInFlightAgeMs: result.publishInFlightAgeMs,
+          }),
+          ...nativeAuthorization,
+          ...nativeAuthorizationCause,
+          ...nativeAuthorizationTransport,
+          ...nativeAuthorizationIo,
+          ...nativeAuthorizationConnector,
+          ...nativeAuthorizationResponse,
+          ...nativeAuthorizationMitigation,
+          ...nativeAuthorizationResponseRead,
+          ...nativeAuthorizationResponseReadTiming,
+          ...terminalError,
+          ...invocationRejection,
+          ...invocationAdmission,
+          ...invocationSpawnHint,
+          ...invocationUnknown,
+          ...streamFence,
+        },
+        dedupeKey,
+      );
+    };
+  }
 }

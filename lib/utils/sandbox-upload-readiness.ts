@@ -9,8 +9,11 @@ export async function checkAttachmentReadiness(
 ) {
   if (!isE2BSandbox(sandbox)) return;
   signal?.throwIfAborted();
+  // requestTimeoutMs bounds only the wait for a process ID, so an unavailable
+  // command channel still fails after five seconds. timeoutMs covers the whole
+  // login shell; a workspace that starts it slowly is not unavailable.
   const result = await runAttachmentCommand(sandbox, "true", signal, {
-    timeoutMs: 5_000,
+    timeoutMs: 30_000,
     requestTimeoutMs: 5_000,
   });
   signal?.throwIfAborted();
@@ -25,14 +28,26 @@ export async function sampleAttachmentFailureMetrics(
   if (!isE2BSandbox(sandbox)) return { metrics_status: "not_e2b" };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const end = new Date(Date.now());
+    const start = new Date(end.getTime() - 5 * 60_000);
     const metrics = await Promise.race([
-      sandbox.getMetrics({ requestTimeoutMs: 1_000 }),
+      sandbox.getMetrics({
+        requestTimeoutMs: 1_000,
+        start,
+        end,
+      }),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), 1_000);
       }),
     ]);
     const latest = metrics?.at(-1);
     if (!latest) return { metrics_status: "unavailable" };
+    const sampleTime =
+      latest.timestamp instanceof Date
+        ? Date.prototype.getTime.call(latest.timestamp)
+        : NaN;
+    // Keep future samples negative rather than reporting clock skew as fresh.
+    const sampleAgeMs = Date.now() - sampleTime;
     const fields = {
       cpu_used_pct: latest.cpuUsedPct,
       memory_used_bytes: latest.memUsed,
@@ -42,6 +57,9 @@ export async function sampleAttachmentFailureMetrics(
     };
     return {
       metrics_status: "available",
+      ...(Number.isSafeInteger(sampleAgeMs) && {
+        metrics_sample_age_ms: sampleAgeMs,
+      }),
       ...Object.fromEntries(
         Object.entries(fields).filter(
           ([, value]) =>

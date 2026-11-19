@@ -9,7 +9,7 @@ import {
   redirectToBillingPortal,
   openRenewalInvoice,
 } from "@/lib/billing/client";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
 let mockAuth = {
@@ -30,7 +30,9 @@ jest.mock("@/lib/billing/client", () => ({
   openRenewalInvoice: jest.fn(),
 }));
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(),
+  getPermittedAnalyticsUserId: () => "user_test",
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 jest.mock("@/lib/utils/settings-dialog", () => ({
   openSettingsDialog: jest.fn(),
@@ -84,11 +86,13 @@ it.each(["past_due", "unpaid"] as const)(
     expect(
       screen.queryByText("Add credits or upgrade"),
     ).not.toBeInTheDocument();
-    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-      "recovery_prompt_impressed",
+    expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        surface: "blocked_chat",
-        subscription_status: subscriptionStatus,
+        event: "recovery_prompt_impressed",
+        properties: expect.objectContaining({
+          surface: "blocked_chat",
+          subscription_status: subscriptionStatus,
+        }),
       }),
     );
   },

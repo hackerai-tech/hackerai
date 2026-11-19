@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type InferToolInput, type InferToolOutput } from "ai";
 import { createHash } from "crypto";
 import type {
   AgentApprovalSandboxIdentity,
@@ -25,7 +25,12 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import { createFileToolSchema } from "./schemas";
+import {
+  createFileEditToolSchema,
+  createFileToolSchema,
+  createFileWriteToolSchema,
+  type FileToolAction,
+} from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -273,14 +278,21 @@ start_line = range_start if range_start > 0 else 1
 
 def add_text(text):
     global selected_bytes, truncated
-    encoded = text.encode("utf-8", errors="replace")
     remaining = max_result_bytes - selected_bytes
     if remaining <= 0:
         truncated = True
         return False
+    # Each character encodes to at least one byte, so this prefix still
+    # exceeds the cap whenever the whole line would.
+    encoded = text[:remaining + 1].encode("utf-8", errors="replace")
     if len(encoded) > remaining:
-        selected.append(encoded[:remaining].decode("utf-8", errors="replace"))
-        selected_bytes = max_result_bytes
+        # Cut before a character the cap splits instead of decoding its
+        # partial bytes as a replacement character.
+        end = remaining
+        while end > 0 and (encoded[end] & 0xC0) == 0x80:
+            end -= 1
+        selected.append(encoded[:end].decode("utf-8"))
+        selected_bytes += end
         truncated = True
         return False
     selected.append(text)
@@ -1280,7 +1292,10 @@ async function uploadViewPreviewFiles(args: {
   };
 }
 
-export const createFile = (context: ToolContext) => {
+export const createFile = (
+  context: ToolContext,
+  toolName: "file" | "file_write" | "file_edit" = "file",
+) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
   const getAuxiliaryVision = () =>
     context.auxiliaryVision?.isEnabled?.() === false
@@ -1331,13 +1346,48 @@ export const createFile = (context: ToolContext) => {
 
   return tool({
     ...fileToolSchema,
+    // The shared executor also accepts dedicated and legacy write inputs.
     execute: async (
-      { action, path, brief, text, range, edits },
+      {
+        action,
+        path,
+        brief,
+        text,
+        range,
+        edits,
+      }: Omit<
+        InferToolInput<ReturnType<typeof createFileToolSchema>>,
+        "action"
+      > & {
+        action: FileToolAction;
+        text?: string;
+        edits?: InferToolInput<
+          ReturnType<typeof createFileEditToolSchema>
+        >["edits"];
+      },
       { toolCallId },
     ) => {
       let source: { environment: string; identity: string } | undefined;
       const executeOperation = async () => {
         try {
+          // These calls cannot perform a file operation. Reject them before
+          // requesting approval or acquiring a sandbox, and mark the outcome so
+          // the Agent can distinguish it from an uncertain transport failure.
+          if (
+            (action === "write" || action === "append") &&
+            text === undefined
+          ) {
+            return {
+              error: `text is required for ${action} action`,
+              executionOutcome: "not_executed" as const,
+            };
+          }
+          if (action === "edit" && (!edits || edits.length === 0)) {
+            return {
+              error: "edits array is required for edit action",
+              executionOutcome: "not_executed" as const,
+            };
+          }
           let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
           if (action === "write" || action === "append" || action === "edit") {
             const serializedEdits = edits ? JSON.stringify(edits) : undefined;
@@ -1348,7 +1398,7 @@ export const createFile = (context: ToolContext) => {
               exactContent.length <= MAX_AUTO_REVIEW_FILE_CHANGE_CHARS;
             const approval = await context.requestToolApproval?.({
               toolCallId,
-              toolName: "file",
+              toolName,
               operation:
                 action === "write"
                   ? "file_write"
@@ -1555,11 +1605,8 @@ export const createFile = (context: ToolContext) => {
             }
 
             case "write": {
-              if (text === undefined) {
-                return { error: "text is required for write action" };
-              }
-
-              await sandbox.files.write(path, text, {
+              const content = text!; // Checked before approval and sandbox access.
+              await sandbox.files.write(path, content, {
                 user: "user" as const,
               });
 
@@ -1567,10 +1614,7 @@ export const createFile = (context: ToolContext) => {
             }
 
             case "append": {
-              if (text === undefined) {
-                return { error: "text is required for append action" };
-              }
-
+              const content = text!; // Checked before approval and sandbox access.
               const existingState = await getSandboxFileState(sandbox, path);
               if (existingState.kind === "unknown") {
                 return {
@@ -1586,7 +1630,7 @@ export const createFile = (context: ToolContext) => {
                 existingState.kind === "file" &&
                 existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES
               ) {
-                await appendSandboxTextFile(sandbox, path, text);
+                await appendSandboxTextFile(sandbox, path, content);
                 return {
                   content: `File appended: ${path}\nExisting file is ${formatBytes(existingState.sizeBytes)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
                 };
@@ -1598,14 +1642,25 @@ export const createFile = (context: ToolContext) => {
                 existingContent = await sandbox.files.read(path, {
                   user: "user" as const,
                 });
-              } catch {
-                // File doesn't exist, start with empty content
+              } catch (error) {
+                // Only a probe-confirmed missing file may start empty. Writing the
+                // appended text alone over an unread existing file would erase it.
+                if (existingState.kind !== "missing") {
+                  if (context.auxiliaryVision?.isAborted?.()) throw error;
+                  return {
+                    error: `Cannot append to ${path} because its existing content could not be read. No write was attempted.`,
+                    executionOutcome: "not_executed" as const,
+                  };
+                }
               }
 
               // Append directly without adding extra newline - agent controls exact content
               const appendText = existingContent
-                ? convertToLineEnding(text, detectLineEnding(existingContent))
-                : text;
+                ? convertToLineEnding(
+                    content,
+                    detectLineEnding(existingContent),
+                  )
+                : content;
               const newContent = existingContent + appendText;
 
               await sandbox.files.write(path, newContent, {
@@ -1628,10 +1683,7 @@ export const createFile = (context: ToolContext) => {
             }
 
             case "edit": {
-              if (!edits || edits.length === 0) {
-                return { error: "edits array is required for edit action" };
-              }
-
+              const requiredEdits = edits!; // Checked before approval and sandbox access.
               const existingState = await getSandboxFileState(sandbox, path);
               if (existingState.kind === "unknown") {
                 return {
@@ -1667,7 +1719,7 @@ export const createFile = (context: ToolContext) => {
 
               // Validate all find strings exist before applying any edits (atomic behavior)
               const lineEnding = detectLineEnding(originalContent);
-              const normalizedEdits = edits.map((edit) => ({
+              const normalizedEdits = requiredEdits.map((edit) => ({
                 ...edit,
                 find: convertToLineEnding(edit.find, lineEnding),
                 replace: convertToLineEnding(edit.replace, lineEnding),
@@ -1675,7 +1727,10 @@ export const createFile = (context: ToolContext) => {
               const missingFinds: { index: number; find: string }[] = [];
               for (let i = 0; i < normalizedEdits.length; i++) {
                 if (!originalContent.includes(normalizedEdits[i].find)) {
-                  missingFinds.push({ index: i + 1, find: edits[i].find });
+                  missingFinds.push({
+                    index: i + 1,
+                    find: requiredEdits[i].find,
+                  });
                 }
               }
 
@@ -1726,7 +1781,7 @@ export const createFile = (context: ToolContext) => {
               // toModelOutput will control what the model sees
               return {
                 content: truncateOutput({
-                  content: `Multi-edit completed: ${edits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
+                  content: `Multi-edit completed: ${requiredEdits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
                   mode: "read-file",
                 }),
                 originalContent: truncateOutput({
@@ -1967,6 +2022,49 @@ export const createFile = (context: ToolContext) => {
       }
 
       // Fallback: stringify the output
+      return { type: "text" as const, value: JSON.stringify(output) };
+    },
+  });
+};
+
+// Share the guarded executor and transport behavior with legacy file calls.
+export const createFileWrite = (context: ToolContext) => {
+  const file = createFile(context, "file_write");
+  return tool<
+    InferToolInput<ReturnType<typeof createFileWriteToolSchema>>,
+    InferToolOutput<typeof file>
+  >({
+    ...createFileWriteToolSchema({
+      approvalGated: !!context.requestToolApproval,
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }),
+    execute: (input, options) => file.execute!(input, options),
+    toModelOutput: file.toModelOutput,
+  });
+};
+
+// Share the guarded edit executor while exposing a schema that requires edits.
+export const createFileEdit = (context: ToolContext) => {
+  const file = createFile(context, "file_edit");
+  return tool<
+    InferToolInput<ReturnType<typeof createFileEditToolSchema>>,
+    InferToolOutput<typeof file>
+  >({
+    ...createFileEditToolSchema({
+      approvalGated: !!context.requestToolApproval,
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }),
+    execute: (input, options) =>
+      file.execute!({ ...input, action: "edit" }, options),
+    toModelOutput: ({ output }) => {
+      if (typeof output === "object" && output !== null) {
+        if ("error" in output) {
+          return { type: "text" as const, value: `Error: ${output.error}` };
+        }
+        if ("content" in output) {
+          return { type: "text" as const, value: output.content };
+        }
+      }
       return { type: "text" as const, value: JSON.stringify(output) };
     },
   });

@@ -9,6 +9,7 @@ import {
 } from "@/lib/billing/annual-switch";
 import { PRICING } from "@/lib/pricing/config";
 import { phLogger } from "@/lib/posthog/server";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
@@ -20,6 +21,8 @@ const conflict = (error: string) =>
   NextResponse.json({ error }, { status: 409 });
 
 export async function POST(request: NextRequest) {
+  const rejection = rejectUnsafeRequest(request, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const context = await getBillingActionContext();
     await assertUserCanStartBillingTransaction(context.user.id);

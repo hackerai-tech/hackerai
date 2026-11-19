@@ -1,5 +1,13 @@
+import { goalElapsedMs } from "../../lib/goals/timing";
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../../lib/ai/browser-handoff/constants";
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
   mutation: (config: unknown) => config,
@@ -35,6 +43,7 @@ function fixture() {
       },
     ],
     browser_handoffs: [],
+    agent_goals: [],
     messages: [],
   };
   const ctx = {
@@ -278,6 +287,41 @@ describe("browser handoff ownership", () => {
     expect(
       await browser.getForBackend.handler(ctx as never, scope),
     ).not.toBeNull();
+  });
+
+  it("reports the completed-takeover receipt even when its private message is unavailable", async () => {
+    const { ctx, rows, register, scope } = fixture();
+    await register();
+    expect(
+      await browser.getForBackend.handler(ctx as never, scope),
+    ).toMatchObject({
+      hasCompletedTakeover: false,
+    });
+    rows.browser_handoffs[0].exit_note_ids = ["removed-note"];
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, scope),
+    ).toEqual([]);
+    expect(
+      await browser.getForBackend.handler(ctx as never, scope),
+    ).toMatchObject({
+      hasCompletedTakeover: true,
+    });
+    const row = rows.browser_handoffs[0];
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, {
+        ...scope,
+        expectedUpdatedAt: row.updated_at as number,
+      }),
+    ).toBe(true);
+    expect(row.state).toBe("agent");
+    expect(
+      JSON.stringify(
+        await browser.getForUser.handler(ctx as never, {
+          chatId: "chat",
+          agentId: "parent",
+        }),
+      ),
+    ).not.toContain("hasCompletedTakeover");
   });
 
   it("rejects replayed and expired control grants while keeping recovery paused", async () => {
@@ -610,3 +654,278 @@ it.each([
     }
   },
 );
+
+describe("abandoned parent handoff deadline", () => {
+  const MINUTES_30 = 30 * 60_000;
+  const T = 1_800_000_000_000;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(T);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  async function waiting(agentId = "parent", runId = "run-parent") {
+    const f = fixture();
+    await f.register(agentId, runId, f.scope.sessionId, 2 * 60 * 60_000);
+    const row = f.rows.browser_handoffs[0];
+    expect(
+      await browser.requestWaitForBackend.handler(f.ctx as never, {
+        ...f.scope,
+        expectedUpdatedAt: row.updated_at as number,
+      }),
+    ).toBe(true);
+    return { ...f, row };
+  }
+  const abandon = (f: Awaited<ReturnType<typeof waiting>>) =>
+    browser.abandonForBackend.handler(f.ctx as never, f.scope);
+
+  it.each([
+    ["an unclaimed wait", { state: "waiting" }, T + MINUTES_30],
+    ["an explicit recovery", { state: "recovery" }, T + MINUTES_30],
+    [
+      "an expired human grant",
+      { state: "human", grant_expires_at: T + 20_000 },
+      T + 20_000 + MINUTES_30,
+    ],
+    [
+      "an expired claim",
+      { state: "claiming", grant_expires_at: T + 5_000 },
+      T + 5_000 + MINUTES_30,
+    ],
+    [
+      "an older expired grant without its expiry",
+      { state: "human", grant_expires_at: undefined },
+      T + MINUTES_30,
+    ],
+    ["a stalled resume", { state: "resuming" }, T + 30_000 + MINUTES_30],
+    [
+      "an active human grant",
+      { state: "human", grant_expires_at: T + 60 * 60_000 },
+      undefined,
+    ],
+    ["a resume within its lease", { state: "resuming" }, undefined],
+    ["Agent work", { state: "agent" }, undefined],
+  ])("reports the backend deadline for %s", async (_name, fields, expected) => {
+    const f = await waiting();
+    Object.assign(f.row, { updated_at: T, ...fields });
+    // Read after a grant/lease could have lapsed, so the effective state is used.
+    jest.setSystemTime(
+      fields.state === "resuming" && expected === undefined
+        ? T + 29_999
+        : T + 60_000,
+    );
+    expect(
+      (await browser.getForBackend.handler(f.ctx as never, f.scope))
+        ?.abandonAfter,
+    ).toBe(expected);
+  });
+
+  it("never gives a child run a deadline or lets it be closed", async () => {
+    const f = await waiting("child", "run-child");
+    jest.setSystemTime(T + 2 * MINUTES_30);
+    expect(
+      await browser.getForBackend.handler(f.ctx as never, f.scope),
+    ).not.toHaveProperty("abandonAfter");
+    expect(await abandon(f)).toBeNull();
+    expect(f.row.state).toBe("waiting");
+  });
+
+  it("closes the owned row once at its deadline, fences control and keeps an idempotent receipt", async () => {
+    const f = await waiting();
+    jest.setSystemTime(T + MINUTES_30 - 1);
+    expect(await abandon(f)).toBe("not_due");
+    expect(f.row.state).toBe("waiting");
+
+    jest.setSystemTime(T + MINUTES_30);
+    expect(await abandon(f)).toBe("abandoned");
+    expect(f.row).toMatchObject({
+      state: "closed",
+      abandoned_at: T + MINUTES_30,
+      grant: undefined,
+      grant_expires_at: undefined,
+    });
+
+    // A lost response or concurrent gate retries against the same owned row.
+    jest.setSystemTime(T + MINUTES_30 + 5_000);
+    expect(await abandon(f)).toBe("abandoned");
+    expect(f.row.abandoned_at).toBe(T + MINUTES_30);
+
+    const grant = "g".repeat(32);
+    expect(
+      await browser.beginTakeoverForBackend.handler(f.ctx as never, {
+        ...f.scope,
+        grant,
+      }),
+    ).toBe(false);
+    expect(
+      await browser.beginResumeForBackend.handler(f.ctx as never, f.scope),
+    ).toBe(false);
+    expect(
+      await browser.finishResumeForBackend.handler(f.ctx as never, f.scope),
+    ).toBe(false);
+    expect(await browser.getForBackend.handler(f.ctx as never, f.scope)).toBe(
+      null,
+    );
+
+    // Normal run cleanup closes again without erasing the receipt.
+    await browser.closeForBackend.handler(f.ctx as never, {
+      serviceKey: "key",
+      sessionId: f.scope.sessionId,
+    });
+    expect(f.row.abandoned_at).toBe(T + MINUTES_30);
+    // A replacement run never inherits the previous run's receipt.
+    f.rows.chats[0].active_trigger_run_id = "run-next";
+    expect(await abandon(f)).toBeNull();
+  });
+
+  it.each(["takeover", "resume"] as const)(
+    "lets a %s that commits before the close defeat the deadline",
+    async (winner) => {
+      const f = await waiting();
+      const grant = "g".repeat(32);
+      if (winner === "resume") {
+        f.row.state = "recovery";
+        f.row.updated_at = T;
+      }
+      jest.setSystemTime(T + MINUTES_30);
+      expect(
+        winner === "takeover"
+          ? await browser.beginTakeoverForBackend.handler(f.ctx as never, {
+              ...f.scope,
+              grant,
+            })
+          : await browser.beginResumeForBackend.handler(
+              f.ctx as never,
+              f.scope,
+            ),
+      ).toBe(true);
+      expect(await abandon(f)).toBe("not_due");
+      expect(f.row.state).toBe(winner === "takeover" ? "claiming" : "resuming");
+      expect(f.row.abandoned_at).toBeUndefined();
+      if (winner === "resume") {
+        // Only a stalled resume becomes eligible again, after its own lease.
+        jest.setSystemTime(T + MINUTES_30 + 30_000 + MINUTES_30 - 1);
+        expect(await abandon(f)).toBe("not_due");
+        jest.setSystemTime(T + MINUTES_30 + 30_000 + MINUTES_30);
+        expect(await abandon(f)).toBe("abandoned");
+      }
+    },
+  );
+
+  it("cannot close a session replaced by a newer browser in the same run", async () => {
+    const f = await waiting();
+    await f.register("parent", "run-parent", "b".repeat(32));
+    jest.setSystemTime(T + 2 * MINUTES_30);
+    expect(await abandon(f)).toBeNull();
+    expect(f.row.abandoned_at).toBeUndefined();
+  });
+});
+
+describe("Goal time during human browser input", () => {
+  it("freezes a Goal through handoff, grant recovery and explicit resume", async () => {
+    const f = fixture();
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    const goal: any = {
+      _id: "goal-row",
+      chatId: "chat",
+      userId: "owner",
+      activeRunId: "run-parent",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: 1000,
+      updatedAt: 1000,
+    };
+    f.rows.agent_goals.push(goal);
+    try {
+      await f.register("parent", "run-parent", f.scope.sessionId, 600000);
+      now.mockReturnValue(4000);
+      expect(
+        await browser.requestWaitForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          expectedUpdatedAt: 1000,
+        }),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      now.mockReturnValue(64000);
+      expect(
+        await browser.requestWaitForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          expectedUpdatedAt: 1000,
+        }),
+      ).toBe(true);
+      const grant = "g".repeat(32);
+      expect(
+        await browser.beginTakeoverForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+        }),
+      ).toBe(true);
+      expect(
+        await browser.finishTakeoverForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+          browserSessionName: "default",
+        }),
+      ).toBe(true);
+      expect(
+        await browser.releaseForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+        }),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 124000)).toBe(5000);
+      now.mockReturnValue(124000);
+      expect(
+        await browser.beginResumeForBackend.handler(f.ctx as any, f.scope),
+      ).toBe(true);
+      expect(
+        await browser.finishResumeForBackend.handler(f.ctx as any, f.scope),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 126000)).toBe(7000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("does not restart Goal time when browser control returns while a chat reply is pending", async () => {
+    const f = fixture();
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    const goal: any = {
+      _id: "goal-row",
+      chatId: "chat",
+      userId: "owner",
+      activeRunId: "run-parent",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: undefined,
+      updatedAt: 1000,
+    };
+    f.rows.agent_goals.push(goal);
+    f.rows.chats[0].active_agent_user_wait = {
+      runId: "run-parent",
+      toolCallId: "reply",
+    };
+    try {
+      await f.register("parent", "run-parent", f.scope.sessionId, 600000);
+      const grant = "g".repeat(32);
+      await browser.beginTakeoverForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+      });
+      await browser.finishTakeoverForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+        browserSessionName: "default",
+      });
+      now.mockReturnValue(64000);
+      await browser.beginResumeForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+      });
+      await browser.finishResumeForBackend.handler(f.ctx as any, f.scope);
+      expect(goalElapsedMs(goal, 124000)).toBe(2000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});

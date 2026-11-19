@@ -1,3 +1,5 @@
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import { BROWSER_HANDOFF_ABANDONED_FINISH_REASON } from "@/lib/ai/browser-handoff/constants";
 import {
   OUTPUT_LIMIT_FINISH_REASON,
   STEP_LIMIT_FINISH_REASON,
@@ -6,6 +8,23 @@ import {
 } from "@/lib/chat/stop-conditions";
 
 export const getResumeSection = (finishReason?: string): string => {
+  if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
+    return `<resume_context>
+The previous Agent run stopped because its local computer connection was lost.
+The user has now explicitly resumed from saved conversation progress. Do not restart completed work.
+A command that was running when the connection disappeared may have completed or may still be running.
+Inspect its saved output and current state before taking further action. Never replay an uncertain mutation automatically.
+</resume_context>`;
+  }
+  if (finishReason === BROWSER_HANDOFF_ABANDONED_FINISH_REASON) {
+    return `<resume_context>
+The previous Agent run paused for browser takeover, and nobody returned control in time, so it stopped with its progress saved.
+Follow the latest user request. If it resumes the task, continue from saved messages, tool results, todos and files without repeating completed work.
+First inspect the current state: read any saved takeover notes, check workspace files, and take a fresh snapshot of any browser page you still need. The previous browser may have been closed.
+Treat any action without a confirmed result as uncertain; verify its effect before deciding whether to repeat it.
+If the next step needs the user in the browser again (for example sign-in, MFA or a CAPTCHA), request a new handoff and wait for the user instead of working around it.
+</resume_context>`;
+  }
   if (
     finishReason === STEP_LIMIT_FINISH_REASON ||
     finishReason === "tool-calls"

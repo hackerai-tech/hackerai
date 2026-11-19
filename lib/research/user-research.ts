@@ -486,17 +486,52 @@ const patternMatches = (pattern: RegExp, value: string): boolean => {
   return matches;
 };
 
-export const containsUnredactedResearchSecret = (value: string): boolean =>
-  patternMatches(secretAssignmentPattern, value) ||
-  patternMatches(bearerPattern, value) ||
-  patternMatches(jwtPattern, value) ||
-  patternMatches(privateKeyMarkerPattern, value) ||
-  standaloneSecretPatterns.some((pattern) => patternMatches(pattern, value));
+/** Closed labels for the first secret family the prompt guard matched. */
+export type ResearchPromptSecretCategory =
+  | "secret_assignment"
+  | "bearer"
+  | "jwt"
+  | "private_key_marker"
+  | "standalone_key";
 
-export const assertResearchPromptIsSafe = (prompt: string): void => {
-  if (containsUnredactedResearchSecret(prompt)) {
-    throw new Error("Research prompt contains unredacted secret material");
+const findUnredactedResearchSecretCategory = (
+  value: string,
+): ResearchPromptSecretCategory | undefined => {
+  if (patternMatches(secretAssignmentPattern, value)) {
+    return "secret_assignment";
   }
+  if (patternMatches(bearerPattern, value)) return "bearer";
+  if (patternMatches(jwtPattern, value)) return "jwt";
+  if (patternMatches(privateKeyMarkerPattern, value)) {
+    return "private_key_marker";
+  }
+  if (
+    standaloneSecretPatterns.some((pattern) => patternMatches(pattern, value))
+  )
+    return "standalone_key";
+  return undefined;
+};
+
+export const containsUnredactedResearchSecret = (value: string): boolean =>
+  findUnredactedResearchSecretCategory(value) !== undefined;
+
+/**
+ * Throws before a model call when a prompt still contains secret material.
+ * `onUnsafe` receives only the closed category; it is best effort and can
+ * never admit the prompt or replace the guard's error.
+ */
+export const assertResearchPromptIsSafe = (
+  prompt: string,
+  onUnsafe?: (category: ResearchPromptSecretCategory) => void,
+): void => {
+  const category = findUnredactedResearchSecretCategory(prompt);
+  if (category === undefined) return;
+  try {
+    onUnsafe?.(category);
+  } catch {
+    // Diagnostics must not change the guard outcome.
+  }
+  throw new Error("Research prompt contains unredacted secret material");
 };
 
 /**

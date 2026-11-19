@@ -1,10 +1,28 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { ComputerWorkspace } from "../ComputerWorkspace";
 import type { SidebarContent } from "@/types/chat";
+import { downloadFile } from "@/lib/utils/file-download";
 
 const mockGetUrl = jest.fn();
 let mockOverlay = false;
-jest.mock("convex/react", () => ({ useAction: () => mockGetUrl }));
+const mockSavedQuery = jest.fn();
+let mockSavedPage: { results: unknown[]; status: string; loadMore: () => void };
+jest.mock("convex/react", () => ({
+  useAction: () => mockGetUrl,
+  useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
+  usePaginatedQuery: (...args: unknown[]) => {
+    mockSavedQuery(...args);
+    return args[1] === "skip"
+      ? { results: [], status: "LoadingFirstPage", loadMore: () => {} }
+      : mockSavedPage;
+  },
+}));
 jest.mock("../ComputerCodeBlock", () => ({
   ComputerCodeBlock: ({ children }: { children: string }) => (
     <pre>{children}</pre>
@@ -65,7 +83,101 @@ const props = {
 
 beforeEach(() => {
   mockOverlay = false;
+  mockGetUrl.mockReset();
+  mockSavedQuery.mockClear();
+  mockSavedPage = { results: [], status: "Exhausted", loadMore: () => {} };
   global.fetch = jest.fn().mockRejectedValue(new Error("offline"));
+});
+
+it("reopens an older saved report outside loaded history and downloads its exact bytes with the workspace offline", async () => {
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]);
+  const olderReport = {
+    id: "older-report",
+    role: "assistant",
+    fileDetails: [
+      {
+        fileId: "file-pdf",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: bytes.length,
+      },
+    ],
+  };
+  mockSavedPage = {
+    results: [olderReport],
+    status: "Exhausted",
+    loadMore: () => {},
+  };
+  mockGetUrl.mockResolvedValue("https://signed/report");
+  global.fetch = jest.fn(async (url: string) => {
+    if (url !== "https://signed/report") throw new Error("workspace offline");
+    let sent = false;
+    return {
+      ok: true,
+      headers: { get: () => String(bytes.length) },
+      body: {
+        getReader: () => ({
+          read: async () =>
+            sent
+              ? { done: true }
+              : ((sent = true), { done: false, value: bytes }),
+          cancel: async () => {},
+        }),
+      },
+    };
+  }) as unknown as typeof fetch;
+  (downloadFile as jest.Mock).mockResolvedValue({ outcome: "success" });
+  // Loaded history no longer contains the message that delivered the report.
+  const view = { ...props, messages: [], selection: activity };
+  const { rerender } = render(<ComputerWorkspace {...view} />);
+  expect(mockSavedQuery.mock.calls.every(([, args]) => args === "skip")).toBe(
+    true,
+  );
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  expect(mockSavedQuery).toHaveBeenLastCalledWith(
+    expect.anything(),
+    { chatId: "chat" },
+    { initialNumItems: 14 },
+  );
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getByRole("button", { name: /report\.pdf/ }),
+  );
+  expect(screen.getByRole("tab", { name: "report.pdf" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  // Minimize and reopen: the older tab waits for saved files instead of reporting it gone.
+  rerender(<ComputerWorkspace {...view} open={false} selection={null} />);
+  mockSavedPage = {
+    results: [],
+    status: "LoadingFirstPage",
+    loadMore: () => {},
+  };
+  rerender(<ComputerWorkspace {...view} selection={null} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Loading saved files");
+  expect(screen.queryByText(/no longer in this chat/)).not.toBeInTheDocument();
+  mockSavedPage = {
+    results: [olderReport],
+    status: "Exhausted",
+    loadMore: () => {},
+  };
+  rerender(<ComputerWorkspace {...view} selection={null} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Download saved file" }),
+  );
+  await waitFor(() => expect(downloadFile).toHaveBeenCalledTimes(1));
+  const [options] = (downloadFile as jest.Mock).mock.calls[0];
+  expect(options).toMatchObject({
+    filename: "report.pdf",
+    mimeType: "application/pdf",
+  });
+  expect(Array.from(options.content)).toEqual(Array.from(bytes));
+  expect(mockGetUrl).toHaveBeenCalledWith({ fileId: "file-pdf" });
+  expect(
+    (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url)),
+  ).toEqual(["https://signed/report"]);
 });
 
 it("keeps two captured versions open, reuses a version, and preserves the selected file through activity updates and minimize", async () => {

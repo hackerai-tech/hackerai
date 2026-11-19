@@ -1,5 +1,7 @@
 import "@testing-library/jest-dom";
 import React from "react";
+import { SubmitStopButton } from "../ChatInput/SubmitStopButton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { evidenceWarningText } from "@/lib/ai/subagents/evidence-references";
 import {
   act,
@@ -511,12 +513,43 @@ describe("SubagentsSidebar", () => {
       }),
     );
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    const onStop = jest.fn();
+    render(
+      <TooltipProvider>
+        <SubmitStopButton
+          isGenerating
+          hideStop={false}
+          onStop={onStop}
+          onSubmit={jest.fn()}
+          status="streaming"
+          isUploadingFiles={false}
+          input=""
+          uploadedFiles={[]}
+          chatMode="agent"
+        />
+      </TooltipProvider>,
+    );
+    const navigation = document.createElement("div");
+    navigation.dataset.shortcutsScope = "navigation";
+    document.body.append(navigation);
+    try {
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(
+        screen.getByRole("heading", { name: "Active candidate" }),
+      ).toBeVisible();
+      expect(closeSidebar).not.toHaveBeenCalled();
+      expect(onStop).not.toHaveBeenCalled();
+    } finally {
+      navigation.remove();
+    }
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.getByRole("heading", { name: "Subagents" })).toBeVisible();
     expect(closeSidebar).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(closeSidebar).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
   });
 
   it("shows assigned specialist skills only in the opened child details", () => {

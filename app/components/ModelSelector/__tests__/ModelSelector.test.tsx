@@ -135,11 +135,6 @@ describe("ModelSelector", () => {
       expect(
         await screen.findAllByText("Maximum intelligence for complex work"),
       ).not.toHaveLength(0);
-      expect(
-        await screen.findAllByText(
-          "Powered by Z.ai GLM 5.3 (text), DeepSeek V4.1 Flash 1017 (vision)",
-        ),
-      ).not.toHaveLength(0);
     },
   );
 

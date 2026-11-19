@@ -54,6 +54,8 @@ import {
   Pin,
   PinOff,
   LoaderCircle,
+  MessageCircleQuestionMark,
+  ShieldQuestion,
   Folder,
   FolderInput,
   FolderMinus,
@@ -77,6 +79,8 @@ import type { SidebarChatDragData } from "./sidebar-chat-drag";
 import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
 import { useSidebarTaskUnreadCompletion } from "@/app/hooks/useSidebarTaskUnreadCompletion";
+import type { SidebarInputReason } from "./sidebar-chat-status";
+import { getRouteChatIdFromPathname } from "./chat-route";
 
 interface ChatItemProps {
   id: string;
@@ -89,6 +93,7 @@ interface ChatItemProps {
   isPinned?: boolean;
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
+  needsInputReason?: SidebarInputReason;
   lastRunFinishedAt?: number;
 }
 
@@ -101,17 +106,6 @@ const CHAT_OPTION_DESTRUCTIVE_ITEM_CLASS =
 const CHAT_OPTIONS_SEPARATOR_CLASS = "mx-1 my-1 bg-border/80";
 const CHAT_OPTION_ICON_CLASS = "size-4 shrink-0 text-foreground/75";
 
-const getRouteChatIdFromPathname = (pathname: string | null): string | null => {
-  const match = pathname?.match(/^\/c\/([^/?#]+)/);
-  const routeChatId = match?.[1];
-  if (!routeChatId) return null;
-  try {
-    return decodeURIComponent(routeChatId);
-  } catch {
-    return routeChatId;
-  }
-};
-
 const ChatItem: React.FC<ChatItemProps> = ({
   id,
   title,
@@ -123,6 +117,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isPinned = false,
   isStreaming = false,
   isAwaitingApproval = false,
+  needsInputReason,
   lastRunFinishedAt,
 }) => {
   const taskTitle = formatTaskTitle(title);
@@ -139,6 +134,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [editTitle, setEditTitle] = useState(taskTitle);
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Title shown when the rename dialog opened, so an untouched draft cannot
+  // overwrite a newer title that arrived while the dialog was open.
+  const renameBaselineRef = useRef(taskTitle);
   const renameInputId = useId();
 
   const {
@@ -146,6 +144,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
+    getChatNavigationRevision,
     optimisticChatId,
     setOptimisticChatId,
   } = useGlobalState();
@@ -180,11 +179,22 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const showActions = Boolean(
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
+  const showInputStatus =
+    (needsInputReason || isAwaitingApproval) && (!showActions || isMobile);
+  const inputIsApproval =
+    needsInputReason === "approval" ||
+    (!needsInputReason && isAwaitingApproval);
   const showStreamingIndicator =
-    isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
+    isStreaming &&
+    !needsInputReason &&
+    !isAwaitingApproval &&
+    (!isHovered || isMobile) &&
+    (!isDropdownOpen || isMobile);
   const showUnreadCompletionIndicator =
     hasUnreadCompletion &&
     !isStreaming &&
+    !needsInputReason &&
+    !isAwaitingApproval &&
     (!isHovered || isMobile) &&
     (!isDropdownOpen || isMobile);
   const showRunStatusIndicator =
@@ -274,6 +284,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleDeleteConfirm = async () => {
     if (isDeleting) return;
     setIsDeleting(true);
+    // Deletion can outlive this row and the route. A chat navigation started
+    // meanwhile advances this revision before its route commits.
+    const navigationRevision = getChatNavigationRevision();
 
     try {
       await confirmDeletion(
@@ -292,8 +305,13 @@ const ChatItem: React.FC<ChatItemProps> = ({
       // Remove draft from localStorage immediately after successful deletion
       removeDraft(id);
 
-      // If we're deleting the currently active chat, navigate to home
-      if (isCurrentlyActive) {
+      // Return home only if the deleted chat still owns navigation: it was
+      // active, the live route still shows it, and no newer navigation began.
+      if (
+        isCurrentlyActive &&
+        getRouteChatIdFromPathname(window.location.pathname) === id &&
+        getChatNavigationRevision() === navigationRevision
+      ) {
         initializeNewChat();
         router.push("/");
       }
@@ -321,6 +339,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
     setEditTitle(taskTitle); // Set the current title when opening dialog
+    renameBaselineRef.current = taskTitle;
 
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
@@ -382,8 +401,12 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const handleSaveRename = async () => {
     const trimmedTitle = editTitle.trim();
 
-    // Don't save if title is empty or unchanged
-    if (!trimmedTitle || trimmedTitle === taskTitle) {
+    // Don't save if title is empty, untouched since opening, or already current
+    if (
+      !trimmedTitle ||
+      trimmedTitle === renameBaselineRef.current.trim() ||
+      trimmedTitle === taskTitle.trim()
+    ) {
       setShowRenameDialog(false);
       setEditTitle(taskTitle); // Reset to original title
       return;
@@ -405,6 +428,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
             : "Failed to rename task";
       toast.error(formatTaskUiCopy(errorMessage));
       setEditTitle(taskTitle); // Reset to original title on error
+      renameBaselineRef.current = taskTitle;
     } finally {
       setIsRenaming(false);
     }
@@ -417,6 +441,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
+      // Enter that confirms an IME candidate must not submit the rename.
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
       e.preventDefault();
       handleSaveRename();
     } else if (e.key === "Escape") {
@@ -484,8 +510,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
       role="button"
       tabIndex={0}
       aria-label={`Open task: ${taskTitle}${
-        isAwaitingApproval ? " awaiting approval" : ""
-      }${hasUnreadCompletion ? " with unread result" : ""}`}
+        needsInputReason || isAwaitingApproval
+          ? `, needs input: ${
+              {
+                approval: "approval requested",
+                reply: "agent asked a question",
+                goal: "goal needs your reply",
+                browser: "browser needs your input",
+              }[needsInputReason ?? "approval"]
+            }`
+          : ""
+      }${hasUnreadCompletion && !needsInputReason && !isAwaitingApproval ? " with unread result" : ""}`}
       data-testid={`chat-item-${id}`}
     >
       <div
@@ -507,13 +542,23 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          <span className="min-w-0 truncate">{taskTitle}</span>
-          {isAwaitingApproval && (
+          <span className="min-w-0 flex-1 truncate">{taskTitle}</span>
+          {showInputStatus && (
             <span
-              className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400"
-              data-testid="chat-item-awaiting-approval"
+              className={`ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-medium ${inputIsApproval ? "text-amber-700 dark:text-amber-300" : "text-foreground"}`}
+              data-testid="chat-item-needs-input"
+              data-reason={needsInputReason ?? "approval"}
+              aria-hidden="true"
             >
-              Awaiting approval
+              {inputIsApproval ? (
+                <ShieldQuestion className="size-3.5" aria-hidden="true" />
+              ) : (
+                <MessageCircleQuestionMark
+                  className="size-3.5"
+                  aria-hidden="true"
+                />
+              )}
+              {inputIsApproval ? "Approval" : "Input"}
             </span>
           )}
         </span>

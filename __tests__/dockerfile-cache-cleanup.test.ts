@@ -69,7 +69,7 @@ describe("sandbox Dockerfile cache cleanup", () => {
   });
 
   test("removes the temporary npm cache before validating agent-browser", () => {
-    const npmRun = findRun("agent-browser@0.26.0");
+    const npmRun = findRun("agent-browser@0.39.3");
     const installIndex = npmRun.indexOf("npm install");
     const cleanupIndex = npmRun.indexOf("rm -rf /tmp/npm-cache");
     const doctorIndex = npmRun.indexOf(

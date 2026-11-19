@@ -40,10 +40,12 @@ describe("GET /sitemap.xml", () => {
     expect(body).toContain("<loc>https://hackerai.co/pricing</loc>");
     expect(body).toContain("<loc>https://hackerai.co/download</loc>");
     expect(body).toContain("<loc>https://hackerai.co/trust</loc>");
+    expect(body).toContain("<loc>https://hackerai.co/abuse</loc>");
+    expect(body).not.toContain("/abuse/operations");
     expect(body).toContain("<loc>https://hackerai.co/privacy-policy</loc>");
     expect(body).toContain("<loc>https://hackerai.co/terms-of-service</loc>");
     expect(body.match(/<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/g)).toHaveLength(
-      7,
+      8,
     );
     expect(body).not.toContain("http://hackerai.co");
   });

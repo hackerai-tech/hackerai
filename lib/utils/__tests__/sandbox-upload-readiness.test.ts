@@ -5,7 +5,10 @@ import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
 } from "../sandbox-file-utils";
-import { sampleAttachmentFailureMetrics } from "../sandbox-upload-readiness";
+import {
+  checkAttachmentReadiness,
+  sampleAttachmentFailureMetrics,
+} from "../sandbox-upload-readiness";
 import { phLogger } from "@/lib/posthog/server";
 
 const files = [1, 2, 3].map((index) => ({
@@ -33,6 +36,8 @@ afterEach(() => {
 });
 
 it("stops an unhealthy batch after one probe and one reconnect, preserving the workspace", async () => {
+  const now = Date.UTC(2026, 10, 1, 15, 36, 42);
+  jest.spyOn(Date, "now").mockReturnValue(now);
   const run = jest
     .fn()
     .mockRejectedValue(new Error("Request handshake timed out after 5000ms"));
@@ -42,6 +47,7 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     kill: jest.fn(),
     getMetrics: jest.fn().mockResolvedValue([
       {
+        timestamp: new Date(now - 480_000),
         cpuUsedPct: 99,
         memUsed: 900,
         memTotal: 1000,
@@ -78,6 +84,7 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     expect.objectContaining({
       cpu_used_pct: 99,
       memory_used_bytes: 900,
+      metrics_sample_age_ms: 480_000,
       readiness_probe_reason: "operation_timeout",
     }),
   );
@@ -90,24 +97,40 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     "initial",
     "reconnect_retry",
   ]);
+  expect(diagnostics.map(([, fields]) => fields.metrics_sample_age_ms)).toEqual(
+    [480_000, 480_000],
+  );
+  expect(sandbox.getMetrics).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
     /private-|secret|preserved-workspace/,
   );
 });
 
-it.each(["agent-long", "chat-handler"] as const)(
-  "attributes permission-denied readiness in %s without retrying or leaking the cause",
-  async (service) => {
+it.each(
+  [
+    {
+      reason: "permission_denied",
+      message:
+        "[invalid_argument] error starting process 'private-command': fork/exec /private/shell: permission denied",
+    },
+    {
+      reason: "process_start_missing_path",
+      message:
+        "[invalid_argument] error starting process '/private/shell -l -c true': open /private/device: no such file or directory",
+    },
+  ].flatMap((failure) =>
+    (["agent-long", "chat-handler"] as const).map((service) => ({
+      ...failure,
+      service,
+    })),
+  ),
+)(
+  "attributes $reason readiness in $service without changing recovery or exposing paths",
+  async ({ service, message, reason }) => {
     const sandbox = {
       sandboxId: "preserved-workspace",
       commands: {
-        run: jest
-          .fn()
-          .mockRejectedValue(
-            new Error(
-              "[invalid_argument] error starting process 'private-command': fork/exec /private/shell: permission denied",
-            ),
-          ),
+        run: jest.fn().mockRejectedValue(new Error(message)),
       },
       kill: jest.fn(),
     };
@@ -124,7 +147,8 @@ it.each(["agent-long", "chat-handler"] as const)(
       upload_failure_phase: "readiness",
       upload_failure_reason: "unknown",
       upload_failure_sandbox_readiness_reason: "unknown",
-      upload_failure_readiness_probe_reason: "permission_denied",
+      upload_failure_transient_sandbox_command: false,
+      upload_failure_readiness_probe_reason: reason,
     });
     expect(getSandboxUploadUserMessage(result)).toBe(
       "Failed to upload 3 attachments to the computer. Please try again.",
@@ -138,7 +162,7 @@ it.each(["agent-long", "chat-handler"] as const)(
         .mock.calls.filter(([name]) => name === event);
       expect(calls).toHaveLength(1);
       expect(calls[0][1]).toMatchObject({
-        readiness_probe_reason: "permission_denied",
+        readiness_probe_reason: reason,
         service,
         request_id: context.requestId,
       });
@@ -149,41 +173,45 @@ it.each(["agent-long", "chat-handler"] as const)(
     expect(logs.map(([payload]) => JSON.parse(payload))).toEqual([
       expect.objectContaining({
         event: "sandbox_attachment_failure_diagnostics",
-        readiness_probe_reason: "permission_denied",
+        readiness_probe_reason: reason,
       }),
       expect.objectContaining({
         event: "sandbox_attachment_staging_failed",
-        readiness_probe_reason: "permission_denied",
+        readiness_probe_reason: reason,
       }),
     ]);
     expect(
       JSON.stringify([logs, jest.mocked(phLogger.event).mock.calls]),
-    ).not.toMatch(
-      /private-command|\/private\/shell|private-|secret|invalid_argument/,
-    );
+    ).not.toMatch(/private-command|\/private|private-|secret|invalid_argument/);
   },
 );
 
-it("keeps unrecognized readiness causes unknown without trusting error properties", async () => {
-  const run = jest.fn().mockRejectedValue(
-    Object.assign(new Error("private failure detail"), {
-      readinessProbeReason: "private-label",
-    }),
-  );
-  const result = await uploadSandboxFiles(
-    files,
-    async () => ({ commands: { run } }),
-    { logContext: context },
-  );
-  expect(run).toHaveBeenCalledTimes(1);
-  expect(getSandboxUploadFailureMetadata(result)).toHaveProperty(
-    "upload_failure_readiness_probe_reason",
-    "unknown",
-  );
-  expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
-    /private failure detail|private-label/,
-  );
-});
+it.each([
+  "private failure detail",
+  "[invalid_argument] error downloading file: open /private/source: no such file or directory",
+])(
+  "keeps unrecognized readiness causes unknown without trusting error properties: %s",
+  async (message) => {
+    const run = jest.fn().mockRejectedValue(
+      Object.assign(new Error(message), {
+        readinessProbeReason: "private-label",
+      }),
+    );
+    const result = await uploadSandboxFiles(
+      files,
+      async () => ({ commands: { run } }),
+      { logContext: context },
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(getSandboxUploadFailureMetadata(result)).toHaveProperty(
+      "upload_failure_readiness_probe_reason",
+      "unknown",
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
+      /private failure detail|private-label|\/private\/source/,
+    );
+  },
+);
 
 it("does not grant an extra reconnect after acquisition consumed the batch budget", async () => {
   const run = jest.fn().mockRejectedValue(new Error("operation timed out"));
@@ -343,4 +371,238 @@ it("bounds stalled metrics and filters untrusted fields", async () => {
   } as any);
   expect(result).toEqual({ metrics_status: "available", cpu_used_pct: 10 });
   expect(jest.getTimerCount()).toBe(0);
+});
+
+it.each([
+  ["old", -480_000, 480_000],
+  ["future", 500, -500],
+] as const)(
+  "reports the selected %s metrics sample age",
+  async (_, offset, age) => {
+    const now = Date.UTC(2026, 10, 1, 15, 36, 42);
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    const getMetrics = jest.fn().mockResolvedValue([
+      { timestamp: new Date(now - 600_000), cpuUsedPct: 90 },
+      { timestamp: new Date(now + offset), cpuUsedPct: 10, path: "private" },
+    ]);
+
+    await expect(
+      sampleAttachmentFailureMetrics({ getMetrics } as any),
+    ).resolves.toEqual({
+      metrics_status: "available",
+      metrics_sample_age_ms: age,
+      cpu_used_pct: 10,
+    });
+    expect(getMetrics).toHaveBeenCalledTimes(1);
+    expect(getMetrics).toHaveBeenCalledWith({
+      requestTimeoutMs: 1_000,
+      start: new Date(now - 5 * 60_000),
+      end: new Date(now),
+    });
+  },
+);
+
+it.each([undefined, new Date(NaN), "2026-11-01T15:36:42Z", 1_793_547_402_000])(
+  "retains numeric metrics without guessing an invalid sample timestamp: %p",
+  async (timestamp) => {
+    await expect(
+      sampleAttachmentFailureMetrics({
+        getMetrics: async () => [{ timestamp, cpuUsedPct: 10 }],
+      } as any),
+    ).resolves.toEqual({ metrics_status: "available", cpu_used_pct: 10 });
+  },
+);
+
+it("retains a wrapped E2B 504 after the acquisition budget is spent", async () => {
+  const { CloudAcquisitionBudgetExhaustedError } =
+    await import("@/lib/ai/tools/utils/cloud-acquisition-budget");
+  const cause = Object.assign(new Error("Cloud sandbox unavailable"), {
+    name: "E2BAcquisitionError",
+    diagnostics: {
+      e2b_phase: "connect",
+      e2b_error_category: "transient",
+      e2b_http_status: 504,
+    },
+  });
+  const ensure = jest
+    .fn()
+    .mockRejectedValue(new CloudAcquisitionBudgetExhaustedError(cause));
+  const result = await uploadSandboxFiles(files, ensure, {
+    retryAfterReconnectOnTransientFailure: true,
+  });
+  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(result.failedCount).toBe(3);
+  expect(result.failureDetails).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        phase: "acquisition",
+        reason: "sandbox_operation_timeout",
+        sandboxReadinessReason: "operation_timeout",
+      }),
+    ]),
+  );
+  expect(getSandboxUploadUserMessage(result)).toBe(
+    "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.",
+  );
+});
+
+const timeoutError = (message: string) =>
+  Object.assign(new Error(message), { name: "TimeoutError" });
+
+/** Models the SDK's two budgets: requestTimeoutMs bounds only the wait for a
+ * process ID; timeoutMs bounds the whole command from its start. */
+function timedCloudSandbox({
+  startMs,
+  exitMs,
+}: {
+  startMs: number;
+  exitMs: number;
+}) {
+  const kill = jest.fn(async () => true);
+  const run = jest.fn(
+    (
+      command: string,
+      options: { timeoutMs: number; requestTimeoutMs: number },
+    ) =>
+      new Promise((resolve, reject) => {
+        const timers: ReturnType<typeof setTimeout>[] = [];
+        const handle = {
+          pid: 4242,
+          exitCode: undefined as number | undefined,
+          wait: () =>
+            new Promise((settle, fail) => {
+              if (command !== "true") {
+                handle.exitCode = 0;
+                return settle(ok);
+              }
+              timers.push(
+                setTimeout(() => {
+                  handle.exitCode = 0;
+                  settle(ok);
+                }, exitMs - startMs),
+                setTimeout(
+                  () =>
+                    fail(
+                      timeoutError(
+                        "[deadline_exceeded] the operation timed out",
+                      ),
+                    ),
+                  options.timeoutMs - startMs,
+                ),
+              );
+            }),
+          disconnect: async () => timers.forEach(clearTimeout),
+        };
+        if (command !== "true") return resolve(handle);
+        if (startMs >= options.requestTimeoutMs)
+          setTimeout(
+            () =>
+              reject(
+                timeoutError(
+                  `Request handshake timed out after ${options.requestTimeoutMs}ms`,
+                ),
+              ),
+            options.requestTimeoutMs,
+          );
+        else setTimeout(() => resolve(handle), startMs);
+      }),
+  );
+  return { sandboxId: "timed-workspace", commands: { run, kill } };
+}
+
+const probe = (
+  sandbox: ReturnType<typeof timedCloudSandbox>,
+  signal = new AbortController().signal,
+) => {
+  const settled = jest.fn();
+  checkAttachmentReadiness(sandbox as any, signal).then(settled, settled);
+  return settled;
+};
+
+it("stages attachments once after a healthy login shell that needs six seconds", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 6_000 });
+  const ensure = jest.fn(async () => sandbox);
+  const pending = uploadSandboxFiles(files, ensure, {
+    signal: new AbortController().signal,
+    retryAfterReconnectOnTransientFailure: true,
+  });
+  await jest.advanceTimersByTimeAsync(6_000);
+  const result = await pending;
+
+  expect(result.failedCount).toBe(0);
+  expect(result.retriedAfterReconnect).toBeUndefined();
+  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(
+    sandbox.commands.run.mock.calls.filter(([command]) => command === "true"),
+  ).toHaveLength(1);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("still fails after five seconds when the command channel yields no process", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 60_000, exitMs: 60_000 });
+  const settled = probe(sandbox);
+
+  await jest.advanceTimersByTimeAsync(4_999);
+  expect(settled).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1);
+  expect(settled).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: "Request handshake timed out after 5000ms",
+    }),
+  );
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+});
+
+it("kills only its own probe when a started login shell exhausts thirty seconds", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 120_000 });
+  const settled = probe(sandbox);
+
+  await jest.advanceTimersByTimeAsync(29_999);
+  expect(settled).not.toHaveBeenCalled();
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1);
+  expect(settled).toHaveBeenCalledWith(
+    expect.objectContaining({ name: "TimeoutError" }),
+  );
+  expect(sandbox.commands.kill).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).toHaveBeenCalledWith(4242, {
+    requestTimeoutMs: 5_000,
+  });
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("stops a slow probe immediately by killing only its own process", async () => {
+  jest.useFakeTimers();
+  const controller = new AbortController();
+  const stop = new Error("user stopped");
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 20_000 });
+  const settled = probe(sandbox, controller.signal);
+
+  await jest.advanceTimersByTimeAsync(2_000);
+  controller.abort(stop);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(settled).toHaveBeenCalledWith(stop);
+  expect(sandbox.commands.kill).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).toHaveBeenCalledWith(4242, {
+    requestTimeoutMs: 5_000,
+  });
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("does not probe a sandbox that is not an E2B workspace", async () => {
+  const run = jest.fn();
+  await expect(
+    checkAttachmentReadiness({
+      sandboxKind: "centrifugo",
+      commands: { run },
+    } as any),
+  ).resolves.toBeUndefined();
+  expect(run).not.toHaveBeenCalled();
 });

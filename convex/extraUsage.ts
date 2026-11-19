@@ -1,3 +1,8 @@
+import { recordWalletDebit } from "./lib/settlementReceipts";
+import {
+  extraUsageBundlesEnabled,
+  getExtraUsageBundle,
+} from "../lib/billing/extra-usage-bundles";
 import {
   internalMutation,
   mutation,
@@ -14,6 +19,8 @@ import {
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
 import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
+import { consumeBundleReservation } from "./lib/extraUsageBundleCap";
+import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
 type ExtraUsagePurchaseRoute =
@@ -26,30 +33,8 @@ type MaxModelExtraUsageReason =
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
 const AUTO_RELOAD_OPERATION_LEASE_MS = 2 * 60_000;
-const PURCHASE_JSON_SECRET_PATTERN =
-  /(["'])(serviceKey|service_key|apiKey|api_key|authorization|cookie|password|secret|token)\1\s*:\s*(["'])(?:(?!\3).)*\3/gi;
-const PURCHASE_ASSIGNMENT_SECRET_PATTERN =
-  /\b(serviceKey|service_key|apiKey|api_key|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
-const PURCHASE_AUTHORIZATION_BEARER_PATTERN =
-  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s,}]+/gi;
-const PURCHASE_BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
-
 const sanitizePurchaseError = (error: string): string =>
-  error
-    .replace(
-      PURCHASE_AUTHORIZATION_BEARER_PATTERN,
-      "Authorization: Bearer [redacted]",
-    )
-    .replace(PURCHASE_JSON_SECRET_PATTERN, (_match, quote, key) => {
-      return `${quote}${key}${quote}: "[redacted]"`;
-    })
-    .replace(PURCHASE_BEARER_TOKEN_PATTERN, "Bearer [redacted]")
-    .replace(PURCHASE_ASSIGNMENT_SECRET_PATTERN, (match) => {
-      const separatorIndex = Math.max(match.indexOf(":"), match.indexOf("="));
-      if (separatorIndex === -1) return "[redacted]";
-      return `${match.slice(0, separatorIndex + 1)} [redacted]`;
-    })
-    .split("\n", 1)[0]
+  redactSensitiveErrorMessage(error.split("\n", 1)[0])
     .trim()
     .slice(0, MAX_PURCHASE_ERROR_LENGTH);
 
@@ -155,6 +140,8 @@ async function upsertExtraUsagePurchase(
   args: {
     userId: string;
     amountDollars: number;
+    paidAmountDollars?: number;
+    bundleId?: string;
     stripeCheckoutSessionId: string;
     stripePaymentIntentId?: string;
     stripeInvoiceId?: string;
@@ -178,6 +165,9 @@ async function upsertExtraUsagePurchase(
   const next: Record<string, unknown> = {
     user_id: args.userId,
     amount_dollars: args.amountDollars,
+    paid_amount_dollars:
+      args.paidAmountDollars ?? existing?.paid_amount_dollars,
+    bundle_id: args.bundleId ?? existing?.bundle_id,
     stripe_checkout_session_id: args.stripeCheckoutSessionId,
     stripe_payment_intent_id:
       args.stripePaymentIntentId ?? existing?.stripe_payment_intent_id,
@@ -221,7 +211,7 @@ async function upsertExtraUsagePurchase(
 /**
  * Internal mutation: purge processed_webhooks rows older than cutoff.
  * Stripe only retries within ~72h, so retention of a week is plenty.
- * Iterates oldest-first via the implicit by_creation_time ordering.
+ * Iterates completed rows by processed time; unfinished reviews are retained.
  */
 export const purgeOldProcessedWebhooks = internalMutation({
   args: {
@@ -232,14 +222,18 @@ export const purgeOldProcessedWebhooks = internalMutation({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
 
-    const rows = await ctx.db
-      .query("processed_webhooks")
-      .order("asc")
-      .take(limit);
-
     let deletedCount = 0;
-    for (const row of rows) {
-      if (row.processed_at < args.cutoffTimeMs) {
+    // Only terminal rows are purged. Indexing by status and processed time
+    // avoids a queue of retained reviews starving cleanup of newer rows.
+    for (const status of [undefined, "completed"] as const) {
+      if (deletedCount >= limit) break;
+      const rows = await ctx.db
+        .query("processed_webhooks")
+        .withIndex("by_status_and_processed_at", (q) =>
+          q.eq("status", status).lt("processed_at", args.cutoffTimeMs),
+        )
+        .take(limit - deletedCount);
+      for (const row of rows) {
         await ctx.db.delete(row._id);
         deletedCount++;
       }
@@ -305,13 +299,14 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
  * both pass the pre-check and both run side effects before either landed the
  * mark.
  *
- * Returns one of three states atomically:
- *   - "acquired"          : caller now owns the claim; run handler then call
- *                           finalizeWebhookProcessing on success
+ * Returns one of four states atomically:
+ *   - "acquired"          : caller now owns the claim; run handler, mark it
+ *                           handled, then finalize on success
  *   - "already_processed" : event was finalized previously; skip with 200
+ *   - "handler_completed": side effects finished; retry only finalization
  *   - "claim_held"        : another worker is currently processing this event;
- *                           skip with 200 (the holder will finalize, or its
- *                           claim will expire and a future retry takes over)
+ *                           return a retryable non-2xx response so a failed
+ *                           holder does not lose the provider delivery
  *
  * If a `pending` row's claim is older than STALE_CLAIM_MS, this mutation
  * reclaims it and returns "acquired" — this is what allows Stripe webhook
@@ -321,16 +316,24 @@ export const claimWebhookProcessing = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    sourceId: v.optional(v.string()),
+    claimToken: v.optional(v.string()),
   },
   returns: v.object({
     state: v.union(
       v.literal("acquired"),
       v.literal("already_processed"),
+      v.literal("handler_completed"),
       v.literal("claim_held"),
+      v.literal("review_required"),
     ),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    if (args.sourceId && !args.claimToken) {
+      throw new Error("Fraud webhook claim requires an owner token");
+    }
 
     const now = Date.now();
     // .unique() throws if duplicates exist, surfacing any state-machine
@@ -343,9 +346,11 @@ export const claimWebhookProcessing = mutation({
     if (!existing) {
       await ctx.db.insert("processed_webhooks", {
         event_id: args.eventId,
+        source_id: args.sourceId,
         processed_at: now,
         status: "pending",
         claimed_at: now,
+        claim_token: args.claimToken,
       });
       return { state: "acquired" as const };
     }
@@ -354,8 +359,27 @@ export const claimWebhookProcessing = mutation({
     // semantics for events whose lifecycle has already concluded.
     const status = existing.status ?? "completed";
 
+    if (
+      args.sourceId &&
+      existing.source_id &&
+      existing.source_id !== args.sourceId
+    ) {
+      throw new Error("Webhook source changed for existing event");
+    }
+    const hadSourceId = Boolean(existing.source_id);
+    const hadClaimToken = Boolean(existing.claim_token);
+    if (args.sourceId && !hadSourceId && status !== "completed") {
+      await ctx.db.patch(existing._id, { source_id: args.sourceId });
+    }
+
     if (status === "completed") {
       return { state: "already_processed" as const };
+    }
+    if (status === "review_required") {
+      return { state: "review_required" as const };
+    }
+    if (status === "handled") {
+      return { state: "handler_completed" as const };
     }
 
     const claimedAt = existing.claimed_at ?? existing.processed_at;
@@ -363,12 +387,165 @@ export const claimWebhookProcessing = mutation({
       return { state: "claim_held" as const };
     }
 
-    // Stale claim — take it over so Stripe's retry can drive completion.
+    // A prior fraud attempt may already have changed Stripe. Once it reached
+    // customer cleanup, or predates source/owner fencing, require manual
+    // reconciliation instead of replaying customer-wide side effects.
+    if (
+      args.sourceId &&
+      (status === "cleanup_started" || !hadSourceId || !hadClaimToken)
+    ) {
+      await ctx.db.patch(existing._id, {
+        status: "review_required",
+        review_reason: "ambiguous_previous_attempt",
+        processed_at: now,
+      });
+      return { state: "review_required" as const };
+    }
+
+    // Stale pre-cleanup claim — no customer-wide Stripe effects have started.
     await ctx.db.patch(existing._id, {
       status: "pending",
       claimed_at: now,
+      claim_token: args.claimToken,
     });
     return { state: "acquired" as const };
+  },
+});
+
+/** Record the transition before any customer-wide Stripe cleanup starts. */
+export const markFraudCleanupStarted = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    claimToken: v.string(),
+    customerId: v.string(),
+  },
+  returns: v.object({ allowed: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (
+      existing?.status !== "pending" ||
+      existing.claim_token !== args.claimToken
+    )
+      throw new Error("Fraud webhook claim no longer owns cleanup");
+    const restored = await ctx.db
+      .query("user_suspensions")
+      .withIndex("by_customer_and_status", (q) =>
+        q.eq("stripe_customer_id", args.customerId).eq("status", "resolved"),
+      )
+      .first();
+    if (restored) return { allowed: false };
+    await ctx.db.patch(existing._id, {
+      status: "cleanup_started",
+      review_customer_id: args.customerId,
+    });
+    return { allowed: true };
+  },
+});
+
+/** Leave an ambiguous delivery in a durable queue for support reconciliation. */
+export const markFraudWebhookReviewRequired = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    claimToken: v.string(),
+    customerId: v.string(),
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (
+      (existing?.status !== "pending" &&
+        existing?.status !== "cleanup_started") ||
+      existing.claim_token !== args.claimToken
+    )
+      throw new Error("Fraud webhook claim no longer owns review");
+    await ctx.db.patch(existing._id, {
+      status: "review_required",
+      review_customer_id: args.customerId,
+      review_reason: args.reason,
+      processed_at: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Support calls this only after reconciling the Stripe customer and hold. */
+export const completeFraudWebhookReview = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    reviewedBy: v.string(),
+    resolution: v.union(
+      v.literal("cleanup_completed"),
+      v.literal("restoration_preserved"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (!args.reviewedBy.trim())
+      throw new Error("Reviewer identity is required");
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (existing?.status !== "review_required")
+      throw new Error("Fraud webhook is not awaiting manual review");
+    const now = Date.now();
+    await ctx.db.patch(existing._id, {
+      status: "completed",
+      review_resolution: args.resolution,
+      reviewed_by: args.reviewedBy,
+      reviewed_at: now,
+      processed_at: now,
+    });
+    return null;
+  },
+});
+
+/** Persist successful side effects before the separate finalization step. */
+export const markWebhookHandled = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    claimToken: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (!existing)
+      throw new Error("Webhook claim missing before handler completion");
+    if (existing.claim_token !== args.claimToken)
+      throw new Error("Fraud webhook claim was superseded");
+    if (
+      existing.status === "pending" ||
+      existing.status === "cleanup_started"
+    ) {
+      await ctx.db.patch(existing._id, {
+        status: "handled",
+        processed_at: Date.now(),
+      });
+    } else if (
+      existing.status !== "handled" &&
+      existing.status !== "completed"
+    ) {
+      throw new Error("Fraud webhook is not ready for completion");
+    }
+    return null;
   },
 });
 
@@ -383,6 +560,7 @@ export const finalizeWebhookProcessing = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    requireHandled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -395,6 +573,15 @@ export const finalizeWebhookProcessing = mutation({
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
       .unique();
 
+    if (existing?.status === "review_required")
+      throw new Error("Fraud webhook requires manual reconciliation");
+    if (
+      args.requireHandled &&
+      existing?.status !== "handled" &&
+      existing?.status !== "completed"
+    ) {
+      throw new Error("Fraud webhook handler completion was not recorded");
+    }
     if (existing) {
       await ctx.db.patch(existing._id, {
         status: "completed",
@@ -417,6 +604,8 @@ export const recordPurchaseCreated = internalMutation({
   args: {
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
   },
   returns: v.null(),
@@ -424,6 +613,8 @@ export const recordPurchaseCreated = internalMutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       status: "created",
       route: "checkout_action",
@@ -443,9 +634,12 @@ export const recordPurchasePaidSeen = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
+    bundleReservationId: v.optional(v.string()),
     route: v.union(
       v.literal("confirm"),
       v.literal("webhook"),
@@ -456,9 +650,22 @@ export const recordPurchasePaidSeen = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    if (args.bundleId !== undefined) {
+      // Paid sessions consume their monthly bundle hold before crediting so a
+      // later credit failure cannot leave the allowance double counted.
+      await consumeBundleReservation(ctx, {
+        userId: args.userId,
+        bundleId: args.bundleId,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        bundleReservationId: args.bundleReservationId,
+      });
+    }
+
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -480,6 +687,8 @@ export const recordPurchaseFailed = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
@@ -497,6 +706,8 @@ export const recordPurchaseFailed = mutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -518,6 +729,8 @@ export const addCredits = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
     legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
     revenueSource: v.optional(
@@ -534,6 +747,7 @@ export const addCredits = mutation({
       v.union(v.literal("confirm"), v.literal("webhook"), v.literal("repair")),
     ),
     enableExtraUsage: v.optional(v.boolean()),
+    bundleReservationId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -542,12 +756,34 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate amount
+    if (!Number.isFinite(args.amountDollars) || args.amountDollars <= 0) {
+      throw new Error("Invalid amount: must be a positive number");
+    }
+
+    if (args.bundleId !== undefined) {
+      const bundle = getExtraUsageBundle(args.bundleId);
+      if (
+        !args.stripeCheckoutSessionId ||
+        args.amountDollars !== bundle.creditDollars ||
+        args.paidAmountDollars !== bundle.paidDollars
+      )
+        throw new Error("Invalid bundle credit");
+    } else if (
+      args.paidAmountDollars !== undefined &&
+      args.paidAmountDollars !== args.amountDollars
+    ) {
+      throw new Error("Discount requires a bundle");
+    }
+
     const markPurchaseCredited = async (creditedAt?: number) => {
       if (!args.stripeCheckoutSessionId) return;
 
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -565,6 +801,8 @@ export const addCredits = mutation({
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -608,11 +846,6 @@ export const addCredits = mutation({
         }
         return { newBalance: 0, alreadyProcessed: true };
       }
-    }
-
-    // Validate amount
-    if (isNaN(args.amountDollars) || args.amountDollars <= 0) {
-      throw new Error("Invalid amount: must be a positive number");
     }
 
     const amountPoints = dollarsToPoints(args.amountDollars);
@@ -688,7 +921,7 @@ export const addCredits = mutation({
         args.idempotencyKey ??
         args.stripePaymentIntentId ??
         args.stripeCheckoutSessionId,
-      grossRevenueDollars: args.amountDollars,
+      grossRevenueDollars: args.paidAmountDollars ?? args.amountDollars,
       currency: "usd",
       attributionStrategy: "direct",
       stripeCustomerId: args.stripeCustomerId,
@@ -699,6 +932,16 @@ export const addCredits = mutation({
     });
 
     await markPurchaseCredited();
+
+    if (args.bundleId !== undefined && args.stripeCheckoutSessionId) {
+      // The cap never gates fulfillment; this only records the consumed hold.
+      await consumeBundleReservation(ctx, {
+        userId: args.userId,
+        bundleId: args.bundleId,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        bundleReservationId: args.bundleReservationId,
+      });
+    }
 
     convexLogger.info("credits_added", {
       user_id: args.userId,
@@ -731,6 +974,8 @@ export const deductPoints = mutation({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
+    settlementDebitSequence: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -741,115 +986,128 @@ export const deductPoints = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    return recordWalletDebit(
+      ctx,
+      args.settlementOperationId
+        ? {
+            operation_id: args.settlementOperationId,
+            user_id: args.userId,
+            usage_settlement_id: args.usageSettlementId,
+            amount_points: args.amountPoints,
+          }
+        : undefined,
+      args.settlementDebitSequence,
+      async () => {
+        // Get current settings
+        const settings = await ctx.db
+          .query("extra_usage")
+          .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+          .first();
 
-    // Get current settings
-    const settings = await ctx.db
-      .query("extra_usage")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
+        if (!settings) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            reason: "no_settings",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: 0,
+            newBalanceDollars: 0,
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    if (!settings) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        reason: "no_settings",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: 0,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        const currentBalancePoints = settings.balance_points ?? 0;
 
-    const currentBalancePoints = settings.balance_points ?? 0;
+        // Check if user has enough balance
+        if (currentBalancePoints < args.amountPoints) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            current_balance_points: currentBalancePoints,
+            reason: "insufficient_balance",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: currentBalancePoints,
+            newBalanceDollars: pointsToDollars(currentBalancePoints),
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    // Check if user has enough balance
-    if (currentBalancePoints < args.amountPoints) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        current_balance_points: currentBalancePoints,
-        reason: "insufficient_balance",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        // Calculate current month for tracking
+        const now = new Date();
+        const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
-    // Calculate current month for tracking
-    const now = new Date();
-    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+        // Reset monthly spending if month changed
+        let monthlySpentPoints = settings.monthly_spent_points ?? 0;
+        const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
+        if (shouldResetMonthly) {
+          monthlySpentPoints = 0;
+        }
 
-    // Reset monthly spending if month changed
-    let monthlySpentPoints = settings.monthly_spent_points ?? 0;
-    const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
-    if (shouldResetMonthly) {
-      monthlySpentPoints = 0;
-    }
+        // Check monthly spending cap before deducting
+        const monthlyCapPoints = settings.monthly_cap_points;
+        if (monthlyCapPoints !== undefined) {
+          const newMonthlySpent = monthlySpentPoints + args.amountPoints;
+          if (newMonthlySpent > monthlyCapPoints) {
+            convexLogger.warn("deduct_points_failed", {
+              user_id: args.userId,
+              amount_points: args.amountPoints,
+              usage_settlement_id: args.usageSettlementId,
+              monthly_spent_points: monthlySpentPoints,
+              monthly_cap_points: monthlyCapPoints,
+              reason: "monthly_cap_exceeded",
+              monthly_cap_exceeded: true,
+            });
+            return {
+              success: false,
+              newBalancePoints: currentBalancePoints,
+              newBalanceDollars: pointsToDollars(currentBalancePoints),
+              insufficientFunds: true,
+              monthlyCapExceeded: true,
+            };
+          }
+        }
 
-    // Check monthly spending cap before deducting
-    const monthlyCapPoints = settings.monthly_cap_points;
-    if (monthlyCapPoints !== undefined) {
-      const newMonthlySpent = monthlySpentPoints + args.amountPoints;
-      if (newMonthlySpent > monthlyCapPoints) {
-        convexLogger.warn("deduct_points_failed", {
+        // Add to monthly spending
+        monthlySpentPoints += args.amountPoints;
+
+        // Deduct balance and update monthly tracking
+        const newBalancePoints = currentBalancePoints - args.amountPoints;
+        await ctx.db.patch(settings._id, {
+          balance_points: newBalancePoints,
+          monthly_spent_points: monthlySpentPoints,
+          monthly_reset_date: currentMonth,
+          updated_at: Date.now(),
+        });
+
+        convexLogger.info("points_deducted", {
           user_id: args.userId,
           amount_points: args.amountPoints,
           usage_settlement_id: args.usageSettlementId,
+          previous_balance_points: currentBalancePoints,
+          new_balance_points: newBalancePoints,
           monthly_spent_points: monthlySpentPoints,
           monthly_cap_points: monthlyCapPoints,
-          reason: "monthly_cap_exceeded",
-          monthly_cap_exceeded: true,
         });
+
         return {
-          success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
-          insufficientFunds: true,
-          monthlyCapExceeded: true,
+          success: true,
+          newBalancePoints,
+          newBalanceDollars: pointsToDollars(newBalancePoints),
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
         };
-      }
-    }
-
-    // Add to monthly spending
-    monthlySpentPoints += args.amountPoints;
-
-    // Deduct balance and update monthly tracking
-    const newBalancePoints = currentBalancePoints - args.amountPoints;
-    await ctx.db.patch(settings._id, {
-      balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_reset_date: currentMonth,
-      updated_at: Date.now(),
-    });
-
-    convexLogger.info("points_deducted", {
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      previous_balance_points: currentBalancePoints,
-      new_balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_cap_points: monthlyCapPoints,
-    });
-
-    return {
-      success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
-      insufficientFunds: false,
-      monthlyCapExceeded: false,
-    };
+      },
+    );
   },
 });
 
@@ -1562,5 +1820,15 @@ export const recordAutoReloadOutcome = internalMutation({
     });
 
     return { autoReloadDisabled: shouldDisable, consecutiveFailures: next };
+  },
+});
+
+/** Same server gate used for displaying offers and creating checkout sessions. */
+export const areBundlesAvailable = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    return !!identity && extraUsageBundlesEnabled(identity.subject);
   },
 });

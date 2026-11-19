@@ -1,3 +1,4 @@
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import type { AbliterationRoutingMarker } from "@/lib/experiments/abliteration-history";
 import {
   wrapLanguageModel,
@@ -8,7 +9,14 @@ import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
-import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import {
+  ABLITERATED_PRO_THREE_STEPS_KEY,
+  type AbliteratedAssignment,
+} from "@/lib/experiments/abliterated-model";
+import {
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
+  isFreeThreeStepsPolicy,
+} from "@/lib/experiments/abliteration-keys";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
@@ -47,6 +55,7 @@ export class AbliteratedModelTelemetry {
     provider_truncated_count: 0,
     provider_empty_count: 0,
     provider_abliteration_attempt_count: 0,
+    provider_inference_attempt_count: 0,
     provider_baseline_attempt_count: 0,
     provider_continuation_completed_count: 0,
     provider_usage_reported_count: 0,
@@ -68,6 +77,7 @@ export class AbliteratedModelTelemetry {
     vision_route_attempt_count: 0,
     abliterated_provider_error_count: 0,
     baseline_provider_error_count: 0,
+    inference_provider_error_count: 0,
     provider_error_recovery_attempt_count: 0,
     provider_error_recovery_served: false,
     provider_error_fallback_served: false,
@@ -78,6 +88,17 @@ export class AbliteratedModelTelemetry {
   private successfulAbliterationGeneration = false;
   private selectionSource: "moderation" | "history" | "paid_first_step";
   private readonly startedAt = Date.now();
+  private firstVisibleContentMs?: number;
+  private readonly toolCalls = new Map<string, boolean>();
+  private readonly toolResults = new Set<string>();
+  private readonly toolMetrics = {
+    tool_call_invalid_count: 0,
+    tool_result_matched_count: 0,
+    tool_result_unmatched_count: 0,
+    tool_result_reported_error_count: 0,
+    tool_result_denied_count: 0,
+    tool_result_without_reported_error_count: 0,
+  };
   private readonly properties: Record<string, string | number | boolean>;
   private readonly generationStepLimit: number;
 
@@ -91,6 +112,7 @@ export class AbliteratedModelTelemetry {
       mode: ChatMode;
       subscription: SubscriptionTier;
       selectedModelOverride?: SelectedModel;
+      release?: string;
     },
   ) {
     this.selectionSource = args.assignment.selectionSource ?? "moderation";
@@ -99,7 +121,9 @@ export class AbliteratedModelTelemetry {
     this.properties = {
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
-      [`$feature/${args.assignment.key}`]: args.assignment.variant,
+      ...(args.assignment.key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
+        ? { routing_policy: args.assignment.key }
+        : { [`$feature/${args.assignment.key}`]: args.assignment.variant }),
       experiment_request_id: args.messageId,
       message_id: args.messageId,
       chat_id: args.chatId,
@@ -116,6 +140,13 @@ export class AbliteratedModelTelemetry {
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
+      ...(args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY && {
+        pro_three_steps_measurement_version: 1,
+      }),
+      ...(isFreeThreeStepsPolicy(args.assignment.key) && {
+        free_three_steps_measurement_version: 1,
+        experiment_release: args.release ?? "unknown",
+      }),
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
       )
@@ -157,11 +188,75 @@ export class AbliteratedModelTelemetry {
     };
   }
 
+  /** Count execution evidence without exporting tool inputs, outputs or IDs.
+   * A result without a reported error is an executor proxy, not task quality.
+   */
+  recordToolStep(
+    calls: readonly { toolCallId: string; invalid?: boolean }[],
+    results: readonly { toolCallId: string; output: unknown }[],
+    errors: readonly { toolCallId: string }[] = [],
+  ) {
+    for (const call of calls) {
+      if (this.toolCalls.has(call.toolCallId)) continue;
+      this.toolCalls.set(call.toolCallId, call.invalid !== true);
+      if (call.invalid === true) this.toolMetrics.tool_call_invalid_count++;
+    }
+    for (const result of results) {
+      if (this.toolResults.has(result.toolCallId)) continue;
+      this.toolResults.add(result.toolCallId);
+      if (!this.toolCalls.has(result.toolCallId)) {
+        this.toolMetrics.tool_result_unmatched_count++;
+        continue;
+      }
+      this.toolMetrics.tool_result_matched_count++;
+      const output = result.output;
+      const record =
+        typeof output === "object" && output !== null
+          ? (output as Record<string, unknown>)
+          : undefined;
+      if (record?.approvalDenied === true) {
+        this.toolMetrics.tool_result_denied_count++;
+      } else if (
+        this.toolCalls.get(result.toolCallId) === false ||
+        Boolean(record?.error) ||
+        record?.isError === true ||
+        record?.success === false ||
+        (typeof record?.exitCode === "number" && record.exitCode !== 0) ||
+        (typeof record?.exit_code === "number" && record.exit_code !== 0)
+      ) {
+        this.toolMetrics.tool_result_reported_error_count++;
+      } else {
+        this.toolMetrics.tool_result_without_reported_error_count++;
+      }
+    }
+    for (const error of errors) {
+      if (this.toolResults.has(error.toolCallId)) continue;
+      this.toolResults.add(error.toolCallId);
+      if (this.toolCalls.has(error.toolCallId)) {
+        this.toolMetrics.tool_result_matched_count++;
+        this.toolMetrics.tool_result_reported_error_count++;
+      } else {
+        this.toolMetrics.tool_result_unmatched_count++;
+      }
+    }
+  }
+
   /** Request totals include retries and replacement messages; no per-step array. */
   getSummary() {
     return {
       telemetry_version: 2,
       generation_step_limit: this.generationStepLimit,
+      ...(isFreeThreeStepsPolicy(String(this.properties.experiment_key)) && {
+        free_three_steps_measurement_version: 1,
+        experiment_release: this.properties.experiment_release,
+        experiment_duration_ms: Math.max(0, Date.now() - this.startedAt),
+        time_to_first_visible_content_ms: this.firstVisibleContentMs,
+        tool_call_unique_count: this.toolCalls.size,
+        tool_result_missing_count: [...this.toolCalls.keys()].filter(
+          (id) => !this.toolResults.has(id),
+        ).length,
+        ...this.toolMetrics,
+      }),
       ...this.routing,
       // Planned step/vision selection never establishes a fallback. Evidence
       // must come from a recovering call or an actual upstream fallback model.
@@ -219,7 +314,13 @@ export class AbliteratedModelTelemetry {
           )
             this.routing.planned_baseline_attempt_count++;
           if (routing.visionRoute) this.routing.vision_route_attempt_count++;
-          if (isAbliterationModel(model.modelId))
+          if (isInferenceCyberModel(model.modelId)) {
+            this.totals.provider_inference_attempt_count++;
+            this.capture("inference_cyber_requested", {
+              requested_model: model.modelId,
+              generation_step: stepIndex + 1,
+            });
+          } else if (isAbliterationModel(model.modelId))
             this.totals.provider_abliteration_attempt_count++;
           else this.totals.provider_baseline_attempt_count++;
           const start = Date.now();
@@ -278,7 +379,9 @@ export class AbliteratedModelTelemetry {
             }
             if (textCharacters > 0 || toolCalls > 0) recordServedRouting();
             if (outcome === "error") {
-              if (isAbliterationModel(model.modelId))
+              if (isInferenceCyberModel(model.modelId))
+                this.routing.inference_provider_error_count++;
+              else if (isAbliterationModel(model.modelId))
                 this.routing.abliterated_provider_error_count++;
               else this.routing.baseline_provider_error_count++;
             }
@@ -305,8 +408,10 @@ export class AbliteratedModelTelemetry {
             }
             if (
               outcome === "completed" &&
-              isAbliterationModel(responseModel) &&
-              isAbliterationModel(model.modelId)
+              (isAbliterationModel(responseModel) ||
+                isInferenceCyberModel(responseModel)) &&
+              (isAbliterationModel(model.modelId) ||
+                isInferenceCyberModel(model.modelId))
             )
               this.successfulAbliterationGeneration = true;
             // Keep first-step comparisons and every exceptional outcome. Normal
@@ -326,6 +431,7 @@ export class AbliteratedModelTelemetry {
           };
           const expose = () => {
             firstContentMs ??= Date.now() - start;
+            this.firstVisibleContentMs ??= Date.now() - this.startedAt;
             recordServedRouting();
             if (this.exposed) return;
             this.exposed = true;

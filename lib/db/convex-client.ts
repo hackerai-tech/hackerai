@@ -1,4 +1,5 @@
 import type { ConvexHttpClient } from "convex/browser";
+import { ChatSDKError } from "@/lib/errors";
 import { createServiceConvexClient } from "@/lib/db/service-client";
 
 // Shared singleton so Trigger.dev's setConvexUrl() override reaches every
@@ -19,11 +20,73 @@ export function getConvexUrl(): string {
   return url;
 }
 
-export function getConvexClient(): ConvexHttpClient {
+export function getConvexClient(signal?: AbortSignal): ConvexHttpClient {
+  // A scoped reader must not change the singleton's fetch/cancellation options.
+  if (signal) return createServiceConvexClient(getConvexUrl(), { signal });
   if (!client) {
     client = createServiceConvexClient(getConvexUrl());
   }
   return client;
+}
+
+/**
+ * A fresh, unbounded client with its own SDK mutation queue, for a caller that
+ * keeps its existing timing but must not wait behind the shared singleton.
+ */
+export function createIsolatedConvexClient(): ConvexHttpClient {
+  return createServiceConvexClient(getConvexUrl());
+}
+
+/**
+ * A caller-owned client. Its SDK mutation queue belongs to that caller alone,
+ * so an unrelated pending write on the process singleton cannot delay it.
+ * With a signal, transport and helper retry sleeps share that deadline.
+ */
+export type ConvexCallScope = {
+  client: ConvexHttpClient;
+  signal?: AbortSignal;
+};
+
+const LOST_TRANSPORT_CODES = new Set([
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CLOSED",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+/**
+ * True when an RPC may have reached Convex but its response was lost: a
+ * deadline/abort, a reset connection or a terminated body. Convex function
+ * errors, validation failures and returned business outcomes are excluded:
+ * those responses arrived, so their outcome is known.
+ */
+export function isConvexOutcomeUnknownError(error: unknown): boolean {
+  if (error instanceof ChatSDKError)
+    return error.metadata?.db_outcome_unknown === true;
+  if (!error || typeof error !== "object") return false;
+  const { name, message, code, cause } = error as {
+    name?: unknown;
+    message?: unknown;
+    code?: unknown;
+    cause?: unknown;
+  };
+  if (name === "TimeoutError" || name === "AbortError") return true;
+  const causeCode =
+    cause && typeof cause === "object"
+      ? (cause as { code?: unknown }).code
+      : undefined;
+  if (
+    (typeof code === "string" && LOST_TRANSPORT_CODES.has(code)) ||
+    (typeof causeCode === "string" && LOST_TRANSPORT_CODES.has(causeCode))
+  )
+    return true;
+  return (
+    name === "TypeError" &&
+    (message === "fetch failed" || message === "terminated")
+  );
 }
 
 // Called by Trigger.dev tasks to point at the correct per-branch preview

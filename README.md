@@ -61,6 +61,15 @@ cd hackerai
 pnpm install
 ```
 
+`pnpm build` generates Next.js route types and checks them with TypeScript 7
+before compilation. TypeScript 6 remains installed as `typescript` for ESLint,
+`ts-node`, Convex tooling, and `pnpm typecheck`. The native compiler is pinned
+separately as `typescript-build`; build scripts resolve it explicitly rather
+than relying on the shared `tsc` executable name. Use `pnpm typecheck` for the
+TypeScript 6 check; package aliases can expose the same `tsc` command. Vercel
+Preview retains its existing separate CI typecheck. Running `next build` directly retains Next's
+built-in TypeScript 6 check.
+
 ### Run the setup script
 
 ```bash

@@ -39,7 +39,10 @@ const responseLike = ({
 }: {
   status?: number;
   headers?: Record<string, string>;
-  body?: { getReader: () => { read: () => Promise<any> } } | null;
+  body?: {
+    getReader: () => { read: () => Promise<any> };
+    cancel?: () => Promise<unknown>;
+  } | null;
 }) =>
   ({
     ok: status >= 200 && status < 300,
@@ -61,6 +64,41 @@ const streamBody = (...chunks: Uint8Array[]) => ({
     };
   },
 });
+
+// A download whose headers arrived but whose body never ends. Like native
+// fetch, the connection is released only when the body is cancelled or the
+// request's AbortSignal fires; pending reads then reject.
+const neverEndingDownload = (
+  status: number,
+  headers: Record<string, string>,
+) => {
+  const download = { closed: false, reads: 0 };
+  const pendingReads: Array<(error: Error) => void> = [];
+  const close = () => {
+    download.closed = true;
+    pendingReads
+      .splice(0)
+      .forEach((reject) => reject(new DOMException("closed", "AbortError")));
+  };
+  const read = () => {
+    download.reads += 1;
+    return download.closed
+      ? Promise.reject(new DOMException("closed", "AbortError"))
+      : new Promise<never>((_resolve, reject) => pendingReads.push(reject));
+  };
+  const fetchImpl = jest.fn(async (_url: string, init?: RequestInit) => {
+    init?.signal?.addEventListener("abort", close, { once: true });
+    return responseLike({
+      status,
+      headers,
+      body: {
+        cancel: async () => close(),
+        getReader: () => ({ read, cancel: async () => close() }),
+      },
+    });
+  });
+  return { download, fetchImpl };
+};
 
 const fileUrlInfo = (
   url: string,
@@ -543,6 +581,83 @@ describe("processMessageFiles image size guards", () => {
       type: "text",
       text: '[Image "not-image.png" omitted: could not verify valid image bytes before sending it to the model. Please reattach or regenerate the image.]',
     });
+  });
+
+  it.each([
+    {
+      label: "an oversized Content-Length",
+      status: 200,
+      headers: { "content-length": String(40 * 1024 * 1024) },
+    },
+    { label: "a 503 status", status: 503, headers: {} },
+  ])(
+    "closes an Ask image download rejected by $label without reading its body",
+    async ({ status, headers }) => {
+      mockConvexAction.mockResolvedValue([
+        fileUrlInfo("https://storage.example/rejected.png", {
+          sizeBytes: 2 * 1024 * 1024,
+          name: "rejected.png",
+        }),
+      ]);
+      const { download, fetchImpl } = neverEndingDownload(status, headers);
+      global.fetch = fetchImpl as any;
+
+      const result = await processMessageFiles(
+        makeMessage({
+          type: "file",
+          mediaType: "image/png",
+          fileId: "file_rejected",
+          name: "rejected.png",
+        }),
+        "ask",
+        "user123",
+        undefined,
+        "pro",
+      );
+
+      expect(result.messages[0].parts[1]).toEqual({
+        type: "text",
+        text: '[Image "rejected.png" omitted: could not verify valid image bytes before sending it to the model. Please reattach or regenerate the image.]',
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(download).toEqual({ closed: true, reads: 0 });
+    },
+  );
+
+  it("closes a rejected Agent image download while keeping the image sandbox-only", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/rejected.png", {
+        sizeBytes: 2 * 1024 * 1024,
+        name: "rejected.png",
+      }),
+    ]);
+    const { download, fetchImpl } = neverEndingDownload(200, {
+      "content-length": String(40 * 1024 * 1024),
+    });
+    global.fetch = fetchImpl as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        fileId: "file_rejected",
+        name: "rejected.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: `<attachment filename="rejected.png" local_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" />`,
+      },
+    ]);
+    expect(download).toEqual({ closed: true, reads: 0 });
   });
 
   it("omits non-streaming image responses without a content length before reading bytes", async () => {

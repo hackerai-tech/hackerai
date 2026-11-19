@@ -1,4 +1,9 @@
 import {
+  INFERENCE_CYBER_MODEL_ID,
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_CYBER_PRICING,
+} from "@/lib/ai/inference";
+import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
   DEEPSEEK_1017_CANONICAL_SLUG,
@@ -152,6 +157,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   [DEEPSEEK_1017_MODEL_KEY]: DEEPSEEK_V4_1_FLASH_PRICING,
   [DEEPSEEK_1017_SLUG]: DEEPSEEK_V4_1_FLASH_PRICING,
   [DEEPSEEK_1017_CANONICAL_SLUG]: DEEPSEEK_V4_1_FLASH_PRICING,
+  [INFERENCE_CYBER_MODEL_ID]: INFERENCE_CYBER_PRICING,
+  [INFERENCE_CYBER_MODEL_KEY]: INFERENCE_CYBER_PRICING,
   [ABLITERATION_MODEL_KEY]: ABLITERATION_LARGE_FLASH_PRICING,
   [ABLITERATION_MODEL_ID]: ABLITERATION_BASE_PRICING,
   [ABLITERATION_LARGE_V2_MODEL_KEY]: ABLITERATION_LARGE_FLASH_PRICING,
@@ -290,6 +297,8 @@ export type UsageDeductionFailureReason =
   | "deduction_failed";
 
 export interface UsageDeductionResult {
+  /** An unacknowledged debit may have committed and requires reconciliation. */
+  usageDeductionOutcomeUnknown?: boolean;
   /** Points deducted from the paid plan's included-usage bucket. */
   includedPointsDeducted: number;
   /** Stored points deducted from the prepaid Extra Usage balance. */
@@ -370,6 +379,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig,
   organizationId,
   usageSettlementId,
+  settlementOperationId,
 }: {
   monthly: MonthlyLimiter;
   userId: string;
@@ -378,6 +388,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig?: ExtraUsageConfig;
   organizationId?: string;
   usageSettlementId?: string;
+  settlementOperationId?: string;
 }): Promise<UsageDeductionResult> => {
   const normalizedAdditionalCost = nonNegativePoints(additionalCostPoints);
   if (normalizedAdditionalCost <= 0) return emptyUsageDeductionResult();
@@ -386,6 +397,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsDeducted: number = 0,
     extraUsagePointsDeducted: number = 0,
     failureReason?: UsageDeductionFailureReason,
+    outcomeUnknown = false,
   ): UsageDeductionResult => {
     const coveredPoints =
       nonNegativePoints(includedPointsDeducted) +
@@ -402,6 +414,7 @@ const deductAdditionalUsagePoints = async ({
       uncoveredPoints,
       usageDeductionFailed: uncoveredPoints > 0 || !!failureReason,
       ...(failureReason && { usageDeductionFailureReason: failureReason }),
+      ...(outcomeUnknown && { usageDeductionOutcomeUnknown: true }),
     };
   };
 
@@ -431,6 +444,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsToExtraUsagePoints(fromExtraUsage);
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
+  let outcomeUnknown = false;
 
   if (extraUsagePointsToDeduct > 0) {
     if (
@@ -446,15 +460,18 @@ const deductAdditionalUsagePoints = async ({
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               )
             : await deductFromBalance(
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               );
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
           return {
+            outcomeUnknown: true,
             success: false,
             newBalanceDollars: 0,
             insufficientFunds: false,
@@ -466,13 +483,19 @@ const deductAdditionalUsagePoints = async ({
         extraUsageDeducted = extraUsagePointsToDeduct;
       } else {
         failureReason = getDeductionFailureReason(deductResult);
+        outcomeUnknown = deductResult.outcomeUnknown === true;
       }
     } else {
       failureReason = "extra_usage_unavailable";
     }
   }
 
-  return buildDeltaResult(includedDeducted, extraUsageDeducted, failureReason);
+  return buildDeltaResult(
+    includedDeducted,
+    extraUsageDeducted,
+    failureReason,
+    outcomeUnknown,
+  );
 };
 
 const scanRedisKeys = async (
@@ -676,8 +699,10 @@ local currentTokens = tonumber(redis.call("HGET", key, "tokens")) or tierMax
 local previousAllocation = tonumber(redis.call("HGET", key, "cycleAllocation")) or tierMax
 local targetAllocation = math.min(previousAllocation, requestedAllocation)
 local previousRemaining = math.max(0, math.min(previousAllocation, currentTokens))
-local consumed = math.max(0, previousAllocation - previousRemaining)
+local previousOffset = tonumber(redis.call("HGET", key, "tierChangeConsumedOffset")) or 0
+local consumed = math.max(0, previousAllocation - previousRemaining) + previousOffset
 local targetRemaining = math.max(0, targetAllocation - consumed)
+local targetOffset = math.max(0, consumed - (targetAllocation - targetRemaining))
 local pointsRemoved = math.max(0, currentTokens - targetRemaining)
 
 if targetRefilledAt >= 0 then
@@ -686,6 +711,7 @@ if targetRefilledAt >= 0 then
     key,
     "tokens", targetRemaining,
     "cycleAllocation", targetAllocation,
+    "tierChangeConsumedOffset", targetOffset,
     "cycleTierMax", tierMax,
     "refilledAt", targetRefilledAt,
     "billingPeriodEndMs", targetRefilledAt + 30 * 24 * 60 * 60 * 1000
@@ -697,6 +723,7 @@ else
     key,
     "tokens", targetRemaining,
     "cycleAllocation", targetAllocation,
+    "tierChangeConsumedOffset", targetOffset,
     "cycleTierMax", tierMax
   )
 end
@@ -934,6 +961,7 @@ export const checkTokenBucketLimit = async (
     };
   }
 
+  let admissionOperationId: string | undefined;
   try {
     // For team users: detect new bucket so we can apply seat debt after creation
     if (subscription === "team" && !organizationId) {
@@ -1012,7 +1040,11 @@ export const checkTokenBucketLimit = async (
       return new ChatSDKError(
         "rate_limit:chat",
         `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`,
-        limitMetadata(reset, "monthly_exhausted"),
+        limitMetadata(reset, "monthly_exhausted", {
+          ...(admissionOperationId && {
+            extraUsageAdmissionOperationId: admissionOperationId,
+          }),
+        }),
       );
     };
 
@@ -1023,6 +1055,7 @@ export const checkTokenBucketLimit = async (
       result: { remaining: number; reset: number },
       pointsDeducted: number,
       extraUsagePointsDeducted?: number,
+      extraUsageAdmissionOperationId?: string,
     ): RateLimitInfo => ({
       remaining: result.remaining,
       resetTime: new Date(result.reset),
@@ -1033,6 +1066,7 @@ export const checkTokenBucketLimit = async (
         resetTime: new Date(result.reset),
       },
       pointsDeducted,
+      ...(extraUsageAdmissionOperationId && { extraUsageAdmissionOperationId }),
       ...(extraUsagePointsDeducted !== undefined && {
         extraUsagePointsDeducted,
       }),
@@ -1078,13 +1112,21 @@ export const checkTokenBucketLimit = async (
         // Team users draw from the org's shared pool with per-member caps;
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
+        admissionOperationId = crypto.randomUUID();
         const deductResult = isTeamPool
           ? await deductFromTeamBalance(
               organizationId!,
               userId,
               extraUsageShortfall,
+              undefined,
+              admissionOperationId,
             )
-          : await deductFromBalance(userId, extraUsageShortfall);
+          : await deductFromBalance(
+              userId,
+              extraUsageShortfall,
+              undefined,
+              admissionOperationId,
+            );
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -1095,7 +1137,12 @@ export const checkTokenBucketLimit = async (
           // subscription debit to validate, so that failed peek must not block
           // an otherwise successful paid request.
           if (bucketDeduct <= 0) {
-            return buildResult(monthlyCheck, 0, extraUsageShortfall);
+            return buildResult(
+              monthlyCheck,
+              0,
+              extraUsageShortfall,
+              admissionOperationId,
+            );
           }
 
           const monthlyResult = await monthly.limiter.limit(monthly.key, {
@@ -1122,7 +1169,12 @@ export const checkTokenBucketLimit = async (
             throw monthlyLimitError(monthlyResult.reset);
           }
 
-          return buildResult(monthlyResult, bucketDeduct, extraUsageShortfall);
+          return buildResult(
+            monthlyResult,
+            bucketDeduct,
+            extraUsageShortfall,
+            admissionOperationId,
+          );
         }
 
         // Deduction failed - check why
@@ -1233,10 +1285,21 @@ export const checkTokenBucketLimit = async (
 
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
-    if (error instanceof ChatSDKError) throw error;
+    if (error instanceof ChatSDKError) {
+      if (admissionOperationId) {
+        error.metadata = {
+          ...error.metadata,
+          extraUsageAdmissionOperationId: admissionOperationId,
+        };
+      }
+      throw error;
+    }
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+      admissionOperationId
+        ? { extraUsageAdmissionOperationId: admissionOperationId }
+        : undefined,
     );
   }
 };
@@ -1252,6 +1315,7 @@ export const deductUsageDelta = async (
   extraUsageConfig?: ExtraUsageConfig,
   organizationId?: string,
   usageSettlementId?: string,
+  settlementSequence?: number,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -1277,6 +1341,10 @@ export const deductUsageDelta = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId:
+        usageSettlementId && settlementSequence !== undefined
+          ? `wallet-v1:${usageSettlementId}:step:${settlementSequence}`
+          : undefined,
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
@@ -1314,7 +1382,7 @@ export const deductUsage = async (
   initialDeduction?: Pick<
     RateLimitInfo,
     "pointsDeducted" | "extraUsagePointsDeducted"
-  >,
+  > & { usageDeductionOutcomeUnknown?: boolean },
   actualModelName?: string,
   usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
@@ -1420,6 +1488,15 @@ export const deductUsage = async (
       actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
 
+    // A lost action response is not proof of no debit. Preserve acknowledged
+    // totals without charging or refunding an unknown debit during finalization.
+    if (initialDeduction?.usageDeductionOutcomeUnknown) {
+      return withFinalCoverage(
+        { ...lastKnownDeductionResult, usageDeductionOutcomeUnknown: true },
+        "deduction_failed",
+      );
+    }
+
     const initialCoveredPoints =
       initialDeduction !== undefined
         ? initialIncludedPoints +
@@ -1505,11 +1582,17 @@ export const deductUsage = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId: usageSettlementId
+        ? `wallet-v1:${usageSettlementId}:final`
+        : undefined,
     });
     lastKnownDeductionResult = buildDeductionResult(
       deltaResult.includedPointsDeducted,
       deltaResult.extraUsagePointsDeducted,
     );
+    if (deltaResult.usageDeductionOutcomeUnknown) {
+      lastKnownDeductionResult.usageDeductionOutcomeUnknown = true;
+    }
     return withFinalCoverage(
       lastKnownDeductionResult,
       deltaResult.usageDeductionFailureReason,
@@ -1894,13 +1977,15 @@ const tierChangeClaimKey = (stashKey: string) => `${stashKey}:claim`;
 const tierChangeCompletedKey = (stashKey: string) => `${stashKey}:completed`;
 
 export type TierChangeBucketState = {
-  version: 3;
+  version: 3 | 4;
   oldTier: SubscriptionTier | null;
+  oldPlanMax: number;
   targetTier: SubscriptionTier | null;
   subscriptionId: string | null;
   transitionId: string | null;
   remaining: number;
   cycleAllocation: number;
+  consumedCredits: number;
   resetAtMs: number;
 };
 
@@ -1928,6 +2013,14 @@ const parseTierChangeBucketState = (
   const cycleAllocation =
     finiteNonNegativePoints(parsed.cycleAllocation) ??
     remaining + legacyConsumed;
+  const consumedCredits = Math.max(
+    cycleAllocation - Math.min(remaining, cycleAllocation),
+    finiteNonNegativePoints(parsed.consumedCredits) ?? legacyConsumed,
+  );
+  // Version 3 stashes did not retain the old plan ceiling. Preserve their
+  // previous calculation until their 24-hour TTL expires.
+  const oldPlanMax =
+    finiteNonNegativePoints(parsed.oldPlanMax) || cycleAllocation;
   const resetAtMs = finiteNonNegativePoints(parsed.resetAtMs) ?? 0;
   const oldTier =
     typeof parsed.oldTier === "string" && parsed.oldTier in MONTHLY_CREDITS
@@ -1948,13 +2041,15 @@ const parseTierChangeBucketState = (
       : null;
 
   return {
-    version: 3,
+    version: parsed.version === 4 ? 4 : 3,
     oldTier,
+    oldPlanMax,
     targetTier,
     subscriptionId,
     transitionId,
     remaining: Math.min(remaining, cycleAllocation),
     cycleAllocation,
+    consumedCredits,
     resetAtMs,
   };
 };
@@ -1986,14 +2081,17 @@ local tokens = tonumber(redis.call("HGET", bucketKey, "tokens")) or oldCycleMax
 local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or oldCycleMax
 allocation = math.max(0, math.min(oldCycleMax, allocation))
 local remaining = math.max(0, math.min(allocation, tokens))
+local consumedOffset = tonumber(redis.call("HGET", bucketKey, "tierChangeConsumedOffset")) or 0
 local state = cjson.encode({
-  version = 3,
+  version = 4,
   oldTier = oldTier,
+  oldPlanMax = oldCycleMax,
   targetTier = targetTier,
   subscriptionId = subscriptionId,
   transitionId = transitionId,
   remaining = remaining,
   cycleAllocation = allocation,
+  consumedCredits = allocation - remaining + consumedOffset,
   resetAtMs = resetAtMs
 })
 
@@ -2065,6 +2163,7 @@ local refilledAt = tonumber(ARGV[6])
 local expireSeconds = tonumber(ARGV[7])
 local completedTtlSeconds = tonumber(ARGV[8])
 local periodEndMs = tonumber(ARGV[9])
+local carriedConsumed = tonumber(ARGV[10])
 
 if redis.call("GET", claimKey) ~= expectedClaim then
   return {0, 0}
@@ -2078,10 +2177,12 @@ end
 local existingTokens = tonumber(redis.call("HGET", bucketKey, "tokens"))
 local existingAllocation = redis.call("HGET", bucketKey, "cycleAllocation")
 local remaining = desiredRemaining
+local provisionalConsumed = 0
 if existingTokens and not existingAllocation then
-  local provisionalConsumed = math.max(0, tierMax - existingTokens)
+  provisionalConsumed = math.max(0, tierMax - existingTokens)
   remaining = math.max(0, desiredRemaining - provisionalConsumed)
 end
+local consumedOffset = math.max(0, carriedConsumed + provisionalConsumed - (allocation - remaining))
 
 redis.call("DEL", bucketKey)
 redis.call(
@@ -2089,6 +2190,7 @@ redis.call(
   bucketKey,
   "tokens", remaining,
   "cycleAllocation", allocation,
+  "tierChangeConsumedOffset", consumedOffset,
   "cycleTierMax", tierMax,
   "cycleStartedAt", cycleStartedAt,
   "refilledAt", refilledAt
@@ -2162,7 +2264,7 @@ export const stashTierChangeBucketState = async (
 
 /**
  * Compute the new cycle from the old cycle, not from the whole new plan.
- * Upgrades add only the prorated difference between allocations. Downgrades
+ * Upgrades add only the prorated difference between plan ceilings. Downgrades
  * cap the cycle immediately without restoring already-consumed credits.
  */
 export const calculateTierChangeCredits = (
@@ -2170,9 +2272,12 @@ export const calculateTierChangeCredits = (
   oldCycleAllocation: number,
   oldRemaining: number,
   proratedRatio: number,
+  oldPlanMax = oldCycleAllocation,
+  priorConsumedCredits = oldCycleAllocation - oldRemaining,
 ): TierChangeCredits => {
   const normalizedNewMax = Math.max(0, Math.round(newCycleMax));
   const normalizedOldAllocation = Math.max(0, Math.round(oldCycleAllocation));
+  const normalizedOldPlanMax = Math.max(0, Math.round(oldPlanMax));
   const normalizedOldRemaining = Math.min(
     normalizedOldAllocation,
     Math.max(0, Math.round(oldRemaining)),
@@ -2181,16 +2286,18 @@ export const calculateTierChangeCredits = (
     ? Math.max(0, Math.min(1, proratedRatio))
     : 0;
   const consumedCredits = Math.max(
-    0,
     normalizedOldAllocation - normalizedOldRemaining,
+    Number.isFinite(priorConsumedCredits)
+      ? Math.max(0, Math.round(priorConsumedCredits))
+      : 0,
   );
-  const isUpgrade = normalizedNewMax >= normalizedOldAllocation;
+  const isUpgrade = normalizedNewMax >= normalizedOldPlanMax;
   const incrementalCredits = isUpgrade
-    ? Math.floor((normalizedNewMax - normalizedOldAllocation) * normalizedRatio)
+    ? Math.floor((normalizedNewMax - normalizedOldPlanMax) * normalizedRatio)
     : 0;
   const cycleAllocation = isUpgrade
     ? normalizedOldAllocation + incrementalCredits
-    : normalizedNewMax;
+    : Math.min(normalizedOldAllocation, normalizedNewMax);
 
   return {
     consumedCredits,
@@ -2313,6 +2420,8 @@ export const applyProratedTierChangeBucket = async (
     state.cycleAllocation,
     state.remaining,
     proratedRatio,
+    state.oldPlanMax,
+    state.consumedCredits,
   );
   const periodEndSeconds =
     storedResetAtMs > nowMs ? Math.ceil(storedResetAtMs / 1000) : undefined;
@@ -2320,7 +2429,18 @@ export const applyProratedTierChangeBucket = async (
     ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
     : nowMs;
   const [applied, appliedRemaining] = await redis.eval<
-    [string, number, number, number, number, number, number, number, number],
+    [
+      string,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ],
     [number, number]
   >(
     APPLY_TIER_CHANGE_BUCKET_SCRIPT,
@@ -2342,6 +2462,7 @@ export const applyProratedTierChangeBucket = async (
       periodEndSeconds
         ? periodEndSeconds * 1000
         : 0,
+      credits.consumedCredits,
     ],
   );
   if (applied !== 1) return null;

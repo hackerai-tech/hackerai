@@ -7,7 +7,11 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useConvex } from "convex/react";
+import { useState } from "react";
 import { MessageSearchDialog } from "../MessageSearchDialog";
+
+const mockRouterPush = jest.fn();
+const mockMarkChatNavigationStarted = jest.fn();
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -20,7 +24,7 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 }));
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush }),
 }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -31,6 +35,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalStateActions: () => ({
     setChatSidebarOpen: jest.fn(),
     closeSidebar: jest.fn(),
+    markChatNavigationStarted: mockMarkChatNavigationStarted,
   }),
 }));
 
@@ -67,12 +72,36 @@ describe("MessageSearchDialog", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     (useConvex().query as jest.Mock).mockReset();
+    mockRouterPush.mockReset();
+    mockMarkChatNavigationStarted.mockClear();
   });
 
   afterEach(() => {
     global.IntersectionObserver = originalIntersectionObserver;
     jest.useRealTimers();
   });
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "keeps search open for a composing Escape (%j)",
+    (composition) => {
+      function Search() {
+        const [open, setOpen] = useState(true);
+        return (
+          <MessageSearchDialog isOpen={open} onClose={() => setOpen(false)} />
+        );
+      }
+
+      render(<Search />);
+      const input = screen.getByPlaceholderText("Search messages...");
+      const dialog = screen.getByRole("dialog", { name: "Search Messages" });
+      fireEvent.keyDown(input, { key: "Escape", ...composition });
+      expect(dialog).toBeVisible();
+      expect(input).toHaveFocus();
+
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(dialog).not.toBeInTheDocument();
+    },
+  );
 
   it("uses one-shot search and clears it when the dialog closes", async () => {
     const query = useConvex().query as jest.Mock;
@@ -101,6 +130,55 @@ describe("MessageSearchDialog", () => {
     expect(screen.getByPlaceholderText("Search messages...")).toHaveValue("");
     await runDebounce();
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the chat navigation before starting a search-result route change", async () => {
+    const query = useConvex().query as jest.Mock;
+    query.mockResolvedValue({
+      page: [
+        {
+          ...makeSearchResult("destination", "Find the destination"),
+          chat_title: "Search destination",
+        },
+      ],
+      isDone: true,
+      continueCursor: "",
+    });
+    const onClose = jest.fn();
+    mockRouterPush.mockImplementationOnce(() => {
+      expect(mockMarkChatNavigationStarted).toHaveBeenCalledTimes(1);
+    });
+    render(<MessageSearchDialog isOpen={true} onClose={onClose} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Search messages..."), {
+      target: { value: "destination" },
+    });
+    await runDebounce();
+    fireEvent.click(await screen.findByText("Search destination"));
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/c/chat-destination");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a clipped search excerpt from splitting an emoji", async () => {
+    const query = useConvex().query as jest.Mock;
+    const prefix = `search ${"a".repeat(192)}`;
+    query.mockResolvedValue({
+      page: [makeSearchResult("emoji", `${prefix}😀tail`)],
+      isDone: true,
+      continueCursor: "",
+    });
+
+    render(<MessageSearchDialog isOpen={true} onClose={jest.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("Search messages..."), {
+      target: { value: "search" },
+    });
+    await runDebounce();
+
+    expect(
+      await screen.findByText("search", { selector: "mark" }),
+    ).toBeVisible();
+    expect(screen.getByText(`${"a".repeat(192)}...`)).toBeVisible();
   });
 
   it("ignores stale results when the query changes", async () => {

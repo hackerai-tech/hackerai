@@ -1,3 +1,8 @@
+const mockSuspensionGate = jest.fn();
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: (...args: unknown[]) =>
+    mockSuspensionGate(...args),
+}));
 import type { Sandbox } from "@e2b/code-interpreter";
 import {
   assertCloudWorkspaceAvailable,
@@ -102,8 +107,10 @@ describe("cloud workspace guard", () => {
       [
         "cloud_workspace_migration:v1:user-1",
         "cloud_workspace_activity:v1:user-1",
+        "cloud_recovery_consent:v1:user-1",
+        "cloud_workspace_recovery_result:v1:user-1",
       ],
-      ["900", "verified-destination"],
+      ["900", "verified-destination", ""],
     );
   });
 
@@ -155,6 +162,8 @@ describe("cloud workspace guard", () => {
       "cloud_workspace_migration:v1:user-1",
       "cloud_workspace_activity:v1:user-1",
       "cloud_workspace_recovery_result:v1:user-1",
+      "cloud_recovery_consent:v1:user-1",
+      "cloud_recovery_history:v1:user-1",
     ]);
     await recovery.update({
       step: "backup_created",
@@ -307,6 +316,76 @@ describe("cloud workspace guard", () => {
     process.env = { ...process.env, NODE_ENV: "development" };
     await expect(readCloudWorkspaceState("user-1")).resolves.toBeNull();
   });
+
+  it.each([
+    ["read_state", "state_read_failed", "read"],
+    ["read_state", "state_invalid", "malformed"],
+    ["read_state", "store_unavailable", "missing_read"],
+    ["assert_available", "store_unavailable", "missing_assert"],
+    ["assert_available", "availability_rejected", "denied"],
+    ["assert_available", "availability_store_error", "eval"],
+  ])(
+    "diagnoses %s/%s without exposing stored state or changing the fence",
+    async (operation, reason, failure) => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        if (failure === "read")
+          mockGet.mockRejectedValue(new Error("private-redis-canary"));
+        if (failure === "malformed")
+          mockGet.mockResolvedValue({ token: "private-state-canary" });
+        if (failure.startsWith("missing")) {
+          mockConfigured = false;
+          process.env = { ...process.env, NODE_ENV: "production" };
+        }
+        if (failure === "denied") mockEval.mockResolvedValue(0);
+        if (failure === "eval")
+          mockEval.mockRejectedValue(new Error("private-eval-canary"));
+        const userId = "user-" + "x".repeat(150);
+        await expect(
+          operation === "read_state"
+            ? readCloudWorkspaceState(userId)
+            : assertCloudWorkspaceAvailable(
+                userId,
+                "private-destination-canary",
+              ),
+        ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+        expect(warn.mock.calls).toEqual([
+          [
+            "Cloud workspace guard unavailable",
+            {
+              event: "cloud_workspace_guard_unavailable",
+              operation,
+              reason,
+              user_id: userId.slice(0, 128),
+            },
+          ],
+        ]);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("private-");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("keeps diagnostics silent for successful guards and cannot replace a denial with a logger error", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(readCloudWorkspaceState("user-1")).resolves.toBeNull();
+      await expect(
+        assertCloudWorkspaceAvailable("user-1"),
+      ).resolves.toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      mockEval.mockResolvedValue(0);
+      await expect(
+        assertCloudWorkspaceAvailable("user-1"),
+      ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 it("refuses a customer claim when a preservation field appeared before fencing", async () => {
@@ -326,4 +405,45 @@ it("refuses a customer claim when a preservation field appeared before fencing",
     }),
   ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
   expect(mockEval).not.toHaveBeenCalled();
+});
+
+test("recovers only the same case's exact cleanup fence after interruption", async () => {
+  mockConfigured = true;
+  const state = {
+    version: 1,
+    phase: "cleanup",
+    token: "abuse:case-a",
+    migration: recovered,
+  };
+  mockGet.mockResolvedValue(state);
+  mockEval.mockResolvedValue(1);
+  await expect(
+    claimCloudWorkspaceCleanup("subject", false, {
+      token: "abuse:case-b",
+      sandboxId: "verified-destination",
+      region: "us-east-1",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    claimCloudWorkspaceCleanup("subject", false, {
+      token: "abuse:case-a",
+      sandboxId: "other",
+      region: "us-east-1",
+    }),
+  ).rejects.toThrow();
+  const fence = await claimCloudWorkspaceCleanup("subject", false, {
+    token: "abuse:case-a",
+    sandboxId: "verified-destination",
+    region: "us-east-1",
+  });
+  await fence.finish(false);
+  expect(mockEval.mock.calls.at(-1)?.[2][1]).toBe(JSON.stringify(recovered));
+});
+test("a suspended account cannot acquire or resume a workspace before touching Redis", async () => {
+  mockGet.mockClear();
+  mockSuspensionGate.mockRejectedValueOnce(new Error("Restricted"));
+  await expect(
+    assertCloudWorkspaceAvailable("subject", "workspace"),
+  ).rejects.toThrow("Restricted");
+  expect(mockGet).not.toHaveBeenCalled();
 });

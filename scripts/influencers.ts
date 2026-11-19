@@ -221,7 +221,7 @@ async function main() {
     monthlyBps: partner.monthly_bps,
     annualBps: partner.annual_bps,
     signups,
-    linkOpens: partner.link_opens ?? 0,
+    legacyLinkOpens: partner.link_opens ?? 0,
     sponsorshipCostCents: partner.sponsorship_cost_cents ?? 0,
     netRevenueCents: invoices
       .filter((row) => row.currency === "usd")

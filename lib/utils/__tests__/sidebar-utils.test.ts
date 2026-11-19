@@ -1,4 +1,5 @@
 import {
+  extractAllSidebarContent,
   extractSidebarContentFromMessage,
   isSameSidebarContent,
   reconcileSidebarContentAfterRegeneration,
@@ -6,6 +7,182 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
+  it("rebuilds a saved retired CAPTCHA command as ordinary terminal history", () => {
+    const tool = {
+      type: "tool-run_terminal_cmd",
+      toolCallId: "captcha-1",
+      input: { command: "hackerai-captcha solve --session owned" },
+    };
+    // Old chats persisted a start marker and runtime-only result metadata.
+    const startMarker = {
+      type: "data-terminal",
+      data: {
+        toolCallId: tool.toolCallId,
+        terminal: "",
+        captchaStartedAt: Date.parse("2026-11-08T12:00:00Z"),
+      },
+    };
+    const [saved] = extractAllSidebarContent([
+      {
+        role: "assistant",
+        parts: [
+          {
+            ...tool,
+            state: "output-available",
+            output: {
+              result: {
+                exitCode: 0,
+                browserChallenge: { status: "token_delivered" },
+                callTiming: { elapsedMs: 27000 },
+              },
+            },
+          },
+          startMarker,
+        ],
+      },
+    ]);
+    expect(saved).toMatchObject({
+      command: "hackerai-captcha solve --session owned",
+      isExecuting: false,
+      executionPhase: "completed",
+      exitCode: 0,
+      toolCallId: "captcha-1",
+    });
+    expect(saved).not.toHaveProperty("captcha");
+    const [interrupted] = extractAllSidebarContent(
+      [
+        {
+          role: "assistant",
+          parts: [{ ...tool, state: "input-available" }, startMarker],
+        },
+      ],
+      false,
+    );
+    expect(interrupted).toMatchObject({
+      command: "hackerai-captcha solve --session owned",
+      executionPhase: "interrupted",
+      isExecuting: false,
+    });
+    expect(interrupted).not.toHaveProperty("captcha");
+  });
+
+  describe("terminal calls saved without a result", () => {
+    const pendingCalls: Array<[string, string, Record<string, unknown>]> = [
+      ["legacy command", "tool-run_terminal_cmd", { command: "sleep 60" }],
+      [
+        "legacy interactive command",
+        "tool-run_terminal_cmd",
+        { command: "bash", interactive: true },
+      ],
+      [
+        "terminal session wait",
+        "tool-interact_terminal_session",
+        { action: "wait", session: "qa" },
+      ],
+      ["shell exec", "tool-shell", { action: "exec", command: "sleep 60" }],
+      [
+        "shell send",
+        "tool-shell",
+        { action: "send", session: "qa", input: "y\n", brief: "Confirm" },
+      ],
+    ];
+    const pendingMessage = (type: string, input: Record<string, unknown>) => ({
+      role: "assistant",
+      parts: [{ type, toolCallId: "pending", state: "input-available", input }],
+    });
+
+    it.each(pendingCalls)(
+      "shows a %s interrupted once its run has ended",
+      (_label, type, input) => {
+        expect(
+          extractAllSidebarContent([pendingMessage(type, input)], false),
+        ).toEqual([
+          expect.objectContaining({
+            toolCallId: "pending",
+            executionPhase: "interrupted",
+            isExecuting: false,
+          }),
+        ]);
+      },
+    );
+
+    it.each(pendingCalls)(
+      "keeps a %s executing while its run is active or run state is unknown",
+      (_label, type, input) => {
+        const executing = expect.objectContaining({
+          executionPhase: "executing",
+          isExecuting: true,
+        });
+        const message = pendingMessage(type, input);
+        expect(extractAllSidebarContent([message], true)).toEqual([executing]);
+        expect(extractAllSidebarContent([message])).toEqual([executing]);
+      },
+    );
+
+    it("keeps an earlier unfinished call interrupted while a newer response streams", () => {
+      const [earlier, current] = extractAllSidebarContent(
+        [
+          pendingMessage("tool-run_terminal_cmd", { command: "sleep 60" }),
+          { role: "user", parts: [{ type: "text", text: "try again" }] },
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-shell",
+                toolCallId: "current",
+                state: "input-available",
+                input: { action: "exec", command: "id" },
+              },
+            ],
+          },
+        ],
+        true,
+      );
+
+      expect(earlier).toMatchObject({
+        toolCallId: "pending",
+        executionPhase: "interrupted",
+        isExecuting: false,
+      });
+      expect(current).toMatchObject({
+        toolCallId: "current",
+        executionPhase: "executing",
+        isExecuting: true,
+      });
+    });
+  });
+  it.each([
+    [
+      "tool-run_terminal_cmd",
+      { command: 'sh -c "exit 7"' },
+      { result: { exitCode: 7 } },
+    ],
+    [
+      "tool-interact_terminal_session",
+      { action: "wait", session: "qa" },
+      { result: { exited: { exitCode: 7 } } },
+    ],
+    ["tool-shell", { action: "exec", command: "false" }, { exitCode: 7 }],
+  ])(
+    "retains the exit code when rebuilding %s from history",
+    (type, input, output) => {
+      const [terminal] = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type,
+            input,
+            output,
+            toolCallId: "call-exit7",
+            state: "output-available",
+          },
+        ],
+      });
+
+      expect(terminal).toMatchObject({ exitCode: 7, isExecuting: false });
+    },
+  );
+
   it("shows the generated command while automatic review is still pending", () => {
     const startedAt = Date.now();
     const [terminal] = extractSidebarContentFromMessage({
@@ -549,5 +726,89 @@ describe("finding sidebar selection identity", () => {
         toolCallId: "discarded-call",
       }),
     ).toBe(false);
+  });
+});
+
+describe.each(["tool-file", "tool-file_write"])(
+  "file sidebar compatibility: %s",
+  (type) => {
+    it.each(["write", "append"])(
+      "retains streaming and saved %s content",
+      (action) => {
+        const call = {
+          type,
+          toolCallId: "file-content",
+          input: { action, path: "/project/notes.txt", text: "new content\n" },
+        };
+        const [streaming] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [{ ...call, state: "input-streaming" }],
+        });
+        expect(streaming).toMatchObject({
+          path: "/project/notes.txt",
+          content: "new content\n",
+          action: action === "write" ? "creating" : "appending",
+          toolCallId: "file-content",
+          isExecuting: true,
+        });
+        const [saved] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [
+            {
+              ...call,
+              state: "output-available",
+              output:
+                action === "append"
+                  ? { originalContent: "existing\n" }
+                  : { success: true },
+            },
+          ],
+        });
+        expect(saved).toMatchObject({
+          path: "/project/notes.txt",
+          content:
+            action === "write" ? "new content\n" : "existing\nnew content\n",
+          action: action === "write" ? "writing" : "appending",
+          toolCallId: "file-content",
+          isExecuting: false,
+        });
+      },
+    );
+  },
+);
+
+it("shows a dedicated edit in the sidebar without an action argument", () => {
+  const call = {
+    type: "tool-file_edit",
+    toolCallId: "edit-content",
+    input: {
+      path: "/project/notes.txt",
+      edits: [{ find: "old", replace: "new" }],
+    },
+  };
+  const [pending] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [{ ...call, state: "input-available" }],
+  });
+  expect(pending).toMatchObject({
+    path: "/project/notes.txt",
+    action: "editing",
+    isExecuting: true,
+  });
+  const [saved] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [
+      {
+        ...call,
+        state: "output-available",
+        output: { originalContent: "old", modifiedContent: "new" },
+      },
+    ],
+  });
+  expect(saved).toMatchObject({
+    path: "/project/notes.txt",
+    content: "new",
+    action: "editing",
+    isExecuting: false,
   });
 });

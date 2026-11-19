@@ -20,11 +20,15 @@ const mockNextResponseRedirect = jest.fn((url: URL, init?: unknown) =>
 );
 const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
 
+/** Model Next's default redirect status for response-based diagnostic assertions. */
 function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
   return {
     kind,
     body,
     init,
+    status:
+      (init as { status?: number } | undefined)?.status ??
+      (kind === "redirect" ? 307 : 200),
     cookies: {
       set: jest.fn(),
       delete: jest.fn(),
@@ -93,6 +97,242 @@ function createRequest({
 }
 
 describe("proxy", () => {
+  it.each([
+    ["POST", true],
+    ["PRIVATE-METHOD-MARKER", false],
+  ])(
+    "records only bounded Desktop redirect context for %s",
+    async (method, isAction) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/c/private-chat-marker?secret=private-query-marker",
+            userAgent: "HackerAI-Desktop private-ua-marker",
+            method,
+            accept: "text/html;private-accept-marker",
+            headers: { "next-action": "private-action-marker" },
+            cookieValues: { unrelated: "private-cookie-marker" },
+          }),
+        );
+        expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+        expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+          new URL("https://hackerai.co/desktop-callback?error=unauthenticated"),
+        );
+        expect(mockAuthkit).not.toHaveBeenCalled();
+        expect(response.cookies.delete).not.toHaveBeenCalledWith("wos-session");
+        expect(info).toHaveBeenCalledTimes(1);
+        const fields = JSON.parse(info.mock.calls[0][0] as string);
+        expect(fields).toEqual({
+          event: "desktop_auth_redirect_observed",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          reason: "missing_session_cookie",
+          request_method: isAction ? "POST" : "OTHER",
+          route_kind: "chat_page",
+          next_action_header_present: true,
+          accepts_html: true,
+          redirect_status: 307,
+          destination: "desktop_callback",
+        });
+        expect(JSON.stringify(fields)).not.toContain("private-");
+        expect(JSON.stringify(fields)).not.toContain("PRIVATE-");
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("records the ended-session redirect after preserving cookie clearing", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/api/private-marker",
+          userAgent: "HackerAI-Desktop",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+        }),
+      );
+      expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+      expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      expect(JSON.parse(info.mock.calls[0][0] as string)).toMatchObject({
+        reason: "ended_session",
+        route_kind: "api",
+        request_method: "POST",
+        next_action_header_present: false,
+        redirect_status: 307,
+      });
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    "preserves the Desktop redirect when logging throws (session=%s)",
+    async (hasSession) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        if (hasSession)
+          mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/dashboard",
+            userAgent: "HackerAI-Desktop",
+            method: "POST",
+            accept: "text/html",
+            hasSession,
+          }),
+        );
+        expect(info).toHaveBeenCalledTimes(1);
+        expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+        expect(response.status).toBe(307);
+        if (hasSession)
+          expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      } finally {
+        info.mockRestore();
+        warning.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { method: "GET", userAgent: "HackerAI-Desktop", hasSession: false },
+    { method: "HEAD", userAgent: "HackerAI-Desktop", hasSession: false },
+    { method: "POST", userAgent: "Mozilla/5.0", hasSession: true },
+    { method: "POST", userAgent: "HackerAI-Desktop", hasSession: true },
+  ])(
+    "does not log unrelated requests: $method $userAgent session=$hasSession",
+    async (options) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockResolvedValue({
+          session: { user: { id: "user" } },
+          headers: new Headers(),
+        });
+        const { default: proxy } = await import("../proxy");
+        await proxy(createRequest({ pathname: "/dashboard", ...options }));
+        expect(info).not.toHaveBeenCalled();
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("does not describe an ended-session Server Action 401 as a redirect", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/c/example",
+          userAgent: "HackerAI-Desktop",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+          headers: { "next-action": "action" },
+        }),
+      );
+      expect(response).toBe(mockNextResponseJson.mock.results[0]?.value);
+      expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      expect(response.status).toBe(401);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it("does not attribute a web login redirect to the Desktop callback", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/dashboard",
+          userAgent: "Mozilla/5.0",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+        }),
+      );
+      expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+      expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+        new URL("https://hackerai.co/login"),
+      );
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it.each([
+    [
+      "preview",
+      "qa-branch.vercel.app",
+      "https://qa-branch.vercel.app/callback",
+    ],
+    [
+      "preview",
+      "deployment.vercel.app",
+      "https://deployment.vercel.app/callback",
+    ],
+    ["preview", "untrusted.example", "https://deployment.vercel.app/callback"],
+    ["production", "qa-branch.vercel.app", undefined],
+  ])(
+    "keeps auth on a trusted Preview branch origin (%s / %s)",
+    async (environment, host, redirectUri) => {
+      const keys = ["VERCEL_ENV", "VERCEL_URL", "VERCEL_BRANCH_URL"] as const;
+      const previous = Object.fromEntries(
+        keys.map((key) => [key, process.env[key]]),
+      );
+      Object.assign(process.env, {
+        VERCEL_ENV: environment,
+        VERCEL_URL: "deployment.vercel.app",
+        VERCEL_BRANCH_URL: "qa-branch.vercel.app",
+      });
+      mockAuthkit.mockResolvedValue({
+        session: { user: { id: "user" } },
+        headers: new Headers(),
+      });
+      try {
+        const { default: proxy } = await import("../proxy");
+        await proxy(
+          createRequest({
+            pathname: `https://${host}/c/goal-chat`,
+            accept: "text/html",
+            userAgent: "Mozilla/5.0",
+            hasSession: true,
+          }),
+        );
+        expect(mockAuthkit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ redirectUri }),
+        );
+      } finally {
+        for (const key of keys) {
+          if (previous[key] === undefined) delete process.env[key];
+          else process.env[key] = previous[key];
+        }
+      }
+    },
+  );
+
   afterAll(() => {
     if (originalCookiePassword === undefined) {
       delete process.env.WORKOS_COOKIE_PASSWORD;
@@ -112,12 +352,151 @@ describe("proxy", () => {
   });
 
   it.each([
+    ["/", "GET", "root"],
+    ["/login?secret=private-query-marker", "GET", "login"],
+    ["/c/private-chat-marker", "POST", "chat_page"],
+    ["/api/private-path-marker", "PRIVATE-METHOD-MARKER", "api"],
+    ["/private-path-marker", "GET", "other_page"],
+  ])(
+    "observes unexpected AuthKit failure without private contents: %s",
+    async (pathname, method, routeKind) => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const oldBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+      const oldEnvironment = process.env.VERCEL_ENV;
+      process.env.VERCEL_GIT_COMMIT_SHA = "A".repeat(40);
+      process.env.VERCEL_ENV = "production";
+      const error = Object.assign(new Error("private-error-marker"), {
+        name: "private-name-marker",
+        status: 503,
+        code: "private-code-marker",
+        cause: Object.assign(new TypeError("private-cause-marker"), {
+          code: "ECONNRESET",
+        }),
+      });
+      try {
+        mockAuthkit.mockRejectedValueOnce(error);
+        const { default: proxy } = await import("../proxy");
+        await expect(
+          proxy(
+            createRequest({
+              pathname,
+              method,
+              cookieValues: { unrelated: "private-cookie-marker" },
+              headers: {
+                "x-vercel-id": "arn1::gtrbx-1794282623256-a92d4497977c",
+                authorization: "private-token-marker",
+              },
+            }),
+          ),
+        ).rejects.toBe(error);
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+        expect(warning).toHaveBeenCalledTimes(1);
+        const encoded = warning.mock.calls[0][0] as string;
+        expect(encoded).not.toContain("private-");
+        expect(JSON.parse(encoded)).toMatchObject({
+          event: "proxy_authkit_failure_context",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          phase: "unexpected_initial_authkit",
+          route_kind: routeKind,
+          request_method: method === "PRIVATE-METHOD-MARKER" ? "OTHER" : method,
+          vercel_request_id: "arn1::gtrbx-1794282623256-a92d4497977c",
+          web_build_commit: "a".repeat(40),
+          environment: "production",
+          auth_refresh_error_kind: "other_error",
+          auth_refresh_error_status: 503,
+          auth_refresh_error_code: "other",
+          auth_refresh_cause_kind: "TypeError",
+          auth_refresh_cause_code: "ECONNRESET",
+        });
+        // A thrown AuthKit error never passed through the refresh callback.
+        expect(JSON.parse(encoded)).not.toHaveProperty("auth_refresh_stage");
+        expect(JSON.parse(encoded)).not.toHaveProperty(
+          "auth_refresh_stage_diagnostic_version",
+        );
+      } finally {
+        warning.mockRestore();
+        if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+        else process.env.VERCEL_GIT_COMMIT_SHA = oldBuild;
+        if (oldEnvironment === undefined) delete process.env.VERCEL_ENV;
+        else process.env.VERCEL_ENV = oldEnvironment;
+      }
+    },
+  );
+
+  it("drops malformed correlation fields and preserves unreadable diagnostic errors", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const oldBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+    const oldEnvironment = process.env.VERCEL_ENV;
+    process.env.VERCEL_GIT_COMMIT_SHA = "private-build-marker";
+    process.env.VERCEL_ENV = "private-environment-marker";
+    const error = Object.defineProperty(
+      new Error("private-error-marker"),
+      "code",
+      {
+        get() {
+          throw new Error("private-getter-marker");
+        },
+      },
+    );
+    try {
+      mockAuthkit.mockRejectedValueOnce(error);
+      const { default: proxy } = await import("../proxy");
+      await expect(
+        proxy(
+          createRequest({
+            pathname: "/login",
+            headers: { "x-vercel-id": "private-header-marker" },
+          }),
+        ),
+      ).rejects.toBe(error);
+      expect(warning).toHaveBeenCalledTimes(1);
+      const encoded = warning.mock.calls[0][0] as string;
+      expect(encoded).not.toContain("private-");
+      const fields = JSON.parse(encoded);
+      expect(fields).toMatchObject({
+        environment: "unknown",
+        auth_refresh_error_kind: "unreadable_error",
+      });
+      expect(fields).not.toHaveProperty("vercel_request_id");
+      expect(fields).not.toHaveProperty("web_build_commit");
+    } finally {
+      warning.mockRestore();
+      if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+      else process.env.VERCEL_GIT_COMMIT_SHA = oldBuild;
+      if (oldEnvironment === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = oldEnvironment;
+    }
+  });
+
+  it("preserves the original unexpected AuthKit error if the diagnostic logger fails", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    const error = new Error("original unexpected failure");
+    try {
+      mockAuthkit.mockRejectedValueOnce(error);
+      const { default: proxy } = await import("../proxy");
+      await expect(proxy(createRequest({ pathname: "/login" }))).rejects.toBe(
+        error,
+      );
+      expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it.each([
+    "/abuse",
+    "/api/abuse",
     "/api/analytics-consent",
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
     "/api/health/trigger-reports",
     "/api/cron/platform-costs/convex",
+    "/api/cron/platform-costs/posthog",
     "/api/cron/platform-costs/vercel",
     "/api/cron/subscription-pauses",
     "/api/cron/trigger-health",
@@ -140,6 +519,20 @@ describe("proxy", () => {
       expect(mockNextResponseRedirect).not.toHaveBeenCalled();
     },
   );
+
+  it("passes a cookie-free native operation redemption to its one-time route", async () => {
+    const { default: proxy } = await import("../proxy");
+    const response = await proxy(
+      createRequest({
+        pathname: "/api/desktop/authorized-operation",
+        method: "POST",
+        hasSession: false,
+      }),
+    );
+    expect(response).toMatchObject({ kind: "next" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseNext).toHaveBeenCalledWith();
+  });
 
   it.each([
     "/api/internal/user-research",
@@ -571,6 +964,223 @@ describe("proxy", () => {
     },
   );
 
+  it.each([true, false])(
+    "logs AuthKit's transient classification (%s) without changing its response",
+    async (isTransient) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sessionCookie = isTransient
+        ? "wos-session=existing-session; Path=/; HttpOnly"
+        : "wos-session=; Max-Age=0; Path=/; HttpOnly";
+      const request = createRequest({
+        pathname: "/api/subscription-details",
+        hasSession: true,
+      });
+
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error: Object.assign(
+              new Error("Refresh failed", {
+                cause: Object.assign(new TypeError("private-refresh-cause"), {
+                  status: 503,
+                  code: "ECONNRESET",
+                }),
+              }),
+              { status: "400" },
+            ),
+            isTransient,
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers({ "set-cookie": sessionCookie }),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+
+        await proxy(request);
+
+        expect(JSON.parse(String(warnSpy.mock.calls[0][0]))).toMatchObject({
+          event: "auth.session_refresh_failed",
+          error: "Refresh failed",
+          is_transient: isTransient,
+          auth_refresh_diagnostic_version: 2,
+          auth_refresh_error_kind: "Error",
+          auth_refresh_error_status: null,
+          auth_refresh_error_status_shape: "non_numeric",
+          auth_refresh_error_code: "none",
+          auth_refresh_cause_kind: "TypeError",
+          auth_refresh_cause_status: 503,
+          auth_refresh_cause_status_shape: "integer",
+          auth_refresh_cause_code: "ECONNRESET",
+        });
+        expect(String(warnSpy.mock.calls[0][0])).not.toContain(
+          "private-refresh-cause",
+        );
+        expect(mockNextResponseJson).toHaveBeenCalledWith(
+          {
+            code: "unauthorized:auth",
+            message: "You need to sign in before continuing.",
+            cause: "Session expired or invalid",
+          },
+          expect.objectContaining({ status: 401 }),
+        );
+        const responseInit = mockNextResponseJson.mock.calls[0][1] as {
+          headers: Headers;
+        };
+        expect(responseInit.headers.get("set-cookie")).toBe(sessionCookie);
+        expect(request.cookies.delete).not.toHaveBeenCalled();
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each<[string, unknown, string]>([
+    [
+      "before the SDK request",
+      "before_refresh_request",
+      "before_refresh_request",
+    ],
+    ["during the SDK request", "refresh_request", "refresh_request"],
+    [
+      "after the SDK response",
+      "after_refresh_response",
+      "after_refresh_response",
+    ],
+    ["from an older AuthKit build", undefined, "unavailable"],
+    ["with private text", "private-stage-marker eyJhbGciOi", "unavailable"],
+    ["with a near-miss label", "Refresh_Request", "unavailable"],
+    [
+      "with a non-string value",
+      { toString: () => "refresh_request" },
+      "unavailable",
+    ],
+  ])(
+    "adds only a closed refresh stage %s to the existing warning",
+    async (_case, refreshStage, expectedStage) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sessionCookie = "wos-session=; Max-Age=0; Path=/; HttpOnly";
+      const jwtInvalid = Object.assign(
+        new Error(
+          "JWTs must use Compact JWS serialization, JWT must be a string",
+        ),
+        { name: "JWTInvalid", code: "ERR_JWT_INVALID" },
+      );
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error: jwtInvalid,
+            isTransient: false,
+            refreshStage,
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers({ "set-cookie": sessionCookie }),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+        const request = createRequest({
+          pathname: "/api/subscription-details",
+          hasSession: true,
+        });
+
+        await proxy(request);
+
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const encoded = String(warnSpy.mock.calls[0][0]);
+        expect(encoded).not.toContain("private-");
+        expect(encoded).not.toContain("eyJ");
+        expect(JSON.parse(encoded)).toMatchObject({
+          event: "auth.session_refresh_failed",
+          is_transient: false,
+          auth_refresh_diagnostic_version: 2,
+          auth_refresh_error_kind: "JWTInvalid",
+          auth_refresh_error_code: "ERR_JWT_INVALID",
+          auth_refresh_stage_diagnostic_version: 1,
+          auth_refresh_stage: expectedStage,
+        });
+        expect(mockNextResponseJson).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseJson).toHaveBeenCalledWith(
+          {
+            code: "unauthorized:auth",
+            message: "You need to sign in before continuing.",
+            cause: "Session expired or invalid",
+          },
+          expect.objectContaining({ status: 401 }),
+        );
+        const responseInit = mockNextResponseJson.mock.calls[0][1] as {
+          headers: Headers;
+        };
+        expect(responseInit.headers.get("set-cookie")).toBe(sessionCookie);
+        expect(request.cookies.delete).not.toHaveBeenCalled();
+        expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    [
+      "invalid refresh token",
+      {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid refresh token.",
+      },
+    ],
+    [
+      "ended session",
+      {
+        error: "invalid_grant",
+        errorDescription: "Session has already ended.",
+      },
+    ],
+    ["rate limit", Object.assign(new Error("Rate limit"), { status: 429 })],
+  ])(
+    "keeps the %s refresh branch free of stage metadata",
+    async (_case, error) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error,
+            isTransient: false,
+            refreshStage: "refresh_request",
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers(),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+
+        await proxy(
+          createRequest({
+            pathname: "/api/subscription-details",
+            hasSession: true,
+          }),
+        );
+
+        const logged = [...warnSpy.mock.calls, ...infoSpy.mock.calls].map(
+          (call) => String(call[0]),
+        );
+        expect(logged).toHaveLength(1);
+        expect(logged[0]).not.toContain("auth.session_refresh_failed");
+        expect(logged[0]).not.toContain("auth_refresh_stage");
+      } finally {
+        warnSpy.mockRestore();
+        infoSpy.mockRestore();
+      }
+    },
+  );
+
   it("treats callback-only ended-session refresh errors as logged-out requests", async () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     const endedSessionError = Object.assign(
@@ -881,6 +1491,9 @@ describe("proxy", () => {
           ).rejects.toBe(recoveryError);
           expect(mockAuthkit).toHaveBeenCalledTimes(2);
           expect(mockNextResponseNext).not.toHaveBeenCalled();
+          expect(warning).toHaveBeenLastCalledWith(
+            expect.stringContaining('"phase":"anonymous_context_retry"'),
+          );
         } finally {
           warning.mockRestore();
         }

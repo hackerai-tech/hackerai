@@ -2,12 +2,16 @@ import type { PostHog } from "posthog-node";
 import { myProvider, type ModelName } from "@/lib/ai/providers";
 import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-context";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import {
+  evaluateFreeAskDeepSeek1017,
+  FREE_ASK_DEEPSEEK_1017_KEY,
+} from "./free-ask-deepseek-1017";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_ASK_DEEPSEEK_1017_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
@@ -24,7 +28,7 @@ export async function evaluateFlashRouting({
   limitRescue = false,
   modelPolicyActive = false,
 }: {
-  posthog: Pick<PostHog, "evaluateFlags"> | null;
+  posthog: Pick<PostHog, "evaluateFlags" | "getFeatureFlagResult"> | null;
   userId: string;
   mode: ChatMode;
   subscription: SubscriptionTier;
@@ -35,6 +39,17 @@ export async function evaluateFlashRouting({
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || limitRescue || modelPolicyActive) return undefined;
   if (hasImages) return undefined;
+  if (
+    mode === "ask" &&
+    subscription === "free" &&
+    selectedModel === "ask-model-free-glm"
+  ) {
+    try {
+      return await evaluateFreeAskDeepSeek1017(posthog, userId);
+    } catch {
+      return undefined;
+    }
+  }
   const key =
     mode === "agent" &&
     subscription !== "free" &&
@@ -122,6 +137,9 @@ export function createFlashRoutingExposureRecorder({
           request_id: requestId,
           message_id: requestId,
           exposure_surface: "provider_request",
+          ...(assignment.key === FREE_ASK_DEEPSEEK_1017_KEY && {
+            $insert_id: `${requestId}:free-ask-1017-exposure`,
+          }),
           $process_person_profile: false,
         },
       });

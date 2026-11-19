@@ -1,7 +1,6 @@
 export interface UserCustomization {
   readonly nickname?: string;
   readonly occupation?: string;
-  readonly traits?: string;
   readonly additional_info?: string;
   readonly include_notes?: boolean;
   readonly updated_at: number;

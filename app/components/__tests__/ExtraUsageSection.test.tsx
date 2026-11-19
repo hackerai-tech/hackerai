@@ -53,7 +53,7 @@ describe("ExtraUsageSection checkout return", () => {
       "/c/stopped-chat?extra-usage-purchased=true#pricing",
     );
     render(<ExtraUsageSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Buy extra usage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buy credit" }));
     fireEvent.click(screen.getByRole("button", { name: "Purchase $30" }));
 
     await waitFor(() =>
@@ -69,7 +69,7 @@ describe("ExtraUsageSection checkout return", () => {
   it("keeps the return path within the checkout API length limit", async () => {
     window.history.replaceState(null, "", "/" + "a".repeat(401));
     render(<ExtraUsageSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Buy extra usage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Buy credit" }));
     fireEvent.click(screen.getByRole("button", { name: "Purchase $30" }));
 
     await waitFor(() =>

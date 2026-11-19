@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useDroppable } from "@dnd-kit/core";
 import {
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  ShieldAlert,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -201,6 +203,16 @@ export function SidebarProjectItem({
               <Pencil className="mr-2 size-4" />
               Edit
             </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link
+                href={`/findings?project=${encodeURIComponent(project._id)}`}
+                prefetch={false}
+              >
+                <ShieldAlert className="mr-2 size-4" aria-hidden="true" />
+                View findings
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
               onSelect={() => setIsDeleteOpen(true)}

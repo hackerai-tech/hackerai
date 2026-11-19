@@ -7,18 +7,24 @@
  * resolve-once guard prevents subtle drift between adapters.
  */
 
+export interface PtyExitResult {
+  exitCode: number | null;
+  /** Transport failure or a kill acknowledgement without an observed exit. */
+  observationFailed?: true;
+}
+
 export interface ResolvableExited {
-  exited: Promise<{ exitCode: number | null }>;
-  resolveOnce: (value: { exitCode: number | null }) => void;
+  exited: Promise<PtyExitResult>;
+  resolveOnce: (value: PtyExitResult) => void;
 }
 
 export function createResolvableExited(): ResolvableExited {
   let resolved = false;
-  let resolveFn!: (value: { exitCode: number | null }) => void;
-  const exited = new Promise<{ exitCode: number | null }>((resolve) => {
+  let resolveFn!: (value: PtyExitResult) => void;
+  const exited = new Promise<PtyExitResult>((resolve) => {
     resolveFn = resolve;
   });
-  const resolveOnce = (value: { exitCode: number | null }): void => {
+  const resolveOnce = (value: PtyExitResult): void => {
     if (resolved) return;
     resolved = true;
     resolveFn(value);

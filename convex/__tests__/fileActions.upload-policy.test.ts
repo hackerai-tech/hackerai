@@ -21,6 +21,7 @@ jest.mock("convex/values", () => ({
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
+    null: jest.fn(() => "null"),
   },
   ConvexError: class ConvexError extends Error {
     data: unknown;
@@ -48,6 +49,9 @@ jest.mock("../_generated/api", () => ({
 
 jest.mock("../s3Utils", () => ({
   generateS3DownloadUrl: jest.fn(),
+  getS3ObjectMetadataFailure: (
+    jest.requireActual("../s3Utils") as typeof import("../s3Utils")
+  ).getS3ObjectMetadataFailure,
   getS3ObjectSizeBytes: jest.fn(),
   getStoredS3Location: jest.fn(),
 }));
@@ -133,6 +137,35 @@ describe("fileActions saveFile upload policy", () => {
       runQuery: jest.fn().mockResolvedValue({ user_id: "user123" }),
       runMutation: jest.fn().mockResolvedValue("file_123"),
     }) as any;
+
+  it("rejects metadata finalization from a different signed organization before side effects", async () => {
+    const { saveFile } = await import("../fileActions");
+    const ctx = makeCtx();
+    ctx.auth.getUserIdentity.mockResolvedValueOnce({
+      subject: "user123",
+      org_id: "org_current",
+      entitlements: ["pro-plan"],
+    });
+
+    await expect(
+      saveFile.handler(ctx, {
+        s3Key: "users/user123/test.txt",
+        name: "test.txt",
+        mediaType: "text/plain",
+        size: 20,
+        mode: "agent",
+        expectedUploadScope: {
+          userId: "user123",
+          organizationId: "org_original",
+        },
+      }),
+    ).rejects.toMatchObject({ data: { code: "UPLOAD_CONTEXT_CHANGED" } });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -561,12 +594,18 @@ describe("saveSandboxGeneratedFile storage verification", () => {
         .mocked(getS3ObjectSizeBytes)
         .mockRejectedValueOnce(new Error(message));
       const ctx = makeCtx();
+      // Errors not produced by the S3 wrapper carry no storage diagnostic.
       await expect(
         saveSandboxGeneratedFile.handler(ctx as any, args),
       ).rejects.toMatchObject({
-        data: expect.objectContaining({
+        data: {
           code: "GENERATED_FILE_VERIFICATION_FAILED",
-        }),
+          message:
+            "The uploaded file could not be verified in storage. Retry delivery before sharing it.",
+          generated_file_verification_diagnostic_version: 1,
+          storage_failure_reason: "unknown",
+          storage_http_status: null,
+        },
       });
       expect(ctx.runMutation).not.toHaveBeenCalled();
       expect(generateS3DownloadUrl).not.toHaveBeenCalled();

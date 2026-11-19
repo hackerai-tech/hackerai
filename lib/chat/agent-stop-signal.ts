@@ -1,8 +1,14 @@
 type DirectStopSource =
+  | "local_connection_lost"
+  | "browser_ownership_lost"
+  | "browser_handoff_abandoned"
+  | "wait_for_user"
+  | "wait_for_user_timeout"
   | "trigger_platform"
   | "active_runtime_budget"
   | "auto_review_circuit_breaker"
   | "post_wait_authorization_denied"
+  | "approval_timeout"
   | "usage_settlement_uncovered";
 
 type StreamStopSource = "agent_run_spend_cap" | "budget_monitor";
@@ -25,6 +31,7 @@ export function createAgentStopSignal({
 }) {
   const controller = new AbortController();
   let directSource: DirectStopSource | undefined;
+  let observedSource: AgentStopSignalSource | undefined;
   const reportAbort = () => {
     let source: AgentStopSignalSource = directSource ?? "unattributed";
     if (!directSource) {
@@ -40,6 +47,7 @@ export function createAgentStopSignal({
         // Attribution must never interfere with cancellation.
       }
     }
+    observedSource = source;
     try {
       // Never pass signal.reason: platform/provider reasons may contain content.
       onAbort(source);
@@ -51,6 +59,9 @@ export function createAgentStopSignal({
 
   return {
     controller,
+    get source() {
+      return observedSource;
+    },
     abort(source: DirectStopSource, reason?: unknown) {
       if (!controller.signal.aborted) directSource = source;
       controller.abort(reason);

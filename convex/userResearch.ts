@@ -91,7 +91,9 @@ const extractText = (parts: unknown[]): string =>
     })
     .join("\n")
     .trim()
-    .slice(0, MAX_MESSAGE_CHARS);
+    .slice(0, MAX_MESSAGE_CHARS)
+    // Convex cannot serialize a surrogate pair split by the UTF-16 limit.
+    .replace(/[\uD800-\uDBFF]$/, "");
 
 const getRunningResearchMember = async (
   ctx: ResearchCtx,

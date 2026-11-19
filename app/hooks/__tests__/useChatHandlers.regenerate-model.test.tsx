@@ -1,37 +1,59 @@
+import { useLayoutEffect } from "react";
 import { act, renderHook } from "@testing-library/react";
 import { jest } from "@jest/globals";
-import type { ChatMessage, SelectedModel } from "@/types";
+import type {
+  AgentPermissionMode,
+  ChatMessage,
+  ChatMode,
+  QueuedMessage,
+  SandboxPreference,
+  SelectedModel,
+} from "@/types";
 
 const mockRegenerate = jest.fn();
 const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
+const mockSetTodos = jest.fn();
 const mockSetIsAutoResuming = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureCancellationEvent = jest.fn();
 const mockToastInfo = jest.fn();
+const mockMutation = jest.fn(
+  async (_args: Record<string, unknown>): Promise<unknown> => undefined,
+);
 let mockSelectedModel: SelectedModel = "hackerai-standard";
+let mockChatMode: ChatMode = "ask";
+let mockSandboxPreference: SandboxPreference = "e2b";
+let mockAgentPermissionMode: AgentPermissionMode = "ask_approval";
+let mockDesktopEnvironmentId: string | undefined;
+let mockMessageQueue: QueuedMessage[] = [];
 const originalFetch = globalThis.fetch;
 
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(async () => undefined),
+  useMutation: () => mockMutation,
 }));
+
+const mockUploadedFiles: never[] = [];
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     getInput: () => "",
-    uploadedFiles: [],
-    chatMode: "ask",
+    uploadedFiles: mockUploadedFiles,
+    getUploadedFiles: () => mockUploadedFiles,
+    chatMode: mockChatMode,
     clearInput: jest.fn(),
     clearUploadedFiles: jest.fn(),
     todos: [],
-    setTodos: jest.fn(),
+    setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
     queueMessage: jest.fn(),
-    messageQueue: [],
+    messageQueue: mockMessageQueue,
     removeQueuedMessage: jest.fn(),
     queueBehavior: "queue",
-    sandboxPreference: "e2b",
+    sandboxPreference: mockSandboxPreference,
+    desktopEnvironmentId: mockDesktopEnvironmentId,
+    agentPermissionMode: mockAgentPermissionMode,
     selectedModel: mockSelectedModel,
   }),
 }));
@@ -42,12 +64,37 @@ jest.mock("@/app/components/DataStreamProvider", () => ({
   }),
 }));
 
-jest.mock("@/lib/analytics/client", () => ({
-  getIdentifiedAnalyticsUserId: () => "test-user",
-  captureQueuedAuthenticatedEvent: (...args: unknown[]) =>
-    mockCaptureCancellationEvent(...args),
-  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
-}));
+jest.mock("@/lib/analytics/client", () => {
+  const { sanitizeAgentCancellationEvent } = jest.requireActual<
+    typeof import("@/lib/analytics/agent-cancellation-privacy")
+  >("@/lib/analytics/agent-cancellation-privacy");
+  return {
+    getIdentifiedAnalyticsUserId: () => "test-user",
+    // Deliver through the privacy filter PostHog's before_send applies after
+    // SDK enrichment, so assertions see what would actually leave the browser.
+    captureQueuedAuthenticatedEvent: ({
+      event,
+      properties,
+    }: {
+      event: string;
+      properties: Record<string, unknown>;
+    }) =>
+      mockCaptureCancellationEvent(
+        sanitizeAgentCancellationEvent({
+          event,
+          properties: {
+            ...properties,
+            token: "phc_test",
+            distinct_id: "test-user",
+            $current_url: "https://hackerai.co/c/chat-1?q=CANARY",
+            prompt: "CANARY",
+          },
+          $set: { email: "CANARY@example.com" },
+        }),
+      ),
+    captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
+  };
+});
 
 jest.mock("sonner", () => ({
   toast: {
@@ -62,6 +109,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
 
 const { useChatHandlers } =
   require("../useChatHandlers") as typeof import("../useChatHandlers");
+const { getCancellationResponseReceipt } =
+  require("@/lib/agent-cancellation-response") as typeof import("@/lib/agent-cancellation-response");
 
 const messages = [
   {
@@ -80,6 +129,7 @@ describe("useChatHandlers regenerate model", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSelectedModel = "hackerai-standard";
+    mockChatMode = "ask";
   });
 
   afterEach(() => {
@@ -527,19 +577,37 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("reports a terminal cancellation rejection to approval UI callers", async () => {
+    const readBody = jest.fn();
+    const headerGet = jest.fn((name: string) =>
+      name === "x-vercel-id"
+        ? "iad1::iad1::abcd1-1763049600000-0123456789abcdef"
+        : "session=CANARY",
+    );
     const fetchMock = jest.fn(
-      async () => ({ ok: false, status: 403 }) as Response,
+      async () =>
+        ({
+          ok: false,
+          status: 403,
+          type: "basic",
+          redirected: false,
+          url: "https://hackerai.co/api/agent/cancel?token=CANARY",
+          headers: { get: headerGet },
+          json: readBody,
+          text: readBody,
+        }) as unknown as Response,
     );
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: fetchMock,
     });
+    const logged = jest.spyOn(console, "error").mockImplementation(() => {});
+    const stop = jest.fn();
     const { result } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
         messages: [],
         sendMessage: mockSendMessage,
-        stop: jest.fn(),
+        stop,
         regenerate: mockRegenerate,
         setMessages: mockSetMessages,
         isExistingChat: true,
@@ -551,11 +619,69 @@ describe("useChatHandlers regenerate model", () => {
     );
 
     let stopped: boolean | undefined;
-    await act(async () => {
-      stopped = await result.current.handleStop();
-    });
+    let errorLogs: unknown[][];
+    try {
+      await act(async () => {
+        stopped = await result.current.handleStop();
+      });
+    } finally {
+      errorLogs = [...logged.mock.calls];
+      logged.mockRestore();
+    }
 
     expect(stopped).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readBody).not.toHaveBeenCalled();
+    expect(headerGet.mock.calls).toEqual([["x-vercel-id"]]);
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    // The caller still sees the service's original rejection object.
+    const [, rejection] = errorLogs.find(
+      ([message]) => message === "Failed to cancel trigger.dev run:",
+    )!;
+    expect(rejection).toEqual(
+      new Error("Agent cancellation failed with status 403"),
+    );
+    const receipt = {
+      cancellation_response_diagnostic_version: 1,
+      cancellation_response_http_status: 403,
+      cancellation_response_type: "basic",
+      cancellation_response_redirected: "false",
+      cancellation_response_url_origin: "hackerai_production",
+      cancellation_response_endpoint: "agent_cancel",
+      cancellation_response_platform_request_id_state: "valid",
+      cancellation_response_platform_request_id:
+        "iad1::iad1::abcd1-1763049600000-0123456789abcdef",
+    };
+    expect(getCancellationResponseReceipt(rejection)).toEqual(receipt);
+    const delivered = mockCaptureCancellationEvent.mock.calls.map(
+      ([event]) => event as { event: string; properties: object },
+    );
+    const requested = delivered.filter(
+      ({ event }) => event === "agent_run_cancellation_requested",
+    );
+    const settled = delivered.filter(
+      ({ event }) => event === "agent_run_cancellation_settled",
+    );
+    expect(requested).toHaveLength(1);
+    expect(settled).toEqual([
+      {
+        event: "agent_run_cancellation_settled",
+        properties: {
+          ...requested[0].properties,
+          outcome: "error",
+          durationMs: expect.any(Number),
+          ...receipt,
+        },
+      },
+    ]);
+    expect(requested[0].properties).toMatchObject({
+      schemaVersion: 1,
+      action: "stop",
+      triggerRunId: "run-1",
+    });
+    expect(JSON.stringify(delivered)).not.toContain("CANARY");
   });
 
   it("reconnects to the persisted run after a stale cancellation", async () => {
@@ -681,6 +807,649 @@ describe("useChatHandlers regenerate model", () => {
         cancellation_applied: false,
       },
     );
+  });
+});
+
+describe("replacement request ownership across awaited work", () => {
+  type MutationArgs = Record<string, unknown>;
+  type Handlers = ReturnType<typeof useChatHandlers>;
+
+  const replacements = {
+    Regenerate: (handlers: Handlers) => handlers.handleRegenerate(),
+    Retry: (handlers: Handlers) => handlers.handleRetry(),
+    Edit: (handlers: Handlers) =>
+      handlers.handleEditMessage("user-1", "Edited question"),
+  };
+  const awaitedSteps = {
+    "the saved-request check": { status: "ready" },
+    "stream cancellation": {
+      status: "streaming",
+      matches: (args: MutationArgs) => args.skipSave === true,
+    },
+    "response deletion": {
+      status: "ready",
+      matches: (args: MutationArgs) => args.resetSummary === true,
+    },
+    "the edit save": {
+      status: "ready",
+      matches: (args: MutationArgs) => args.newContent !== undefined,
+    },
+  } as const;
+  type AwaitedStep = keyof typeof awaitedSteps;
+
+  const resetSelection = () => {
+    mockSelectedModel = "hackerai-standard";
+    mockChatMode = "ask";
+    mockSandboxPreference = "e2b";
+    mockAgentPermissionMode = "ask_approval";
+    mockDesktopEnvironmentId = undefined;
+    mockMessageQueue = [];
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetSelection();
+    mockMutation.mockImplementation(async () => undefined);
+  });
+  afterEach(() => {
+    resetSelection();
+    if (originalFetch) {
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: originalFetch,
+      });
+    } else {
+      Reflect.deleteProperty(globalThis, "fetch");
+    }
+  });
+
+  /** Renders chat-1 with one awaited step held open until `release`. */
+  const renderHeldChat = (step: AwaitedStep) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const awaited = awaitedSteps[step];
+    const isUserMessagePersisted = jest.fn(async (_messageId: string) => {
+      if (step === "the saved-request check") await held;
+      return true;
+    });
+    if ("matches" in awaited) {
+      mockMutation.mockImplementation(async (args) => {
+        if (awaited.matches(args)) await held;
+        return undefined;
+      });
+    }
+    const view = renderHook(
+      ({ chatId }: { chatId: string }) =>
+        useChatHandlers({
+          chatId,
+          messages: chatId === "chat-1" ? messages : [],
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          isUserMessagePersisted,
+          status: awaited.status,
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      { initialProps: { chatId: "chat-1" } },
+    );
+    const isHeld = () =>
+      "matches" in awaited
+        ? mockMutation.mock.calls.some(([args]) => awaited.matches(args))
+        : isUserMessagePersisted.mock.calls.length > 0;
+    return { ...view, release, isHeld };
+  };
+
+  it.each([
+    ["Regenerate", "stream cancellation"],
+    ["Retry", "the saved-request check"],
+    ["Edit", "stream cancellation"],
+  ] as const)(
+    "%s from an older rendered message keeps the settings at invocation through %s",
+    async (replacement, step) => {
+      const chat = renderHeldChat(step);
+      const renderedMessageHandlers = chat.result.current;
+      mockSelectedModel = "hackerai-max";
+      mockSandboxPreference = "desktop";
+      mockAgentPermissionMode = "full_access";
+      chat.rerender({ chatId: "chat-1" });
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](renderedMessageHandlers);
+      });
+      expect(chat.isHeld()).toBe(true);
+      expect(mockRegenerate).not.toHaveBeenCalled();
+
+      // A later selection belongs to the next request, not this one.
+      mockSelectedModel = "hackerai-pro";
+      mockChatMode = "agent";
+      mockSandboxPreference = "e2b";
+      mockAgentPermissionMode = "auto_review";
+      chat.rerender({ chatId: "chat-1" });
+      await act(async () => {
+        chat.release();
+        await action;
+      });
+
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+      expect(mockRegenerate).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          mode: "ask",
+          selectedModel: "hackerai-max",
+          sandboxPreference: "desktop",
+          agentPermissionMode: "full_access",
+        }),
+      });
+    },
+  );
+
+  it("keeps an explicit Retry model ahead of the current selection", async () => {
+    const chat = renderHeldChat("the saved-request check");
+    chat.release();
+    mockSelectedModel = "hackerai-max";
+    chat.rerender({ chatId: "chat-1" });
+
+    await act(async () => {
+      await chat.result.current.handleRetry({ selectedModel: "auto" });
+    });
+
+    expect(mockRegenerate).toHaveBeenCalledWith({
+      body: expect.objectContaining({ selectedModel: "auto" }),
+    });
+  });
+
+  it.each([
+    ["Regenerate", "stream cancellation", "is left and reopened"],
+    ["Regenerate", "response deletion", "is left and reopened"],
+    ["Regenerate", "response deletion", "unmounts"],
+    ["Retry", "the saved-request check", "is left and reopened"],
+    ["Retry", "stream cancellation", "is left and reopened"],
+    ["Retry", "response deletion", "is left and reopened"],
+    ["Edit", "stream cancellation", "is left and reopened"],
+    ["Edit", "the edit save", "is left and reopened"],
+  ] as const)(
+    "%s abandons later work held at %s when the chat %s",
+    async (replacement, step, departure) => {
+      const chat = renderHeldChat(step);
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](chat.result.current);
+      });
+      expect(chat.isHeld()).toBe(true);
+      const mutationsIssued = mockMutation.mock.calls.length;
+      const transcriptWrites = mockSetMessages.mock.calls.length;
+      const todoWrites = mockSetTodos.mock.calls.length;
+
+      if (departure === "unmounts") {
+        chat.unmount();
+      } else {
+        // Returning to the same chat must not revive the earlier visit's action.
+        chat.rerender({ chatId: "chat-2" });
+        chat.rerender({ chatId: "chat-1" });
+      }
+      await act(async () => {
+        chat.release();
+        await action;
+      });
+
+      // Work already issued for the original chat is not rolled back, but no
+      // new mutation, transcript/todo write or generation follows it.
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledTimes(mutationsIssued);
+      expect(mockSetMessages).toHaveBeenCalledTimes(transcriptWrites);
+      expect(mockSetTodos).toHaveBeenCalledTimes(todoWrites);
+    },
+  );
+
+  it("Edit does not stop the stream after sending is disabled during a goal pause", async () => {
+    mockChatMode = "agent";
+    let releasePause!: () => void;
+    const pauseHeld = new Promise<void>((resolve) => {
+      releasePause = resolve;
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") await pauseHeld;
+        return {
+          ok: true,
+          json: async () =>
+            init?.method === "POST"
+              ? { state: "paused" }
+              : { goal: { generation: 4 } },
+        } as Response;
+      }),
+    });
+    const goalMessages = messages.map((message) =>
+      message.id === "user-1"
+        ? { ...message, metadata: { goal: { sent: true } } }
+        : message,
+    ) as ChatMessage[];
+    const { result, rerender } = renderHook(
+      ({ sendDisabledReason }: { sendDisabledReason?: string }) =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: goalMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          goalState: "running",
+          goalGeneration: 4,
+          sendDisabledReason,
+        }),
+      { initialProps: {} },
+    );
+
+    let action!: Promise<void>;
+    await act(async () => {
+      action = result.current.handleEditMessage("user-1", "Updated goal");
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    rerender({ sendDisabledReason: "Computer disconnected" });
+    await act(async () => {
+      releasePause();
+      await action;
+    });
+
+    expect(mockSetIsAutoResuming).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockRegenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Regenerate", "response deletion"],
+    ["Edit", "the edit save"],
+  ] as const)(
+    "%s started by a later layout callback after a chat change keeps ownership through %s",
+    async (replacement, step) => {
+      const { matches } = awaitedSteps[step];
+      let releaseHeld!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseHeld = resolve;
+      });
+      mockMutation.mockImplementation(async (args) => {
+        if (matches(args)) await held;
+        return undefined;
+      });
+      let started: Promise<void> | undefined;
+      const { rerender } = renderHook(
+        ({ chatId }: { chatId: string }) => {
+          const handlers = useChatHandlers({
+            chatId,
+            messages,
+            sendMessage: mockSendMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "ready",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          });
+          // Runs during the commit that switches chats, before passive effects.
+          useLayoutEffect(() => {
+            if (chatId === "chat-2" && !started)
+              started = replacements[replacement](handlers);
+          }, [chatId, handlers]);
+          return handlers;
+        },
+        { initialProps: { chatId: "chat-1" } },
+      );
+
+      rerender({ chatId: "chat-2" });
+      expect(mockMutation.mock.calls.some(([args]) => matches(args))).toBe(
+        true,
+      );
+      await act(async () => {
+        releaseHeld();
+        await started;
+      });
+
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("an Agent Retry started by a later layout callback uses the settings committed with it", async () => {
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async () => ({ status: 204 }) as Response),
+    });
+    let started: Promise<void> | undefined;
+    const { rerender } = renderHook(
+      ({ selection }: { selection: "initial" | "changed" }) => {
+        const handlers = useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "error",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        });
+        // Runs during the commit that applies the new settings, before
+        // passive effects.
+        useLayoutEffect(() => {
+          if (selection === "changed" && !started)
+            started = handlers.handleRetry();
+        }, [selection, handlers]);
+        return handlers;
+      },
+      { initialProps: { selection: "initial" as "initial" | "changed" } },
+    );
+
+    mockChatMode = "agent";
+    mockSelectedModel = "hackerai-max";
+    mockSandboxPreference = "desktop";
+    mockDesktopEnvironmentId = "env-1";
+    mockAgentPermissionMode = "full_access";
+    rerender({ selection: "changed" });
+    await act(async () => {
+      await started;
+    });
+
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { isAutoContinue: true } }),
+      {
+        body: expect.objectContaining({
+          mode: "agent",
+          selectedModel: "hackerai-max",
+          sandboxPreference: "desktop",
+          desktopEnvironmentId: "env-1",
+          agentPermissionMode: "full_access",
+        }),
+      },
+    );
+  });
+
+  it.each([
+    ["Regenerate", "stays open", true],
+    ["Regenerate", "is left and reopened", false],
+    ["Retry", "is left and reopened", false],
+    ["Edit", "is left and reopened", false],
+  ] as const)(
+    "%s reconnects to a changed Agent run only while its chat %s",
+    async (replacement, departure, recovers) => {
+      let releaseCancel!: () => void;
+      const cancelHeld = new Promise<void>((resolve) => {
+        releaseCancel = resolve;
+      });
+      const cancelRequest = jest.fn(async () => {
+        await cancelHeld;
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            canceled: false,
+            reason: "stale_run",
+            activeTriggerRunId: "run-2",
+          }),
+        } as unknown as Response;
+      });
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: cancelRequest,
+      });
+      const activeTriggerRunRef: { current: string | undefined } = {
+        current: "run-1",
+      };
+      const resumeActiveRun = jest.fn(async () => undefined);
+      const { result, rerender } = renderHook(
+        ({ chatId }: { chatId: string }) =>
+          useChatHandlers({
+            chatId,
+            messages,
+            sendMessage: mockSendMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+            activeTriggerRunRef,
+            resumeActiveRun,
+          }),
+        { initialProps: { chatId: "chat-1" } },
+      );
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = replacements[replacement](result.current);
+      });
+      expect(cancelRequest).toHaveBeenCalledWith(
+        "/api/agent/cancel",
+        expect.anything(),
+      );
+      if (departure === "is left and reopened") {
+        rerender({ chatId: "chat-2" });
+        rerender({ chatId: "chat-1" });
+      }
+      await act(async () => {
+        releaseCancel();
+        await action;
+      });
+
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      if (recovers) {
+        expect(activeTriggerRunRef.current).toBe("run-2");
+        expect(resumeActiveRun).toHaveBeenCalledTimes(1);
+        expect(mockToastInfo).toHaveBeenCalledWith(
+          "Agent run changed",
+          expect.anything(),
+        );
+      } else {
+        expect(activeTriggerRunRef.current).toBe("run-1");
+        expect(resumeActiveRun).not.toHaveBeenCalled();
+        expect(mockToastInfo).not.toHaveBeenCalled();
+        expect(mockSetIsAutoResuming).not.toHaveBeenCalledWith(true);
+      }
+    },
+  );
+
+  it.each([
+    ["now", "the selected model", {}, "hackerai-max"],
+    [
+      "now",
+      "an explicit Retry model",
+      { selectedModel: "auto" as const },
+      "auto",
+    ],
+    ["after compaction", "the selected model", {}, "hackerai-max"],
+  ] as const)(
+    "a queued Retry from an older rendered message sent %s uses the committed computer with %s",
+    async (timing, _model, retryOptions, expectedModel) => {
+      const deferred = timing === "after compaction";
+      mockMessageQueue = [
+        {
+          id: "user-1",
+          text: "Question",
+          timestamp: 1,
+          deliveryStatus: "failed",
+        },
+      ];
+      const sendQueuedMessage = jest.fn(async () => undefined);
+      const { result, rerender } = renderHook(
+        ({ isSummarizing }: { isSummarizing: boolean }) =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages,
+            sendMessage: mockSendMessage,
+            sendQueuedMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "error",
+            isSummarizing,
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        { initialProps: { isSummarizing: deferred } },
+      );
+      const renderedMessageHandlers = result.current;
+      mockSelectedModel = "hackerai-max";
+      mockSandboxPreference = "desktop-environment:env-2";
+      mockAgentPermissionMode = "full_access";
+      rerender({ isSummarizing: deferred });
+
+      await act(async () => {
+        await renderedMessageHandlers.handleRetry(retryOptions);
+      });
+      if (deferred) {
+        expect(sendQueuedMessage).not.toHaveBeenCalled();
+        // A later selection belongs to the next request, not this Retry.
+        mockSelectedModel = "hackerai-pro";
+        mockChatMode = "agent";
+        mockSandboxPreference = "e2b";
+        mockAgentPermissionMode = "auto_review";
+        await act(async () => {
+          rerender({ isSummarizing: false });
+        });
+      }
+
+      expect(mockRegenerate).not.toHaveBeenCalled();
+      expect(sendQueuedMessage).toHaveBeenCalledTimes(1);
+      expect(sendQueuedMessage).toHaveBeenCalledWith(
+        "user-1",
+        expect.objectContaining({
+          mode: "ask",
+          sandboxPreference: "desktop-environment:env-2",
+          agentPermissionMode: "full_access",
+          selectedModel: expectedModel,
+        }),
+      );
+    },
+  );
+
+  describe("Agent Retry delegated to saved-task recovery", () => {
+    type RecoveryStep = "the run check" | "the recovery save";
+
+    /** Renders an Agent chat whose saved-task recovery is held at `step`. */
+    const renderHeldRecovery = (step: RecoveryStep) => {
+      mockChatMode = "agent";
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const runCheck = jest.fn(async () => {
+        if (step === "the run check") await held;
+        return { status: 204 } as Response;
+      });
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: runCheck,
+      });
+      const prepareAgentRecovery = jest.fn(async () => {
+        if (step === "the recovery save") await held;
+        return false;
+      });
+      const view = renderHook(
+        ({ chatId }: { chatId: string }) =>
+          useChatHandlers({
+            chatId,
+            messages,
+            sendMessage: mockSendMessage,
+            stop: jest.fn(),
+            regenerate: mockRegenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "error",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+            prepareAgentRecovery,
+          }),
+        { initialProps: { chatId: "chat-1" } },
+      );
+      const isHeld = () =>
+        (step === "the run check" ? runCheck : prepareAgentRecovery).mock.calls
+          .length > 0;
+      return { ...view, release, isHeld, prepareAgentRecovery };
+    };
+
+    it.each(["the run check", "the recovery save"] as const)(
+      "keeps the settings from an older rendered Retry through %s",
+      async (step) => {
+        const chat = renderHeldRecovery(step);
+        const renderedMessageHandlers = chat.result.current;
+        mockSelectedModel = "hackerai-max";
+        mockSandboxPreference = "desktop";
+        mockDesktopEnvironmentId = "env-1";
+        mockAgentPermissionMode = "full_access";
+        chat.rerender({ chatId: "chat-1" });
+
+        let action!: Promise<void>;
+        await act(async () => {
+          action = renderedMessageHandlers.handleRetry();
+        });
+        expect(chat.isHeld()).toBe(true);
+        expect(mockSendMessage).not.toHaveBeenCalled();
+
+        // A later selection belongs to the next request, not this one.
+        mockSelectedModel = "hackerai-pro";
+        mockChatMode = "ask";
+        mockSandboxPreference = "e2b";
+        mockDesktopEnvironmentId = "env-2";
+        mockAgentPermissionMode = "auto_review";
+        chat.rerender({ chatId: "chat-1" });
+        await act(async () => {
+          chat.release();
+          await action;
+        });
+
+        expect(mockRegenerate).not.toHaveBeenCalled();
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ metadata: { isAutoContinue: true } }),
+          {
+            body: expect.objectContaining({
+              isAutoContinue: true,
+              mode: "agent",
+              selectedModel: "hackerai-max",
+              sandboxPreference: "desktop",
+              desktopEnvironmentId: "env-1",
+              agentPermissionMode: "full_access",
+            }),
+          },
+        );
+      },
+    );
+
+    it("abandons recovery when the chat is left and reopened during the run check", async () => {
+      const chat = renderHeldRecovery("the run check");
+
+      let action!: Promise<void>;
+      await act(async () => {
+        action = chat.result.current.handleRetry();
+      });
+      expect(chat.isHeld()).toBe(true);
+      chat.rerender({ chatId: "chat-2" });
+      chat.rerender({ chatId: "chat-1" });
+      await act(async () => {
+        chat.release();
+        await action;
+      });
+
+      expect(chat.prepareAgentRecovery).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
   });
 });
 

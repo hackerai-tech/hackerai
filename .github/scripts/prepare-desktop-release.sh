@@ -71,10 +71,12 @@ copy_one "$ARTIFACTS_DIR/desktop-Linux-x64" "HackerAI_${VERSION}_amd64.AppImage"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-x64" "HackerAI_${VERSION}_amd64.AppImage.tar.gz"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-x64" "HackerAI_${VERSION}_amd64.AppImage.tar.gz.sig"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-x64" "HackerAI_${VERSION}_amd64.deb"
+copy_one "$ARTIFACTS_DIR/desktop-Linux-x64" "HackerAI_${VERSION}_amd64.deb.sig"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-arm64" "HackerAI_${VERSION}_aarch64.AppImage"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-arm64" "HackerAI_${VERSION}_aarch64.AppImage.tar.gz"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-arm64" "HackerAI_${VERSION}_aarch64.AppImage.tar.gz.sig"
 copy_one "$ARTIFACTS_DIR/desktop-Linux-arm64" "HackerAI_${VERSION}_arm64.deb"
+copy_one "$ARTIFACTS_DIR/desktop-Linux-arm64" "HackerAI_${VERSION}_arm64.deb.sig"
 copy_one "$ARTIFACTS_DIR/desktop-Windows-x64" "HackerAI_${VERSION}_x64-setup.exe"
 copy_one "$ARTIFACTS_DIR/desktop-Windows-x64" "HackerAI_${VERSION}_x64-setup.nsis.zip"
 copy_one "$ARTIFACTS_DIR/desktop-Windows-x64" "HackerAI_${VERSION}_x64-setup.nsis.zip.sig"
@@ -137,6 +139,8 @@ MACOS_ARM_FILE="HackerAI-aarch64.app.tar.gz"
 MACOS_X64_FILE="HackerAI-x86_64.app.tar.gz"
 LINUX_X64_FILE="HackerAI_${VERSION}_amd64.AppImage.tar.gz"
 LINUX_ARM_FILE="HackerAI_${VERSION}_aarch64.AppImage.tar.gz"
+LINUX_X64_DEB="HackerAI_${VERSION}_amd64.deb"
+LINUX_ARM_DEB="HackerAI_${VERSION}_arm64.deb"
 WINDOWS_FILE="HackerAI_${VERSION}_x64-setup.nsis.zip"
 
 verify_signature "$RELEASE_DIR/$MACOS_ARM_FILE" "$RELEASE_DIR/${MACOS_ARM_FILE}.sig"
@@ -145,10 +149,15 @@ verify_signature "$RELEASE_DIR/$LINUX_X64_FILE" "$RELEASE_DIR/${LINUX_X64_FILE}.
 verify_signature "$RELEASE_DIR/$LINUX_ARM_FILE" "$RELEASE_DIR/${LINUX_ARM_FILE}.sig"
 verify_signature "$RELEASE_DIR/$WINDOWS_FILE" "$RELEASE_DIR/${WINDOWS_FILE}.sig"
 
+verify_signature "$RELEASE_DIR/$LINUX_X64_DEB" "$RELEASE_DIR/${LINUX_X64_DEB}.sig"
+verify_signature "$RELEASE_DIR/$LINUX_ARM_DEB" "$RELEASE_DIR/${LINUX_ARM_DEB}.sig"
+
 MACOS_ARM_SIG="$(read_signature "$RELEASE_DIR/${MACOS_ARM_FILE}.sig")"
 MACOS_X64_SIG="$(read_signature "$RELEASE_DIR/${MACOS_X64_FILE}.sig")"
 LINUX_X64_SIG="$(read_signature "$RELEASE_DIR/${LINUX_X64_FILE}.sig")"
 LINUX_ARM_SIG="$(read_signature "$RELEASE_DIR/${LINUX_ARM_FILE}.sig")"
+LINUX_X64_DEB_SIG="$(read_signature "$RELEASE_DIR/${LINUX_X64_DEB}.sig")"
+LINUX_ARM_DEB_SIG="$(read_signature "$RELEASE_DIR/${LINUX_ARM_DEB}.sig")"
 WINDOWS_SIG="$(read_signature "$RELEASE_DIR/${WINDOWS_FILE}.sig")"
 PUBLISH_DATE="${PUBLISH_DATE:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 RELEASE_URL="https://github.com/${GH_REPO}/releases/download/${TAG_NAME}"
@@ -164,6 +173,10 @@ jq -n \
   --arg linux_x64_sig "$LINUX_X64_SIG" \
   --arg linux_arm_url "$RELEASE_URL/$LINUX_ARM_FILE" \
   --arg linux_arm_sig "$LINUX_ARM_SIG" \
+  --arg linux_x64_deb_url "$RELEASE_URL/$LINUX_X64_DEB" \
+  --arg linux_x64_deb_sig "$LINUX_X64_DEB_SIG" \
+  --arg linux_arm_deb_url "$RELEASE_URL/$LINUX_ARM_DEB" \
+  --arg linux_arm_deb_sig "$LINUX_ARM_DEB_SIG" \
   --arg windows_url "$RELEASE_URL/$WINDOWS_FILE" \
   --arg windows_sig "$WINDOWS_SIG" \
   '{
@@ -175,6 +188,10 @@ jq -n \
       "darwin-x86_64": {url: $macos_x64_url, signature: $macos_x64_sig},
       "linux-x86_64": {url: $linux_x64_url, signature: $linux_x64_sig},
       "linux-aarch64": {url: $linux_arm_url, signature: $linux_arm_sig},
+      "linux-x86_64-appimage": {url: $linux_x64_url, signature: $linux_x64_sig},
+      "linux-aarch64-appimage": {url: $linux_arm_url, signature: $linux_arm_sig},
+      "linux-x86_64-deb": {url: $linux_x64_deb_url, signature: $linux_x64_deb_sig},
+      "linux-aarch64-deb": {url: $linux_arm_deb_url, signature: $linux_arm_deb_sig},
       "windows-x86_64": {url: $windows_url, signature: $windows_sig}
     }
   }' > "$RELEASE_DIR/latest.json"

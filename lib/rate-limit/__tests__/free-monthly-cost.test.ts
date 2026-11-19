@@ -6,7 +6,6 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
-import { getRegionalFreeLimits } from "../regional-free-limits";
 
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
@@ -58,25 +57,7 @@ describe("free monthly cost limit", () => {
     expect(snapshot.monthlyRemainingAtStart).toBe(1250);
     expect(snapshot.extraUsageBalanceAtStart).toBe(0);
     expect(snapshot.extraUsageAutoReload).toBe(false);
-  });
-
-  it("enforces the permanent regional cap against existing spend without clearing it", async () => {
-    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
-    mockGet.mockResolvedValue(1000);
-    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
-    await expect(
-      checkFreeMonthlyCostLimit(
-        "quota",
-        getRegionalFreeLimits({
-          userId: "quota",
-          subscription: "free",
-          country: "NG",
-        }),
-      ),
-    ).rejects.toMatchObject({ type: "rate_limit" });
-    const control = await checkFreeMonthlyCostLimit("quota");
-    expect(control.monthlyRemainingAtStart).toBe(1500);
-    expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
+    // A preflight check must not modify recorded spend.
     expect(mockEval).not.toHaveBeenCalled();
   });
 
@@ -104,6 +85,46 @@ describe("free monthly cost limit", () => {
       [expect.stringMatching(/^free_monthly_cost:user-123:\d{4}-\d{2}$/)],
       [123, expect.any(Number)],
     );
+  });
+
+  it("checkpoints child cost against one run across retries and a month rollover", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockEval.mockResolvedValue(1200);
+    const { recordFreeMonthlySubagentCost } = getIsolatedModule();
+
+    jest.useFakeTimers().setSystemTime(new Date("2026-10-31T23:59:59Z"));
+    try {
+      await expect(
+        recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.01),
+      ).resolves.toEqual({ usedPoints: 1200, limitPoints: 2500 });
+      jest.setSystemTime(new Date("2026-11-01T00:00:01Z"));
+      await recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.015);
+
+      const first = mockEval.mock.calls[0] as [string, string[], number[]];
+      const second = mockEval.mock.calls[1] as [string, string[], number[]];
+      expect(first[1]).toEqual([
+        "free_monthly_cost:quota-subject:2026-10",
+        "free_monthly_subagent_cost:quota-subject:run-123",
+      ]);
+      expect(first[2][0]).toBe(100);
+      expect(second[1]).toEqual([
+        "free_monthly_cost:quota-subject:2026-11",
+        first[1][1],
+      ]);
+      expect(second[2][0]).toBe(150);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("fails closed when the child checkpoint returns an invalid total", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockEval.mockResolvedValue("invalid");
+    const { recordFreeMonthlySubagentCost } = getIsolatedModule();
+
+    await expect(
+      recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.01),
+    ).rejects.toThrow("invalid total");
   });
 
   it("can key free monthly usage by privacy-safe quota subject", async () => {

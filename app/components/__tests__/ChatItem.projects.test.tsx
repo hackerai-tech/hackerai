@@ -5,9 +5,17 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import {
   DndContext,
   KeyboardSensor,
@@ -16,9 +24,12 @@ import {
 } from "@dnd-kit/core";
 import type { ReactNode } from "react";
 import {
+  clearAllDrafts,
   clearSidebarTaskLastVisitedAt,
+  getDraftContentById,
   markSidebarTaskVisited,
   readSidebarTaskLastVisitedAt,
+  upsertDraft,
 } from "@/lib/utils/client-storage";
 
 const mockMoveChatToProject = jest.fn<any>();
@@ -28,6 +39,15 @@ const mockToastSuccess = jest.fn();
 const mockToastInfo = jest.fn();
 let mockProjects: any[] | undefined;
 let mockPathname = "/";
+// Mirrors the provider contract: chat navigation entry points advance the
+// revision synchronously, before the destination route commits.
+let mockChatNavigationRevision = 0;
+const mockInitializeChat = jest.fn(() => {
+  mockChatNavigationRevision += 1;
+});
+const mockInitializeNewChat = jest.fn(() => {
+  mockChatNavigationRevision += 1;
+});
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockRouterPush }),
@@ -37,8 +57,9 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     closeSidebar: jest.fn(),
     setChatSidebarOpen: jest.fn(),
-    initializeNewChat: jest.fn(),
-    initializeChat: jest.fn(),
+    initializeNewChat: mockInitializeNewChat,
+    initializeChat: mockInitializeChat,
+    getChatNavigationRevision: () => mockChatNavigationRevision,
     optimisticChatId: null,
     setOptimisticChatId: jest.fn(),
   }),
@@ -343,6 +364,98 @@ describe("ChatItem project actions", () => {
     ).not.toBeInTheDocument();
   });
 
+  async function openRenameDialog(user: ReturnType<typeof userEvent.setup>) {
+    fireEvent.focus(screen.getByRole("button", { name: /Open task:/ }));
+    await user.click(screen.getByRole("button", { name: "Open task options" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    return screen.findByLabelText("Task name");
+  }
+
+  it.each(["Recon notes", " Recon notes "])(
+    "keeps a newer incoming title when the opened draft was left untouched (%j)",
+    async (openingTitle) => {
+      const user = userEvent.setup();
+      const { rerender } = render(
+        <ChatItem id="chat-1" title={openingTitle} />,
+      );
+      expect(await openRenameDialog(user)).toHaveValue(openingTitle);
+
+      rerender(<ChatItem id="chat-1" title="Staging API recon" />);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(mockRenameChat).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
+
+  it.each([
+    ["  Exploit chain  ", "Staging API recon", "Exploit chain"],
+    ["Staging API recon", "Staging API recon", null],
+    ["Staging API recon", " Staging API recon ", null],
+  ])(
+    "saves only a draft that differs from the incoming title (%j over %j)",
+    async (draft, incomingTitle, expectedTitle) => {
+      const user = userEvent.setup();
+      const { rerender } = render(<ChatItem id="chat-1" title="Recon notes" />);
+      const input = await openRenameDialog(user);
+      rerender(<ChatItem id="chat-1" title={incomingTitle} />);
+
+      await user.clear(input);
+      await user.type(input, draft);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      if (expectedTitle) {
+        expect(mockRenameChat).toHaveBeenCalledTimes(1);
+        expect(mockRenameChat).toHaveBeenCalledWith({
+          chatId: "chat-1",
+          newTitle: expectedTitle,
+        });
+      } else {
+        expect(mockRenameChat).not.toHaveBeenCalled();
+      }
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "does not save when Enter confirms an IME candidate (%o)",
+    async (composition) => {
+      const user = userEvent.setup();
+      render(<ChatItem id="chat-1" title="Recon notes" />);
+      const input = await openRenameDialog(user);
+      await user.clear(input);
+      await user.type(input, "Exploit chain");
+
+      fireEvent.keyDown(input, { key: "Enter", ...composition });
+
+      expect(mockRenameChat).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("dialog", { name: "Rename Task" }),
+      ).toBeInTheDocument();
+
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Rename Task" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(mockRenameChat).toHaveBeenCalledTimes(1);
+      expect(mockRenameChat).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        newTitle: "Exploit chain",
+      });
+    },
+  );
+
   it("uses compact side padding for standard and project chat rows", () => {
     render(
       <>
@@ -469,6 +582,34 @@ describe("ChatItem project actions", () => {
     ).toHaveClass("pr-9");
   });
 
+  it("shows the input status without a completion dot", () => {
+    markSidebarTaskVisited("chat-1", 1_000);
+    render(
+      <ChatItem
+        id="chat-1"
+        title="Question about target"
+        needsInputReason="reply"
+        lastRunFinishedAt={2_000}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-item-needs-input")).toHaveTextContent(
+      "Input",
+    );
+    expect(screen.getByTestId("chat-item-needs-input")).toHaveAttribute(
+      "data-reason",
+      "reply",
+    );
+    expect(
+      screen.getByRole("button", {
+        name: /needs input: agent asked a question/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows a completion dot when the server finish time is newer than the local visit", async () => {
     markSidebarTaskVisited("chat-1", 1_000);
     const view = render(
@@ -565,5 +706,135 @@ describe("ChatItem project actions", () => {
     expect(
       await screen.findByRole("menuitem", { name: "Unpin" }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ChatItem delete navigation", () => {
+  const originalFetch = global.fetch;
+  let finishDeleteRequest: (() => void) | undefined;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseIsMobile.mockReturnValue(false);
+    mockProjects = undefined;
+    mockChatNavigationRevision = 0;
+    finishDeleteRequest = undefined;
+    clearAllDrafts();
+    upsertDraft("chat-a", "Unsent fixture text");
+    // The DELETE request stays in flight until the test settles it, so the
+    // real deletion hook keeps awaiting while the route changes.
+    global.fetch = jest.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishDeleteRequest = () =>
+            resolve({ ok: true, text: async () => "" } as Response);
+        }),
+    ) as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    mockPathname = "/";
+    window.history.replaceState(null, "", "/");
+  });
+
+  function commitRoute(path: string) {
+    mockPathname = path;
+    window.history.pushState(null, "", path);
+  }
+
+  function renderRows(ids: Array<"chat-a" | "chat-b">) {
+    const rows = (visible: typeof ids) => (
+      <>
+        {visible.map((id) => (
+          <ChatItem
+            key={id}
+            id={id}
+            title={id === "chat-a" ? "Task A" : "Task B"}
+          />
+        ))}
+      </>
+    );
+    const view = render(rows(ids));
+    return {
+      rerenderRows: (visible: typeof ids) => view.rerender(rows(visible)),
+    };
+  }
+
+  async function startDeletingTaskA(user: ReturnType<typeof userEvent.setup>) {
+    const row = screen.getByRole("button", { name: "Open task: Task A" });
+    fireEvent.focus(row);
+    await user.click(
+      within(row).getByRole("button", { name: "Open task options" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(global.fetch).toHaveBeenCalledWith("/api/chat/chat-a", {
+        method: "DELETE",
+      }),
+    );
+  }
+
+  async function finishDeletingTaskA() {
+    await act(async () => finishDeleteRequest?.());
+    // Draft removal runs in the same continuation as the navigation decision.
+    await waitFor(() => expect(getDraftContentById("chat-a")).toBeNull());
+  }
+
+  it("returns home once when the deleted task still owns navigation", async () => {
+    const user = userEvent.setup();
+    commitRoute("/c/chat-a");
+    const { rerenderRows } = renderRows(["chat-a"]);
+
+    await startDeletingTaskA(user);
+    rerenderRows([]);
+    await finishDeletingTaskA();
+
+    expect(mockInitializeNewChat).toHaveBeenCalledTimes(1);
+    expect(mockRouterPush).toHaveBeenCalledTimes(1);
+    expect(mockRouterPush).toHaveBeenCalledWith("/");
+  });
+
+  it("keeps a route committed to another task while deletion finishes", async () => {
+    const user = userEvent.setup();
+    commitRoute("/c/chat-a");
+    const { rerenderRows } = renderRows(["chat-a", "chat-b"]);
+
+    await startDeletingTaskA(user);
+    commitRoute("/c/chat-b");
+    rerenderRows(["chat-a", "chat-b"]);
+    await finishDeletingTaskA();
+
+    expect(mockInitializeNewChat).not.toHaveBeenCalled();
+    expect(mockRouterPush).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer task navigation that has not committed after the deleted row disappears", async () => {
+    const user = userEvent.setup();
+    commitRoute("/c/chat-a");
+    const { rerenderRows } = renderRows(["chat-a", "chat-b"]);
+
+    await startDeletingTaskA(user);
+    rerenderRows(["chat-b"]);
+    await user.click(screen.getByRole("button", { name: "Open task: Task B" }));
+    await finishDeletingTaskA();
+
+    expect(mockInitializeChat).toHaveBeenCalledWith("chat-b");
+    expect(mockInitializeNewChat).not.toHaveBeenCalled();
+    expect(mockRouterPush.mock.calls).toEqual([["/c/chat-b"]]);
+  });
+
+  it("does not reset the active task when deleting another task", async () => {
+    const user = userEvent.setup();
+    commitRoute("/c/chat-b");
+    renderRows(["chat-a", "chat-b"]);
+
+    await startDeletingTaskA(user);
+    await finishDeletingTaskA();
+
+    expect(mockInitializeNewChat).not.toHaveBeenCalled();
+    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 });

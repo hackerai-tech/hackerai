@@ -1,3 +1,5 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { BrowserHandoffAbandonedError } from "@/lib/chat/manual-agent-resume";
 import { randomBytes } from "node:crypto";
 import type { ToolSet } from "ai";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
@@ -7,6 +9,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
+import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -18,7 +21,28 @@ type BrowserSession = {
   ready: Promise<string | undefined>;
   registered: boolean;
   registration?: Promise<void>;
+  preparationReason: BrowserPreparationReason;
+  preparationReported?: boolean;
+  /** Start of the latest held-browser keepalive, including failed attempts. */
+  keepaliveAt?: number;
+  keepalive?: Promise<void>;
 };
+
+// The native daemon closes a browser after 15 idle minutes, well inside the
+// owner's lifetime. Only states where a human holds the page are kept alive.
+const HANDOFF_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
+const HANDOFF_KEEPALIVE_STATES = new Set(["waiting", "human", "recovery"]);
+
+// The abandonment close is idempotent; retry only it, never browser/tool work.
+const ABANDON_ATTEMPTS = 3;
+const ABANDON_ATTEMPT_TIMEOUT_MS = 10_000;
+// Worker/backend clock skew must not turn a defeated deadline into a hot loop.
+const ABANDON_RECHECK_MS = 5_000;
+
+type AbandonResult = "abandoned" | "not_due" | null | "unknown";
+
+type BrowserPreparationReason =
+  "gate_only" | "recognized_browser_command" | "interactive_shell" | "internal";
 
 type BrowserHandoffScope = {
   userId: string;
@@ -28,6 +52,11 @@ type BrowserHandoffScope = {
   triggerRegion?: string;
   serviceKey: string;
 };
+
+const diagnosticId = (value: string, secret: string) =>
+  /^[A-Za-z0-9:_-]{1,128}$/.test(value) && (!secret || !value.includes(secret))
+    ? value
+    : "unknown";
 
 // Convex HTTP reads can outlive Stop; detach the waiter without admitting work.
 function withCancellation<T>(
@@ -53,20 +82,189 @@ export class BrowserSessions {
   private readonly failedSessions = new Set<BrowserSession>();
   private closed = false;
   private cleanupPromise?: Promise<void>;
+  private admissionProbeCount = 0;
+  private readonly readCounts = {
+    state: { calls: 0, succeeded: 0, rejected: 0 },
+    notes: { calls: 0, succeeded: 0, rejected: 0 },
+  };
+  /** Committed abandonment receipt; every later gate stops the same way. */
+  private abandoned = false;
+  /** The exact row whose close this owner requested; its receipt outranks ownership loss. */
+  private abandonCandidate?: BrowserSession;
+  private abandonment?: Promise<AbandonResult>;
+  private abandonNotBefore = 0;
 
-  constructor(private readonly handoffScope?: BrowserHandoffScope) {}
+  /**
+   * `onHandoffAbandoned` opts a parent run into the backend abandonment
+   * deadline. Without it an uncontrolled handoff keeps holding the run.
+   */
+  constructor(
+    private readonly handoffScope?: BrowserHandoffScope,
+    private readonly onOwnershipLost?: () => void,
+    private readonly onHandoffAbandoned?: () => void,
+  ) {}
+
+  /**
+   * Compare-and-close the owned handoff after its backend deadline. Waiters
+   * share one bounded request; a lost response is resolved by retrying the
+   * idempotent close, which then returns the committed receipt.
+   */
+  private requestAbandonment(session: BrowserSession): Promise<AbandonResult> {
+    const scope = this.handoffScope;
+    if (!scope) return Promise.resolve(null);
+    if (this.abandonment) return this.abandonment;
+    this.abandonCandidate = session;
+    const request = (async (): Promise<AbandonResult> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await getConvexClient(
+            AbortSignal.timeout(ABANDON_ATTEMPT_TIMEOUT_MS),
+          ).mutation(api.browserHandoffs.abandonForBackend, {
+            serviceKey: scope.serviceKey,
+            userId: scope.userId,
+            sessionId: session.sessionId,
+          });
+        } catch {
+          if (attempt >= ABANDON_ATTEMPTS) return "unknown";
+          await abortableDelay(250 * 2 ** (attempt - 1));
+        }
+      }
+    })();
+    this.abandonment = request;
+    void request.then((result) => {
+      if (result === "abandoned") {
+        this.abandoned = true;
+        return;
+      }
+      if (this.abandonment === request) this.abandonment = undefined;
+      this.abandonNotBefore = Date.now() + ABANDON_RECHECK_MS;
+    });
+    return request;
+  }
+
+  private stopForAbandonment(signal?: AbortSignal): never {
+    this.abandoned = true;
+    // The first stop wins: an earlier user Stop or replacement keeps its reason.
+    this.onHandoffAbandoned?.();
+    signal?.throwIfAborted();
+    throw new BrowserHandoffAbandonedError();
+  }
+
+  private async observeRead<T>(
+    kind: "state" | "notes",
+    read: () => Promise<T>,
+  ): Promise<T> {
+    const counts = this.readCounts[kind];
+    counts.calls++;
+    try {
+      const result = await read();
+      counts.succeeded++;
+      return result;
+    } catch (error) {
+      counts.rejected++;
+      throw error;
+    }
+  }
+
+  private reportReadSummary() {
+    const { state, notes } = this.readCounts;
+    if (!this.handoffScope || state.calls + notes.calls === 0) return;
+    try {
+      // One snapshot per used owner. SDK retries are inside each logical read;
+      // fulfilled reads do not establish control admission or customer recovery.
+      // Stop can detach a pending read, which may settle after this snapshot.
+      console.info(
+        JSON.stringify({
+          event: "browser_handoff_read_summary",
+          trigger_run_id: diagnosticId(
+            this.handoffScope.runId,
+            this.handoffScope.serviceKey,
+          ),
+          agent_id: diagnosticId(
+            this.handoffScope.agentId,
+            this.handoffScope.serviceKey,
+          ),
+          summary_phase: "cleanup_start",
+          counts_unit: "logical_query",
+          state_read_calls: state.calls,
+          state_read_succeeded: state.succeeded,
+          state_read_rejected: state.rejected,
+          state_read_pending: state.calls - state.succeeded - state.rejected,
+          note_read_calls: notes.calls,
+          note_read_succeeded: notes.succeeded,
+          note_read_rejected: notes.rejected,
+          note_read_pending: notes.calls - notes.succeeded - notes.rejected,
+        }),
+      );
+    } catch {
+      // Diagnostics cannot replace cleanup or the original ownership/read error.
+    }
+  }
 
   hasHandoffScope(): boolean {
     return !!this.handoffScope;
   }
 
+  /** A completion repair may only wait on this owner's already-live browser. */
+  async canRecoverHumanHandoff(signal?: AbortSignal): Promise<boolean> {
+    if (!this.handoffScope || this.closed || Date.now() >= this.expiresAt)
+      return false;
+    const scope = this.handoffScope;
+    for (const session of [...this.sessions.values()].reverse()) {
+      if (!session.registered || !isE2BSandbox(session.sandbox)) continue;
+      try {
+        const state = await withCancellation(
+          this.observeRead("state", () =>
+            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
+              serviceKey: scope.serviceKey,
+              userId: scope.userId,
+              sessionId: session.sessionId,
+            }),
+          ),
+          signal,
+        );
+        if (!state?.runActive) continue;
+        const result = await withCancellation(
+          session.sandbox.commands.run(
+            browserSessionCommand("status", session.directory, this.expiresAt),
+            {
+              ...buildSandboxCommandOptions(session.sandbox),
+              timeoutMs: 5_000,
+            },
+          ),
+          signal,
+        );
+        if (result.exitCode !== 0) return false;
+        const parsed = JSON.parse(result.stdout);
+        const data = parsed.data ?? parsed;
+        return (
+          !this.closed &&
+          !signal?.aborted &&
+          parsed.success === true &&
+          data.connected === true &&
+          Number.isInteger(data.port) &&
+          data.port > 0 &&
+          data.port <= 65535
+        );
+      } catch {
+        // Missing ownership, socket or stream is not permission to reopen it.
+        return false;
+      }
+    }
+    return false;
+  }
+
   /** Retry failed setup on the next call, retaining every attempt for cleanup. */
-  async prepare(sandbox: AnySandbox): Promise<Record<string, string>> {
-    if (this.closed) {
+  async prepare(
+    sandbox: AnySandbox,
+    reason: BrowserPreparationReason = "internal",
+  ): Promise<Record<string, string>> {
+    if (this.closed || this.abandoned) {
       throw new Error(
         "Browser session ownership has ended. Start a new Agent run.",
       );
     }
+    // Only Cloud sandboxes have a private, gated browser namespace.
     if (!isE2BSandbox(sandbox)) return {};
     if (Date.now() >= this.expiresAt)
       throw new Error(
@@ -78,30 +276,33 @@ export class BrowserSessions {
     const gate = this.hasHandoffScope();
     let session = this.sessions.get(sandboxId);
     if (!session) {
-      // Short enough for Unix socket paths, random across factories/runs, and
-      // memory-backed so checkpoints are not part of the reusable workspace.
+      // Publish the preparation promise before awaiting sandbox I/O, so two
+      // commands preparing the same sandbox retain one owner and namespace.
       const directory = `/dev/shm/hackerai-browser-${randomBytes(12).toString("hex")}`;
-      const ready = sandbox.commands
-        .run(
+      const ready = (async () => {
+        const result = await sandbox.commands.run(
           browserSessionCommand("prepare", directory, this.expiresAt, gate),
-          {
-            ...buildSandboxCommandOptions(sandbox),
-            timeoutMs: 20_000,
-          },
-        )
-        .then((result) => {
-          if (result.exitCode !== 0)
-            throw new Error("Could not prepare private browser sessions.");
-          if (gate && !result.stdout?.trim())
-            throw new Error("Browser command gate is unavailable.");
-          return gate ? result.stdout.trim() : undefined;
-        });
+          { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20000 },
+        );
+        if (result.exitCode !== 0)
+          throw new Error("Could not prepare private browser sessions.");
+        if (gate && !result.stdout?.trim())
+          throw new Error("Browser command gate is unavailable.");
+        return gate ? result.stdout.trim() : undefined;
+      })();
       session = {
         sessionId: randomBytes(16).toString("hex"),
         sandbox,
         directory,
         ready,
         registered: false,
+        preparationReason: [
+          "gate_only",
+          "recognized_browser_command",
+          "interactive_shell",
+        ].includes(reason)
+          ? reason
+          : "internal",
       };
       this.sessions.set(sandboxId, session);
       const created = session;
@@ -143,6 +344,28 @@ export class BrowserSessions {
         });
       await current.registration;
     }
+    if (
+      session.registered &&
+      this.handoffScope &&
+      !session.preparationReported
+    ) {
+      // Attribute root creation, not CLI execution or browser readiness. Keep
+      // the first caller even when later commands reuse this gated namespace.
+      session.preparationReported = true;
+      const scope = this.handoffScope;
+      try {
+        phLogger.info("browser_session_preparation_diagnostics", {
+          diagnostic_version: 1,
+          observation_scope: "initial_registered_root",
+          preparation_reason: session.preparationReason,
+          browser_session_id: diagnosticId(session.sessionId, scope.serviceKey),
+          trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
+          agent_id: diagnosticId(scope.agentId, scope.serviceKey),
+        });
+      } catch {
+        // Optional delivery cannot change setup, admission or terminal results.
+      }
+    }
     return {
       AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
       AGENT_BROWSER_SESSION: "default",
@@ -158,7 +381,169 @@ export class BrowserSessions {
     };
   }
 
-  /** Park a requested handoff without occupying a sandbox process. */
+  /** Query the owned daemon without launching it; each check has its own deadline. */
+  private async probeHandoffBrowser(
+    session: BrowserSession,
+    signal?: AbortSignal,
+  ) {
+    const remaining = this.expiresAt - Date.now();
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), 3_000);
+    let envIdleTimeout = "unavailable";
+    let result:
+      | "connected"
+      | "disconnected"
+      | "invalid_response"
+      | "command_failed"
+      | "transport_error"
+      | "deadline"
+      | "stopped" = "invalid_response";
+    try {
+      const response = await withCancellation(
+        session.sandbox.commands.run(
+          browserSessionCommand("status", session.directory, this.expiresAt),
+          {
+            ...buildSandboxCommandOptions(session.sandbox),
+            timeoutMs: 2_000,
+            requestTimeoutMs: 3_000,
+          },
+        ),
+        AbortSignal.any([deadline.signal, ...(signal ? [signal] : [])]),
+      );
+      if (response.exitCode !== 0) result = "command_failed";
+      else if (
+        typeof response.stdout === "string" &&
+        response.stdout.length <= 65_536
+      ) {
+        try {
+          const parsed = JSON.parse(response.stdout);
+          const ambientIdle = parsed?.hackerai_env_idle_timeout;
+          if (
+            typeof ambientIdle === "string" &&
+            [
+              "unset",
+              "disabled",
+              "lt_15m",
+              "15m",
+              "gt_15m",
+              "unparsed",
+            ].includes(ambientIdle)
+          )
+            envIdleTimeout = ambientIdle;
+          const data = parsed?.data ?? parsed;
+          if (parsed?.success === true && data?.connected === false)
+            result = "disconnected";
+          else if (
+            parsed?.success === true &&
+            data?.connected === true &&
+            Number.isInteger(data.port) &&
+            data.port > 0 &&
+            data.port <= 65_535
+          )
+            result = "connected";
+        } catch {
+          // Raw daemon output and parser errors are never diagnostic fields.
+        }
+      }
+    } catch (error) {
+      let commandFailed = false;
+      try {
+        // The SDK throws on nonzero exits. Read only its finite own data tag,
+        // without invoking getters or serializing command output/errors.
+        commandFailed =
+          Object.getOwnPropertyDescriptor(error, "name")?.value ===
+          "CommandExitError";
+      } catch {
+        // Optional attribution must not change handoff control flow.
+      }
+      result = signal?.aborted
+        ? "stopped"
+        : deadline.signal.aborted
+          ? "deadline"
+          : commandFailed
+            ? "command_failed"
+            : "transport_error";
+    } finally {
+      clearTimeout(timer);
+    }
+    return {
+      admission_probe_result: result,
+      // Ambient command environment only; launch flags can override the daemon.
+      admission_env_idle_timeout: envIdleTimeout,
+      admission_owner_remaining:
+        remaining <= 0
+          ? "expired"
+          : remaining < 60_000
+            ? "lt_1m"
+            : remaining < 600_000
+              ? "lt_10m"
+              : "gte_10m",
+    };
+  }
+
+  /**
+   * Touch each held browser's owned daemon so its idle timeout cannot discard
+   * the user's page. Status never launches a browser and its result never
+   * changes control. Waiters share one attempt bounded by its own deadline.
+   */
+  private async keepHandoffBrowsersAlive(
+    sessions: BrowserSession[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.closed || Date.now() >= this.expiresAt) return;
+    const attempts = sessions.map((session) => {
+      if (
+        !session.keepalive &&
+        Date.now() - (session.keepaliveAt ?? -Infinity) >=
+          HANDOFF_KEEPALIVE_INTERVAL_MS
+      ) {
+        session.keepaliveAt = Date.now();
+        const clear = () => {
+          session.keepalive = undefined;
+        };
+        session.keepalive = this.probeHandoffBrowser(session).then(
+          clear,
+          clear,
+        );
+      }
+      return session.keepalive;
+    });
+    await withCancellation(Promise.all(attempts), signal);
+  }
+
+  /** Cap optional telemetry independently of required availability checks. */
+  private reportHandoffAdmission(
+    session: BrowserSession,
+    observation: Awaited<ReturnType<BrowserSessions["probeHandoffBrowser"]>>,
+    accepted: boolean,
+    beforeWait: boolean,
+    requestAnotherTakeover: boolean,
+  ): void {
+    const scope = this.handoffScope;
+    if (!scope || this.admissionProbeCount >= 2) return;
+    const attempt = ++this.admissionProbeCount;
+    try {
+      phLogger.info("browser_handoff_admission_diagnostics", {
+        diagnostic_version: beforeWait ? 4 : 3,
+        ...observation,
+        admission_probe_attempt: attempt,
+        admission_request_accepted: accepted,
+        admission_observation_phase: beforeWait
+          ? "before_wait_request"
+          : "after_accepted_wait_request",
+        admission_state_before: "agent",
+        admission_request_another: requestAnotherTakeover,
+        browser_session_id: diagnosticId(session.sessionId, scope.serviceKey),
+        trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
+        agent_id: diagnosticId(scope.agentId, scope.serviceKey),
+      });
+    } catch {
+      // Optional delivery cannot change admission or control ownership.
+    }
+  }
+
+  /** Park a requested handoff without occupying a foreground wait process. */
   async waitForHumanHandoff(
     signal?: AbortSignal,
     requestAnotherTakeover = false,
@@ -172,13 +557,12 @@ export class BrowserSessions {
       Promise.all(
         sessions.map(async (session) => ({
           session,
-          state: await getConvexClient().query(
-            api.browserHandoffs.getForBackend,
-            {
+          state: await this.observeRead("state", () =>
+            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
               serviceKey: scope.serviceKey,
               userId: scope.userId,
               sessionId: session.sessionId,
-            },
+            }),
           ),
         })),
       ),
@@ -190,6 +574,33 @@ export class BrowserSessions {
       throw new Error(
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
+    // Older backends omit the receipt flag. Preserve their admission contract
+    // during deploy skew; only explicit repeat requests are certainly new then.
+    // A completed takeover remains fulfilled even after its browser closes.
+    const needsBrowser =
+      current.state.state === "agent" &&
+      (requestAnotherTakeover || current.state.hasCompletedTakeover === false);
+    const readiness = needsBrowser
+      ? await this.probeHandoffBrowser(current.session, signal)
+      : undefined;
+    signal?.throwIfAborted();
+    if (this.closed || Date.now() >= this.expiresAt)
+      throw new Error("Browser session ownership has ended.");
+    if (readiness && readiness.admission_probe_result !== "connected") {
+      this.reportHandoffAdmission(
+        current.session,
+        readiness,
+        false,
+        true,
+        requestAnotherTakeover,
+      );
+      throw new Error(
+        readiness.admission_probe_result === "deadline" ||
+          readiness.admission_probe_result === "transport_error"
+          ? "Browser availability could not be confirmed. Inspect the owned Cloud browser and retry. No handoff was requested."
+          : "Open the required page in the owned Cloud browser before requesting human input. No handoff was requested.",
+      );
+    }
     const accepted = await withCancellation(
       getConvexClient().mutation(api.browserHandoffs.requestWaitForBackend, {
         serviceKey: scope.serviceKey,
@@ -205,6 +616,24 @@ export class BrowserSessions {
       throw new Error(
         "Browser ownership changed. Read the handoff context and inspect the current browser before deciding what to do next.",
       );
+    // The readiness check cannot authorize control: the unchanged CAS above
+    // rejects ownership changes while it ran. Keep legacy/fulfilled observations
+    // after admission, and never mislabel a pre-wait measurement as post-wait.
+    const observation =
+      readiness ??
+      (current.state.state === "agent" && this.admissionProbeCount < 2
+        ? await this.probeHandoffBrowser(current.session, signal)
+        : undefined);
+    signal?.throwIfAborted();
+    if (observation) {
+      this.reportHandoffAdmission(
+        current.session,
+        observation,
+        true,
+        readiness !== undefined,
+        requestAnotherTakeover,
+      );
+    }
     // Uses the same cancellation, ownership and recovery gate as every other
     // tool. Resume only admits work after the private note and browser gate
     // have been committed; no foreground sandbox timer needs to finish.
@@ -217,6 +646,7 @@ export class BrowserSessions {
     while (true) {
       signal?.throwIfAborted();
       if (this.closed) throw new Error("Browser session ownership has ended.");
+      if (this.abandoned) this.stopForAbandonment(signal);
       if (!this.handoffScope) return waited;
       const scope = this.handoffScope;
       const sessions = [...this.sessions.values()].filter((s) => s.registered);
@@ -226,25 +656,78 @@ export class BrowserSessions {
       const states = await withCancellation(
         Promise.all(
           sessions.map((session) =>
-            getConvexClient().query(api.browserHandoffs.getForBackend, {
-              serviceKey: scope.serviceKey,
-              userId: scope.userId,
-              sessionId: session.sessionId,
-            }),
+            this.observeRead("state", () =>
+              getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
+                serviceKey: scope.serviceKey,
+                userId: scope.userId,
+                sessionId: session.sessionId,
+              }),
+            ),
           ),
-        ),
+        ).catch(rethrowBrowserHandoffReadError),
         signal,
       );
       signal?.throwIfAborted();
       // Replaced sandboxes remain in our map for cleanup. Only the latest
       // registered owner can authorize work; stale rows must not block it.
-      const currentStates = states.filter((state) => state?.runActive);
-      if (states.length > 0 && currentStates.length === 0)
+      const current = sessions.flatMap((session, index) => {
+        const state = states[index];
+        return state?.runActive ? [{ session, state }] : [];
+      });
+      if (states.length > 0 && current.length === 0) {
+        // Our own committed close also ends ownership. A concurrent waiter or a
+        // lost response must not report it as generic ownership loss.
+        if (this.onHandoffAbandoned && this.abandonCandidate) {
+          const receipt = await withCancellation(
+            this.requestAbandonment(this.abandonCandidate),
+            signal,
+          );
+          signal?.throwIfAborted();
+          if (receipt === "abandoned") this.stopForAbandonment(signal);
+          if (receipt === "unknown") {
+            // The close may have committed. Stay parked until we can classify it.
+            await abortableDelay(ABANDON_RECHECK_MS, signal);
+            continue;
+          }
+        }
+        // Fail closed before any action, but let the owning worker settle its
+        // already-produced output/usage as cancellation instead of provider error.
+        this.onOwnershipLost?.();
+        signal?.throwIfAborted();
         throw new Error("Browser session ownership has ended.");
-      if (currentStates.every((state) => state?.state === "agent"))
-        return waited;
+      }
+      if (current.every(({ state }) => state.state === "agent")) return waited;
       // Expired grants become recovery, which still requires an explicit resume.
       waited = true;
+      // Older backends omit the deadline and keep holding the run. Each poll
+      // compares the backend's deadline only; the close rechecks it atomically.
+      const due =
+        this.onHandoffAbandoned && Date.now() >= this.abandonNotBefore
+          ? current.find(
+              ({ state }) =>
+                state.abandonAfter !== undefined &&
+                state.abandonAfter <= Date.now(),
+            )
+          : undefined;
+      if (due) {
+        const result = await withCancellation(
+          this.requestAbandonment(due.session),
+          signal,
+        );
+        signal?.throwIfAborted();
+        if (result === "abandoned") this.stopForAbandonment(signal);
+        // A controller that committed first keeps its semantics; poll again.
+        continue;
+      }
+      await this.keepHandoffBrowsersAlive(
+        current.flatMap(({ session, state }) =>
+          HANDOFF_KEEPALIVE_STATES.has(state.state) &&
+          isE2BSandbox(session.sandbox)
+            ? [session]
+            : [],
+        ),
+        signal,
+      );
       await abortableDelay(1000, signal);
     }
   }
@@ -278,7 +761,9 @@ export class BrowserSessions {
     ) as ToolSet;
   }
 
-  async getExitNotes(): Promise<Array<{ id: string; text: string }>> {
+  async getExitNotes(
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: string; text: string }>> {
     if (!this.handoffScope || this.closed) return [];
     const scope = this.handoffScope;
     // Preview registration is optional, but saved notes are user instructions.
@@ -287,19 +772,25 @@ export class BrowserSessions {
       [...this.sessions.values()]
         .filter((session) => session.registered)
         .map((session) =>
-          getConvexClient().query(api.browserHandoffs.getExitNotesForBackend, {
-            serviceKey: scope.serviceKey,
-            userId: scope.userId,
-            sessionId: session.sessionId,
-          }),
+          this.observeRead("notes", () =>
+            getConvexClient(signal).query(
+              api.browserHandoffs.getExitNotesForBackend,
+              {
+                serviceKey: scope.serviceKey,
+                userId: scope.userId,
+                sessionId: session.sessionId,
+              },
+            ),
+          ),
         ),
-    );
+    ).catch(rethrowBrowserHandoffReadError);
     return notes.flat();
   }
 
   /** End ownership once, preventing any subsequent browser preparation. */
   cleanup(): Promise<void> {
     this.closed = true;
+    if (!this.cleanupPromise) this.reportReadSummary();
     this.cleanupPromise ??= this.cleanupAll();
     return this.cleanupPromise;
   }

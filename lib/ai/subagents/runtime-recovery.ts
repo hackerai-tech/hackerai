@@ -8,6 +8,7 @@ import {
   getProviderErrorCategory,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
+import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 
 const TRANSIENT_PROVIDER_CATEGORIES = new Set<ProviderErrorCategory>([
   "rate_limited",
@@ -179,6 +180,8 @@ export const getSubagentProviderRetryDecision = (
     !options.spendCapExceeded &&
     options.hasStepsRemaining &&
     retriesUsed < SUBAGENT_MAX_PROVIDER_RECOVERY_RETRIES &&
+    // Provider-only: structured-result recovery keeps its own contract.
+    !isTrustedBrowserHandoffReadFailure(error) &&
     isRecoverableProviderCategory(category);
 
   const baseDelayMs = 750 * 2 ** retriesUsed;

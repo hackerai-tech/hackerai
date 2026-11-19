@@ -1,8 +1,11 @@
 import {
   APICallError,
   generateText,
+  JSONParseError,
   NoObjectGeneratedError,
+  NoOutputGeneratedError,
   Output,
+  TypeValidationError,
   UIMessage,
   UIMessageStreamWriter,
 } from "ai";
@@ -13,49 +16,126 @@ import {
   isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
+// Ask and Agent await the title before settling usage; a stalled provider
+// must not hold the response open. Covers retries under one deadline.
+const TITLE_GENERATION_TOTAL_TIMEOUT_MS = 8_000;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
 const IMAGE_ONLY_CHAT_TITLE = "New chat";
 const AUXILIARY_IMAGE_DESCRIPTION_PATTERN =
   /^<image_description\b(?=[^>]*\btrust="untrusted")[^>]*>[\s\S]*<\/image_description>$/;
 
+/** Identify public failure classes without retaining error text, values or arbitrary names. */
+const getUnknownTitleErrorKind = (
+  error: unknown,
+):
+  | "sdk_no_output"
+  | "sdk_type_validation"
+  | "sdk_json_parse"
+  | "js_type_error"
+  | "js_range_error"
+  | "js_syntax_error"
+  | "other_error"
+  | "non_error"
+  | "unavailable" => {
+  try {
+    if (NoOutputGeneratedError.isInstance(error)) return "sdk_no_output";
+    if (TypeValidationError.isInstance(error)) return "sdk_type_validation";
+    if (JSONParseError.isInstance(error)) return "sdk_json_parse";
+    if (error instanceof TypeError) return "js_type_error";
+    if (error instanceof RangeError) return "js_range_error";
+    if (error instanceof SyntaxError) return "js_syntax_error";
+    return error instanceof Error ? "other_error" : "non_error";
+  } catch {
+    // A thrown value can reject brand inspection; diagnostics must preserve fallback.
+    return "unavailable";
+  }
+};
+
+/**
+ * True when a UTF-16 cut at `index` would separate a valid surrogate pair.
+ * Already-unpaired surrogates in the input are left as they are.
+ */
+const splitsSurrogatePair = (text: string, index: number): boolean => {
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return (
+    before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+  );
+};
+
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
 
   const halfLength = Math.floor((maxLength - 3) / 2); // -3 for "..."
-  const start = text.substring(0, halfLength);
-  const end = text.substring(text.length - halfLength);
+  // Shrink each kept edge rather than splitting an emoji, staying within budget.
+  let headEnd = halfLength;
+  if (splitsSurrogatePair(text, headEnd)) headEnd -= 1;
+  let tailStart = text.length - halfLength;
+  if (splitsSurrogatePair(text, tailStart)) tailStart += 1;
 
-  return `${start}...${end}`;
+  return `${text.substring(0, headEnd)}...${text.substring(tailStart)}`;
 };
 
-const normalizeTitle = (title: unknown): string | undefined => {
-  if (typeof title !== "string") return undefined;
+const TITLE_QUOTES = new Set(['"', "'", "`"]);
 
-  const normalized = title
-    .replace(/^["'`]+|["'`]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+/** Remove one quote pair only when it unambiguously wraps the whole title. */
+const unwrapQuotedTitle = (title: string): string => {
+  // Delimiters with no content are not a title; let the caller fall back.
+  if (/^["'`\s]*$/.test(title)) return "";
 
+  const quote = title[0];
+  if (
+    title.length < 2 ||
+    !TITLE_QUOTES.has(quote) ||
+    title[title.length - 1] !== quote
+  ) {
+    return title;
+  }
+
+  const inner = title.slice(1, -1);
+  // `"foo" and "bar"` has matching ends but no single wrapper.
+  return inner.includes(quote) ? title : inner;
+};
+
+/** Fold whitespace and apply the length limit to already-redacted text. */
+const finishRedactedTitle = (title: string): string | undefined => {
+  const normalized = title.replace(/\s+/g, " ").trim();
   if (!normalized) return undefined;
 
-  return normalized.substring(0, MAX_GENERATED_TITLE_LENGTH);
+  let end = MAX_GENERATED_TITLE_LENGTH;
+  if (splitsSurrogatePair(normalized, end)) end -= 1;
+  return normalized.substring(0, end);
 };
 
-const fallbackTitleFromMessage = (message: string): string | undefined => {
+const normalizeGeneratedTitle = (title: unknown): string | undefined => {
+  if (typeof title !== "string") return undefined;
+  // Unwrap first: an unquoted redacted value would absorb the closing quote.
+  // Redact before folding or truncation can separate a value from its field.
+  const normalized = finishRedactedTitle(
+    redactSensitiveErrorMessage(unwrapQuotedTitle(title.trim())),
+  );
+  // A bare schema label carries no information about the chat.
+  return normalized?.toLowerCase() === "title" ? undefined : normalized;
+};
+
+const fallbackTitleFromRedactedMessage = (
+  message: string,
+): string | undefined => {
   const normalized = message.replace(/\s+/g, " ").trim();
   if (!normalized) return undefined;
 
-  return normalizeTitle(
-    normalized.split(" ").slice(0, FALLBACK_TITLE_WORD_LIMIT).join(" "),
+  return finishRedactedTitle(
+    unwrapQuotedTitle(
+      normalized.split(" ").slice(0, FALLBACK_TITLE_WORD_LIMIT).join(" "),
+    ),
   );
 };
 
-export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
-  message: string,
-) => `### Task:
+const buildTitlePromptFromRedactedMessage = (message: string) => `### Task:
 You are a helpful assistant that generates short, concise chat titles for an AI penetration testing assistant based on the first user message.
 
 ### Instructions:
@@ -64,6 +144,9 @@ You are a helpful assistant that generates short, concise chat titles for an AI 
 
 ### User Message:
 ${truncateMiddle(message, 8000)}`;
+
+export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (message: string) =>
+  buildTitlePromptFromRedactedMessage(redactSensitiveErrorMessage(message));
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
@@ -94,7 +177,10 @@ export const generateTitleFromUserMessage = async (
     return IMAGE_ONLY_CHAT_TITLE;
   }
 
-  const fallbackTitle = fallbackTitleFromMessage(textContent);
+  // Remove credentials the shared redactor recognizes (not every possible
+  // secret) once, before the prompt and fallback truncate the text.
+  const redactedText = redactSensitiveErrorMessage(textContent);
+  const fallbackTitle = fallbackTitleFromRedactedMessage(redactedText);
 
   try {
     const result = await generateText({
@@ -120,10 +206,11 @@ export const generateTitleFromUserMessage = async (
       temperature: 0,
       maxOutputTokens: TITLE_GENERATION_MAX_OUTPUT_TOKENS,
       maxRetries: 1,
+      timeout: { totalMs: TITLE_GENERATION_TOTAL_TIMEOUT_MS },
       messages: [
         {
           role: "user",
-          content: DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE(textContent),
+          content: buildTitlePromptFromRedactedMessage(redactedText),
         },
       ],
     });
@@ -133,18 +220,26 @@ export const generateTitleFromUserMessage = async (
       onCost?.(costDollars);
     }
 
-    return normalizeTitle(result.output?.title) ?? fallbackTitle;
+    return normalizeGeneratedTitle(result.output?.title) ?? fallbackTitle;
   } catch (error) {
     // SDK errors can contain prompts, provider responses, and credentials.
-    // Keep fallback diagnostics limited to fixed categories and HTTP status.
+    // Keep fallback diagnostics limited to fixed categories/kinds and HTTP status.
     const isProviderError = APICallError.isInstance(error);
+    const category = isProviderError
+      ? "provider_error"
+      : NoObjectGeneratedError.isInstance(error)
+        ? "invalid_output"
+        : "unknown_error";
     console.warn("chat_title_generation_failed", {
-      category: isProviderError
-        ? "provider_error"
-        : NoObjectGeneratedError.isInstance(error)
-          ? "invalid_output"
-          : "unknown_error",
+      category,
       ...(isProviderError && { statusCode: error.statusCode }),
+      error_kind_version: 1,
+      error_kind:
+        category === "provider_error"
+          ? "provider_api_error"
+          : category === "invalid_output"
+            ? "sdk_no_object"
+            : getUnknownTitleErrorKind(error),
     });
     return fallbackTitle;
   }

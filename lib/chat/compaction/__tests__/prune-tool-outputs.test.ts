@@ -57,6 +57,7 @@ describe("pruneToolOutputs", () => {
                 exitCode: null,
                 waitExpired: true,
                 recordPath: "/tmp/records/abcd1234.json",
+                recordPersistenceStatus: "pending",
                 output:
                   "[Full output (5000 chars) saved to: /tmp/evidence.txt]\n" +
                   "x".repeat(5000),
@@ -89,6 +90,8 @@ describe("pruneToolOutputs", () => {
       expect(placeholder).toContain("status wait_expired");
       expect(placeholder).toContain("record /tmp/records/abcd1234.json");
       expect(placeholder).toContain("saved output /tmp/evidence.txt");
+      expect(placeholder).toContain("record persistence pending");
+      expect(placeholder).not.toContain("record persistence failed");
       expect(placeholder).not.toContain("x".repeat(100));
     },
   );
@@ -279,7 +282,34 @@ describe("pruneToolOutputs", () => {
 
     const result = pruneToolOutputs(messages, 5, NO_MIN);
     const filePart = result.messages[0].parts[0] as any;
-    expect(filePart.output).toBe("[File: edit /src/app.ts]");
+    expect(filePart.output).toBe("[File: edit /src/app.ts; outcome unknown]");
+  });
+
+  it("prunes a dedicated file_edit result without an action field", () => {
+    const messages: UIMessage[] = [
+      makeAssistantMessage([
+        makeToolPart(
+          "file_edit",
+          { content: "x".repeat(5000) },
+          { path: "/src/app.ts" },
+        ),
+      ]),
+      makeAssistantMessage(
+        [
+          makeToolPart(
+            "run_terminal_cmd",
+            { stdout: "recent", exitCode: 0 },
+            { command: "echo" },
+          ),
+        ],
+        "msg-new",
+      ),
+    ];
+
+    const result = pruneToolOutputs(messages, 5, NO_MIN);
+    expect((result.messages[0].parts[0] as any).output).toBe(
+      "[File: edit /src/app.ts; outcome unknown]",
+    );
   });
 
   it("generates correct placeholder for match tool", () => {
@@ -844,6 +874,30 @@ describe("compactMessageForStorage", () => {
     expect(result.afterSizeBytes).toBeLessThan(result.beforeSizeBytes);
   });
 
+  it("strips dedicated edit diff fields before storage", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file_edit",
+        {
+          content: "latest content",
+          originalContent: "x".repeat(5000),
+          modifiedContent: "y".repeat(5000),
+        },
+        { path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    expect(result.strippedUiOnlyFields).toBe(true);
+    expect((result.message.parts[0] as any).output).toEqual({
+      content: "latest content",
+    });
+  });
+
   it("prunes old tool outputs when stripped parts are still too large", () => {
     const message = makeAssistantMessage([
       makeToolPart(
@@ -1009,6 +1063,53 @@ describe("compactMessageForStorage", () => {
     expect(listNotesPart.output.notes[0].content).toContain(
       "[truncated for storage]",
     );
+  });
+
+  it("keeps protected note excerpts well-formed at both storage cuts", () => {
+    const head = "a".repeat(315);
+    const tail = "z".repeat(168);
+    const notes = Array.from({ length: 30 }, (_, index) => ({
+      note_id: `note-${index}`,
+      title: `Note ${index}`,
+      content: `${head}🙂${"middle".repeat(5_000)}🙂${tail}`,
+    }));
+    const message = makeAssistantMessage([
+      makeToolPart("list_notes", {
+        success: true,
+        notes,
+        total_count: notes.length,
+      }),
+    ]);
+
+    const result = compactMessageForStorage(message);
+    const part = result.message.parts[0] as any;
+
+    expect(result.compacted).toBe(true);
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(850 * 1024);
+    expect(part.output.notes[0].content).toBe(
+      `${head}... [truncated for storage]${tail}`,
+    );
+  });
+
+  it("keeps the saved reasoning tail from starting with half a character", () => {
+    const prefix = "[Earlier reasoning compacted for storage]\n\n";
+    const tail = "z".repeat(8_000 - prefix.length - 1);
+    const message = makeAssistantMessage([
+      {
+        type: "reasoning",
+        text: `${"x".repeat(16_000)}🙂${tail}`,
+        state: "done",
+      },
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 12_000,
+    });
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(12_000);
+    expect(result.message.parts).toEqual([
+      { type: "reasoning", text: prefix + tail, state: "done" },
+    ]);
   });
 
   it("enforces the byte cap for a single oversized assistant text part", () => {
@@ -1210,6 +1311,7 @@ describe("pruneModelMessages", () => {
             session: "abcd1234",
             status: "running",
             recordPath: "/tmp/record.json",
+            recordPersistenceStatus: "pending",
             outputPath: "/tmp/output.txt",
             output: "evidence\n".repeat(1000),
           },
@@ -1248,6 +1350,8 @@ describe("pruneModelMessages", () => {
       expect(output.value).toContain("status running");
       expect(output.value).toContain("record /tmp/record.json");
       expect(output.value).toContain("output /tmp/output.txt");
+      expect(output.value).toContain("record persistence pending");
+      expect(output.value).not.toContain("record persistence failed");
       expect(output.value).not.toContain("evidence");
     },
   );
@@ -1951,4 +2055,116 @@ it("stores compact report read/update receipts even below the size threshold", (
     compactMessageForStorage(result.message, { softLimitBytes: 1_000_000 })
       .compacted,
   ).toBe(false);
+});
+
+describe("file mutation outcomes survive compaction", () => {
+  const failure =
+    "Atomic edit failed - find string was not found. No edits were applied. " +
+    "Mismatch detail. ".repeat(200);
+  it.each([{ error: failure }, { result: { error: failure } }])(
+    "preserves a failed UI edit without claiming success",
+    (output) => {
+      const original = makeAssistantMessage([
+        makeToolPart("file_edit", output, { path: "/fixture.ts" }),
+      ]);
+      const snapshot = JSON.stringify(original);
+      const result = pruneToolOutputs([original], 0, 0);
+      expect((result.messages[0].parts[0] as any).output).toContain(
+        "outcome failed",
+      );
+      expect((result.messages[0].parts[0] as any).output).toContain(
+        "no changes applied",
+      );
+      expect(JSON.stringify(original)).toBe(snapshot);
+    },
+  );
+  it.each([
+    { type: "text", value: `Error: ${failure}` },
+    { type: "error-text", value: "Operation rejected. ".repeat(200) },
+    {
+      type: "error-json",
+      value: { message: "Operation rejected. ".repeat(200) },
+    },
+    { type: "json", value: { result: { error: failure } } },
+  ])("retains model tool error semantics through pruning", (output) => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "edit",
+            toolName: "file_edit",
+            input: { path: "/fixture.ts" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "edit",
+            toolName: "file_edit",
+            output,
+          },
+        ],
+      },
+    ];
+    const result = pruneModelMessages(messages, 0, 0);
+    expect((result.messages[1].content as any[])[0].output.value).toContain(
+      "outcome failed",
+    );
+    const again = pruneModelMessages(result.messages, 0, 0);
+    expect(again.messages).toEqual(result.messages);
+  });
+  it("preserves the failure in byte-limited saved chat compaction", () => {
+    const message = makeAssistantMessage([
+      makeToolPart("file_edit", { error: failure }, { path: "/fixture.ts" }),
+    ]);
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1024,
+      toolOutputTokenBudget: 0,
+    });
+    expect((result.message.parts[0] as any).output).toContain("outcome failed");
+    expect((result.message.parts[0] as any).output).toContain(
+      "no changes applied",
+    );
+  });
+  it("does not treat source contents mentioning Error as an edit failure", () => {
+    const output = {
+      content:
+        'Multi-edit completed: 1 edits applied, 1 total replacements made\nLatest content with line numbers:\n1|throw new Error("example")',
+    };
+    const result = pruneToolOutputs(
+      [
+        makeAssistantMessage([
+          makeToolPart("file_edit", output, { path: "/fixture.ts" }),
+        ]),
+      ],
+      0,
+      0,
+    );
+    expect((result.messages[0].parts[0] as any).output).toContain(
+      "outcome success",
+    );
+  });
+  it("retains unknown rather than inventing success for an unrecognized response", () => {
+    const result = pruneToolOutputs(
+      [
+        makeAssistantMessage([
+          makeToolPart(
+            "file_edit",
+            { arbitrary: "Unrecognized payload ".repeat(200) },
+            { path: "/fixture.ts" },
+          ),
+        ]),
+      ],
+      0,
+      0,
+    );
+    expect((result.messages[0].parts[0] as any).output).toContain(
+      "outcome unknown",
+    );
+  });
 });

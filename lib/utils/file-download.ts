@@ -3,6 +3,7 @@ import {
   isTauriEnvironment,
   revealFileInDir,
   saveFileToLocal,
+  saveBinaryFileToLocal,
 } from "@/app/hooks/useTauri";
 
 /**
@@ -11,8 +12,8 @@ import {
 interface DownloadFileOptions {
   /** The suggested filename for the save dialog */
   filename: string;
-  /** The file content as a string */
-  content: string;
+  /** UTF-8 text or exact binary bytes. */
+  content: string | Uint8Array<ArrayBuffer>;
   /** MIME type for the blob fallback (default: "text/plain") */
   mimeType?: string;
 }
@@ -30,6 +31,25 @@ export type DownloadFileResult = {
   reason?: "unsupported_native";
 };
 
+/** Keep the object URL alive while the browser starts its asynchronous save. */
+export function startBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  try {
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  } finally {
+    link.remove();
+  }
+  // Revoking in the click's call stack can invalidate a pending download.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export async function downloadFile({
   filename,
   content,
@@ -38,7 +58,10 @@ export async function downloadFile({
   // Tauri: cancellation is a successful no-op, distinct from a failed write.
   if (isTauriEnvironment()) {
     try {
-      const filePath = await saveFileToLocal(filename, content);
+      const filePath =
+        typeof content === "string"
+          ? await saveFileToLocal(filename, content)
+          : await saveBinaryFileToLocal(filename, content);
       if (filePath) {
         toast.success("File saved successfully", {
           action: {
@@ -51,7 +74,9 @@ export async function downloadFile({
     } catch (error) {
       const unsupported =
         typeof error === "string" &&
-        /command.*save_file_with_dialog.*not found/i.test(error);
+        /(?:command.*save_(?:binary_)?file_with_dialog.*not found|(?:command )?save_(?:binary_)?file_with_dialog not allowed(?: by acl)?)/i.test(
+          error,
+        );
       toast.error(
         unsupported ? "Update Desktop to save reports" : "Failed to save file",
       );
@@ -91,16 +116,9 @@ export async function downloadFile({
   }
 
   // Blob download fallback
-  let url: string | undefined;
   try {
     const blob = new Blob([content], { type: mimeType });
-    url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    startBlobDownload(blob, filename);
     toast.success("File downloaded successfully");
     return { outcome: "initiated" };
   } catch (error) {
@@ -112,10 +130,5 @@ export async function downloadFile({
         error instanceof Error ? error.message : "Unknown error occurred",
     });
     return { outcome: "failed" };
-  } finally {
-    // Always revoke the blob URL to prevent memory leaks
-    if (url) {
-      URL.revokeObjectURL(url);
-    }
   }
 }

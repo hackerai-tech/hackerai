@@ -1,3 +1,4 @@
+import { INFERENCE_CYBER_FLAG } from "@/lib/ai/inference";
 import {
   evaluateAbliteratedModel,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
@@ -157,9 +158,10 @@ describe("paid moderation-gated three-step Abliteration", () => {
             mode,
             subscription: "free",
             selectedModelOverride,
-            previewDiagnosticContext: {
+            diagnosticContext: {
               chatId: "free-chat",
               requestId: "free-run",
+              logAll: true,
             },
           }),
         ).resolves.toBeUndefined();
@@ -232,13 +234,14 @@ describe("paid moderation-gated three-step Abliteration", () => {
     },
   );
   it("diagnoses the default without customer content and without changing behavior on logging failure", async () => {
-    const previewDiagnosticContext = {
+    const diagnosticContext = {
       chatId: "test-chat",
       requestId: "test-run",
+      logAll: true,
     };
     const result = await evaluateAbliteratedModel({
       ...defaults,
-      previewDiagnosticContext,
+      diagnosticContext,
     });
     expect(result?.key).toBe(
       ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
@@ -259,8 +262,149 @@ describe("paid moderation-gated three-step Abliteration", () => {
     await expect(
       evaluateAbliteratedModel({
         ...defaults,
-        previewDiagnosticContext,
+        diagnosticContext,
       }),
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+  });
+
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "keeps the baseline for a %s request below the moderation threshold",
+    async (subscription) => {
+      expect(
+        await evaluateAbliteratedModel({
+          ...defaults,
+          subscription,
+          moderationEligible: false,
+          moderationChecked: true,
+        }),
+      ).toBeUndefined();
+    },
+  );
+});
+
+describe("Inference rollout assignment", () => {
+  const originalInferenceKey = process.env.INFERENCE_API_KEY;
+  const originalAbliterationKey = process.env.ABLITERATION_API_KEY;
+  afterEach(() => {
+    if (originalInferenceKey === undefined)
+      delete process.env.INFERENCE_API_KEY;
+    else process.env.INFERENCE_API_KEY = originalInferenceKey;
+    if (originalAbliterationKey === undefined)
+      delete process.env.ABLITERATION_API_KEY;
+    else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
+  });
+  const evaluate = (
+    inferenceEnvironment: "preview" | "production" | undefined,
+    subscription: SubscriptionTier = "pro",
+    fileType?: string,
+    overrides: Partial<Parameters<typeof evaluateAbliteratedModel>[0]> = {},
+  ) =>
+    evaluateAbliteratedModel({
+      posthog: { getFeatureFlagResult: jest.fn() } as never,
+      userId: "test-user",
+      selectedModel: "model-glm-5.3",
+      subscription,
+      mode: "ask",
+      inferenceEnvironment,
+      moderationEligible: true,
+      messages: [
+        {
+          id: "u",
+          role: "user",
+          parts: fileType
+            ? [
+                {
+                  type: "file",
+                  mediaType: fileType,
+                  url: "https://example.test/file",
+                },
+              ]
+            : [{ type: "text", text: "synthetic" }],
+        },
+      ],
+      ...overrides,
+    });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.INFERENCE_API_KEY = "test-only";
+    process.env.ABLITERATION_API_KEY = "test-only";
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
+  });
+  it("enables eligible Production and Preview requests", async () => {
+    expect((await evaluate("preview"))?.inferenceCyberEnabled).toBe(true);
+    expect((await evaluate("production"))?.inferenceCyberEnabled).toBe(true);
+    expect(await evaluate("preview", "free")).toBeUndefined();
+    expect(await evaluate("preview", "pro", "application/pdf")).toBeUndefined();
+    expect(
+      (await evaluate("preview", "pro", "image/png"))?.inferenceCyberEnabled,
+    ).toBe(true);
+  });
+  it.each(["ask", "agent"] as const)(
+    "assigns the new rollout in %s",
+    async (mode) => {
+      expect(
+        await evaluate("production", "pro", undefined, { mode }),
+      ).toMatchObject({
+        key: INFERENCE_CYBER_FLAG,
+        inferenceCyberEnabled: true,
+        generationStepLimit: 3,
+      });
+    },
+  );
+  it.each([
+    { limitRescue: true },
+    { moderationEligible: false },
+    {
+      moderationEligible: false,
+      moderationChecked: false,
+    },
+    { messages: [] },
+  ])("preserves eligibility gates: %j", async (overrides) => {
+    expect(
+      await evaluate("production", "pro", undefined, overrides),
+    ).toBeUndefined();
+    expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+  });
+  it("requires the retained fallback provider to be configured", async () => {
+    delete process.env.ABLITERATION_API_KEY;
+    expect(await evaluate("production")).toBeUndefined();
+    expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+  });
+  it("does not enable Inference outside a trusted deployed runtime", async () => {
+    expect((await evaluate(undefined))?.inferenceCyberEnabled).toBe(false);
+    expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+  });
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "keeps the baseline for below-threshold %s requests even when Inference is enabled",
+    async (subscription) => {
+      expect(
+        await evaluate("production", subscription, undefined, {
+          moderationEligible: false,
+          moderationChecked: true,
+        }),
+      ).toBeUndefined();
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+    },
+  );
+  it.each([false, undefined, "test"])(
+    "uses the shared moderation-gated route when Inference rollout is %s",
+    async (value) => {
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
+      expect(await evaluate("production")).toMatchObject({
+        key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        inferenceCyberEnabled: false,
+      });
+    },
+  );
+  it("retains Abliteration when key or flag is missing, false, or unavailable", async () => {
+    delete process.env.INFERENCE_API_KEY;
+    expect((await evaluate("preview"))?.inferenceCyberEnabled).toBe(false);
+    process.env.INFERENCE_API_KEY = "test-only";
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
+    expect((await evaluate("preview"))?.inferenceCyberEnabled).toBe(false);
+    jest
+      .mocked(getPostHogFlagWithoutExposure)
+      .mockRejectedValue(new Error("unavailable"));
+    expect((await evaluate("preview"))?.inferenceCyberEnabled).toBe(false);
   });
 });

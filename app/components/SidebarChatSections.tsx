@@ -2,6 +2,7 @@
 
 import {
   useId,
+  useEffect,
   useMemo,
   useState,
   useSyncExternalStore,
@@ -178,6 +179,17 @@ export function SidebarChatSections({
     [openProjectIdsSnapshot],
   );
   const [activeTask, setActiveTask] = useState<SidebarChatDragData>();
+  useEffect(() => {
+    if (!activeTask) return;
+    // Dnd-kit cancels on Escape at document level. Consume it before the
+    // window-level Stop shortcut without preventing the sensor's cancellation.
+    const reserveDragEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") event.preventDefault();
+    };
+    document.addEventListener("keydown", reserveDragEscape, true);
+    return () =>
+      document.removeEventListener("keydown", reserveDragEscape, true);
+  }, [activeTask]);
   const startNewChat = useStartNewChat();
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();

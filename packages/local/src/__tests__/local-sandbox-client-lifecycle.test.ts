@@ -1,6 +1,11 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
 const mockSpawn = jest.fn();
+const mockCommandIdentity = jest.fn();
+
+jest.mock("../command-identity", () => ({
+  commandIdentityFromEnvironment: () => mockCommandIdentity(),
+}));
 
 jest.mock("child_process", () => ({
   ...jest.requireActual("child_process"),
@@ -26,9 +31,10 @@ jest.mock("../command-cancellation", () => ({
 }));
 
 jest.mock("../private-artifact-hardening", () => ({
-  hardenExistingTerminalArtifacts: jest.fn().mockResolvedValue(true),
+  preparePrivateArtifactStorage: jest.fn().mockResolvedValue({ ready: true }),
 }));
 
+import { preparePrivateArtifactStorage } from "../private-artifact-hardening";
 import { LocalSandboxClient } from "../index";
 import { EventEmitter } from "events";
 
@@ -41,7 +47,54 @@ const config = {
 describe("LocalSandboxClient cleanup", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCommandIdentity.mockReset();
     mockConfirmProcessTermination.mockResolvedValue(true);
+  });
+
+  it("runs streamed and background Agent commands as the isolated user", async () => {
+    mockCommandIdentity.mockReturnValue({
+      uid: 65534,
+      gid: 65534,
+      home: "/home/hackerai-agent",
+    });
+    const streamed = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    mockSpawn.mockReturnValueOnce(streamed).mockReturnValueOnce({
+      pid: 1234,
+      unref: jest.fn(),
+    });
+    const client = new LocalSandboxClient(config);
+    const privateClient = client as unknown as {
+      streamCommand: (
+        id: string,
+        command: string,
+        timeout: number,
+        show: boolean,
+        label: string,
+      ) => Promise<void>;
+      spawnBackground: (command: string) => Promise<number>;
+      publishToChannel: jest.Mock;
+    };
+    privateClient.publishToChannel = jest.fn().mockResolvedValue(undefined);
+    const running = privateClient.streamCommand(
+      "isolated",
+      "id",
+      0,
+      false,
+      "id",
+    );
+    streamed.emit("close", 0, null);
+    await running;
+    await privateClient.spawnBackground("id");
+    for (const call of mockSpawn.mock.calls.slice(0, 2)) {
+      expect(call[2]).toMatchObject({
+        uid: 65534,
+        gid: 65534,
+        env: { HOME: "/home/hackerai-agent" },
+      });
+    }
   });
 
   it("stops process resources exactly once across repeated cleanup", async () => {
@@ -291,6 +344,9 @@ describe("LocalSandboxClient cleanup", () => {
       }
     ).startIdleCheck = jest.fn();
 
+    jest
+      .mocked(preparePrivateArtifactStorage)
+      .mockResolvedValueOnce({ ready: true, namespace: "uid-1000" });
     const start = client.start();
     await setupStarted;
     expect(mutation).toHaveBeenCalledTimes(1);
@@ -298,7 +354,11 @@ describe("LocalSandboxClient cleanup", () => {
       "localSandbox:connect",
       expect.objectContaining({
         environmentId: "test-environment",
-        capabilities: expect.objectContaining({ commandStdin: true }),
+        clientVersion: require("../../package.json").version,
+        capabilities: expect.objectContaining({
+          commandStdin: true,
+          privateArtifactNamespace: "uid-1000",
+        }),
       }),
     );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(

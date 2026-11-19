@@ -86,7 +86,7 @@ describe("token-bucket", () => {
     it("should calculate input token cost correctly ($0.50/1M tokens * 1.3x)", () => {
       // 1M input tokens = $0.50 * 1.3 = 6500 points
       expect(calculateTokenCost(1_000_000, "input")).toBe(6500);
-      // 1K input tokens = ceil(0.001 * 0.5 * 10000 * 1.3) = 7 points
+      // 1K input tokens = ceil(0.001 * 0.5 * 10000 * 1.3) = ceil(6.5) = 7 points
       expect(calculateTokenCost(1000, "input")).toBe(7);
       // 10M input tokens = $5.00 * 1.3 = 65000 points
       expect(calculateTokenCost(10_000_000, "input")).toBe(65000);
@@ -417,6 +417,12 @@ describe("token-bucket", () => {
         isUserRateLimitKey(`free_monthly_cost:${userId}:2026-06`, userId),
       ).toBe(true);
       expect(
+        isUserRateLimitKey(
+          `free_monthly_subagent_cost:${userId}:run-1`,
+          userId,
+        ),
+      ).toBe(true);
+      expect(
         isUserRateLimitKey(`free_usage_budget_started:v1:${userId}`, userId),
       ).toBe(true);
       expect(isUserRateLimitKey(`free_run_lock:${userId}`, userId)).toBe(true);
@@ -443,7 +449,7 @@ describe("token-bucket", () => {
     it("typical conversation should cost reasonable points", () => {
       // Typical: 2000 input tokens, 500 output tokens (with 1.3x multiplier)
       const inputCost = calculateTokenCost(2000, "input"); // 13 points
-      const outputCost = calculateTokenCost(500, "output"); // 20 points
+      const outputCost = calculateTokenCost(500, "output"); // ceil(19.5) = 20 points
       const totalCost = inputCost + outputCost; // 33 points
 
       expect(inputCost).toBe(13);
@@ -524,6 +530,53 @@ describe("token-bucket", () => {
       });
     });
 
+    it("uses the old plan ceiling on a second prorated upgrade", () => {
+      const result = calculateTierChangeCredits(
+        2_000_000,
+        425_000,
+        175_000,
+        0.25,
+        600_000,
+      );
+
+      expect(result).toEqual({
+        consumedCredits: 250_000,
+        incrementalCredits: 350_000,
+        cycleAllocation: 775_000,
+        remainingCredits: 525_000,
+      });
+    });
+
+    it("retains spent credits through a downgrade and later upgrade", () => {
+      const downgraded = calculateTierChangeCredits(
+        600_000,
+        2_000_000,
+        500_000,
+        0.5,
+        2_000_000,
+      );
+      const upgraded = calculateTierChangeCredits(
+        2_000_000,
+        downgraded.cycleAllocation,
+        downgraded.remainingCredits,
+        0.25,
+        600_000,
+        downgraded.consumedCredits,
+      );
+
+      expect(downgraded).toMatchObject({
+        consumedCredits: 1_500_000,
+        cycleAllocation: 600_000,
+        remainingCredits: 0,
+      });
+      expect(upgraded).toMatchObject({
+        consumedCredits: 1_500_000,
+        incrementalCredits: 350_000,
+        cycleAllocation: 950_000,
+        remainingCredits: 0,
+      });
+    });
+
     it("caps a downgrade without restoring consumed usage", () => {
       const result = calculateTierChangeCredits(250_000, 600_000, 400_000, 0.5);
 
@@ -532,6 +585,23 @@ describe("token-bucket", () => {
         incrementalCredits: 0,
         cycleAllocation: 250_000,
         remainingCredits: 50_000,
+      });
+    });
+
+    it("does not increase a partially prorated allocation on downgrade", () => {
+      const result = calculateTierChangeCredits(
+        600_000,
+        425_000,
+        175_000,
+        0.1,
+        2_000_000,
+      );
+
+      expect(result).toEqual({
+        consumedCredits: 250_000,
+        incrementalCredits: 0,
+        cycleAllocation: 425_000,
+        remainingCredits: 175_000,
       });
     });
 

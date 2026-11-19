@@ -1,3 +1,4 @@
+import { recordWalletDebit } from "./lib/settlementReceipts";
 import {
   internalMutation,
   mutation,
@@ -302,6 +303,8 @@ export const deductTeamPoints = mutation({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
+    settlementDebitSequence: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -315,158 +318,176 @@ export const deductTeamPoints = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    return recordWalletDebit(
+      ctx,
+      args.settlementOperationId
+        ? {
+            operation_id: args.settlementOperationId,
+            user_id: args.userId,
+            organization_id: args.organizationId,
+            usage_settlement_id: args.usageSettlementId,
+            amount_points: args.amountPoints,
+          }
+        : undefined,
+      args.settlementDebitSequence,
+      async () => {
+        const team = await ctx.db
+          .query("team_extra_usage")
+          .withIndex("by_org", (q) =>
+            q.eq("organization_id", args.organizationId),
+          )
+          .first();
 
-    const team = await ctx.db
-      .query("team_extra_usage")
-      .withIndex("by_org", (q) => q.eq("organization_id", args.organizationId))
-      .first();
+        if (!team || !(team.enabled ?? false)) {
+          return {
+            success: false,
+            newBalancePoints: 0,
+            newBalanceDollars: 0,
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+            memberCapExceeded: false,
+            memberDisabled: false,
+            poolDisabled: true,
+          };
+        }
 
-    if (!team || !(team.enabled ?? false)) {
-      return {
-        success: false,
-        newBalancePoints: 0,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: true,
-      };
-    }
+        const member = await ctx.db
+          .query("team_member_usage")
+          .withIndex("by_org_user", (q) =>
+            q
+              .eq("organization_id", args.organizationId)
+              .eq("user_id", args.userId),
+          )
+          .first();
 
-    const member = await ctx.db
-      .query("team_member_usage")
-      .withIndex("by_org_user", (q) =>
-        q.eq("organization_id", args.organizationId).eq("user_id", args.userId),
-      )
-      .first();
+        if (member?.disabled) {
+          return {
+            success: false,
+            newBalancePoints: team.balance_points ?? 0,
+            newBalanceDollars: pointsToDollars(team.balance_points ?? 0),
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+            memberCapExceeded: false,
+            memberDisabled: true,
+            poolDisabled: false,
+          };
+        }
 
-    if (member?.disabled) {
-      return {
-        success: false,
-        newBalancePoints: team.balance_points ?? 0,
-        newBalanceDollars: pointsToDollars(team.balance_points ?? 0),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: true,
-        poolDisabled: false,
-      };
-    }
+        const currentMonth = currentMonthString();
+        const currentBalancePoints = team.balance_points ?? 0;
 
-    const currentMonth = currentMonthString();
-    const currentBalancePoints = team.balance_points ?? 0;
+        // Reset team monthly spent if cycle rolled over
+        let teamMonthlySpent = team.monthly_spent_points ?? 0;
+        if (team.monthly_reset_date !== currentMonth) {
+          teamMonthlySpent = 0;
+        }
 
-    // Reset team monthly spent if cycle rolled over
-    let teamMonthlySpent = team.monthly_spent_points ?? 0;
-    if (team.monthly_reset_date !== currentMonth) {
-      teamMonthlySpent = 0;
-    }
+        // Same for member counter
+        let memberMonthlySpent = member?.monthly_spent_points ?? 0;
+        const memberShouldReset = member?.monthly_reset_date !== currentMonth;
+        if (memberShouldReset) {
+          memberMonthlySpent = 0;
+        }
 
-    // Same for member counter
-    let memberMonthlySpent = member?.monthly_spent_points ?? 0;
-    const memberShouldReset = member?.monthly_reset_date !== currentMonth;
-    if (memberShouldReset) {
-      memberMonthlySpent = 0;
-    }
+        // Team monthly cap check
+        const teamCap = team.monthly_cap_points;
+        if (teamCap !== undefined) {
+          const newTeamSpent = teamMonthlySpent + args.amountPoints;
+          if (newTeamSpent > teamCap) {
+            return {
+              success: false,
+              newBalancePoints: currentBalancePoints,
+              newBalanceDollars: pointsToDollars(currentBalancePoints),
+              insufficientFunds: true,
+              monthlyCapExceeded: true,
+              memberCapExceeded: false,
+              memberDisabled: false,
+              poolDisabled: false,
+            };
+          }
+        }
 
-    // Team monthly cap check
-    const teamCap = team.monthly_cap_points;
-    if (teamCap !== undefined) {
-      const newTeamSpent = teamMonthlySpent + args.amountPoints;
-      if (newTeamSpent > teamCap) {
+        // Per-member cap check
+        const memberCap = member?.monthly_limit_points;
+        if (memberCap !== undefined) {
+          const newMemberSpent = memberMonthlySpent + args.amountPoints;
+          if (newMemberSpent > memberCap) {
+            return {
+              success: false,
+              newBalancePoints: currentBalancePoints,
+              newBalanceDollars: pointsToDollars(currentBalancePoints),
+              insufficientFunds: true,
+              monthlyCapExceeded: false,
+              memberCapExceeded: true,
+              memberDisabled: false,
+              poolDisabled: false,
+            };
+          }
+        }
+
+        if (currentBalancePoints < args.amountPoints) {
+          return {
+            success: false,
+            newBalancePoints: currentBalancePoints,
+            newBalanceDollars: pointsToDollars(currentBalancePoints),
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+            memberCapExceeded: false,
+            memberDisabled: false,
+            poolDisabled: false,
+          };
+        }
+
+        // All checks passed — commit
+        teamMonthlySpent += args.amountPoints;
+        memberMonthlySpent += args.amountPoints;
+        const newBalancePoints = currentBalancePoints - args.amountPoints;
+
+        await ctx.db.patch(team._id, {
+          balance_points: newBalancePoints,
+          monthly_spent_points: teamMonthlySpent,
+          monthly_reset_date: currentMonth,
+          updated_at: Date.now(),
+        });
+
+        if (member) {
+          await ctx.db.patch(member._id, {
+            monthly_spent_points: memberMonthlySpent,
+            monthly_reset_date: currentMonth,
+            updated_at: Date.now(),
+          });
+        } else {
+          await ctx.db.insert("team_member_usage", {
+            organization_id: args.organizationId,
+            user_id: args.userId,
+            monthly_spent_points: memberMonthlySpent,
+            monthly_reset_date: currentMonth,
+            updated_at: Date.now(),
+          });
+        }
+
+        convexLogger.info("team_points_deducted", {
+          organization_id: args.organizationId,
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
+          new_balance_points: newBalancePoints,
+          team_monthly_spent: teamMonthlySpent,
+          member_monthly_spent: memberMonthlySpent,
+        });
+
         return {
-          success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
-          insufficientFunds: true,
-          monthlyCapExceeded: true,
+          success: true,
+          newBalancePoints,
+          newBalanceDollars: pointsToDollars(newBalancePoints),
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
           memberCapExceeded: false,
           memberDisabled: false,
           poolDisabled: false,
         };
-      }
-    }
-
-    // Per-member cap check
-    const memberCap = member?.monthly_limit_points;
-    if (memberCap !== undefined) {
-      const newMemberSpent = memberMonthlySpent + args.amountPoints;
-      if (newMemberSpent > memberCap) {
-        return {
-          success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
-          insufficientFunds: true,
-          monthlyCapExceeded: false,
-          memberCapExceeded: true,
-          memberDisabled: false,
-          poolDisabled: false,
-        };
-      }
-    }
-
-    if (currentBalancePoints < args.amountPoints) {
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: false,
-      };
-    }
-
-    // All checks passed — commit
-    teamMonthlySpent += args.amountPoints;
-    memberMonthlySpent += args.amountPoints;
-    const newBalancePoints = currentBalancePoints - args.amountPoints;
-
-    await ctx.db.patch(team._id, {
-      balance_points: newBalancePoints,
-      monthly_spent_points: teamMonthlySpent,
-      monthly_reset_date: currentMonth,
-      updated_at: Date.now(),
-    });
-
-    if (member) {
-      await ctx.db.patch(member._id, {
-        monthly_spent_points: memberMonthlySpent,
-        monthly_reset_date: currentMonth,
-        updated_at: Date.now(),
-      });
-    } else {
-      await ctx.db.insert("team_member_usage", {
-        organization_id: args.organizationId,
-        user_id: args.userId,
-        monthly_spent_points: memberMonthlySpent,
-        monthly_reset_date: currentMonth,
-        updated_at: Date.now(),
-      });
-    }
-
-    convexLogger.info("team_points_deducted", {
-      organization_id: args.organizationId,
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      new_balance_points: newBalancePoints,
-      team_monthly_spent: teamMonthlySpent,
-      member_monthly_spent: memberMonthlySpent,
-    });
-
-    return {
-      success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
-      insufficientFunds: false,
-      monthlyCapExceeded: false,
-      memberCapExceeded: false,
-      memberDisabled: false,
-      poolDisabled: false,
-    };
+      },
+    );
   },
 });
 

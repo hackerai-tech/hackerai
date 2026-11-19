@@ -185,11 +185,27 @@ export type LocalTextFileData = LocalFileMetadata & {
   content: string;
 };
 
-export async function pickLocalFiles(): Promise<string[]> {
-  if (!detectTauri()) return [];
+export async function pickLocalFiles(signal?: AbortSignal): Promise<string[]> {
+  if (!detectTauri() || signal?.aborted) return [];
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return [];
+    return await invoke<string[]>("pick_local_files");
+  } catch (error) {
+    if (signal?.aborted) return [];
+    // Keep older installed binaries usable until they receive the native
+    // picker update. A new binary's ACL denial must not select this fallback.
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open native file picker:", error);
+      toast.error("Failed to open file picker");
+      return [];
+    }
+  }
 
   try {
     const dialog = await import("@tauri-apps/plugin-dialog");
+    if (signal?.aborted) return [];
     const selected = await dialog.open({
       multiple: true,
       directory: false,
@@ -197,6 +213,7 @@ export async function pickLocalFiles(): Promise<string[]> {
     if (!selected) return [];
     return Array.isArray(selected) ? selected : [selected];
   } catch (err) {
+    if (signal?.aborted) return [];
     console.error("[Tauri] Failed to pick local files:", err);
     toast.error("Failed to open file picker");
     return [];
@@ -222,32 +239,39 @@ export async function pickLocalFolder(): Promise<string | null> {
 
 export async function getLocalFileMetadata(
   path: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileMetadata | null> {
-  if (!detectTauri()) return null;
+  if (!detectTauri() || signal?.aborted) return null;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return null;
     return await invoke<LocalFileMetadata>("get_local_file_metadata", {
       path,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to read local file metadata:", err);
     toast.error("Failed to read local file metadata");
     return null;
   }
 }
 
+/** `signal` ends the caller's interest: no read starts and no stale feedback. */
 export async function readLocalFile(
   path: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileData | null> {
-  if (!detectTauri()) return null;
+  if (!detectTauri() || signal?.aborted) return null;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
+    if (signal?.aborted) return null;
     return await invoke<LocalFileData>("read_local_file", {
       path,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to read local file:", err);
     toast.error("Failed to read local file");
     return null;
@@ -270,10 +294,15 @@ export async function readLocalPreviewFile(path: string): Promise<File> {
   });
 }
 
+/**
+ * The write always runs once called; `signal` only suppresses failure
+ * feedback after the caller's scope has ended.
+ */
 export async function writeGeneratedTextAttachment(
   attachmentId: string,
   fileName: string,
   content: string,
+  signal?: AbortSignal,
 ): Promise<LocalFileMetadata | null> {
   if (!detectTauri()) return null;
 
@@ -285,6 +314,7 @@ export async function writeGeneratedTextAttachment(
       content,
     });
   } catch (err) {
+    if (signal?.aborted) return null;
     console.error("[Tauri] Failed to write generated text attachment:", err);
     toast.error("Failed to save pasted text locally");
     return null;
@@ -360,9 +390,36 @@ export async function saveFileToLocal(
   return invoke<string | null>("save_file_with_dialog", { filename, content });
 }
 
+/** Binary reports use a separate command so older Desktop versions fail safely
+ * instead of saving base64 text under a .pdf extension. */
+export async function saveBinaryFileToLocal(
+  filename: string,
+  content: Uint8Array,
+): Promise<string | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  let binary = "";
+  for (let offset = 0; offset < content.length; offset += 8192)
+    binary += String.fromCharCode(...content.subarray(offset, offset + 8192));
+  return invoke<string | null>("save_binary_file_with_dialog", {
+    filename,
+    contentBase64: btoa(binary),
+  });
+}
+
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_downloads_folder");
+    return true;
+  } catch (error) {
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open Downloads folder:", error);
+      return false;
+    }
   }
 
   try {

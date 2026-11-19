@@ -1,0 +1,70 @@
+// Convex also analyzes service-client. Keep the Node request/run scope behind
+// this bridge, as with service-transport-observation.
+export const serviceQueryRecoveryKey = Symbol.for(
+  "hackerai.serviceQueryRecovery.v1",
+);
+
+export interface ServiceQueryRecoveryAttempt {
+  signal: AbortSignal;
+  remaining: number;
+}
+
+export const serviceQueryRecoveryRuntime = globalThis as typeof globalThis & {
+  [serviceQueryRecoveryKey]?: () => ServiceQueryRecoveryAttempt | undefined;
+};
+
+// Same AsyncLocalStorage the Node module installs; read without reserving.
+const scopeKey = Symbol.for("hackerai.serviceQueryRecoveryScope.v1");
+const scopeRuntime = globalThis as typeof globalThis & {
+  [scopeKey]?: { getStore(): unknown };
+};
+
+/**
+ * True inside a request/run recovery scope, even after its retries are spent
+ * or its owner ended. That scope then owns response-termination retries, so
+ * helpers must not add their own.
+ */
+export const hasServiceQueryRecoveryScope = (): boolean =>
+  scopeRuntime[scopeKey]?.getStore() !== undefined;
+
+const recoverableQueries = new Set([
+  "agentGoals:getForBackend",
+  "chats:getChatById",
+  "localSandbox:listConnectionsForBackend",
+  "localSandbox:resolveEnvironmentPreferenceForBackend",
+  "browserHandoffs:getForBackend",
+  "browserHandoffs:getExitNotesForBackend",
+  "userSuspensions:getActiveByUser",
+  "findingHunts:getHistoryForBackend",
+  "findingAgentRetests:getHistoryForBackend",
+]);
+
+export function reserveServiceQueryRecovery(
+  url: URL,
+  functionName: string | undefined,
+  error: unknown,
+  statusCode: number | undefined,
+): ServiceQueryRecoveryAttempt | undefined {
+  // HTTP/application/auth errors and every mutation/action remain unchanged.
+  // A body reset after HTTP 200 is eligible; a failed 4xx/5xx body is not.
+  if (
+    url.pathname !== "/api/query" ||
+    !functionName ||
+    !recoverableQueries.has(functionName) ||
+    (statusCode !== undefined && statusCode !== 200) ||
+    !(error instanceof TypeError) ||
+    !["fetch failed", "terminated"].includes(error.message)
+  )
+    return;
+  const code = (error.cause as { code?: unknown } | undefined)?.code;
+  // A request timeout before any response is admitted only for the signed goal
+  // read. Timed-out response bodies and "terminated" timeouts stay excluded.
+  const goalRequestTimeout =
+    code === "ETIMEDOUT" &&
+    functionName === "agentGoals:getForBackend" &&
+    statusCode === undefined &&
+    error.message === "fetch failed";
+  if (code !== "ECONNRESET" && code !== "UND_ERR_SOCKET" && !goalRequestTimeout)
+    return;
+  return serviceQueryRecoveryRuntime[serviceQueryRecoveryKey]?.();
+}

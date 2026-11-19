@@ -136,6 +136,8 @@ export function getActionText(content: SidebarContent): string {
   }
 
   if (isSidebarTerminal(content)) {
+    if (content.executionPhase === "interrupted") return "Command interrupted";
+    if (content.executionPhase === "stopped") return "Stopped command";
     if (content.executionPhase === "reviewing") return "Reviewing";
     if (content.executionPhase === "awaiting_approval") {
       return "Awaiting approval";
@@ -149,6 +151,7 @@ export function getActionText(content: SidebarContent): string {
       isActive: content.isExecuting,
       interactive: content.isInteractive,
       isBackground: content.isBackground,
+      exitCode: content.exitCode,
     });
   }
 
@@ -163,14 +166,26 @@ export function getActionText(content: SidebarContent): string {
         list: "Listing notes",
         update: "Updating note",
         delete: "Deleting note",
+        get: "Reading note",
       };
       return streamingActionMap[content.action];
+    }
+    if (content.error) {
+      const failedActionMap = {
+        create: "Failed to create note",
+        list: "Failed to list notes",
+        update: "Failed to update note",
+        delete: "Failed to delete note",
+        get: "Failed to read note",
+      };
+      return failedActionMap[content.action];
     }
     const completedActionMap = {
       create: "Created note",
       list: "Notes",
       update: "Updated note",
       delete: "Deleted note",
+      get: "Read note",
     };
     return completedActionMap[content.action];
   }

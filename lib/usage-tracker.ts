@@ -1,9 +1,11 @@
-import { logUsageRecord } from "@/lib/db/actions";
+import { logUsageRecord, type UsageLogPersistence } from "@/lib/db/actions";
+import { servingProviderCostProperties } from "@/lib/analytics/serving-cost";
 import {
   getProviderUsageRawModelCost,
   isPositiveFiniteNumber,
 } from "@/lib/provider-usage-cost";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
+import { isValidTokenCount } from "@/lib/token-usage";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
@@ -19,6 +21,7 @@ interface StepUsage {
   };
   raw?: {
     cost?: number;
+    is_byok?: boolean;
     cost_details?: {
       upstream_inference_cost?: number;
       upstreamInferenceCost?: number;
@@ -30,14 +33,67 @@ interface StepUsage {
   };
 }
 
-const isValidCacheTokenCount = (value: unknown): value is number =>
+/** Costs may be fractional, and an explicit zero is a known measurement. */
+const isNonNegativeCost = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+type TokenReceipt = {
+  inputReported: boolean;
+  cacheReadReported: boolean;
+  cacheTelemetryReported: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
+/**
+ * Normalizes one provider usage receipt before it reaches counters, model step
+ * records or measurement. Malformed fields are ignored independently rather
+ * than coerced, so they cannot reduce or poison accumulated usage. Cache reads
+ * and writes are subsets of input: each counts only when it is bounded by this
+ * receipt's reported input, otherwise the input is priced uncached.
+ */
+const normalizeTokenReceipt = (usage: {
+  inputTokens?: unknown;
+  inputTokensReported?: boolean;
+  outputTokens?: unknown;
+  cacheReadTokens?: unknown;
+  cacheWriteTokens?: unknown;
+}): TokenReceipt => {
+  const reportedInput =
+    isValidTokenCount(usage.inputTokens) && usage.inputTokensReported !== false
+      ? usage.inputTokens
+      : undefined;
+  const cacheSubset = (value: unknown): number | undefined =>
+    reportedInput !== undefined &&
+    isValidTokenCount(value) &&
+    value <= reportedInput
+      ? value
+      : undefined;
+  const cacheReadTokens = cacheSubset(usage.cacheReadTokens);
+  const cacheWriteTokens = cacheSubset(usage.cacheWriteTokens);
+  return {
+    inputReported: reportedInput !== undefined,
+    cacheReadReported: cacheReadTokens !== undefined,
+    cacheTelemetryReported:
+      cacheReadTokens !== undefined || cacheWriteTokens !== undefined,
+    inputTokens: isValidTokenCount(usage.inputTokens) ? usage.inputTokens : 0,
+    outputTokens: isValidTokenCount(usage.outputTokens)
+      ? usage.outputTokens
+      : 0,
+    cacheReadTokens: cacheReadTokens ?? 0,
+    cacheWriteTokens: cacheWriteTokens ?? 0,
+  };
+};
 
 type ModelStepCost = {
   measurementCost?: number;
   inputReported: boolean;
   cacheReadReported: boolean;
   rawCost: number;
+  reportedCost?: number;
+  reportedIsByok?: boolean;
   authoritativeCost?: number;
   inputTokens: number;
   outputTokens: number;
@@ -56,6 +112,7 @@ export interface UsageBillingBreakdown {
   uncoveredPoints?: number;
   usageDeductionFailed?: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
 }
 
 interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
@@ -77,6 +134,7 @@ export interface UsageCostRecord {
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -103,7 +161,7 @@ export class UsageTracker {
   providerCost = 0;
   /**
    * Provider cost for the streamed model leg only. Summarization is tracked
-   * separately because it survives resetModelLeg() during a fallback retry.
+   * separately because it survives prepareModelRetry() during a fallback retry.
    */
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
@@ -119,6 +177,19 @@ export class UsageTracker {
   }
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
+  /**
+   * Trigger.dev compute already included in nonModelCost. Measurement replaces
+   * this settlement snapshot with a later one instead of adding both.
+   */
+  triggerRunCostDollars = 0;
+
+  /** Adds Trigger compute to billable non-model cost; billing is unchanged. */
+  addTriggerRunCost(costDollars: number): void {
+    if (!isPositiveFiniteNumber(costDollars)) return;
+    this.providerCost += costDollars;
+    this.nonModelCost += costDollars;
+    this.triggerRunCostDollars += costDollars;
+  }
   lastStepInputTokens = 0;
   /** Input tokens from summarization requests, preserved across model fallback. */
   summarizationInputTokens = 0;
@@ -131,12 +202,18 @@ export class UsageTracker {
   private summarizationCacheTelemetryObserved = false;
 
   /**
-   * Discard the model leg's accumulated usage before a fallback retry runs.
+   * Prepare accounting before a fallback retry. Loop recovery retains recorded
+   * work: user-influenced repetition must not refund earlier model output.
+   * Ordinary provider failures discard the failed model leg's usage.
    * Keeps nonModelCost (sandbox/tool spend already incurred) and all
    * summarization usage, so the final deduction only replaces the streamed
    * model leg with the fallback model.
    */
-  resetModelLeg() {
+  prepareModelRetry({
+    isLoopRecovery = false,
+  }: { isLoopRecovery?: boolean } = {}) {
+    if (isLoopRecovery) return;
+
     this.discardedModelSteps.push(...this.modelStepCosts);
     this.retryResets++;
     this.providerCost -= this.modelProviderCost;
@@ -152,44 +229,48 @@ export class UsageTracker {
   }
 
   accumulateStep(usage: StepUsage, modelName?: string): number {
-    const reportedCacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
-    const reportedCacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens;
-    const cacheReadTokens = isValidCacheTokenCount(reportedCacheReadTokens)
-      ? reportedCacheReadTokens
-      : 0;
-    const cacheWriteTokens = isValidCacheTokenCount(reportedCacheWriteTokens)
-      ? reportedCacheWriteTokens
-      : 0;
-    if (
-      isValidCacheTokenCount(reportedCacheReadTokens) ||
-      isValidCacheTokenCount(reportedCacheWriteTokens)
-    ) {
+    const receipt = normalizeTokenReceipt({
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens,
+      cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens,
+    });
+    if (receipt.cacheTelemetryReported) {
       this.modelCacheTelemetryObserved = true;
     }
-    this.inputTokens += usage.inputTokens || 0;
-    this.outputTokens += usage.outputTokens || 0;
-    this.totalTokens += usage.totalTokens || 0;
-    this.lastStepInputTokens = usage.inputTokens || 0;
-    this.cacheReadTokens += cacheReadTokens;
-    this.cacheWriteTokens += cacheWriteTokens;
+    this.inputTokens += receipt.inputTokens;
+    this.outputTokens += receipt.outputTokens;
+    this.totalTokens += isValidTokenCount(usage.totalTokens)
+      ? usage.totalTokens
+      : receipt.inputTokens + receipt.outputTokens;
+    this.lastStepInputTokens = receipt.inputTokens;
+    this.cacheReadTokens += receipt.cacheReadTokens;
+    this.cacheWriteTokens += receipt.cacheWriteTokens;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
+    const reportedCost = isPositiveFiniteNumber(usage.raw?.cost)
+      ? usage.raw.cost
+      : undefined;
     const stepCostIndex =
       this.modelStepCosts.push({
-        measurementCost: [
-          usage.raw?.cost_details?.upstream_inference_cost,
-          usage.raw?.cost_details?.upstreamInferenceCost,
-          usage.raw?.costDetails?.upstream_inference_cost,
-          usage.raw?.costDetails?.upstreamInferenceCost,
-          usage.raw?.cost,
-        ].find(isValidCacheTokenCount),
-        inputReported: isValidCacheTokenCount(usage.inputTokens),
-        cacheReadReported: isValidCacheTokenCount(reportedCacheReadTokens),
+        measurementCost: isPositiveFiniteNumber(stepCost)
+          ? stepCost
+          : [
+              usage.raw?.cost_details?.upstream_inference_cost,
+              usage.raw?.cost_details?.upstreamInferenceCost,
+              usage.raw?.costDetails?.upstream_inference_cost,
+              usage.raw?.costDetails?.upstreamInferenceCost,
+              usage.raw?.cost,
+            ].find(isNonNegativeCost),
+        inputReported: receipt.inputReported,
+        cacheReadReported: receipt.cacheReadReported,
         rawCost,
-        inputTokens: usage.inputTokens || 0,
-        outputTokens: usage.outputTokens || 0,
-        cacheReadTokens,
-        cacheWriteTokens,
+        reportedCost,
+        reportedIsByok: usage.raw?.is_byok,
+        inputTokens: receipt.inputTokens,
+        outputTokens: receipt.outputTokens,
+        cacheReadTokens: receipt.cacheReadTokens,
+        cacheWriteTokens: receipt.cacheWriteTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
@@ -208,20 +289,12 @@ export class UsageTracker {
     cost?: number;
     model?: string;
   }): void {
-    const cacheReadTokens = isValidCacheTokenCount(usage.cacheReadTokens)
-      ? usage.cacheReadTokens
-      : 0;
-    const cacheWriteTokens = isValidCacheTokenCount(usage.cacheWriteTokens)
-      ? usage.cacheWriteTokens
-      : 0;
-    if (
-      isValidCacheTokenCount(usage.cacheReadTokens) ||
-      isValidCacheTokenCount(usage.cacheWriteTokens)
-    ) {
+    const receipt = normalizeTokenReceipt(usage);
+    if (receipt.cacheTelemetryReported) {
       this.summarizationCacheTelemetryObserved = true;
     }
-    const inputTokens = usage.inputTokens || 0;
-    const outputTokens = usage.outputTokens || 0;
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } =
+      receipt;
     const rawCost = isPositiveFiniteNumber(usage.cost) ? usage.cost : 0;
 
     this.inputTokens += inputTokens;
@@ -234,12 +307,9 @@ export class UsageTracker {
     this.cacheWriteTokens += cacheWriteTokens;
     this.summarizationCacheWriteTokens += cacheWriteTokens;
     this.summarizationStepCosts.push({
-      measurementCost: isValidCacheTokenCount(usage.cost)
-        ? usage.cost
-        : undefined,
-      inputReported:
-        usage.inputTokensReported ?? isValidCacheTokenCount(usage.inputTokens),
-      cacheReadReported: isValidCacheTokenCount(usage.cacheReadTokens),
+      measurementCost: isNonNegativeCost(usage.cost) ? usage.cost : undefined,
+      inputReported: receipt.inputReported,
+      cacheReadReported: receipt.cacheReadReported,
       rawCost,
       inputTokens,
       outputTokens,
@@ -248,7 +318,7 @@ export class UsageTracker {
       modelName: usage.model,
     });
     if (rawCost > 0) {
-      // Summarization survives resetModelLeg(), so do not include it in
+      // Summarization survives prepareModelRetry(), so do not include it in
       // modelProviderCost (the amount removed for a streamed-model retry).
       this.providerCost += rawCost;
     }
@@ -257,22 +327,34 @@ export class UsageTracker {
   setAuthoritativeModelCostForStep(
     stepCostIndex: number | undefined,
     costDollars: number | undefined,
+    openRouter?: { isByok?: boolean; chargedCost?: number },
   ) {
-    if (stepCostIndex !== undefined && isValidCacheTokenCount(costDollars)) {
-      const step = this.modelStepCosts[stepCostIndex];
-      if (step) step.measurementCost = costDollars;
-    }
-    if (!isPositiveFiniteNumber(costDollars) || stepCostIndex === undefined) {
+    if (stepCostIndex === undefined) {
       return;
     }
 
     const stepCost = this.modelStepCosts[stepCostIndex];
     if (!stepCost) return;
+    const resolvedCost =
+      openRouter && isPositiveFiniteNumber(costDollars)
+        ? getProviderUsageRawModelCost(
+            {
+              cost: stepCost.reportedCost ?? openRouter.chargedCost,
+              is_byok: stepCost.reportedIsByok,
+              cost_details: { upstream_inference_cost: costDollars },
+            },
+            openRouter.isByok,
+          )
+        : costDollars;
+    if (isNonNegativeCost(resolvedCost)) {
+      stepCost.measurementCost = resolvedCost;
+    }
+    if (!isPositiveFiniteNumber(resolvedCost)) return;
 
     const previousCost = stepCost.authoritativeCost ?? stepCost.rawCost;
-    stepCost.authoritativeCost = costDollars;
-    this.providerCost += costDollars - previousCost;
-    this.modelProviderCost += costDollars - previousCost;
+    stepCost.authoritativeCost = resolvedCost;
+    this.providerCost += resolvedCost - previousCost;
+    this.modelProviderCost += resolvedCost - previousCost;
   }
 
   private get allModelSteps(): ModelStepCost[] {
@@ -320,6 +402,20 @@ export class UsageTracker {
     );
   }
 
+  /**
+   * Measurement only: true when a model call started, a model record (including
+   * a discarded retry) or non-model cost was observed. Never decide billing here.
+   */
+  get hasIncurredMeasurement(): boolean {
+    return (
+      this.modelCallsStarted > 0 ||
+      this.discardedModelSteps.length > 0 ||
+      this.modelStepCosts.length > 0 ||
+      this.summarizationStepCosts.length > 0 ||
+      this.nonModelCost > 0
+    );
+  }
+
   private stepMeasurementCost(
     step: ModelStepCost,
     fallbackModel: string,
@@ -348,8 +444,16 @@ export class UsageTracker {
     const covered = steps.filter(
       (step) => step.inputReported && step.cacheReadReported,
     );
+    const stepCosts = steps.map((step) => ({
+      modelName: step.modelName ?? fallbackModel,
+      costDollars: this.stepMeasurementCost(step, fallbackModel),
+    }));
+    const observedModelCost = stepCosts.reduce(
+      (sum, step) => sum + step.costDollars,
+      0,
+    );
     return {
-      usage_measurement_version: 1,
+      usage_measurement_version: 2,
       usage_model_calls_started: this.modelCallsStarted,
       usage_model_records: modelSteps.length,
       usage_summary_records: this.summarizationStepCosts.length,
@@ -360,9 +464,26 @@ export class UsageTracker {
       usage_provider_cost_records: steps.filter(
         (step) => step.measurementCost !== undefined,
       ).length,
-      usage_observed_model_cost_dollars: sumCost(steps),
+      // Missing input usage without a provider cost leaves unknown spend,
+      // even if output tokens permit a partial estimate.
+      usage_unreported_model_records: steps.filter(
+        (step) => !step.inputReported && step.measurementCost === undefined,
+      ).length,
+      usage_token_estimated_model_records: steps.filter(
+        (step) => step.measurementCost === undefined,
+      ).length,
+      usage_observed_model_cost_dollars: observedModelCost,
       usage_discarded_retry_cost_dollars: sumCost(this.discardedModelSteps),
       usage_summary_cost_dollars: sumCost(this.summarizationStepCosts),
+      ...servingProviderCostProperties(stepCosts),
+      // Includes tool/auxiliary-vision costs plus any sandbox and Trigger run
+      // costs already added at settlement. Do not add their separate fields
+      // again. Missing unreported calls still remain unknown.
+      usage_observed_non_model_cost_dollars: this.nonModelCost,
+      usage_trigger_run_cost_dollars: this.triggerRunCostDollars,
+      // Incurred, not billable: includes discarded retries and estimated steps.
+      // A lower bound while any record or started call remains unreported.
+      usage_known_incurred_cost_dollars: observedModelCost + this.nonModelCost,
       usage_observed_input_tokens: steps.reduce(
         (sum, step) => sum + step.inputTokens,
         0,
@@ -442,9 +563,13 @@ export class UsageTracker {
       uncoveredPoints: Math.max(0, billingBreakdown?.uncoveredPoints ?? 0),
       usageDeductionFailed:
         billingBreakdown?.usageDeductionFailed === true ||
+        billingBreakdown?.usageDeductionOutcomeUnknown === true ||
         (billingBreakdown?.uncoveredPoints ?? 0) > 0,
       usageDeductionFailureReason:
         billingBreakdown?.usageDeductionFailureReason,
+      ...(billingBreakdown?.usageDeductionOutcomeUnknown && {
+        usageDeductionOutcomeUnknown: true,
+      }),
     };
   }
 
@@ -482,6 +607,7 @@ export class UsageTracker {
     | "uncoveredPoints"
     | "usageDeductionFailed"
     | "usageDeductionFailureReason"
+    | "usageDeductionOutcomeUnknown"
   > {
     const {
       includedPointsDeducted,
@@ -489,6 +615,7 @@ export class UsageTracker {
       uncoveredPoints,
       usageDeductionFailed,
       usageDeductionFailureReason,
+      usageDeductionOutcomeUnknown,
     } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
     const totalPoints =
       includedPointsDeducted + extraUsagePointsDeducted + uncoveredPoints;
@@ -503,6 +630,9 @@ export class UsageTracker {
         uncoveredPoints,
         usageDeductionFailed,
         usageDeductionFailureReason,
+        ...(usageDeductionOutcomeUnknown && {
+          usageDeductionOutcomeUnknown: true,
+        }),
       };
     }
 
@@ -521,6 +651,9 @@ export class UsageTracker {
       uncoveredPoints,
       usageDeductionFailed,
       usageDeductionFailureReason,
+      ...(usageDeductionOutcomeUnknown && {
+        usageDeductionOutcomeUnknown: true,
+      }),
     };
   }
 
@@ -609,10 +742,13 @@ export class UsageTracker {
     accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
-  }) {
+  }): Promise<UsageLogPersistence> {
     const usage = this.createUsageCostRecord(args);
-    logUsageRecord({
+    // Callers await this so the ledger row is not abandoned when the request
+    // or worker ends. It resolves with a failure status instead of throwing.
+    return logUsageRecord({
       usageSettlementId: this.usageSettlementId,
+      admissionOperationId: args.rateLimitInfo.extraUsageAdmissionOperationId,
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,
@@ -629,6 +765,7 @@ export class UsageTracker {
       uncoveredCostDollars: usage.uncoveredCostDollars,
       uncoveredPoints: usage.uncoveredPoints,
       usageDeductionFailureReason: usage.usageDeductionFailureReason,
+      usageDeductionOutcomeUnknown: usage.usageDeductionOutcomeUnknown,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens,

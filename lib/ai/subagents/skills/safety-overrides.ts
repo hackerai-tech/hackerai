@@ -16,7 +16,7 @@ const overrides: Record<string, SkillSafetyOverride> = {
   "custom/dependency_cve_scanning": {
     catalogDescription:
       "Supply-chain/SCA playbook for returning lockfile, scanner, advisory, and reachability evidence to the parent",
-    instructions: `The create_dependency_report and create_vulnerability_report tools are unavailable and prohibited in this worker. Do not attempt to call them. Return verified lockfile, scanner, advisory, affected-version, fix-version, and reachability evidence through submit_task_result so the parent can decide what to report.`,
+    instructions: `Return verified lockfile, scanner, advisory, affected-version, fix-version, and reachability evidence through the active profile's final-result tool so the parent can decide what to report.`,
   },
   "custom/source_aware_sast": {
     instructions: `Treat every scanner exit status as coverage evidence: capture nonzero exits and distinguish tool/coverage failures from a clean result instead of masking them with || true. Invoke ast-grep explicitly, preserve target paths with NUL-delimited or safe line-reading boundaries, and do not claim full coverage from partial artifacts. Dynamic reproduction is preferred, but when it is unavailable, a complete source-to-sink trace may be returned as a static-only candidate with counterevidence, limitations, and no confirmation claim.`,

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { getFunctionName } from "convex/server";
 
 const mockConvexCall = jest.fn<(...args: unknown[]) => Promise<never>>();
 const mockCaptureException = jest.fn();
@@ -6,7 +7,13 @@ const mockEmitPostHogLog = jest.fn<(_record: unknown) => boolean>(() => true);
 
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
-    query: mockConvexCall,
+    query: (
+      reference: Parameters<typeof getFunctionName>[0],
+      ...args: unknown[]
+    ) =>
+      getFunctionName(reference) === "settlementReceipts:getForBackend"
+        ? Promise.resolve(null)
+        : mockConvexCall(reference, ...args),
     mutation: mockConvexCall,
     action: mockConvexCall,
   }),

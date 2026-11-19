@@ -1,0 +1,170 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
+import { z } from "zod";
+import { NextRequest } from "next/server";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import {
+  classifyGoalReconciliationFailure,
+  type GoalReconciliationStep,
+} from "@/lib/goals/reconciliation-diagnostics";
+import { getChatById } from "@/lib/db/actions";
+import {
+  cancelAgentTriggerRun,
+  closeAgentApprovalSession,
+} from "@/lib/api/agent-approval-session";
+import { ChatSDKError } from "@/lib/errors";
+import { phLogger } from "@/lib/posthog/server";
+
+const controlRequest = z.discriminatedUnion("action", [
+  z.object({
+    chatId: z.string().trim().min(1).max(128),
+    action: z.enum(["pause", "stop", "clear"]),
+    generation: z.number().int().nonnegative().optional(),
+  }),
+  z.object({
+    chatId: z.string().trim().min(1).max(128),
+    action: z.literal("update"),
+    generation: z.number().int().nonnegative(),
+    objective: z.string().trim().min(1).max(4000),
+    criteria: z.array(z.string().trim().min(1).max(1000)).min(1).max(8),
+    verificationCommand: z.string().max(2000).optional(),
+    constraints: z.string().max(2000).optional(),
+    boundaries: z.string().max(2000).optional(),
+    stopWhen: z.string().max(2000).optional(),
+  }),
+]);
+export const maxDuration = 30;
+/** Own goal-read recovery until the status response finishes, separately from controls. */
+async function handleGet(req: NextRequest) {
+  let failureStage: "auth_lookup" | "goal_reconciliation" = "auth_lookup";
+  let reconciliationStep: GoalReconciliationStep | undefined;
+  try {
+    const { userId, subscription } = await getUserIDAndPro(req);
+    failureStage = "goal_reconciliation";
+    const chatId = req.nextUrl.searchParams.get("chatId");
+    const goal = chatId
+      ? await reconcileGoal(chatId, userId, (step) => {
+          reconciliationStep = step;
+        })
+      : null;
+    // A later failure did not happen inside a reconciliation step.
+    reconciliationStep = undefined;
+    return Response.json({
+      enabled: subscription !== "free",
+      ...(chatId ? { goal: goal?.deletedAt ? null : goal } : {}),
+    });
+  } catch (e) {
+    if (e instanceof ChatSDKError) return e.toResponse();
+    const { failureKind, convexRequestId } =
+      classifyGoalReconciliationFailure(e);
+    try {
+      phLogger.warn("agent_goal_status_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: failureStage,
+        ...(failureStage === "goal_reconciliation"
+          ? { reconciliation_step: reconciliationStep ?? "unknown" }
+          : {}),
+        failure_kind: failureKind,
+        convex_request_id: convexRequestId,
+      });
+    } catch {
+      // Diagnostics must not replace the existing response or retry the operation.
+    }
+    return Response.json(
+      { message: "Goal access unavailable" },
+      { status: 503 },
+    );
+  }
+}
+export const GET = withServiceQueryRecovery(handleGet);
+
+/**
+ * The last control boundary entered before a failure. It never proves that a
+ * remote call was dispatched or applied: e.g. a mutation can have succeeded
+ * before a later cancellation fails, and argument construction can throw first.
+ */
+type GoalControlStage =
+  | "auth_lookup"
+  | "parse_request"
+  | "get_chat"
+  | "update_goal"
+  | "control_goal"
+  | "close_approval_session"
+  | "cancel_trigger_run"
+  | "capture_lifecycle"
+  | "response";
+
+export async function POST(req: NextRequest) {
+  let failureStage: GoalControlStage = "auth_lookup";
+  try {
+    const { userId } = await getUserIDAndPro(req);
+    failureStage = "parse_request";
+    const parsed = controlRequest.safeParse(await req.json().catch(() => null));
+    if (!parsed.success)
+      return Response.json(
+        { message: "Invalid goal control request" },
+        { status: 400 },
+      );
+    const body = parsed.data;
+    failureStage = "get_chat";
+    const chat = await getChatById({ id: body.chatId });
+    if (!chat || chat.user_id !== userId)
+      return Response.json({ message: "Chat unavailable" }, { status: 403 });
+    const { action, ...fields } = body;
+    failureStage = action === "update" ? "update_goal" : "control_goal";
+    const goal =
+      action === "update"
+        ? await getConvexClient().mutation(api.agentGoals.update, {
+            serviceKey: goalServiceKey(),
+            userId,
+            ...(fields as Extract<typeof body, { action: "update" }>),
+          })
+        : await getConvexClient().mutation(api.agentGoals.control, {
+            serviceKey: goalServiceKey(),
+            userId,
+            chatId: body.chatId,
+            action,
+            generation: body.generation,
+          });
+    if (goal.activeRunId) {
+      failureStage = "close_approval_session";
+      await closeAgentApprovalSession(
+        chat.active_agent_approval_session_id,
+        "goal-user-control",
+      );
+      failureStage = "cancel_trigger_run";
+      await cancelAgentTriggerRun(goal.activeRunId);
+    }
+    failureStage = "capture_lifecycle";
+    await captureGoalLifecycle(
+      action === "update" ? "update" : action,
+      { userId, chatId: body.chatId, runId: goal.activeRunId },
+      goal,
+    );
+    failureStage = "response";
+    return Response.json({ state: goal.state, generation: goal.generation });
+  } catch (e) {
+    if (e instanceof ChatSDKError) return e.toResponse();
+    const { failureKind, convexRequestId } =
+      classifyGoalReconciliationFailure(e);
+    try {
+      phLogger.warn("agent_goal_control_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: failureStage,
+        failure_kind: failureKind,
+        convex_request_id: convexRequestId,
+      });
+    } catch {
+      // Diagnostics must not replace the existing response or retry the control.
+    }
+    return Response.json(
+      {
+        message: "Goal control could not finish. Reload to check saved state.",
+      },
+      { status: 503 },
+    );
+  }
+}

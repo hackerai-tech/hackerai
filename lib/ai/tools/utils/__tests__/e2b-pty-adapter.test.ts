@@ -273,7 +273,10 @@ describe("createE2BPtyHandle", () => {
 
       rejectWait(new Error("boom"));
 
-      await expect(handle.exited).resolves.toEqual({ exitCode: null });
+      await expect(handle.exited).resolves.toEqual({
+        exitCode: null,
+        observationFailed: true,
+      });
       expect(errorSpy).toHaveBeenCalled();
       const firstCall = errorSpy.mock.calls[0];
       expect(String(firstCall[0])).toContain("[e2b-pty-adapter]");

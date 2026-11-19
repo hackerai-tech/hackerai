@@ -117,8 +117,19 @@ describe("saveMessage — is_hidden handling", () => {
       user_id: USER_ID,
       canceled_at: undefined,
     },
+    access: Record<string, any> | null = null,
   ): void {
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "chat_history_access") {
+        const lookup = jest.fn<any>().mockResolvedValue(access);
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: lookup,
+            unique: lookup,
+          }),
+        };
+      }
+
       if (table === "messages") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -347,6 +358,70 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it.each([undefined, "trigger_crashed_client_saved", "stop"])(
+    "server completion preserves final content over a client snapshot (existing %s)",
+    async (finishReason) => {
+      setupExistingMessage(
+        makeMessage({
+          role: "assistant",
+          trigger_run_id: "run-1",
+          finish_reason: finishReason,
+          parts: [{ type: "text", text: "partial" }],
+        }),
+      );
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        triggerRunId: "run-1",
+        parts: [{ type: "text", text: "complete" }],
+        finishReason: "stop",
+      });
+      if (finishReason === "stop") {
+        expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ parts: expect.anything() }),
+        );
+      } else {
+        expect(mockCtx.db.patch).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "complete" }],
+            finish_reason: "stop",
+          }),
+        );
+      }
+    },
+  );
+
+  it("does not let a late client snapshot replace retained server content", async () => {
+    setupExistingMessage(
+      makeMessage({
+        role: "assistant",
+        trigger_run_id: "run-1",
+        parts: [{ type: "text", text: "retained server content" }],
+      }),
+    );
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      triggerRunId: "run-1",
+      clientSnapshot: true,
+      parts: [{ type: "text", text: "older browser snapshot" }],
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ parts: expect.anything() }),
+    );
+  });
+
   it("rejects changing an existing message to a different Trigger run", async () => {
     const existing = makeMessage({
       role: "assistant",
@@ -432,6 +507,65 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
     expect(mockCtx.runQuery).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["other-chat", USER_ID, "chat"],
+    [CHAT_ID, "other-user", "user"],
+    ["other-chat", "other-user", "chat_and_user"],
+  ])(
+    "logs only the ownership mismatch scope while rejecting a normal save (%s/%s)",
+    async (existingChatId, existingUserId, scope) => {
+      setupExistingMessage(
+        makeMessage({
+          id: "reused-message-id",
+          chat_id: existingChatId,
+          user_id: existingUserId,
+          parts: [{ type: "text", text: "PRIVATE_EXISTING_CONTENT" }],
+        }),
+      );
+      const { saveMessage } = await import("../messages");
+      const error = await saveMessage
+        .handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "reused-message-id",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "user" as const,
+          parts: [{ type: "text", text: "PRIVATE_INCOMING_CONTENT" }],
+        })
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        data: {
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "verify_existing_message_ownership",
+          causeData: { code: "MESSAGE_UNAUTHORIZED" },
+        },
+      });
+      const records = jest
+        .mocked(console.error)
+        .mock.calls.map(([value]) => {
+          try {
+            return JSON.parse(String(value));
+          } catch {
+            return {};
+          }
+        })
+        .filter((row) => row.event === "convex_message_save_failed");
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        message_ownership_mismatch: scope,
+        message_ownership_diagnostic_version: 1,
+      });
+      expect(JSON.stringify(records)).not.toMatch(
+        /PRIVATE_|other-chat|other-user/,
+      );
+      expect(JSON.stringify(error)).not.toMatch(
+        /message_ownership_mismatch|message_ownership_diagnostic_version|other-chat|other-user|PRIVATE_/,
+      );
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    },
+  );
 
   it("should not include is_hidden: true on insert when isHidden is not provided", async () => {
     setupExistingMessage(null);
@@ -629,12 +763,64 @@ describe("saveMessage — is_hidden handling", () => {
         code: "MESSAGE_SAVE_FAILED",
         failureStage: "validate_new_message_file_ownership",
         causeMessage: "File does not belong to user",
+        fileValidationReason: "file_not_owned",
       }),
     });
 
     expect(mockCtx.db.insert).not.toHaveBeenCalled();
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["missing row", "file_missing"],
+    ["failed lookup", "file_lookup_failed"],
+    ["different owner", "file_not_owned"],
+  ])(
+    "diagnoses %s without admitting an attached message",
+    async (scenario, reason) => {
+      setupExistingMessage(null);
+      if (scenario === "failed lookup") {
+        mockCtx.db.get.mockRejectedValue(new Error("lookup unavailable"));
+      } else {
+        mockCtx.db.get.mockResolvedValue(
+          scenario === "different owner" ? { user_id: "other-user" } : null,
+        );
+      }
+      const { saveMessage } = await import("../messages");
+      await expect(
+        saveMessage.handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "file-validation-message",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "user",
+          parts: [{ type: "text", text: "attachment" }],
+          fileIds: ["unavailable-file" as Id<"files">],
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "validate_new_message_file_ownership",
+          causeName: "Error",
+          causeMessage:
+            scenario === "different owner"
+              ? "File does not belong to user"
+              : "File not found",
+          fileValidationReason: reason,
+        }),
+      });
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      const structuredErrors = (console.error as jest.Mock).mock.calls.filter(
+        (call) => typeof call[0] === "string" && call[0].startsWith("{"),
+      );
+      expect(structuredErrors).toHaveLength(1);
+      expect(JSON.parse(structuredErrors[0][0] as string)).toMatchObject({
+        event: "convex_message_save_failed",
+        file_validation_reason: reason,
+      });
+    },
+  );
 
   const previewParts = (ids: string[]) => [
     {
@@ -802,10 +988,140 @@ describe("saveMessage — is_hidden handling", () => {
         code: "MESSAGE_SAVE_FAILED",
         failureStage: "validate_existing_message_file_ownership",
         causeMessage: "File does not belong to user",
+        fileValidationReason: "file_not_owned",
       }),
     });
 
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  // Legacy chats without a stable ownership row make every history page depend
+  // on the chat document. The first admitted user insert must create that row
+  // in the same transaction, and nothing else may create or rewrite it.
+  describe("stable history ownership", () => {
+    const saveArgs = (overrides: Record<string, any> = {}) => ({
+      serviceKey: SERVICE_KEY,
+      id: "msg-new-user",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "continue" }],
+      ...overrides,
+    });
+    const accessInserts = () =>
+      mockCtx.db.insert.mock.calls.filter(
+        ([table]: [string]) => table === "chat_history_access",
+      );
+
+    it.each([
+      ["visible", undefined],
+      ["hidden continuation", true],
+    ])(
+      "creates the owner's row for a %s user insert into a legacy chat",
+      async (_label, isHidden) => {
+        setupExistingMessage(null);
+        const { saveMessage } = await import("../messages");
+
+        await saveMessage.handler(mockCtx, saveArgs({ isHidden }));
+
+        expect(accessInserts()).toEqual([
+          ["chat_history_access", { chat_id: CHAT_ID, user_id: USER_ID }],
+        ]);
+        expect(mockCtx.db.insert).toHaveBeenCalledWith(
+          "messages",
+          expect.objectContaining({ id: "msg-new-user", role: "user" }),
+        );
+      },
+    );
+
+    it.each([
+      ["matching", USER_ID],
+      ["conflicting", "other-user"],
+    ])(
+      "keeps an existing %s ownership row unchanged",
+      async (_label, owner) => {
+        const access = {
+          _id: "access-doc",
+          chat_id: CHAT_ID,
+          user_id: owner,
+        };
+        setupExistingMessage(null, undefined, access);
+        const { saveMessage } = await import("../messages");
+
+        await saveMessage.handler(mockCtx, saveArgs());
+
+        expect(accessInserts()).toEqual([]);
+        expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+          "access-doc",
+          expect.anything(),
+        );
+        expect(mockCtx.db.delete).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not create a row from assistant inserts", async () => {
+      setupExistingMessage(null);
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(
+        mockCtx,
+        saveArgs({ role: "assistant", id: "msg-new-assistant" }),
+      );
+
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "messages",
+        expect.objectContaining({ role: "assistant" }),
+      );
+      expect(accessInserts()).toEqual([]);
+    });
+
+    it("does not create a row when a user message is retried", async () => {
+      setupExistingMessage(makeMessage());
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(mockCtx, saveArgs({ id: "msg-1" }));
+
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    });
+
+    it("does not create a row for a chat whose deletion has started", async () => {
+      setupExistingMessage(null, {
+        _id: "chat-doc-1",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        canceled_at: 1,
+        deletion_started_at: 1,
+      });
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(mockCtx, saveArgs());
+
+      expect(accessInserts()).toEqual([]);
+    });
+
+    it.each([
+      ["missing", null, "CHAT_NOT_FOUND"],
+      [
+        "another user's",
+        { _id: "chat-doc-1", id: CHAT_ID, user_id: "other-user" },
+        "CHAT_UNAUTHORIZED",
+      ],
+    ])(
+      "rejects a user insert into a %s chat without creating a row",
+      async (_label, chat, code) => {
+        setupExistingMessage(null, chat);
+        const { saveMessage } = await import("../messages");
+
+        await expect(
+          saveMessage.handler(mockCtx, saveArgs()),
+        ).rejects.toMatchObject({
+          data: expect.objectContaining({
+            causeData: expect.objectContaining({ code }),
+          }),
+        });
+        expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      },
+    );
   });
 });
 
@@ -835,13 +1151,21 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
       isDone: true,
       continueCursor: "",
     });
-    mockCtx.db.query.mockReturnValue({
-      withIndex: jest.fn().mockReturnValue({
-        order: jest.fn().mockReturnValue({
-          paginate: paginateMock,
-        }),
-      }),
-    });
+    mockCtx.db.query.mockImplementation((table: string) =>
+      table === "chat_history_access"
+        ? {
+            withIndex: () => ({
+              unique: async () => ({ chat_id: CHAT_ID, user_id: USER_ID }),
+            }),
+          }
+        : {
+            withIndex: jest.fn().mockReturnValue({
+              order: jest.fn().mockReturnValue({
+                paginate: paginateMock,
+              }),
+            }),
+          },
+    );
     return paginateMock;
   }
 
@@ -1494,5 +1818,135 @@ describe("isUserMessagePersisted", () => {
   );
   it("requires authentication even for a missing message", async () => {
     await expect(check(null, null)).rejects.toThrow("Unauthorized");
+  });
+});
+
+describe("getSavedFilesByChatId — workspace-independent saved downloads", () => {
+  const report = {
+    _id: "saved-report",
+    user_id: USER_ID,
+    name: "report.pdf",
+    media_type: "application/pdf",
+    size: 240,
+    content: "must not reach client",
+    s3_key: "private-key",
+  };
+  function context(owner = USER_ID) {
+    const paginate = jest
+      .fn<any>()
+      .mockImplementation(async ({ cursor }: { cursor: string | null }) =>
+        cursor === "older"
+          ? {
+              page: [
+                makeMessage({
+                  id: "older-message",
+                  role: "assistant",
+                  parts: [],
+                  file_ids: [report._id, report._id, "missing", "foreign"],
+                }),
+              ],
+              isDone: true,
+              continueCursor: "",
+            }
+          : {
+              page: [
+                makeMessage(),
+                makeMessage({
+                  role: "assistant",
+                  is_hidden: true,
+                  file_ids: ["hidden"],
+                }),
+              ],
+              isDone: false,
+              continueCursor: "older",
+            },
+      );
+    const get = jest
+      .fn<any>()
+      .mockImplementation(async (id: string) =>
+        id === report._id
+          ? report
+          : id === "foreign"
+            ? { ...report, _id: id, user_id: "other-user" }
+            : null,
+      );
+    const ctx: any = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+      },
+      db: {
+        query: jest.fn((table: string) =>
+          table === "chat_history_access"
+            ? {
+                withIndex: () => ({
+                  unique: async () => ({ chat_id: CHAT_ID, user_id: owner }),
+                }),
+              }
+            : { withIndex: () => ({ order: () => ({ paginate }) }) },
+        ),
+        get,
+      },
+    };
+    return { ctx, paginate, get };
+  }
+
+  it("retains the cursor across empty recent pages and finds old saved IDs even with no tool history", async () => {
+    const { getSavedFilesByChatId } = await import("../messages");
+    const { ctx, paginate, get } = context();
+    const recent = await getSavedFilesByChatId.handler(ctx, {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 100, cursor: null },
+    });
+    expect(recent).toEqual({
+      page: [],
+      isDone: false,
+      continueCursor: "older",
+    });
+    expect(get).not.toHaveBeenCalled();
+    const older = await getSavedFilesByChatId.handler(ctx, {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 14, cursor: recent.continueCursor },
+    });
+    expect(older.page).toEqual([
+      {
+        id: "older-message",
+        role: "assistant",
+        fileDetails: [
+          {
+            fileId: report._id,
+            name: "report.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: 240,
+          },
+        ],
+      },
+    ]);
+    expect(paginate).toHaveBeenNthCalledWith(1, {
+      numItems: 14,
+      cursor: null,
+      maximumBytesRead: 4 * 1024 * 1024,
+    });
+    expect(older.isDone).toBe(true);
+  });
+
+  it("does not read files for another chat owner or an unauthenticated caller", async () => {
+    const { getSavedFilesByChatId } = await import("../messages");
+    const { ctx, paginate, get } = context("other-user");
+    const args = {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 14, cursor: null },
+    };
+    await expect(
+      getSavedFilesByChatId.handler(ctx, args),
+    ).rejects.toMatchObject({ data: { code: "CHAT_UNAUTHORIZED" } });
+    expect(paginate).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    ctx.auth.getUserIdentity.mockResolvedValue(null);
+    await expect(getSavedFilesByChatId.handler(ctx, args)).resolves.toEqual({
+      page: [],
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(paginate).not.toHaveBeenCalled();
   });
 });

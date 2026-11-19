@@ -1,10 +1,20 @@
 import {
+  inference,
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_CYBER_MODEL_ID,
+} from "./inference";
+import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
   DEEPSEEK_1017_CANONICAL_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
+import { withOpenRouterStreamErrorContext } from "./openrouter-stream-error-context";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
+import {
+  recordOpenRouterBodyFailureContext,
+  type OpenRouterBodyFailurePhase,
+} from "@/lib/utils/openrouter-stream-error-context";
 import {
   abliteration,
   ABLITERATION_LARGE_FLASH_MODEL_ID,
@@ -664,15 +674,28 @@ const createToolMediaRequestRecoveryBody = (
   };
 };
 
+type SandboxPdfRecoveryUnavailableReason =
+  | "unsupported_request_shape"
+  | "no_staged_attachments"
+  | "no_unique_matching_file"
+  | "no_user_message";
+
 const createSandboxPdfRecoveryBody = (
   body: unknown,
   removeAllFileParts = false,
-): { body: unknown; changed: boolean } => {
+): { body: unknown } & (
+  | { changed: true }
+  | { changed: false; unavailableReason: SandboxPdfRecoveryUnavailableReason }
+) => {
   if (!isRecord(body) || !Array.isArray(body.messages)) {
-    return { body, changed: false };
+    return {
+      body,
+      changed: false,
+      unavailableReason: "unsupported_request_shape",
+    };
   }
   if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_staged_attachments" };
   }
 
   let removedFilePart = false;
@@ -713,13 +736,20 @@ const createSandboxPdfRecoveryBody = (
       : { ...message, content };
   });
 
-  if (!removedFilePart || lastUserMessageIndex < 0) {
-    return { body, changed: false };
+  if (!removedFilePart) {
+    return {
+      body,
+      changed: false,
+      unavailableReason: "no_unique_matching_file",
+    };
+  }
+  if (lastUserMessageIndex < 0) {
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
 
   const lastUserMessage = messages[lastUserMessageIndex];
   if (!isRecord(lastUserMessage)) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
   const recoveryInstruction = removeAllFileParts
     ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
@@ -765,12 +795,15 @@ const logPdfParserRecovery = (
   fromEngine: "mistral-ocr" | "cloudflare-ai" | "unknown",
   toEngine: "cloudflare-ai" | "sandbox",
   reason: PdfParserFailure,
+  unavailableReason?: SandboxPdfRecoveryUnavailableReason,
 ) => {
   console.warn(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "warn",
-      event: "openrouter_pdf_parser_recovery",
+      event: unavailableReason
+        ? "openrouter_pdf_parser_recovery_unavailable"
+        : "openrouter_pdf_parser_recovery",
       service: "openrouter",
       environment:
         process.env.TRIGGER_ENV ??
@@ -780,6 +813,7 @@ const logPdfParserRecovery = (
       from_engine: fromEngine,
       to_engine: toEngine,
       reason,
+      ...(unavailableReason && { unavailable_reason: unavailableReason }),
     }),
   );
 };
@@ -1027,23 +1061,41 @@ export const attachOpenRouterStreamErrorMetadata = (
   let cancelled = false;
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());
+  const responseStatus = response.status;
+  const responseIdentity = {};
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      let phase: OpenRouterBodyFailurePhase = "read_body";
       try {
         const chunk = await reader.read();
         if (cancelled) return;
         if (chunk.done) {
+          phase = "finish_stream";
           options.signal?.throwIfAborted();
           observer?.finish();
           controller.close();
           return;
         }
+        phase = "observe_chunk";
         observer?.feed(chunk.value);
+        phase = "forward_chunk";
         controller.enqueue(chunk.value);
       } catch (error) {
         observer?.reset();
-        if (!cancelled)
-          controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+        if (!cancelled) {
+          const enriched = enrichOpenRouterStreamError(error, responseHeaders);
+          try {
+            recordOpenRouterBodyFailureContext(
+              enriched,
+              responseIdentity,
+              responseStatus,
+              phase,
+            );
+          } catch {
+            // Optional diagnostics must not replace the original stream failure.
+          }
+          controller.error(enriched);
+        }
       }
     },
     cancel(reason) {
@@ -1054,7 +1106,7 @@ export const attachOpenRouterStreamErrorMetadata = (
   });
 
   return new Response(body, {
-    status: response.status,
+    status: responseStatus,
     statusText: response.statusText,
     headers: response.headers,
   });
@@ -1149,6 +1201,12 @@ export const createOpenRouterPatchFetch =
         parserFailure === "generic_parse",
       );
       if (!sandboxBody.changed) {
+        logPdfParserRecovery(
+          "unknown",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
         return wrapResponse(initialResponse);
       }
 
@@ -1169,6 +1227,12 @@ export const createOpenRouterPatchFetch =
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
       const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
       if (!sandboxBody.changed) {
+        logPdfParserRecovery(
+          "cloudflare-ai",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
         return wrapResponse(initialResponse);
       }
 
@@ -1214,6 +1278,12 @@ export const createOpenRouterPatchFetch =
 
     const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
     if (!sandboxBody.changed) {
+      logPdfParserRecovery(
+        "cloudflare-ai",
+        "sandbox",
+        cloudflareFailure,
+        sandboxBody.unavailableReason,
+      );
       return wrapResponse(cloudflareResponse);
     }
 
@@ -1273,13 +1343,15 @@ export const getOpenRouterProviderRoutingForModel = (
 };
 
 const buildProviderMap = (
-  or: OpenRouterInstance,
+  provider: OpenRouterInstance,
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
-) =>
-  ({
+) => {
+  const or = (id: Parameters<OpenRouterInstance>[0]) =>
+    withOpenRouterStreamErrorContext(provider(id));
+  return {
     [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
@@ -1315,9 +1387,12 @@ const buildProviderMap = (
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
-  }) as Record<string, any>;
+  } as Record<string, any>;
+};
 
-const baseProviders: ReturnType<typeof buildProviderMap> = {
+const baseProviders: ReturnType<typeof buildProviderMap> &
+  Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {
+  [INFERENCE_CYBER_MODEL_KEY]: inference(INFERENCE_CYBER_MODEL_ID),
   ...buildProviderMap(openrouter),
   [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
   [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
@@ -1351,6 +1426,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
+  [INFERENCE_CYBER_MODEL_KEY]: "Inference DeepSeek V4.1 Flash 1017 Cyber",
   [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
   [ABLITERATION_LARGE_V2_MODEL_KEY]:
     "Abliteration abliterated-model-large-flash",
@@ -1494,7 +1570,7 @@ export function resolveAgentTierToProviderKey(
     case "hackerai-pro":
       return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
-      return "model-glm-5.3";
+      return "model-grok-4.6";
   }
 }
 

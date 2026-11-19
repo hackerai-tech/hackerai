@@ -182,6 +182,9 @@ const convertUrlToBase64DataUrl = async (
     return url;
   } finally {
     clearTimeout(timeoutId);
+    // Release an unread body after a non-OK response. Aborting has no effect
+    // once the body has been fully consumed.
+    controller.abort();
   }
 };
 
@@ -377,6 +380,9 @@ const validateImageUrl = async (
     };
   } finally {
     clearTimeout(timeoutId);
+    // Release any unread body on early rejection. Aborting is synchronous and
+    // has no effect once the body has been fully consumed.
+    controller.abort();
   }
 };
 

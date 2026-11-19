@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ABUSE_EMAIL } from "@/lib/abuse/report";
 import {
   HELP_CENTER_URL,
   PUBLIC_PAGE_LAST_MODIFIED,
@@ -167,19 +168,18 @@ export default function TermsOfServicePage() {
             </p>
             <p className="mt-2">
               Any future use of Input or Output for model training, evaluation,
-              or commercial licensing to AI partners will be subject to the
-              program notice, your settings, applicable law, and any required
-              agreement or consent. You retain ownership of your content. The
-              service license above does not by itself authorize partner data
-              licensing. See{" "}
+              or commercial licensing to AI partners will be subject to prior
+              program notice, applicable law, and any required agreement or
+              consent. You retain ownership of your content. The service license
+              above does not by itself authorize partner data licensing. See{" "}
               <Link
                 href="/privacy-policy#data-contributions"
                 className={linkClassName}
               >
-                Model improvement and data licensing
+                Model training and data licensing
               </Link>{" "}
-              in our Privacy Policy for the default-on preference, opt-out, and
-              limits on eligible content. Partner data collection is not active.
+              in our Privacy Policy. This program is not active, and partner
+              data collection has not started.
             </p>
           </section>
 
@@ -251,6 +251,24 @@ export default function TermsOfServicePage() {
               any time to protect the Service, manage capacity, or respond to
               provider availability.
             </p>
+            <p className="mt-3">
+              To report suspected misuse of HackerAI, use our{" "}
+              <Link href="/abuse" className={linkClassName}>
+                abuse reporting form
+              </Link>
+              . You do not need a HackerAI account or ownership of the affected
+              system to submit a report.
+              {process.env.ABUSE_EMAIL_VERIFIED === "true" && (
+                <>
+                  {" "}
+                  You can also email{" "}
+                  <a href={`mailto:${ABUSE_EMAIL}`} className={linkClassName}>
+                    {ABUSE_EMAIL}
+                  </a>
+                  .
+                </>
+              )}
+            </p>
           </section>
 
           <section>
@@ -270,6 +288,14 @@ export default function TermsOfServicePage() {
               Sections that by their nature should survive, including those on
               content, payments, disclaimers, liability, indemnity, and
               disputes, survive termination.
+            </p>
+            <p className="mt-3">
+              To request review of a restriction, select “Appeal a decision” on
+              the{" "}
+              <Link href="/abuse" className={linkClassName}>
+                reporting form
+              </Link>
+              . An appeal does not automatically lift a restriction.
             </p>
           </section>
 
@@ -388,9 +414,9 @@ export default function TermsOfServicePage() {
               required by law, provide additional notice. Changes take effect
               when posted unless we state otherwise. Your continued use after
               the effective date constitutes acceptance, and if you do not agree
-              you must stop using the Service. Continued use does not override
-              your model improvement opt-out or substitute for any consent
-              required for new program partners, purposes, or eligible content.
+              you must stop using the Service. Continued use does not substitute
+              for any consent required for a model training or data licensing
+              program, its partners, purposes, or eligible content.
             </p>
           </section>
 

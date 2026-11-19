@@ -33,6 +33,8 @@ import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
   RELAY_STOP_PROGRAM,
+  RELAY_RENEW_FAILURE_CODES,
+  RELAY_RENEW_PROGRAM,
 } from "../relay-program";
 
 let root: string;
@@ -85,8 +87,12 @@ beforeEach(async () => {
   );
   for (let i = 0; i < 100; i++) {
     try {
-      url = `http://127.0.0.1:${await readFile(join(directory, "port"), "utf8")}`;
-      return;
+      // The file can be visible before the child finishes writing its port.
+      const port = Number(await readFile(join(directory, "port"), "utf8"));
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        url = `http://127.0.0.1:${port}`;
+        return;
+      }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -111,6 +117,80 @@ const input = (body: unknown, extraHeaders = headers) =>
     headers: { ...extraHeaders, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+async function renewLease(lease: number, path = directory) {
+  const renewal = spawn(
+    process.execPath,
+    ["-e", RELAY_RENEW_PROGRAM, path, String(lease)],
+    { stdio: "ignore" },
+  );
+  const [code] = await once(renewal, "exit");
+  return code;
+}
+
+it("does not shorten the relay lease when a delayed renewal arrives after a newer one", async () => {
+  const newer = Date.now() + 40_000;
+  expect(await renewLease(newer)).toBe(0);
+  expect(await renewLease(newer - 10_000)).toBe(0);
+  expect(Number(await readFile(join(directory, "lease"), "utf8"))).toBe(newer);
+});
+
+it("rejects a missing relay instead of reporting a successful renewal", async () => {
+  expect(await renewLease(Date.now() + 25_000, join(root, "missing"))).toBe(
+    RELAY_RENEW_FAILURE_CODES.missing_path,
+  );
+});
+
+it.each(["revoked", "closed", "expired"])(
+  "does not revive a %s relay",
+  async (state) => {
+    // The running relay writes its own closed marker after expiry. Isolate
+    // the renewal command so each case tests only its intended rejection.
+    const renewalDirectory = join(root, "renewal");
+    await mkdir(renewalDirectory);
+    const leaseFile = join(renewalDirectory, "lease");
+    const previous = String(Date.now() + (state === "expired" ? -1 : 40_000));
+    await writeFile(leaseFile, previous);
+    if (state !== "expired")
+      await writeFile(join(renewalDirectory, state), "1");
+    expect(await renewLease(Date.now() + 25_000, renewalDirectory)).toBe(
+      state === "expired"
+        ? RELAY_RENEW_FAILURE_CODES.expired_or_invalid_lease
+        : RELAY_RENEW_FAILURE_CODES.revoked_or_closed,
+    );
+    expect(await readFile(leaseFile, "utf8")).toBe(previous);
+  },
+);
+
+it("distinguishes a rejected deadline from lock contention without changing the lease", async () => {
+  const previous = await readFile(join(directory, "lease"), "utf8");
+  expect(await renewLease(Date.now() - 1)).toBe(
+    RELAY_RENEW_FAILURE_CODES.invalid_deadline,
+  );
+  await mkdir(join(directory, "lease.lock"));
+  expect(await renewLease(Date.now() + 25_000)).toBe(
+    RELAY_RENEW_FAILURE_CODES.lock_busy,
+  );
+  expect(await readFile(join(directory, "lease"), "utf8")).toBe(previous);
+});
+
+it("serializes concurrent renewals without losing the later deadline", async () => {
+  const deadline = Date.now() + 40_000;
+  expect(
+    await Promise.all([renewLease(deadline), renewLease(deadline - 5_000)]),
+  ).toEqual([0, 0]);
+  expect(Number(await readFile(join(directory, "lease"), "utf8"))).toBe(
+    deadline,
+  );
+  expect(
+    (
+      await input({
+        sequence: 1,
+        inputs: [{ kind: "text", text: "still controlled" }],
+      })
+    ).status,
+  ).toBe(200);
+});
 
 it("requires origin and bearer authorization before exposing frames or input", async () => {
   expect(
@@ -195,6 +275,47 @@ it("preserves input order, rejects arbitrary commands, and deduplicates response
   });
 });
 
+it("forwards held movement across requests and releases a drag before relay shutdown", async () => {
+  expect(
+    (await input({ sequence: 1, inputs: [{ kind: "down", x: 10, y: 20 }] }))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await input({
+        sequence: 2,
+        inputs: [{ kind: "move", x: 40, y: 50, buttons: 1 }],
+      })
+    ).status,
+  ).toBe(200);
+  await writeFile(join(directory, "revoked"), "1");
+  await once(child, "exit");
+  expect(received).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mousePressed",
+      x: 10,
+      y: 20,
+      button: "left",
+      clickCount: 1,
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseMoved",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+  ]);
+});
+
 it.each(["expiry", "browser replacement", "Agent resume", "run cleanup"])(
   "closes frames and rejects further input after %s",
   async (reason) => {
@@ -214,37 +335,73 @@ it.each(["expiry", "browser replacement", "Agent resume", "run cleanup"])(
   },
 );
 
-it("starts the detached relay from protected stdin and prints only its port", async () => {
-  const second = join(root, "second-relay");
-  const config = JSON.parse(await readFile(join(directory, "config"), "utf8"));
-  const launcher = spawn(process.execPath, ["-e", RELAY_START_PROGRAM], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let stdout = "";
-  launcher.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  launcher.stdin.end(
-    JSON.stringify({
-      directory: second,
-      config,
-      program: browserRelayProgram(),
-      lease: Date.now() + 3000,
-    }),
-  );
-  const [code] = await once(launcher, "exit");
-  expect(code).toBe(0);
-  expect(stdout).toMatch(/^\d+$/);
-  expect(await stopRelay(second)).toBe(0);
-});
+it.each([false, true])(
+  "starts the detached relay from protected stdin despite an initial empty port read: %s",
+  async (emptyPortRead) => {
+    const second = join(root, "second-relay");
+    const config = JSON.parse(
+      await readFile(join(directory, "config"), "utf8"),
+    );
+    // Model the create/write window without depending on filesystem scheduling.
+    const initialRead = emptyPortRead
+      ? `
+    (() => {
+      const fs = require('node:fs');
+      const read = fs.readFileSync;
+      let first = true;
+      fs.readFileSync = function(path, ...args) {
+        if (first && typeof path === 'string' && path.endsWith('/port')) {
+          first = false;
+          return '';
+        }
+        return read.call(this, path, ...args);
+      };
+    })();
+  `
+      : "";
+    const launcher = spawn(
+      process.execPath,
+      ["-e", initialRead + RELAY_START_PROGRAM],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    launcher.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    launcher.stdin.end(
+      JSON.stringify({
+        directory: second,
+        config,
+        program: browserRelayProgram(),
+        lease: Date.now() + 3000,
+      }),
+    );
+    try {
+      const [code] = await once(launcher, "close");
+      expect(code).toBe(0);
+      expect(stdout).toMatch(/^\d+$/);
+      expect(Number(stdout)).toBeGreaterThan(0);
+      expect(Number(stdout)).toBeLessThanOrEqual(65535);
+    } finally {
+      expect(await stopRelay(second)).toBe(0);
+    }
+  },
+);
 
 async function stopRelay(target = directory) {
   const stopper = spawn(
     process.execPath,
     ["-e", RELAY_STOP_PROGRAM, root, target],
-    { stdio: "ignore" },
+    { stdio: ["ignore", "pipe", "ignore"] },
   );
-  return (await once(stopper, "exit"))[0];
+  let stdout = "";
+  stopper.stdout.on("data", (chunk) => (stdout += chunk));
+  const [code] = await once(stopper, "close");
+  // Failure receipts are optional diagnostics; success keeps empty output.
+  if (code === 0) expect(stdout).toBe("");
+  return code;
 }
 
 it("recovers from a dead relay without a close marker", async () => {

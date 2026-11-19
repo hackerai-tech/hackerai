@@ -3,6 +3,11 @@ import { presenceHasConnectionId } from "./presence";
 import { sandboxConnectionChannel } from "./types";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 import { LocalCommandRelayUnsubscribedError } from "@/lib/ai/tools/utils/local-sandbox-errors";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
+import {
+  awaitDispatchReadiness,
+  type DesktopDispatchGate,
+} from "./desktop-session";
 
 /** Publication completed, but the client's readiness reply was not observed. */
 export class RelayOperationReadinessTimeout extends Error {
@@ -11,6 +16,13 @@ export class RelayOperationReadinessTimeout extends Error {
     this.name = "RelayOperationReadinessTimeout";
   }
 }
+
+export type IsolatedOperationPhase =
+  | "control_ready"
+  | "presence"
+  | "publish"
+  | "operation_ready"
+  | "ready_received";
 
 /** Use the connection channel only while dispatching, then stop receiving its fanout. */
 export async function dispatchIsolatedOperation(
@@ -21,7 +33,18 @@ export async function dispatchIsolatedOperation(
   isActive: () => boolean,
   reply: Subscription,
   onBeforePublish?: () => void,
+  onPhase?: (phase: IsolatedOperationPhase) => void,
+  desktop = false,
+  /** The run's live host readiness; a wait it imposes ends on this signal. */
+  readiness?: { gate?: DesktopDispatchGate; signal?: AbortSignal },
 ): Promise<void> {
+  const observe = (phase: IsolatedOperationPhase) => {
+    try {
+      onPhase?.(phase);
+    } catch {
+      // Diagnostics must never change command publication or cleanup.
+    }
+  };
   let onReady: (ctx: PublicationContext) => void;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let rejectReady!: (error: Error) => void;
@@ -48,24 +71,43 @@ export async function dispatchIsolatedOperation(
   });
   control.subscribe();
   try {
+    observe("control_ready");
+    await awaitDispatchReadiness(readiness?.gate, readiness?.signal);
     await control.ready(5000);
+    observe("presence");
     const presence = await control.presence();
     if (!presenceHasConnectionId(presence, connectionId))
       throw new LocalCommandRelayUnsubscribedError(connectionId);
-    for (const fragment of fragmentCentrifugoMessage({
+    observe("publish");
+    const authorizationId = desktop
+      ? await authorizeDesktopOperation(userId, connectionId, request)
+      : undefined;
+    const fragments = fragmentCentrifugoMessage({
       ...request,
+      ...(authorizationId ? { authorizationId } : {}),
       operationChannel: true,
-    })) {
+    });
+    const gate = readiness?.gate;
+    for (const fragment of fragments) {
+      // Readiness may lapse during authorization or a prior fragment's
+      // publish. Admit each fragment with no await between this final read
+      // and its publication. A partly published request is never restarted
+      // or resent; its caller treats it as an uncertain execution.
+      while (gate && !gate.isReady())
+        await gate.waitUntilReady(readiness?.signal);
+      readiness?.signal?.throwIfAborted();
       if (!isActive())
         throw new Error("Relay operation ended before dispatch completed");
       onBeforePublish?.();
       await control.publish(fragment);
     }
+    observe("operation_ready");
     timeout = setTimeout(
       () => rejectReady(new RelayOperationReadinessTimeout()),
       5000,
     );
     await ready;
+    observe("ready_received");
   } finally {
     clearTimeout(timeout);
     reply.removeListener("publication", onReady!);

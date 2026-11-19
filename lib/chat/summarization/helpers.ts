@@ -44,6 +44,8 @@ import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { isValidTokenCount } from "@/lib/token-usage";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -908,7 +910,12 @@ export const generateSummaryText = async (
     ],
   });
 
-  const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
+  const routerMetadata = extractOpenRouterMetadata(result);
+  const providerCost =
+    getProviderUsageRawModelCost(
+      result.usage?.raw,
+      routerMetadata.openrouter_is_byok,
+    ) ?? (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (
     result.usage as {
       inputTokenDetails?: {
@@ -917,25 +924,18 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
-  const routerMetadata = extractOpenRouterMetadata(result);
+  // Malformed counts are unknown: report them as absent rather than coerced.
+  const inputTokens = result.usage?.inputTokens;
+  const outputTokens = result.usage?.outputTokens;
+  const cacheReadTokens = details?.cacheReadTokens;
+  const cacheWriteTokens = details?.cacheWriteTokens;
   const usage: SummarizationUsage = {
-    inputTokens: result.usage?.inputTokens ?? 0,
-    inputTokensReported:
-      typeof result.usage?.inputTokens === "number" &&
-      Number.isFinite(result.usage.inputTokens) &&
-      result.usage.inputTokens >= 0,
-    outputTokens: result.usage?.outputTokens ?? 0,
+    inputTokens: isValidTokenCount(inputTokens) ? inputTokens : 0,
+    inputTokensReported: isValidTokenCount(inputTokens),
+    outputTokens: isValidTokenCount(outputTokens) ? outputTokens : 0,
     estimatedCompactedInputTokens,
-    ...(typeof details?.cacheReadTokens === "number" &&
-    Number.isFinite(details.cacheReadTokens) &&
-    details.cacheReadTokens >= 0
-      ? { cacheReadTokens: details.cacheReadTokens }
-      : undefined),
-    ...(typeof details?.cacheWriteTokens === "number" &&
-    Number.isFinite(details.cacheWriteTokens) &&
-    details.cacheWriteTokens >= 0
-      ? { cacheWriteTokens: details.cacheWriteTokens }
-      : undefined),
+    ...(isValidTokenCount(cacheReadTokens) ? { cacheReadTokens } : undefined),
+    ...(isValidTokenCount(cacheWriteTokens) ? { cacheWriteTokens } : undefined),
     ...(typeof providerCost === "number" &&
     Number.isFinite(providerCost) &&
     providerCost >= 0

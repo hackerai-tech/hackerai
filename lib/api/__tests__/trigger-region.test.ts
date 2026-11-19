@@ -181,6 +181,7 @@ describe("getTriggerRegionForVercelRequest", () => {
 
   test.each(["us-east-1", "us-west-2", "eu-central-1"] as const)(
     "accepts a qualified worker queue in the requested %s region",
+
     (requestedRegion) => {
       expect(() =>
         assertTriggerRunRegion({

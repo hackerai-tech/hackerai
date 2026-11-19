@@ -1,12 +1,19 @@
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier } from "@/types";
-import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
+import {
+  createFreeQuotaSubject,
+  createFreeUsageQuotaSubject,
+} from "@/lib/auth/free-quota-subject";
 import {
   parseEntitlements,
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
+import {
+  analyticsAccountCohort,
+  type AnalyticsAccountCohort,
+} from "@/lib/analytics/account-cohort";
 
 const getSessionUserEmail = (session: unknown): string | undefined => {
   if (!session || typeof session !== "object") return undefined;
@@ -47,31 +54,48 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
   }
 };
 
+export type AuthSessionPhase = "load_sdk" | "session" | "entitlements";
+
 /**
  * Get the current user ID and pro status from the authenticated session
  * Throws ChatSDKError if user is not authenticated
  *
  * @param req - NextRequest object (server-side only)
- * @returns Promise<{ userId: string; isPro: boolean; subscription: SubscriptionTier }> - Object with userId, isPro, and subscription
+ * @param onPhase - Optional finite progress observer; receives no session data.
+ * @returns Authenticated identity, subscription and quota metadata.
  * @throws ChatSDKError - When user is not authenticated
  */
 export const getUserIDAndPro = async (
   req: NextRequest,
+  onPhase?: (phase: AuthSessionPhase) => void,
 ): Promise<{
   userId: string;
   subscription: SubscriptionTier;
   emailVerified: boolean;
+  analyticsAccountCohort?: AnalyticsAccountCohort;
   organizationId?: string;
   freeQuotaSubject?: string;
+  freeUsageQuotaSubject?: string;
 }> => {
+  /** Observe progress without allowing diagnostics to alter authentication. */
+  const reportPhase = (phase: AuthSessionPhase) => {
+    try {
+      onPhase?.(phase);
+    } catch {
+      // Optional timing context cannot change authentication or its errors.
+    }
+  };
   try {
+    reportPhase("load_sdk");
     const { authkit } = await import("@workos-inc/authkit-nextjs");
+    reportPhase("session");
     const { session } = await authkit(req);
 
     if (!session?.user?.id) {
       throw new ChatSDKError("unauthorized:auth");
     }
 
+    reportPhase("entitlements");
     const entitlements = parseEntitlements(session.entitlements);
     const subscription = resolveSubscriptionTier(entitlements);
 
@@ -79,8 +103,18 @@ export const getUserIDAndPro = async (
       userId: session.user.id,
       subscription,
       emailVerified: session.user.emailVerified === true,
+      analyticsAccountCohort: analyticsAccountCohort(
+        getSessionUserEmail(session),
+      ),
       organizationId: (session as any).organizationId as string | undefined,
       freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
+      freeUsageQuotaSubject:
+        subscription === "free"
+          ? createFreeUsageQuotaSubject(
+              getSessionUserEmail(session),
+              session.user.createdAt,
+            )
+          : undefined,
     };
   } catch (error) {
     if (error instanceof ChatSDKError) {

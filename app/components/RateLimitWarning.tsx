@@ -10,6 +10,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import type { AgentRunSpendCapBasis } from "@/lib/chat/agent-run-spend-cap";
 import {
+  SPENDING_LIMIT_EXPLANATION,
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
   shouldShowUpgradeCta,
@@ -140,12 +141,12 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
 
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
+    if (data.capReason === "extra_usage_cap" && data.subscription !== "free") {
+      return `You've reached your monthly extra usage spending limit${data.cutOff ? " and this response was cut off" : ""}. ${SPENDING_LIMIT_EXPLANATION}`;
+    }
     if (data.cutOff) {
       if (data.subscription === "free") {
         return `You've reached your free monthly usage limit and this response was cut off. Upgrade for higher limits. Resets ${timeString}.`;
-      }
-      if (data.capReason === "extra_usage_cap") {
-        return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
       }
       if (data.capReason === "paid_daily_free_allowance_cut_off") {
         return `Today's free allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;

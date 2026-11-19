@@ -207,6 +207,10 @@ function createMockCtx(tables: Tables, subject = "user_123") {
 
 function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
   return {
+    chat_history_access: [
+      { _id: "access-user", chat_id: "chat-1", user_id: userId },
+      { _id: "access-other", chat_id: "chat-other-id", user_id: otherUserId },
+    ],
     chats: [
       {
         _id: "chat-doc",
@@ -329,6 +333,78 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         latest_finding_at: 1,
       },
     ],
+    finding_agent_retest_runs: [
+      {
+        _id: "agent-retest-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: "message-user",
+        started_at: 1,
+      },
+      {
+        _id: "agent-retest-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+      },
+    ],
+    finding_variant_hunts: [
+      {
+        _id: "variant-hunt-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: "message-user",
+        started_at: 1,
+        candidates: [],
+      },
+      {
+        _id: "variant-hunt-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+        candidates: [],
+      },
+    ],
+    finding_retest_recipes: [
+      {
+        _id: "retest-recipe-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        version: 1,
+      },
+      {
+        _id: "retest-recipe-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        version: 1,
+      },
+    ],
+    finding_retest_runs: [
+      {
+        _id: "retest-run-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        request_id: "request-user",
+        started_at: 1,
+      },
+      {
+        _id: "retest-run-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        request_id: "request-other",
+        started_at: 1,
+      },
+    ],
     user_customization: [
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },
@@ -399,12 +475,38 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },
     ],
+    local_sandbox_heartbeats: [
+      {
+        _id: "heartbeat-user",
+        user_id: userId,
+        connection_id: "conn-1",
+        last_heartbeat: 1,
+      },
+      {
+        _id: "heartbeat-other",
+        user_id: otherUserId,
+        connection_id: "conn-2",
+        last_heartbeat: 2,
+      },
+    ],
     local_sandbox_connections: [
       { _id: "connection-user", user_id: userId, connection_id: "conn-1" },
       {
         _id: "connection-other",
         user_id: otherUserId,
         connection_id: "conn-2",
+      },
+    ],
+    current_cancellation_reasons: [
+      {
+        _id: "current-cancel-user",
+        user_id: userId,
+        reason_details: "private feedback",
+      },
+      {
+        _id: "current-cancel-other",
+        user_id: otherUserId,
+        reason_details: "keep",
       },
     ],
     cancellation_reason_details: [
@@ -455,6 +557,25 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         stripe_invoice_id: "in-other",
         recovery_result: "pending",
         occurred_at: 1,
+      },
+    ],
+    usage_settlement_operations: [
+      {
+        _id: "settlement-operation-user",
+        user_id: userId,
+        operation_id: "op-1",
+        status: "pending",
+        amount_points: 20,
+      },
+    ],
+    usage_settlement_debits: [
+      {
+        _id: "settlement-debit-user",
+        user_id: userId,
+        operation_id: "op-1",
+        outcome: "applied",
+        sequence: 0,
+        amount_points: 20,
       },
     ],
     usage_logs: [
@@ -567,6 +688,39 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         source: "subscription",
       },
     ],
+    extra_usage_bundle_reservations: [
+      {
+        _id: "bundle-reservation-user",
+        user_id: userId,
+        credit_dollars: 1000,
+        paid_dollars: 700,
+        stripe_checkout_session_id: "cs_bundle_user",
+        return_path: "/c/private-chat",
+        status: "consumed",
+      },
+      {
+        _id: "bundle-reservation-other",
+        user_id: otherUserId,
+        return_path: "/c/other-chat",
+        status: "reserved",
+      },
+    ],
+    extra_usage_bundle_attempts: [
+      {
+        _id: "bundle-attempt-user",
+        user_id: userId,
+        checkout_attempt_id: "attempt-user",
+        bundle_id: "usage-1000-v1",
+        reservation_id: "bundle-reservation-user",
+      },
+      {
+        _id: "bundle-attempt-other",
+        user_id: otherUserId,
+        checkout_attempt_id: "attempt-other",
+        bundle_id: "usage-1000-v1",
+        reservation_id: "bundle-reservation-other",
+      },
+    ],
     extra_usage_purchases: [
       {
         _id: "purchase-user",
@@ -628,6 +782,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     ],
     paid_start_mix_daily: [
       { _id: "paid-mix", day: "2026-06-21", tier: "pro", plan: "pro" },
+    ],
+    billing_operations: [
+      {
+        _id: "billing-owner",
+        stripe_customer_id: "cus_user",
+        token: "in-flight-owner",
+        writing: true,
+      },
     ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
@@ -772,6 +934,19 @@ describe("userDeletion", () => {
     }
 
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
+    expect(
+      row(tables, "finding_variant_hunts", "variant-hunt-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "finding_variant_hunts", "variant-hunt-other"),
+    ).toMatchObject({ user_id: "user_other" });
+    expect(
+      row(tables, "local_sandbox_heartbeats", "heartbeat-other"),
+    ).toMatchObject({
+      user_id: "user_other",
+      connection_id: "conn-2",
+      last_heartbeat: 2,
+    });
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();
@@ -802,6 +977,12 @@ describe("userDeletion", () => {
       row(tables, "subagent_work_items", "subagent-work-other"),
     ).toBeTruthy();
 
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-other"),
+    ).toBeDefined();
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });
@@ -819,6 +1000,20 @@ describe("userDeletion", () => {
     expect(
       row(tables, "involuntary_churn_events", "churn-other"),
     ).toMatchObject({ user_id: "user_other" });
+    expect(
+      row(tables, "usage_settlement_operations", "settlement-operation-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      status: "pending",
+    });
+    expect(
+      row(tables, "usage_settlement_debits", "settlement-debit-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      outcome: "applied",
+    });
     expect(row(tables, "usage_logs", "usage-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });
@@ -874,6 +1069,36 @@ describe("userDeletion", () => {
     ).toMatchObject({
       user_id: "user_other",
     });
+    expect(
+      row(tables, "extra_usage_bundle_reservations", "bundle-reservation-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      credit_dollars: 1000,
+      paid_dollars: 700,
+      stripe_checkout_session_id: "cs_bundle_user",
+      status: "consumed",
+    });
+    expect(
+      row(tables, "extra_usage_bundle_reservations", "bundle-reservation-user")
+        ?.return_path,
+    ).toBeUndefined();
+    expect(
+      row(
+        tables,
+        "extra_usage_bundle_reservations",
+        "bundle-reservation-other",
+      ),
+    ).toMatchObject({ user_id: "user_other", return_path: "/c/other-chat" });
+    // The attempt mapping keeps pointing at the retained hold, without the user.
+    expect(
+      row(tables, "extra_usage_bundle_attempts", "bundle-attempt-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      reservation_id: "bundle-reservation-user",
+    });
+    expect(
+      row(tables, "extra_usage_bundle_attempts", "bundle-attempt-other"),
+    ).toMatchObject({ user_id: "user_other" });
     expect(row(tables, "paid_start_events", "paid-user-entity")).toMatchObject({
       entity_id: DELETED_USER_ID,
     });
@@ -1321,6 +1546,102 @@ describe("userDeletion", () => {
     expect(tables.feedback).toHaveLength(0);
     expect(thirdBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it("dry-runs and then deletes a user's variant hunts in bounded batches", async () => {
+    const { cleanupDeletedUserResidue, deleteAllUserDataByService } =
+      await import("../userDeletion");
+    const tables = seedTables();
+    tables.finding_variant_hunts = [
+      ...Array.from({ length: 150 }, (_, index) => ({
+        _id: `hunt-user-${index}`,
+        user_id: "user_123",
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: `message-${index}`,
+        started_at: index,
+        candidates: [],
+      })),
+      {
+        _id: "hunt-other",
+        user_id: "user_other",
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+        candidates: [],
+      },
+    ];
+    const { ctx, readCounter } = createMockCtx(tables);
+    const userHunts = () =>
+      tables.finding_variant_hunts.filter(
+        (candidate) => candidate.user_id === "user_123",
+      );
+
+    const dryRun = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      userIds: ["user_123"],
+    });
+    expect(dryRun.deleted.finding_variant_hunts).toBeGreaterThan(0);
+    expect(dryRun.hasMore).toBe(true);
+    expect(userHunts()).toHaveLength(150);
+
+    let previousReads = readCounter.value;
+    let batches = 0;
+    for (let done = false; !done && batches < 20; batches += 1) {
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      // Hunts share the cleanup pass's document budget.
+      expect(readCounter.value - previousReads).toBeLessThanOrEqual(100);
+      previousReads = readCounter.value;
+      done = !result.hasMore;
+    }
+    expect(batches).toBeGreaterThan(1);
+    expect(userHunts()).toHaveLength(0);
+    expect(row(tables, "finding_variant_hunts", "hunt-other")).toMatchObject({
+      user_id: "user_other",
+    });
+  });
+
+  it("makes progress deleting near-limit chats with stable ownership records", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const { getDocumentSize } = await import("convex/values");
+    const chats = [0, 1].map((i) => {
+      const chat = {
+        _id: `chat${i}`,
+        id: `chat${i}`,
+        user_id: "user_123",
+        title: "",
+      };
+      chat.title = "x".repeat(1024 * 1024 - 16 - getDocumentSize(chat));
+      return chat;
+    });
+    const tables: Tables = {
+      chats,
+      chat_history_access: chats.map((chat) => ({
+        _id: `access-${chat.id}`,
+        chat_id: chat.id,
+        user_id: chat.user_id,
+      })),
+    };
+    const { ctx, readCounter } = createMockCtx(tables);
+    let done = false;
+    for (let pass = 0; pass < 5 && !done; pass++) {
+      const previous = tables.chats.length;
+      readCounter.bytes = 0;
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+      expect(tables.chats.length < previous || !result.hasMore).toBe(true);
+      done = !result.hasMore;
+    }
+    expect(done).toBe(true);
+    expect(tables.chats).toHaveLength(0);
+    expect(tables.chat_history_access).toHaveLength(0);
   });
 
   it.each(["service", "residue"])(

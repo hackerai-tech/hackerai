@@ -24,6 +24,7 @@ import {
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import { recordTeamHistoryWrite } from "@/lib/posthog/team-history-write-diagnostics";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
 
 interface PricingDialogProps {
@@ -370,6 +371,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     const url = new URL(window.location.href);
     url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
     url.hash = "team-pricing-seat-selection";
+    recordTeamHistoryWrite(
+      "pricing_team_open",
+      url.href === window.location.href,
+    );
     window.history.replaceState({}, "", url.toString());
     window.dispatchEvent(new Event("hashchange"));
 
@@ -647,13 +652,17 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             </button>
           </div>
 
-          <div className="mt-2 mb-4 flex justify-center px-6">
+          <div className="mt-2 mb-4 flex flex-col items-center gap-2 px-6">
             <BillingFrequencySelector
               value={isYearly ? "yearly" : "monthly"}
               showSavings={!hasSubscription}
               onChange={handleBillingChange}
               isOpen={isOpen}
             />
+            <p className="text-muted-foreground text-center text-xs">
+              Included usage refills every month, whether you pay monthly or
+              yearly.
+            </p>
           </div>
 
           <div className="px-6 pb-8">
@@ -692,6 +701,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                     }
                     subscription={subscription}
                     surface="pricing_dialog"
+                    scopeKey={`${user.id}:${organizationId ?? ""}`}
                     onCheck={checkBilling}
                   />
                 )}

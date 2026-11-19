@@ -1,8 +1,14 @@
 import {
+  FINDING_DEDUPE_GROUP_LIMIT,
+  FINDING_DEDUPE_GROUP_MAX_BYTES,
   FINDING_DEDUPE_LIMIT,
+  FINDING_DEDUPE_RECENT_MAX_BYTES,
   findingComparisonSummary,
   findingDedupeVersions,
+  mergeFindingDedupeCandidates,
   sameFindingDedupeVersions,
+  sameFindingIdentity,
+  type FindingIdentitySource,
 } from "../lib/findings/dedupe-context";
 import {
   findingRevisionValidator,
@@ -10,10 +16,12 @@ import {
   findingFeedbackAnswerValidator,
 } from "./findingValidators";
 import { evidenceVerificationSchema } from "../lib/ai/subagents/contracts";
-import { mutation, query } from "./lib/serviceFunctions";
+import { internal } from "./_generated/api";
+import { EVIDENCE_BASIS_FIELDS } from "../lib/findings/evidence-status";
+import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import type { QueryCtx } from "./lib/serviceFunctions";
 import { paginationOptsValidator } from "convex/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, getConvexSize, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { calculateCvss31 } from "../lib/findings/cvss31";
@@ -105,13 +113,88 @@ type FindingListFilters = {
   category?: FindingCategory;
   status?: FindingStatus;
   chatId?: string;
+  projectId?: import("./_generated/dataModel").Id<"projects">;
 };
 
 const getFindingsByFacets = (
   ctx: FindingReadCtx,
   userId: string,
-  { severity, category, status, chatId }: FindingListFilters,
+  { severity, category, status, chatId, projectId }: FindingListFilters,
 ) => {
+  if (projectId && status && category && severity)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_status_category_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("status", status)
+          .eq("category", category)
+          .eq("severity", severity),
+      );
+  if (projectId && status && category)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_status_category_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("status", status)
+          .eq("category", category),
+      );
+  if (projectId && status && severity)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_status_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("status", status)
+          .eq("severity", severity),
+      );
+  if (projectId && category && severity)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_category_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("category", category)
+          .eq("severity", severity),
+      );
+  if (projectId && status)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_status_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("status", status),
+      );
+  if (projectId && category)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_category_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("category", category),
+      );
+  if (projectId && severity)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_severity_created", (q) =>
+        q
+          .eq("user_id", userId)
+          .eq("project_id", projectId)
+          .eq("severity", severity),
+      );
+  if (projectId)
+    return ctx.db
+      .query("findings")
+      .withIndex("by_user_project_created", (q) =>
+        q.eq("user_id", userId).eq("project_id", projectId),
+      );
   if (status && category && severity && chatId) {
     return ctx.db
       .query("findings")
@@ -263,6 +346,10 @@ const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => {
     chat_id: finding.chat_id,
     chat_title: chatTitle,
     created_at: finding.created_at,
+    ...(finding.project_id ? { project_id: finding.project_id } : {}),
+    ...(finding.evidence_status
+      ? { evidence_status: finding.evidence_status }
+      : {}),
   };
 };
 
@@ -280,6 +367,9 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
     ? { evidence_verification: finding.evidence_verification }
     : {}),
   assumptions: finding.assumptions,
+  ...(finding.evidence_status_reason
+    ? { evidence_status_reason: finding.evidence_status_reason }
+    : {}),
   ...(finding.confidence ? { confidence: finding.confidence } : {}),
   ...(finding.counterevidence
     ? { counterevidence: finding.counterevidence }
@@ -336,10 +426,63 @@ async function recentDedupeFindings(
     .paginate({
       numItems: FINDING_DEDUPE_LIMIT,
       cursor: null,
-      maximumBytesRead: 2_000_000,
+      maximumBytesRead: FINDING_DEDUPE_RECENT_MAX_BYTES,
     });
   return result.page;
 }
+
+/**
+ * The stored dedupe_key is a coarse lookup group, not proof of identity: it
+ * case-folds paths and ignores code locations and evidence. A partial group is
+ * incomplete evidence, so callers only reject on a strict match in loaded rows.
+ *
+ * Convex allows one paginated query per query function, and the recent window
+ * uses it. Bound this indexed read manually instead: stop at the row limit or
+ * once accumulated size reaches the soft byte cap, so at most one document can
+ * cross that cap.
+ */
+async function dedupeGroupFindings(
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+  dedupeKey: string,
+) {
+  const group: Doc<"findings">[] = [];
+  let bytes = 0;
+  for await (const finding of ctx.db
+    .query("findings")
+    .withIndex("by_user_chat_dedupe", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId).eq("dedupe_key", dedupeKey),
+    )) {
+    group.push(finding);
+    bytes += getConvexSize(finding);
+    if (
+      group.length >= FINDING_DEDUPE_GROUP_LIMIT ||
+      bytes >= FINDING_DEDUPE_GROUP_MAX_BYTES
+    )
+      break;
+  }
+  return group;
+}
+
+/** Shared by the context query and create mutation so their snapshots agree. */
+async function dedupeCandidates(
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+  dedupeKey: string,
+) {
+  const [recent, group] = await Promise.all([
+    recentDedupeFindings(ctx, userId, chatId),
+    dedupeGroupFindings(ctx, userId, chatId, dedupeKey),
+  ]);
+  return mergeFindingDedupeCandidates(recent, group);
+}
+
+const findStrictDuplicate = (
+  report: FindingIdentitySource,
+  candidates: Doc<"findings">[],
+) => candidates.find((finding) => sameFindingIdentity(report, finding));
 
 export const getFindingDedupeContextForBackend = query({
   args: {
@@ -347,6 +490,9 @@ export const getFindingDedupeContextForBackend = query({
     userId: v.string(),
     chatId: v.string(),
     dedupeKey: v.string(),
+    // Optional for older callers. Without a valid report, no exact match is
+    // claimed and every candidate goes to semantic comparison.
+    report: v.optional(v.any()),
   },
   returns: v.object({
     exact_duplicate_id: v.union(v.string(), v.null()),
@@ -370,16 +516,20 @@ export const getFindingDedupeContextForBackend = query({
       throw new ConvexError("The source chat is no longer available.");
     }
     await assertUserCanAccessChatHistory(ctx, args.userId);
-    const exact = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", args.dedupeKey),
-      )
-      .first();
-    const findings = await recentDedupeFindings(ctx, args.userId, args.chatId);
+    const parsed =
+      args.report === undefined
+        ? undefined
+        : createVulnerabilityReportInputSchema.safeParse(args.report);
+    const report = parsed?.success ? parsed.data : undefined;
+    // Derive the group from the validated report exactly as the create mutation
+    // does, so both read the same candidates for the comparison snapshot.
+    const findings = await dedupeCandidates(
+      ctx,
+      args.userId,
+      args.chatId,
+      report ? createFindingDedupeKey(report) : args.dedupeKey,
+    );
+    const exact = report ? findStrictDuplicate(report, findings) : undefined;
     return {
       exact_duplicate_id: exact?.finding_id ?? null,
       candidates: findings.map((finding) => ({
@@ -468,15 +618,15 @@ export const createFindingForBackend = mutation({
       : undefined;
     const input = parsed.data;
     const dedupeKey = createFindingDedupeKey(input);
-    const duplicate = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", dedupeKey),
-      )
-      .first();
+    // These indexed reads participate in Convex OCC: a concurrent create,
+    // correction or deletion invalidates the model's comparison before commit.
+    const current = await dedupeCandidates(
+      ctx,
+      args.userId,
+      args.chatId,
+      dedupeKey,
+    );
+    const duplicate = findStrictDuplicate(input, current);
 
     if (duplicate) {
       return {
@@ -489,9 +639,6 @@ export const createFindingForBackend = mutation({
     }
 
     if (args.comparisonSnapshot) {
-      const current = await recentDedupeFindings(ctx, args.userId, args.chatId);
-      // This indexed read participates in Convex OCC: a concurrent create,
-      // correction or deletion invalidates the model's comparison before commit.
       if (
         !sameFindingDedupeVersions(
           args.comparisonSnapshot,
@@ -540,6 +687,13 @@ export const createFindingForBackend = mutation({
       finding_id: findingId,
       user_id: args.userId,
       chat_id: args.chatId,
+      ...(chat.project_id ? { project_id: chat.project_id } : {}),
+      ...(input.evidence_status
+        ? {
+            evidence_status: input.evidence_status,
+            evidence_status_reason: input.evidence_status_reason,
+          }
+        : {}),
       message_id: args.messageId,
       tool_call_id: args.toolCallId,
       title: input.title,
@@ -642,6 +796,7 @@ export const listFindings = query({
     category: v.optional(findingCategoryArgValidator),
     status: v.optional(findingStatusArgValidator),
     chatId: v.optional(v.string()),
+    projectId: v.optional(v.id("projects")),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -650,6 +805,20 @@ export const listFindings = query({
     }
     await assertUserCanAccessChatHistory(ctx, identity.subject);
 
+    if (args.projectId) {
+      const project = await ctx.db.get(args.projectId);
+      if (
+        !project ||
+        project.user_id !== identity.subject ||
+        project.deletion_started_at !== undefined
+      ) {
+        return { page: [], isDone: true, continueCursor: "" };
+      }
+      if (args.chatId)
+        throw new ConvexError(
+          "Choose a project or source chat filter, not both",
+        );
+    }
     const search = args.search?.trim().slice(0, MAX_SEARCH_LENGTH);
     let page: Doc<"findings">[];
     let isDone: boolean;
@@ -662,6 +831,8 @@ export const listFindings = query({
           let builder = q
             .search("search_text", search)
             .eq("user_id", identity.subject);
+          if (args.projectId)
+            builder = builder.eq("project_id", args.projectId);
           if (args.status) builder = builder.eq("status", args.status);
           if (args.category) builder = builder.eq("category", args.category);
           if (args.severity) builder = builder.eq("severity", args.severity);
@@ -687,11 +858,24 @@ export const listFindings = query({
     const summaries = await Promise.all(
       page.map(async (finding) => {
         const chat = await getChat(ctx, finding.chat_id);
+        // Membership synchronization is batched. Never show a stale old-project
+        // result while a move/detach is still catching up.
+        if (
+          args.projectId &&
+          (!chat ||
+            chat.project_id !== args.projectId ||
+            chat.user_id !== identity.subject)
+        )
+          return null;
         return toFindingSummary(finding, chat?.title ?? "Deleted chat");
       }),
     );
 
-    return { page: summaries, isDone, continueCursor };
+    return {
+      page: summaries.filter((row) => row !== null),
+      isDone,
+      continueCursor,
+    };
   },
 });
 
@@ -806,6 +990,19 @@ export const deleteFinding = mutation({
     }
 
     await ctx.db.delete(finding._id);
+    await ctx.scheduler.runAfter(0, internal.findingRetests.deleteForFinding, {
+      findingId: finding.finding_id,
+      userId: identity.subject,
+    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.findingAgentRetests.deleteForFinding,
+      { findingId: finding.finding_id, userId: identity.subject },
+    );
+    await ctx.scheduler.runAfter(0, internal.findingHunts.deleteForFinding, {
+      findingId: finding.finding_id,
+      userId: identity.subject,
+    });
 
     const source = await getFindingSource(
       ctx,
@@ -859,6 +1056,14 @@ const reportSummaryFields = {
   chat_title: v.string(),
   created_at: v.number(),
   updated_at: v.number(),
+  project_id: v.optional(v.id("projects")),
+  evidence_status: v.optional(
+    v.union(
+      v.literal("source_review_only"),
+      v.literal("runtime_reproduced"),
+      v.literal("inconclusive"),
+    ),
+  ),
 };
 const reportSummaryValidator = v.object(reportSummaryFields);
 const reportDetailValidator = v.object({
@@ -879,6 +1084,7 @@ const reportDetailValidator = v.object({
     }),
   ),
   assumptions: v.string(),
+  evidence_status_reason: v.optional(v.string()),
   confidence: v.optional(
     v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
   ),
@@ -980,24 +1186,38 @@ export const listReportsForBackend = query({
       };
     }
     const search = args.search?.trim();
-    const page = search
-      ? await ctx.db
-          .query("findings")
-          .withSearchIndex("search_findings", (q) => {
-            let b = q
-              .search("search_text", search)
-              .eq("user_id", args.userId)
-              .eq("chat_id", args.chatId);
-            if (args.status) b = b.eq("status", args.status);
-            return b;
-          })
-          .paginate(args.paginationOpts)
-      : await getFindingsByFacets(ctx, args.userId, {
+    const reportQuery = search
+      ? ctx.db.query("findings").withSearchIndex("search_findings", (q) => {
+          let b = q
+            .search("search_text", search)
+            .eq("user_id", args.userId)
+            .eq("chat_id", args.chatId);
+          if (args.status) b = b.eq("status", args.status);
+          return b;
+        })
+      : getFindingsByFacets(ctx, args.userId, {
           chatId: args.chatId,
           status: args.status,
-        })
-          .order("desc")
-          .paginate(args.paginationOpts);
+        }).order("desc");
+    let page;
+    try {
+      page = await reportQuery.paginate(args.paginationOpts);
+    } catch (error) {
+      // A malformed model-supplied cursor needs a new first-page request, not a retry.
+      if (
+        args.paginationOpts.cursor !== null &&
+        error instanceof Error &&
+        error.message === "Failed to parse cursor"
+      ) {
+        return {
+          success: false as const,
+          error: "validation" as const,
+          message:
+            "The report cursor is invalid. Start again without a cursor and use only the next_cursor returned for the same search and status filters.",
+        };
+      }
+      throw error;
+    }
     return {
       success: true as const,
       reports: page.page.map((f) => ({
@@ -1108,9 +1328,26 @@ export const updateFindingForBackend = mutation({
         message:
           "The report changed. Read it again and reconcile the changes before updating.",
       };
-    const report = createVulnerabilityReportInputSchema.safeParse(
-      mergeFindingReportChanges(finding, update.changes),
+    if (
+      Object.hasOwn(update.changes, "evidence_status") !==
+      Object.hasOwn(update.changes, "evidence_status_reason")
+    )
+      return {
+        success: false as const,
+        error: "validation" as const,
+        message: "Supply the evidence status and its factual reason together.",
+      };
+    const merged = mergeFindingReportChanges(finding, update.changes);
+    const changedBasis = EVIDENCE_BASIS_FIELDS.some(
+      (key) =>
+        Object.hasOwn(update.changes, key) &&
+        JSON.stringify(merged[key]) !== JSON.stringify(finding[key]),
     );
+    if (changedBasis && !Object.hasOwn(update.changes, "evidence_status")) {
+      merged.evidence_status = undefined;
+      merged.evidence_status_reason = undefined;
+    }
+    const report = createVulnerabilityReportInputSchema.safeParse(merged);
     if (!report.success)
       return {
         success: false as const,
@@ -1119,16 +1356,18 @@ export const updateFindingForBackend = mutation({
       };
     const input = report.data;
     const dedupeKey = createFindingDedupeKey(input);
-    const matches = await ctx.db
-      .query("findings")
-      .withIndex("by_user_chat_dedupe", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("dedupe_key", dedupeKey),
+    const group = await dedupeGroupFindings(
+      ctx,
+      args.userId,
+      args.chatId,
+      dedupeKey,
+    );
+    if (
+      findStrictDuplicate(
+        input,
+        group.filter((f) => f._id !== finding._id),
       )
-      .take(2);
-    if (matches.some((f) => f._id !== finding._id))
+    )
       return {
         success: false as const,
         error: "duplicate" as const,
@@ -1159,6 +1398,8 @@ export const updateFindingForBackend = mutation({
       severity_change_conditions: input.severity_change_conditions,
       evidence_refs: input.evidence_refs,
       evidence_verification: evidenceVerification,
+      evidence_status: input.evidence_status,
+      evidence_status_reason: input.evidence_status_reason,
       cvss_score: cvss.score,
       cvss_vector: cvss.vector,
       severity: cvss.severity,
@@ -1176,7 +1417,13 @@ export const updateFindingForBackend = mutation({
           updated_at: now,
           message_id: args.messageId,
           reason: update.reason,
-          changed_fields: Object.keys(update.changes).filter((key) => {
+          changed_fields: [
+            ...Object.keys(update.changes),
+            ...(changedBasis &&
+            !Object.hasOwn(update.changes, "evidence_status")
+              ? ["evidence_status", "evidence_status_reason"]
+              : []),
+          ].filter((key) => {
             const next =
               key === "method"
                 ? input.method?.toUpperCase()
@@ -1258,5 +1505,69 @@ export const submitFindingFeedback = mutation({
       },
     });
     return { success: true as const, changed: true };
+  },
+});
+
+/** Backfill existing records before enabling project navigation in an environment.
+ * Run once with cursor:null; each bounded batch schedules its continuation.
+ * Source chats remain authoritative, including concurrent moves/deletions.
+ */
+export const backfillFindingProjects = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const batch = await ctx.db.query("findings").order("asc").paginate({
+      numItems: 20,
+      cursor: args.cursor,
+      maximumBytesRead: 1_000_000,
+    });
+    for (const finding of batch.page) {
+      const chat = await getChat(ctx, finding.chat_id);
+      const projectId =
+        chat?.user_id === finding.user_id ? chat.project_id : undefined;
+      if (finding.project_id !== projectId)
+        await ctx.db.patch(finding._id, { project_id: projectId });
+    }
+    if (!batch.isDone)
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.backfillFindingProjects,
+        { cursor: batch.continueCursor },
+      );
+    return null;
+  },
+});
+
+/** Follow current chat membership, never a captured project ID from an old job. */
+export const syncChatFindingProject = internalMutation({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chat = await getChat(ctx, args.chatId);
+    if (!chat || chat.user_id !== args.userId) return null;
+    const batch = await ctx.db
+      .query("findings")
+      .withIndex("by_user_chat_created", (q) =>
+        q.eq("user_id", args.userId).eq("chat_id", args.chatId),
+      )
+      .paginate({
+        numItems: 20,
+        cursor: args.cursor,
+        maximumBytesRead: 1_000_000,
+      });
+    for (const finding of batch.page)
+      if (finding.project_id !== chat.project_id)
+        await ctx.db.patch(finding._id, { project_id: chat.project_id });
+    if (!batch.isDone)
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.syncChatFindingProject,
+        { ...args, cursor: batch.continueCursor },
+      );
+    return null;
   },
 });

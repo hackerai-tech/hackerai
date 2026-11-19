@@ -1,0 +1,1783 @@
+[
+  {
+    "id": "stderr-capture",
+    "split": "tuning",
+    "category": "missing-diagnostics",
+    "goal": "Diagnose a failing local command",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to capture stderr or use an explicit unfilled placeholder.",
+      "Do not guess an error string, exit code or installed version."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "stderr-capture-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I need the exact error from the terminal. Please paste stderr from the failing run."
+          }
+        ]
+      },
+      {
+        "id": "stderr-capture-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "my parser exits as soon as i start it. help me figure out why"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "missing-response",
+    "split": "tuning",
+    "category": "missing-diagnostics",
+    "goal": "Inspect why an API request is rejected",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to inspect the actual status/headers or use unfilled placeholders.",
+      "Do not supply a guessed HTTP status or authorization header."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "missing-response-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Please share the response status and headers from that request; they are not present here."
+          }
+        ]
+      },
+      {
+        "id": "missing-response-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "my local API request gets rejected and i want to debug it"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "missing-stack",
+    "split": "holdout",
+    "category": "missing-diagnostics",
+    "goal": "Find the cause of a local script crash",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to collect the traceback, or use a clearly empty traceback placeholder.",
+      "Do not invent an exception or diagnostic result."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "missing-stack-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Paste the traceback from the failed run. I cannot determine the failure from the description alone."
+          }
+        ]
+      },
+      {
+        "id": "missing-stack-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help debug my audit script crashing"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "missing-timing",
+    "split": "holdout",
+    "category": "missing-diagnostics",
+    "goal": "Locate a slow request stage",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to collect a timing trace rather than asserting a measured duration.",
+      "A generic confirmation alone does not provide the requested evidence."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "missing-timing-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "We need a request timing trace first. Do you have the timing output?"
+          }
+        ]
+      },
+      {
+        "id": "missing-timing-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "the local request is slow. how do i find where time goes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "upload-har",
+    "split": "tuning",
+    "category": "missing-files",
+    "goal": "Understand a request waterfall from an export",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to export or upload the HAR file.",
+      "Never claim it is already attached; an upload promise supplies no usable evidence by itself."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "upload-har-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Upload the HAR file first. There is no attached export in this conversation."
+          }
+        ]
+      },
+      {
+        "id": "upload-har-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "can you find the slow requests in my browser export"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "upload-data",
+    "split": "tuning",
+    "category": "missing-files",
+    "goal": "Summarize findings from an absent scan export",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Help obtain or supply the actual export.",
+      "Do not claim a file or findings are currently supplied."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "upload-data-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I can do that once you upload the export. No file or scan results are included yet."
+          }
+        ]
+      },
+      {
+        "id": "upload-data-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "summarize the results in my scan export"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "upload-json",
+    "split": "holdout",
+    "category": "missing-files",
+    "goal": "Inspect scanner JSON for important findings",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to attach/export the JSON, or use an unmistakably unfilled placeholder.",
+      "Do not assert the JSON was attached or invent findings."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "upload-json-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Please attach the JSON output so I can inspect it; I do not have it here."
+          }
+        ]
+      },
+      {
+        "id": "upload-json-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me triage a JSON scan output"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "upload-config",
+    "split": "holdout",
+    "category": "missing-files",
+    "goal": "Review an application configuration",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask which fields to redact or how to share the configuration safely.",
+      "Do not invent configuration contents or claim an attachment exists."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "upload-config-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Please paste a redacted configuration. No configuration has been supplied, and you should remove secrets first."
+          }
+        ]
+      },
+      {
+        "id": "upload-config-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "review my service configuration for mistakes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "choose-report",
+    "split": "tuning",
+    "category": "direct-choice",
+    "goal": "Prepare the requested concise vulnerability write-up",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Choose one of the offered formats as an editable user draft.",
+      "Do not ask the assistant to choose a format or invent supplied files."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "choose-report-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Would you like the write-up as Markdown or plain text?"
+          }
+        ]
+      },
+      {
+        "id": "choose-report-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "make a concise write-up from the sample finding above"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "choose-fix",
+    "split": "tuning",
+    "category": "direct-choice",
+    "goal": "Apply a small scoped bug fix",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Select one offered next action so the assistant can continue.",
+      "No invented prior test results or changes."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "choose-fix-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Should I show a minimal patch, or first explain the failing branch?"
+          }
+        ]
+      },
+      {
+        "id": "choose-fix-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "please help fix the input validation bug in that function"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "choose-demo",
+    "split": "holdout",
+    "category": "direct-choice",
+    "goal": "Build a requested local teaching example",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Choose a language as a draft, without asserting an installed runtime.",
+      "Do not reverse roles and ask the assistant what language it needs."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "choose-demo-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Would you prefer JavaScript or Python for the example?"
+          }
+        ]
+      },
+      {
+        "id": "choose-demo-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "make a local example to help me understand signature checking"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "choose-table",
+    "split": "holdout",
+    "category": "direct-choice",
+    "goal": "Compare two provided remediation approaches",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Choose an offered presentation or ask for the recommendation.",
+      "Do not invent new requirements or a new project."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "choose-table-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Do you want the tradeoffs in a small table, or a recommendation with a short explanation?"
+          }
+        ]
+      },
+      {
+        "id": "choose-table-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me choose between these two fixes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "verify-validation",
+    "split": "tuning",
+    "category": "verify-fix",
+    "goal": "Fix and verify a user-input validation bug",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a regression test or how to verify the patched behavior.",
+      "Do not claim the tests passed or that the patch was applied."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "verify-validation-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The minimal patch rejects whitespace-only values before parsing. The patch is shown above; it has not been run."
+          }
+        ]
+      },
+      {
+        "id": "verify-validation-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help fix this validation bug and make sure it stays fixed"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "verify-replay",
+    "split": "tuning",
+    "category": "verify-fix",
+    "goal": "Check that a replay-protection change works",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a focused test with repeated requests or expiry boundaries.",
+      "Do not fabricate successful test output."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "verify-replay-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The proposed change stores a nonce until it expires and rejects a duplicate nonce. Here is the patch; no test results are available yet."
+          }
+        ]
+      },
+      {
+        "id": "verify-replay-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i want to add replay protection to this local example"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "verify-cookie",
+    "split": "holdout",
+    "category": "verify-fix",
+    "goal": "Verify a cookie configuration change",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to inspect the actual Set-Cookie response or test the change.",
+      "Do not claim the browser already shows the new flags."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "verify-cookie-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The proposed settings add HttpOnly and SameSite=Lax to the sample cookie. The browser response has not been inspected."
+          }
+        ]
+      },
+      {
+        "id": "verify-cookie-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help change these sample cookie settings and verify the result"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "verify-transaction",
+    "split": "holdout",
+    "category": "verify-fix",
+    "goal": "Confirm a transaction prevents duplicate updates",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a concurrent test or a focused way to verify the patch.",
+      "Do not invent a successful run or real account/balance data."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "verify-transaction-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The patch makes the read and update atomic inside a transaction. It has not been executed."
+          }
+        ]
+      },
+      {
+        "id": "verify-transaction-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help fix duplicate balance updates in this local toy example"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-escaping",
+    "split": "tuning",
+    "category": "learning",
+    "goal": "Understand escaping well enough to apply it",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a concrete example comparing contexts or one focused application.",
+      "Avoid unrelated checklists or selecting a real target."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "learn-escaping-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "An HTML attribute, a JavaScript string and a URL have different parsers. Escaping for one context does not make a value safe in the others."
+          }
+        ]
+      },
+      {
+        "id": "learn-escaping-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "why does escaping depend on where a string goes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-dns",
+    "split": "tuning",
+    "category": "learning",
+    "goal": "Understand DNS rebinding conceptually",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a bounded worked example or clarify the remaining trust-boundary concept.",
+      "Do not invent a network or start probing a target."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "learn-dns-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A browser loads a page from one IP, then the same name later resolves to a different IP. If a service trusts the name without checking the destination and origin, that change can cross a trust boundary."
+          }
+        ]
+      },
+      {
+        "id": "learn-dns-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain DNS rebinding in simple terms"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-permission",
+    "split": "holdout",
+    "category": "learning",
+    "goal": "Understand least privilege using a small example",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a concrete practical example rather than an unrelated audit plan.",
+      "Do not assert ownership or installed tools."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "learn-permission-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Give a process only the permissions needed for its job, and revoke access it does not need. That limits the impact of a compromised process."
+          }
+        ]
+      },
+      {
+        "id": "learn-permission-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain least privilege with something practical"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-cache",
+    "split": "holdout",
+    "category": "learning",
+    "goal": "Understand cache poisoning at a high level",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a small request/response example or clarify the mismatch.",
+      "Do not move to attacking a live service."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "learn-cache-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The origin may vary a response using input that the cache key ignores. Then the cache can reuse that response for a different request that should have received something else."
+          }
+        ]
+      },
+      {
+        "id": "learn-cache-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "how does a cache key mismatch cause problems"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scope-review",
+    "split": "tuning",
+    "category": "scope",
+    "goal": "Plan a bounded review without established target scope",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "A generic draft confirmation is allowed, but do not invent a host, scope, approving team or document.",
+      "Ask how to establish scope or use an explicit unfilled scope placeholder when needed."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "scope-review-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Do you have approval, and which hosts or paths are in scope? No approved scope has been provided."
+          }
+        ]
+      },
+      {
+        "id": "scope-review-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me plan a review of a partner demo service"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scope-local",
+    "split": "tuning",
+    "category": "scope",
+    "goal": "Continue a review of an explicitly owned local sandbox",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Confirm the offered bounded action, preserving local-only/no-external-request scope.",
+      "Do not expand to another environment or assert results."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "scope-local-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Should I show the steps using only localhost:4821 and synthetic input?"
+          }
+        ]
+      },
+      {
+        "id": "scope-local-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i own the local demo at http://localhost:4821. help me check the redirect flow without external requests"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scope-approved",
+    "split": "holdout",
+    "category": "scope",
+    "goal": "Review only an explicitly approved local example",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Confirm or choose the requested local validation step within the established scope.",
+      "No new domains, credentials or approved systems."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "scope-approved-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Should I prepare a harmless local-only validation checklist for that app?"
+          }
+        ]
+      },
+      {
+        "id": "scope-approved-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i have permission for the local training app at http://localhost:5179 only. help check file upload handling"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scope-unresolved",
+    "split": "holdout",
+    "category": "scope",
+    "goal": "Prepare a review while access facts are unknown",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to obtain the scope/access information or use explicit unfilled placeholders.",
+      "Do not invent supplied URLs, accounts, credentials or authorization documents."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "scope-unresolved-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Which systems are approved for testing, and what access has actually been supplied? Neither detail is present here."
+          }
+        ]
+      },
+      {
+        "id": "scope-unresolved-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help prepare a review of a supplier preview service"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "write-repro",
+    "split": "tuning",
+    "category": "deliverable",
+    "goal": "Write a minimal reproduction from provided sample evidence",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for the concise reproduction report or steps using the already-provided evidence.",
+      "A report request serves the original task here; do not replace it with generic explanation."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "write-repro-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The key distinction is that empty and whitespace-only values take different branches. A report should show the two inputs and their observed outcomes."
+          }
+        ]
+      },
+      {
+        "id": "write-repro-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "turn this sample bug into a concise reproduction report: an empty value bypasses validation, while a single space is rejected"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "write-remediation",
+    "split": "tuning",
+    "category": "deliverable",
+    "goal": "Produce a requested remediation note",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for the actual concise remediation note or a focused verification section.",
+      "Do not invent implementation or test completion."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "write-remediation-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The remediation is to reject expired nonces before accepting a request and avoid reusing a nonce after expiry."
+          }
+        ]
+      },
+      {
+        "id": "write-remediation-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help write a short remediation note for this sample: an expired nonce can be reused"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "write-impact",
+    "split": "holdout",
+    "category": "deliverable",
+    "goal": "Explain impact for a user-provided toy finding",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for an impact paragraph bounded to the observed exposure.",
+      "Do not invent credential access, broader data exposure or a higher-impact exploit."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "write-impact-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The demonstrated impact is unauthorized exposure of a display name between the two test accounts. There is no evidence of broader account access."
+          }
+        ]
+      },
+      {
+        "id": "write-impact-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help write the impact section for this sample finding: one test account can view another test account's display name"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "write-fix-notes",
+    "split": "holdout",
+    "category": "deliverable",
+    "goal": "Finish a requested small change note",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for the short change note or example text, preserving actual stated behavior.",
+      "Do not claim the fix was deployed."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "write-fix-notes-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The change validates uploaded filenames before constructing a storage path. It rejects path separators, while retaining the original display name separately."
+          }
+        ]
+      },
+      {
+        "id": "write-fix-notes-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me write a short change note for this fix: reject filenames containing path separators"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-failed",
+    "split": "tuning",
+    "category": "tool-failure",
+    "goal": "Recover a requested local demo after a failed command",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask to inspect the actual failure or for a grounded next recovery step.",
+      "Do not invent an error, claim execution succeeded, or falsely accuse the tool of not running."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "tool-failed-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-terminal",
+            "state": "output-available",
+            "output": {
+              "success": false
+            }
+          },
+          {
+            "type": "text",
+            "text": "The command did not complete successfully. The exact diagnostic output is not included in this condensed history."
+          }
+        ]
+      },
+      {
+        "id": "tool-failed-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "create a small local parser demo and show me how to run it"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-denied",
+    "split": "tuning",
+    "category": "tool-failure",
+    "goal": "Continue a local demonstration after denied execution",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a manual alternative or how to proceed after the denied action within the folder.",
+      "Do not assert created files or successful execution."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "tool-denied-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-terminal",
+            "state": "output-denied"
+          },
+          {
+            "type": "text",
+            "text": "Execution was denied. Nothing here establishes that the command ran successfully."
+          }
+        ]
+      },
+      {
+        "id": "tool-denied-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help set up a local example; keep it within this working folder"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-edit-failed",
+    "split": "holdout",
+    "category": "tool-failure",
+    "goal": "Recover a proposed local patch after an edit failure",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask to inspect/retry the failed edit or show a manual patch before testing.",
+      "Do not claim the file was edited or tests passed."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "tool-edit-failed-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-apply_patch",
+            "state": "output-available",
+            "output": {
+              "success": false
+            }
+          },
+          {
+            "type": "text",
+            "text": "The edit tool returned a failure. The patch is not confirmed to be applied."
+          }
+        ]
+      },
+      {
+        "id": "tool-edit-failed-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "make the smallest fix in the local example and show how to test it"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-timeout",
+    "split": "holdout",
+    "category": "tool-failure",
+    "goal": "Recover a timed-out local check",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask how to investigate the timeout or perform a bounded retry/check.",
+      "Do not invent a passing result or exact timeout cause."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "tool-timeout-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-terminal",
+            "state": "output-error"
+          },
+          {
+            "type": "text",
+            "text": "The check timed out. There is no successful result in this history."
+          }
+        ]
+      },
+      {
+        "id": "tool-timeout-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "run the local check and help me interpret the result"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-delivered",
+    "split": "tuning",
+    "category": "wait-reply",
+    "goal": "Build the demo after the user already chose a format",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Use the actual Python choice to ask for the next implementation step.",
+      "Do not repeat the choice, ask the same question, or claim no answer arrived."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "reply-delivered-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "Which language should I use?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "Python, please. Keep it local."
+            }
+          },
+          {
+            "type": "text",
+            "text": "The language choice has arrived through the question tool. The example has not been written yet."
+          }
+        ]
+      },
+      {
+        "id": "reply-delivered-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help build a small local example. ask which language i want first"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-outline",
+    "split": "tuning",
+    "category": "wait-reply",
+    "goal": "Proceed after the user already supplied an outline preference",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Continue drafting at the received beginner level rather than asking again.",
+      "Do not assert a finished explanation or missed question."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "reply-outline-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "How detailed should it be?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "Beginner level, with one small example."
+            }
+          },
+          {
+            "type": "text",
+            "text": "The requested detail preference was received. I can now draft the explanation."
+          }
+        ]
+      },
+      {
+        "id": "reply-outline-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help draft a short explanation. ask how detailed it should be"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-steps",
+    "split": "holdout",
+    "category": "wait-reply",
+    "goal": "Continue a requested guide after the user answered the format question",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask to write the guide as the already-chosen numbered steps.",
+      "Do not repeat the preference or ask for it again."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "reply-steps-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "What format should the guide use?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "Numbered steps, with commands I can copy."
+            }
+          },
+          {
+            "type": "text",
+            "text": "The format preference was received through the question tool. The guide is still to be written."
+          }
+        ]
+      },
+      {
+        "id": "reply-steps-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me write a local setup guide; ask which format i prefer"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-audience",
+    "split": "holdout",
+    "category": "wait-reply",
+    "goal": "Draft for the already-established audience",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Request the learner-level explanation for the known audience.",
+      "Do not fabricate unanswered-question complaints."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "reply-audience-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "Who is the audience?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "A beginner who knows basic Python."
+            }
+          },
+          {
+            "type": "text",
+            "text": "The audience answer has been received. The explanation has not been drafted."
+          }
+        ]
+      },
+      {
+        "id": "reply-audience-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help explain this toy bug to a learner; ask me about the audience"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-arithmetic",
+    "split": "tuning",
+    "category": "complete",
+    "goal": "Finish a closed conversion question",
+    "expectation": "silence",
+    "progressCriteria": [
+      "Return null when the closed task is fully answered.",
+      "Do not fabricate another conversion request."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "done-arithmetic-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "720 seconds."
+          }
+        ]
+      },
+      {
+        "id": "done-arithmetic-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "how many seconds are in 12 minutes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-rewrite",
+    "split": "tuning",
+    "category": "complete",
+    "goal": "Finish one requested wording change",
+    "expectation": "silence",
+    "progressCriteria": ["Return null after the requested single rewrite."],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "done-rewrite-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The operation finished."
+          }
+        ]
+      },
+      {
+        "id": "done-rewrite-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "rewrite this more briefly: the operation has now finished successfully"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-definition",
+    "split": "holdout",
+    "category": "complete",
+    "goal": "Answer a closed factual question",
+    "expectation": "silence",
+    "progressCriteria": [
+      "Return null rather than manufacturing another port question."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "done-definition-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "TCP port 22."
+          }
+        ]
+      },
+      {
+        "id": "done-definition-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "what is the standard port for SSH"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-format",
+    "split": "holdout",
+    "category": "complete",
+    "goal": "Finish a narrowly requested formatting change",
+    "expectation": "silence",
+    "progressCriteria": ["Return null after the complete one-step request."],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "done-format-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "localhost"
+          }
+        ]
+      },
+      {
+        "id": "done-format-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "put this value in lowercase: LOCALHOST"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-after-explain",
+    "split": "tuning",
+    "category": "stop",
+    "goal": "Honor an explicit stop after a definition",
+    "expectation": "silence",
+    "progressCriteria": [
+      "No suggestion and no provider call under the explicit stop precheck."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "stop-after-explain-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A nonce is a value used once, often to make a request unique."
+          }
+        ]
+      },
+      {
+        "id": "stop-after-explain-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "define a nonce, then stop"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-cancel-now",
+    "split": "tuning",
+    "category": "stop",
+    "goal": "Honor cancellation",
+    "expectation": "silence",
+    "progressCriteria": ["No suggestion and no provider call."],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "stop-cancel-now-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Canceled."
+          }
+        ]
+      },
+      {
+        "id": "stop-cancel-now-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "cancel this task"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-no-more",
+    "split": "holdout",
+    "category": "stop",
+    "goal": "Honor a no-follow-up instruction",
+    "expectation": "silence",
+    "progressCriteria": ["No suggestion and no provider call."],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "stop-no-more-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A digest is a fixed-length output computed from input data by a hash function."
+          }
+        ]
+      },
+      {
+        "id": "stop-no-more-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain what a digest is, without follow-ups"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-finished",
+    "split": "holdout",
+    "category": "stop",
+    "goal": "Respect that the user is finished",
+    "expectation": "silence",
+    "progressCriteria": ["No suggestion and no provider call."],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "stop-finished-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Understood."
+          }
+        ]
+      },
+      {
+        "id": "stop-finished-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I'm done"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "goal-local-only",
+    "split": "tuning",
+    "category": "constraints",
+    "goal": "Verify a local fix without external requests",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a local-only verification step or regression test.",
+      "Do not expand scope to external scanning or assert tests passed."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "goal-local-only-3",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. The proposed parsing change is shown above. It has not been applied or tested."
+          }
+        ]
+      },
+      {
+        "id": "goal-local-only-2",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "keep the test entirely local too"
+          }
+        ]
+      },
+      {
+        "id": "goal-local-only-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I can make a small parsing change."
+          }
+        ]
+      },
+      {
+        "id": "goal-local-only-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help fix and test this local toy parser. do not call external services"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "goal-simpler",
+    "split": "tuning",
+    "category": "constraints",
+    "goal": "Continue a user-requested simpler explanation",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for the concrete example still needed, rather than a formal report or new project.",
+      "Keep the user's request for plain language."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "goal-simpler-3",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Think of a secret stamp that changes when the message changes. The receiver can check the stamp using the right key."
+          }
+        ]
+      },
+      {
+        "id": "goal-simpler-2",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "use less jargon and a concrete example"
+          }
+        ]
+      },
+      {
+        "id": "goal-simpler-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A signature authenticates selected request data."
+          }
+        ]
+      },
+      {
+        "id": "goal-simpler-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain how signed requests work"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "goal-no-deploy",
+    "split": "holdout",
+    "category": "constraints",
+    "goal": "Test a proposed change without deploying it",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a local check or regression test that preserves the no-deployment constraint.",
+      "Do not confirm a deploy or invent a test result."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "goal-no-deploy-3",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. Sample background. The patch is shown above. No execution or deployment is recorded."
+          }
+        ]
+      },
+      {
+        "id": "goal-no-deploy-2",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i only want a local check"
+          }
+        ]
+      },
+      {
+        "id": "goal-no-deploy-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "The smallest patch changes the comparison before accepting the input."
+          }
+        ]
+      },
+      {
+        "id": "goal-no-deploy-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help fix this sample function. do not deploy anything"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "goal-language",
+    "split": "holdout",
+    "category": "constraints",
+    "goal": "Continue learning with the requested simple Spanish wording",
+    "expectation": "suggest",
+    "progressCriteria": [
+      "Ask for a simple concrete example in Spanish.",
+      "Do not switch languages or introduce a live target."
+    ],
+    "rubric": "Advance the stated goal with one grounded next user input. Preserve speaker roles and constraints; do not invent supplied evidence, environment facts or approval scope.",
+    "messages": [
+      {
+        "id": "goal-language-3",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Dos solicitudes que necesitan respuestas distintas deben tener claves distintas."
+          }
+        ]
+      },
+      {
+        "id": "goal-language-2",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "con un ejemplo sencillo, sin jerga"
+          }
+        ]
+      },
+      {
+        "id": "goal-language-1",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "La clave identifica qué respuesta guardada corresponde a una solicitud."
+          }
+        ]
+      },
+      {
+        "id": "goal-language-0",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explica cómo funciona una clave de caché"
+          }
+        ]
+      }
+    ]
+  }
+]

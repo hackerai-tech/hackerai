@@ -794,11 +794,13 @@ export function WorkspaceFilesPanel({
   chatId,
   onOpenCapturedFile,
   onOpenWorkspaceFile,
+  savedFilesLoading = false,
 }: {
   messages: any[];
   chatId: string;
   onOpenCapturedFile?: (file: CapturedFile) => void;
   onOpenWorkspaceFile?: (file: LoadedWorkspaceFile) => void;
+  savedFilesLoading?: boolean;
 }) {
   const { sandboxPreference } = useGlobalState();
   const [tab, setTab] = useState<"chat" | "workspace">("chat");
@@ -828,7 +830,11 @@ export function WorkspaceFilesPanel({
         </Button>
       </div>
       {tab === "chat" ? (
-        <ChatFilesPanel messages={messages} onOpenFile={onOpenCapturedFile} />
+        <ChatFilesPanel
+          messages={messages}
+          onOpenFile={onOpenCapturedFile}
+          loading={savedFilesLoading}
+        />
       ) : (
         <LiveWorkspaceFilesPanel
           key={`${chatId}:${sandboxPreference}`}

@@ -30,6 +30,7 @@ export interface UploadedFileState {
   file: File | LocalDesktopFile;
   uploading: boolean;
   uploaded: boolean;
+  removing?: boolean;
   error?: string;
   retryable?: boolean;
   storage?: "s3" | "local-desktop";

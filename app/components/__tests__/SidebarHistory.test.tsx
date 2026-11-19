@@ -5,8 +5,17 @@ import type SidebarHistoryType from "../SidebarHistory";
 
 jest.mock("../ChatItem", () => ({
   __esModule: true,
-  default: ({ id, title, isStreaming, isAwaitingApproval }: any) => (
-    <div data-testid={`chat-item-${id}`}>
+  default: ({
+    id,
+    title,
+    isStreaming,
+    isAwaitingApproval,
+    needsInputReason,
+  }: any) => (
+    <div
+      data-testid={`chat-item-${id}`}
+      data-needs-input={needsInputReason ?? ""}
+    >
       <span>{title}</span>
       {isAwaitingApproval ? (
         <span data-testid={`awaiting-approval-${id}`}>Awaiting approval</span>
@@ -145,6 +154,33 @@ describe("SidebarHistory", () => {
     expect(
       screen.queryByTestId("streaming-stored-approval-chat"),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a waiting reply and a goal question in either chat section", () => {
+    render(
+      <SidebarHistory
+        chats={[
+          chat({
+            id: "reply-chat",
+            active_trigger_run_id: "run-1",
+            active_agent_user_wait: { status: "waiting" },
+          }),
+          chat({ id: "goal-chat", goal_needs_input: true }),
+        ]}
+        paginationStatus="Exhausted"
+      />,
+    );
+    expect(screen.getByTestId("chat-item-reply-chat")).toHaveAttribute(
+      "data-needs-input",
+      "reply",
+    );
+    expect(
+      screen.queryByTestId("streaming-reply-chat"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-item-goal-chat")).toHaveAttribute(
+      "data-needs-input",
+      "goal",
+    );
   });
 
   it("keeps the pagination sentinel when the loaded page has no unpinned chats", () => {

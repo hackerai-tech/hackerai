@@ -1,4 +1,5 @@
 import { useWorkspaceFilesEnabled } from "./ComputerPanelToggle";
+import { AgentGoalEditor, type GoalEditorDraft } from "./AgentGoalEditor";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -60,14 +61,15 @@ import {
   getCategoryColor,
   getLanguageFromPath,
   getActionText,
-  getSidebarIcon,
   getToolName,
   getDisplayTarget,
 } from "./computer-sidebar-utils";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
+import { useS3ActionDiagnostics } from "@/app/hooks/useS3ActionDiagnostics";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { collectChatFiles } from "@/lib/workspace-preview/chat-files";
+import { getNoteMetaSegments } from "./tools/notes-tool-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
 import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
@@ -115,6 +117,7 @@ interface ComputerSidebarProps {
   browserChatId?: string;
   browserAgentId?: string;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  onTakeoverRequestConsumed?: (requestId: string) => void;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -142,7 +145,10 @@ const SidebarPreviewImage = ({
   file: FilePart & { page?: number };
   label: string;
 }) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "computer_sidebar",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
     if (file.fileId && fileUrlCache) {
@@ -356,6 +362,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   browserChatId,
   browserAgentId = "parent",
   onBrowserContinue,
+  onTakeoverRequestConsumed,
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -407,10 +414,22 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     canGoPrev,
     canGoNext,
   } = useSidebarNavigation({
+    // Shared views have no status, so their run state stays unknown.
+    isRunActive:
+      status === undefined
+        ? undefined
+        : status === "streaming" || status === "submitted",
     messages,
     sidebarContent,
     onNavigate: onNavigate ? navigateManually : undefined,
   });
+
+  const missingBrowserSelection =
+    currentIndex === -1 &&
+    !!sidebarContent &&
+    isSidebarTerminal(sidebarContent) &&
+    !!detectAgentBrowserUsage(sidebarContent.command);
+  const showingLiveContent = isAtLive || missingBrowserSelection;
 
   const handleJumpToLive = useCallback(() => {
     const latestTool = toolExecutions.at(-1);
@@ -535,6 +554,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return;
     }
 
+    // Browser control has its own authenticated session lifecycle. A command
+    // opened from persisted history can be absent from the live stream; do not
+    // close or replace its preview while the user is taking control.
+    if (missingBrowserSelection) {
+      return;
+    }
+
     // currentIndex === -1 means the current sidebarContent is not found in toolExecutions
     // This happens when the message containing this tool was deleted
     const timeoutId = window.setTimeout(() => {
@@ -550,6 +576,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return () => window.clearTimeout(timeoutId);
   }, [
     currentIndex,
+    missingBrowserSelection,
     sidebarOpen,
     sidebarContent,
     status,
@@ -580,7 +607,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     sidebarContent;
 
   const actionText = getActionText(displayContent);
-  const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
   const headerTitle = isWorkspaceFiles
@@ -758,43 +784,56 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             ) : (
               <>
                 {/* Action Status */}
-                <div className="flex items-center gap-2 mt-2">
-                  <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                    {icon}
+                <div className="mt-2 flex min-w-0 flex-col gap-1 text-xs text-muted-foreground desktop:flex-row desktop:items-center desktop:gap-2">
+                  <div
+                    className="shrink-0 whitespace-nowrap"
+                    title={
+                      isToolError
+                        ? `${toolName} needs attention`
+                        : `HackerAI is using ${toolName}`
+                    }
+                  >
+                    {isToolError ? (
+                      <>
+                        <span className="text-foreground">{toolName}</span>{" "}
+                        needs attention
+                      </>
+                    ) : (
+                      <>
+                        HackerAI is using{" "}
+                        <span className="text-foreground">{toolName}</span>
+                      </>
+                    )}
                   </div>
-                  <div className="flex-1 flex flex-col gap-1 min-w-0">
-                    <div className="text-[12px] text-muted-foreground">
-                      {isToolError ? (
-                        <>
-                          <span className="text-foreground">{toolName}</span>{" "}
-                          needs attention
-                        </>
-                      ) : (
-                        <>
-                          HackerAI is using{" "}
-                          <span className="text-foreground">{toolName}</span>
-                        </>
-                      )}
-                    </div>
-                    <div
-                      title={`${actionText} ${displayTarget}`}
-                      className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                    >
-                      {actionText}
-                      <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                        <code>{displayTarget}</code>
-                      </span>
-                    </div>
+                  <div
+                    aria-hidden="true"
+                    className="hidden h-3 w-px shrink-0 bg-border desktop:block"
+                  />
+                  <div
+                    title={`${actionText} ${displayTarget}`}
+                    className="min-w-0 truncate desktop:flex-1"
+                  >
+                    {actionText}
+                    {displayTarget && (
+                      <code className="ml-1 font-mono">{displayTarget}</code>
+                    )}
                   </div>
                 </div>
 
                 {sidebarOpen && browserChatId && (
                   <AgentBrowserPreview
+                    onReturnToChat={closeSidebar}
                     onVisibilityChange={setBrowserPreviewVisible}
+                    onTakeoverRequestConsumed={onTakeoverRequestConsumed}
+                    takeoverRequest={
+                      isSidebarTerminal(sidebarContent)
+                        ? sidebarContent.browserTakeoverRequest
+                        : undefined
+                    }
                     onContinue={onBrowserContinue}
                     chatId={browserChatId}
                     agentId={browserAgentId}
-                    liveSelection={isAtLive && isFollowingLive}
+                    liveSelection={showingLiveContent && isFollowingLive}
                     browserRequested={
                       !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
                     }
@@ -1133,6 +1172,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                       Processing...
                                     </div>
                                   </div>
+                                ) : sidebarContent.error ? (
+                                  <div
+                                    role="alert"
+                                    className="py-8 text-center text-sm text-muted-foreground break-words"
+                                  >
+                                    {sidebarContent.error}
+                                  </div>
                                 ) : sidebarContent.action === "update" &&
                                   sidebarContent.modified ? (
                                   // Update action: show before/after comparison
@@ -1225,39 +1271,81 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     </div>
                                   </div>
                                 ) : (
-                                  sidebarContent.notes.map((note, index) => (
-                                    <div
-                                      key={note.note_id}
-                                      className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
-                                    >
-                                      <div className="flex items-center gap-2 mb-1">
-                                        <span className="text-foreground text-sm font-medium">
-                                          {note.title}
-                                        </span>
-                                        <span
-                                          className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
-                                        >
-                                          {note.category}
-                                        </span>
-                                      </div>
-                                      <div className="text-muted-foreground text-sm whitespace-pre-wrap">
-                                        {note.content}
-                                      </div>
-                                      {note.tags.length > 0 && (
-                                        <div className="flex gap-1 mt-2 flex-wrap">
-                                          {note.tags.map((tag) => (
-                                            <span
-                                              key={tag}
-                                              className="text-xs bg-muted px-1.5 py-0.5 rounded"
-                                            >
-                                              {tag}
-                                            </span>
-                                          ))}
+                                  sidebarContent.notes.map((note, index) => {
+                                    const meta = getNoteMetaSegments(note);
+                                    return (
+                                      <div
+                                        key={note.note_id}
+                                        className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
+                                      >
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="text-foreground text-sm font-medium min-w-0 break-words">
+                                            {note.title}
+                                          </span>
+                                          <span
+                                            className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
+                                          >
+                                            {note.category}
+                                          </span>
                                         </div>
-                                      )}
-                                    </div>
-                                  ))
+                                        {meta.length > 0 && (
+                                          <div className="-mt-0.5 mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                                            {meta.map(
+                                              (segment, segmentIndex) => (
+                                                <span
+                                                  key={segment}
+                                                  className={`min-w-0 max-w-full whitespace-nowrap ${segmentIndex === 0 && note.target ? "truncate font-mono" : ""}`}
+                                                >
+                                                  {segmentIndex > 0 && (
+                                                    <span
+                                                      aria-hidden="true"
+                                                      className="mr-1.5"
+                                                    >
+                                                      ·
+                                                    </span>
+                                                  )}
+                                                  {segment}
+                                                </span>
+                                              ),
+                                            )}
+                                          </div>
+                                        )}
+                                        <div
+                                          className={`text-muted-foreground text-sm whitespace-pre-wrap break-words ${sidebarContent.action === "list" && note.preview_truncated ? "line-clamp-2" : ""}`}
+                                        >
+                                          {note.content}
+                                        </div>
+                                        {sidebarContent.action === "get" &&
+                                          note.partial_content && (
+                                            <div className="mt-2 text-xs text-muted-foreground">
+                                              Showing part of a long note.
+                                            </div>
+                                          )}
+                                        {note.tags.length > 0 && (
+                                          <div className="flex gap-1 mt-2 flex-wrap">
+                                            {note.tags.map((tag) => (
+                                              <span
+                                                key={tag}
+                                                className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                              >
+                                                {tag}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })
                                 )}
+                                {!sidebarContent.isExecuting &&
+                                  !sidebarContent.error &&
+                                  sidebarContent.action === "list" &&
+                                  sidebarContent.hasMore && (
+                                    <div className="mt-1 border-t border-border/30 pt-3 text-xs text-muted-foreground">
+                                      Partial list: showing one page. More notes
+                                      may match.
+                                    </div>
+                                  )}
                               </div>
                             </div>
                           )}
@@ -1284,14 +1372,22 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={handleNext}
+                        onClick={
+                          missingBrowserSelection
+                            ? handleJumpToLive
+                            : handleNext
+                        }
                         disabled={!canGoNext}
                         className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
                           !canGoNext
                             ? "text-muted-foreground/30 cursor-not-allowed"
                             : "text-muted-foreground hover:text-blue-500"
                         }`}
-                        aria-label="Next tool execution"
+                        aria-label={
+                          missingBrowserSelection
+                            ? "Latest available tool execution"
+                            : "Next tool execution"
+                        }
                       >
                         <SkipForward size={16} />
                       </button>
@@ -1357,7 +1453,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       </span>
                     </div>
                     {toolExecutions.length > 0 &&
-                      (!isAtLive || !isFollowingLive) && (
+                      (!showingLiveContent || !isFollowingLive) && (
                         <button
                           onClick={handleJumpToLive}
                           className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
@@ -1522,11 +1618,20 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
+  continueGoal?: React.ComponentProps<typeof AgentGoalEditor>["continueGoal"];
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
-}> = ({ chatId, messages, status, onBrowserContinue }) => {
+}> = ({
+  chatId,
+  messages,
+  status,
+  onBrowserContinue,
+  stopGoalRunBeforeControl,
+  continueGoal,
+}) => {
   const {
     sidebarOpen,
     sidebarContent,
@@ -1534,8 +1639,106 @@ export const ComputerSidebar: React.FC<{
     setSidebarContent,
     closeSidebar,
     openSidebar,
+    consumeBrowserTakeoverRequest,
   } = useGlobalState();
+
   const tabsEnabled = useWorkspaceFilesEnabled(chatId);
+
+  const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft | undefined) => {
+    setGoalDraft(draft);
+  }, []);
+  const closeGoalEditor = useCallback(() => {
+    setGoalDraft(undefined);
+    closeSidebar();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+        )
+        ?.focus(),
+    );
+  }, [closeSidebar]);
+
+  const editorChatId =
+    sidebarOpen &&
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal"
+      ? sidebarContent.chatId
+      : undefined;
+  const editorGoal = useQuery(
+    api.agentGoals.get,
+    editorChatId ? { chatId: editorChatId } : "skip",
+  );
+  const lastEditorGoal = useRef<
+    | {
+        chatId: string;
+        id: string;
+        startedAt?: number;
+        state: string;
+      }
+    | undefined
+  >(undefined);
+  useEffect(() => {
+    if (!editorChatId) {
+      lastEditorGoal.current = undefined;
+      return;
+    }
+    if (editorGoal === undefined) return;
+    const previous = lastEditorGoal.current;
+    if (editorGoal === null) {
+      // Only close the goal being viewed. A preserved draft may belong to an
+      // older objective while another goal is being replaced or cleared.
+      lastEditorGoal.current = undefined;
+      if (
+        previous?.chatId === editorChatId &&
+        (!goalDraft ||
+          (goalDraft.chatId === editorChatId &&
+            goalDraft.original._id === previous.id &&
+            goalDraft.original.startedAt === previous.startedAt))
+      )
+        closeSidebar();
+      return;
+    }
+    lastEditorGoal.current = {
+      chatId: editorChatId,
+      id: editorGoal._id,
+      startedAt: editorGoal.startedAt,
+      state: editorGoal.state,
+    };
+    if (
+      editorGoal.state === "achieved" &&
+      previous?.state !== "achieved" &&
+      previous?.chatId === editorChatId &&
+      previous.id === editorGoal._id &&
+      previous.startedAt === editorGoal.startedAt &&
+      (!goalDraft ||
+        (goalDraft.chatId === editorChatId &&
+          goalDraft.original._id === editorGoal._id &&
+          goalDraft.original.startedAt === editorGoal.startedAt))
+    )
+      closeSidebar();
+  }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
+
+  // Keep only the draft controller alive while closed, not browser viewers or polls.
+  if (!sidebarOpen && !tabsEnabled) return null;
+
+  if (editorChatId) {
+    return (
+      <AgentGoalEditor
+        key={editorChatId}
+        chatId={editorChatId}
+        onClose={closeGoalEditor}
+        continueGoal={editorChatId === chatId ? continueGoal : undefined}
+        draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
+        onDraftChange={keepGoalDraft}
+        stopRunBeforeControl={
+          editorChatId === chatId ? stopGoalRunBeforeControl : undefined
+        }
+      />
+    );
+  }
 
   const subagents =
     sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)
@@ -1568,6 +1771,7 @@ export const ComputerSidebar: React.FC<{
               onNavigate={setSidebarContent}
               browserChatId={chatId}
               onBrowserContinue={onBrowserContinue}
+              onTakeoverRequestConsumed={consumeBrowserTakeoverRequest}
             />
           )}
         />
@@ -1594,6 +1798,7 @@ export const ComputerSidebar: React.FC<{
         sidebarOpen && (
           <ComputerSidebarBase
             onBrowserContinue={onBrowserContinue}
+            onTakeoverRequestConsumed={consumeBrowserTakeoverRequest}
             sidebarOpen={sidebarOpen}
             browserChatId={chatId}
             sidebarContent={sidebarContent}

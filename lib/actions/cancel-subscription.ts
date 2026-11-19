@@ -1,5 +1,12 @@
 "use server";
 
+import {
+  withSubscriptionOperation,
+  type SubscriptionOperation,
+} from "@/lib/billing/subscription-operation";
+
+import { randomUUID } from "node:crypto";
+
 import type Stripe from "stripe";
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
@@ -152,6 +159,10 @@ function shouldCancelImmediately(status: Stripe.Subscription.Status) {
   return status === "past_due" || status === "unpaid";
 }
 
+/**
+ * Keep survey identity across retries while reconciling each request with Stripe.
+ * After required coordination succeeds, feedback persistence is best effort.
+ */
 export default async function cancelSubscriptionAction(
   input: CancelSubscriptionInput,
 ) {
@@ -172,6 +183,20 @@ export default async function cancelSubscriptionAction(
     });
     throw error;
   });
+  return withSubscriptionOperation(
+    context.stripeCustomerId,
+    "cancel",
+    (guard) =>
+      cancelWithinOperation(context, cancellationReason, startedAt, guard),
+  );
+}
+
+async function cancelWithinOperation(
+  context: Awaited<ReturnType<typeof getBillingActionContext>>,
+  cancellationReason: ReturnType<typeof parseCancellationReasonInput>,
+  startedAt: number,
+  guard: SubscriptionOperation,
+) {
   const { organizationId, user, stripeCustomerId } = context;
   const billingFields = {
     userId: user.id,
@@ -215,14 +240,16 @@ export default async function cancelSubscriptionAction(
     : undefined;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   let cancellationStartRecorded = false;
+  let cancellationReasonId: string | undefined;
   let shouldEmitCancellationCompleted = true;
 
   if (serviceKey) {
     try {
-      await getConvexClient().mutation(
+      cancellationReasonId = await getConvexClient().mutation(
         api.cancellationReasons.recordCancellationStarted,
         {
           serviceKey,
+          operation: "cancel",
           userId: user.id,
           organizationId,
           stripeCustomerId,
@@ -235,7 +262,9 @@ export default async function cancelSubscriptionAction(
           reasonDetails: cancellationReason.reasonDetails,
           accountCreatedAt,
           accountAgeDays,
-          startedAt: now,
+          // Use request admission time so an overlapping request that observed
+          // Stripe before cancellation can still join the completed attempt.
+          startedAt,
           source: "in_app",
         },
       );
@@ -262,26 +291,66 @@ export default async function cancelSubscriptionAction(
   let updatedSubscription: Stripe.Subscription;
   try {
     // A pending retention downgrade would block the cancellation update.
-    await releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
-      ...billingFields,
-      stripe_subscription_id: subscriptionContext.id,
-      reason: "cancellation",
-    });
+    if (subscriptionContext.scheduleId) {
+      await guard.write(() =>
+        releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+          ...billingFields,
+          stripe_subscription_id: subscriptionContext.id,
+          reason: "cancellation",
+        }),
+      );
+    }
     const cancellationDetails = {
       feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
       comment: cancellationReason.reasonDetails,
     } as const;
 
-    updatedSubscription = cancelImmediately
-      ? await stripe.subscriptions.cancel(subscriptionContext.id, {
-          cancellation_details: cancellationDetails,
-          invoice_now: false,
-          prorate: false,
-        })
-      : await stripe.subscriptions.update(subscriptionContext.id, {
-          cancel_at_period_end: true,
-          cancellation_details: cancellationDetails,
-        });
+    // SDK transport retries share this request's key. A new user request must
+    // not replay a cached Stripe error/success from an earlier decision.
+    const stripeRequestId = randomUUID();
+    const requestOptions = cancellationReasonId
+      ? {
+          idempotencyKey: `cancel:${cancellationReasonId}:${stripeRequestId}:${cancelImmediately ? "immediate" : "scheduled"}`,
+        }
+      : undefined;
+    const metadata = cancellationReasonId
+      ? { hackerai_cancellation_reason_id: cancellationReasonId }
+      : undefined;
+    // Stripe's immediate cancel API cannot write metadata. Attach the attempt
+    // first so a deleted webhook can recover completion if this request dies.
+    if (cancelImmediately && metadata) {
+      await guard.write(() =>
+        stripe.subscriptions.update(
+          subscriptionContext.id,
+          { metadata },
+          {
+            idempotencyKey: `cancel-metadata:${cancellationReasonId}:${stripeRequestId}`,
+          },
+        ),
+      );
+    }
+
+    updatedSubscription = await guard.write(() =>
+      cancelImmediately
+        ? stripe.subscriptions.cancel(
+            subscriptionContext.id,
+            {
+              cancellation_details: cancellationDetails,
+              invoice_now: false,
+              prorate: false,
+            },
+            requestOptions,
+          )
+        : stripe.subscriptions.update(
+            subscriptionContext.id,
+            {
+              cancel_at_period_end: true,
+              cancellation_details: cancellationDetails,
+              ...(metadata && { metadata }),
+            },
+            requestOptions,
+          ),
+    );
   } catch (error) {
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
@@ -333,6 +402,7 @@ export default async function cancelSubscriptionAction(
         api.cancellationReasons.markCancellationCompleted,
         {
           serviceKey,
+          cancellationReasonId,
           stripeSubscriptionId: subscriptionContext.id,
           stripeCustomerId,
           userIds: [user.id],
@@ -404,7 +474,10 @@ export default async function cancelSubscriptionAction(
         ...proMonthlyPricingExperimentProperties(
           subscriptionContext.pricingExperiment,
         ),
-        $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
+        $insert_id: cancellationCompletionInsertId(
+          subscriptionContext.id,
+          cancellationReasonId,
+        ),
       }),
     );
   }

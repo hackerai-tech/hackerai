@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "0f81f40765f0329006a9a7d2eb97513f56743a9b",
+  "sourceCommit": "8db295a5b3564be2b430bb3a9afdb4db7850fa24",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -8,10 +8,10 @@
       "filename": "counterevidence",
       "name": "counterevidence",
       "description": "Closure discipline for security findings — what counts as proof of safety, what does not, and how to record an unresolved candidate instead of silently dropping it",
-      "contentBytes": 8905,
+      "contentBytes": 9038,
       "internal": true,
       "sourcePath": "analysis/counterevidence.md",
-      "sourceSha256": "b4d7a8ce6a820a6f4705098aa96524f2a1095a46125d575c5df3cbd1d77e731e"
+      "sourceSha256": "21f3edf62e0d0aca00f0835e4ebd33bd2efd85d0890cc644649f99a7394691d4"
     },
     {
       "id": "analysis/fix_verification",
@@ -41,10 +41,10 @@
       "filename": "source_aware_discovery",
       "name": "source_aware_discovery",
       "description": "Enumeration discipline for reading code — which locations to keep as separate candidates, which safe siblings prove nothing, and the per-family sweeps that are routinely missed",
-      "contentBytes": 10541,
+      "contentBytes": 10648,
       "internal": true,
       "sourcePath": "analysis/source_aware_discovery.md",
-      "sourceSha256": "5d0b9818f54b194b0b183926465c123aff19b53080e688dee78e3436316811cf"
+      "sourceSha256": "e91219d685215d5daaa1293214df927949d11568ab95be083482ef7bee0d6f42"
     },
     {
       "id": "cloud/aws",
@@ -96,10 +96,10 @@
       "filename": "root_agent",
       "name": "root-agent",
       "description": "Orchestration layer that coordinates specialized subagents for security assessments",
-      "contentBytes": 5875,
+      "contentBytes": 6626,
       "internal": true,
       "sourcePath": "coordination/root_agent.md",
-      "sourceSha256": "1405ce4ba9fc38862195c7e65de2f6a1768f02a0490cdf8cb153137ee667834c"
+      "sourceSha256": "c483d320e2cc8fdbc3fc6204e46baf2c71f8ad5db6c5315707335e878e506206"
     },
     {
       "id": "coordination/source_aware_whitebox",
@@ -107,10 +107,10 @@
       "filename": "source_aware_whitebox",
       "name": "source-aware-whitebox",
       "description": "Coordination playbook for source-aware white-box testing with static triage and dynamic validation",
-      "contentBytes": 2000,
+      "contentBytes": 2004,
       "internal": true,
       "sourcePath": "coordination/source_aware_whitebox.md",
-      "sourceSha256": "2efc20ae4d6589cbdd962fb66509c8bb3c99c772e856f015ed2f6880c3fb854e"
+      "sourceSha256": "6a61ad6fd8722bb281ea103bedfb0f07b5cbe5ef2e3b0656188dab2aa153efe0"
     },
     {
       "id": "custom/api_spec_testing",
@@ -129,10 +129,10 @@
       "filename": "dependency_cve_scanning",
       "name": "dependency-cve-scanning",
       "description": "Supply-chain / SCA playbook — scan repository lockfiles for known dependency CVEs and report them with create_dependency_report (no dynamic PoC required)",
-      "contentBytes": 19806,
+      "contentBytes": 20605,
       "internal": false,
       "sourcePath": "custom/dependency_cve_scanning.md",
-      "sourceSha256": "49a94cda76b22f1882e24d353be3b14bcac6496a40d25123d165b73ec291b613"
+      "sourceSha256": "6cb4cd828172dda4f8fe89282e53b5f1e52bb4738af74876c7b74fa51f2dfdbe"
     },
     {
       "id": "custom/npx_confusion",
@@ -150,11 +150,11 @@
       "category": "custom",
       "filename": "source_aware_sast",
       "name": "source-aware-sast",
-      "description": "Practical source-aware SAST and AST playbook for semgrep, ast-grep, gitleaks, and trivy fs",
-      "contentBytes": 8093,
+      "description": "Practical source-aware SAST and AST playbook for opengrep, ast-grep, gitleaks, and trivy fs",
+      "contentBytes": 8211,
       "internal": false,
       "sourcePath": "custom/source_aware_sast.md",
-      "sourceSha256": "6746609351bf7bf78d9259fb7d8be558492fbde1df5251256bc9b14d2105bd7d"
+      "sourceSha256": "771a0a54471fe23b91049d84593270061d9ff880a7e311b19539e2f8dad7b931"
     },
     {
       "id": "frameworks/django",
@@ -162,10 +162,10 @@
       "filename": "django",
       "name": "django",
       "description": "Security testing playbook for Django applications covering ORM injection, middleware gaps, auth/session flaws, and template issues",
-      "contentBytes": 10689,
+      "contentBytes": 10728,
       "internal": false,
       "sourcePath": "frameworks/django.md",
-      "sourceSha256": "995afca1c114f5f84b6f828a18ae1fb0a204f0709aaa8dcc5a9773783ac7b319"
+      "sourceSha256": "b3e1dd7ded9ba34c36f7b7be4647a3cd32f9d9ef82316b8801e33445f5a479f0"
     },
     {
       "id": "frameworks/fastapi",
@@ -201,15 +201,26 @@
       "sourceSha256": "7b4d3d0e26b944800ae5b01ed79908f1d532360cf356941ce8954501e538b8a0"
     },
     {
+      "id": "frameworks/springboot",
+      "category": "frameworks",
+      "filename": "springboot",
+      "name": "springboot",
+      "description": "Security testing playbook for deployed or source-available Spring Boot services, including Spring MVC/WebFlux, Spring Security, REST controllers, Actuator, Spring Data REST, Jackson serialization, SpEL, outbound clients, and session management. Use when Spring Boot runtime or configuration is confirmed; first identify the MVC/WebFlux mode, active security chains, method-security wiring, management exposure, profiles, and resolved dependency versions. Covers authentication, authorization, CSRF/CORS, Actuator exposure, path matching, DTO over-binding, validation, deserialization, SSRF, session controls, and Spring-specific configuration flaws.",
+      "contentBytes": 10949,
+      "internal": false,
+      "sourcePath": "frameworks/springboot.md",
+      "sourceSha256": "51abf2cbcfdf87050d914000768ea4d748e074d302b263d74d7a9299f182746d"
+    },
+    {
       "id": "protocols/graphql",
       "category": "protocols",
       "filename": "graphql",
       "name": "graphql",
       "description": "GraphQL security testing covering introspection, resolver injection, batching attacks, and authorization bypass",
-      "contentBytes": 8527,
+      "contentBytes": 8774,
       "internal": false,
       "sourcePath": "protocols/graphql.md",
-      "sourceSha256": "884bc5aabeee41a0e3731af9406b8a8b3d5eaf2d3df4f82e7abaec52ea39eb80"
+      "sourceSha256": "0c133decf9c1a7aebea2ee29eeba59dff7223f3ff45c12e85576f9cf8b03e24c"
     },
     {
       "id": "protocols/oauth",
@@ -217,10 +228,10 @@
       "filename": "oauth",
       "name": "oauth",
       "description": "OAuth 2.0 and OIDC flow security testing covering redirect manipulation, token leakage, PKCE bypass, and client misconfiguration",
-      "contentBytes": 9151,
+      "contentBytes": 9428,
       "internal": false,
       "sourcePath": "protocols/oauth.md",
-      "sourceSha256": "05602f134b076d9c4af19586863787ad9f69e7bef3b27546d9fa43a4a17af2e3"
+      "sourceSha256": "ede8b207c545d352cb70891f808b4ffabe82863347415429962255e98cd1f5cb"
     },
     {
       "id": "reconnaissance/asset_discovery",
@@ -250,10 +261,10 @@
       "filename": "deep",
       "name": "deep",
       "description": "Exhaustive security assessment with maximum coverage, depth, and vulnerability chaining",
-      "contentBytes": 7232,
+      "contentBytes": 7233,
       "internal": true,
       "sourcePath": "scan_modes/deep.md",
-      "sourceSha256": "a2716675ba0a12da93511460036106d6fd6f3655758f505e1933bd200771fa0b"
+      "sourceSha256": "ac018f9b2db062e790382666b05f03756996ad5cdc2d950ac44d9766434d7ce7"
     },
     {
       "id": "scan_modes/diff",
@@ -261,10 +272,10 @@
       "filename": "diff",
       "name": "diff",
       "description": "Methodology for diff-scoped review of a pull request, commit, or branch — what counts as in scope, how far to follow a change, and what not to report",
-      "contentBytes": 3675,
+      "contentBytes": 3900,
       "internal": true,
       "sourcePath": "scan_modes/diff.md",
-      "sourceSha256": "a7b6ab15cd0ed411449f7813ba272cb95c34d79a897b48fed9cbb59583fd40a6"
+      "sourceSha256": "77161a9f265e706e488aa7a6160c3a55553c06a14a90cd8f9cd36c4ac6e74d83"
     },
     {
       "id": "scan_modes/quick",
@@ -272,10 +283,10 @@
       "filename": "quick",
       "name": "quick",
       "description": "Time-boxed rapid assessment targeting high-impact vulnerabilities",
-      "contentBytes": 3002,
+      "contentBytes": 3003,
       "internal": true,
       "sourcePath": "scan_modes/quick.md",
-      "sourceSha256": "98d97940332d543ce21a3d70c5505a1469db191c6c2ee8c9bfa1257ca57693e0"
+      "sourceSha256": "b5cba380721bd09ff206e86250bfed0176afac0ecad30b565cfd860b8d657d8b"
     },
     {
       "id": "scan_modes/standard",
@@ -283,10 +294,10 @@
       "filename": "standard",
       "name": "standard",
       "description": "Balanced security assessment with systematic methodology and full attack surface coverage",
-      "contentBytes": 3895,
+      "contentBytes": 3896,
       "internal": true,
       "sourcePath": "scan_modes/standard.md",
-      "sourceSha256": "8a08601f0f6b08c6b19060f661323c0edbee46d2fdcb135794f6d5f441ee8fe5"
+      "sourceSha256": "f1db97ebf1caaa746c45e64f6ea9808dc3e5faa174581c47a961a2fe5abf7c11"
     },
     {
       "id": "technologies/active_directory",
@@ -437,10 +448,10 @@
       "filename": "csrf",
       "name": "csrf",
       "description": "CSRF testing covering token bypass, SameSite cookies, CORS misconfigurations, and state-changing request abuse",
-      "contentBytes": 8000,
+      "contentBytes": 8536,
       "internal": false,
       "sourcePath": "vulnerabilities/csrf.md",
-      "sourceSha256": "aaf01a435e09734d8fbc18424727336a473f38c1241b33d212ae1cebe6820974"
+      "sourceSha256": "4348560ebe4768fd1cf33f770cb5f03882eb95767021215b727466c105afa644"
     },
     {
       "id": "vulnerabilities/header_injection",
@@ -470,10 +481,10 @@
       "filename": "idor",
       "name": "idor",
       "description": "IDOR/BOLA testing for object-level authorization failures and cross-account data access",
-      "contentBytes": 10257,
+      "contentBytes": 10795,
       "internal": false,
       "sourcePath": "vulnerabilities/idor.md",
-      "sourceSha256": "2b97ead5254ab3e3fec92c3edafcd3eb619e59264c9f743c844bdadfcc1d0659"
+      "sourceSha256": "fb2add80106c302c95b1e5710fe7ec26a3c6d60713ed7da487443389924e597f"
     },
     {
       "id": "vulnerabilities/information_disclosure",
@@ -536,10 +547,10 @@
       "filename": "nosql_injection",
       "name": "nosql-injection",
       "description": "NoSQL injection testing covering MongoDB operator injection, authentication bypass, blind extraction, GraphQL variable injection, and Redis/DynamoDB/Elasticsearch/Neo4j-specific attack surfaces",
-      "contentBytes": 14619,
+      "contentBytes": 15031,
       "internal": false,
       "sourcePath": "vulnerabilities/nosql_injection.md",
-      "sourceSha256": "1bddffe3071fb6a831d59a9c7d4909e13f0865582b01d65fdfe7d66b86159f45"
+      "sourceSha256": "200db1c3cb7059934d011161031515bf262a3c3ddf1e2558203510dad42c65af"
     },
     {
       "id": "vulnerabilities/open_redirect",
@@ -575,6 +586,17 @@
       "sourceSha256": "06e0b2da334bb6a5faf9126653968905e9cfe17b667f98c1fe859febbac3e4d8"
     },
     {
+      "id": "vulnerabilities/query_language_injection",
+      "category": "vulnerabilities",
+      "filename": "query_language_injection",
+      "name": "query-language-injection",
+      "description": "Query-language injection testing for scalar search, filter, selector, and authorization inputs compiled into JSONPath, JMESPath, OData, Lucene, LDAP, Cypher, XPath, or similar expressions. Requires a per-sink four-cell balanced true/false matrix before generic spraying or no-issue closure",
+      "contentBytes": 9747,
+      "internal": false,
+      "sourcePath": "vulnerabilities/query_language_injection.md",
+      "sourceSha256": "c651e3b5ba0fa603d5c420044563eead261bfc56aaaa267a3dcd2f447375630a"
+    },
+    {
       "id": "vulnerabilities/race_conditions",
       "category": "vulnerabilities",
       "filename": "race_conditions",
@@ -601,11 +623,11 @@
       "category": "vulnerabilities",
       "filename": "semantic_confusion",
       "name": "semantic-confusion",
-      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
-      "contentBytes": 12511,
+      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, email and IDNA identity drift, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
+      "contentBytes": 14778,
       "internal": false,
       "sourcePath": "vulnerabilities/semantic_confusion.md",
-      "sourceSha256": "5b3ebda3fdb48993b3f2cc5afb797343948b44fac4e5cd23b8e00a0712660f38"
+      "sourceSha256": "8d56e4ef328f02ea5336336c19463c633fc5a8a19c0bc6a80826138f84dd0a6e"
     },
     {
       "id": "vulnerabilities/sql_injection",

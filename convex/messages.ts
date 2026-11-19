@@ -1,3 +1,9 @@
+import {
+  assertChatHistoryOwner,
+  createChatHistoryAccess,
+  ensureChatHistoryAccess,
+} from "./lib/chatHistoryAccess";
+import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
@@ -69,6 +75,85 @@ const withMessagePageReadLimit = (
     paginationOpts.maximumBytesRead ?? MESSAGE_PAGE_MAX_BYTES,
     MESSAGE_PAGE_MAX_BYTES,
   ),
+});
+
+/** Saved downloads have their own cursor: reopening Files must not depend on
+ * which conversation pages the user has scrolled into view. Only persisted
+ * file references are returned; resolving bytes never requires a workspace. */
+export const getSavedFilesByChatId = query({
+  args: { chatId: v.string(), paginationOpts: paginationOptsValidator },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        id: v.string(),
+        role: v.literal("assistant"),
+        fileDetails: v.array(
+          v.object({
+            fileId: v.id("files"),
+            name: v.string(),
+            mediaType: v.optional(v.string()),
+            sizeBytes: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    pageStatus: v.optional(v.union(v.string(), v.null())),
+    splitCursor: v.optional(v.union(v.string(), v.null())),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return { page: [], isDone: true, continueCursor: "" };
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    await assertChatHistoryOwner(ctx, args.chatId, identity.subject);
+    const result = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+      .order("desc")
+      .paginate(
+        withMessagePageReadLimit({
+          ...args.paginationOpts,
+          numItems: Math.min(args.paginationOpts.numItems, 14),
+        }),
+      );
+    const messages = result.page.filter(
+      (message) =>
+        message.role === "assistant" &&
+        message.user_id === identity.subject &&
+        message.is_hidden !== true &&
+        (message.file_ids?.length ?? 0) > 0,
+    );
+    const fileIds = [...new Set(messages.flatMap((m) => m.file_ids ?? []))];
+    const files = await Promise.all(fileIds.map((id) => ctx.db.get(id)));
+    const ownedFiles = new Map(
+      files.flatMap((file) =>
+        file !== null && file.user_id === identity.subject
+          ? [[file._id, file] as const]
+          : [],
+      ),
+    );
+    return {
+      ...result,
+      page: messages.map((message) => ({
+        id: message.id,
+        role: "assistant" as const,
+        fileDetails: [...new Set(message.file_ids ?? [])].flatMap((fileId) => {
+          const file = ownedFiles.get(fileId);
+          return file
+            ? [
+                {
+                  fileId,
+                  name: file.name,
+                  mediaType: file.media_type,
+                  sizeBytes: file.size,
+                },
+              ]
+            : [];
+        }),
+      })),
+    };
+  },
 });
 
 const getOwnedFileInfo = async (
@@ -286,6 +371,20 @@ const getMessageSaveDiagnostics = (parts: any[]) => {
     data_part_count: dataPartCount,
   };
 };
+
+type MessageFileValidationReason =
+  "file_missing" | "file_lookup_failed" | "file_not_owned";
+
+// Keep the existing public error while distinguishing failed reads from absent rows.
+class MessageFileValidationError extends Error {
+  constructor(readonly reason: MessageFileValidationReason) {
+    super(
+      reason === "file_not_owned"
+        ? "File does not belong to user"
+        : "File not found",
+    );
+  }
+}
 
 const getErrorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
@@ -600,6 +699,7 @@ export const saveMessage = mutation({
     finishReason: v.optional(v.string()),
     triggerRunId: v.optional(v.string()),
     expectedActiveTriggerRunId: v.optional(v.string()),
+    clientSnapshot: v.optional(v.boolean()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
@@ -630,6 +730,7 @@ export const saveMessage = mutation({
         return "stale_run" as const;
     }
     let failureStage = "start";
+    let messageOwnershipMismatch: "chat" | "user" | "chat_and_user" | undefined;
     let chatForInsert: Doc<"chats"> | null = null;
 
     try {
@@ -638,9 +739,11 @@ export const saveMessage = mutation({
       ): Promise<Doc<"files">[]> => {
         if (!fileIds || fileIds.length === 0) return [];
 
+        const failedReads = new Set<number>();
         const files = await Promise.all(
-          fileIds.map((fileId) =>
+          fileIds.map((fileId, index) =>
             ctx.db.get(fileId).catch((error) => {
+              failedReads.add(index);
               console.error(
                 `Failed to read file ${fileId} while validating ownership:`,
                 error,
@@ -653,10 +756,12 @@ export const saveMessage = mutation({
         for (let i = 0; i < fileIds.length; i++) {
           const file = files[i];
           if (!file) {
-            throw new Error("File not found");
+            throw new MessageFileValidationError(
+              failedReads.has(i) ? "file_lookup_failed" : "file_missing",
+            );
           }
           if (file.user_id !== args.userId) {
-            throw new Error("File does not belong to user");
+            throw new MessageFileValidationError("file_not_owned");
           }
         }
 
@@ -714,6 +819,13 @@ export const saveMessage = mutation({
           existingMessage.chat_id !== args.chatId ||
           existingMessage.user_id !== args.userId
         ) {
+          // Server-only scope, never the existing owner's identifiers or response data.
+          messageOwnershipMismatch =
+            existingMessage.chat_id === args.chatId
+              ? "user"
+              : existingMessage.user_id === args.userId
+                ? "chat"
+                : "chat_and_user";
           failureStage = "verify_existing_message_ownership";
           throw new ConvexError({
             code: "MESSAGE_UNAUTHORIZED",
@@ -764,10 +876,12 @@ export const saveMessage = mutation({
         // The retained server stream is authoritative over an earlier browser
         // snapshot of this same interrupted run. Never replace a final answer.
         if (
-          args.expectedActiveTriggerRunId &&
           existingMessage.role === "assistant" &&
-          existingMessage.trigger_run_id === args.expectedActiveTriggerRunId &&
-          existingMessage.finish_reason === "trigger_crashed_client_saved"
+          args.triggerRunId &&
+          existingMessage.trigger_run_id === args.triggerRunId &&
+          !args.clientSnapshot &&
+          (!existingMessage.finish_reason ||
+            existingMessage.finish_reason === "trigger_crashed_client_saved")
         ) {
           const base = {
             ...existingMessage,
@@ -815,7 +929,13 @@ export const saveMessage = mutation({
         ) {
           patch.generation_time_ms = args.generationTimeMs;
         }
-        if (args.finishReason && !existingMessage.finish_reason) {
+        if (
+          args.finishReason &&
+          (!existingMessage.finish_reason ||
+            (!args.clientSnapshot &&
+              args.triggerRunId === existingMessage.trigger_run_id &&
+              existingMessage.finish_reason === "trigger_crashed_client_saved"))
+        ) {
           patch.finish_reason = args.finishReason;
         }
         if (
@@ -962,6 +1082,18 @@ export const saveMessage = mutation({
         content: indexedContent?.content,
       });
 
+      // Give an admitted legacy chat stable history ownership so its history
+      // pages stop depending on chat status writes. Deleting chats are skipped;
+      // their final batch removes the record together with the chat.
+      if (
+        args.role === "user" &&
+        chatForInsert &&
+        chatForInsert.deletion_started_at === undefined
+      ) {
+        failureStage = "ensure_chat_history_access";
+        await ensureChatHistoryAccess(ctx, chatForInsert);
+      }
+
       // Move the chat to the top of the sidebar as soon as the user submits a
       // visible message. Existing-message retries return above, so they do not
       // create artificial activity. Hidden user messages are automatic Agent
@@ -1042,10 +1174,19 @@ export const saveMessage = mutation({
         return null;
       }
 
+      const fileValidationReason =
+        error instanceof MessageFileValidationError ? error.reason : undefined;
       console.error(
         JSON.stringify({
           level: "error",
           event: "convex_message_save_failed",
+          ...(messageOwnershipMismatch && {
+            message_ownership_mismatch: messageOwnershipMismatch,
+            message_ownership_diagnostic_version: 1,
+          }),
+          ...(fileValidationReason && {
+            file_validation_reason: fileValidationReason,
+          }),
           service: "convex",
           timestamp: new Date().toISOString(),
           db_operation: "messages.saveMessage",
@@ -1070,6 +1211,7 @@ export const saveMessage = mutation({
         code: "MESSAGE_SAVE_FAILED",
         message: "Failed to save message",
         failureStage,
+        ...(fileValidationReason && { fileValidationReason }),
         causeName: getErrorName(error),
         causeMessage: getErrorMessage(error),
         causeData,
@@ -1138,6 +1280,12 @@ export const getMessagesByChatId = query({
           }),
           v.null(),
         ),
+        goal: v.optional(
+          v.object({
+            sent: v.optional(v.boolean()),
+            achievedElapsedMs: v.optional(v.number()),
+          }),
+        ),
         generation_time_ms: v.optional(v.number()),
         generation_started_at: v.optional(v.number()),
         mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
@@ -1173,10 +1321,7 @@ export const getMessagesByChatId = query({
     await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
-      await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
+      await assertChatHistoryOwner(ctx, args.chatId, user.subject);
 
       const result = await ctx.db
         .query("messages")
@@ -1282,6 +1427,7 @@ export const getMessagesByChatId = query({
           feedback,
           mode: message.mode,
           generation_started_at: message.generation_started_at,
+          goal: message.goal,
           generation_time_ms: message.generation_time_ms,
           fileDetails,
         });
@@ -1592,6 +1738,12 @@ export const getLastAssistantMessage = query({
       metadata: v.optional(
         v.object({
           generationStartedAt: v.optional(v.number()),
+          goal: v.optional(
+            v.object({
+              sent: v.optional(v.boolean()),
+              achievedElapsedMs: v.optional(v.number()),
+            }),
+          ),
           generationTimeMs: v.optional(v.number()),
           mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
         }),
@@ -1625,10 +1777,12 @@ export const getLastAssistantMessage = query({
         role: message.role,
         parts: message.parts,
         metadata:
+          message.goal ||
           message.mode ||
           typeof message.generation_started_at === "number" ||
           typeof message.generation_time_ms === "number"
             ? {
+                ...(message.goal ? { goal: message.goal } : {}),
                 ...(message.mode ? { mode: message.mode } : {}),
                 ...(typeof message.generation_started_at === "number"
                   ? { generationStartedAt: message.generation_started_at }
@@ -2136,6 +2290,8 @@ export const branchChat = mutation({
         update_time: Date.now(),
       });
 
+      await createChatHistoryAccess(ctx, newChatId, user.subject);
+
       // Copy messages to new chat, tracking old→new ID mapping for summary remapping
       const messageIdMap = new Map<string, string>();
       for (const msg of messagesToCopy) {
@@ -2189,6 +2345,7 @@ export const regenerateWithNewContent = mutation({
   args: {
     messageId: v.string(),
     newContent: v.string(),
+    goalGeneration: v.optional(v.number()),
     fileIds: v.optional(v.array(v.string())),
     todos: v.optional(
       v.array(
@@ -2206,7 +2363,7 @@ export const regenerateWithNewContent = mutation({
       ),
     ),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.object({ goalGeneration: v.number() })),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -2264,6 +2421,80 @@ export const regenerateWithNewContent = mutation({
           code: "MESSAGE_NOT_EDITABLE",
           message: "Only the latest user message can be edited",
         });
+      }
+
+      // Update the saved objective in the same transaction as the message.
+      // A stale/cleared goal or unfinished cancellation must not rewrite history.
+      let editedGoalGeneration: number | undefined;
+      if (message.goal?.sent) {
+        const goal = await ctx.db
+          .query("agent_goals")
+          .withIndex("by_chatId", (q) => q.eq("chatId", message.chat_id))
+          .unique();
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+          .first();
+        if (
+          !goal ||
+          goal.deletedAt ||
+          goal.userId !== user.subject ||
+          args.goalGeneration === undefined ||
+          goal.generation !== args.goalGeneration
+        ) {
+          throw new ConvexError(
+            "The goal changed or was cleared. Reopen it before editing.",
+          );
+        }
+        if (
+          goal.activeRunId ||
+          chat?.active_trigger_run_id ||
+          chat?.active_stream_id ||
+          ["queued", "running", "waiting", "needs_approval"].includes(
+            goal.state,
+          )
+        ) {
+          throw new ConvexError(
+            "Wait for the goal to stop before editing its message.",
+          );
+        }
+        const objective = args.newContent.trim();
+        const criteria =
+          goal.criteria.length === 1 &&
+          goal.criteria[0] === defaultGoalCriterion(goal.objective)
+            ? [defaultGoalCriterion(objective)]
+            : goal.criteria;
+        if (!validGoalStart({ ...goal, objective, criteria })) {
+          throw new ConvexError(
+            "Invalid goal objective or completion criteria",
+          );
+        }
+        editedGoalGeneration = goal.generation + 1;
+        await ctx.db.replace(goal._id, {
+          chatId: goal.chatId,
+          userId: goal.userId,
+          objective,
+          criteria,
+          verificationCommand: goal.verificationCommand,
+          constraints: goal.constraints,
+          boundaries: goal.boundaries,
+          stopWhen: goal.stopWhen,
+          sandboxPreference: goal.sandboxPreference,
+          permissionMode: goal.permissionMode,
+          selectedModel: goal.selectedModel,
+          generation: editedGoalGeneration,
+          state: "paused",
+          runs: 0,
+          noProgressRuns: 0,
+          progress: "",
+          evidence: [],
+          elapsedMs: 0,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+          reason: "Goal message edited. Ready to restart.",
+        });
+      } else if (args.goalGeneration !== undefined) {
+        throw new ConvexError("This message was not sent as a goal.");
       }
 
       // Determine which files to keep
@@ -2401,7 +2632,9 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
-      return null;
+      return editedGoalGeneration === undefined
+        ? null
+        : { goalGeneration: editedGoalGeneration };
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
       if (!(

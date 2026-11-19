@@ -305,6 +305,7 @@ describe("extra-usage", () => {
           newBalanceDollars: 0,
           insufficientFunds: false,
           monthlyCapExceeded: false,
+          outcomeUnknown: true,
         });
       });
     });

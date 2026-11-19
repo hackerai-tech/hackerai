@@ -2,6 +2,10 @@ import { mutation, query } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { getActiveChatAccessBlockingSuspension } from "./lib/chatAccessSuspensions";
+import {
+  assertNoLiveAbuseOperation,
+  releaseLocalAccess,
+} from "./lib/abuseResponse";
 
 const suspensionCategoryValidator = v.union(
   v.literal("early_fraud_warning"),
@@ -78,6 +82,7 @@ export const upsertActive = mutation({
     stripeChargeId: v.optional(v.string()),
     workosOrganizationId: v.optional(v.string()),
     sourceCreatedAt: v.optional(v.number()),
+    preserveResolved: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -97,6 +102,9 @@ export const upsertActive = mutation({
         q.eq("user_id", args.userId).eq("source_id", args.sourceId),
       )
       .first();
+
+    // A retry of the same Stripe source cannot undo a support decision.
+    if (args.preserveResolved && existing?.status === "resolved") return null;
 
     const fields = {
       status: "active" as const,
@@ -144,6 +152,64 @@ export const resolveBySource = mutation({
       .first();
 
     if (!suspension) return { resolved: false };
+    await assertNoLiveAbuseOperation(ctx, args.userId, args.sourceId);
+
+    // Do not restore Stripe access while a webhook for this source can still
+    // perform external cleanup. This index read conflicts with a new claim,
+    // so support resolution and claim creation are ordered by Convex.
+    if (suspension.source === "stripe") {
+      for (const status of [
+        "pending",
+        "cleanup_started",
+        "review_required",
+      ] as const) {
+        const active = await ctx.db
+          .query("processed_webhooks")
+          .withIndex("by_source_id_and_status", (q) =>
+            q.eq("source_id", args.sourceId).eq("status", status),
+          )
+          .first();
+        if (active)
+          throw new Error(
+            status === "review_required"
+              ? "Fraud webhook requires reconciliation"
+              : "Fraud webhook is still processing",
+          );
+      }
+
+      if (suspension.stripe_customer_id) {
+        for (const status of ["cleanup_started", "review_required"] as const) {
+          const customerCleanup = await ctx.db
+            .query("processed_webhooks")
+            .withIndex("by_review_customer_id_and_status", (q) =>
+              q
+                .eq("review_customer_id", suspension.stripe_customer_id)
+                .eq("status", status),
+            )
+            .first();
+          if (customerCleanup)
+            throw new Error("Customer-wide fraud cleanup needs reconciliation");
+        }
+      }
+
+      // Pre-deployment pending claims have no source_id. A running old
+      // handler can still alter this shared Stripe customer; after the
+      // ten-minute claim window, a retry goes to manual review instead.
+      const legacy = await ctx.db
+        .query("processed_webhooks")
+        .withIndex("by_source_status_event_id", (q) =>
+          q
+            .eq("source_id", undefined)
+            .eq("status", "pending")
+            .gte("event_id", "evt_")
+            .lt("event_id", "evt`"),
+        )
+        .filter((q) =>
+          q.gte(q.field("claimed_at"), Date.now() - 10 * 60 * 1000),
+        )
+        .first();
+      if (legacy) throw new Error("A legacy webhook is still processing");
+    }
 
     const now = Date.now();
     await ctx.db.patch(suspension._id, {
@@ -152,6 +218,10 @@ export const resolveBySource = mutation({
       resolved_reason: args.resolvedReason,
       updated_at: now,
     });
+    // An abuse case keeps local access revoked while any security restriction
+    // remains; resolving the last one lifts that block.
+    if (suspension.category === "security_abuse")
+      await releaseLocalAccess(ctx, args.userId);
 
     return { resolved: true };
   },

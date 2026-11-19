@@ -59,6 +59,21 @@ and their IDs are retained; incomplete or ambiguous batches are left unchanged
 and reported by shape diagnostics. Storage's hard byte limit can still remove
 old parts as before.
 
+Conversation compaction shares the `inference_cyber_v1` rollout control with
+eligible security generation. With the flag enabled and Inference configured,
+all plans use Inference for ordinary and expanded-context summaries, with
+Abliteration as the first recovery provider when configured. Existing
+OpenRouter recovery follows if both direct providers fail. The summary must
+finish normally and contain every required checkpoint section before it can
+replace history; discarded output usage is still accounted to its actual
+model. Cancellation stops the chain. Disabling the flag restores the previous
+compaction policy for new runs; an active run retains its initial assignment.
+
+Eligible Free three-step treatment uses the same Inference-first provider
+route. Its separate experiment controls enrollment, and control users retain
+their baseline. Compare outcomes by actual provider and release: the historical
+experiment key alone does not identify which direct provider served a request.
+
 ## Diagnosing a failure
 
 Inspect the existing `provider_streaming_error` / `provider_stream_terminated`
@@ -74,7 +89,11 @@ unmatched call/result counts, duplicate calls within a batch, and the number of
 oversized batches repaired in that request. Error extraction retains known
 schema parameter paths with numeric indices normalized, when supplied by the
 provider. No new diagnostic includes prompts, tool arguments/results, image
-contents, or signed URLs.
+contents, or signed URLs. URL image counts also classify recognized SigV4
+expiry hints at the diagnostic snapshot as elapsed, within five minutes, later,
+or unknown. These counts do not validate signatures, credentials or access;
+unsupported, malformed, duplicate or future-dated hints remain unknown. Input
+URLs are unchanged and no image fetch is added.
 
 Generic `invalid_request` responses still require an upstream request ID and
 these shape diagnostics to identify the rejected constraint. An image fetch

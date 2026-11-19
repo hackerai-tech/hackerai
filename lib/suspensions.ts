@@ -9,11 +9,19 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
-export async function getActiveSuspensionForUser(userId: string) {
-  return await getConvexClient().query(api.userSuspensions.getActiveByUser, {
-    serviceKey,
-    userId,
-  });
+/** A supplied signal cancels only this read, without altering the shared client. */
+export async function getActiveSuspensionForUser(
+  userId: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  return await getConvexClient(signal).query(
+    api.userSuspensions.getActiveByUser,
+    {
+      serviceKey,
+      userId,
+    },
+  );
 }
 
 export async function hasActiveSuspensionForUser(userId: string) {
@@ -43,7 +51,7 @@ export async function assertUserCanMakeCostIncurringRequest(
 ) {
   let suspension;
   try {
-    suspension = await getActiveSuspensionForUser(userId);
+    suspension = await getActiveSuspensionForUser(userId, options?.signal);
     options?.signal?.throwIfAborted();
   } catch (error) {
     // Only web preflight opts in, once before any writes or task creation.
@@ -68,7 +76,7 @@ export async function assertUserCanMakeCostIncurringRequest(
     try {
       await delay(250, undefined, { signal: options.signal });
       options.signal?.throwIfAborted();
-      suspension = await getActiveSuspensionForUser(userId);
+      suspension = await getActiveSuspensionForUser(userId, options.signal);
       options.signal?.throwIfAborted();
       console.info(
         JSON.stringify({

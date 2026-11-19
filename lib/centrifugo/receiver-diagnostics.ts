@@ -1,3 +1,5 @@
+import type { IsolatedOperationPhase } from "./dispatch-operation";
+
 type ReceiverState = {
   sequence: number;
   terminalReceived: boolean;
@@ -22,15 +24,76 @@ export type ReceiverCleanupReason =
   | "disconnected"
   | "client_error";
 
+/** Which wait timed out after command publication started. */
+export type DispatchUncertainReason =
+  "publish_timeout" | "operation_ready_timeout";
+
+const ATTACHMENT_LOCAL_COPY_OWNER_STAGES = [
+  "shell_detection",
+  "source_native_path_conversion",
+  "destination_native_path_conversion",
+  "directory_and_copy",
+] as const;
+/** The local-copy step that issued this command; not its outcome or cause.
+ * Server-internal: never forwarded to a provider SDK or the Desktop host. */
+export type AttachmentLocalCopyOwnerStage =
+  (typeof ATTACHMENT_LOCAL_COPY_OWNER_STAGES)[number];
+
 /** Server-side, content-free counterpart to Desktop sender settlement telemetry.
  * A published cursor proves broker acceptance, not receipt by the sender.
  * Bound transition logs independently of retries; always retain final counters.
  */
 export function createReceiverDiagnostics(
-  context: { commandId: string; triggerRunId?: string; enabled: boolean },
+  context: {
+    commandId: string;
+    triggerRunId?: string;
+    enabled: boolean;
+    /** What the server asked Desktop to do; not the native lifetime or receipt. */
+    requestedBackground?: boolean;
+    /** Requested execution budget, excluding any receiver delivery allowance. */
+    requestedTimeoutMs?: number;
+    /** Local-copy step that issued this command, when one did. */
+    attachmentLocalCopyOwnerStage?: AttachmentLocalCopyOwnerStage;
+  },
   state: () => ReceiverState,
 ) {
   const started = Date.now();
+  let startRecorded = false;
+  // Closed group: omitted entirely unless the stage is a known value.
+  const copyOwner = () => {
+    try {
+      const stage: unknown = context.attachmentLocalCopyOwnerStage;
+      return ATTACHMENT_LOCAL_COPY_OWNER_STAGES.some((known) => known === stage)
+        ? {
+            attachment_local_copy_owner_version: 1,
+            attachment_local_copy_owner_stage: stage as string,
+          }
+        : {};
+    } catch {
+      return {};
+    }
+  };
+  // Closed group: omitted entirely unless both requested values are valid.
+  const requestIntent = () => {
+    try {
+      const background: unknown = context.requestedBackground;
+      const timeoutMs: unknown = context.requestedTimeoutMs;
+      if (
+        typeof background !== "boolean" ||
+        typeof timeoutMs !== "number" ||
+        !Number.isSafeInteger(timeoutMs) ||
+        timeoutMs <= 0
+      )
+        return {};
+      return {
+        request_intent_version: 1,
+        request_background: background,
+        request_timeout_ms: timeoutMs,
+      };
+    } catch {
+      return {};
+    }
+  };
   let transitions = 0;
   let suppressed = 0;
   let closed = false;
@@ -42,6 +105,17 @@ export function createReceiverDiagnostics(
   let terminalType: "exit" | "error" | undefined;
   let cancelConfirmed: boolean | undefined;
   let lastPublishError: "timeout" | "other" | undefined;
+  let dispatchPhase: IsolatedOperationPhase | "not_started" | "uncertain" =
+    "not_started";
+  let uncertainReason: DispatchUncertainReason | undefined;
+  const uncertainty = () =>
+    uncertainReason
+      ? {
+          dispatch_uncertain_version: 1,
+          dispatch_uncertain_reason: uncertainReason,
+        }
+      : {};
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
   const emit = (
     phase: string,
     details: Record<string, string | number | boolean | undefined> = {},
@@ -83,7 +157,26 @@ export function createReceiverDiagnostics(
     }
   };
   return {
-    start: () => emit("started"),
+    start() {
+      const first = !startRecorded;
+      startRecorded = true;
+      emit(
+        "started",
+        first && context.enabled ? { ...requestIntent(), ...copyOwner() } : {},
+      );
+      if (context.enabled && !closed && !waitTimer) {
+        // One passive snapshot before a web request's platform deadline.
+        waitTimer = setTimeout(() => {
+          emit("command_wait", {
+            dispatch_phase: dispatchPhase,
+            ...uncertainty(),
+          });
+        }, 10_000);
+      }
+    },
+    dispatchPhase(phase: IsolatedOperationPhase) {
+      dispatchPhase = phase;
+    },
     subscribed(recovered: boolean) {
       generation++;
       emit("subscribed", { recovered });
@@ -95,10 +188,14 @@ export function createReceiverDiagnostics(
         | "cancel_requested"
         | "sequence_gap"
         | "subscription_retry"
-        | "client_retry"
-        | "dispatch_uncertain",
+        | "client_retry",
     ) {
       emit(phase);
+    },
+    dispatchUncertain(reason: DispatchUncertainReason) {
+      dispatchPhase = "uncertain";
+      uncertainReason = reason;
+      emit("dispatch_uncertain", uncertainty());
     },
     cursorAttempt(resume: boolean) {
       if (resume) resumeAttempts++;
@@ -131,7 +228,8 @@ export function createReceiverDiagnostics(
         });
     },
     finish(reason: ReceiverCleanupReason) {
-      emit("cleanup", { reason }, true);
+      clearTimeout(waitTimer);
+      emit("cleanup", { reason, ...uncertainty() }, true);
       closed = true;
     },
   };

@@ -144,3 +144,37 @@ describe("verify-local-dependencies", () => {
     expect(result.status).toBe(0);
   });
 });
+
+describe("development entry-point dependency isolation", () => {
+  test.each(["dev:convex", "dev:trigger"])(
+    "%s cannot start with missing worktree dependencies",
+    (command) => {
+      const { readFileSync, existsSync } = require("node:fs");
+      const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+      const root = createProject({ createNodeModules: false });
+      try {
+        writeFileSync(
+          path.join(root, "package.json"),
+          JSON.stringify({
+            dependencies: { next: "test" },
+            scripts: {
+              "check:local-dependencies": `node ${JSON.stringify(scriptPath)}`,
+              [`pre${command}`]: scripts[`pre${command}`],
+              [command]: `node -e "require('fs').writeFileSync('started', '')"`,
+            },
+          }),
+        );
+        const result = spawnSync("corepack", ["pnpm", "run", command], {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 10000,
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Local dependencies are incomplete");
+        expect(existsSync(path.join(root, "started"))).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});

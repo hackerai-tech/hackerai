@@ -1,7 +1,19 @@
+jest.mock("../_generated/api", () => ({
+  internal: {
+    findingRetests: { deleteForFinding: "deleteFindingRetests" },
+    findingAgentRetests: { deleteForFinding: "deleteFindingAgentRetests" },
+    findingHunts: { deleteForFinding: "deleteFindingHunts" },
+    findings: {
+      backfillFindingProjects: "backfillFindingProjects",
+      syncChatFindingProject: "syncChatFindingProject",
+    },
+  },
+}));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
+  internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
 }));
 
@@ -110,7 +122,11 @@ const seedTables = (): Tables => ({
   finding_sources: [],
 });
 
-function createResult(rows: Row[], filters: Array<[string, unknown]>) {
+function createResult(
+  rows: Row[],
+  filters: Array<[string, unknown]>,
+  paginationFailure?: unknown,
+) {
   const filtered = () =>
     rows.filter((row) =>
       filters.every(([field, value]) => row[field] === value),
@@ -154,6 +170,7 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
         cursor: string | null;
         numItems: number;
       }) => {
+        if (paginationFailure !== undefined) throw paginationFailure;
         const all = filtered();
         const start = cursor ? Number(cursor) : 0;
         const page = all.slice(start, start + numItems);
@@ -172,10 +189,17 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
   return result;
 }
 
-function createMockCtx(tables: Tables, subject = "user-1") {
+function createMockCtx(
+  tables: Tables,
+  subject = "user-1",
+  paginationFailure?: unknown,
+) {
   let nextId = 1;
   const indexes: string[] = [];
   const query = jest.fn((table: string) => ({
+    order: jest.fn((direction: "asc" | "desc") =>
+      createResult(tables[table] ?? [], [], paginationFailure).order(direction),
+    ),
     withIndex: jest.fn((index: string, build: (q: any) => any) => {
       indexes.push(index);
       const filters: Array<[string, unknown]> = [];
@@ -186,7 +210,7 @@ function createMockCtx(tables: Tables, subject = "user-1") {
         },
       };
       build(q);
-      return createResult(tables[table] ?? [], filters);
+      return createResult(tables[table] ?? [], filters, paginationFailure);
     }),
     withSearchIndex: jest.fn((_index: string, build: (q: any) => any) => {
       const filters: Array<[string, unknown]> = [];
@@ -207,7 +231,7 @@ function createMockCtx(tables: Tables, subject = "user-1") {
           .toLowerCase()
           .includes(search),
       );
-      return createResult(rows, filters);
+      return createResult(rows, filters, paginationFailure);
     }),
   }));
   const insert = jest.fn(async (table: string, value: Record<string, any>) => {
@@ -234,7 +258,19 @@ function createMockCtx(tables: Tables, subject = "user-1") {
           .fn()
           .mockResolvedValue(subject ? { subject } : null),
       },
-      db: { query, insert, patch, delete: deleteDoc },
+      db: {
+        query,
+        insert,
+        patch,
+        delete: deleteDoc,
+        get: jest.fn(
+          async (id: string) =>
+            Object.values(tables)
+              .flat()
+              .find((row) => row._id === id) ?? null,
+        ),
+      },
+      scheduler: { runAfter: jest.fn() },
     } as any,
     insert,
     patch,
@@ -319,6 +355,16 @@ describe("findings Convex lifecycle", () => {
     expect(
       await getFinding.handler(ctx, { findingId: result.finding_id }),
     ).toBeNull();
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "deleteFindingAgentRetests",
+      { findingId: result.finding_id, userId: expect.any(String) },
+    );
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "deleteFindingHunts",
+      { findingId: result.finding_id, userId: expect.any(String) },
+    );
   });
 
   it("persists server-derived provenance, score, severity, search, and dedupe", async () => {
@@ -1435,5 +1481,782 @@ describe("semantic finding deduplication", () => {
       ),
     ).toMatchObject({ success: true });
     expect(tables.findings).toHaveLength(2);
+  });
+});
+
+describe("exact finding identity", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const loadContext = async (ctx: any, input: ReturnType<typeof report>) => {
+    const { getFindingDedupeContextForBackend } = await import("../findings");
+    const { createFindingDedupeKey } =
+      await import("../../lib/findings/validation");
+    return getFindingDedupeContextForBackend.handler(ctx, {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+      dedupeKey: createFindingDedupeKey(input),
+      report: input,
+    });
+  };
+
+  // Saves `first`, then reports what the backend does with `second`: whether the
+  // context reader short-circuits model comparison and whether creation saves it.
+  // A resubmission of `first` with cosmetic changes must still be rejected.
+  async function submitPair(
+    first: ReturnType<typeof report>,
+    second: ReturnType<typeof report>,
+    resubmission: ReturnType<typeof report>,
+  ) {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const saved = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: first }),
+    );
+    if (!saved.success) throw new Error("Expected the first report to save");
+    const context = await loadContext(ctx, second);
+    const distinct = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ toolCallId: "tool-2", report: second }),
+    );
+    const retryContext = await loadContext(ctx, resubmission);
+    const retried = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ toolCallId: "tool-3", report: resubmission }),
+    );
+    return {
+      tables,
+      savedId: saved.finding_id,
+      context,
+      distinct,
+      // Shows the rejection kind, which a partial object diff would hide.
+      distinctRejection: distinct.success ? null : distinct.error,
+      retryContext,
+      retried,
+    };
+  }
+
+  const sqlShared = {
+    title: "SQL injection in list sort parameter",
+    target: "example-shop repository",
+    endpoint: undefined,
+    method: undefined,
+    cwe: "CWE-89",
+  };
+  const usersSql = report({
+    ...sqlShared,
+    description:
+      "listUsers builds its ORDER BY clause from the caller's sort argument.",
+    impact: "A signed-in caller can read the password_hash column of users.",
+    technical_analysis:
+      "src/users.ts listUsers concatenates args.sort into its own raw SQL string. It does not share a query builder with any other module.",
+    poc_description: "Pass a CASE expression as the users list sort value.",
+    poc_script_code:
+      "listUsers({ sort: \"(CASE WHEN substr(password_hash,1,1)='a' THEN id END)\" })",
+    remediation_steps:
+      "Map the users sort argument to an allowlist of column names in listUsers.",
+    evidence:
+      "The users list order changed with the injected CASE expression in a local test database.",
+    code_locations: [
+      {
+        file: "src/users.ts",
+        start_line: 40,
+        end_line: 42,
+        label: "listUsers ORDER BY interpolation",
+      },
+    ],
+  });
+  const ordersSql = report({
+    ...sqlShared,
+    description:
+      "listOrders builds its ORDER BY clause from the caller's sort argument.",
+    impact: "A signed-in caller can read other customers' order totals.",
+    technical_analysis:
+      "src/orders.ts listOrders concatenates args.sort into a separate raw SQL string. Fixing listUsers does not change this function.",
+    poc_description: "Pass a CASE expression as the orders list sort value.",
+    poc_script_code:
+      'listOrders({ sort: "(CASE WHEN customer_id=2 THEN total END)" })',
+    remediation_steps:
+      "Map the orders sort argument to an allowlist of column names in listOrders.",
+    evidence:
+      "The orders list order changed with the injected CASE expression in a local test database.",
+    code_locations: [
+      {
+        file: "src/orders.ts",
+        start_line: 88,
+        end_line: 90,
+        label: "listOrders ORDER BY interpolation",
+      },
+    ],
+  });
+  const usersSqlRetry = {
+    ...usersSql,
+    title: "  SQL INJECTION in list sort parameter ",
+  };
+
+  // Convex runs one paginated query per query function, which the recent window
+  // uses. The coarse-key group must be read through a bounded iterator instead.
+  // Returns the total number of paginated reads made through this context.
+  const paginatedReads = (ctx: any) => {
+    let count = 0;
+    for (const { value } of ctx.db.query.mock.results)
+      value.withIndex.mock.calls.forEach(([index]: [string], i: number) => {
+        const result = value.withIndex.mock.results[i].value;
+        count += result.paginate.mock.calls.length;
+        if (index !== "by_user_chat_dedupe") return;
+        for (const unbounded of ["paginate", "collect", "take", "first"])
+          expect(result[unbounded]).not.toHaveBeenCalled();
+      });
+    return count;
+  };
+
+  // One group row older than the 25 most recent findings in the chat.
+  async function seedOlderGroupRow() {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const mock = createMockCtx(tables);
+    const saved = await createFindingForBackend.handler(
+      mock.ctx,
+      createArgs({ report: usersSql }),
+    );
+    if (!saved.success) throw new Error("Expected the group row to save");
+    for (let i = 0; i < 30; i++) {
+      const filler = await createFindingForBackend.handler(
+        mock.ctx,
+        createArgs({ report: report({ title: `Unrelated finding ${i}` }) }),
+      );
+      if (!filler.success) throw new Error("Expected filler to save");
+    }
+    tables.findings.forEach((row, index) => (row.created_at = index));
+    return { tables, ctx: mock.ctx, olderId: saved.finding_id };
+  }
+
+  it("preserves distinct findings on case-distinct endpoints served by different handlers", async () => {
+    const shared = {
+      title: "Missing authorization on user record endpoint",
+      target: "https://app.example.test",
+      method: "GET",
+      cwe: "CWE-862",
+    };
+    const legacyAdmin = report({
+      ...shared,
+      endpoint: "/api/Users/:id",
+      description:
+        "A customer can call the legacy administrative user endpoint and read any account's role and email.",
+      impact: "A customer can enumerate administrator accounts and emails.",
+      technical_analysis:
+        "The router matches paths case-sensitively. /api/Users/:id is registered to LegacyAdminUsersController.show without the requireAdmin middleware.",
+      poc_description:
+        "Request account 42 from the capitalized administrative path as a customer.",
+      poc_script_code:
+        "curl -H 'Authorization: Bearer customer-a' https://app.example.test/api/Users/42",
+      remediation_steps:
+        "Register LegacyAdminUsersController behind requireAdmin or remove the legacy route.",
+      evidence:
+        "GET /api/Users/42 as customer-a returned 200 from LegacyAdminUsersController with role=admin.",
+    });
+    const profile = report({
+      ...shared,
+      endpoint: "/api/users/:id",
+      description:
+        "A customer can read another customer's private profile through the profile endpoint.",
+      impact: "A customer can disclose another customer's phone number.",
+      technical_analysis:
+        "The router matches paths case-sensitively. /api/users/:id is registered to ProfileController.show, which loads the profile by id without comparing it to the session user. Adding requireAdmin to the legacy controller does not change this handler.",
+      poc_description:
+        "Request customer 7's profile from the lowercase profile path as customer A.",
+      poc_script_code:
+        "curl -H 'Authorization: Bearer customer-a' https://app.example.test/api/users/7",
+      remediation_steps:
+        "Scope ProfileController.show to the session user or an explicit sharing grant.",
+      evidence:
+        "GET /api/users/7 as customer-a returned 200 from ProfileController with customer 7's phone number.",
+    });
+    const legacyAdminRetry = {
+      ...legacyAdmin,
+      title: "  MISSING authorization on user record endpoint ",
+      target: "HTTPS://APP.EXAMPLE.TEST",
+      method: "get",
+    };
+
+    const result = await submitPair(legacyAdmin, profile, legacyAdminRetry);
+
+    expect({
+      exactMatchBeforeComparison: result.context.exact_duplicate_id,
+      distinctRejection: result.distinctRejection,
+      distinct: result.distinct,
+      retryExactMatch: result.retryContext.exact_duplicate_id,
+      retried: result.retried,
+    }).toMatchObject({
+      exactMatchBeforeComparison: null,
+      distinctRejection: null,
+      distinct: { success: true, endpoint: "/api/users/:id" },
+      retryExactMatch: result.savedId,
+      retried: {
+        success: false,
+        error: "duplicate",
+        duplicate_of: result.savedId,
+      },
+    });
+    expect(result.tables.findings.map((row) => row.endpoint)).toEqual([
+      "/api/Users/:id",
+      "/api/users/:id",
+    ]);
+  });
+
+  it("preserves distinct findings in different source files when endpoint and method are omitted", async () => {
+    const result = await submitPair(usersSql, ordersSql, usersSqlRetry);
+
+    expect({
+      exactMatchBeforeComparison: result.context.exact_duplicate_id,
+      distinctRejection: result.distinctRejection,
+      distinct: result.distinct,
+      retryExactMatch: result.retryContext.exact_duplicate_id,
+      retried: result.retried,
+    }).toMatchObject({
+      exactMatchBeforeComparison: null,
+      distinctRejection: null,
+      distinct: { success: true },
+      retryExactMatch: result.savedId,
+      retried: {
+        success: false,
+        error: "duplicate",
+        duplicate_of: result.savedId,
+      },
+    });
+    expect(
+      result.tables.findings.map((row) => row.code_locations?.[0]?.file),
+    ).toEqual(["src/users.ts", "src/orders.ts"]);
+  });
+
+  it("rejects a true duplicate of a later row in a shared group with that row's ID", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: usersSql }),
+    );
+    const orders = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: ordersSql }),
+    );
+    if (!orders.success) throw new Error("Expected the second row to save");
+
+    const context = await loadContext(ctx, ordersSql);
+    const duplicate = await createFindingForBackend.handler(
+      ctx,
+      createArgs({
+        toolCallId: "tool-3",
+        report: { ...ordersSql, title: "SQL Injection In List Sort Parameter" },
+      }),
+    );
+
+    expect(context.exact_duplicate_id).toBe(orders.finding_id);
+    expect(duplicate).toMatchObject({
+      success: false,
+      error: "duplicate",
+      duplicate_of: orders.finding_id,
+    });
+    expect(tables.findings).toHaveLength(2);
+  });
+
+  it("does not claim an exact match from a changed narrative or a legacy caller without a report", async () => {
+    const { createFindingForBackend, getFindingDedupeContextForBackend } =
+      await import("../findings");
+    const { createFindingDedupeKey } =
+      await import("../../lib/findings/validation");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: usersSql }),
+    );
+    const changedEvidence = {
+      ...usersSql,
+      evidence: "A different capture showed the users list leaking emails.",
+    };
+
+    const legacy = await getFindingDedupeContextForBackend.handler(ctx, {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+      dedupeKey: createFindingDedupeKey(usersSql),
+    });
+    const changed = await loadContext(ctx, changedEvidence);
+
+    expect(legacy.exact_duplicate_id).toBeNull();
+    expect(legacy.candidates).toHaveLength(1);
+    expect(changed.exact_duplicate_id).toBeNull();
+    expect(changed.candidates).toHaveLength(1);
+  });
+
+  it("corrects reports sharing a group independently and rejects a correction into a copy", async () => {
+    const { createFindingForBackend, updateFindingForBackend } =
+      await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: usersSql }),
+    );
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: ordersSql }),
+    );
+    const [users, orders] = tables.findings;
+    const update = (row: Row, changes: Record<string, unknown>) =>
+      updateFindingForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        messageId: "update-message",
+        toolCallId: "update-call",
+        update: {
+          finding_id: row.finding_id,
+          expected_updated_at: row.updated_at,
+          reason: "Clarify the demonstrated impact",
+          changes,
+        },
+      });
+
+    expect(
+      await update(users, { impact: "Users: password hashes are readable." }),
+    ).toMatchObject({ success: true });
+    expect(
+      await update(orders, { impact: "Orders: totals are readable." }),
+    ).toMatchObject({ success: true });
+    const usersBefore = JSON.stringify(users);
+    const intoCopy = await update(
+      users,
+      Object.fromEntries(
+        [
+          "description",
+          "impact",
+          "technical_analysis",
+          "poc_description",
+          "poc_script_code",
+          "remediation_steps",
+          "evidence",
+          "code_locations",
+        ].map((field) => [field, orders[field]]),
+      ),
+    );
+
+    expect(intoCopy).toMatchObject({ success: false, error: "duplicate" });
+    expect(JSON.stringify(users)).toBe(usersBefore);
+  });
+
+  it("compares and matches a group row older than the recent window", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const { tables, ctx, olderId } = await seedOlderGroupRow();
+
+    const sibling = await loadContext(ctx, ordersSql);
+    const retry = await loadContext(ctx, usersSqlRetry);
+    const semanticDuplicate = await createFindingForBackend.handler(
+      ctx,
+      createArgs({
+        toolCallId: "tool-semantic",
+        report: ordersSql,
+        comparisonSnapshot: sibling.candidates.map(
+          ({ finding_id, updated_at }) => ({ finding_id, updated_at }),
+        ),
+        semanticDuplicateId: olderId,
+      }),
+    );
+    const exactDuplicate = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ toolCallId: "tool-exact", report: usersSqlRetry }),
+    );
+
+    expect(sibling.exact_duplicate_id).toBeNull();
+    expect(sibling.candidates).toHaveLength(26);
+    expect(sibling.candidates.at(-1)?.finding_id).toBe(olderId);
+    expect(retry.exact_duplicate_id).toBe(olderId);
+    expect(semanticDuplicate).toMatchObject({
+      success: false,
+      error: "duplicate",
+      duplicate_of: olderId,
+    });
+    expect(exactDuplicate).toMatchObject({
+      success: false,
+      error: "duplicate",
+      duplicate_of: olderId,
+    });
+    expect(tables.findings).toHaveLength(31);
+    paginatedReads(ctx);
+  });
+
+  it("bounds the coarse-key group by rows and soft bytes with one paginated query", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const inFile = (index: number) => ({
+      ...usersSql,
+      code_locations: [
+        { file: `src/list-${index}.ts`, start_line: 1, end_line: 2 },
+      ],
+    });
+    for (let i = 0; i < 12; i++)
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ report: inFile(i) }),
+      );
+    for (let i = 0; i < 30; i++)
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ report: report({ title: `Unrelated finding ${i}` }) }),
+      );
+    // All twelve group rows are older than the 25 most recent findings.
+    tables.findings.forEach((row, index) => (row.created_at = index));
+    const groupIds = tables.findings.slice(0, 12).map((row) => row.finding_id);
+    const loadedGroup = (context: any) =>
+      context.candidates.slice(25).map((c: any) => c.finding_id);
+
+    const beforeRows = paginatedReads(ctx);
+    const rowBounded = await loadContext(ctx, inFile(99));
+    expect(paginatedReads(ctx) - beforeRows).toBe(1);
+    expect(loadedGroup(rowBounded)).toEqual(groupIds.slice(0, 10));
+
+    // Stored fields outside the report count toward the read size. Two rows stay
+    // under the soft cap; the third crosses it and is the last row loaded.
+    for (const row of tables.findings.slice(0, 3))
+      row.search_text = "x".repeat(400_000);
+    const byteBounded = await loadContext(ctx, inFile(99));
+    expect(loadedGroup(byteBounded)).toEqual(groupIds.slice(0, 3));
+    expect((await loadContext(ctx, inFile(2))).exact_duplicate_id).toBe(
+      groupIds[2],
+    );
+    // A row beyond the bound is not evidence either way.
+    expect((await loadContext(ctx, inFile(3))).exact_duplicate_id).toBeNull();
+    paginatedReads(ctx);
+  });
+
+  it("rejects a stale comparison after an older group row changes", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const { tables, ctx } = await seedOlderGroupRow();
+    const context = await loadContext(ctx, ordersSql);
+    tables.findings[0].updated_at++;
+
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({
+          report: ordersSql,
+          comparisonSnapshot: context.candidates.map(
+            ({ finding_id, updated_at }) => ({ finding_id, updated_at }),
+          ),
+        }),
+      ),
+    ).toEqual({ success: false, error: "comparison_stale" });
+    expect(tables.findings).toHaveLength(31);
+  });
+
+  it("does not reject on coarse-key equality when the group page is truncated", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const inFile = (index: number) => ({
+      ...usersSql,
+      code_locations: [
+        { file: `src/list-${index}.ts`, start_line: 1, end_line: 2 },
+      ],
+    });
+    for (let i = 0; i < 11; i++)
+      expect(
+        await createFindingForBackend.handler(
+          ctx,
+          createArgs({ report: inFile(i) }),
+        ),
+      ).toMatchObject({ success: true });
+
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ report: inFile(11) }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ report: inFile(0) }),
+      ),
+    ).toMatchObject({
+      success: false,
+      error: "duplicate",
+      duplicate_of: tables.findings[0].finding_id,
+    });
+    expect(tables.findings).toHaveLength(12);
+  });
+});
+
+describe("Agent report cursor validation", () => {
+  beforeEach(() => jest.clearAllMocks());
+  const scope = { serviceKey: "service", userId: "user-1", chatId: "chat-1" };
+  const paginationOpts = { numItems: 1, cursor: "private-invalid-cursor" };
+
+  it("preserves valid first-page and continuation results", async () => {
+    const api = await import("../findings");
+    const tables = seedTables();
+    const mock = createMockCtx(tables);
+    await api.createFindingForBackend.handler(mock.ctx, createArgs());
+    await api.createFindingForBackend.handler(
+      mock.ctx,
+      createArgs({
+        toolCallId: "tool-2",
+        report: report({
+          title: "Different invoice issue",
+          target: "other.example.test",
+        }),
+      }),
+    );
+    const first = await api.listReportsForBackend.handler(mock.ctx, {
+      ...scope,
+      paginationOpts: { numItems: 1, cursor: null },
+    });
+    expect(first).toMatchObject({
+      success: true,
+      is_done: false,
+      reports: [expect.objectContaining({ finding_id: expect.any(String) })],
+    });
+    const second = await api.listReportsForBackend.handler(mock.ctx, {
+      ...scope,
+      paginationOpts: { numItems: 1, cursor: first.next_cursor },
+    });
+    expect(second).toMatchObject({
+      success: true,
+      is_done: true,
+      next_cursor: null,
+      reports: [expect.objectContaining({ finding_id: expect.any(String) })],
+    });
+    expect(second.reports[0].finding_id).not.toBe(first.reports[0].finding_id);
+  });
+
+  it.each([undefined, "invoice"])(
+    "returns actionable validation for a malformed cursor with search %s without restarting",
+    async (search) => {
+      const api = await import("../findings");
+      const mock = createMockCtx(
+        seedTables(),
+        "user-1",
+        new Error("Failed to parse cursor"),
+      );
+      const result = await api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts,
+        search,
+      });
+      expect(result).toEqual({
+        success: false,
+        error: "validation",
+        message:
+          "The report cursor is invalid. Start again without a cursor and use only the next_cursor returned for the same search and status filters.",
+      });
+      const findingsRead = mock.ctx.db.query.mock.results.at(-1).value;
+      const builder = search
+        ? findingsRead.withSearchIndex
+        : findingsRead.withIndex;
+      const page = builder.mock.results[0].value;
+      expect(page.paginate).toHaveBeenCalledTimes(1);
+      expect(page.paginate).toHaveBeenCalledWith(paginationOpts);
+      expect(JSON.stringify(result)).not.toContain(paginationOpts.cursor);
+    },
+  );
+
+  it.each([
+    new Error("Too many concurrent requests"),
+    new Error("InvalidCursor: cursor used with a different query"),
+    new Error("Failed to parse cursor elsewhere"),
+    "Failed to parse cursor",
+  ])("keeps an unrelated pagination failure visible: %s", async (failure) => {
+    const api = await import("../findings");
+    const mock = createMockCtx(seedTables(), "user-1", failure);
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts,
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("keeps parser failures without a supplied cursor visible", async () => {
+    const api = await import("../findings");
+    const failure = new Error("Failed to parse cursor");
+    const mock = createMockCtx(seedTables(), "user-1", failure);
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts: { numItems: 1, cursor: null },
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("does not treat an authorization or history failure as cursor validation", async () => {
+    const api = await import("../findings");
+    const { validateServiceKey } = await import("../lib/utils");
+    const { assertUserCanAccessChatHistory } =
+      await import("../lib/suspensionGuards");
+    const failure = new Error("Failed to parse cursor");
+    for (const guard of [validateServiceKey, assertUserCanAccessChatHistory]) {
+      jest.mocked(guard).mockImplementationOnce(() => {
+        throw failure;
+      });
+      const mock = createMockCtx(seedTables(), "user-1", failure);
+      await expect(
+        api.listReportsForBackend.handler(mock.ctx, {
+          ...scope,
+          paginationOpts,
+        }),
+      ).rejects.toBe(failure);
+      expect(mock.ctx.db.query).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not inspect a foreign chat's findings even with a malformed cursor", async () => {
+    const api = await import("../findings");
+    const mock = createMockCtx(
+      seedTables(),
+      "user-1",
+      new Error("Failed to parse cursor"),
+    );
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        chatId: "chat-other",
+        paginationOpts,
+      }),
+    ).resolves.toMatchObject({ success: false, error: "not_found" });
+    expect(
+      mock.ctx.db.query.mock.calls.map(([table]: [string]) => table),
+    ).toEqual(["chats"]);
+  });
+});
+
+describe("project finding membership and evidence basis", () => {
+  it("persists explicit evidence basis and keeps legacy records unknown", async () => {
+    const { createFindingForBackend, getFinding } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const result = await (createFindingForBackend as any).handler(
+      ctx,
+      createArgs({
+        report: report({
+          evidence_status: "runtime_reproduced",
+          evidence_status_reason:
+            "Actual cross-account response observed in this run.",
+        }),
+      }),
+    );
+    expect(result.success).toBe(true);
+    const saved = await (getFinding as any).handler(ctx, {
+      findingId: result.finding_id,
+    });
+    expect(saved.evidence_status).toBe("runtime_reproduced");
+    delete tables.findings[0].evidence_status;
+    expect(
+      (await (getFinding as any).handler(ctx, { findingId: result.finding_id }))
+        .evidence_status,
+    ).toBeUndefined();
+  });
+  it.each([
+    { poc_script_code: "curl /invoice/new" },
+    {
+      description:
+        "A revised finding claim changes the asserted authorization failure and requires reassessment.",
+    },
+  ])(
+    "clears a previous runtime claim when changed evidence or claims are not reassessed: %j",
+    async (changes) => {
+      const { createFindingForBackend, updateFindingForBackend, getFinding } =
+        await import("../findings");
+      const tables = seedTables();
+      const { ctx } = createMockCtx(tables);
+      const created = await (createFindingForBackend as any).handler(
+        ctx,
+        createArgs({
+          report: report({
+            evidence_status: "runtime_reproduced",
+            evidence_status_reason: "Actual cross-account response observed.",
+          }),
+        }),
+      );
+      const row = tables.findings[0];
+      const result = await (updateFindingForBackend as any).handler(ctx, {
+        serviceKey: "key",
+        userId: "user-1",
+        chatId: "chat-1",
+        messageId: "message-1",
+        toolCallId: "update-1",
+        update: {
+          finding_id: created.finding_id,
+          expected_updated_at: row.updated_at,
+          reason: "Different reproduction",
+          changes,
+        },
+      });
+      expect(result.success).toBe(true);
+      const saved = await (getFinding as any).handler(ctx, {
+        findingId: created.finding_id,
+      });
+      expect(saved.evidence_status).toBeUndefined();
+      expect(saved.evidence_status_reason).toBeUndefined();
+      expect(saved.correction_history.at(-1).changed_fields).toEqual(
+        expect.arrayContaining(["evidence_status", "evidence_status_reason"]),
+      );
+    },
+  );
+  it("returns only the owned project's findings and hides stale membership during moves", async () => {
+    const { createFindingForBackend, listFindings } =
+      await import("../findings");
+    const tables = seedTables();
+    tables.projects = [
+      { _id: "project-1", user_id: "user-1" },
+      { _id: "foreign-project", user_id: "other-user" },
+    ];
+    tables.chats[0].project_id = "project-1";
+    const { ctx, indexes } = createMockCtx(tables);
+    await (createFindingForBackend as any).handler(ctx, createArgs());
+    const args = {
+      projectId: "project-1",
+      paginationOpts: { cursor: null, numItems: 25 },
+    };
+    expect((await (listFindings as any).handler(ctx, args)).page).toHaveLength(
+      1,
+    );
+    expect(indexes).toContain("by_user_project_created");
+    tables.chats[0].project_id = undefined;
+    expect((await (listFindings as any).handler(ctx, args)).page).toHaveLength(
+      0,
+    );
+    expect(
+      (
+        await (listFindings as any).handler(ctx, {
+          ...args,
+          projectId: "foreign-project",
+        })
+      ).page,
+    ).toHaveLength(0);
+  });
+  it("backfills existing reports from current chat membership and follows a later move", async () => {
+    const {
+      createFindingForBackend,
+      backfillFindingProjects,
+      syncChatFindingProject,
+    } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await (createFindingForBackend as any).handler(ctx, createArgs());
+    tables.chats[0].project_id = "project-1";
+    await (backfillFindingProjects as any).handler(ctx, { cursor: null });
+    expect(tables.findings[0].project_id).toBe("project-1");
+    tables.chats[0].project_id = "project-2";
+    await (syncChatFindingProject as any).handler(ctx, {
+      chatId: "chat-1",
+      userId: "user-1",
+      cursor: null,
+    });
+    expect(tables.findings[0].project_id).toBe("project-2");
   });
 });

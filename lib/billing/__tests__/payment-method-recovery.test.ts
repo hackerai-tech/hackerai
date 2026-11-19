@@ -1,5 +1,9 @@
 import Stripe from "stripe";
-import { recoverSubscriptionPayment } from "../payment-method-recovery";
+import {
+  paymentMethodRecoveryFailureFields,
+  recoverSubscriptionPayment,
+  type PaymentMethodRecoveryDiagnostic,
+} from "../payment-method-recovery";
 
 function fixture() {
   const update = jest.fn().mockResolvedValue({});
@@ -304,5 +308,125 @@ describe("payment method recovery", () => {
       "Update failed",
     );
     expect(f.pay).not.toHaveBeenCalled();
+  });
+});
+
+describe("payment method recovery failure step", () => {
+  it.each([
+    {
+      step: "check_subscription_default_history",
+      fail: (f: ReturnType<typeof fixture>, error: Error) =>
+        f.listEvents.mockRejectedValue(error),
+      customerScope: true,
+    },
+    {
+      step: "update_subscription_default",
+      fail: (f: ReturnType<typeof fixture>, error: Error) =>
+        f.update.mockRejectedValue(error),
+      customerScope: true,
+    },
+    {
+      // A subscription-scoped selection replaces the default without history.
+      step: "update_subscription_default",
+      fail: (f: ReturnType<typeof fixture>, error: Error) =>
+        f.update.mockRejectedValue(error),
+      customerScope: false,
+    },
+    {
+      step: "pay_invoice",
+      fail: (f: ReturnType<typeof fixture>, error: Error) =>
+        f.pay.mockRejectedValue(error),
+      customerScope: true,
+    },
+  ])(
+    "leaves $step as the last entered boundary (customer scope $customerScope)",
+    async ({ step, fail, customerScope }) => {
+      const f = fixture();
+      const error = new Error("Stripe unavailable");
+      fail(f, error);
+      const diagnostic: PaymentMethodRecoveryDiagnostic = {};
+      await expect(
+        recoverSubscriptionPayment({
+          ...f,
+          customerEventCreated: customerScope
+            ? f.customerEventCreated
+            : undefined,
+          diagnostic,
+        }),
+      ).rejects.toBe(error);
+      expect(diagnostic).toEqual({ step });
+      expect(f.listEvents).toHaveBeenCalledTimes(customerScope ? 1 : 0);
+    },
+  );
+
+  const throwing = () => {
+    throw new Error("Hostile diagnostic");
+  };
+  const hostileDiagnostics = () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    return [
+      ["frozen", Object.freeze({})],
+      [
+        "throwing accessor",
+        Object.defineProperty({}, "step", { get: throwing, set: throwing }),
+      ],
+      ["throwing proxy", new Proxy({}, { get: throwing, set: throwing })],
+      ["revoked proxy", revoked.proxy],
+    ] as [string, PaymentMethodRecoveryDiagnostic][];
+  };
+
+  it.each(hostileDiagnostics())(
+    "keeps the same Stripe calls and outcome with a %s diagnostic",
+    async (_label, diagnostic) => {
+      const baseline = fixture();
+      const expected = await recoverSubscriptionPayment(baseline);
+      const f = fixture();
+      f.customerEventCreated = baseline.customerEventCreated;
+      expect(await recoverSubscriptionPayment({ ...f, diagnostic })).toBe(
+        expected,
+      );
+      expect(expected).toBe("paid");
+      expect(f.listEvents.mock.calls).toEqual(baseline.listEvents.mock.calls);
+      expect(f.update.mock.calls).toEqual(baseline.update.mock.calls);
+      expect(f.pay.mock.calls).toEqual(baseline.pay.mock.calls);
+    },
+  );
+
+  it.each(hostileDiagnostics())(
+    "rethrows the original payment failure with a %s diagnostic",
+    async (_label, diagnostic) => {
+      const f = fixture();
+      const error = new Error("Stripe unavailable");
+      f.pay.mockRejectedValue(error);
+      await expect(
+        recoverSubscriptionPayment({ ...f, diagnostic }),
+      ).rejects.toBe(error);
+      expect(f.update).toHaveBeenCalledTimes(1);
+      expect(f.pay).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("returns only the closed version and step pair", () => {
+    expect(paymentMethodRecoveryFailureFields({ step: "pay_invoice" })).toEqual(
+      {
+        payment_method_recovery_diagnostic_version: 1,
+        payment_method_recovery_step: "pay_invoice",
+      },
+    );
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["unentered", {}],
+    ["unknown", { step: "PRIVATE_step" }],
+    ["non-string", { step: { toString: () => "pay_invoice" } }],
+    ...hostileDiagnostics(),
+  ])("drops the pair for an %s diagnostic", (_label, diagnostic) => {
+    expect(
+      paymentMethodRecoveryFailureFields(
+        diagnostic as PaymentMethodRecoveryDiagnostic | undefined,
+      ),
+    ).toEqual({});
   });
 });

@@ -27,6 +27,8 @@ export interface FindingSummary {
   chat_id: string;
   chat_title: string;
   created_at: number;
+  project_id?: string;
+  evidence_status?: import("@/lib/findings/evidence-status").FindingEvidenceStatus;
 }
 
 export interface FindingDetailRecord extends FindingSummary {
@@ -40,6 +42,7 @@ export interface FindingDetailRecord extends FindingSummary {
   evidence_refs?: string[];
   evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
   assumptions: string;
+  evidence_status_reason?: string;
   confidence?: "low" | "medium" | "high";
   confidence_rationale?: string;
   correction_history?: Array<{
@@ -75,6 +78,77 @@ export interface FindingDetailRecord extends FindingSummary {
   closed_at?: number;
   updated_at: number;
 }
+
+/** One Agent retest assessment. `interrupted` runs ended without a result. */
+export type FindingAgentRetestView = {
+  retest_id: string;
+  chat_id: string;
+  assistant_message_id: string;
+  status: "running" | "finished";
+  started_at: number;
+  finished_at?: number;
+  outcome?: import("@/lib/findings/agent-retest").AgentRetestOutcome;
+  interrupted?: boolean;
+  summary?: string;
+  reproduction_steps?: string[];
+  expected_result?: string;
+  observed_result?: string;
+  evidence_refs?: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+  limitations?: string[];
+  environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
+};
+
+/** Response of GET /api/finding-retests. */
+export type FindingRetestState =
+  | { enabled: false }
+  | {
+      enabled: true;
+      chat_title: string;
+      retests: FindingAgentRetestView[];
+    };
+
+/** One individually saved hunt candidate. Agent judgment, never a finding. */
+export type FindingHuntCandidateView = {
+  candidate_key: string;
+  surface: string;
+  rationale: string;
+  outcome: import("@/lib/findings/variant-hunt").HuntCandidateOutcome;
+  evidence_basis?: import("@/lib/findings/variant-hunt").HuntEvidenceBasis;
+  /** Agent's claim of a successful same-surface authorized control. Older rows omit it. */
+  authorized_control_succeeded?: boolean;
+  reproduction_steps: string[];
+  expected_result?: string;
+  observed_result?: string;
+  evidence_refs: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+  limitations: string[];
+  recorded_at: number;
+};
+
+/** One hunt. `interrupted` hunts ended early; saved candidates are kept. */
+export type FindingHuntView = {
+  hunt_id: string;
+  chat_id: string;
+  assistant_message_id: string;
+  status: "running" | "finished";
+  started_at: number;
+  finished_at?: number;
+  interrupted?: boolean;
+  summary?: string;
+  limitations?: string[];
+  environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
+  candidates: FindingHuntCandidateView[];
+};
+
+/** Response of GET /api/finding-hunts. */
+export type FindingHuntState =
+  | { enabled: false }
+  | {
+      enabled: true;
+      chat_title: string;
+      hunts: FindingHuntView[];
+    };
 
 export interface FindingSourceChat {
   chat_id: string;

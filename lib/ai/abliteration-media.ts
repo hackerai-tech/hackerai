@@ -10,6 +10,7 @@ export const ABLITERATION_MAX_IMAGES_PER_REQUEST = 4;
 /** Counts attachments and tool images together at the provider request boundary. */
 export function exceedsAbliterationImageLimit(
   messages: AbliterationImageMessages,
+  maxNativeImages = ABLITERATION_MAX_IMAGES_PER_REQUEST,
 ): boolean {
   let imageCount = 0;
   const isImage = (part: { type: string; mediaType?: string }) =>
@@ -26,7 +27,7 @@ export function exceedsAbliterationImageLimit(
           if (isImage(output)) imageCount++;
         }
       }
-      if (imageCount > ABLITERATION_MAX_IMAGES_PER_REQUEST) return true;
+      if (imageCount > maxNativeImages) return true;
     }
   }
   return false;

@@ -39,6 +39,7 @@ import {
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
+  terminalRecordPersistenceFields,
   type PtySession,
 } from "./utils/pty-session-manager";
 import {
@@ -62,6 +63,7 @@ import {
   detectAgentBrowserUsage,
 } from "./utils/agent-browser-usage";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
+import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -148,7 +150,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   } = context;
   const ptyScopeId = context.ptyScopeId ?? chatId;
   const executionRecord = (sandbox: AnySandbox, command: string) => ({
-    ...createTerminalRecordStore(sandbox, context.userID, ptyScopeId),
+    ...createTerminalRecordStore(
+      sandbox,
+      context.userID,
+      ptyScopeId,
+      context.triggerRunId,
+    ),
     sandboxInstance: terminalSandboxInstance(sandbox),
     artifactPaths: BackgroundProcessTracker.extractOutputFiles(command),
   });
@@ -162,9 +169,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
-          ...(session.recordPersistenceFailed
-            ? { recordPersistenceFailed: true }
-            : {}),
+          ...terminalRecordPersistenceFields(session),
         }
       : {};
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
@@ -248,7 +253,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     sandbox: AnySandbox,
     command: string,
     interactiveShell = false,
-  ) => {
+  ): Promise<Record<string, string> | undefined> => {
     const env = getAgentBrowserRuntimeEnv(command);
     const required = !!context.browserSessions && (interactiveShell || !!env);
     const gateOnly =
@@ -258,7 +263,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     if (!env && !required && !gateOnly) return undefined;
     let sessionEnv: Record<string, string> | undefined;
     try {
-      sessionEnv = await context.browserSessions?.prepare(sandbox);
+      sessionEnv = await context.browserSessions?.prepare(
+        sandbox,
+        gateOnly
+          ? "gate_only"
+          : interactiveShell
+            ? "interactive_shell"
+            : "recognized_browser_command",
+      );
     } catch (error) {
       if (!gateOnly) throw error;
       console.warn("[run-terminal-cmd] browser gate unavailable");
@@ -516,6 +528,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cols,
                   rows,
                   cwd: sandbox.getWorkingDirectory(),
+                  ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -1161,6 +1174,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStdout: forwardCommandOutput,
                     onStderr: forwardCommandOutput,
                   },
+              agentBrowserEnv,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
@@ -1175,7 +1189,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               : isE2BSandbox(sandboxInstance)
                 ? {
                     ...commonOptions,
-                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                     signal: abortSignal,
                   }
                 : commonOptions;
@@ -1414,6 +1427,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 }
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
+                  !(error instanceof CommandExitError),
                 );
                 if (handler) {
                   handler.cleanup();
@@ -1490,6 +1504,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         status: "failed",
                         processStarted,
                         exitCode: null,
+                        executionOutcome: "unknown",
                         output,
                         error: `Local command outcome is unknown: ${resolveToolErrorMessage(error)}. Do not rerun this command automatically; it may already have executed.`,
                       },
@@ -1507,11 +1522,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }));
         } // end of executeCommand
       } catch (error) {
+        const executionOutcome =
+          error &&
+          typeof error === "object" &&
+          "executionOutcome" in error &&
+          error.executionOutcome === "unknown"
+            ? "unknown"
+            : undefined;
         return {
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
             error: resolveToolErrorMessage(error),
+            ...(executionOutcome && { executionOutcome }),
           },
         };
       }
@@ -1556,10 +1579,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         options,
       ) => {
         // Terminal tools return one result, never an AsyncIterable.
-        const execute = async () =>
-          (await terminalTool.execute!(input, options)) as {
+        const execute = async () => {
+          const output = (await terminalTool.execute!(input, options)) as {
             result: Record<string, unknown>;
           };
+          captureAgentBrowserOpenFailure({
+            context,
+            command: input.command,
+            interactive: input.interactive,
+            isBackground: input.is_background,
+            aborted: options.abortSignal?.aborted === true,
+            result: output.result,
+          });
+          return output;
+        };
         return input.is_background || input.interactive
           ? execute()
           : trackForegroundCommand(context, execute);

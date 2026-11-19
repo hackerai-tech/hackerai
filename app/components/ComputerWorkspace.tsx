@@ -32,6 +32,7 @@ import {
   type FileMessage,
 } from "@/lib/workspace-preview/chat-files";
 import { extractSidebarContentFromMessage } from "@/lib/utils/sidebar-utils";
+import { useSavedChatFiles } from "../hooks/useSavedChatFiles";
 import { FileSourceDetails } from "./FileSourceDetails";
 import { CapturedFilePreview } from "./ChatFilesPanel";
 import {
@@ -92,7 +93,17 @@ export function ComputerWorkspace({
   const [lastRequest, setLastRequest] = useState<number | null>(null);
   const [previousSelection, setPreviousSelection] = useState(selection);
   const ownedUrls = useRef(new Map<string, string>());
-  const captures = useMemo(() => collectChatFiles(messages), [messages]);
+  // Saved files from pages outside the loaded history; Activity keeps using `messages`.
+  const saved = useSavedChatFiles({
+    chatId,
+    messages,
+    enabled: open && filesVisited,
+  });
+  const fileMessages = saved.messages;
+  const captures = useMemo(
+    () => collectChatFiles(fileMessages),
+    [fileMessages],
+  );
   const activityContent = useMemo(() => {
     if (activity) return activity;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -454,7 +465,8 @@ export function ComputerWorkspace({
             >
               <WorkspaceFilesPanel
                 chatId={chatId}
-                messages={messages}
+                messages={fileMessages}
+                savedFilesLoading={saved.loading}
                 onOpenCapturedFile={openCaptured}
                 onOpenWorkspaceFile={openWorkspace}
               />
@@ -480,6 +492,13 @@ export function ComputerWorkspace({
                       file={file}
                       onClose={() => closeTab(tab.id)}
                     />
+                  ) : saved.loading ? (
+                    <p
+                      role="status"
+                      className="p-4 text-sm text-muted-foreground"
+                    >
+                      Loading saved files…
+                    </p>
                   ) : (
                     <p
                       role="status"

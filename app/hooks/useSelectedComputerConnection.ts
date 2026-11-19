@@ -1,11 +1,14 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { isTauriEnvironment } from "./useTauri";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useInitialConnectionPending } from "./useInitialConnectionPending";
 import { connectionMatchesPreference } from "@/lib/sandbox/environment";
+import { LOCAL_SANDBOX_PRESENCE_GRACE_MS } from "@/lib/centrifugo/presence";
 
 // The native environment is fixed for the page lifetime. Use a server snapshot
 // so hydration starts with the same environment as the server render.
@@ -32,10 +35,55 @@ export function useSelectedComputerConnection() {
     (sandboxPreference === "desktop" ||
       (desktopEnvironmentId !== undefined &&
         sandboxPreference === `desktop-environment:${desktopEnvironmentId}`));
+  const [now, setNow] = useState(Date.now);
+  const selectedDesktopIds = (localConnections ?? [])
+    .filter(
+      (connection) =>
+        connection.isDesktop &&
+        connectionMatchesPreference(connection, sandboxPreference),
+    )
+    .map((connection) => connection.connectionId)
+    .sort();
+  const heartbeats = useQuery(
+    api.localSandbox.getConnectionHeartbeats,
+    !selectedNativeDesktop && selectedDesktopIds.length > 0
+      ? { connectionIds: selectedDesktopIds }
+      : "skip",
+  );
+  const latestHeartbeat = Math.max(
+    ...(heartbeats ?? [])
+      .filter((heartbeat) =>
+        selectedDesktopIds.includes(heartbeat.connectionId),
+      )
+      .map((heartbeat) => heartbeat.lastSeen)
+      .filter(Number.isFinite),
+  );
+  const heartbeatPending =
+    !selectedNativeDesktop &&
+    selectedDesktopIds.length > 0 &&
+    heartbeats === undefined;
+  useEffect(() => {
+    if (selectedNativeDesktop || !Number.isFinite(latestHeartbeat)) return;
+    // A closed/crashed computer may never persist its disconnect. Age the
+    // last heartbeat even when Convex has no new row update to push.
+    // CLI clients have no periodic heartbeat, so only Desktop rows expire here.
+    const timer = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.max(
+        0,
+        latestHeartbeat + LOCAL_SANDBOX_PRESENCE_GRACE_MS - Date.now() + 1,
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [selectedNativeDesktop, latestHeartbeat]);
   const connected = selectedNativeDesktop
     ? desktopBridgeStatus === "connected"
-    : localConnections?.some((connection) =>
-        connectionMatchesPreference(connection, sandboxPreference),
+    : localConnections?.some(
+        (connection) =>
+          connectionMatchesPreference(connection, sandboxPreference) &&
+          (!connection.isDesktop ||
+            (Number.isFinite(latestHeartbeat) &&
+              now - latestHeartbeat <= LOCAL_SANDBOX_PRESENCE_GRACE_MS)),
       );
 
   const initialConnectionPending = useInitialConnectionPending({
@@ -45,7 +93,7 @@ export function useSelectedComputerConnection() {
   });
   const computerConnectionPending = selectedNativeDesktop
     ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
-    : initialConnectionPending;
+    : heartbeatPending || initialConnectionPending;
   const selectedComputerUnavailable =
     isAgentMode(chatMode) && sandboxPreference !== "e2b" && !connected;
   const sendDisabledReason = selectedComputerUnavailable

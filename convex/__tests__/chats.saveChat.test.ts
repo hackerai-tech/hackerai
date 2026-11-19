@@ -36,6 +36,9 @@ jest.mock("convex/server", () => ({
 
 jest.mock("../_generated/api", () => ({
   internal: {
+    findings: {
+      syncChatFindingProject: "internal.findings.syncChatFindingProject",
+    },
     chats: {
       cleanupChatSummaryTelemetryBatch:
         "internal.chats.cleanupChatSummaryTelemetryBatch",
@@ -111,6 +114,7 @@ const makeCtx = ({
 
   return {
     ctx: {
+      scheduler: { runAfter: jest.fn<any>().mockResolvedValue(undefined) },
       auth: {
         getUserIdentity: jest
           .fn<any>()
@@ -443,6 +447,148 @@ describe("updateChat", () => {
   });
 });
 
+describe("manual chat title ownership", () => {
+  // Stateful rows so a rename, a late generated title and the final metadata
+  // write observe each other's results in order.
+  const makeTitleRaceCtx = (chatOverrides: Record<string, unknown> = {}) => {
+    const chat: Record<string, unknown> = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      title: "New Chat",
+      active_stream_id: "stream-1",
+      update_time: 1,
+      ...chatOverrides,
+    };
+    const findingSource: Record<string, unknown> = {
+      _id: "source-1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      chat_title: chat.title,
+    };
+    const tables: Record<string, Record<string, unknown>[]> = {
+      chats: [chat],
+      finding_sources: [findingSource],
+    };
+    const query = jest.fn((table: string) => ({
+      withIndex: (_indexName: string, build: (q: any) => any) => {
+        const filters: Array<[string, unknown]> = [];
+        const q = {
+          eq: (field: string, value: unknown) => {
+            filters.push([field, value]);
+            return q;
+          },
+        };
+        build(q);
+        const rows = (tables[table] ?? []).filter((row) =>
+          filters.every(([field, value]) => row[field] === value),
+        );
+        return {
+          first: async () => rows[0] ?? null,
+          unique: async () => rows[0] ?? null,
+        };
+      },
+    }));
+    const patch = jest.fn(async (id: string, data: Record<string, unknown>) => {
+      const row = Object.values(tables)
+        .flat()
+        .find((candidate) => candidate._id === id);
+      if (!row) throw new Error(`Unknown document ${id}`);
+      for (const [field, value] of Object.entries(data)) {
+        if (value === undefined) delete row[field];
+        else row[field] = value;
+      }
+    });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-1" }),
+      },
+      db: { query, patch },
+    } as any;
+    return { ctx, chat, findingSource, patch };
+  };
+
+  it("keeps a rename equal to the placeholder after a late generated title and final update", async () => {
+    const { renameChat, updateChatTitle, updateChat } =
+      await import("../chats");
+    const { ctx, chat, findingSource } = makeTitleRaceCtx();
+
+    // The user deliberately keeps the placeholder text while the first
+    // response is still generating its title.
+    await renameChat.handler(ctx, { chatId: "chat-1", newTitle: "New Chat" });
+    await updateChatTitle.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      chatId: "chat-1",
+      title: "Generated Title",
+    });
+    await updateChat.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      chatId: "chat-1",
+      title: "Generated Title",
+      finishReason: "stop",
+      todos: [],
+    });
+
+    expect(chat.title).toBe("New Chat");
+    expect(chat.title_manually_edited).toBe(true);
+    expect(findingSource.chat_title).toBe("New Chat");
+    // Stream cleanup and metadata still apply.
+    expect(chat).not.toHaveProperty("active_stream_id");
+    expect(chat.finish_reason).toBe("stop");
+    expect(chat.todos).toEqual([]);
+    expect(chat.last_run_finished_at).toEqual(expect.any(Number));
+  });
+
+  it("still applies generated titles to chats the user never renamed", async () => {
+    const { updateChatTitle, updateChat } = await import("../chats");
+    const { ctx, chat, findingSource } = makeTitleRaceCtx();
+
+    await updateChatTitle.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      chatId: "chat-1",
+      title: "Streamed Title",
+    });
+    expect(chat.title).toBe("Streamed Title");
+
+    await updateChat.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      chatId: "chat-1",
+      title: "Generated Title",
+      finishReason: "stop",
+    });
+
+    expect(chat.title).toBe("Generated Title");
+    expect(findingSource.chat_title).toBe("Generated Title");
+    expect(chat).not.toHaveProperty("title_manually_edited");
+  });
+
+  it("does not let another user's rename claim the title", async () => {
+    const { renameChat, updateChat } = await import("../chats");
+    const { ctx, chat, patch } = makeTitleRaceCtx({ user_id: "other-user" });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        renameChat.handler(ctx, { chatId: "chat-1", newTitle: "Mine now" }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "ACCESS_DENIED" }),
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(patch).not.toHaveBeenCalled();
+
+    await updateChat.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      chatId: "chat-1",
+      title: "Generated Title",
+    });
+    expect(chat.title).toBe("Generated Title");
+  });
+});
+
 describe("moveChatToProject", () => {
   it("moves an owned chat to an owned project", async () => {
     const { moveChatToProject } = await import("../chats");
@@ -462,6 +608,11 @@ describe("moveChatToProject", () => {
       }),
     ).resolves.toBe(true);
 
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.findings.syncChatFindingProject",
+      { chatId: "chat-1", userId: "user-1", cursor: null },
+    );
     expect(get).toHaveBeenCalledWith("project-1");
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: "project-1",
@@ -514,6 +665,11 @@ describe("moveChatToProject", () => {
       }),
     ).resolves.toBe(true);
 
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.findings.syncChatFindingProject",
+      { chatId: "chat-1", userId: "user-1", cursor: null },
+    );
     expect(get).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: undefined,

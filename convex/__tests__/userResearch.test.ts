@@ -237,6 +237,53 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it.each([
+    {
+      label: "a supplementary character crossing the text limit",
+      parts: [{ type: "text", text: "a".repeat(7_999) + "😀tail" }],
+      expected: "a".repeat(7_999),
+    },
+    {
+      label: "a complete supplementary character at the text limit",
+      parts: [{ type: "text", text: "a".repeat(7_998) + "😀tail" }],
+      expected: "a".repeat(7_998) + "😀",
+    },
+    {
+      label: "a supplementary character crossing the joined-parts limit",
+      parts: [
+        { type: "text", text: "a".repeat(7_998) },
+        { type: "text", text: "😀tail" },
+      ],
+      expected: "a".repeat(7_998) + "\n",
+    },
+  ])(
+    "returns valid Unicode for $label at both chat ends",
+    async ({ parts, expected }) => {
+      const { getMessageExcerpt } = await import("../userResearch");
+      const { ctx, userId, chatId, tables } = createCtx({ messageCount: 21 });
+      tables.messages[0].parts = parts;
+      tables.messages[20].parts = parts;
+
+      const result = await getMessageExcerpt.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        userId,
+        chatId,
+        maxMessages: 20,
+      });
+
+      for (const message of [result.messages[0], result.messages.at(-1)!]) {
+        // Convex's UTF-8 string contract rejects a dangling UTF-16 surrogate.
+        expect(Buffer.from(message.text, "utf8").toString("utf8")).toBe(
+          message.text,
+        );
+        expect(message.text).toBe(expected);
+        expect(message.text.length).toBeLessThanOrEqual(8_000);
+      }
+      expect(result.truncated).toBe(true);
+    },
+  );
+
   it.each([20, 120])(
     "bounds the entire transaction for %i requested large messages",
     async (maxMessages) => {

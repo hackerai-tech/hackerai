@@ -3,8 +3,13 @@ use std::io::{self, Write};
 use std::path::Path;
 
 /// Publish a complete file without truncating the destination on write failure.
+#[cfg(test)]
 pub(crate) fn save_text(path: &Path, content: &str) -> io::Result<()> {
-    save_with_writer(path, |file| file.write_all(content.as_bytes()))
+    save_bytes(path, content.as_bytes())
+}
+
+pub(crate) fn save_bytes(path: &Path, content: &[u8]) -> io::Result<()> {
+    save_with_writer(path, |file| file.write_all(content))
 }
 
 fn save_with_writer(
@@ -56,6 +61,15 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn binary_report_preserves_every_byte() {
+        let dir = Directory::new();
+        let path = dir.0.join("report.pdf");
+        let content = b"%PDF-1.7\n\x00\xff\xfe\x80\n%%EOF";
+        save_bytes(&path, content).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), content);
     }
 
     #[test]

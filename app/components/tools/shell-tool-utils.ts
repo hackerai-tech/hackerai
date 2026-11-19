@@ -10,6 +10,10 @@ import {
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
 import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
+import {
+  isUserStoppedToolError,
+  LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT,
+} from "@/lib/chat/tool-abort-utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,12 +28,22 @@ export type TerminalExecutionPhase = NonNullable<
 export function getTerminalExecutionPhase({
   toolState,
   autoReviewStatus,
+  errorText,
+  isRunActive,
 }: {
   toolState?: string;
   autoReviewStatus?: AgentAutoReviewLifecycleStatus;
+  errorText?: string;
+  isRunActive?: boolean;
 }): TerminalExecutionPhase | undefined {
-  if (toolState === "output-error") return "failed";
+  if (toolState === "output-error") {
+    if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+      return "interrupted";
+    return isUserStoppedToolError(errorText) ? "stopped" : "failed";
+  }
   if (toolState === "output-available") return "completed";
+  if (toolState === "input-available" && isRunActive === false)
+    return "interrupted";
   if (
     toolState === "approval-requested" ||
     autoReviewStatus === "needs_approval"
@@ -58,6 +72,8 @@ export interface ShellToolOutput {
     stdout?: string;
     stderr?: string;
     error?: string;
+    exitCode?: number | null;
+    exited?: { exitCode: number | null };
     sessionSnapshot?: string;
     rawSnapshot?: string;
   };
@@ -66,6 +82,18 @@ export interface ShellToolOutput {
   pid?: number;
   session?: string;
   error?: boolean | string;
+}
+
+export function getShellExitCode(
+  output: ShellToolOutput | undefined,
+): number | undefined {
+  const exitCode =
+    output?.result?.exitCode ??
+    output?.result?.exited?.exitCode ??
+    output?.exitCode;
+  return typeof exitCode === "number" && Number.isInteger(exitCode)
+    ? exitCode
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +129,7 @@ export function getShellActionLabel(opts: {
   interactive?: boolean;
   /** Legacy run_terminal_cmd: input.is_background — true runs detached. */
   isBackground?: boolean;
+  exitCode?: number | null;
 }): string {
   const {
     isShellTool,
@@ -108,7 +137,18 @@ export function getShellActionLabel(opts: {
     isActive = false,
     interactive,
     isBackground,
+    exitCode,
   } = opts;
+
+  if (
+    !isActive &&
+    action !== "kill" &&
+    typeof exitCode === "number" &&
+    Number.isInteger(exitCode) &&
+    exitCode !== 0
+  ) {
+    return `Exited with code ${exitCode}`;
+  }
 
   if (!isShellTool) {
     // For interactive / background, the verb is the action label and the
@@ -148,6 +188,8 @@ export function getTerminalFailureAction(
   errorText?: string,
   action?: string,
 ): string {
+  if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+    return "Command interrupted";
   if (action === "wait") return "Couldn’t check command output";
   return isToolInputValidationError(errorText)
     ? "Invalid command"
@@ -438,6 +480,15 @@ export function computeShellTerminalBlock(
     ? getShellDisplayTarget(shellInput) || displayCommand
     : displayCommand;
 
+  // A tool can return successfully even when the command exits nonzero.
+  // Use structured process results, never text printed by the command.
+  const exitCode = getShellExitCode(shellOutput);
+  const hasFailedExit =
+    hasResult &&
+    shellAction !== "kill" &&
+    exitCode !== undefined &&
+    exitCode !== 0;
+
   // Brief-only label: drop the verb prefix ("Sent input", "Viewed", "Killed",
   // "Executed") and let the model's brief stand alone. Applied to:
   //   - interactive PTY actions (always — the verb is too generic without it)
@@ -445,21 +496,25 @@ export function computeShellTerminalBlock(
   //     run, so the user still sees the live command while it's executing.
   const briefText = shellInput?.brief || "";
   const useBriefOnly =
+    !hasFailedExit &&
     !!briefText &&
     ((isShellTool && isInteractiveAction) ||
       (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
-    !isActive && errorText
-      ? getTerminalFailureAction(errorText, shellAction)
-      : useBriefOnly
-        ? briefText
-        : getShellActionLabel({
-            isShellTool,
-            action: shellAction,
-            isActive,
-            interactive: !isShellTool ? legacyInteractive : undefined,
-            isBackground: !isShellTool ? legacyIsBackground : undefined,
-          });
+    executionPhase === "interrupted"
+      ? "Command interrupted"
+      : !isActive && errorText
+        ? getTerminalFailureAction(errorText, shellAction)
+        : useBriefOnly
+          ? briefText
+          : getShellActionLabel({
+              isShellTool,
+              action: shellAction,
+              isActive,
+              interactive: !isShellTool ? legacyInteractive : undefined,
+              isBackground: !isShellTool ? legacyIsBackground : undefined,
+              exitCode: hasResult ? exitCode : undefined,
+            });
   const blockTarget = useBriefOnly ? undefined : displayTarget;
 
   // sessionSnapshot is xterm-headless-cleaned — prefer it when present; fall
@@ -497,6 +552,7 @@ export function computeShellTerminalBlock(
           output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
           executionPhase,
+          exitCode: hasResult ? exitCode : undefined,
           isBackground: !isShellTool ? legacyIsBackground : undefined,
           isInteractive: !isShellTool ? legacyInteractive : undefined,
           toolCallId,

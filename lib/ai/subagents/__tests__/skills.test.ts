@@ -7,6 +7,7 @@ import {
   STRIX_SUBAGENT_SKILL_COUNT,
   STRIX_SUBAGENT_SKILL_SOURCE_COMMIT,
   listSubagentSkills,
+  listIncompatibleSubagentSkills,
   resolveDelegatedSubagentSkills,
   resolveSubagentSkills,
 } from "../skills";
@@ -14,6 +15,10 @@ import { renderSubagentSkillKnowledge } from "../skills/knowledge";
 import { listSubagentSkillSafetyOverrideIds } from "../skills/safety-overrides";
 
 describe("Strix subagent skills", () => {
+  it("keeps every reviewed vendored skill compatible before exposing it", () => {
+    expect(listIncompatibleSubagentSkills()).toEqual([]);
+  });
+
   it("exposes methodology skills without internal orchestration or tooling skills", () => {
     expect(STRIX_SUBAGENT_SKILL_COUNT).toBe(
       upstreamManifest.selectableSkillCount,
@@ -153,9 +158,7 @@ describe("Strix subagent skills", () => {
     const dependency = renderSubagentSkillKnowledge([
       "custom/dependency_cve_scanning",
     ]);
-    expect(dependency).toContain(
-      "create_dependency_report and create_vulnerability_report tools are unavailable",
-    );
+    expect(dependency).toContain("HackerAI worker result contract");
 
     const nosql = renderSubagentSkillKnowledge([
       "vulnerabilities/nosql_injection",

@@ -1,4 +1,19 @@
+import {
+  classifyPersistenceFailure,
+  checkpointFailureOrigin,
+  checkpointCommandContext,
+  checkpointCloudErrorContext,
+  checkpointNativeFilesystemErrorContext,
+  type CheckpointFailureOrigin,
+  type PersistenceFailureCategory,
+} from "./persistence-failure";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
+import {
+  parseDesktopFileFailure,
+  DesktopFileBridgeError,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+import { LocalFileRequestError } from "./local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
@@ -16,12 +31,91 @@ import {
   writeOwnerOnlyPosixFile,
 } from "./owner-only-posix-file";
 import { pruneLocalTerminalRecords } from "./local-terminal-retention";
+import { phLogger } from "@/lib/posthog/server";
+import type { RecordCheckpointIssue } from "./pty-session-manager";
+
+/** Read already-held metadata without allowing optional context to lose a receipt. */
+function nativeFilesystemReportedPlatform(sandbox: AnySandbox): unknown {
+  try {
+    if (!isCentrifugoSandbox(sandbox)) return undefined;
+    const connection = sandbox.getConnectionInfo();
+    const osInfo = Object.getOwnPropertyDescriptor(connection, "osInfo")?.value;
+    if (!osInfo || typeof osInfo !== "object") return undefined;
+    return Object.getOwnPropertyDescriptor(osInfo, "platform")?.value;
+  } catch {
+    return undefined;
+  }
+}
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
 export const TERMINAL_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 64;
+const RETENTION_IO_CONCURRENCY = 4;
 const lastPrunedAt = new Map<string, number>();
+const pruningDirectories = new Set<string>();
+let activeRetentionOperations = 0;
+const retentionWaiters: Array<() => void> = [];
+
+/** Share four retention I/O slots across all stores in this worker process. */
+async function withRetentionIo<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  if (activeRetentionOperations >= RETENTION_IO_CONCURRENCY) {
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => {
+        signal?.removeEventListener("abort", aborted);
+        resolve();
+      };
+      const aborted = () => {
+        const index = retentionWaiters.indexOf(ready);
+        if (index !== -1) retentionWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      retentionWaiters.push(ready);
+      signal?.addEventListener("abort", aborted, { once: true });
+    });
+  } else {
+    activeRetentionOperations++;
+  }
+  try {
+    signal?.throwIfAborted();
+    return await operation();
+  } finally {
+    const next = retentionWaiters.shift();
+    // Transfer the reserved slot directly so another store cannot overtake it.
+    if (next) next();
+    else activeRetentionOperations--;
+  }
+}
+/** Bound queued work and finish independent batches even if one file fails. */
+async function mapRetentionIo<T, R>(
+  items: T[],
+  operation: (item: T) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  const results: R[] = [];
+  let failure: { reason: unknown } | undefined;
+  for (let start = 0; start < items.length; start += RETENTION_IO_CONCURRENCY) {
+    signal?.throwIfAborted();
+    const batch = await Promise.allSettled(
+      items
+        .slice(start, start + RETENTION_IO_CONCURRENCY)
+        .map((item) => withRetentionIo(() => operation(item), signal)),
+    );
+    for (const result of batch) {
+      if (result.status === "rejected") failure ??= { reason: result.reason };
+      else results.push(result.value);
+    }
+  }
+  // Keep the directory guarded until every batch settles, and preserve the
+  // failed maintenance outcome without starving later independent removals.
+  if (failure) throw failure.reason;
+  return results;
+}
+
 const recordSchema = z.object({
   version: z.literal(1),
   session: z.string().regex(/^[a-f0-9]{8}$/),
@@ -51,11 +145,31 @@ export function terminalSandboxInstance(sandbox: AnySandbox): string {
   return `e2b:${sandbox.sandboxId}`;
 }
 
+/**
+ * Persist best-effort terminal recovery artifacts within one user/sandbox scope.
+ * Keep failed-write diagnostics bounded and attributable to the same session.
+ */
 export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
   scopeId: string,
+  ownerTriggerRunId?: string,
 ) {
+  // Caller-supplied server context identifies the store owner, not necessarily
+  // the request interacting with a retained terminal. Keep storage scope hashes
+  // and provider sandbox identities out of this additional correlation field.
+  const ownerContext: Record<string, string | number> =
+    typeof ownerTriggerRunId === "string" &&
+    /^run_[a-z0-9]{20,40}$/.test(ownerTriggerRunId)
+      ? {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "recorded",
+          checkpoint_owner_trigger_run_id: ownerTriggerRunId,
+        }
+      : {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "unavailable",
+        };
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -66,6 +180,14 @@ export function createTerminalRecordStore(
   const directory = `${root}/${scope}`;
   const files = asCommonSandbox(sandbox).files;
   const ownerOnlyPosix = usesOwnerOnlyPosixFileTransport(sandbox);
+  // One completed failure, not an unbounded per-session cache. If another
+  // session overtakes it, omit context rather than attributing the wrong write.
+  let lastSaveFailure:
+    | {
+        session: string;
+        fields: Record<string, string | number>;
+      }
+    | undefined;
   const pathFor = (session: string) => {
     if (!/^[a-f0-9]{8}$/.test(session))
       throw new Error("Invalid terminal session ID");
@@ -112,13 +234,33 @@ export function createTerminalRecordStore(
   };
 
   return {
+    /** Keep server logging behind the adapter used by the shared session manager. */
+    reportCheckpointIssue(issue: RecordCheckpointIssue): void {
+      phLogger.info("terminal_record_checkpoint_unconfirmed", {
+        // Scope IDs can be client-controlled; reuse the store's opaque digest.
+        terminal_scope_fingerprint: scope,
+        terminal_session_id: issue.terminalSessionId,
+        session_kind: issue.sessionKind,
+        reason: issue.reason,
+        diagnostic_version: 1,
+        diagnostic_scope: "first_reason_per_terminal_session",
+        ...(issue.reason === "save_unacknowledged" &&
+        lastSaveFailure?.session === issue.terminalSessionId
+          ? lastSaveFailure.fields
+          : {}),
+      });
+    },
     checkpointOnStart: true,
     checkpointOnOutput: true,
     pruneOnStart: true,
     pathFor,
+    /** Save a recovery snapshot, returning null without replaying failed writes. */
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
+      let failureCategory: PersistenceFailureCategory | undefined;
+      let fileFailure: DesktopFileFailure | undefined;
+      let failureOrigin: CheckpointFailureOrigin | undefined;
       try {
         const validated = recordSchema.parse(record);
         const path = pathFor(record.session);
@@ -138,13 +280,74 @@ export function createTerminalRecordStore(
           await files.write(path, content);
         }
         outcome = "success";
+        if (lastSaveFailure?.session === record.session)
+          lastSaveFailure = undefined;
         return path;
-      } catch {
+      } catch (error) {
+        failureOrigin = checkpointFailureOrigin(error);
+        failureCategory = classifyPersistenceFailure(error);
+        try {
+          if (
+            error instanceof LocalFileRequestError ||
+            error instanceof DesktopFileBridgeError
+          )
+            fileFailure = parseDesktopFileFailure(error.fileFailure);
+        } catch {
+          // Optional adapter context must not change a best-effort save result.
+        }
+        try {
+          const local = isCentrifugoSandbox(sandbox);
+          const cloudContext = !local
+            ? checkpointCloudErrorContext(error)
+            : undefined;
+          const nativeFilesystemFailure =
+            local &&
+            !ownerOnlyPosix &&
+            failureOrigin === "local_file_request" &&
+            fileFailure === "filesystem" &&
+            failureCategory === "unknown";
+          const session = Object.getOwnPropertyDescriptor(
+            record,
+            "session",
+          )?.value;
+          lastSaveFailure =
+            typeof session === "string" && /^[a-f0-9]{8}$/.test(session)
+              ? {
+                  session,
+                  fields: {
+                    failure_category: failureCategory,
+                    checkpoint_failure_origin: failureOrigin,
+                    file_failure: fileFailure ?? "none",
+                    checkpoint_transport: ownerOnlyPosix
+                      ? "posix_command"
+                      : "native_file",
+                    checkpoint_backend: local ? "local" : "cloud",
+                    ...checkpointCommandContext(error),
+                    ...(nativeFilesystemFailure
+                      ? checkpointNativeFilesystemErrorContext(
+                          error,
+                          nativeFilesystemReportedPlatform(sandbox),
+                        )
+                      : {}),
+                    ...cloudContext,
+                    ...(nativeFilesystemFailure ||
+                    cloudContext?.cloud_error_kind === "no_space"
+                      ? ownerContext
+                      : {}),
+                  },
+                }
+              : undefined;
+        } catch {
+          lastSaveFailure = undefined;
+        }
         return null; // Persistence failure must not interrupt or replay a command.
       } finally {
         recordTerminalMaintenance(sandbox, {
           operation: "checkpoint_write",
           outcome,
+          failureCategory,
+          fileFailure,
+          checkpointFailureOrigin: failureOrigin,
           payloadBytes,
           transport: ownerOnlyPosix ? "posix_command" : "native_file",
         });
@@ -157,10 +360,14 @@ export function createTerminalRecordStore(
         ? record
         : null;
     },
-    async prune(): Promise<void> {
+    async prune(signal?: AbortSignal): Promise<void> {
+      if (signal?.aborted) return;
       // Avoid rereading every retained record on every command. This cache
       // bounds only retention work; it is never used for record retrieval.
-      if (Date.now() - (lastPrunedAt.get(directory) ?? 0) < 60_000) {
+      if (
+        pruningDirectories.has(directory) ||
+        Date.now() - (lastPrunedAt.get(directory) ?? 0) < 60_000
+      ) {
         recordTerminalMaintenance(sandbox, {
           operation: "prune_route",
           outcome: "throttled",
@@ -171,26 +378,36 @@ export function createTerminalRecordStore(
       lastPrunedAt.set(directory, Date.now());
       if (lastPrunedAt.size > 256)
         lastPrunedAt.delete(lastPrunedAt.keys().next().value!);
+      pruningDirectories.add(directory);
       let fallbackStarted = false;
       let fallbackOutcome: "success" | "failure" = "failure";
       try {
         if (
-          await pruneLocalTerminalRecords(sandbox, {
-            root,
-            directory,
-            sandboxInstance: terminalSandboxInstance(sandbox),
-            schema: z.toJSONSchema(recordSchema),
-            cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
-            maxRecords: MAX_RECORDS,
-          })
+          await withRetentionIo(
+            () =>
+              pruneLocalTerminalRecords(sandbox, {
+                root,
+                directory,
+                sandboxInstance: terminalSandboxInstance(sandbox),
+                schema: z.toJSONSchema(recordSchema),
+                cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
+                maxRecords: MAX_RECORDS,
+              }),
+            signal,
+          )
         )
           return;
         fallbackStarted = true;
-        const entries = ownerOnlyPosix
-          ? await listOwnerOnlyPosixFiles(sandbox, root, directory)
-          : await files.list(directory);
-        const records = await Promise.all(
-          entries.map(async ({ name }) => {
+        const entries = await withRetentionIo(
+          () =>
+            ownerOnlyPosix
+              ? listOwnerOnlyPosixFiles(sandbox, root, directory)
+              : files.list(directory),
+          signal,
+        );
+        const records = await mapRetentionIo(
+          entries,
+          async ({ name }) => {
             // Never trust paths from a sandbox directory listing.
             const match = /^([a-f0-9]{8})\.json$/.exec(
               name.split(/[\\/]/).pop() ?? "",
@@ -201,33 +418,34 @@ export function createTerminalRecordStore(
             return record
               ? { session: match[1], updatedAt: record.updatedAt }
               : null;
-          }),
+          },
+          signal,
         );
         const sorted = records
           .filter((r) => r !== null)
           .sort((a, b) => b.updatedAt - a.updatedAt);
-        await Promise.all(
-          sorted
-            .filter(
-              (r, i) =>
-                i >= MAX_RECORDS ||
-                r.updatedAt < Date.now() - TERMINAL_RECORD_RETENTION_MS,
-            )
-            .map((r) =>
-              ownerOnlyPosix
-                ? removeOwnerOnlyPosixFile(
-                    sandbox,
-                    root,
-                    directory,
-                    pathFor(r.session),
-                  )
-                : files.remove(pathFor(r.session)),
-            ),
+        await mapRetentionIo(
+          sorted.filter(
+            (r, i) =>
+              i >= MAX_RECORDS ||
+              r.updatedAt < Date.now() - TERMINAL_RECORD_RETENTION_MS,
+          ),
+          (r) =>
+            ownerOnlyPosix
+              ? removeOwnerOnlyPosixFile(
+                  sandbox,
+                  root,
+                  directory,
+                  pathFor(r.session),
+                )
+              : files.remove(pathFor(r.session)),
+          signal,
         );
         fallbackOutcome = "success";
       } catch {
         /* Retention is best effort when the sandbox disconnects. */
       } finally {
+        pruningDirectories.delete(directory);
         if (fallbackStarted)
           recordTerminalMaintenance(sandbox, {
             operation: "prune_fallback",

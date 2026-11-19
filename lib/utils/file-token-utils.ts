@@ -1,4 +1,7 @@
-import { getAgentHistoryBudget } from "@/lib/ai/agent-context-budget";
+import {
+  getAgentHistoryBudget,
+  type AgentContextPolicy,
+} from "@/lib/ai/agent-context-budget";
 import "server-only";
 
 import { api } from "@/convex/_generated/api";
@@ -99,7 +102,7 @@ export const truncateMessagesWithFileTokens = async (
   skipFileTokens: boolean = false,
   mode?: import("@/types").ChatMode,
   userId?: string,
-  agentModelContextEnabled = false,
+  agentContextPolicy: AgentContextPolicy = "baseline",
 ): Promise<{
   messages: UIMessage[];
   fileTokens: Record<Id<"files">, number>;
@@ -107,7 +110,7 @@ export const truncateMessagesWithFileTokens = async (
   const maxTokens = getAgentHistoryBudget(
     subscription,
     mode,
-    agentModelContextEnabled,
+    agentContextPolicy,
   );
   const fileTokens = skipFileTokens
     ? {}

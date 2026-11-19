@@ -14,12 +14,17 @@ export const USER_DELETION_TABLE_POLICY = {
   delete: [
     "projects",
     "chats",
+    "chat_history_access",
     "chat_summaries",
     "messages",
     "files",
     "feedback",
     "findings",
     "finding_sources",
+    "finding_agent_retest_runs",
+    "finding_variant_hunts",
+    "finding_retest_recipes",
+    "finding_retest_runs",
     "task_outcome_surveys",
     "notes",
     "user_customization",
@@ -31,7 +36,9 @@ export const USER_DELETION_TABLE_POLICY = {
     "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
+    "local_sandbox_heartbeats",
     "cancellation_reason_details",
+    "current_cancellation_reasons",
     "research_run_members",
     "research_user_profiles",
     "subagent_messages",
@@ -41,6 +48,8 @@ export const USER_DELETION_TABLE_POLICY = {
   ],
   anonymize: [
     "usage_logs",
+    "usage_settlement_operations",
+    "usage_settlement_debits",
     "cancellation_reasons",
     "involuntary_churn_events",
     "referral_codes",
@@ -48,6 +57,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "referral_rewards",
     "revenue_events",
     "extra_usage_purchases",
+    "extra_usage_bundle_reservations",
+    "extra_usage_bundle_attempts",
     "paid_start_events",
     "unit_economics_daily",
     "user_suspensions",
@@ -58,6 +69,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
+    // Unresolved Stripe writes must stay fenced even during account deletion.
+    "billing_operations",
     "processed_webhooks",
     "processed_checkout_sessions",
     // Reports contain only cohort-level patterns from runs with at least three
@@ -406,9 +419,9 @@ async function cleanupUserDataForUser(
     messages.push(message);
   }
 
-  // Chat cleanup can require both an indexed summary read and a legacy latest
-  // summary lookup for each chat, so leave room for both.
-  const chatLimit = Math.floor((budget.remaining - 1) / 3);
+  // Limit candidates to leave room for dependent lookups; every read also
+  // checks the shared budget.
+  const chatLimit = Math.floor((budget.remaining - 1) / 4);
   const chatsBatch = await collectByIndexBatch<Doc<"chats">>(
     ctx,
     budget,
@@ -461,6 +474,26 @@ async function cleanupUserDataForUser(
     "by_user_and_latest",
     (q) => q.eq("user_id", userId),
   );
+  const findingAgentRetestsBatch = await collectByIndexBatch<
+    Doc<"finding_agent_retest_runs">
+  >(ctx, budget, "finding_agent_retest_runs", "by_user_and_started", (q) =>
+    q.eq("user_id", userId),
+  );
+  const findingVariantHuntsBatch = await collectByIndexBatch<
+    Doc<"finding_variant_hunts">
+  >(ctx, budget, "finding_variant_hunts", "by_user_and_started", (q) =>
+    q.eq("user_id", userId),
+  );
+  const findingRetestRecipesBatch = await collectByIndexBatch<
+    Doc<"finding_retest_recipes">
+  >(ctx, budget, "finding_retest_recipes", "by_user", (q) =>
+    q.eq("user_id", userId),
+  );
+  const findingRetestRunsBatch = await collectByIndexBatch<
+    Doc<"finding_retest_runs">
+  >(ctx, budget, "finding_retest_runs", "by_user_and_started", (q) =>
+    q.eq("user_id", userId),
+  );
   const cloudNetworkBatch = await collectByIndexBatch<
     Doc<"cloud_network_settings">
   >(ctx, budget, "cloud_network_settings", "by_user_id", (q) =>
@@ -481,6 +514,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const localSandboxHeartbeatsBatch = await collectByIndexBatch<
+    Doc<"local_sandbox_heartbeats">
+  >(ctx, budget, "local_sandbox_heartbeats", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
     ctx,
     budget,
@@ -496,6 +534,11 @@ async function cleanupUserDataForUser(
   const subscriptionPausesBatch = await collectByIndexBatch<
     Doc<"subscription_pauses">
   >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
+    q.eq("user_id", userId),
+  );
+  const currentCancellationReasonsBatch = await collectByIndexBatch<
+    Doc<"current_cancellation_reasons">
+  >(ctx, budget, "current_cancellation_reasons", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
@@ -547,6 +590,10 @@ async function cleanupUserDataForUser(
     filesBatch,
     findingsBatch,
     findingSourcesBatch,
+    findingAgentRetestsBatch,
+    findingVariantHuntsBatch,
+    findingRetestRecipesBatch,
+    findingRetestRunsBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
     cloudNetworkBatch,
@@ -554,6 +601,7 @@ async function cleanupUserDataForUser(
     messagesBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
+    localSandboxHeartbeatsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     subscriptionPausesBatch,
@@ -585,6 +633,22 @@ async function cleanupUserDataForUser(
   const subagentEvents = subagentEventsBatch.docs;
   const subagentWorkItems = subagentWorkItemsBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
+
+  // Check dependent tables before access reads can consume their scan reserve.
+  // Otherwise near-limit chats can repeatedly block all cleanup progress.
+  const chatAccess = new Map<string, Doc<"chat_history_access">>();
+  for (const chat of chats) {
+    if (!canReadDocument(budget)) {
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+    const access = await ctx.db
+      .query("chat_history_access")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+      .unique();
+    chargeRead(budget, access);
+    if (access) chatAccess.set(chat.id, access);
+  }
 
   const chatsReadyToDelete =
     messagesBatch.hasMore ||
@@ -636,11 +700,46 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);
   await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "chat_history_access",
+    chatsReadyToDelete.map((chat) => chatAccess.get(chat.id)),
+    mode,
+  );
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_agent_retest_runs",
+    findingAgentRetestsBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_variant_hunts",
+    findingVariantHuntsBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_retest_recipes",
+    findingRetestRecipesBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_retest_runs",
+    findingRetestRunsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(
     ctx,
@@ -664,6 +763,13 @@ async function cleanupUserDataForUser(
     localSandboxConnections,
     mode,
   );
+  await deleteDocs(
+    ctx,
+    stats,
+    "local_sandbox_heartbeats",
+    localSandboxHeartbeatsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);
   await deleteDocs(ctx, stats, "team_member_usage", teamMemberUsage, mode);
   await deleteDocs(
@@ -679,6 +785,14 @@ async function cleanupUserDataForUser(
     "subscription_pauses",
     subscriptionPausesToAnonymize,
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  stats.hasMore ||= currentCancellationReasonsBatch.hasMore;
+  await deleteDocs(
+    ctx,
+    stats,
+    "current_cancellation_reasons",
+    currentCancellationReasonsBatch.docs,
     mode,
   );
   await deleteDocs(
@@ -714,6 +828,16 @@ async function cleanupUserDataForUser(
     "usage_logs",
     "by_user",
     (q) => q.eq("user_id", userId),
+  );
+  const settlementOperationsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_operations">
+  >(ctx, budget, "usage_settlement_operations", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const settlementDebitsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_debits">
+  >(ctx, budget, "usage_settlement_debits", "by_user_id", (q) =>
+    q.eq("user_id", userId),
   );
   const involuntaryChurnEventsBatch = await collectByIndexBatch<
     Doc<"involuntary_churn_events">
@@ -776,6 +900,16 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "extra_usage_purchases", "by_user_created_at", (q) =>
     q.eq("user_id", userId),
   );
+  const bundleReservationsBatch = await collectByIndexBatch<
+    Doc<"extra_usage_bundle_reservations">
+  >(ctx, budget, "extra_usage_bundle_reservations", "by_user_attempt", (q) =>
+    q.eq("user_id", userId),
+  );
+  const bundleAttemptsBatch = await collectByIndexBatch<
+    Doc<"extra_usage_bundle_attempts">
+  >(ctx, budget, "extra_usage_bundle_attempts", "by_user_attempt", (q) =>
+    q.eq("user_id", userId),
+  );
   const paidStartsByUserBatch = await collectByIndexBatch<
     Doc<"paid_start_events">
   >(ctx, budget, "paid_start_events", "by_user_day", (q) =>
@@ -800,6 +934,8 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    settlementOperationsBatch,
+    settlementDebitsBatch,
     involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
@@ -811,6 +947,8 @@ async function cleanupUserDataForUser(
     revenueByUserBatch,
     revenueByEntityBatch,
     extraUsagePurchasesBatch,
+    bundleReservationsBatch,
+    bundleAttemptsBatch,
     paidStartsByUserBatch,
     paidStartsByEntityBatch,
     unitEconomicsByUserBatch,
@@ -858,6 +996,22 @@ async function cleanupUserDataForUser(
       chat_id: undefined,
       assistant_message_id: undefined,
     }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_operations",
+    settlementOperationsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_debits",
+    settlementDebitsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
     mode,
   );
   await anonymizeDocs(
@@ -951,6 +1105,29 @@ async function cleanupUserDataForUser(
     stats,
     "extra_usage_purchases",
     extraUsagePurchases,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  // Bundle holds mirror the purchase ledger: amounts and Stripe references stay
+  // for reconciliation; the user link and the chat-scoped return path do not.
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_bundle_reservations",
+    bundleReservationsBatch.docs,
+    () => ({
+      user_id: DELETED_USER_ID,
+      return_path: undefined,
+      updated_at: now,
+    }),
+    mode,
+  );
+  // Attempt mappings keep their link to the retained hold, not to the user.
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_bundle_attempts",
+    bundleAttemptsBatch.docs,
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
     mode,
   );

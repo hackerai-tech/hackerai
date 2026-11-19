@@ -24,6 +24,30 @@ end
 return nextUsed
 `;
 
+// A child can settle during every model step and again during finalization.
+// Keep its cumulative total in Redis so retries only add the new cost, even
+// when the response to an earlier write was lost or the month changes.
+const RECORD_FREE_SUBAGENT_COST_SCRIPT = `
+local costKey = KEYS[1]
+local runKey = KEYS[2]
+local cumulativePoints = tonumber(ARGV[1])
+local costTtlMs = tonumber(ARGV[2])
+local runTtlMs = tonumber(ARGV[3])
+local recordedPoints = tonumber(redis.call("GET", runKey) or "0")
+local delta = math.max(0, cumulativePoints - recordedPoints)
+
+if delta > 0 then
+  redis.call("SET", runKey, cumulativePoints, "PX", runTtlMs)
+  local usedPoints = redis.call("INCRBY", costKey, delta)
+  redis.call("PEXPIRE", costKey, costTtlMs)
+  return usedPoints
+end
+
+return tonumber(redis.call("GET", costKey) or "0")
+`;
+
+const SUBAGENT_COST_RECORD_TTL_MS = 32 * 24 * 60 * 60 * 1000;
+
 export interface FreeMonthlyCostSnapshot {
   capReasonOnExhaustion?: import("@/lib/limit-pressure").LimitCapReason;
   budgetPeriod?: "daily" | "monthly";
@@ -147,4 +171,45 @@ export async function recordFreeMonthlyCost(
     [freeMonthlyCostKey(userId, bucket)],
     [costPoints, ttlMs],
   );
+}
+
+/** Atomically record a free child's cumulative cost in the shared monthly pool. */
+export async function recordFreeMonthlySubagentCost(
+  quotaSubject: string,
+  triggerRunId: string,
+  cumulativeCostDollars: number,
+  freeLimits?: FreeLimitPolicy,
+): Promise<{ usedPoints: number; limitPoints: number }> {
+  const limitPoints = dollarsToPoints(
+    getFreeMonthlyCostLimitDollars(freeLimits),
+  );
+  const redis = createRedisClient();
+  if (!redis) {
+    if (process.env.NODE_ENV !== "production") {
+      return { usedPoints: 0, limitPoints };
+    }
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is not configured",
+    );
+  }
+
+  const { bucket, ttlMs } = getCurrentUtcMonthWindow();
+  const result = await redis.eval(
+    RECORD_FREE_SUBAGENT_COST_SCRIPT,
+    [
+      freeMonthlyCostKey(quotaSubject, bucket),
+      `free_monthly_subagent_cost:${quotaSubject}:${triggerRunId}`,
+    ],
+    [
+      dollarsToPoints(cumulativeCostDollars),
+      ttlMs,
+      SUBAGENT_COST_RECORD_TTL_MS,
+    ],
+  );
+  const usedPoints = Number(result);
+  if (!Number.isSafeInteger(usedPoints) || usedPoints < 0) {
+    throw new Error("Free subagent cost accounting returned an invalid total");
+  }
+  return { usedPoints, limitPoints };
 }

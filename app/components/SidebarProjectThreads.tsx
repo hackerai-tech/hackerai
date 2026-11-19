@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import Loading from "@/components/ui/loading";
 import { useProjectThreads } from "@/app/hooks/useProjects";
 import ChatItem from "./ChatItem";
+import { getSidebarChatStatus } from "./sidebar-chat-status";
 
 interface SidebarProjectThreadsProps {
   project: Doc<"projects">;
@@ -49,11 +50,9 @@ export function SidebarProjectThreads({ project }: SidebarProjectThreadsProps) {
             branchedFromTitle={chat.branched_from_title}
             shareId={chat.share_id}
             isPinned={chat.pinned_at != null}
-            isStreaming={
-              !chat.active_agent_approval_pending &&
-              (!!chat.active_stream_id || !!chat.active_trigger_run_id)
-            }
+            isStreaming={getSidebarChatStatus(chat).isStreaming}
             isAwaitingApproval={!!chat.active_agent_approval_pending}
+            needsInputReason={getSidebarChatStatus(chat).needsInputReason}
             lastRunFinishedAt={chat.last_run_finished_at}
           />
         ))}

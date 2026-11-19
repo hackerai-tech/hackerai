@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ApiError, runs } from "@trigger.dev/sdk";
 
-import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { getUserIDAndPro, type AuthSessionPhase } from "@/lib/auth/get-user-id";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
 import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
+import { withAgentConvexScope } from "@/lib/api/agent-convex";
 
 import { recoverCrashedAgentRun } from "./agent-crash-recovery";
+import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
+import { createTriggerRunReadDiagnostics } from "./trigger-run-read-diagnostics";
 
 type AgentStatusRequestBody = {
   chatId?: unknown;
@@ -17,6 +20,7 @@ type AgentStatusRequestBody = {
 type TriggerRunStatus = {
   metadata?: unknown;
   status?: string;
+  tags?: string[];
 };
 
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
@@ -56,38 +60,47 @@ const clearTerminalAgentRun = async ({
   userId: string;
   runId: string;
   recoveredCrash?: boolean;
-}) => {
-  const chat = await getChatById({ id: chatId });
-  if (
-    !chat ||
-    chat.user_id !== userId ||
-    chat.active_trigger_run_id !== runId
-  ) {
-    return "stale" as const;
-  }
+}) =>
+  // A fresh bounded client: the ownership read's budget is already spent, and
+  // a stalled cleanup must still end as a retryable failure before Vercel's.
+  withAgentConvexScope("statusTerminalCleanup", async (convex) => {
+    const chat = await getChatById({ id: chatId }, convex);
+    if (
+      !chat ||
+      chat.user_id !== userId ||
+      chat.active_trigger_run_id !== runId
+    ) {
+      return "stale" as const;
+    }
 
-  await closeAgentApprovalSession(
-    chat.active_agent_approval_session_id,
-    "agent-run-terminal",
-  );
-  return await setActiveTriggerRun({
-    chatId,
-    triggerRunId: null,
-    approvalSessionId: null,
-    expectedRunId: runId,
-    ...(recoveredCrash ? { recoveredCrash } : {}),
-    clearApprovalPending: true,
+    await closeAgentApprovalSession(
+      chat.active_agent_approval_session_id,
+      "agent-run-terminal",
+    );
+    return await setActiveTriggerRun(
+      {
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: runId,
+        ...(recoveredCrash ? { recoveredCrash } : {}),
+        clearApprovalPending: true,
+      },
+      convex,
+    );
   });
-};
 
 export const createAgentStatusPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     let stage = "read_request";
+    let authPhase: AuthSessionPhase | undefined;
     let userId: string | undefined;
     let chatId: string | undefined;
     let runId: string | undefined;
     let ownedRun: { chatId: string; runId: string } | undefined;
+    let triggerRunRead:
+      ReturnType<typeof createTriggerRunReadDiagnostics> | undefined;
     const requestId =
       req.headers.get("x-request-id") ??
       req.headers.get("x-vercel-id") ??
@@ -111,6 +124,11 @@ export const createAgentStatusPost =
             chat_id: ownedRun?.chatId,
             trigger_run_id: ownedRun?.runId,
             stage,
+            ...(stage === "retrieve_trigger_run" && triggerRunRead?.snapshot()),
+            ...(stage === "authenticate" && {
+              auth_phase_diagnostic_version: 1,
+              auth_phase: authPhase ?? "not_observed",
+            }),
             elapsed_ms: elapsedMs,
             warning_threshold_ms: delay,
             timer_lateness_ms: Math.max(0, elapsedMs - delay),
@@ -138,11 +156,24 @@ export const createAgentStatusPost =
       }
 
       stage = "authenticate";
-      const authContext = await getUserIDAndPro(req);
+      const authContext = await getUserIDAndPro(req, (phase) => {
+        if (
+          phase === "load_sdk" ||
+          phase === "session" ||
+          phase === "entitlements"
+        )
+          authPhase = phase;
+      });
       userId = authContext.userId;
 
       stage = "get_chat";
-      const chat = await getChatById({ id: chatId });
+      // Bound the ownership read, including a connection that never returns
+      // headers. Its typed 503 is nonterminal: the browser keeps this run and
+      // polls again, and nothing about the run is read or changed first.
+      const ownedChatId = chatId;
+      const chat = await withAgentConvexScope("statusOwnershipRead", (convex) =>
+        getChatById({ id: ownedChatId }, convex),
+      );
       if (!chat) {
         return new NextResponse("Chat not found", { status: 404 });
       }
@@ -160,8 +191,68 @@ export const createAgentStatusPost =
 
       ownedRun = { chatId: chat.id, runId: chat.active_trigger_run_id };
       stage = "retrieve_trigger_run";
-      const run = (await runs.retrieve(runId)) as TriggerRunStatus;
+      const read = createTriggerRunReadDiagnostics({ runId });
+      triggerRunRead = read;
+      const readRunId = runId;
+      let run: TriggerRunStatus;
+      try {
+        run = (await read.run(() =>
+          runs.retrieve(readRunId, read.requestOptions),
+        )) as TriggerRunStatus;
+      } finally {
+        // Keep the last state for warnings; ignore events after settlement.
+        read.finish();
+      }
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
+        const metadataRecord =
+          run.metadata != null &&
+          typeof run.metadata === "object" &&
+          !Array.isArray(run.metadata)
+            ? (run.metadata as Record<string, unknown>)
+            : undefined;
+        const missingOwnerMetadata =
+          run.metadata == null ||
+          (metadataRecord !== undefined &&
+            (metadataRecord.chatId === undefined ||
+              metadataRecord.chatId === chatId) &&
+            (metadataRecord.userId === undefined ||
+              metadataRecord.userId === userId));
+        // Session metadata is not copied onto its first run. The worker fills
+        // ownership metadata shortly after starting. Keep an owned, associated
+        // approval run polling without disclosing its actual status or changing
+        // state until that independent ownership check becomes available.
+        if (
+          chat.active_agent_approval_session_id &&
+          missingOwnerMetadata &&
+          run.tags?.includes(`user_${userId}`) &&
+          run.tags.includes(`chat_${chatId}`)
+        ) {
+          if (run.status && TERMINAL_RUN_STATUSES.has(run.status)) {
+            // Startup can fail before the worker writes ownership metadata.
+            // The associated run and server tags permit cleanup, but missing
+            // metadata cannot safely drive a crash-recovery replay.
+            stage = "clear_uninitialized_terminal_trigger_run";
+            const outcome = await clearTerminalAgentRun({
+              chatId,
+              userId,
+              runId,
+            });
+            return NextResponse.json({
+              status: outcome === "stale" ? "DETACHED" : run.status,
+              terminal: true,
+            });
+          }
+          if (
+            ["PENDING_VERSION", "QUEUED", "DEQUEUED", "EXECUTING"].includes(
+              run.status ?? "",
+            )
+          ) {
+            return NextResponse.json(
+              { status: "INITIALIZING", terminal: false },
+              { status: 202 },
+            );
+          }
+        }
         return new NextResponse("Forbidden", { status: 403 });
       }
 
@@ -171,12 +262,37 @@ export const createAgentStatusPost =
       if (terminal) {
         if (run.status === "CRASHED") {
           stage = "recover_crashed_trigger_run";
-          const outcome = await recoverCrashedAgentRun({
-            chatId,
-            userId,
-            runId,
-            metadata: run.metadata,
-          });
+          let outcome: "recovered" | "stale";
+          try {
+            outcome = await recoverCrashedAgentRun({
+              chatId,
+              userId,
+              runId,
+              metadata: run.metadata,
+            });
+          } catch (error) {
+            if (!(error instanceof AgentCrashRecoveryReplayLimitError))
+              throw error;
+            console.warn(
+              JSON.stringify({
+                event: "agent_crash_recovery_blocked",
+                service: "hackerai-web",
+                action: "status",
+                reason: "replay_byte_limit",
+                chat_id: chatId.slice(0, 128),
+                user_id: userId.slice(0, 128),
+                trigger_run_id: runId.slice(0, 128),
+                ...error.context,
+              }),
+            );
+            // Report the real terminal state so clients stop polling. Preserve
+            // the association and approval session; no replay was persisted.
+            return NextResponse.json({
+              status: "CRASHED",
+              terminal: true,
+              recovery: "blocked",
+            });
+          }
           if (outcome === "stale")
             return NextResponse.json({ status: "DETACHED", terminal: true });
         }

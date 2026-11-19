@@ -1,12 +1,26 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useMutation, useQuery } from "convex/react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+} from "react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
-import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
-import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import type {
+  DesktopSandboxBridge,
+  NativeAuthFrontendState,
+} from "@/app/services/desktop-sandbox-bridge";
+import {
+  DESKTOP_UPDATE_URL,
+  isTauriEnvironment,
+  openInBrowser,
+} from "@/app/hooks/useTauri";
+import { getDesktopFileFailure } from "@/lib/centrifugo/desktop-file-errors";
 import {
   captureAuthenticatedEvent,
   subscribeAuthenticatedAnalytics,
@@ -14,6 +28,7 @@ import {
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { readConvexAuthProviderState } from "@/lib/auth/convex-auth-diagnostics";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -93,6 +108,15 @@ let bridgeRecoveryExhausted = false;
 let bridgeRecoveryPausedOffline = false;
 let bridgeRecoveryResumeAt = 0;
 const bridgeTelemetry = new DesktopRelayTelemetry(captureAuthenticatedEvent);
+// The bridge outlives the consumer that created it, so its auth-stop
+// diagnostics read the latest committed consumer rather than a render closure.
+// Each commit's snapshot object is its owner token for cleanup.
+let nativeAuthFrontendSnapshot: { state: NativeAuthFrontendState } | null =
+  null;
+
+function readNativeAuthFrontendState(): NativeAuthFrontendState {
+  return nativeAuthFrontendSnapshot?.state ?? "unavailable";
+}
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
   if (bridgeRecoveryTimer) {
@@ -125,6 +149,24 @@ export function useSandboxPreference(
     useState<DesktopBridgeStatus>("idle");
   const [desktopBridgeRetryAttempt, setDesktopBridgeRetryAttempt] = useState(0);
   const [desktopEnvironmentId, setDesktopEnvironmentId] = useState<string>();
+
+  const convexAuth = useConvexAuth();
+  const nativeAuthFrontendState: NativeAuthFrontendState = !isAuthenticated
+    ? "owner_absent"
+    : convexAuth.isLoading
+      ? "owner_present_convex_loading"
+      : convexAuth.isAuthenticated
+        ? "owner_present_convex_authenticated"
+        : "owner_present_convex_unauthenticated";
+  useLayoutEffect(() => {
+    const snapshot = { state: nativeAuthFrontendState };
+    nativeAuthFrontendSnapshot = snapshot;
+    return () => {
+      if (nativeAuthFrontendSnapshot === snapshot) {
+        nativeAuthFrontendSnapshot = null;
+      }
+    };
+  }, [nativeAuthFrontendState]);
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
@@ -379,6 +421,8 @@ export function useSandboxPreference(
                     refreshTokenRef.current(args),
                   disconnectDesktop: (args) => disconnectRef.current(args),
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
+                  readNativeAuthFrontendState,
+                  readNativeAuthProviderState: readConvexAuthProviderState,
                   onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
@@ -437,6 +481,27 @@ export function useSandboxPreference(
         publishBridgeState(true, "connected", bridge.getEnvironmentId?.());
       } catch (error) {
         if (cancelled) return;
+        if (getDesktopFileFailure(error) === "native_ipc_denied") {
+          bridgeRecoveryExhausted = false;
+          bridgeRecoveryPausedOffline = false;
+          clearBridgeRecovery(true);
+          publishBridgeState(false, "failed");
+          toast.error("HackerAI Desktop can't access files", {
+            id: "desktop-file-access-denied",
+            duration: 20_000,
+            description:
+              "Install the latest version, then fully quit and reopen the app. If it still fails, contact support.",
+            action: {
+              label: "Download update",
+              onClick: () => {
+                void openInBrowser(DESKTOP_UPDATE_URL).then((opened) => {
+                  if (!opened) window.location.href = DESKTOP_UPDATE_URL;
+                });
+              },
+            },
+          });
+          return;
+        }
         if (isUnauthenticatedConvexError(error)) {
           // Registration can reject before the bridge has a connection to
           // terminate. Match the heartbeat/token path: wait for an explicit

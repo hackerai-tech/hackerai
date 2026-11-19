@@ -16,6 +16,16 @@ function mockStripeSubscriptionsList(data: unknown[]) {
 
 const mockReleaseSchedule = jest.fn();
 
+jest.mock("@/lib/billing/subscription-operation", () => ({
+  withSubscriptionOperation: async (
+    _customer: string,
+    _operation: string,
+    run: (guard: {
+      write: <T>(write: () => Promise<T>) => Promise<T>;
+    }) => Promise<unknown>,
+  ) => run({ write: (write) => write() }),
+}));
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {
@@ -51,6 +61,9 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    cancellationReasons: {
+      markCancellationReversed: "cancellationReasons.markCancellationReversed",
+    },
     subscriptionPauses: {
       cancelScheduledPause: "subscriptionPauses.cancelScheduledPause",
     },

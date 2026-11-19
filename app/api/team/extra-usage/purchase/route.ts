@@ -5,6 +5,7 @@ import { requireAdminOrg } from "../../team-auth";
 import { normalizeCheckoutAttemptId } from "@/lib/analytics/paid-funnel";
 import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 /**
  * POST /api/team/extra-usage/purchase
@@ -13,6 +14,8 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
  * existing Stripe customer (the same one used for the team subscription).
  */
 export const POST = async (req: NextRequest) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;

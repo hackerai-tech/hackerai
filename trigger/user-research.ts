@@ -1,4 +1,4 @@
-import { schemaTask } from "@trigger.dev/sdk";
+import { logger as triggerLogger, schemaTask } from "@trigger.dev/sdk";
 import { createServiceConvexClient } from "@/lib/db/service-client";
 import { generateText, Output } from "ai";
 import { z } from "zod";
@@ -25,7 +25,12 @@ import {
   type ResearchBasis,
   type ResearchCohortReport,
   type ResearchCoverage,
+  type ResearchPromptSecretCategory,
 } from "@/lib/research/user-research";
+import {
+  readResearchStructuredOutput,
+  type ResearchStructuredOutputOperation,
+} from "@/lib/research/structured-output-diagnostics";
 
 const MAX_MESSAGES_PER_CHAT = 80;
 
@@ -90,13 +95,25 @@ const usageForStorage = (usage: {
   };
 };
 
+// Failure-only warning with closed fields. Trigger attaches run and attempt
+// identity natively; never add the prompt, ctx, or the guard error here.
+const warnUnsafeResearchPrompt =
+  (operation: ResearchStructuredOutputOperation) =>
+  (category: ResearchPromptSecretCategory) => {
+    triggerLogger.warn("[user-research] prompt privacy guard rejected", {
+      diagnostic_version: 1,
+      operation,
+      category,
+    });
+  };
+
 export const analyzeUserResearchProfile = schemaTask({
   id: "analyze-user-research-profile",
   schema: workerPayloadSchema,
   maxDuration: 5 * 60,
   retry: { maxAttempts: 2 },
   machine: { preset: "small-1x" },
-  run: async (payload) => {
+  run: async (payload, { ctx }) => {
     const { client, serviceKey } = getResearchClient();
     const chats = await client.query(api.userResearch.listRepresentativeChats, {
       serviceKey,
@@ -175,7 +192,7 @@ export const analyzeUserResearchProfile = schemaTask({
       },
       chats: evidence,
     });
-    assertResearchPromptIsSafe(prompt);
+    assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("profile"));
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
       output: Output.object({ schema: researchUserProfileSchema }),
@@ -186,7 +203,10 @@ export const analyzeUserResearchProfile = schemaTask({
       prompt,
     });
     const profile = normalizeResearchUserProfile(
-      result.output,
+      await readResearchStructuredOutput(result, {
+        operation: "profile",
+        ctx,
+      }),
       coverage.chatsReviewed,
     );
     const usage = usageForStorage(result.usage);
@@ -220,7 +240,7 @@ export const pmUserResearch = schemaTask({
   maxDuration: 30 * 60,
   retry: { maxAttempts: 1 },
   machine: { preset: "small-1x" },
-  run: async (payload) => {
+  run: async (payload, { ctx }) => {
     const { client, serviceKey } = getResearchClient();
     const analysisId = crypto.randomUUID();
     const evidenceAnchors = new Map(
@@ -384,7 +404,7 @@ export const pmUserResearch = schemaTask({
           : {}),
         profiles: profilesWithBasis,
       });
-      assertResearchPromptIsSafe(prompt);
+      assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("synthesis"));
       const result = await generateText({
         model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
         output: Output.object({ schema: cohortSynthesisSchema }),
@@ -395,7 +415,10 @@ export const pmUserResearch = schemaTask({
         prompt,
       });
       const synthesis = normalizeCohortSynthesis(
-        result.output,
+        await readResearchStructuredOutput(result, {
+          operation: "synthesis",
+          ctx,
+        }),
         profiles.length,
       );
       const report: ResearchCohortReport = {

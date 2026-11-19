@@ -1,5 +1,10 @@
 "use server";
 
+import {
+  withSubscriptionOperation,
+  type SubscriptionOperation,
+} from "@/lib/billing/subscription-operation";
+
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
@@ -28,6 +33,7 @@ import type Stripe from "stripe";
 import type { SubscriptionTier } from "@/types";
 
 type SubscriptionContext = {
+  cancellationReasonId?: string;
   id: string;
   priceId?: string;
   plan?: string;
@@ -65,6 +71,8 @@ async function getActiveSubscriptionContext(
 
   const price = currentSubscription.items.data[0]?.price;
   return {
+    cancellationReasonId:
+      currentSubscription.metadata?.hackerai_cancellation_reason_id,
     id: currentSubscription.id,
     priceId: price?.id,
     plan: subscriptionPlanFromPrice(price),
@@ -108,24 +116,51 @@ async function cancelScheduledPauseRecord(args: {
 }
 
 export default async function keepSubscriptionAction(): Promise<KeepSubscriptionResult> {
-  const { organizationId, user, stripeCustomerId } =
-    await getBillingActionContext();
+  const context = await getBillingActionContext();
+  return withSubscriptionOperation(context.stripeCustomerId, "keep", (guard) =>
+    keepWithinOperation(context, guard),
+  );
+}
+
+async function keepWithinOperation(
+  context: Awaited<ReturnType<typeof getBillingActionContext>>,
+  guard: SubscriptionOperation,
+): Promise<KeepSubscriptionResult> {
+  const { organizationId, user, stripeCustomerId } = context;
   const subscriptionContext =
     await getActiveSubscriptionContext(stripeCustomerId);
+
+  const recordReversal = async () => {
+    const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+    if (!serviceKey) return;
+    // This is also called for an already-kept subscription: a retry must
+    // repair a failed persistence write after Stripe restored the plan.
+    await getConvexClient().mutation(
+      api.cancellationReasons.markCancellationReversed,
+      {
+        serviceKey,
+        stripeSubscriptionId: subscriptionContext.id,
+        stripeCustomerId,
+        cancellationReasonId: subscriptionContext.cancellationReasonId,
+        reversedAt: Date.now(),
+      },
+    );
+  };
 
   if (!subscriptionContext.cancelAtPeriodEnd) {
     // "Keep plan" while a retention downgrade is scheduled: release the
     // schedule so the subscription keeps renewing on the current price.
-    const planChangeCanceled = await releaseSubscriptionSchedule(
-      subscriptionContext.scheduleId,
-      {
-        userId: user.id,
-        org_id: organizationId,
-        stripe_customer_id: stripeCustomerId,
-        stripe_subscription_id: subscriptionContext.id,
-        reason: "keep_plan",
-      },
-    );
+    const planChangeCanceled = subscriptionContext.scheduleId
+      ? await guard.write(() =>
+          releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+            userId: user.id,
+            org_id: organizationId,
+            stripe_customer_id: stripeCustomerId,
+            stripe_subscription_id: subscriptionContext.id,
+            reason: "keep_plan",
+          }),
+        )
+      : false;
     if (planChangeCanceled) {
       phLogger.event(
         PAID_FUNNEL_EVENTS.retentionDowngradeCanceled,
@@ -142,6 +177,7 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
         }),
       );
     }
+    await recordReversal();
     return {
       kept: true,
       cancelAtPeriodEnd: false,
@@ -165,12 +201,11 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
     });
     throw error;
   }
-  const updatedSubscription = await stripe.subscriptions.update(
-    subscriptionContext.id,
-    {
+  const updatedSubscription = await guard.write(() =>
+    stripe.subscriptions.update(subscriptionContext.id, {
       cancel_at_period_end: false,
       ...(pause && { metadata: clearedSubscriptionPauseMetadata() }),
-    },
+    }),
   );
 
   let pauseCanceled = false;
@@ -199,6 +234,8 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
       }),
     );
   }
+
+  await recordReversal();
 
   phLogger.event(
     PAID_FUNNEL_EVENTS.cancellationReversed,

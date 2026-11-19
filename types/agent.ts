@@ -11,6 +11,7 @@ import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox"
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
+import type { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 
 // Union type for cloud providers and local CentrifugoSandbox.
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -26,9 +27,21 @@ export interface SandboxInfo {
   name?: string;
   /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
+  /** Image generation from the attached E2B workspace, never the current default. */
+  sandboxVersion?: string;
 }
 
 export interface SandboxManager {
+  /** End this run when its local connection is lost; a successor requires a new run. */
+  stopOnLocalDisconnect?(
+    onLost: (error: LocalConnectionLostError) => void,
+  ): () => void;
+  /**
+   * Before a run completes, freshly verify its watched local connection.
+   * Resolves when no connection is watched; rejects with the run's
+   * LocalConnectionLostError on loss, or with the signal's reason.
+   */
+  confirmLocalConnection?(signal?: AbortSignal): Promise<void>;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
@@ -84,6 +97,8 @@ export interface SandboxResourceMetrics {
   cpuPct: number;
   memPct: number;
   diskPct: number;
+  /** Provider timestamp age (possibly a bucket start) at return; negative means clock skew. */
+  sampleAgeMs?: number;
 }
 
 export type SandboxReadinessFailureReason =

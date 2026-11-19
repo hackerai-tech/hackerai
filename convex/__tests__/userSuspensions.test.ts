@@ -16,6 +16,7 @@ jest.mock("convex/values", () => ({
   v: {
     string: jest.fn(() => "string"),
     number: jest.fn(() => "number"),
+    boolean: jest.fn(() => "boolean"),
     optional: jest.fn(() => "optional"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
@@ -51,31 +52,79 @@ type SuspensionRow = {
   resolved_reason?: string;
 };
 
-function makeMockCtx(initialRows: SuspensionRow[] = []) {
+type TokenRow = {
+  _id: string;
+  user_id: string;
+  token: string;
+  revoked_at?: number;
+};
+
+type WebhookRow = {
+  _id: string;
+  source_id?: string;
+  event_id?: string;
+  status:
+    "pending" | "cleanup_started" | "review_required" | "handled" | "completed";
+  claimed_at?: number;
+  review_customer_id?: string;
+};
+
+function makeMockCtx(
+  initialRows: SuspensionRow[] = [],
+  initialTokens: TokenRow[] = [],
+  initialWebhooks: WebhookRow[] = [],
+) {
   const rows = [...initialRows];
+  const tokens = [...initialTokens];
+  const tables: Record<string, any[]> = {
+    user_suspensions: rows,
+    local_sandbox_tokens: tokens,
+    processed_webhooks: initialWebhooks,
+  };
 
-  const matchesFilters = (
-    row: SuspensionRow,
-    filters: Record<string, unknown>,
-  ) =>
-    Object.entries(filters).every(
-      ([field, value]) => row[field as keyof SuspensionRow] === value,
-    );
+  const matchesFilters = (row: any, filters: Record<string, unknown>) =>
+    Object.entries(filters).every(([field, value]) => row[field] === value);
 
-  const withIndex = jest.fn((_indexName: string, predicate: any) => {
+  // Records index use; the table-specific reader below applies the filters.
+  const withIndex = jest.fn((_indexName: string, _predicate: any) => {});
+  const indexed = (table: string) => (indexName: string, predicate: any) => {
+    withIndex(indexName, predicate);
     const filters: Record<string, unknown> = {};
+    const ranges: Array<(row: any) => boolean> = [];
+    let postFilter: ((q: any) => boolean) | null = null;
     const q = {
       eq: jest.fn((field: string, value: unknown) => {
         filters[field] = value;
+        return q;
+      }),
+      gte: jest.fn((field: string, value: any) => {
+        ranges.push((row) => row[field] >= value);
+        return q;
+      }),
+      lt: jest.fn((field: string, value: any) => {
+        ranges.push((row) => row[field] < value);
         return q;
       }),
     };
     predicate(q);
 
     const filteredRows = () =>
-      rows.filter((row) => matchesFilters(row, filters));
+      tables[table].filter(
+        (row) =>
+          matchesFilters(row, filters) &&
+          ranges.every((range) => range(row)) &&
+          (!postFilter ||
+            postFilter({
+              field: (name: string) => name,
+              gte: (field: string, value: any) => row[field] >= value,
+            })),
+      );
 
-    return {
+    const result = {
+      filter: jest.fn((predicate: (q: any) => boolean) => {
+        postFilter = predicate;
+        return result;
+      }),
       order: jest.fn((direction: "asc" | "desc") => ({
         collect: async () => {
           const sorted = [...filteredRows()].sort(
@@ -93,15 +142,23 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
         },
       })),
       first: async () => filteredRows()[0] ?? null,
+      take: async (count: number) => filteredRows().slice(0, count),
     };
-  });
+    return result;
+  };
 
   const ctx: any = {
     __withIndex: withIndex,
     db: {
-      query: jest.fn(() => ({
-        withIndex,
+      query: jest.fn((table: string) => ({
+        withIndex: indexed(table),
       })),
+      delete: jest.fn(async (id: string) => {
+        for (const list of Object.values(tables)) {
+          const index = list.findIndex((row) => row._id === id);
+          if (index >= 0) list.splice(index, 1);
+        }
+      }),
       insert: jest.fn(
         async (_table: string, doc: Omit<SuspensionRow, "_id">) => {
           const row: SuspensionRow = { _id: `id-${rows.length + 1}`, ...doc };
@@ -117,7 +174,7 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
     },
   };
 
-  return { ctx, rows };
+  return { ctx, rows, tokens };
 }
 
 const baseArgs = {
@@ -247,6 +304,113 @@ describe("userSuspensions", () => {
       resolved_at: undefined,
       resolved_reason: undefined,
     });
+  });
+
+  it("blocks support resolution during pending fraud cleanup and preserves it after completion", async () => {
+    const { resolveBySource, upsertActive } =
+      await import("../userSuspensions");
+    const webhook: WebhookRow = {
+      _id: "webhook-1",
+      source_id: "dp_123",
+      status: "pending",
+    };
+    const { ctx, rows } = makeMockCtx(
+      [
+        {
+          _id: "id-1",
+          user_id: "user_123",
+          status: "active",
+          category: "dispute_fraudulent",
+          source: "stripe",
+          source_id: "dp_123",
+          stripe_customer_id: "cus_123",
+          created_at: 5_000,
+          updated_at: 5_000,
+        },
+      ],
+      [],
+      [webhook],
+    );
+    const resolveArgs = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      sourceId: "dp_123",
+    };
+
+    await expect(
+      (resolveBySource as any).handler(ctx, resolveArgs),
+    ).rejects.toThrow("Fraud webhook is still processing");
+    expect(rows[0].status).toBe("active");
+
+    webhook.status = "review_required";
+    webhook.review_customer_id = "cus_123";
+    await expect(
+      (resolveBySource as any).handler(ctx, resolveArgs),
+    ).rejects.toThrow("Fraud webhook requires reconciliation");
+
+    webhook.status = "handled";
+    expect(await (resolveBySource as any).handler(ctx, resolveArgs)).toEqual({
+      resolved: true,
+    });
+    expect(
+      await (upsertActive as any).handler(ctx, {
+        ...baseArgs,
+        preserveResolved: true,
+      }),
+    ).toBeNull();
+    expect(rows[0].status).toBe("resolved");
+    expect(rows[0].resolved_at).toBe(10_000);
+  });
+
+  it("ignores an unrelated WorkOS claim but fences a live legacy Stripe claim", async () => {
+    const { resolveBySource } = await import("../userSuspensions");
+    const suspension: SuspensionRow = {
+      _id: "id-1",
+      user_id: "user_123",
+      status: "active",
+      category: "dispute_fraudulent",
+      source: "stripe",
+      source_id: "dp_123",
+      stripe_customer_id: "cus_123",
+      created_at: 5_000,
+      updated_at: 5_000,
+    };
+    const args = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      sourceId: "dp_123",
+    };
+    const workos = makeMockCtx(
+      [suspension],
+      [],
+      [
+        {
+          _id: "workos-1",
+          event_id: "event_0123456789ABCDEFGHJKMNPQRS",
+          status: "pending",
+          claimed_at: 9_000,
+        },
+      ],
+    );
+    expect(await (resolveBySource as any).handler(workos.ctx, args)).toEqual({
+      resolved: true,
+    });
+
+    const stripe = makeMockCtx(
+      [{ ...suspension }],
+      [],
+      [
+        {
+          _id: "stripe-1",
+          event_id: "evt_legacy",
+          status: "pending",
+          claimed_at: 9_000,
+        },
+      ],
+    );
+    await expect(
+      (resolveBySource as any).handler(stripe.ctx, args),
+    ).rejects.toThrow("A legacy webhook is still processing");
   });
 
   it("returns the newest active suspension for a user", async () => {
@@ -446,5 +610,90 @@ describe("userSuspensions", () => {
       userId: "user_123",
     });
     expect(active).toBeNull();
+  });
+
+  describe("abuse local-access revocation", () => {
+    const suspension = (
+      source_id: string,
+      category: SuspensionRow["category"],
+      status: SuspensionRow["status"] = "active",
+    ): SuspensionRow => ({
+      _id: source_id,
+      user_id: "user_123",
+      status,
+      category,
+      source: category === "security_abuse" ? "support" : "stripe",
+      source_id,
+      created_at: 1_000,
+      updated_at: 1_000,
+    });
+    const markers = (): TokenRow[] => [
+      {
+        _id: "marker",
+        user_id: "user_123",
+        token: "revoked_synthetic",
+        revoked_at: 2_000,
+      },
+      {
+        _id: "other-marker",
+        user_id: "other_user",
+        token: "revoked_synthetic_other",
+        revoked_at: 2_000,
+      },
+    ];
+    const resolve = async (ctx: any, sourceId: string) => {
+      const { resolveBySource } = await import("../userSuspensions");
+      return (resolveBySource as any).handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        userId: "user_123",
+        sourceId,
+        resolvedReason: "support_review",
+      });
+    };
+
+    it("lifts the block when the last independent security restriction outlived the case", async () => {
+      // The case already released its own restriction but kept the marker.
+      const { ctx, rows, tokens } = makeMockCtx(
+        [
+          suspension("abuse-late:case", "security_abuse", "resolved"),
+          suspension("independent", "security_abuse"),
+          suspension("billing", "dispute_billing_hold"),
+        ],
+        markers(),
+      );
+
+      await resolve(ctx, "independent");
+
+      expect(tokens.map((row) => row._id)).toEqual(["other-marker"]);
+      expect(rows.map((row) => [row.source_id, row.status])).toEqual([
+        ["abuse-late:case", "resolved"],
+        ["independent", "resolved"],
+        ["billing", "active"],
+      ]);
+    });
+
+    it.each([
+      ["another security restriction remains", "independent", true],
+      ["a billing restriction is resolved", "billing", false],
+    ])(
+      "keeps the block when %s",
+      async (_label, resolvedSource, secondSecurity) => {
+        const { ctx, tokens } = makeMockCtx(
+          [
+            suspension("independent", "security_abuse"),
+            ...(secondSecurity ? [suspension("second", "security_abuse")] : []),
+            suspension("billing", "dispute_billing_hold"),
+          ],
+          markers(),
+        );
+
+        await resolve(ctx, resolvedSource);
+
+        expect(tokens.map((row) => row._id)).toEqual([
+          "marker",
+          "other-marker",
+        ]);
+      },
+    );
   });
 });

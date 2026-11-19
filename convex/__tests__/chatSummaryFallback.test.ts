@@ -1678,6 +1678,127 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     );
   });
 
+  it.each([
+    "default",
+    "explicit",
+    "stale",
+    "cleared",
+    "running",
+    "missing-generation",
+  ])(
+    "keeps goal message edits and their new attempt consistent (%s)",
+    async (scenario) => {
+      const { defaultGoalCriterion } =
+        await import("../../lib/goals/contracts");
+      const userMessage = {
+        _id: "goal-message",
+        id: "user-msg-1",
+        chat_id: CHAT_ID,
+        user_id: USER_ID,
+        role: "user",
+        goal: { sent: true },
+        parts: [{ type: "text", text: "Old objective" }],
+        _creationTime: 1000,
+      };
+      const oldResponse = {
+        _id: "old-receipt",
+        id: "answer",
+        role: "assistant",
+        goal: { achievedElapsedMs: 5000 },
+        _creationTime: 2000,
+      };
+      let goal: any = {
+        _id: "goal",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        objective: "Old objective",
+        criteria: [defaultGoalCriterion("Old objective")],
+        state: "achieved",
+        generation: 4,
+        elapsedMs: 5000,
+        achievedAt: 123,
+        checkpoint: { outcome: "achieved" },
+        judgment: { verdict: "done" },
+        progress: "old progress",
+        evidence: [{ toolCallId: "old-proof" }],
+        sandboxPreference: "e2b",
+        permissionMode: "ask_approval",
+        selectedModel: "auto",
+        ...(scenario === "explicit"
+          ? {
+              criteria: ["Retain exact output"],
+              verificationCommand: "cat result",
+              constraints: "Keep files",
+            }
+          : {}),
+        ...(scenario === "cleared" ? { deletedAt: 123 } : {}),
+        ...(scenario === "running" ? { activeRunId: "old-run" } : {}),
+      };
+      const chat = makeChatDoc({ latest_summary_id: undefined });
+      mockCtx.db.replace = jest
+        .fn<any>()
+        .mockImplementation(async (_id: string, data: any) => {
+          goal = data;
+        });
+      mockCtx.db.query.mockImplementation((table: string) => ({
+        withIndex: (index: string) => ({
+          unique: async () => (table === "agent_goals" ? goal : null),
+          first: async () =>
+            table === "messages" && index === "by_message_id"
+              ? userMessage
+              : chat,
+          collect: async () => [oldResponse],
+        }),
+      }));
+      const { regenerateWithNewContent } = await import("../messages");
+      const action = regenerateWithNewContent.handler(mockCtx, {
+        messageId: "user-msg-1",
+        newContent: "New objective",
+        ...(scenario === "missing-generation"
+          ? {}
+          : { goalGeneration: scenario === "stale" ? 3 : 4 }),
+      });
+      if (
+        ["stale", "cleared", "running", "missing-generation"].includes(scenario)
+      ) {
+        await expect(action).rejects.toThrow();
+        expect(mockCtx.db.replace).not.toHaveBeenCalled();
+        expect(mockCtx.db.patch).not.toHaveBeenCalled();
+        expect(mockCtx.db.delete).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(action).resolves.toEqual({ goalGeneration: 5 });
+      expect(goal).toMatchObject({
+        objective: "New objective",
+        state: "paused",
+        generation: 5,
+        elapsedMs: 0,
+        runs: 0,
+        progress: "",
+        evidence: [],
+        permissionMode: "ask_approval",
+      });
+      expect(goal.achievedAt).toBeUndefined();
+      expect(goal.checkpoint).toBeUndefined();
+      expect(goal.judgment).toBeUndefined();
+      expect(goal.criteria).toEqual([
+        scenario === "explicit"
+          ? "Retain exact output"
+          : defaultGoalCriterion("New objective"),
+      ]);
+      if (scenario === "explicit")
+        expect(goal).toMatchObject({
+          verificationCommand: "cat result",
+          constraints: "Keep files",
+        });
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(
+        "goal-message",
+        expect.objectContaining({ content: "New objective" }),
+      );
+      expect(mockCtx.db.delete).toHaveBeenCalledWith("old-receipt");
+    },
+  );
+
   it("should reject editing a user message when a newer visible user message exists", async () => {
     const editedUserMessage = {
       _id: "user-doc-1" as Id<"messages">,

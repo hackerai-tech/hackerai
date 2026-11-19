@@ -5,6 +5,7 @@ import {
   isEndedSessionRefreshError,
   isInvalidRefreshTokenError,
 } from "@/lib/auth/expected-auth-errors";
+import { getRefreshFailureDiagnostics } from "@/lib/auth/refresh-failure-diagnostics";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -24,12 +25,17 @@ import {
 } from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/abuse",
+  "/api/abuse",
   "/api/analytics-consent",
+  "/api/desktop/authorized-operation",
   "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",
   "/api/health/trigger-reports",
   "/api/cron/platform-costs/convex",
+  "/api/cron/platform-costs/aws",
+  "/api/cron/platform-costs/posthog",
   "/api/cron/platform-costs/vercel",
   "/api/cron/subscription-pauses",
   "/api/cron/trigger-health",
@@ -41,6 +47,12 @@ const AUTHKIT_BYPASS_PATHS = new Set([
 ]);
 const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
+// Closed labels from the patched AuthKit refresh; anything else is "unavailable".
+const AUTH_REFRESH_STAGES = new Set<unknown>([
+  "before_refresh_request",
+  "refresh_request",
+  "after_refresh_response",
+]);
 
 const UNAUTHENTICATED_PATHS = new Set([
   ...AUTHKIT_BYPASS_PATHS,
@@ -63,15 +75,23 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/privacy-policy",
   "/terms-of-service",
   "/trust",
+  "/abuse",
   "/download",
   "/product",
   "/pricing",
   "/manifest.json",
 ]);
 
-function getRedirectUri(): string | undefined {
+function getRedirectUri(request: NextRequest): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}/callback`;
+    // Keep the branch origin's auth cookie usable by its allowlisted relay.
+    // Never derive a callback from an arbitrary request/forwarded Host value.
+    const branchHost = process.env.VERCEL_BRANCH_URL;
+    const host =
+      branchHost && request.nextUrl.host === branchHost
+        ? branchHost
+        : process.env.VERCEL_URL;
+    return `https://${host}/callback`;
   }
   return undefined;
 }
@@ -235,6 +255,109 @@ function withSessionCookieCleared(response: NextResponse): NextResponse {
   return response;
 }
 
+/** Observe non-GET Desktop redirect decisions without retaining request contents or affecting auth. */
+function recordDesktopAuthRedirect(
+  request: NextRequest,
+  response: NextResponse,
+  reason: "missing_session_cookie" | "ended_session",
+): void {
+  try {
+    if (
+      request.method === "GET" ||
+      request.method === "HEAD" ||
+      !isDesktopApp(request)
+    ) {
+      return;
+    }
+
+    const pathname = request.nextUrl.pathname;
+    console.info(
+      JSON.stringify({
+        event: "desktop_auth_redirect_observed",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        reason,
+        request_method: ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(
+          request.method,
+        )
+          ? request.method
+          : "OTHER",
+        route_kind: pathname.startsWith("/c/")
+          ? "chat_page"
+          : pathname.startsWith("/api/")
+            ? "api"
+            : "other_protected",
+        next_action_header_present: request.headers.has(NEXT_ACTION_HEADER),
+        accepts_html: isBrowserRequest(request),
+        redirect_status: response.status,
+        destination: "desktop_callback",
+      }),
+    );
+  } catch {
+    // Diagnostics must never change authentication responses.
+  }
+}
+
+/** Observe only unexpected AuthKit throws, without retaining request or error contents. */
+function recordProxyAuthkitFailure(
+  request: NextRequest,
+  error: unknown,
+  phase: "unexpected_initial_authkit" | "anonymous_context_retry",
+): void {
+  try {
+    const pathname = request.nextUrl.pathname;
+    const requestId = request.headers.get("x-vercel-id");
+    const build = process.env.VERCEL_GIT_COMMIT_SHA;
+    const environment = process.env.VERCEL_ENV;
+    console.warn(
+      JSON.stringify({
+        event: "proxy_authkit_failure_context",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        phase,
+        request_method: [
+          "GET",
+          "HEAD",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "OPTIONS",
+        ].includes(request.method)
+          ? request.method
+          : "OTHER",
+        route_kind: ROOT_PAGE_PATHS.has(pathname)
+          ? "root"
+          : pathname === "/login"
+            ? "login"
+            : pathname.startsWith("/c/")
+              ? "chat_page"
+              : pathname.startsWith("/api/")
+                ? "api"
+                : "other_page",
+        ...(requestId &&
+        /^(?:[a-z]{3}\d::){0,3}[a-z0-9]{3,16}-\d{13}-[a-f0-9]{8,64}$/.test(
+          requestId,
+        )
+          ? { vercel_request_id: requestId }
+          : {}),
+        ...(build && /^[a-f0-9]{40}$/i.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+        environment: ["production", "preview", "development"].includes(
+          environment ?? "",
+        )
+          ? environment
+          : "unknown",
+        ...getRefreshFailureDiagnostics(error),
+      }),
+    );
+  } catch {
+    // Telemetry must never replace the original error or participate in auth decisions.
+  }
+}
+
+/** Retain the logged-out response contract and clear only the ended session cookie. */
 function buildEndedSessionResponse(
   request: NextRequest,
   pathname: string,
@@ -282,11 +405,14 @@ function buildEndedSessionResponse(
     ? new URL("/desktop-callback?error=unauthenticated", request.url)
     : new URL("/login", request.url);
 
-  return withSessionCookieCleared(
+  const response = withSessionCookieCleared(
     withAttributionCookies(request, NextResponse.redirect(redirectUrl)),
   );
+  recordDesktopAuthRedirect(request, response, "ended_session");
+  return response;
 }
 
+/** Keep Desktop cookie admission distinct from AuthKit refresh recovery and its response contract. */
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
@@ -342,12 +468,14 @@ export default async function proxy(request: NextRequest) {
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return withAttributionCookies(
+      const response = withAttributionCookies(
         request,
         NextResponse.redirect(
           new URL("/desktop-callback?error=unauthenticated", request.url),
         ),
       );
+      recordDesktopAuthRedirect(request, response, "missing_session_cookie");
+      return response;
     }
   }
 
@@ -358,9 +486,9 @@ export default async function proxy(request: NextRequest) {
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
   try {
     authkitResult = await authkit(request, {
-      redirectUri: getRedirectUri(),
+      redirectUri: getRedirectUri(request),
       eagerAuth: true,
-      onSessionRefreshError: ({ error }) => {
+      onSessionRefreshError: ({ error, isTransient, refreshStage }) => {
         if (isInvalidRefreshTokenError(error)) {
           refreshEndedSession = true;
           console.warn(
@@ -413,6 +541,12 @@ export default async function proxy(request: NextRequest) {
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             pathname,
             error: error instanceof Error ? error.message : String(error),
+            is_transient: isTransient,
+            ...getRefreshFailureDiagnostics(error),
+            auth_refresh_stage_diagnostic_version: 1,
+            auth_refresh_stage: AUTH_REFRESH_STAGES.has(refreshStage)
+              ? refreshStage
+              : "unavailable",
           }),
         );
       },
@@ -442,10 +576,21 @@ export default async function proxy(request: NextRequest) {
       // Public routes still need real anonymous AuthKit context. A response
       // cookie deletion alone leaves the invalid cookie on this request.
       // An error from this second call propagates, so recovery cannot loop.
-      const { headers } = await authkit(request, {
-        redirectUri: getRedirectUri(),
-        eagerAuth: true,
-      });
+      let anonymousResult: Awaited<ReturnType<typeof authkit>>;
+      try {
+        anonymousResult = await authkit(request, {
+          redirectUri: getRedirectUri(request),
+          eagerAuth: true,
+        });
+      } catch (recoveryError) {
+        recordProxyAuthkitFailure(
+          request,
+          recoveryError,
+          "anonymous_context_retry",
+        );
+        throw recoveryError;
+      }
+      const { headers } = anonymousResult;
       return withSessionCookieCleared(
         withAttributionCookies(
           request,
@@ -468,6 +613,7 @@ export default async function proxy(request: NextRequest) {
     if (isEndedSessionRefreshError(error)) {
       return buildEndedSessionResponse(request, pathname);
     }
+    recordProxyAuthkitFailure(request, error, "unexpected_initial_authkit");
     throw error;
   }
 

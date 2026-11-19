@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
@@ -202,17 +202,14 @@ describe("ChatInputToolbar", () => {
     expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
-    expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
-    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
-      "data-size",
-      "toolbar",
-    );
-    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
-      "data-value",
-      "e2b",
-    );
-    fireEvent.click(screen.getByTestId("sandbox-selector"));
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
+    const desktopSandbox = within(
+      screen.getByTestId("chat-input-desktop-sandbox"),
+    ).getByTestId("sandbox-selector");
+    expect(desktopSandbox).toBeInTheDocument();
+    expect(desktopSandbox).toHaveAttribute("data-size", "toolbar");
+    expect(desktopSandbox).toHaveAttribute("data-value", "e2b");
+    fireEvent.click(desktopSandbox);
     expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
     expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
       "hidden",
@@ -220,7 +217,7 @@ describe("ChatInputToolbar", () => {
     );
     expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
       "hidden",
-      "min-w-0",
+      "min-w-16",
       "md:block",
     );
   });
@@ -234,6 +231,7 @@ describe("ChatInputToolbar", () => {
       "min-w-0",
       "flex-1",
       "overflow-hidden",
+      "md:flex-wrap",
     );
     expect(screen.getByTestId("chat-input-primary-actions")).toHaveClass(
       "shrink-0",
@@ -246,31 +244,6 @@ describe("ChatInputToolbar", () => {
     );
   });
 
-  it("moves Agent controls out of the toolbar in compact layout", () => {
-    mockAuthUser({ id: "user_123" });
-
-    render(
-      <ChatInputToolbar
-        {...defaultProps}
-        chatMode="agent"
-        compactAgentControls
-      />,
-    );
-
-    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
-      "hidden",
-    );
-    expect(screen.getByTestId("chat-input-desktop-permission")).not.toHaveClass(
-      "md:block",
-    );
-    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
-      "hidden",
-    );
-    expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
-      "md:block",
-    );
-  });
-
   it("removes only the mode selector for paid Agent-only mode", () => {
     mockAuthUser({ id: "user_123" });
     mockSubscription = "pro";
@@ -279,7 +252,7 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
   });
 
   it("removes only the mode selector for free Desktop Agent-only mode", () => {
@@ -289,7 +262,7 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
       "data-neutral-agent-style",

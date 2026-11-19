@@ -4,23 +4,124 @@ import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 import type { ChatMessage } from "@/types";
+import { useS3ActionDiagnostics } from "./useS3ActionDiagnostics";
 
 interface CachedUrl {
   url: string;
-  timestamp: number;
+  expiresAt: number;
 }
 
-const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 hour)
+const URL_CACHE_EXPIRATION = 50 * 60 * 1000;
+const SIGNED_URL_SAFETY_MARGIN = 60 * 1000;
+
+function getCacheLifetime(url: string): number {
+  try {
+    const lifetimes = new URL(url).searchParams.getAll("X-Amz-Expires");
+    if (lifetimes.length === 0) return URL_CACHE_EXPIRATION;
+    if (lifetimes.length !== 1 || !/^\d+$/.test(lifetimes[0])) return 0;
+    const seconds = Number(lifetimes[0]);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) return 0;
+    return Math.max(
+      0,
+      Math.min(URL_CACHE_EXPIRATION, seconds * 1000 - SIGNED_URL_SAFETY_MARGIN),
+    );
+  } catch {
+    return 0;
+  }
+}
 const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.ts
 
+interface UrlRequest {
+  promise: Promise<string | null>;
+  resolve: (url: string | null) => void;
+  reject: (error: unknown) => void;
+  settled: boolean;
+}
+
 /**
- * Hook to manage prefetching and caching of file URLs
+ * Requests made under one authentication state. Losing or refreshing
+ * authentication, unmounting and StrictMode replay end the scope: its waiting
+ * callers are rejected with an AbortError and unsent batches are discarded.
+ * Actions already sent still complete on the server; their results are ignored.
+ */
+interface AuthScope {
+  ready: boolean;
+  signal: AbortSignal;
+  /** In flight, or settled as unavailable/failed so prefetch does not repeat it. */
+  requests: Map<string, UrlRequest>;
+  /** Requested since the last dispatch; sent together in the next microtask. */
+  queued: Set<string>;
+}
+
+function abortError() {
+  return new DOMException("Image URL request was superseded", "AbortError");
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === "AbortError";
+}
+
+function createRequest(): UrlRequest {
+  let resolve!: (url: string | null) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<string | null>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // Callers handle rejections; an image nobody is waiting for must not warn.
+  promise.catch(() => {});
+  const request: UrlRequest = {
+    promise,
+    settled: false,
+    resolve: (url) => {
+      request.settled = true;
+      resolve(url);
+    },
+    reject: (error) => {
+      request.settled = true;
+      reject(error);
+    },
+  };
+  return request;
+}
+
+function imageFileIds(messages: ChatMessage[]): string[] {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const file of message.fileDetails ?? []) {
+      if (
+        file.s3Key &&
+        file.mediaType &&
+        isSupportedImageMediaType(file.mediaType)
+      )
+        ids.add(file.fileId);
+    }
+    for (const part of message.parts) {
+      // Uploaded parts carry only their file ID; the server signs what exists.
+      if (
+        part.type === "file" &&
+        "fileId" in part &&
+        typeof part.fileId === "string" &&
+        !("storage" in part && part.storage === "local-desktop") &&
+        part.mediaType &&
+        isSupportedImageMediaType(part.mediaType)
+      )
+        ids.add(part.fileId);
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Owns signed URLs for a chat's files.
  *
- * Features:
- * - Batch prefetches URLs for all S3 image files in messages (images need eager loading)
- * - Caches URLs with expiration handling (50 min, before 1 hour S3 expiry)
- * - Provides methods to get and set cached URLs (for lazy-loaded non-image files)
- * - Automatically cleans up expired URLs
+ * - `loadImageUrl` shares one request per file: everything asked for in the
+ *   same tick, by mounted images or by the history prefetch, goes out in
+ *   batches of up to 50. A file the batch cannot sign is asked for once on its
+ *   own. Later ticks are sent without waiting for earlier batches.
+ * - Images in the messages are requested as soon as authentication is ready.
+ * - Fresh URLs are cached for at most 50 minutes, shortened for their signed
+ *   lifetime, and expired entries are cleaned up periodically.
  */
 export function useFileUrlCache(messages: ChatMessage[]) {
   const { isAuthenticated, isLoading, isRefreshing } = useConvexAuth();
@@ -28,26 +129,31 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   const getFileUrlsBatchAction = useAction(
     api.s3Actions.getFileUrlsBatchAction,
   );
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "inline_image",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const urlCacheRef = useRef<Map<string, CachedUrl>>(new Map());
-  const prefetchedIdsRef = useRef<Set<string>>(new Set());
-  const pendingIdsRef = useRef<Set<string>>(new Set());
-  const prefetchQueueRef = useRef<Promise<void> | null>(null);
-  const authScopeRef = useRef(new AbortController());
+  const scopeRef = useRef<AuthScope | null>(null);
 
   useLayoutEffect(() => {
-    const scope = new AbortController();
-    authScopeRef.current = scope;
-    // Each scope owns its reservations, including React's effect replay.
-    pendingIdsRef.current.clear();
-    prefetchQueueRef.current = null;
-    if (!authReady) {
-      urlCacheRef.current.clear();
-      prefetchedIdsRef.current.clear();
-    }
-    // Invalidate during commit, before pending responses can resume.
-    // Pending reads cannot be canceled by Convex, but their results and queued
-    // batches must not survive a loss of authentication or an unmount.
-    return () => scope.abort();
+    const controller = new AbortController();
+    const scope: AuthScope = {
+      ready: authReady,
+      signal: controller.signal,
+      requests: new Map(),
+      queued: new Set(),
+    };
+    scopeRef.current = scope;
+    if (!authReady) urlCacheRef.current.clear();
+    // Ends during commit, before pending responses can resume.
+    return () => {
+      controller.abort();
+      scope.queued.clear();
+      for (const request of scope.requests.values())
+        if (!request.settled) request.reject(abortError());
+      scope.requests.clear();
+    };
   }, [authReady]);
 
   // Get cached URL for a file (returns null if expired or not cached)
@@ -55,151 +161,121 @@ export function useFileUrlCache(messages: ChatMessage[]) {
     const cached = urlCacheRef.current.get(fileId);
     if (!cached) return null;
 
-    // Check if URL has expired
-    const now = Date.now();
-    if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+    if (Date.now() >= cached.expiresAt) {
       urlCacheRef.current.delete(fileId);
-      prefetchedIdsRef.current.delete(fileId);
       return null;
     }
 
     return cached.url;
   }, []);
 
-  // Set/update cached URL for a file (used for lazy-loaded non-image files)
+  // Set/update cached URL for a file
   const setCachedUrl = useCallback((fileId: string, url: string) => {
-    const now = Date.now();
-    urlCacheRef.current.set(fileId, { url, timestamp: now });
-    prefetchedIdsRef.current.add(fileId);
+    const lifetime = getCacheLifetime(url);
+    if (lifetime <= 0) {
+      urlCacheRef.current.delete(fileId);
+      return;
+    }
+    // Actions sign fresh URLs on demand. Start their TTL on receipt so server
+    // and browser clock differences cannot extend or prematurely expire it.
+    urlCacheRef.current.set(fileId, { url, expiresAt: Date.now() + lifetime });
   }, []);
 
-  // Prefetch image URLs for messages
-  useEffect(() => {
-    if (!authReady) return;
-    const scope = authScopeRef.current;
-    async function prefetchImageUrls() {
-      // Track seen fileIds within this run to avoid duplicates
-      const seenInThisRun = new Set<string>();
-      const s3ImageFiles: Array<{
-        fileId: Id<"files">;
-        mediaType: string;
-      }> = [];
-
-      for (const message of messages) {
-        if (!message.fileDetails) continue;
-
-        for (const file of message.fileDetails) {
-          // Only process files that:
-          // 1. Have an S3 key
-          // 2. Are supported image types
-          // 3. Haven't been prefetched yet
-          // 4. Haven't been seen in this run
-          if (
-            file.s3Key &&
-            file.mediaType &&
-            isSupportedImageMediaType(file.mediaType) &&
-            !prefetchedIdsRef.current.has(file.fileId) &&
-            !pendingIdsRef.current.has(file.fileId) &&
-            !seenInThisRun.has(file.fileId)
-          ) {
-            s3ImageFiles.push({
-              fileId: file.fileId,
-              mediaType: file.mediaType,
-            });
-            seenInThisRun.add(file.fileId);
-          }
+  const sendBatch = useCallback(
+    async (scope: AuthScope, fileIds: string[]) => {
+      const deliver = (fileId: string, url: string | null) => {
+        const request = scope.requests.get(fileId);
+        if (!request || request.settled || scope.signal.aborted) return;
+        if (url) {
+          setCachedUrl(fileId, url);
+          // The cache owns successful URLs, so an expired one is asked again.
+          scope.requests.delete(fileId);
         }
-      }
-
-      // Also collect image files from message parts
-      for (const message of messages) {
-        for (const part of message.parts) {
-          if (
-            part.type === "file" &&
-            "fileId" in part &&
-            "s3Key" in part &&
-            part.s3Key &&
-            part.mediaType &&
-            isSupportedImageMediaType(part.mediaType) &&
-            typeof part.fileId === "string" &&
-            !prefetchedIdsRef.current.has(part.fileId) &&
-            !pendingIdsRef.current.has(part.fileId) &&
-            !seenInThisRun.has(part.fileId)
-          ) {
-            s3ImageFiles.push({
-              fileId: part.fileId as Id<"files">,
-              mediaType: part.mediaType,
-            });
-            seenInThisRun.add(part.fileId);
-          }
-        }
-      }
-
-      // If no new images to prefetch, return early
-      if (s3ImageFiles.length === 0) {
-        return;
-      }
-
-      // Reserve all IDs before awaiting so streaming renders cannot enqueue them again.
-      const fileIds = s3ImageFiles.map((f) => f.fileId);
-      for (const fileId of fileIds) pendingIdsRef.current.add(fileId);
-      const chunks: Array<Array<Id<"files">>> = [];
-      for (let i = 0; i < fileIds.length; i += MAX_BATCH_SIZE) {
-        chunks.push(fileIds.slice(i, i + MAX_BATCH_SIZE));
-      }
-
-      const runBatches = async () => {
-        for (const chunk of chunks) {
-          if (scope.signal.aborted) return;
-          try {
-            const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
-            if (scope.signal.aborted) return;
-            const now = Date.now();
-            if (urlMap && typeof urlMap === "object") {
-              for (const [fileId, url] of Object.entries(urlMap) as Array<
-                [string, string]
-              >) {
-                urlCacheRef.current.set(fileId, { url, timestamp: now });
-                prefetchedIdsRef.current.add(fileId);
-              }
-            }
-          } catch (error) {
-            if (!scope.signal.aborted)
-              console.error("Failed to prefetch image URLs:", error);
-          } finally {
-            if (!scope.signal.aborted)
-              for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
-          }
-        }
+        request.resolve(url);
       };
 
-      // Serialize across effects too: newly arriving IDs wait behind active work.
-      const previousWork = prefetchQueueRef.current;
-      prefetchQueueRef.current = previousWork
-        ? previousWork.then(runBatches, runBatches)
-        : runBatches();
-      await prefetchQueueRef.current;
-    }
+      let urls: Record<string, string> = {};
+      try {
+        const result = await getFileUrlsBatchAction({
+          fileIds: fileIds as Array<Id<"files">>,
+        });
+        if (result && typeof result === "object") urls = result;
+      } catch (error) {
+        if (scope.signal.aborted) return;
+        console.error("Failed to load image URLs:", error);
+      }
+      if (scope.signal.aborted) return;
 
-    prefetchImageUrls();
-  }, [messages, getFileUrlsBatchAction, authReady]);
+      for (const fileId of fileIds) {
+        const request = scope.requests.get(fileId);
+        if (!request || request.settled) continue;
+        if (urls[fileId]) {
+          deliver(fileId, urls[fileId]);
+          continue;
+        }
+        // Ask once more on its own; a null answer means the file is gone.
+        getFileUrlAction({ fileId: fileId as Id<"files"> }).then(
+          (url) => deliver(fileId, url),
+          (error) => {
+            if (!request.settled && !scope.signal.aborted)
+              request.reject(error);
+          },
+        );
+      }
+    },
+    [getFileUrlAction, getFileUrlsBatchAction, setCachedUrl],
+  );
+
+  const requestImageUrl = useCallback(
+    (fileId: string, retrySettled: boolean): Promise<string | null> => {
+      const cached = getCachedUrl(fileId);
+      if (cached) return Promise.resolve(cached);
+      const scope = scopeRef.current;
+      if (!authReady || !scope?.ready || scope.signal.aborted)
+        return Promise.reject(abortError());
+      const existing = scope.requests.get(fileId);
+      if (existing && (!existing.settled || !retrySettled))
+        return existing.promise;
+
+      const request = createRequest();
+      scope.requests.set(fileId, request);
+      if (scope.queued.size === 0) {
+        queueMicrotask(() => {
+          if (scope.signal.aborted) return;
+          const ids = [...scope.queued];
+          scope.queued.clear();
+          for (let i = 0; i < ids.length; i += MAX_BATCH_SIZE)
+            void sendBatch(scope, ids.slice(i, i + MAX_BATCH_SIZE));
+        });
+      }
+      scope.queued.add(fileId);
+      return request.promise;
+    },
+    [authReady, getCachedUrl, sendBatch],
+  );
+
+  // A newly shown image asks again for a file that failed or was unavailable.
+  // Identity changes with authentication, so shown images load again.
+  const loadImageUrl = useCallback(
+    (fileId: string) => requestImageUrl(fileId, true),
+    [requestImageUrl],
+  );
+
+  // Request every image in the history; mounted images share these requests.
+  // Settled failures are left alone so streamed renders do not repeat them.
+  useEffect(() => {
+    if (!authReady) return;
+    for (const fileId of imageFileIds(messages))
+      requestImageUrl(fileId, false).catch(() => {});
+  }, [messages, authReady, requestImageUrl]);
 
   // Cleanup expired URLs periodically
   useEffect(() => {
     const cleanupInterval = setInterval(
       () => {
         const now = Date.now();
-        const entriesToDelete: string[] = [];
-
         for (const [fileId, cached] of urlCacheRef.current.entries()) {
-          if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
-            entriesToDelete.push(fileId);
-          }
-        }
-
-        for (const fileId of entriesToDelete) {
-          urlCacheRef.current.delete(fileId);
-          prefetchedIdsRef.current.delete(fileId);
+          if (now >= cached.expiresAt) urlCacheRef.current.delete(fileId);
         }
       },
       5 * 60 * 1000,
@@ -208,5 +284,5 @@ export function useFileUrlCache(messages: ChatMessage[]) {
     return () => clearInterval(cleanupInterval);
   }, []);
 
-  return { getCachedUrl, setCachedUrl };
+  return { getCachedUrl, setCachedUrl, loadImageUrl };
 }

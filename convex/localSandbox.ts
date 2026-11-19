@@ -1,9 +1,29 @@
 import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { DatabaseReader } from "./lib/serviceFunctions";
+import { DatabaseReader, type MutationCtx } from "./lib/serviceFunctions";
+import {
+  findHeartbeat,
+  lastHeartbeat,
+  recordHeartbeat,
+} from "./lib/localSandboxHeartbeat";
+import type { Doc } from "./_generated/dataModel";
 import { SignJWT } from "jose";
 import { isEnvironmentPreference } from "../lib/sandbox/environment";
+
+function validatePrivateArtifactNamespace(
+  capabilities:
+    { privateArtifactNamespace?: string; commandStdin?: boolean } | undefined,
+) {
+  const namespace = capabilities?.privateArtifactNamespace;
+  if (
+    namespace !== undefined &&
+    (!/^uid-(0|[1-9][0-9]{0,9})$/.test(namespace) ||
+      capabilities?.commandStdin !== true)
+  ) {
+    throw new ConvexError("Invalid private terminal artifact namespace");
+  }
+}
 
 function validateEnvironmentId(id: string | undefined) {
   if (
@@ -31,8 +51,10 @@ async function resolvePreference(
     .query("local_sandbox_connections")
     .withIndex("by_connection_id", (q) => q.eq("connection_id", preference))
     .unique();
-  return session?.user_id === userId && session.environment_id
-    ? `${session.client_version === "desktop" ? "desktop-environment" : "environment"}:${session.environment_id}`
+  return session?.user_id === userId &&
+    session.registration_origin === "desktop" &&
+    session.environment_id
+    ? `desktop-environment:${session.environment_id}`
     : preference;
 }
 
@@ -80,6 +102,8 @@ export const purgeStaleDisconnectedConnections = internalMutation({
       .take(limit);
 
     for (const row of rows) {
+      const heartbeat = await findHeartbeat(ctx.db, row.connection_id);
+      if (heartbeat) await ctx.db.delete(heartbeat._id);
       await ctx.db.delete(row._id);
     }
     return { deletedCount: rows.length };
@@ -94,6 +118,43 @@ function generateToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+// A reviewed abuse restriction revokes local access until its case is
+// resolved. Neither token reissue nor a Desktop session may bypass it.
+function localAccessRevoked(): never {
+  throw new ConvexError({
+    code: "LOCAL_SANDBOX_ACCESS_REVOKED",
+    message: "Local sandbox access is unavailable for this account.",
+  });
+}
+
+async function isLocalAccessRevoked(db: DatabaseReader, userId: string) {
+  const record = await db
+    .query("local_sandbox_tokens")
+    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+    .first();
+  return record?.revoked_at !== undefined;
+}
+
+/**
+ * The restriction disconnects sessions in bounded batches. A Desktop session
+ * outside that batch is disconnected on its next refresh or heartbeat instead
+ * of being renewed. The existing reason keeps current clients compatible.
+ */
+async function disconnectIfRevoked(
+  ctx: MutationCtx,
+  connection: Doc<"local_sandbox_connections">,
+): Promise<Doc<"local_sandbox_connections">> {
+  if (!(await isLocalAccessRevoked(ctx.db, connection.user_id)))
+    return connection;
+  const disconnected = {
+    status: "disconnected" as const,
+    disconnected_at: Date.now(),
+    disconnect_reason: "token_regenerated" as const,
+  };
+  await ctx.db.patch(connection._id, disconnected);
+  return { ...connection, ...disconnected };
 }
 
 // CENTRIFUGO JWT GENERATION
@@ -129,7 +190,7 @@ async function validateToken(
     .withIndex("by_token", (q) => q.eq("token", token))
     .first();
 
-  if (!tokenRecord) {
+  if (!tokenRecord || tokenRecord.revoked_at !== undefined) {
     return { valid: false };
   }
 
@@ -178,6 +239,7 @@ export const getToken = mutation({
       .withIndex("by_user_id", (q) => q.eq("user_id", userId))
       .first();
 
+    if (existing?.revoked_at !== undefined) localAccessRevoked();
     if (existing) {
       return { token: existing.token };
     }
@@ -217,6 +279,7 @@ export const regenerateToken = mutation({
       .withIndex("by_user_id", (q) => q.eq("user_id", userId))
       .first();
 
+    if (existing?.revoked_at !== undefined) localAccessRevoked();
     if (existing) {
       await ctx.db.patch(existing._id, {
         token: token,
@@ -274,6 +337,7 @@ export const connect = mutation({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
         operationChannels: v.optional(v.boolean()),
       }),
     ),
@@ -287,13 +351,14 @@ export const connect = mutation({
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
+    validatePrivateArtifactNamespace(args.capabilities);
     // Verify token
     const tokenRecord = await ctx.db
       .query("local_sandbox_tokens")
       .withIndex("by_token", (q) => q.eq("token", args.token))
       .first();
 
-    if (!tokenRecord) {
+    if (!tokenRecord || tokenRecord.revoked_at !== undefined) {
       return { success: false, error: "Invalid token" };
     }
 
@@ -314,6 +379,7 @@ export const connect = mutation({
       ...(args.environmentId ? { ready: false } : {}),
       connection_name: args.connectionName,
       client_version: args.clientVersion,
+      registration_origin: "runner",
       mode: "dangerous",
       os_info: args.osInfo,
       capabilities: args.capabilities ?? { commands: true, pty: true },
@@ -353,10 +419,9 @@ export const ready = mutation({
     ) {
       throw new ConvexError("Connection is no longer active");
     }
-    await ctx.db.patch(connection._id, {
-      ready: true,
-      last_heartbeat: Date.now(),
-    });
+    await recordHeartbeat(ctx, connection);
+    if (connection.ready !== true)
+      await ctx.db.patch(connection._id, { ready: true });
     return null;
   },
 });
@@ -467,10 +532,13 @@ export const refreshCentrifugoToken = mutation({
     }
 
     if (connection.status !== "connected") {
-      return terminatedResult("connection_inactive", connectionId, connection);
+      return terminatedResult("connection_inactive", connectionId, {
+        ...connection,
+        last_heartbeat: await lastHeartbeat(ctx.db, connection),
+      });
     }
 
-    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    await recordHeartbeat(ctx, connection);
 
     const centrifugoToken = await generateCentrifugoToken(
       connection.user_id,
@@ -534,6 +602,7 @@ export const connectDesktop = mutation({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
         operationChannels: v.optional(v.boolean()),
       }),
     ),
@@ -544,6 +613,7 @@ export const connectDesktop = mutation({
     centrifugoWsUrl: v.string(),
   }),
   handler: async (ctx, args) => {
+    validatePrivateArtifactNamespace(args.capabilities);
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new ConvexError({
@@ -554,6 +624,7 @@ export const connectDesktop = mutation({
 
     const userId = identity.subject;
     validateEnvironmentId(args.environmentId);
+    if (await isLocalAccessRevoked(ctx.db, userId)) localAccessRevoked();
 
     // Disconnect stale desktop connections for this user (page reload, etc.)
     const existingDesktop = await ctx.db
@@ -565,7 +636,7 @@ export const connectDesktop = mutation({
     const now = Date.now();
     for (const conn of existingDesktop) {
       if (
-        conn.client_version === "desktop" &&
+        conn.registration_origin === "desktop" &&
         conn.environment_id === args.environmentId
       ) {
         await ctx.db.patch(conn._id, {
@@ -586,6 +657,7 @@ export const connectDesktop = mutation({
       container_id: undefined,
       ...(args.environmentId ? { ready: false } : {}),
       client_version: "desktop",
+      registration_origin: "desktop",
       mode: "dangerous",
       os_info: args.osInfo,
       capabilities: args.capabilities ?? { commands: true, pty: true },
@@ -637,11 +709,15 @@ export const refreshCentrifugoTokenDesktop = mutation({
       return terminatedResult("ownership_mismatch", connectionId, null);
     }
 
-    if (connection.status !== "connected") {
-      return terminatedResult("connection_inactive", connectionId, connection);
+    const current = await disconnectIfRevoked(ctx, connection);
+    if (current.status !== "connected") {
+      return terminatedResult("connection_inactive", connectionId, {
+        ...current,
+        last_heartbeat: await lastHeartbeat(ctx.db, current),
+      });
     }
 
-    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    await recordHeartbeat(ctx, current);
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { ok: true as const, centrifugoToken };
@@ -672,16 +748,16 @@ export const heartbeatDesktop = mutation({
     if (
       !connection ||
       connection.user_id !== identity.subject ||
-      connection.client_version !== "desktop" ||
-      connection.status !== "connected"
+      connection.registration_origin !== "desktop" ||
+      connection.status !== "connected" ||
+      (await disconnectIfRevoked(ctx, connection)).status !== "connected"
     ) {
       return { success: false };
     }
 
-    await ctx.db.patch(connection._id, {
-      last_heartbeat: Date.now(),
-      ready: true,
-    });
+    await recordHeartbeat(ctx, connection);
+    if (connection.ready !== true)
+      await ctx.db.patch(connection._id, { ready: true });
     return { success: true };
   },
 });
@@ -756,107 +832,123 @@ export const disconnectByBackend = mutation({
   },
 });
 
+const connectionDetailsFields = {
+  connectionId: v.string(),
+  environmentId: v.optional(v.string()),
+  createdAt: v.optional(v.number()),
+  name: v.string(),
+  osInfo: v.optional(
+    v.object({
+      platform: v.string(),
+      arch: v.string(),
+      release: v.string(),
+      hostname: v.string(),
+    }),
+  ),
+  isDesktop: v.boolean(),
+  capabilities: v.object({
+    commands: v.boolean(),
+    pty: v.boolean(),
+    files: v.optional(v.boolean()),
+    commandStdin: v.optional(v.boolean()),
+    privateArtifactNamespace: v.optional(v.string()),
+    operationChannels: v.optional(v.boolean()),
+  }),
+};
+
+function connectionDetails(conn: Doc<"local_sandbox_connections">) {
+  return {
+    connectionId: conn.connection_id,
+    environmentId: conn.environment_id,
+    createdAt: conn._creationTime,
+    name: conn.connection_name,
+    osInfo: conn.os_info,
+    isDesktop: conn.registration_origin === "desktop",
+    capabilities: conn.capabilities ?? { commands: true, pty: true },
+  };
+}
+
+// Connection selectors need membership/readiness/capabilities, not a timestamp
+// change every 30 seconds. Do not join heartbeat rows into this subscription.
+export const listConnectionDetails = query({
+  args: {},
+  returns: v.array(v.object(connectionDetailsFields)),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    const connections = await collectConnectedLocalConnections(
+      ctx.db,
+      identity.subject,
+    );
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map(connectionDetails);
+  },
+});
+
+// Only selected remote Desktop sessions need reactive freshness in the UI.
+// Heartbeat ownership is immutable; membership/readiness comes from the stable
+// list. Legacy sessions fall back until their first separated heartbeat arrives.
+export const getConnectionHeartbeats = query({
+  args: { connectionIds: v.array(v.string()) },
+  returns: v.array(
+    v.object({ connectionId: v.string(), lastSeen: v.number() }),
+  ),
+  handler: async (ctx, { connectionIds }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    const result = [];
+    for (const connectionId of new Set(connectionIds)) {
+      const heartbeat = await findHeartbeat(ctx.db, connectionId);
+      if (heartbeat) {
+        if (heartbeat.user_id === identity.subject)
+          result.push({ connectionId, lastSeen: heartbeat.last_heartbeat });
+      } else {
+        const connection = await ctx.db
+          .query("local_sandbox_connections")
+          .withIndex("by_connection_id", (q) =>
+            q.eq("connection_id", connectionId),
+          )
+          .unique();
+        if (connection?.user_id === identity.subject)
+          result.push({ connectionId, lastSeen: connection.last_heartbeat });
+      }
+    }
+    return result;
+  },
+});
+
+async function connectionsWithHeartbeats(db: DatabaseReader, userId: string) {
+  const connections = await collectConnectedLocalConnections(db, userId);
+  return Promise.all(
+    connections
+      .filter((conn) => conn.ready !== false)
+      .map(async (conn) => ({
+        ...connectionDetails(conn),
+        lastSeen: await lastHeartbeat(db, conn),
+      })),
+  );
+}
+
+// Preserve fresh timestamps for already-open clients during a rolling deploy.
 export const listConnections = query({
   args: {},
   returns: v.array(
-    v.object({
-      connectionId: v.string(),
-      environmentId: v.optional(v.string()),
-      createdAt: v.optional(v.number()),
-      name: v.string(),
-      osInfo: v.optional(
-        v.object({
-          platform: v.string(),
-          arch: v.string(),
-          release: v.string(),
-          hostname: v.string(),
-        }),
-      ),
-      lastSeen: v.number(),
-      isDesktop: v.boolean(),
-      capabilities: v.object({
-        commands: v.boolean(),
-        pty: v.boolean(),
-        files: v.optional(v.boolean()),
-        commandStdin: v.optional(v.boolean()),
-        operationChannels: v.optional(v.boolean()),
-      }),
-    }),
+    v.object({ ...connectionDetailsFields, lastSeen: v.number() }),
   ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return [];
-    }
-
-    const userId = identity.subject;
-
-    const connections = await collectConnectedLocalConnections(ctx.db, userId);
-
-    return connections
-      .filter((conn) => conn.ready !== false)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        environmentId: conn.environment_id,
-        createdAt: conn._creationTime,
-        name: conn.connection_name,
-        osInfo: conn.os_info,
-        lastSeen: conn.last_heartbeat,
-        isDesktop: conn.client_version === "desktop",
-        capabilities: conn.capabilities ?? { commands: true, pty: true },
-      }));
+    return identity ? connectionsWithHeartbeats(ctx.db, identity.subject) : [];
   },
 });
 
 export const listConnectionsForBackend = query({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-  },
+  args: { serviceKey: v.string(), userId: v.string() },
   returns: v.array(
-    v.object({
-      connectionId: v.string(),
-      environmentId: v.optional(v.string()),
-      createdAt: v.optional(v.number()),
-      name: v.string(),
-      osInfo: v.optional(
-        v.object({
-          platform: v.string(),
-          arch: v.string(),
-          release: v.string(),
-          hostname: v.string(),
-        }),
-      ),
-      lastSeen: v.number(),
-      isDesktop: v.boolean(),
-      capabilities: v.object({
-        commands: v.boolean(),
-        pty: v.boolean(),
-        files: v.optional(v.boolean()),
-        commandStdin: v.optional(v.boolean()),
-        operationChannels: v.optional(v.boolean()),
-      }),
-    }),
+    v.object({ ...connectionDetailsFields, lastSeen: v.number() }),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-
-    const connections = await collectConnectedLocalConnections(
-      ctx.db,
-      args.userId,
-    );
-
-    return connections
-      .filter((conn) => conn.ready !== false)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        environmentId: conn.environment_id,
-        createdAt: conn._creationTime,
-        name: conn.connection_name,
-        osInfo: conn.os_info,
-        lastSeen: conn.last_heartbeat,
-        isDesktop: conn.client_version === "desktop",
-        capabilities: conn.capabilities ?? { commands: true, pty: true },
-      }));
+    return connectionsWithHeartbeats(ctx.db, args.userId);
   },
 });

@@ -15,9 +15,12 @@ import { ImageViewer } from "./ImageViewer";
 import { LocalFilePreviewCard } from "./LocalFilePreviewCard";
 import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
+import { canPreviewImageInline } from "@/lib/utils/file-utils";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
-import { isTauriEnvironment, openDownloadsFolder } from "../hooks/useTauri";
+import { useAttachmentDownload } from "../hooks/useAttachmentDownload";
+import { useS3ActionDiagnostics } from "../hooks/useS3ActionDiagnostics";
+import { isAbortError } from "../hooks/useFileUrlCache";
 
 const FilePartRendererComponent = ({
   part,
@@ -25,58 +28,45 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "inline_image",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   // Use ref to access cache without adding to useEffect dependencies
   // This prevents re-renders from triggering URL refetches
   const fileUrlCacheRef = useRef(fileUrlCache);
   fileUrlCacheRef.current = fileUrlCache;
+  // Changes when authentication does, so a waiting image loads again.
+  const loadImageUrl = fileUrlCache?.loadImageUrl;
 
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
   } | null>(null);
-  const [downloadingFile, setDownloadingFile] = useState(false);
+  const { downloadAttachment, isDownloading: downloadingFile } =
+    useAttachmentDownload();
   // Initialize fileUrl from cache or part.url to prevent flash on remount
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
-    // First check cache for S3 files
-    if (part.fileId && fileUrlCache) {
-      const cachedUrl = fileUrlCache.getCachedUrl(part.fileId);
-      if (cachedUrl) return cachedUrl;
-    }
-    // Fallback to part.url if available
+    // Stored files use a URL resolved for this session, never part.url.
+    if (part.fileId) return fileUrlCache?.getCachedUrl(part.fileId) ?? null;
     return part.url || null;
   });
   const [urlError, setUrlError] = useState<string | null>(null);
 
-  // Track the last fetched identifiers to avoid unnecessary refetches
-  const lastFetchedRef = useRef<{
-    fileId?: string;
-    url?: string;
-  }>({});
+  const fileName = part.name || part.filename;
+  const showsInlineImage = canPreviewImageInline(part.mediaType, fileName);
 
-  // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
+  // Fetch URL ONLY for images (inline display) - non-images are fetched lazily
+  // on click. Dependencies stay stable while a reply streams; a new file,
+  // authentication state or remount loads again, from the cache when fresh.
   useEffect(() => {
-    const isImage = part.mediaType?.startsWith("image/");
-    if (!isImage) {
+    if (!showsInlineImage) {
       return;
     }
 
-    // Check if we already fetched for these same identifiers
-    const sameIdentifiers =
-      lastFetchedRef.current.fileId === part.fileId &&
-      lastFetchedRef.current.url === part.url;
-
-    // If identifiers haven't changed and we have a URL, skip refetch
-    if (sameIdentifiers && fileUrl) {
-      return;
-    }
-
-    // Update tracking ref
-    lastFetchedRef.current = {
-      fileId: part.fileId,
-      url: part.url,
-    };
+    // A changed file, authentication or unmount supersedes this request.
+    let current = true;
 
     async function fetchUrl() {
       const cache = fileUrlCacheRef.current;
@@ -96,7 +86,11 @@ const FilePartRendererComponent = ({
         // Don't reset to null - keep showing previous image while fetching
         setUrlError(null);
         try {
-          const url = await getFileUrlAction({ fileId: part.fileId });
+          // The shared loader caches what it fetches.
+          const url = loadImageUrl
+            ? await loadImageUrl(part.fileId)
+            : await getFileUrlAction({ fileId: part.fileId });
+          if (!current) return;
           if (!url) {
             setFileUrl(null);
             setUrlError("File not available");
@@ -104,11 +98,16 @@ const FilePartRendererComponent = ({
           }
 
           setFileUrl(url);
-          // Cache the fetched URL
-          if (cache) {
+          if (!loadImageUrl && cache) {
             cache.setCachedUrl(part.fileId, url);
           }
         } catch (error) {
+          if (!current) return;
+          if (isAbortError(error)) {
+            // Signed for a previous session; loads again once it is ready.
+            setFileUrl(null);
+            return;
+          }
           console.error("Failed to fetch file URL:", error);
           const errorMessage =
             error instanceof ConvexError
@@ -132,104 +131,23 @@ const FilePartRendererComponent = ({
     }
 
     fetchUrl();
-    // Note: fileUrl is intentionally not in deps - we check it inside the effect
+    return () => {
+      current = false;
+    };
     // fileUrlCacheRef is a ref, so it doesn't need to be in deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part.url, part.fileId, part.mediaType, getFileUrlAction]);
+  }, [part.url, part.fileId, showsInlineImage, getFileUrlAction, loadImageUrl]);
 
-  const handleDownload = useCallback(async (url: string, fileName: string) => {
-    try {
-      setDownloadingFile(true);
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      URL.revokeObjectURL(blobUrl);
-
-      if (isTauriEnvironment()) {
-        toast.success(`Downloaded ${fileName}`, {
-          description: "Saved to Downloads folder",
-          action: {
-            label: "Show in folder",
-            onClick: () => openDownloadsFolder(),
-          },
-        });
-      }
-    } catch (error) {
-      console.error("Error downloading file:", error);
-      toast.error("Failed to download file");
-      window.open(url, "_blank", "noopener,noreferrer");
-    } finally {
-      setDownloadingFile(false);
-    }
-  }, []);
-
+  // Non-images are fetched lazily on click through the shared download owner.
   const handleNonImageFileClick = useCallback(
     async (fileName: string) => {
-      const cache = fileUrlCacheRef.current;
-
-      // Check if we already have the URL cached or in state
-      if (fileUrl) {
-        await handleDownload(fileUrl, fileName);
-        return;
-      }
-
-      // Check cache first
-      if (cache && part.fileId) {
-        const cachedUrl = cache.getCachedUrl(part.fileId);
-        if (cachedUrl) {
-          await handleDownload(cachedUrl, fileName);
-          return;
-        }
-      }
-
-      // Clear error state before attempting fetch (allows recovery from transient failures)
-      setUrlError(null);
-
-      // Fetch URL lazily on click
-      try {
-        let url: string | null = null;
-
-        if (part.fileId) {
-          url = await getFileUrlAction({ fileId: part.fileId });
-
-          // Cache it for future clicks
-          if (url && cache) {
-            cache.setCachedUrl(part.fileId, url);
-          }
-        } else if (part.url) {
-          url = part.url;
-        }
-
-        if (url) {
-          setFileUrl(url);
-          await handleDownload(url, fileName);
-        } else {
-          setUrlError("Failed to get download URL");
-          toast.error("Failed to get download URL");
-        }
-      } catch (error) {
-        console.error("Failed to fetch download URL:", error);
-        const errorMessage =
-          error instanceof ConvexError
-            ? (error.data as { message?: string })?.message ||
-              error.message ||
-              "Failed to fetch download URL"
-            : error instanceof Error
-              ? error.message
-              : "Failed to fetch download URL";
-        setUrlError(errorMessage);
-        toast.error(errorMessage);
-      }
+      const outcome = await downloadAttachment({
+        fileId: part.fileId,
+        url: part.url,
+        fileName,
+      });
+      if (outcome === "unavailable") setUrlError("Failed to get download URL");
     },
-    [fileUrl, handleDownload, part.fileId, part.url, getFileUrlAction],
+    [downloadAttachment, part.fileId, part.url],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -315,8 +233,11 @@ const FilePartRendererComponent = ({
         );
       }
 
-      // Use the fetched URL or the URL from props
-      const actualUrl = fileUrl || part.url;
+      // Use the fetched URL or the URL from props. A stored image shows only
+      // its resolved URL; part.url may be stale or no longer authorized.
+      const actualUrl =
+        (showsInlineImage && part.fileId ? fileUrl : fileUrl || part.url) ||
+        undefined;
 
       if (part.storage === "local-desktop") {
         return (
@@ -341,7 +262,7 @@ const FilePartRendererComponent = ({
       }
 
       // Handle image files - resolve fetchable URLs before showing a real error
-      if (part.mediaType?.startsWith("image/")) {
+      if (showsInlineImage) {
         if (!actualUrl) {
           if (part.fileId) {
             const isMultipleImages = totalFileParts > 1;
@@ -468,13 +389,14 @@ const FilePartRendererComponent = ({
     part.fileId,
     fileUrl,
     urlError,
+    showsInlineImage,
     FilePreviewCard,
   ]);
 
   return (
     <>
       {renderedFilePart}
-      {/* Image Viewer Modal - rendered via portal to escape contentVisibility containment */}
+      {/* Image Viewer Modal - rendered via portal to escape ancestor containment (timeline rows, dialogs) */}
       {selectedImage &&
         typeof document !== "undefined" &&
         createPortal(

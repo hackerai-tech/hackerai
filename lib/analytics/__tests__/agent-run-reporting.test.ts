@@ -1,12 +1,19 @@
 import type { PostHog } from "posthog-node";
 import { ChatSDKError } from "@/lib/errors";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import {
   agentFailureCategory,
+  agentFailureSignalContext,
   agentRunEventUuid,
   createAgentRunReporting,
+  modelRecoveryAnalyticsProperties,
 } from "../agent-run-reporting";
 
-function setup() {
+function setup(
+  getFailureSignalContext?: Parameters<
+    typeof createAgentRunReporting
+  >[0]["getFailureSignalContext"],
+) {
   const capture = jest.fn();
   const reporter = createAgentRunReporting({
     posthog: { capture } as unknown as PostHog,
@@ -15,12 +22,39 @@ function setup() {
     chatId: "chat_1",
     subscription: "free",
     endpoint: "/api/agent",
+    getFailureSignalContext,
   });
   const events = () => capture.mock.calls.map(([event]) => event);
   return { reporter, capture, events };
 }
 
 describe("Agent run reporting", () => {
+  it.each([false, true])(
+    "preserves automatic-continuation=%s on setup failure",
+    (isAutoContinue) => {
+      const capture = jest.fn();
+      const reporter = createAgentRunReporting({
+        posthog: { capture } as unknown as PostHog,
+        runId: "synthetic",
+        userId: "synthetic",
+        chatId: "synthetic",
+        subscription: "pro",
+        endpoint: "/api/agent",
+        isAutoContinue,
+      });
+      reporter.fail(new Error("setup failed"));
+      reporter.finalize({ canceled: false });
+      expect(
+        capture.mock.calls.find(
+          ([event]) => event.event === "hackerai-agent_run",
+        )?.[0].properties,
+      ).toMatchObject({
+        is_auto_continue: isAutoContinue,
+        run_metadata_version: 1,
+        outcome: "error",
+      });
+    },
+  );
   it.each(
     (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
       (flag) =>
@@ -49,6 +83,27 @@ describe("Agent run reporting", () => {
       expect(events()[0].properties[`$feature/${other}`]).toBeUndefined();
     },
   );
+
+  it("passes run and cost records through without retired experiment fields", () => {
+    const { reporter, events } = setup();
+    const terminal = jest.fn();
+    const cost = jest.fn();
+    reporter.captureTerminal(terminal, { outcome: "success" });
+    reporter.captureCost(cost, { usage: "recorded" });
+    expect(terminal).toHaveBeenCalledWith({ outcome: "success" });
+    expect(cost).toHaveBeenCalledWith({ usage: "recorded" });
+
+    const fallback = setup();
+    fallback.reporter.fail(new Error("stream failed"));
+    fallback.reporter.finalize({ canceled: false });
+    expect(fallback.events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    expect(JSON.stringify([...events(), ...fallback.events()])).not.toContain(
+      "paid_agent_context",
+    );
+  });
 
   it("reports database setup failure once without pretending missing costs are zero", () => {
     const { reporter, events } = setup();
@@ -112,20 +167,66 @@ describe("Agent run reporting", () => {
   });
 
   it.each([
-    ["usage_limit", "budget_exhausted", "usage_limit"],
-    ["canceled", "request_cancel", "canceled"],
-    ["elapsed_timeout", "elapsed_timeout", "elapsed_timeout"],
+    ["usage_limit", "budget_exhausted"],
+    ["canceled", "request_cancel"],
+    ["elapsed_timeout", "elapsed_timeout"],
   ] as const)(
     "reports %s without calling it a technical error",
-    (kind, abortSource, finishReason) => {
+    (kind, abortSource) => {
       const { reporter, events } = setup();
       reporter.fail(new Error("ignored"), kind);
       reporter.finalize({ canceled: kind === "canceled" });
       expect(events()[0].properties).toMatchObject({
         outcome: "aborted",
         abort_source: abortSource,
-        finish_reason: finishReason,
+        finish_reason: "unknown",
+        failure_kind: kind,
       });
+    },
+  );
+
+  it.each(["user_wait_timeout", "user_wait_failed", "approval_timeout"])(
+    "retains %s when terminal capture fails before later cancellation",
+    (abortSource) => {
+      const { reporter, events } = setup();
+      reporter.captureTerminal(
+        () => {
+          throw new Error("enqueue unavailable");
+        },
+        { outcome: "aborted", abortSource },
+      );
+      reporter.finalize({ canceled: true });
+      expect(events()[0].properties).toMatchObject({
+        outcome: "aborted",
+        abort_source: abortSource,
+      });
+    },
+  );
+
+  it.each([undefined, "stop", "length", "private arbitrary value"])(
+    "retains only bounded observed finish reasons after failed capture: %s",
+    (finishReason) => {
+      const { reporter, events } = setup();
+      reporter.captureTerminal(
+        () => {
+          throw new Error("enqueue unavailable");
+        },
+        {
+          outcome: "success",
+          finishReason,
+          stepLimitTelemetry: { stepLimitReached: true },
+        },
+      );
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties).toMatchObject({
+        outcome: "success",
+        finish_reason:
+          finishReason === "stop" || finishReason === "length"
+            ? finishReason
+            : "unknown",
+        step_limit_reached: true,
+      });
+      expect(JSON.stringify(events())).not.toContain("private arbitrary value");
     },
   );
 
@@ -231,6 +332,81 @@ describe("Agent run reporting", () => {
     });
   });
 
+  it("retains discarded and estimated model costs with Trigger counted once", () => {
+    const { reporter, events } = setup();
+    reporter.fail(new Error("settlement write failed"));
+    reporter.finalize({
+      canceled: false,
+      triggerCostDollars: 0.375,
+      // Provider-reported only; would understate the known work.
+      observedAccumulatedCostDollars: 0.25,
+      usageMeasurement: {
+        usage_discarded_retry_cost_dollars: 1,
+        usage_trigger_run_cost_dollars: 0.25,
+        // 1 discarded + 0.5 estimated + 0.25 settled Trigger snapshot.
+        usage_known_incurred_cost_dollars: 1.75,
+      },
+    });
+    expect(events()[1].properties).toMatchObject({
+      cost_accounting_status: "incomplete",
+      cost_dollars: null,
+      usage_discarded_retry_cost_dollars: 1,
+      known_trigger_cost_dollars: 0.375,
+      known_incurred_cost_lower_bound_dollars: 1.875,
+    });
+  });
+
+  it.each([0, 0.25])(
+    "reports later Trigger compute from a %s snapshot without repeating its cost",
+    (settled) => {
+      const { reporter, capture, events } = setup();
+      reporter.captureCost(capture, { event: "hackerai-usage_cost" });
+      reporter.captureTerminal(capture, { event: "hackerai-agent_run" });
+      const snapshot = {
+        canceled: false,
+        triggerCostDollars: 0.375,
+        usageMeasurement: { usage_trigger_run_cost_dollars: settled },
+      };
+      reporter.finalize(snapshot);
+      reporter.finalize(snapshot);
+
+      const observations = events().filter(
+        (event) => event.event === "hackerai-usage_cost_observation",
+      );
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        uuid: agentRunEventUuid(
+          "run_failed",
+          "hackerai-usage_cost_observation",
+        ),
+        properties: {
+          settled_trigger_cost_dollars: settled,
+          latest_trigger_cost_dollars: 0.375,
+          unrecorded_trigger_cost_dollars: 0.375 - settled,
+          trigger_cost_is_final: false,
+        },
+      });
+      expect(
+        events().filter((event) => event.event === "hackerai-usage_cost"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not add an observation to an incomplete run's own Trigger cost", () => {
+    const { reporter, events } = setup();
+    const snapshot = {
+      canceled: false,
+      triggerCostDollars: 0.375,
+      usageMeasurement: { usage_trigger_run_cost_dollars: 0.25 },
+    };
+    reporter.finalize(snapshot);
+    reporter.finalize(snapshot);
+    expect(events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+  });
+
   it("tolerates missing PostHog configuration", () => {
     const reporter = createAgentRunReporting({
       posthog: null,
@@ -278,5 +454,487 @@ it("keeps reconnect-required Agent attempts unsuccessful in analytics", () => {
   expect(events()[1].properties).toMatchObject({
     cost_dollars: null,
     cost_accounting_status: "incomplete",
+  });
+});
+
+describe("first local stop cause", () => {
+  const CONNECTION = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+  const localStop = () =>
+    new LocalConnectionLostError("subscription_reconnecting", {
+      connectionId: CONNECTION,
+      hadPositivePresence: true,
+      lastPositivePresenceAgeMs: 5_000,
+      callbackCode: 1,
+      clientState: "connecting",
+      socketCloseCode: 1006,
+      socketCloseWasClean: false,
+    });
+  const localFields = {
+    local_stop_diagnostic_version: 1,
+    local_stop_reason: "subscription_reconnecting",
+    local_stop_connection_id: CONNECTION,
+    local_stop_had_positive_presence: true,
+    local_stop_last_positive_presence_age_ms: 5_000,
+    local_stop_callback_code: 1,
+    local_stop_client_state: "connecting",
+    local_stop_socket_close_code: 1006,
+    local_stop_socket_close_was_clean: false,
+  };
+  const failingCapture = () => {
+    throw new Error("enqueue unavailable");
+  };
+
+  it("passes the first stop to normal terminal capture", () => {
+    const { reporter } = setup();
+    const error = localStop();
+    reporter.recordLocalStop(error);
+    reporter.recordLocalStop(new LocalConnectionLostError("setup_timeout"));
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, { outcome: "aborted" });
+    expect(capture).toHaveBeenCalledWith({
+      outcome: "aborted",
+      localConnectionLostError: error,
+    });
+  });
+
+  it("retains the local finish reason and cause after a failed terminal enqueue", () => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(localStop());
+    reporter.captureCost(jest.fn(), {});
+    reporter.captureTerminal(failingCapture, {
+      outcome: "aborted",
+      finishReason: "local-connection-lost",
+      abortSource: "unknown",
+    });
+    reporter.finalize({ canceled: false });
+    reporter.finalize({ canceled: false });
+    expect(events()).toHaveLength(1);
+    expect(events()[0]).toMatchObject({
+      event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_failed", "hackerai-agent_run"),
+      properties: {
+        outcome: "aborted",
+        finish_reason: "local-connection-lost",
+        abort_source: "unknown",
+        ...localFields,
+      },
+    });
+  });
+
+  it("reports a pre-stream local stop once with its cause, without copying it to cost", () => {
+    const { reporter, events } = setup();
+    reporter.setStage("preparation");
+    const error = localStop();
+    reporter.recordLocalStop(error);
+    reporter.fail(error, "canceled");
+    reporter.finalize({ canceled: false, triggerCostDollars: 0.01 });
+    expect(events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    expect(events()[0].properties).toMatchObject({
+      outcome: "aborted",
+      failure_stage: "preparation",
+      failure_kind: "canceled",
+      finish_reason: "local-connection-lost",
+      abort_source: "unknown",
+      ...localFields,
+    });
+    expect(events()[1].properties.known_trigger_cost_dollars).toBe(0.01);
+    expect(
+      Object.keys(events()[1].properties).filter((key) =>
+        key.startsWith("local_stop_"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not attach a stop observed after the terminal outcome", () => {
+    const { reporter, events } = setup();
+    reporter.captureTerminal(failingCapture, {
+      outcome: "success",
+      finishReason: "stop",
+    });
+    reporter.recordLocalStop(localStop());
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "success",
+      finish_reason: "stop",
+    });
+    expect(events()[0].properties).not.toHaveProperty("local_stop_reason");
+  });
+
+  it("does not attach a stop observed during an earlier failure's cleanup", () => {
+    const { reporter, events } = setup();
+    reporter.fail(new Error("PRIVATE original failure"));
+    reporter.recordLocalStop(localStop());
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      finish_reason: "unknown",
+    });
+    expect(JSON.stringify(events())).not.toMatch(/local_stop_|PRIVATE/);
+  });
+
+  it("keeps a later authoritative error unrelabeled while retaining the first-abort cause", () => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(localStop());
+    reporter.fail(new Error("PRIVATE later persistence failure"));
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      finish_reason: "unknown",
+      ...localFields,
+    });
+    expect(events()[0].properties).not.toHaveProperty("abort_source");
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    ["generic error", new Error("PRIVATE")],
+    ["forged prototype", Object.create(LocalConnectionLostError.prototype)],
+    ["plain object", { local_stop_reason: "selected_host_left" }],
+  ])("ignores a %s as the first abort reason", (_name, reason) => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(reason);
+    reporter.fail(reason, "canceled");
+    reporter.finalize({ canceled: true });
+    expect(events()[0].properties).toMatchObject({
+      finish_reason: "unknown",
+      abort_source: "request_cancel",
+    });
+    expect(JSON.stringify(events())).not.toMatch(/local_stop_|PRIVATE/);
+  });
+});
+
+describe("first-failure signal attribution", () => {
+  it("compares standard reason identities without inspecting private reason contents", () => {
+    const inspect = jest.fn();
+    const reason = new Proxy(
+      {},
+      {
+        get: () => {
+          inspect();
+          return "PRIVATE";
+        },
+        getPrototypeOf: () => {
+          inspect();
+          return null;
+        },
+        ownKeys: () => {
+          inspect();
+          return [];
+        },
+      },
+    );
+    const platform = new AbortController();
+    const stop = new AbortController();
+    expect(
+      agentFailureSignalContext(reason, platform.signal, stop.signal),
+    ).toEqual({
+      trigger_aborted: false,
+      stop_aborted: false,
+      matches_trigger_reason: false,
+      matches_stop_reason: false,
+    });
+    platform.abort(new Error("PRIVATE different reason"));
+    stop.abort(reason);
+    expect(
+      agentFailureSignalContext(reason, platform.signal, stop.signal),
+    ).toEqual({
+      trigger_aborted: true,
+      stop_aborted: true,
+      matches_trigger_reason: false,
+      matches_stop_reason: true,
+    });
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it("preserves first-failure ordering and the error outcome when cancellation arrives during cleanup", () => {
+    const platform = new AbortController();
+    const stop = new AbortController();
+    const { reporter, events } = setup((error) =>
+      agentFailureSignalContext(error, platform.signal, stop.signal),
+    );
+    reporter.setStage("preparation");
+    const error = new Error("PRIVATE failure");
+    reporter.fail(error);
+    platform.abort(error);
+    stop.abort(error);
+    reporter.fail(error, "canceled");
+    reporter.finalize({ canceled: true });
+    reporter.finalize({ canceled: true });
+    const terminal = events().filter((x) => x.event === "hackerai-agent_run");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      failure_stage: "preparation",
+      failure_signal_context_version: 1,
+      failure_trigger_aborted: false,
+      failure_stop_aborted: false,
+      failure_matches_trigger_reason: false,
+      failure_matches_stop_reason: false,
+      finalization_trigger_aborted: true,
+    });
+    expect(terminal[0].properties).not.toHaveProperty("abort_source");
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it("reads four observer primitives once without spreading or retaining its object", () => {
+    const reads = jest.fn();
+    const observed = { private_payload: "PRIVATE canary" };
+    for (const key of [
+      "trigger_aborted",
+      "stop_aborted",
+      "matches_trigger_reason",
+      "matches_stop_reason",
+    ]) {
+      let first = true;
+      Object.defineProperty(observed, key, {
+        enumerable: true,
+        get: () => {
+          reads(key);
+          if (first) {
+            first = false;
+            return true;
+          }
+          return "PRIVATE changed";
+        },
+      });
+    }
+    const { reporter, events } = setup(() => observed as never);
+    reporter.fail(new Error("fixture"));
+    reporter.finalize({ canceled: true });
+    expect(reads).toHaveBeenCalledTimes(4);
+    expect(events()[0].properties).toMatchObject({
+      failure_signal_context_version: 1,
+      failure_trigger_aborted: true,
+      failure_stop_aborted: true,
+      failure_matches_trigger_reason: true,
+      failure_matches_stop_reason: true,
+      finalization_trigger_aborted: true,
+      outcome: "error",
+    });
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it.each(["throws", "invalid"])(
+    "preserves reporting when the optional observer %s",
+    (kind) => {
+      const { reporter, events } = setup(() => {
+        if (kind === "throws") throw new Error("PRIVATE sink");
+        return {
+          trigger_aborted: "PRIVATE",
+          stop_aborted: false,
+          matches_trigger_reason: false,
+          matches_stop_reason: false,
+        } as never;
+      });
+      expect(() => reporter.fail(new Error("PRIVATE original"))).not.toThrow();
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties.outcome).toBe("error");
+      expect(events()[0].properties).not.toHaveProperty(
+        "failure_signal_context_version",
+      );
+      expect(JSON.stringify(events())).not.toContain("PRIVATE");
+    },
+  );
+});
+
+describe("run-scoped model recovery history", () => {
+  const DEEPSEEK = "model-deepseek-v4.1-flash-1017-pro";
+  const refusal = {
+    reason: "content_filter",
+    retryModel: DEEPSEEK,
+    failure: { category: "content_blocked", model: "x-ai/grok-4.6" },
+  };
+  function setupWithMetadata(
+    setRunMetadata: (key: string, value: unknown) => void = jest.fn(),
+  ) {
+    const capture = jest.fn();
+    const metadata = new Map<string, unknown>();
+    const reporter = createAgentRunReporting({
+      posthog: { capture } as unknown as PostHog,
+      runId: "run_recovery",
+      userId: "user_public",
+      chatId: "chat_1",
+      subscription: "ultra",
+      endpoint: "/api/agent",
+      setRunMetadata: (key, value) => {
+        setRunMetadata(key, value);
+        metadata.set(key, value);
+      },
+    });
+    const run = () =>
+      capture.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.event === "hackerai-agent_run");
+    return { reporter, metadata, run };
+  }
+
+  it("keeps the first failure and every leg after later failures, within a bounded record", () => {
+    const { reporter, metadata, run } = setupWithMetadata();
+    reporter.recordModelRecovery(refusal);
+    reporter.recordModelRecovery({
+      reason: "provider_disconnect_continuation",
+      retryModel: DEEPSEEK,
+      failure: {
+        category: "stream_terminated",
+        model: "deepseek/deepseek-v4.1-flash-1017",
+        statusCode: 502,
+      },
+    });
+    for (let i = 0; i < 4; i++)
+      reporter.recordModelRecovery({ ...refusal, failure: undefined });
+    reporter.finalize({ canceled: false });
+    expect(run().properties).toMatchObject({
+      model_recovery_version: 1,
+      model_recovery_attempts: 6,
+      model_recovery_models: [DEEPSEEK, DEEPSEEK, DEEPSEEK, DEEPSEEK],
+      model_recovery_reasons: [
+        "content_filter",
+        "provider_disconnect_continuation",
+        "content_filter",
+        "content_filter",
+      ],
+      model_recovery_succeeded: false,
+      initial_provider_failure_category: "content_blocked",
+      initial_provider_failure_model: "x-ai/grok-4.6",
+    });
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_status_code",
+    );
+    expect(Object.fromEntries(metadata)).toMatchObject({
+      agentRecoveryAttempts: 6,
+      agentRecoveryModel: DEEPSEEK,
+      agentProviderFailureCategory: "content_blocked",
+      agentProviderFailureModel: "x-ai/grok-4.6",
+    });
+  });
+
+  it("exports only allowlisted or validated primitives", () => {
+    const { reporter, metadata, run } = setupWithMetadata();
+    reporter.recordModelRecovery({
+      reason: "PRIVATE reason",
+      retryModel: "PRIVATE prompt with spaces",
+      failure: {
+        category: "PRIVATE",
+        model: "x-ai/grok-4.6",
+        statusCode: 503,
+        message: "PRIVATE provider text",
+      },
+    });
+    reporter.recordModelRecovery({
+      reason: "content_filter",
+      retryModel: DEEPSEEK,
+      failure: {
+        category: "provider_5xx",
+        model: "PRIVATE target https://example.test/x",
+        statusCode: 99_999,
+      },
+    });
+    reporter.finalize({ canceled: false });
+    expect(run().properties).toMatchObject({
+      model_recovery_models: ["unknown", DEEPSEEK],
+      model_recovery_reasons: ["other", "content_filter"],
+      // An invalid category cannot become the initial failure.
+      initial_provider_failure_category: "provider_5xx",
+    });
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_model",
+    );
+    expect(run().properties).not.toHaveProperty(
+      "initial_provider_failure_status_code",
+    );
+    expect(JSON.stringify([run(), Object.fromEntries(metadata)])).not.toContain(
+      "PRIVATE",
+    );
+  });
+
+  it("marks a recovered completion successful and keeps the first outcome in metadata", () => {
+    const { reporter, metadata } = setupWithMetadata();
+    reporter.recordModelRecovery(refusal);
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, {
+      outcome: "success",
+      finishReason: "stop",
+    });
+    const { modelRecoveryHistory } = capture.mock.calls[0][0];
+    expect(
+      modelRecoveryAnalyticsProperties(modelRecoveryHistory, "success"),
+    ).toMatchObject({
+      model_recovery_attempts: 1,
+      model_recovery_succeeded: true,
+      initial_provider_failure_category: "content_blocked",
+    });
+    // Later terminal reports and retries cannot rewrite the recorded outcome.
+    reporter.captureTerminal(jest.fn(), { outcome: "aborted" });
+    reporter.recordModelRecovery({ ...refusal, reason: "doom_loop" });
+    reporter.finalize({ canceled: true });
+    expect(Object.fromEntries(metadata)).toMatchObject({
+      agentOutcome: "success",
+      agentOutcomeSource: "completion",
+      agentFinishReason: "stop",
+      agentRecoverySucceeded: true,
+      agentRecoveryAttempts: 1,
+      agentRecoveryReason: "content_filter",
+    });
+    expect(metadata.has("agentAbortSource")).toBe(false);
+  });
+
+  it("writes run-finally outcome metadata for a cancellation with no recovery or analytics client", () => {
+    const metadata = new Map<string, unknown>();
+    const reporter = createAgentRunReporting({
+      posthog: null,
+      runId: "run_canceled",
+      userId: "user_public",
+      chatId: "chat_1",
+      subscription: "pro",
+      endpoint: "/api/agent",
+      setRunMetadata: (key, value) => metadata.set(key, value),
+    });
+    reporter.fail(new Error("PRIVATE"), "canceled");
+    reporter.finalize({ canceled: true });
+    expect(Object.fromEntries(metadata)).toEqual({
+      agentOutcome: "aborted",
+      agentOutcomeSource: "run_finally",
+      agentFinishReason: "unknown",
+      agentAbortSource: "request_cancel",
+    });
+  });
+
+  it("keeps outcome and analytics when the metadata sink fails", () => {
+    const { reporter, run } = setupWithMetadata(() => {
+      throw new Error("metadata unavailable");
+    });
+    expect(() => reporter.recordModelRecovery(refusal)).not.toThrow();
+    const capture = jest.fn();
+    expect(() =>
+      reporter.captureTerminal(capture, { outcome: "error" }),
+    ).not.toThrow();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(() => reporter.finalize({ canceled: false })).not.toThrow();
+    // The normal capture succeeded, so the fallback is not repeated.
+    expect(run()).toBeUndefined();
+  });
+
+  it("produces no recovery fields without a recorded leg or for a forged history", () => {
+    const { reporter, metadata } = setupWithMetadata();
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, { outcome: "success" });
+    expect(capture).toHaveBeenCalledWith({ outcome: "success" });
+    expect(metadata.has("agentRecoverySucceeded")).toBe(false);
+    expect(
+      modelRecoveryAnalyticsProperties(
+        Object.freeze({
+          attempts: 1,
+          models: ["PRIVATE"],
+          reasons: ["content_filter"],
+        }),
+        "success",
+      ),
+    ).toBeUndefined();
   });
 });

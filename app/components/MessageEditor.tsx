@@ -7,6 +7,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { getMaxTokensForSubscription } from "@/lib/token-limits";
 import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
+import { canPreviewImageInline } from "@/lib/utils/file-utils";
 
 export interface EditableFile {
   fileId: string;
@@ -84,6 +85,7 @@ export const MessageEditor = ({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
+      e.preventDefault();
       onCancel();
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -91,7 +93,6 @@ export const MessageEditor = ({
     }
   };
 
-  const isImage = (mediaType?: string) => mediaType?.startsWith("image/");
   const hasContent = content.trim() || files.length > 0;
 
   return (
@@ -106,10 +107,13 @@ export const MessageEditor = ({
             >
               <div
                 className={`relative overflow-hidden border rounded-2xl ${
-                  isImage(file.mediaType) ? "bg-background" : "bg-primary"
+                  canPreviewImageInline(file.mediaType, file.name)
+                    ? "bg-background"
+                    : "bg-primary"
                 }`}
               >
-                {isImage(file.mediaType) && file.url ? (
+                {canPreviewImageInline(file.mediaType, file.name) &&
+                file.url ? (
                   <div className="h-20 w-20 relative">
                     <Image
                       src={file.url}

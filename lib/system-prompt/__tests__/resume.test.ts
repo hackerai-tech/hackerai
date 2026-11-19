@@ -41,3 +41,9 @@ it.each([
 ])("provides recovery context for %s", (reason) => {
   expect(getResumeSection(reason)).toContain("<resume_context>");
 });
+
+test("local resume preserves uncertainty about interrupted command outcomes", () => {
+  const section = getResumeSection("local-connection-lost");
+  expect(section).toContain("may have completed or may still be running");
+  expect(section).toContain("Never replay an uncertain mutation automatically");
+});

@@ -3,6 +3,9 @@ import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
+  ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
@@ -88,6 +91,150 @@ describe("Abliteration stream telemetry", () => {
       mode: "ask",
       subscription: "pro",
     });
+  it.each([
+    [ABLITERATED_FREE_THREE_STEPS_KEY, "control"],
+    [ABLITERATED_FREE_THREE_STEPS_KEY, "test"],
+    [ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY, "test"],
+  ] as const)(
+    "measures Free %s %s routing, retries and tools without exporting content",
+    async (key, variant) => {
+      capture.mockClear();
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "free", {
+        assignment: {
+          key,
+          variant,
+          modelKey:
+            variant === "test" ? "model-abliterated" : "ask-model-free-glm",
+          baselineModel: "ask-model-free-glm",
+          generationStepLimit: 3,
+        },
+        messageId: "original",
+        chatId: "fixture",
+        mode: "ask",
+        subscription: "free",
+        release: "qa-commit",
+      });
+      expect(events("abliterated_model_eligible")).toHaveLength(1);
+      const eligible = events("abliterated_model_eligible")[0].properties;
+      expect(eligible.experiment_key).toBe(key);
+      if (key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY) {
+        expect(eligible.routing_policy).toBe(key);
+        expect(eligible).not.toHaveProperty(`$feature/${key}`);
+        expect(eligible).not.toHaveProperty(
+          `$feature/${ABLITERATED_FREE_THREE_STEPS_KEY}`,
+        );
+      }
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await expect(consume(telemetry, model([], true), 0)).rejects.toThrow();
+      await consume(
+        telemetry,
+        model(
+          [
+            { type: "text-delta", id: "t", delta: "private answer" },
+            finishPart,
+          ],
+          false,
+          "z-ai/glm-5.3-flash",
+        ),
+      );
+      const calls = [
+        { toolCallId: "secret-id" },
+        { toolCallId: "bad", invalid: true },
+        { toolCallId: "deny" },
+        { toolCallId: "missing" },
+        { toolCallId: "thrown" },
+      ];
+      const results = [
+        {
+          toolCallId: "secret-id",
+          output: { content: "private tool output", exitCode: 0 },
+        },
+        { toolCallId: "bad", output: { error: "private error" } },
+        { toolCallId: "deny", output: { approvalDenied: true } },
+        { toolCallId: "unmatched", output: "private unmatched" },
+      ];
+      telemetry.recordToolStep(calls, results, [{ toolCallId: "thrown" }]);
+      telemetry.recordToolStep(calls, results, [{ toolCallId: "thrown" }]);
+      telemetry.setMessageId("replacement");
+      expect(telemetry.getSummary()).toMatchObject({
+        experiment_release: "qa-commit",
+        free_three_steps_measurement_version: 1,
+        provider_attempt_count: 2,
+        provider_error_count: 1,
+        time_to_first_visible_content_ms: expect.any(Number),
+        experiment_duration_ms: expect.any(Number),
+        tool_call_unique_count: 5,
+        tool_call_invalid_count: 1,
+        tool_result_matched_count: 4,
+        tool_result_missing_count: 1,
+        tool_result_unmatched_count: 1,
+        tool_result_denied_count: 1,
+        tool_result_reported_error_count: 2,
+        tool_result_without_reported_error_count: 1,
+      });
+      const encoded = JSON.stringify({
+        events: capture.mock.calls,
+        summary: telemetry.getSummary(),
+      });
+      for (const value of [
+        "private answer",
+        "private tool output",
+        "private error",
+        "secret-id",
+        "private unmatched",
+      ])
+        expect(encoded).not.toContain(value);
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_variant: variant,
+        experiment_request_id: "original",
+      });
+    },
+  );
+  it.each(["control", "test"] as const)(
+    "keeps %s assignment and request linkage through failed attempts and fallback",
+    async (variant) => {
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+        assignment: {
+          key: ABLITERATED_PRO_THREE_STEPS_KEY,
+          variant,
+          modelKey:
+            variant === "test"
+              ? "model-abliterated"
+              : "model-deepseek-v4-flash-0731",
+          baselineModel: "model-deepseek-v4-flash-0731",
+          selectionSource: "paid_first_step",
+          generationStepLimit: 3,
+        },
+        messageId: "original",
+        chatId: "chat",
+        mode: "agent",
+        subscription: "pro",
+      });
+      expect(events("abliterated_model_eligible")).toHaveLength(1);
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await expect(consume(telemetry, model([], true))).rejects.toThrow();
+      telemetry.setMessageId("replacement");
+      await consume(
+        telemetry,
+        model(answer, false, "deepseek/deepseek-v4-flash-0731"),
+      );
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_variant: variant,
+        experiment_request_id: "original",
+        message_id: "replacement",
+        pro_three_steps_measurement_version: 1,
+        generation_step_limit: 3,
+        response_model: "deepseek/deepseek-v4-flash-0731",
+      });
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_attempt_count: 2,
+        provider_error_count: 1,
+        provider_completed_count: 1,
+        provider_pending_count: 0,
+      });
+      expect(telemetry.getRoutingMarker(true).completed).toBe(false);
+    },
+  );
   beforeEach(() => capture.mockClear());
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);

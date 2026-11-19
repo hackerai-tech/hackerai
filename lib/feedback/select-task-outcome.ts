@@ -12,8 +12,13 @@ import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
   type AbliteratedAssignment,
 } from "../experiments/abliterated-model";
+
+export type TaskOutcomeSurveySelection = {
+  linkMessage(messageId: string): Promise<void>;
+};
 
 export async function selectTaskOutcomeSurvey(args: {
   posthog: Pick<PostHog, "getFeatureFlagResult" | "capture"> | null;
@@ -25,7 +30,7 @@ export async function selectTaskOutcomeSurvey(args: {
   release?: string;
   assignment?: AbliteratedAssignment;
   selectedModelOverride?: string;
-}) {
+}): Promise<TaskOutcomeSurveySelection | undefined> {
   const { posthog } = args;
   if (!posthog || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
   const reportFailure = (stage: "flag" | "reserve" | "capture" | "link") => {
@@ -60,14 +65,16 @@ export async function selectTaskOutcomeSurvey(args: {
         "unknown",
     };
     const selector = args.selectedModelOverride ?? "auto";
-    const feedbackPhase = args.assignment
-      ? experimentTaskOutcomePhase(args.assignment.key)
+    const assignment = args.assignment;
+    const feedbackPhase = assignment
+      ? experimentTaskOutcomePhase(assignment.key)
       : undefined;
     const experimentEligible =
       feedbackPhase !== undefined &&
       args.assignment !== undefined &&
       args.assignment.selectionSource ===
-        (args.assignment.key === ABLITERATED_PAID_FIRST_STEP_KEY
+        (args.assignment.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
+        args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY
           ? "paid_first_step"
           : "moderation") &&
       (args.assignment.key !== ABLITERATED_PAID_MODERATED_DEFAULT_KEY ||
@@ -80,7 +87,7 @@ export async function selectTaskOutcomeSurvey(args: {
         selector === "hackerai-max") &&
       ["pro", "pro-plus", "ultra", "team"].includes(args.subscription);
     // Never fall through to a different cohort for an assigned trial request.
-    if (args.assignment && !experimentEligible) return;
+    if (assignment && !experimentEligible) return;
     if (!experimentEligible && !paidEligible) return;
     if (
       (await getPostHogFlagWithoutExposure(
@@ -95,23 +102,24 @@ export async function selectTaskOutcomeSurvey(args: {
       return;
     stage = "reserve";
     const row =
-      experimentEligible && args.assignment && feedbackPhase
+      experimentEligible && assignment && feedbackPhase
         ? await getConvexClient().mutation(
             api.taskOutcomeSurveys.reserveExperiment,
             {
               ...context,
               survey_kind: "current_experiment",
-              experiment_key: args.assignment.key as
+              experiment_key: assignment.key as
                 | typeof ABLITERATED_MAX_EXPERIMENT_KEY
                 | typeof ABLITERATED_PAID_FIRST_STEP_KEY
-                | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-              experiment_variant: args.assignment.variant,
+                | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
+                | typeof ABLITERATED_PRO_THREE_STEPS_KEY,
+              experiment_variant: assignment.variant,
               // Abliteration telemetry uses the original assistant ID as request ID.
               experiment_request_id: args.messageId,
               selected_model_override: selector as
                 "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max",
-              assigned_model: args.assignment.modelKey,
-              baseline_model: args.assignment.baselineModel,
+              assigned_model: assignment.modelKey,
+              baseline_model: assignment.baselineModel,
               feedback_phase: feedbackPhase,
             },
           )

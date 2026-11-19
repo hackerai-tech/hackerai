@@ -1,3 +1,7 @@
+import {
+  extraUsagePurchaseValueProperties,
+  readExtraUsagePurchase,
+} from "@/lib/billing/extra-usage-bundles";
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -51,9 +55,29 @@ export async function GET(req: NextRequest) {
     }
 
     const userId = session.metadata.userId;
-    const amountDollars = session.metadata.amountDollars
-      ? parseFloat(session.metadata.amountDollars)
-      : parseInt(session.metadata.amountCents ?? "0", 10) / 100;
+    let purchase: ReturnType<typeof readExtraUsagePurchase>;
+    try {
+      purchase = readExtraUsagePurchase(session);
+    } catch (error) {
+      logExtraUsagePurchase("error", "extra_usage_purchase_invalid_metadata", {
+        route: ROUTE,
+        requestHeaders: req.headers,
+        stripeCheckoutSessionId: session.id,
+        paymentStatus: session.payment_status,
+        reason: "invalid_purchase_metadata",
+        error,
+      });
+      return NextResponse.redirect(
+        getExtraUsageReturnUrl(origin, session.metadata.returnPath),
+        { status: 303 },
+      );
+    }
+    const { amountDollars } = purchase;
+    const bundleLog = {
+      bundleId: purchase.bundleId,
+      bundleReservationId: purchase.bundleReservationId,
+      bundleCapPeriod: purchase.bundleCapPeriod,
+    };
     const stripeCustomerId = stripeObjectId(session.customer);
     const stripePaymentIntentId = stripeObjectId(session.payment_intent);
     const stripeInvoiceId = stripeObjectId(session.invoice);
@@ -103,6 +127,7 @@ export async function GET(req: NextRequest) {
         stripePaymentIntentId,
         stripeInvoiceId,
         paymentStatus: session.payment_status,
+        ...bundleLog,
         result: "payment_pending",
       });
       redirectUrl.searchParams.set("extra-usage-pending", "true");
@@ -116,6 +141,13 @@ export async function GET(req: NextRequest) {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
         amountDollars,
+        ...(purchase.bundleId && {
+          bundleId: purchase.bundleId,
+          paidAmountDollars: purchase.paidAmountDollars,
+        }),
+        ...(purchase.bundleReservationId && {
+          bundleReservationId: purchase.bundleReservationId,
+        }),
         stripeCheckoutSessionId: session.id,
         stripePaymentIntentId,
         stripeInvoiceId,
@@ -126,6 +158,13 @@ export async function GET(req: NextRequest) {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
         amountDollars,
+        ...(purchase.bundleId && {
+          bundleId: purchase.bundleId,
+          paidAmountDollars: purchase.paidAmountDollars,
+        }),
+        ...(purchase.bundleReservationId && {
+          bundleReservationId: purchase.bundleReservationId,
+        }),
         idempotencyKey: `cs_${session.id}`,
         revenueSource: "extra_usage_purchase",
         stripeCustomerId,
@@ -142,6 +181,10 @@ export async function GET(req: NextRequest) {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           userId,
           amountDollars,
+          ...(purchase.bundleId && {
+            bundleId: purchase.bundleId,
+            paidAmountDollars: purchase.paidAmountDollars,
+          }),
           stripeCheckoutSessionId: session.id,
           stripePaymentIntentId,
           stripeInvoiceId,
@@ -176,6 +219,7 @@ export async function GET(req: NextRequest) {
         stripePaymentIntentId,
         stripeInvoiceId,
         paymentStatus: session.payment_status,
+        ...bundleLog,
         result: "failed",
         error,
       });
@@ -199,26 +243,32 @@ export async function GET(req: NextRequest) {
         stripePaymentIntentId,
         stripeInvoiceId,
         paymentStatus: session.payment_status,
+        ...bundleLog,
         result: result.alreadyProcessed ? "already_processed" : "credited",
       },
     );
 
     try {
-      phLogger.event(
-        PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
-        paidFunnelProperties({
-          userId,
-          checkout_attempt_id: session.metadata.checkoutAttemptId,
-          checkout_type: "extra_usage_purchase",
-          amount_dollars: amountDollars,
-          stripe_customer_id: stripeCustomerId,
-          stripe_checkout_session_id: session.id,
-          stripe_payment_intent_id: stripePaymentIntentId,
-          payment_status: session.payment_status,
-          $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
-        }),
-      );
-      after(() => phLogger.flush());
+      // Only the route whose addCredits call granted the credit reports the
+      // purchase; the other route's duplicate observation stays a log entry.
+      if (!result.alreadyProcessed) {
+        phLogger.event(
+          PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+          paidFunnelProperties({
+            userId,
+            checkout_attempt_id: session.metadata.checkoutAttemptId,
+            checkout_type: "extra_usage_purchase",
+            ...extraUsagePurchaseValueProperties(purchase),
+            fulfillment_route: "confirm",
+            stripe_customer_id: stripeCustomerId,
+            stripe_checkout_session_id: session.id,
+            stripe_payment_intent_id: stripePaymentIntentId,
+            payment_status: session.payment_status,
+            $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+          }),
+        );
+        after(() => phLogger.flush());
+      }
     } catch (analyticsError) {
       logExtraUsagePurchase("warn", "extra_usage_purchase_analytics_failed", {
         route: ROUTE,

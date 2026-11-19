@@ -1,4 +1,7 @@
-import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../lib/ai/browser-handoff/constants";
+import {
+  BROWSER_HANDOFF_RESUME_GRACE_MS,
+  BROWSER_SESSION_MAX_LIFETIME_MS,
+} from "../lib/ai/browser-handoff/constants";
 import { v } from "convex/values";
 import {
   mutation,
@@ -8,6 +11,27 @@ import {
 } from "./lib/serviceFunctions";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
+import {
+  browserHandoffAbandonAfter,
+  effectiveBrowserHandoffState,
+} from "./lib/browserHandoffState";
+import { syncGoalInputTiming } from "./lib/goalInputTiming";
+
+async function syncParentGoalTiming(
+  ctx: MutationCtx,
+  row: Pick<
+    Doc<"browser_handoffs">,
+    "agent_id" | "chat_id" | "user_id" | "run_id"
+  >,
+) {
+  if (row.agent_id === "parent") {
+    await syncGoalInputTiming(ctx, {
+      chatId: row.chat_id,
+      userId: row.user_id,
+      runId: row.run_id,
+    });
+  }
+}
 
 const state = v.union(
   v.literal("agent"),
@@ -29,6 +53,7 @@ const publicSession = v.object({
 });
 const privateSession = v.object({
   runActive: v.boolean(),
+  hasCompletedTakeover: v.optional(v.boolean()),
   sessionId: v.string(),
   userId: v.string(),
   chatId: v.string(),
@@ -40,6 +65,8 @@ const privateSession = v.object({
   state,
   grantExpiresAt: v.union(v.number(), v.null()),
   controlledSessionName: v.union(v.string(), v.null()),
+  // Parent runs only: when an uncontrolled handoff may be closed as abandoned.
+  abandonAfter: v.optional(v.number()),
   expiresAt: v.number(),
   updatedAt: v.number(),
 });
@@ -120,12 +147,7 @@ function publicView(row: Doc<"browser_handoffs">) {
     sessionId: row.session_id,
     runId: row.run_id,
     agentId: row.agent_id,
-    state:
-      ((row.state === "human" || row.state === "claiming") &&
-        (row.grant_expires_at ?? 0) <= Date.now()) ||
-      (row.state === "resuming" && row.updated_at + 30_000 <= Date.now())
-        ? ("recovery" as const)
-        : row.state,
+    state: effectiveBrowserHandoffState(row),
     grantExpiresAt: row.grant_expires_at ?? null,
     expiresAt: row.expires_at,
     updatedAt: row.updated_at,
@@ -233,6 +255,7 @@ export const registerForBackend = mutation({
       expires_at: args.expiresAt,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, probe);
     return true;
   },
 });
@@ -249,8 +272,16 @@ export const getForBackend = query({
       args.allowEnded,
     );
     if (!row) return null;
+    // Child runs return their own result lifecycle and never get a deadline.
+    const abandonAfter =
+      row.agent_id === "parent" && row.state !== "closed"
+        ? browserHandoffAbandonAfter(row)
+        : null;
     return {
+      ...(abandonAfter !== null && { abandonAfter }),
       runActive: await currentOwner(ctx, row),
+      // Match requestWait's fulfilled-duplicate predicate without reading notes.
+      hasCompletedTakeover: !!row.exit_note_ids?.length,
       sessionId: row.session_id,
       userId: row.user_id,
       chatId: row.chat_id,
@@ -292,6 +323,7 @@ export const requestWaitForBackend = mutation({
       waiting_for_handoff: true,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -307,7 +339,10 @@ export const beginTakeoverForBackend = mutation({
       args.grant.length < 32 ||
       (row.input_expires_at ?? 0) > Date.now() ||
       (!["agent", "waiting", "recovery"].includes(row.state) &&
-        !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now()) &&
+        !(
+          row.state === "resuming" &&
+          row.updated_at + BROWSER_HANDOFF_RESUME_GRACE_MS <= Date.now()
+        ) &&
         !(
           ["human", "claiming"].includes(row.state) &&
           (row.grant_expires_at ?? 0) <= Date.now()
@@ -320,6 +355,7 @@ export const beginTakeoverForBackend = mutation({
       grant_expires_at: Date.now() + CLAIM_MS,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -370,6 +406,7 @@ export const abortTakeoverForBackend = mutation({
         controlled_session_name: undefined,
         updated_at: Date.now(),
       });
+      await syncParentGoalTiming(ctx, row);
     }
     return null;
   },
@@ -467,7 +504,10 @@ export const beginResumeForBackend = mutation({
     if (
       !row ||
       (!["human", "recovery", "claiming"].includes(row.state) &&
-        !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now())) ||
+        !(
+          row.state === "resuming" &&
+          row.updated_at + BROWSER_HANDOFF_RESUME_GRACE_MS <= Date.now()
+        )) ||
       (row.input_expires_at ?? 0) > Date.now()
     )
       return false;
@@ -502,6 +542,7 @@ export const finishResumeForBackend = mutation({
       waiting_for_handoff: undefined,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -551,8 +592,44 @@ export const closeForBackend = mutation({
         controlled_session_name: undefined,
         updated_at: Date.now(),
       });
+      await syncParentGoalTiming(ctx, row);
     }
     return null;
+  },
+});
+
+/**
+ * Release the owning parent run from a handoff nobody controls once its
+ * deadline passes. Eligibility is rechecked in this transaction: a takeover,
+ * renewed grant or resume that commits first defeats it, and every later
+ * takeover/resume sees the closed row. The receipt makes a retried or
+ * concurrent request for the same still-owned row return the committed result.
+ */
+export const abandonForBackend = mutation({
+  args: serviceSessionArgs,
+  returns: v.union(v.literal("abandoned"), v.literal("not_due"), v.null()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getSession(ctx, args.sessionId, args.userId, true);
+    if (!row || row.agent_id !== "parent" || !(await ownsActiveRun(ctx, row)))
+      return null;
+    if (row.abandoned_at !== undefined) return "abandoned";
+    const now = Date.now();
+    if (row.state === "closed" || row.expires_at <= now) return null;
+    const deadline = browserHandoffAbandonAfter(row, now);
+    if (deadline === null || deadline > now) return "not_due";
+    await ctx.db.patch(row._id, {
+      state: "closed",
+      grant: undefined,
+      grant_expires_at: undefined,
+      controlled_session_name: undefined,
+      input_id: undefined,
+      input_expires_at: undefined,
+      abandoned_at: now,
+      updated_at: now,
+    });
+    await syncParentGoalTiming(ctx, row);
+    return "abandoned";
   },
 });
 

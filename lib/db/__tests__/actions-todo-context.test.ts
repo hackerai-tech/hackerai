@@ -1,3 +1,4 @@
+import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 const mockQuery = jest.fn();
 jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("../convex-client", () => ({
@@ -90,7 +91,9 @@ it.each([
     const recent = {
       id: "recent",
       role: "assistant",
-      parts: [{ type: "text", text: " ordinary".repeat(210_000) }],
+      parts: [
+        { type: "text", text: " ordinary".repeat(MAX_TOKENS_PAID + 10_000) },
+      ],
     };
     mockQuery.mockResolvedValueOnce({ id: "chat-test" }).mockResolvedValueOnce({
       page: [recent, older],

@@ -8,6 +8,8 @@ import {
 } from "@jest/globals";
 import { ChatSDKError } from "@/lib/errors";
 
+const mockRetrieveRun = jest.fn<any>();
+jest.mock("@trigger.dev/sdk", () => ({ runs: { retrieve: mockRetrieveRun } }));
 const mockGetUserID = jest.fn();
 const mockGetChatById = jest.fn();
 const mockSaveMessage = jest.fn();
@@ -137,6 +139,7 @@ describe("createAgentPartialSavePost", () => {
   beforeEach(() => {
     installResponseShim();
     jest.clearAllMocks();
+    mockRetrieveRun.mockReset().mockResolvedValue({ status: "CRASHED" });
     errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -155,6 +158,50 @@ describe("createAgentPartialSavePost", () => {
     errorSpy.mockRestore();
     infoSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  it.each(["EXECUTING", "QUEUED", "WAITING", "REATTEMPTING"])(
+    "persists a snapshot without finishing a %s worker",
+    async (status) => {
+      mockRetrieveRun.mockResolvedValue({ status });
+      const { createAgentPartialSavePost } =
+        await import("../agent-partial-save-route");
+      const response = await createAgentPartialSavePost()(request(validBody));
+      expect(response.status).toBe(200);
+      expect(mockSaveMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          triggerRunId: "run-1",
+          finishReason: undefined,
+          message: validBody.message,
+        }),
+      );
+      expect(mockUpdateChat).not.toHaveBeenCalled();
+    },
+  );
+  it("retains progress without declaring a crash when run status is unavailable", async () => {
+    mockRetrieveRun.mockRejectedValue(new Error("status unavailable"));
+    const { createAgentPartialSavePost } =
+      await import("../agent-partial-save-route");
+    await createAgentPartialSavePost()(request(validBody));
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ finishReason: undefined }),
+    );
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
+  it("still saves partial output when the status lookup hangs", async () => {
+    jest.useFakeTimers();
+    mockRetrieveRun.mockImplementation(() => new Promise(() => {}));
+    const { createAgentPartialSavePost } =
+      await import("../agent-partial-save-route");
+    const pending = createAgentPartialSavePost()(request(validBody));
+    await jest.advanceTimersByTimeAsync(3_001);
+    expect((await pending).status).toBe(200);
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ finishReason: undefined }),
+    );
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   const diagnosticUser = "user_01KPNCS7R5VE7QQSVFXMC7ENKK";
@@ -695,6 +742,7 @@ describe("createAgentPartialSavePost", () => {
       chatId: "chat-1",
       finishReason: "trigger_crashed_client_saved",
       defaultModelSlug: "agent",
+      expectedActiveTriggerRunId: "run-1",
     });
   });
 

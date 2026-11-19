@@ -1,4 +1,9 @@
-import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import {
+  agentRunEventUuid,
+  createAgentRunReporting,
+} from "@/lib/analytics/agent-run-reporting";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
 import path from "path";
@@ -15,6 +20,7 @@ const {
   captureAgentCompletionAnalytics,
   captureAgentRun,
   captureToolCalls,
+  captureIncompleteUsageCost,
   captureUsageCost,
   captureUsageSettlement,
   isUsageSettlementSuccessSampled,
@@ -23,6 +29,59 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+
+it.each(["/api/chat", "/api/agent"])(
+  "removes standalone provider keys from %s error diagnostics",
+  (endpoint) => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const phErrorSpy = jest
+      .spyOn(phLogger, "error")
+      .mockImplementation(() => {});
+    try {
+      const key = "sk-proj-SYNTHETIC_provider_key_with-underscores_012345";
+      const error = Object.assign(
+        new Error(`Provider rejected '${key}'`, {
+          cause: new Error(`Configuration contains ${key}`),
+        }),
+        { statusCode: 401 },
+      );
+      const chatLogger = createChatLogger({
+        chatId: "redaction-fixture",
+        endpoint,
+      });
+      chatLogger.recordProviderError(error, { model: "test/model" });
+      chatLogger.emitUnexpectedError(error);
+
+      expect(errorSpy).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalled();
+      expect(phErrorSpy).toHaveBeenCalled();
+      // Error properties are non-enumerable, including nested exception causes.
+      const serialized = JSON.stringify(
+        [errorSpy.mock.calls, logSpy.mock.calls, phErrorSpy.mock.calls],
+        (_name, value) =>
+          value instanceof Error
+            ? {
+                ...value,
+                name: value.name,
+                message: value.message,
+                stack: value.stack,
+                cause: value.cause,
+              }
+            : value,
+      );
+      expect(serialized).not.toContain(key);
+      expect(serialized).not.toContain("SYNTHETIC_provider_key");
+      expect(serialized).toContain("[Redacted]");
+      expect(serialized).toContain("401");
+      expect(error.message).toContain(key);
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+      phErrorSpy.mockRestore();
+    }
+  },
+);
 
 it("correlates provider errors and final outcomes to distinct Agent runs in one chat", () => {
   const source = ts.createSourceFile(
@@ -334,6 +393,9 @@ describe("captureAgentRun", () => {
       event: "hackerai-agent_run",
       uuid: agentRunEventUuid("run_123", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -696,6 +758,185 @@ describe("captureAgentRun", () => {
     );
   });
 
+  it("adds the first local stop cause to the normal terminal event once, with its run identity", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const connectionId = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_local",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "pro",
+      endpoint: "/api/agent",
+    });
+    reporting.recordLocalStop(
+      new LocalConnectionLostError("subscription_reconnecting", {
+        connectionId,
+        hadPositivePresence: false,
+        callbackCode: 2500,
+        clientState: "connected",
+        socketCloseCode: 1000,
+        socketCloseWasClean: true,
+        // Never the close reason or socket URL.
+        ...({ reason: "PRIVATE", url: "wss://PRIVATE" } as {}),
+      }),
+    );
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "desktop" },
+      outcome: "aborted",
+      abortSource: "unknown",
+      hasResponseContent: false,
+      chatLogger: undefined,
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      finishReason: "local-connection-lost",
+      triggerRunId: "run_local",
+      abliteratedProviderSummary: undefined,
+    });
+    reporting.finalize({ canceled: false });
+
+    const runs = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0].uuid).toBe(
+      agentRunEventUuid("run_local", "hackerai-agent_run"),
+    );
+    expect(runs[0].properties).toMatchObject({
+      outcome: "aborted",
+      finish_reason: "local-connection-lost",
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "subscription_reconnecting",
+      local_stop_connection_id: connectionId,
+      local_stop_had_positive_presence: false,
+      local_stop_callback_code: 2500,
+      local_stop_client_state: "connected",
+      local_stop_socket_close_code: 1000,
+      local_stop_socket_close_was_clean: true,
+    });
+    expect(runs[0].properties).not.toHaveProperty(
+      "local_stop_last_positive_presence_age_ms",
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    ["no stop", undefined],
+    ["a generic error", new Error("PRIVATE canary")],
+    [
+      "a forged error",
+      Object.assign(Object.create(LocalConnectionLostError.prototype), {
+        local_stop_reason: "PRIVATE canary",
+      }),
+    ],
+    [
+      "a proxied error",
+      new Proxy(new LocalConnectionLostError("selected_host_left"), {}),
+    ],
+  ])("adds no local stop fields for %s", (_name, localConnectionLostError) => {
+    const capture = jest.fn();
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "aborted",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      localConnectionLostError,
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(
+      /local_stop_|PRIVATE/,
+    );
+  });
+
+  it("adds reporter recovery history beside the existing disconnect-only fields", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_recovered",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "ultra",
+      endpoint: "/api/agent",
+    });
+    reporting.recordModelRecovery({
+      reason: "content_filter",
+      retryModel: "model-deepseek-v4.1-flash-1017-pro",
+      failure: { category: "content_blocked", model: "x-ai/grok-4.6" },
+    });
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "ultra",
+      sandboxInfo: { type: "cloud" },
+      outcome: "success",
+      hasResponseContent: true,
+      chatLogger: undefined,
+      selectedModel: "model-grok-4.6",
+      configuredModelId: "x-ai/grok-4.6",
+      responseModel: "deepseek/deepseek-v4.1-flash-20261017",
+      finishReason: "stop",
+      triggerRunId: "run_recovered",
+      abliteratedProviderSummary: undefined,
+      // The refusal was not a disconnect, so the existing fields stay empty.
+      providerRecoveryAttempts: 0,
+      providerRecoveryModels: [],
+      providerRecoverySucceeded: false,
+    });
+    const [run] = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(run.properties).toMatchObject({
+      outcome: "success",
+      provider_recovery_attempts: 0,
+      provider_recovery_succeeded: false,
+      model_recovery_version: 1,
+      model_recovery_attempts: 1,
+      model_recovery_models: ["model-deepseek-v4.1-flash-1017-pro"],
+      model_recovery_reasons: ["content_filter"],
+      model_recovery_succeeded: true,
+      initial_provider_failure_category: "content_blocked",
+      initial_provider_failure_model: "x-ai/grok-4.6",
+    });
+  });
+
+  it("adds no recovery history fields for a caller-supplied object", () => {
+    const capture = jest.fn();
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "ultra",
+      sandboxInfo: null,
+      outcome: "success",
+      selectedModel: "model-grok-4.6",
+      configuredModelId: "x-ai/grok-4.6",
+      modelRecoveryHistory: {
+        attempts: 1,
+        models: ["PRIVATE"],
+        reasons: ["content_filter"],
+      },
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(
+      /model_recovery_|initial_provider_failure_|PRIVATE/,
+    );
+  });
+
   it("does not capture agent run events for ask mode", () => {
     const capture = jest.fn();
 
@@ -729,6 +970,12 @@ describe("resolveAgentAbortSource", () => {
     ],
     ["agent_spend_cap", { stoppedDueToAgentRunSpendCap: true }],
     ["elapsed_timeout", { stoppedDueToElapsedTimeout: true }],
+    [
+      "user_wait_timeout",
+      { stopSource: "wait_for_user_timeout", requestCancelled: true },
+    ],
+    ["user_wait_failed", { stopSource: "wait_for_user" }],
+    ["approval_timeout", { stopSource: "approval_timeout" }],
     ["user_stop", { userStopRequested: true }],
     ["request_cancel", { requestCancelled: true }],
     ["unknown", {}],
@@ -810,6 +1057,38 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each(["success", "aborted", "error"] as const)(
+    "keeps unknown termination explicit for %s without inventing a natural finish",
+    (outcome) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "synthetic",
+        chatId: "synthetic",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome,
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "auto",
+        configuredModelId: "synthetic",
+        abliteratedProviderSummary: undefined,
+        isAutoContinue: false,
+      });
+      const event = capture.mock.calls.find(
+        ([entry]) => entry.event === "hackerai-agent_run",
+      )?.[0];
+      expect(event.properties).toMatchObject({
+        outcome,
+        finish_reason: "unknown",
+        is_auto_continue: false,
+        run_metadata_version: 1,
+      });
+      expect(event.properties.finish_reason).not.toBe("stop");
+    },
+  );
   it("enriches existing run and usage events without adding events", () => {
     const capture = jest.fn();
     const shared = {
@@ -1030,6 +1309,8 @@ describe("captureAgentCompletionAnalytics", () => {
     ["agent", "abliterated_paid_three_steps_v1"],
     ["ask", "abliterated_paid_moderated_three_steps_default_v1"],
     ["agent", "abliterated_paid_moderated_three_steps_default_v1"],
+    ["ask", "abliterated_pro_three_steps_v1"],
+    ["agent", "abliterated_pro_three_steps_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
@@ -1081,6 +1362,76 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
+  it.each([
+    ["ask", "abliterated_free_three_steps_v1"],
+    ["agent", "abliterated_free_three_steps_v1"],
+    ["ask", "abliterated_free_three_steps_default_v1"],
+    ["agent", "abliterated_free_three_steps_default_v1"],
+  ] as const)(
+    "retains Free %s %s cost coverage after an aborted fallback",
+    (mode, key) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        hasResponseContent: false,
+        abliteratedProviderSummary: {
+          free_three_steps_measurement_version: 1,
+          experiment_release: "preview-worker",
+          provider_attempt_count: 2,
+          tool_result_reported_error_count: 1,
+          provider_content_filter_count: 1,
+          time_to_first_visible_content_ms: undefined,
+        } as any,
+        usageMeasurement: {
+          usage_observed_model_cost_dollars: 0.03,
+          usage_summary_cost_dollars: 0,
+          usage_model_calls_started: 2,
+          usage_model_records: 1,
+          usage_observed_non_model_cost_dollars: 0.01,
+        } as any,
+        posthog: { capture } as any,
+        userId: "free",
+        chatId: "fixture",
+        mode,
+        endpoint: mode === "agent" ? "/api/agent" : "/api/chat",
+        subscription: "free",
+        outcome: "aborted",
+        abortSource: "request_cancel",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model-large-flash",
+        responseModel: "z-ai/glm-5.3-flash",
+        fallbackServed: true,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        experiment: {
+          key,
+          variant: "test",
+          requestId: "original",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            experiment_request_id: "original",
+            experiment_variant: "test",
+            outcome: "aborted",
+            abort_source: "request_cancel",
+            natural_completion: false,
+            usage_model_calls_started: 2,
+            usage_model_records: 1,
+            usage_observed_model_cost_dollars: 0.03,
+            usage_observed_non_model_cost_dollars: 0.01,
+            provider_content_filter_count: 1,
+            tool_result_reported_error_count: 1,
+            $insert_id: "original:free-three-step-outcome",
+          }),
+        }),
+      );
+      expect(
+        capture.mock.calls.some(([e]) => e.event === "free_response_completed"),
+      ).toBe(false);
+    },
+  );
   it("preserves the existing Agent event alongside successful free activation", () => {
     const capture = jest.fn();
 
@@ -1107,6 +1458,9 @@ describe("captureAgentCompletionAnalytics", () => {
       distinctId: "user_123",
       event: "hackerai-agent_run",
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "free",
         subscription_tier: "free",
@@ -1156,6 +1510,9 @@ describe("captureAgentCompletionAnalytics", () => {
       event: "hackerai-agent_run",
       uuid: agentRunEventUuid("run_completion", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -1189,21 +1546,16 @@ describe("captureAgentCompletionAnalytics", () => {
 
 describe("captureUsageCost", () => {
   it.each(["ask", "agent"])(
-    "records %s regional policy without contaminating the ended experiment",
+    "attributes free %s cost to its experiment without retired regional quota fields",
     (mode) => {
       const capture = jest.fn();
       captureUsageCost({
         posthog: { capture } as any,
-        userId: "regional-user",
+        userId: "free-user",
         subscription: "free",
-        chatId: "regional-chat",
+        chatId: "free-chat",
         endpoint: mode === "ask" ? "/api/chat" : "/api/agent-long",
         mode,
-        regionalFreeLimits: {
-          country: "NG",
-          dailyRequests: 3,
-          monthlyCostDollars: 0.1,
-        },
         experiment: { key: "separate-model-test", variant: "control" },
         usage: {
           model: "auto",
@@ -1226,15 +1578,12 @@ describe("captureUsageCost", () => {
       });
       const properties = capture.mock.calls[0][0].properties;
       expect(properties).toMatchObject({
-        regional_free_policy_version: 1,
-        regional_free_country: "NG",
-        regional_free_daily_requests: 3,
-        regional_free_monthly_cost_dollars: 0.1,
         experiment_key: "separate-model-test",
         experiment_variant: "control",
       });
-      expect(properties).not.toHaveProperty("regional_free_variant");
-      expect(properties).not.toHaveProperty("$feature/regional_free_limits_v1");
+      expect(
+        Object.keys(properties).filter((key) => key.includes("regional_free")),
+      ).toEqual([]);
     },
   );
 
@@ -1406,6 +1755,151 @@ describe("captureUsageCost", () => {
     expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
       "response_model",
     );
+  });
+
+  const recordedUsage = {
+    model: "auto",
+    type: "included",
+    inputTokens: 100,
+    outputTokens: 50,
+    totalTokens: 150,
+    costDollars: 0.01,
+    includedCostDollars: 0.01,
+    extraUsageCostDollars: 0,
+    uncoveredCostDollars: 0,
+    includedPointsDeducted: 0,
+    extraUsagePointsDeducted: 0,
+    uncoveredPoints: 0,
+    usageDeductionFailed: false,
+    modelCostDollars: 0.01,
+    nonModelCostDollars: 0,
+    costSource: "provider",
+  };
+  const askContext = {
+    userId: "user_123",
+    subscription: "free",
+    chatId: "chat_123",
+    endpoint: "/api/chat",
+    mode: "ask",
+  };
+
+  it("gives Free Ask a settlement ID and a stable identity shared by the fallback", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    captureUsageCost({
+      ...askContext,
+      posthog,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_free",
+      usageLog: "not_applicable",
+    });
+    captureIncompleteUsageCost({
+      ...askContext,
+      posthog,
+      usageSettlementId: "settlement_free",
+      failureStage: "settlement",
+      canceled: false,
+    });
+
+    const [recorded, incomplete] = capture.mock.calls.map(
+      ([event]) => event as any,
+    );
+    expect(recorded.uuid).toEqual(expect.any(String));
+    // PostHog keeps one record if both captures are ever sent.
+    expect(incomplete.uuid).toBe(recorded.uuid);
+    expect(recorded.properties).toMatchObject({
+      usage_settlement_id: "settlement_free",
+      usage_log_status: "not_applicable",
+    });
+    expect(recorded.properties).not.toHaveProperty(
+      "usage_settlement_summary_version",
+    );
+  });
+
+  it("reports a failed ledger write as fixed fields without changing cost", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      subscription: "pro",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_paid",
+      usageLog: { status: "failed", failureCategory: "write_failed" },
+    });
+    expect(capture.mock.calls[0][0].properties).toMatchObject({
+      cost_accounting_status: "recorded",
+      cost_dollars: 0.01,
+      usage_log_status: "failed",
+      usage_log_failure_category: "write_failed",
+    });
+  });
+
+  it("keeps child execution cost in its own run-scoped record", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      subagent: { id: "sa_1", parentTriggerRunId: "run_parent" },
+      triggerRunUsage: {
+        totalCostDollars: 0.02,
+        computeCostDollars: 0.02,
+        baseCostDollars: 0,
+        durationMs: 10,
+      },
+    });
+    const event = capture.mock.calls[0][0] as any;
+    expect(event.uuid).toBe(
+      agentRunEventUuid("run_child", "hackerai-usage_cost"),
+    );
+    expect(event.uuid).not.toBe(
+      agentRunEventUuid("run_parent", "hackerai-usage_cost"),
+    );
+    expect(event.properties).toMatchObject({
+      cost_scope: "subagent",
+      subagent_id: "sa_1",
+      parent_trigger_run_id: "run_parent",
+      trigger_run_id: "run_child",
+      trigger_cost_is_final: false,
+    });
+  });
+
+  it("reports unknown full cost with a lower bound that counts Trigger once", () => {
+    const capture = jest.fn();
+    captureIncompleteUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      usageMeasurement: {
+        usage_known_incurred_cost_dollars: 1.25,
+        usage_trigger_run_cost_dollars: 0.25,
+        usage_discarded_retry_cost_dollars: 0.5,
+      },
+      latestTriggerCostDollars: 0.375,
+      failureStage: "settlement",
+      canceled: true,
+    });
+    expect(capture.mock.calls[0][0]).toMatchObject({
+      uuid: agentRunEventUuid("run_child", "hackerai-usage_cost"),
+      properties: {
+        cost_accounting_status: "incomplete",
+        cost_dollars: null,
+        model_cost_dollars: null,
+        non_model_cost_dollars: null,
+        usage_discarded_retry_cost_dollars: 0.5,
+        // 1.25 known, with the 0.25 settled snapshot replaced by 0.375.
+        known_incurred_cost_lower_bound_dollars: 1.375,
+        known_trigger_cost_dollars: 0.375,
+        failure_kind: "canceled",
+      },
+    });
   });
 });
 
@@ -1718,6 +2212,19 @@ describe("createChatLogger provider stream termination", () => {
         last_message_role: "user",
         last_message_content_types: ["tool-result"],
         serialized_message_bytes: 680000,
+        media_counts: {
+          image_parts: 2,
+          user_image_parts: 1,
+          assistant_image_parts: 0,
+          tool_image_parts: 1,
+          other_image_parts: 0,
+          url_images: 2,
+          inline_images: 0,
+          provider_id_images: 0,
+          unknown_images: 0,
+          pdf_file_parts: 0,
+          other_file_parts: 0,
+        },
         estimated_serialized_message_tokens: 170000,
         context_used_tokens: 171844,
         context_max_tokens: 200000,
@@ -1762,6 +2269,9 @@ describe("createChatLogger provider stream termination", () => {
         estimated_serialized_message_tokens: 170000,
         content_part_counts: { text: 6, "tool-result": 3 },
       });
+      expect(wideEvent.provider_request.media_counts).toEqual(
+        providerRequest.media_counts,
+      );
       expect(wideEvent.provider_error).not.toHaveProperty("request");
       expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
       expect(errorSpy.mock.calls.flat().map(String).join("\n")).not.toContain(
@@ -2665,6 +3175,51 @@ describe("createChatLogger OpenRouter metadata", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("logs OpenRouter's charged cost for non-BYOK usage", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_non_byok_provider_cost",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({ mode: "ask", isRegenerate: false });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          notesEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        {
+          inputTokens: 5264,
+          outputTokens: 18,
+          raw: {
+            cost: 0.0015,
+            cost_details: { upstream_inference_cost: 0.0012 },
+          },
+        },
+        { openrouter_is_byok: false },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.usage.total_cost).toBeCloseTo(0.0015);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger provider stream timeout", () => {
@@ -2754,6 +3309,13 @@ it.each([
   ["agent", "error", false, "error", false, false],
   ["agent", "aborted", true, "stop", false, false],
   ["agent", "success", true, "length", false, false],
+  ["agent", "success", true, "doom-loop", false, false],
+  ["agent", "success", true, "compaction-incomplete", false, false],
+  ["agent", "success", true, "context-limit", false, false],
+  ["agent", "success", true, "budget-exhausted", false, false],
+  ["agent", "success", true, "tool-calls", false, false],
+  ["agent", "success", true, "content-filter", false, false],
+  ["agent", "success", true, undefined, false, false],
   ["agent", "success", true, "stop", true, false],
 ] as const)(
   "records paid experiment terminal outcome (%s %s)",
@@ -2806,6 +3368,7 @@ it.each([
       outcome,
       has_response_content: hasResponseContent,
       natural_completion: naturalCompletion,
+      natural_completion_version: 2,
       fallback_served: true,
       response_model: "z-ai/glm-5.3-flash",
       time_to_first_chunk_ms: 50,
@@ -2813,5 +3376,219 @@ it.each([
       $process_person_profile: false,
     });
     expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+  },
+);
+
+it.each(["success", "error", "aborted"] as const)(
+  "retains Free Ask first assignment through fallback and %s termination",
+  (outcome) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "free",
+      outcome,
+      hasResponseContent: outcome === "success",
+      finishReason: outcome === "success" ? "stop" : "error",
+      responseMessageId: "recovered-message",
+      selectedModel: "ask-model-free-deepseek-v41",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      abliteratedProviderSummary: undefined,
+      experiment: {
+        key: "free_ask_deepseek_1017_conversion_v2",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls.map(([event]) => event);
+    const terminal = events.filter(
+      (event) => event.event === "free_ask_model_response_outcome",
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      experiment_key: "free_ask_deepseek_1017_conversion_v2",
+      experiment_variant: "test",
+      message_id: "recovered-message",
+      outcome,
+      has_response_content: outcome === "success",
+      natural_completion: outcome === "success",
+      response_model: "z-ai/glm-5.3-flash",
+      fallback_served: true,
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:free-ask-1017-outcome",
+    });
+    expect(terminal[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+    expect(
+      events.some((event) => event.event === "paid_model_response_outcome"),
+    ).toBe(false);
+  },
+);
+
+it("separates marked handoff reads in existing fingerprints without changing ordinary provider groups", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "fixture",
+      endpoint: "/api/chat",
+    });
+    for (const marked of [false, true]) {
+      // An arbitrary public origin property is not evidence of a local read.
+      const error = Object.assign(new Error("read ECONNRESET"), {
+        origin: "browser_handoff_read",
+      });
+      if (marked) {
+        try {
+          rethrowBrowserHandoffReadError(error);
+        } catch (failure) {
+          expect(failure).toBe(error);
+        }
+      }
+      logger.recordProviderError(error, { requestedModelSlug: "test/model" });
+    }
+    const fields = phWarn.mock.calls.map(
+      (call) => call[1] as Record<string, unknown>,
+    );
+    expect(fields).toHaveLength(2);
+    expect(fields[0].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|provider_test|model_test/model",
+    );
+    expect(fields[1].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|origin_browser_handoff_read",
+    );
+    expect(fields[0].errorOrigin).toBeUndefined();
+    expect(fields[1].errorOrigin).toBe("browser_handoff_read");
+  } finally {
+    warn.mockRestore();
+    phWarn.mockRestore();
+  }
+});
+
+it("does not attribute a handoff read failure to the preceding provider request", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "handoff",
+      endpoint: "/api/agent",
+    });
+    const metadata = {
+      provider_name: "PreviousProvider",
+      openrouter_generation_id: "gen-previous",
+      openrouter_request_id: "req-previous",
+      openrouter_upstream_id: "upstream-previous",
+    };
+    const request = {
+      model: "previous-configured",
+      requested_model_slug: "previous/model",
+      step_index: 27,
+      source: "prepare_step",
+    };
+    logger.setModelResponse("previous/response", metadata);
+    logger.recordProviderRequestDiagnostics(request);
+    const cause = Object.freeze(
+      Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+    );
+    const error = Object.freeze(new Error("read ECONNRESET", { cause }));
+    try {
+      rethrowBrowserHandoffReadError(error);
+    } catch (failure) {
+      expect(failure).toBe(error);
+    }
+    logger.recordProviderError(error, {
+      mode: "agent",
+      model: request.model,
+      requestedModelSlug: request.requested_model_slug,
+      fallbackModelSlugs: ["previous/fallback"],
+      providerRequest: request,
+      openRouterMetadata: metadata,
+    });
+    expect(error.cause).toBe(cause);
+    expect(phWarn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const fields = phWarn.mock.calls[0][1] as Record<string, unknown>;
+    expect(fields).toMatchObject({
+      errorOrigin: "browser_handoff_read",
+      provider_attribution_available: false,
+      providerErrorFingerprint:
+        "provider_error|stream_terminated|origin_browser_handoff_read",
+    });
+    expect(fields.provider_request).toBeUndefined();
+    const failureEvents = JSON.stringify([warn.mock.calls, phWarn.mock.calls]);
+    expect(failureEvents).not.toMatch(/previous|PreviousProvider/);
+    logger.emitUnexpectedError(error);
+    const wideEvent = JSON.parse(String(log.mock.calls.at(-1)![0]));
+    expect(JSON.stringify(wideEvent.provider_error)).not.toMatch(
+      /previous|PreviousProvider/,
+    );
+    expect(wideEvent.provider_error.provider_error_fingerprint).toBe(
+      fields.providerErrorFingerprint,
+    );
+    // Prior successful-call history remains useful, but does not own this failure.
+    expect(wideEvent.model.provider_name).toBe("PreviousProvider");
+    expect(wideEvent.provider_request).toEqual(request);
+  } finally {
+    warn.mockRestore();
+    log.mockRestore();
+    phWarn.mockRestore();
+  }
+});
+
+// These events use separate branches in the shared reporter. Both must reject
+// interrupted work even when earlier steps produced usable assistant text.
+it.each(["ask", "agent"] as const)(
+  "classifies Free %s natural completions using the final stop reason",
+  (mode) => {
+    for (const finishReason of [
+      "stop",
+      "doom-loop",
+      "timeout",
+      "step-limit",
+      undefined,
+    ]) {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "fixture-user",
+        chatId: "fixture-chat",
+        endpoint: "/api/chat",
+        mode,
+        subscription: "free",
+        outcome: "success",
+        hasResponseContent: true,
+        finishReason,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        abliteratedProviderSummary: undefined,
+        selectedModel: "model-abliterated",
+        experiment: {
+          key: "abliterated_free_three_steps_default_v1",
+          variant: "test",
+          requestId: "fixture-request",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            outcome: "success",
+            natural_completion: finishReason === "stop",
+            natural_completion_version: 2,
+          }),
+        }),
+      );
+    }
   },
 );

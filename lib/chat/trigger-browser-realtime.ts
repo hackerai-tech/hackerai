@@ -192,23 +192,26 @@ const createSSEParser = () => {
 
   return {
     feed(chunk: string): ParsedSSEEvent[] {
-      buffer += chunk;
+      // Search only the new chunk for LF. The unfinished line carried in
+      // `buffer` cannot contain one, so a large event split across many reads
+      // is not rescanned on every read. A CR before LF belongs to the CRLF
+      // terminator; processLine still trims one further CR as before.
       const events: ParsedSSEEvent[] = [];
-      let lineEndIndex = buffer.search(/\r?\n/);
+      let lineStart = 0;
+      let lineEndIndex = chunk.indexOf("\n");
 
       while (lineEndIndex !== -1) {
-        const line = buffer.slice(0, lineEndIndex);
-        const newlineLength =
-          buffer[lineEndIndex] === "\r" && buffer[lineEndIndex + 1] === "\n"
-            ? 2
-            : 1;
-        buffer = buffer.slice(lineEndIndex + newlineLength);
+        let line = buffer + chunk.slice(lineStart, lineEndIndex);
+        buffer = "";
+        if (line.endsWith("\r")) line = line.slice(0, -1);
 
         const parsedEvent = processLine(line);
         if (parsedEvent) events.push(parsedEvent);
-        lineEndIndex = buffer.search(/\r?\n/);
+        lineStart = lineEndIndex + 1;
+        lineEndIndex = chunk.indexOf("\n", lineStart);
       }
 
+      if (lineStart < chunk.length) buffer += chunk.slice(lineStart);
       return events;
     },
     flush(): ParsedSSEEvent[] {
@@ -367,6 +370,10 @@ export async function* readTriggerRunStream<T>(
         clearTimeout(fetchTimeoutId);
 
         if (!response.ok) {
+          // The status is all this reader needs from a rejected response.
+          // Abort only this attempt so its unread body is released before the
+          // retry wait, token refresh or terminal error; the run stays active.
+          fetchAbortController.abort();
           if (AUTHORIZATION_FAILURE_STATUSES.has(response.status)) {
             if (
               !options.refreshAccessToken ||

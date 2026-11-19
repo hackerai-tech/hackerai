@@ -1,4 +1,4 @@
-import { collectChatFiles } from "../chat-files";
+import { collectChatFiles, mergeSavedFileMessages } from "../chat-files";
 
 const result = (
   id: string,
@@ -107,6 +107,131 @@ it("indexes stored file IDs without depending on expiring download URLs", () => 
     saved: { fileId: "saved-id" },
     source: "Saved files",
   });
+});
+
+it("indexes dedicated file_write and file_edit results as distinct versions per environment", () => {
+  const snapshot = (environment: string) => ({
+    environment,
+    identity: `${environment}-machine`,
+    capturedAt: 100,
+  });
+  const files = collectChatFiles([
+    {
+      id: "m",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-file_write",
+          state: "output-available",
+          toolCallId: "write",
+          input: { action: "write", path: "/r/report.md", text: "v1" },
+          output: { fileSnapshot: snapshot("cloud") },
+        },
+        {
+          type: "tool-file_write",
+          state: "output-available",
+          toolCallId: "append",
+          input: { action: "append", path: "/r/report.md", text: "+tail" },
+          output: { content: "Appended", fileSnapshot: snapshot("cloud") },
+        },
+        {
+          type: "tool-file_edit",
+          state: "output-available",
+          toolCallId: "edit",
+          input: {
+            path: "/r/report.md",
+            edits: [{ find: "v1", replace: "v2" }],
+          },
+          output: {
+            originalContent: "v1",
+            modifiedContent: "v2",
+            fileSnapshot: snapshot("desktop"),
+          },
+        },
+        {
+          type: "tool-file_edit",
+          state: "input-available",
+          toolCallId: "pending",
+          input: { path: "/r/report.md", edits: [] },
+        },
+        {
+          type: "tool-file_write",
+          state: "output-available",
+          toolCallId: "failed",
+          input: { action: "write", path: "/r/report.md", text: "never" },
+          output: { error: "Permission denied" },
+        },
+        {
+          type: "tool-file_edit",
+          state: "output-error",
+          toolCallId: "errored",
+          input: { path: "/r/report.md", edits: [] },
+          output: { originalContent: "x", modifiedContent: "y" },
+        },
+      ],
+    },
+  ]);
+  expect(
+    files.map((f) => [f.toolCallId, f.action, f.text, f.source, f.partial]),
+  ).toEqual([
+    ["write", "write", "v1", "Cloud", false],
+    ["append", "append", "+tail", "Cloud", true],
+    ["edit", "edit", "v2", "Desktop", false],
+  ]);
+  expect(files[2].originalText).toBe("v1");
+  expect(new Set(files.map((f) => f.id)).size).toBe(3);
+});
+
+it("merges older stored files with loaded messages without dropping parts or duplicating files", () => {
+  const loaded = [
+    result("latest", "cloud", "LATEST"),
+    {
+      id: "delivery",
+      role: "assistant",
+      fileDetails: [{ fileId: "zip", name: "loot.zip" }],
+    },
+  ];
+  // Pages arrive newest first; the same message can repeat across pages.
+  const merged = mergeSavedFileMessages(loaded, [
+    {
+      id: "delivery",
+      role: "assistant",
+      fileDetails: [
+        { fileId: "zip", name: "loot.zip" },
+        { fileId: "pdf", name: "report.pdf", mediaType: "application/pdf" },
+      ],
+    },
+    { id: "older", role: "assistant", fileDetails: [] },
+    {
+      id: "oldest",
+      role: "assistant",
+      fileDetails: [{ fileId: "csv", name: "hosts.csv" }],
+    },
+    {
+      id: "oldest",
+      role: "assistant",
+      fileDetails: [{ fileId: "csv", name: "hosts.csv" }],
+    },
+  ]);
+  expect(merged.map((m) => m.id)).toEqual([
+    "oldest",
+    "older",
+    "latest",
+    "delivery",
+  ]);
+  expect(merged[2]).toBe(loaded[0]);
+  const files = collectChatFiles(merged);
+  expect(files.map((f) => f.name)).toEqual([
+    "hosts.csv",
+    "report.md",
+    "loot.zip",
+    "report.pdf",
+  ]);
+  expect(files.find((f) => f.name === "report.pdf")?.saved).toMatchObject({
+    fileId: "pdf",
+    mediaType: "application/pdf",
+  });
+  expect(mergeSavedFileMessages(loaded, [])).toBe(loaded);
 });
 
 it("does not mistake literal truncation markers in fully written source for an excerpt", () => {

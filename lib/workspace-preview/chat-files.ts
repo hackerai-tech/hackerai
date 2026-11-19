@@ -46,6 +46,91 @@ const sourceLabel = (value: unknown) =>
         ? "Local"
         : "Source not recorded";
 
+const legacyActions: Record<string, string> = {
+  "tool-read_file": "read",
+  "tool-write_file": "write",
+  "tool-search_replace": "edit",
+  "tool-multi_edit": "edit",
+};
+/** Unified `file`, dedicated `file_write`/`file_edit`, and legacy tool names. */
+function actionOf(
+  type: string,
+  input: Record<string, any>,
+): string | undefined {
+  if (type === "tool-file") return text(input.action);
+  if (type === "tool-file_write")
+    return input.action === "append" ? "append" : "write";
+  if (type === "tool-file_edit") return "edit";
+  return legacyActions[type];
+}
+
+/** Stored file metadata for one assistant message, independent of loaded history. */
+export type SavedFileEntry = {
+  id: string;
+  role: "assistant";
+  fileDetails: Array<{
+    fileId: string;
+    name: string;
+    mediaType?: string;
+    sizeBytes?: number;
+  }>;
+};
+
+function unionByFileId(
+  ...lists: Array<ReadonlyArray<Record<string, any>> | undefined>
+): Array<Record<string, any>> {
+  const seen = new Set<unknown>();
+  const merged: Array<Record<string, any>> = [];
+  for (const detail of lists.flatMap((list) => list ?? [])) {
+    if (detail.fileId !== undefined) {
+      if (seen.has(detail.fileId)) continue;
+      seen.add(detail.fileId);
+    }
+    merged.push(detail);
+  }
+  return merged;
+}
+
+/**
+ * Merge stored file pages (newest first) into loaded messages. Loaded messages keep
+ * their streamed parts; messages outside loaded history are prepended oldest first.
+ */
+export function mergeSavedFileMessages(
+  messages: FileMessage[],
+  saved: readonly SavedFileEntry[],
+): FileMessage[] {
+  if (!saved.length) return messages;
+  const stored = new Map<string, SavedFileEntry["fileDetails"]>();
+  for (const entry of saved)
+    stored.set(entry.id, [
+      ...(stored.get(entry.id) ?? []),
+      ...entry.fileDetails,
+    ]);
+  const loaded = new Set(messages.map((message) => message.id));
+  const older: FileMessage[] = [];
+  for (const [id, details] of stored)
+    if (!loaded.has(id))
+      older.push({
+        id,
+        role: "assistant",
+        fileDetails: unionByFileId(details),
+      });
+  return [
+    ...older.reverse(),
+    ...messages.map((message) =>
+      message.id && stored.has(message.id)
+        ? {
+            ...message,
+            fileDetails: unionByFileId(
+              message.fileDetails,
+              stored.get(message.id),
+            ),
+          }
+        : message,
+    ),
+  ];
+}
+
 /** Index only persisted results. Never read a current filesystem to fill a gap. */
 export function collectChatFiles(
   messages: readonly FileMessage[],
@@ -61,31 +146,12 @@ export function collectChatFiles(
         part.output?.error
       )
         continue;
-      if (
-        ![
-          "tool-file",
-          "tool-read_file",
-          "tool-write_file",
-          "tool-search_replace",
-          "tool-multi_edit",
-        ].includes(part.type)
-      )
-        continue;
       const input = part.input;
       const output = part.output;
+      const action = actionOf(part.type, input);
+      if (!action) continue;
       const path = text(input.path ?? input.file_path ?? input.target_file);
       if (!path) continue;
-      const action =
-        part.type === "tool-file"
-          ? input.action
-          : (
-              {
-                "tool-read_file": "read",
-                "tool-write_file": "write",
-                "tool-search_replace": "edit",
-                "tool-multi_edit": "edit",
-              } as Record<string, string>
-            )[part.type];
       let content: string | undefined;
       let originalText: string | undefined;
       let partial = false;

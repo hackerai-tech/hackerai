@@ -35,6 +35,10 @@ export interface AcknowledgedCommandSettlement {
   terminalType: "exit" | "error" | null;
   terminalAcknowledged: boolean;
   durationMs: number;
+  /** Ages at settlement, not command duration or proof of a stalled receiver. */
+  oldestPendingAgeMs: number | null;
+  lastAcknowledgementAgeMs: number | null;
+  publishInFlightAgeMs: number | null;
 }
 
 export class AcknowledgedCommandOutput {
@@ -43,6 +47,7 @@ export class AcknowledgedCommandOutput {
     {
       frame: AcknowledgedCommandFrame;
       bytes: number;
+      queuedAt: number;
       sentAt: number;
       attempts: number;
     }
@@ -59,6 +64,8 @@ export class AcknowledgedCommandOutput {
   private nextSequence = 0;
   private highestSent = -1;
   private acknowledged = -1;
+  private lastAcknowledgementAt: number | null = null;
+  private publishStartedAt: number | null = null;
   private terminalSequence: number | undefined;
   private pumping = false;
   private closed = false;
@@ -86,6 +93,23 @@ export class AcknowledgedCommandOutput {
     this.timer = setInterval(() => {
       void this.pump();
     }, 250);
+  }
+
+  /**
+   * Whether this window can still replay output from a receiver's cursor.
+   * False once closed for any reason (terminal ACK, cancellation, overflow,
+   * deadline, lost ownership or stop), even while native execution continues,
+   * and as soon as it is inactive or past its deadline.
+   */
+  get resumable(): boolean {
+    if (this.closed) return false;
+    // The pump closes an inactive or expired window only on its next tick;
+    // read the same conditions now, without closing anything here.
+    try {
+      return this.isActive() && Date.now() < this.deadline;
+    } catch {
+      return false;
+    }
   }
 
   append(chunk: CommandOutputChunk): void {
@@ -137,6 +161,7 @@ export class AcknowledgedCommandOutput {
         outputProtocol: "ack-v1",
       },
       bytes,
+      queuedAt: Date.now(),
       sentAt: -Infinity,
       attempts: 0,
     });
@@ -155,6 +180,8 @@ export class AcknowledgedCommandOutput {
       sequence < this.acknowledged
     )
       return;
+    // Duplicate, stale and future controls must not make receipt look recent.
+    if (sequence > this.acknowledged) this.lastAcknowledgementAt = Date.now();
     this.acknowledged = sequence;
     for (const [id, entry] of this.pending) {
       if (id > sequence) break;
@@ -211,6 +238,9 @@ export class AcknowledgedCommandOutput {
   }
 
   private close(reason: AcknowledgedCommandSettlement["reason"]): void {
+    const now = Date.now();
+    const age = (since: number | null | undefined) =>
+      since == null ? null : Math.max(0, now - since);
     const settlement: Readonly<AcknowledgedCommandSettlement> = Object.freeze({
       outcome:
         reason === "terminal_ack"
@@ -231,7 +261,12 @@ export class AcknowledgedCommandOutput {
       peakPendingBytes: this.peakPendingBytes,
       terminalType: this.terminalType,
       terminalAcknowledged: reason === "terminal_ack",
-      durationMs: Math.max(0, Date.now() - this.startedAt),
+      durationMs: Math.max(0, now - this.startedAt),
+      // Map order follows sequence order. Combining an unsent tail preserves
+      // its original queue time; cumulative ACKs remove only the oldest prefix.
+      oldestPendingAgeMs: age(this.pending.values().next().value?.queuedAt),
+      lastAcknowledgementAgeMs: age(this.lastAcknowledgementAt),
+      publishInFlightAgeMs: age(this.publishStartedAt),
     });
     this.closed = true;
     clearInterval(this.timer);
@@ -277,10 +312,13 @@ export class AcknowledgedCommandOutput {
         this.publishAttempts++;
         if (entry.attempts++ > 0) this.replayAttempts++;
         try {
+          this.publishStartedAt = Date.now();
           await this.publish(entry.frame);
         } catch {
           if (!this.closed) this.publishFailures++;
           break;
+        } finally {
+          this.publishStartedAt = null;
         } // Retain on uncertain transport outcomes until receipt/deadline.
       }
     } finally {

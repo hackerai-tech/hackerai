@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { AlertTriangle, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
+import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import {
   openRenewalInvoice,
@@ -12,7 +19,12 @@ import type {
   BillingRecoverySurface,
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureQueuedAuthenticatedEvent,
+  getPermittedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
+} from "@/lib/analytics/client";
+import { beginServerActionDiagnostic } from "@/lib/analytics/server-action-diagnostics";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
@@ -21,60 +33,153 @@ import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-nav
 import recoverCanceledRenewal from "@/lib/actions/recover-canceled-renewal";
 import type { SubscriptionTier } from "@/types";
 
+/**
+ * Handoff stages are traced separately: a ready URL proves neither that the
+ * browser navigated nor that payment succeeded. Payment is confirmed only by
+ * the authoritative status check after return.
+ */
+export const BILLING_RECOVERY_HANDOFF_EVENT = "billing_recovery_handoff";
+
 type Props = {
   status: SubscriptionCancellationStatus;
   subscription: SubscriptionTier;
   surface: BillingRecoverySurface;
   onCheck: () => Promise<SubscriptionCancellationStatus | undefined>;
+  /** One-line notice above the composer. Renders only renewal recovery. */
+  variant?: "full" | "compact";
+  /** Plan named in the compact notice, from the live subscription price. */
+  planName?: string;
+  /** Blocks navigation away while chat work is in flight; never blocks send. */
+  actionDisabled?: boolean;
+  onDismiss?: () => void;
+  /**
+   * Current account and organization. A result that arrives after the scope
+   * changed never navigates, reports, or shows feedback to the new owner.
+   */
+  scopeKey?: string | null;
 };
+
+/**
+ * Panels can render before the analytics SDK is ready, so events queue for the
+ * consented owner and flush once identified. Without consent nothing is sent.
+ */
+function captureRecoveryEvent(
+  event: string,
+  properties: Record<string, unknown>,
+  dedupeKey: string,
+) {
+  captureQueuedAuthenticatedEvent({
+    event,
+    properties: paidFunnelProperties(properties),
+    dedupeKey,
+  });
+}
+
+const noAnalyticsOwner = () => null;
+
+/** Only the HTTP status of a billing request failure; never its message. */
+function handoffFailureStatus(error: unknown) {
+  const status =
+    error && typeof error === "object" && "status" in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return typeof status === "number" && Number.isInteger(status)
+    ? status
+    : undefined;
+}
 
 export function BillingRecoveryPanel({
   status,
   subscription,
   surface,
   onCheck,
+  variant = "full",
+  planName,
+  actionDisabled = false,
+  onDismiss,
+  scopeKey,
 }: Props) {
   const [opening, setOpening] = useState<"invoice" | "card" | null>(null);
   const [checking, setChecking] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [message, setMessage] = useState("");
   const mounted = useRef(true);
-  useEffect(() => {
+  const currentScope = useRef(scopeKey);
+  // Read at resolution time: chat work can start while a URL is loading.
+  const navigationBlocked = useRef(actionDisabled);
+  const emittedImpressions = useRef(new Set<string>());
+  // Pending handlers must only see committed props, and a keyed replacement
+  // must invalidate this instance at commit, before pending promises resume.
+  useLayoutEffect(() => {
+    currentScope.current = scopeKey;
+    navigationBlocked.current = actionDisabled;
+  }, [scopeKey, actionDisabled]);
+  useLayoutEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
+  // Consent and sign-in can resolve after the panel is already visible.
+  const analyticsOwner = useSyncExternalStore(
+    subscribeAuthenticatedAnalytics,
+    getPermittedAnalyticsUserId,
+    noAnalyticsOwner,
+  );
   const review = status.checkoutRequiresReview === true;
   const overdue =
     status.subscriptionStatus === "past_due" ||
     status.subscriptionStatus === "unpaid";
   const recovery = !review && status.renewalPaymentRequired === true;
+  const compact = variant === "compact";
+  const visible = compact ? recovery && overdue : overdue || review;
 
   useEffect(() => {
-    if (!overdue && !review) return;
-    captureAuthenticatedEvent(
+    if (
+      !visible ||
+      !analyticsOwner ||
+      (scopeKey && !scopeKey.startsWith(`${analyticsOwner}:`))
+    )
+      return;
+    const recoveryState = review ? "canceled_review" : "renewal";
+    // One exposure per visible account, organization, invoice and surface.
+    const encounter = JSON.stringify([
+      analyticsOwner,
+      scopeKey ?? null,
+      surface,
+      recoveryState,
+      status.latestInvoiceId ?? null,
+    ]);
+    if (emittedImpressions.current.has(encounter)) return;
+    emittedImpressions.current.add(encounter);
+    captureRecoveryEvent(
       PAID_FUNNEL_EVENTS.recoveryPromptImpressed,
-      paidFunnelProperties({
+      {
         surface,
         subscription_tier: subscription,
         subscription_status: status.subscriptionStatus,
-        recovery_state: review ? "canceled_review" : "renewal",
+        recovery_state: recoveryState,
         ...(status.latestInvoiceId && {
           stripe_invoice_id: status.latestInvoiceId,
         }),
-      }),
+      },
+      encounter,
     );
   }, [
-    overdue,
+    analyticsOwner,
+    scopeKey,
+    visible,
     review,
     status.latestInvoiceId,
     status.subscriptionStatus,
     subscription,
     surface,
   ]);
+  /** False once unmounted or the account/organization changed since start. */
+  const isCurrent = (startedScope: string | null | undefined) =>
+    mounted.current && currentScope.current === startedScope;
 
-  if (!overdue && !review) return null;
+  if (!visible) return null;
   const authentication =
     status.renewalPaymentFailure === "authentication_required";
   const amount =
@@ -97,23 +202,45 @@ export function BillingRecoveryPanel({
       : null;
 
   const open = async (action: "invoice" | "card") => {
-    if (opening || checking || recovering) return;
+    if (opening || checking || recovering || actionDisabled) return;
     setOpening(action);
     setMessage("");
+    const startedScope = currentScope.current;
+    const attemptId = uuidv4();
+    const traced = action === "invoice" || review || recovery;
+    const handoffProperties = {
+      surface,
+      subscription_tier: subscription,
+      handoff_action: action,
+      handoff_attempt_id: attemptId,
+      ...(status.latestInvoiceId && {
+        stripe_invoice_id: status.latestInvoiceId,
+      }),
+    };
+    // Unmounted or switched to another account/organization while waiting:
+    // never navigate, capture, or report for the new owner.
+    const stale = () => {
+      if (isCurrent(startedScope)) return false;
+      if (mounted.current) setOpening(null);
+      return true;
+    };
+    const capture = (
+      event: string,
+      properties: Record<string, unknown>,
+      dedupeKey: string,
+    ) => {
+      const owner = getPermittedAnalyticsUserId();
+      if (scopeKey && (!owner || !scopeKey.startsWith(`${owner}:`))) return;
+      if (traced) captureRecoveryEvent(event, properties, dedupeKey);
+    };
     try {
-      if (action === "invoice" || review || recovery)
-        captureAuthenticatedEvent(
-          action === "card"
-            ? PAID_FUNNEL_EVENTS.billingPastDuePaymentUpdateClicked
-            : "billing_renewal_invoice_open_clicked",
-          paidFunnelProperties({
-            surface,
-            subscription_tier: subscription,
-            ...(status.latestInvoiceId && {
-              stripe_invoice_id: status.latestInvoiceId,
-            }),
-          }),
-        );
+      capture(
+        action === "card"
+          ? PAID_FUNNEL_EVENTS.billingPastDuePaymentUpdateClicked
+          : "billing_renewal_invoice_open_clicked",
+        handoffProperties,
+        `${attemptId}:requested`,
+      );
       const url =
         action === "invoice"
           ? await openRenewalInvoice()
@@ -124,13 +251,46 @@ export function BillingRecoveryPanel({
                 returnPath: window.location.pathname,
               },
             );
-      if (mounted.current) window.location.href = url;
+      if (stale()) return;
+      if (navigationBlocked.current) {
+        // Chat or Agent work started while the link loaded. Leaving now would
+        // interrupt it; the user can open billing again once it finishes.
+        capture(
+          BILLING_RECOVERY_HANDOFF_EVENT,
+          {
+            ...handoffProperties,
+            handoff_stage: "url_discarded",
+            discard_reason: "chat_in_flight",
+          },
+          `${attemptId}:url_discarded`,
+        );
+        setOpening(null);
+        return;
+      }
+      capture(
+        BILLING_RECOVERY_HANDOFF_EVENT,
+        { ...handoffProperties, handoff_stage: "url_ready" },
+        `${attemptId}:url_ready`,
+      );
+      window.location.href = url;
     } catch (error) {
-      if (!mounted.current) return;
+      if (stale()) return;
+      const failureStatus = handoffFailureStatus(error);
+      capture(
+        BILLING_RECOVERY_HANDOFF_EVENT,
+        {
+          ...handoffProperties,
+          handoff_stage: "failed",
+          ...(failureStatus && { failure_http_status: failureStatus }),
+        },
+        `${attemptId}:failed`,
+      );
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "Could not open billing. Please try again.",
+        compact
+          ? "Couldn’t open billing."
+          : error instanceof Error
+            ? error.message
+            : "Could not open billing. Please try again.",
       );
       setOpening(null);
     }
@@ -140,9 +300,10 @@ export function BillingRecoveryPanel({
     if (checking || opening || recovering) return;
     setChecking(true);
     setMessage("");
+    const startedScope = currentScope.current;
     try {
       const next = await onCheck();
-      if (!mounted.current) return;
+      if (!isCurrent(startedScope)) return;
       if (!next)
         throw new Error(
           "We couldn't verify your billing status. Please try again.",
@@ -176,9 +337,10 @@ export function BillingRecoveryPanel({
         toast.success("Your billing status is up to date. You can try again.");
       }
     } catch {
-      setMessage("We couldn't verify your billing status. Please try again.");
+      if (isCurrent(startedScope))
+        setMessage("We couldn't verify your billing status. Please try again.");
     } finally {
-      setChecking(false);
+      if (mounted.current) setChecking(false);
     }
   };
 
@@ -186,10 +348,22 @@ export function BillingRecoveryPanel({
     if (opening || checking || recovering) return;
     setRecovering(true);
     setMessage("");
+    const startedScope = currentScope.current;
+    const settleDiagnostic = beginServerActionDiagnostic(
+      "billing_renewal_recovery",
+    );
     try {
-      const ready = await recoverCanceledRenewal();
+      let ready: boolean;
+      try {
+        ready = await recoverCanceledRenewal();
+      } catch (error) {
+        settleDiagnostic(error);
+        throw error;
+      }
+      // Settle before onCheck so a later status-check failure is not attributed to the action.
+      settleDiagnostic();
       const next = await onCheck();
-      if (!mounted.current) return;
+      if (!isCurrent(startedScope)) return;
       if (
         !ready ||
         !next ||
@@ -203,7 +377,7 @@ export function BillingRecoveryPanel({
       }
       toast.success("You can now choose a plan and subscribe again.");
     } catch {
-      if (mounted.current)
+      if (isCurrent(startedScope))
         setMessage(
           "We couldn't prepare your new subscription. Check payment status or try again.",
         );
@@ -211,6 +385,79 @@ export function BillingRecoveryPanel({
       if (mounted.current) setRecovering(false);
     }
   };
+
+  if (compact) {
+    // Bank verification is completed on the hosted invoice; a new card cannot
+    // satisfy it. Every other failure updates the payment method.
+    const action =
+      authentication && status.renewalInvoicePayable ? "invoice" : "card";
+    const plan = planName ? `${planName} ` : "";
+    const title =
+      action === "invoice"
+        ? `Your ${plan}renewal needs bank verification.`
+        : `Your ${plan}renewal payment failed.`;
+    const detail = `${action === "invoice" ? "Confirm" : "Update"} it to keep ${planName ?? "your plan"}.`;
+    return (
+      <section
+        aria-label="Renewal payment"
+        data-testid="renewal-payment-notice"
+        className="mb-2 flex items-start gap-2.5 rounded-[22px] border border-black/8 bg-input-chat py-3 pr-1.5 pl-3.5 text-sm sm:items-center sm:py-2 sm:pr-2 dark:border-border"
+      >
+        <AlertTriangle
+          aria-hidden="true"
+          className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 sm:mt-0 dark:text-amber-400"
+        />
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-2.5">
+          <p className="flex min-w-0 flex-1 flex-wrap gap-x-1 leading-5">
+            <span className="text-foreground">{title}</span>
+            {message ? (
+              <span role="status" className="text-foreground">
+                {message}
+              </span>
+            ) : (
+              <span className="hidden text-muted-foreground sm:inline">
+                {detail}
+              </span>
+            )}
+          </p>
+          <Button
+            size="sm"
+            className="h-8 shrink-0 px-3.5 text-[13px] sm:h-7 sm:px-3 sm:text-xs"
+            disabled={!!opening || actionDisabled}
+            title={
+              actionDisabled
+                ? "Available when the response finishes"
+                : undefined
+            }
+            onClick={() => void open(action)}
+          >
+            {opening ? (
+              <>
+                <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                Opening…
+              </>
+            ) : message ? (
+              "Try again"
+            ) : action === "invoice" ? (
+              "Complete payment"
+            ) : (
+              "Update payment"
+            )}
+          </Button>
+        </div>
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Hide renewal payment notice"
+            className="flex h-8 w-8 shrink-0 -translate-y-1.5 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:h-7 sm:w-7 sm:translate-y-0"
+          >
+            <X aria-hidden="true" className="h-4 w-4" />
+          </button>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section

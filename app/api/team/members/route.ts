@@ -17,21 +17,26 @@ export const GET = async (req: NextRequest) => {
     const { userId, organizationId, membership } = guard;
     const isAdmin = membership.role?.slug === "admin";
 
-    // Get organization details, all members, and pending invitations in parallel
-    const [organization, allMembers, pendingInvitations] = await Promise.all([
+    // Get organization details, all members, and pending invitations in parallel.
+    // Traverse every page: seat counts and the roster must cover the whole org.
+    const [organization, allMembers, allInvitations] = await Promise.all([
       workos.organizations.getOrganization(organizationId),
-      workos.userManagement.listOrganizationMemberships({
-        organizationId,
-        statuses: ["active"],
-      }),
-      workos.userManagement.listInvitations({
-        organizationId,
-      }),
+      workos.userManagement
+        .listOrganizationMemberships({
+          organizationId,
+          statuses: ["active"],
+        })
+        .then((page) => page.autoPagination()),
+      workos.userManagement
+        .listInvitations({
+          organizationId,
+        })
+        .then((page) => page.autoPagination()),
     ]);
 
     // Get user details for each member
     const membersWithDetails = await Promise.all(
-      allMembers.data.map(async (member) => {
+      allMembers.map(async (member) => {
         const user = await workos.userManagement.getUser(member.userId);
         return {
           id: member.id,
@@ -46,7 +51,7 @@ export const GET = async (req: NextRequest) => {
       }),
     );
 
-    const currentSeats = allMembers.data.length;
+    const currentSeats = allMembers.length;
     let totalSeats = currentSeats; // Default to current if no Stripe info
     let billingPeriod: "monthly" | "yearly" | null = null;
 
@@ -82,7 +87,7 @@ export const GET = async (req: NextRequest) => {
     }
 
     // Get pending invitations (only those not yet accepted/revoked/expired)
-    const invitationsWithDetails = pendingInvitations.data
+    const invitationsWithDetails = allInvitations
       .filter((invitation) => invitation.state === "pending")
       .map((invitation) => ({
         id: invitation.id,
@@ -191,13 +196,15 @@ export const DELETE = async (req: NextRequest) => {
       );
     }
 
-    // Check if this is the last admin
-    const allMembers = await workos.userManagement.listOrganizationMemberships({
-      organizationId,
-      statuses: ["active"],
-    });
+    // Check if this is the last admin; another admin may be on any page
+    const allMembers = await workos.userManagement
+      .listOrganizationMemberships({
+        organizationId,
+        statuses: ["active"],
+      })
+      .then((page) => page.autoPagination());
 
-    const adminCount = allMembers.data.filter(
+    const adminCount = allMembers.filter(
       (m) => m.role?.slug === "admin",
     ).length;
 

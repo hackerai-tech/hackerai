@@ -71,7 +71,8 @@ export class ProviderTerminalError extends Error {
   readonly model: string;
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
-  readonly origin?: "local_request_size_guard" | "auxiliary_vision";
+  readonly origin?:
+    "local_request_size_guard" | "auxiliary_vision" | "browser_handoff_read";
   readonly localRequestId?: string;
   readonly requestBytesBefore?: number;
   readonly requestBytesAfter?: number;
@@ -89,6 +90,7 @@ export class ProviderTerminalError extends Error {
   ) {
     const details = extractErrorDetails(cause);
     const category = getProviderErrorCategory(details);
+    const browserHandoffRead = details.errorOrigin === "browser_handoff_read";
     const errorMetadata = extractOpenRouterMetadataFromError(cause);
     const errorProvider =
       errorMetadata.provider_name ??
@@ -116,21 +118,29 @@ export class ProviderTerminalError extends Error {
         context.openRouterMetadata?.[key] !== undefined &&
         failedCallMetadata[key] !== context.openRouterMetadata[key],
     );
-    const metadata = mergeOpenRouterMetadata(
-      failedCallMetadata,
-      conflictingAttribution ? undefined : context.openRouterMetadata,
-    );
-    const model = metadata.openrouter_selected_model ?? context.model;
+    // A safety read is not a provider request. Prior model/route identifiers
+    // cannot identify the owner of this failure, even if the SDK reports it.
+    const metadata = browserHandoffRead
+      ? {}
+      : mergeOpenRouterMetadata(
+          failedCallMetadata,
+          conflictingAttribution ? undefined : context.openRouterMetadata,
+        );
+    const model = browserHandoffRead
+      ? undefined
+      : (metadata.openrouter_selected_model ?? context.model);
     const provider =
       metadata.provider_name ??
       (conflictingAttribution ? undefined : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
     const localSizeGuard = getLocalOpenRouterRequestSizeGuardDetails(cause);
-    const origin = localSizeGuard
-      ? "local_request_size_guard"
-      : details.errorOrigin === "auxiliary_vision"
-        ? "auxiliary_vision"
-        : undefined;
+    const origin = browserHandoffRead
+      ? "browser_handoff_read"
+      : localSizeGuard
+        ? "local_request_size_guard"
+        : details.errorOrigin === "auxiliary_vision"
+          ? "auxiliary_vision"
+          : undefined;
     const message = [
       "Provider terminal error",
       `category=${category}`,

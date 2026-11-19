@@ -85,6 +85,7 @@ function DataStreamSetter({
 
 interface RenderNoticeProps {
   finishReason?: string;
+  continueDisabledReason?: string;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (selectedModelOverride?: SelectedModel) => void;
@@ -108,6 +109,89 @@ function renderNotice(
 }
 
 describe("FinishReasonNotice", () => {
+  it.each([
+    {
+      finishReason: "local-connection-lost",
+      reason: "The connection to your computer was lost, so this run stopped.",
+    },
+    {
+      finishReason: "browser-handoff-abandoned",
+      reason: "The Agent paused while waiting for the browser handoff.",
+    },
+  ])("waits for one manual Resume after $finishReason", async (stop) => {
+    let finishResume!: () => void;
+    const onContinue = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishResume = resolve;
+        }),
+    );
+    const props = {
+      finishReason: stop.finishReason,
+      mode: "agent" as const,
+      onContinue,
+    };
+    const view = renderNotice({
+      ...props,
+      continueDisabledReason: "Reconnect the selected computer.",
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(stop.reason);
+    expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Resume" }),
+    ).toHaveAccessibleDescription("Reconnect the selected computer.");
+
+    view.rerender(
+      <DataStreamProvider>
+        <FinishReasonNotice {...props} />
+      </DataStreamProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resuming…" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Resuming…" })).toBeDisabled();
+    await act(async () => finishResume());
+    expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+  });
+
+  it("offers explicit resume after a lost computer connection, even after automatic continuation was pending", () => {
+    const onContinue = jest.fn();
+    renderNotice(
+      { finishReason: "local-connection-lost", mode: "agent", onContinue },
+      { isAutoContinuing: true },
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(/connection.*lost/i);
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains an abandoned browser handoff without a transcript Resume when the Goal owns it", () => {
+    renderNotice(
+      { finishReason: "browser-handoff-abandoned", mode: "agent" },
+      { isAutoContinuing: true },
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saved progress is available. You may need to reopen the browser.",
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("explains a repetition halt without offering to repeat the same work", () => {
+    const onContinue = jest.fn();
+    renderNotice({ finishReason: "doom-loop", mode: "agent", onContinue });
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /repeating work without progress.*new instruction.*change the approach/i,
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
   it("shows automatic continuation status without a manual Continue button", () => {
     const onContinue = jest.fn();
     renderNotice(

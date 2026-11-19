@@ -5,6 +5,7 @@ import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
+import { getSidebarChatStatus } from "./sidebar-chat-status";
 
 export type SidebarPaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -118,11 +119,9 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           branchedFromTitle={chat.branched_from_title}
           shareId={chat.share_id}
           isPinned={chat.pinned_at != null}
-          isStreaming={
-            !chat.active_agent_approval_pending &&
-            (!!chat.active_stream_id || !!chat.active_trigger_run_id)
-          }
+          isStreaming={getSidebarChatStatus(chat).isStreaming}
           isAwaitingApproval={!!chat.active_agent_approval_pending}
+          needsInputReason={getSidebarChatStatus(chat).needsInputReason}
           lastRunFinishedAt={chat.last_run_finished_at}
         />
       ))}

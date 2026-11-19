@@ -41,6 +41,15 @@ const MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS = 6;
 const RECORD_CHECKPOINT_INTERVAL_MS = 10_000;
 const RECORD_CHECKPOINT_WAIT_MS = 2_000;
 
+type RecordCheckpointIssueReason =
+  "save_unacknowledged" | "checkpoint_threw" | "wait_deadline";
+
+export type RecordCheckpointIssue = {
+  terminalSessionId: string;
+  sessionKind: "pty" | "command";
+  reason: RecordCheckpointIssueReason;
+};
+
 export interface PtySession {
   readonly sessionId: string;
   readonly chatId: string;
@@ -71,8 +80,23 @@ export interface PtySession {
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
   recordPath?: string;
-  recordPersistenceFailed?: boolean;
+  /** Latest checkpoint write; pending does not invalidate an earlier recordPath. */
+  recordPersistenceStatus?: "pending" | "saved" | "failed";
+  /** Compatibility flag: a bounded wait deadline is not a failed write. */
+  readonly recordPersistenceFailed?: boolean;
   outputPath?: string;
+}
+
+/** Share checkpoint state across both terminal tools without treating delay as loss. */
+export function terminalRecordPersistenceFields(session: PtySession) {
+  return {
+    ...(session.recordPersistenceStatus
+      ? { recordPersistenceStatus: session.recordPersistenceStatus }
+      : {}),
+    ...(session.recordPersistenceFailed
+      ? { recordPersistenceFailed: true }
+      : {}),
+  };
 }
 
 export interface CreateSessionOpts {
@@ -91,7 +115,9 @@ export interface CreateSessionOpts {
     sandboxInstance: string;
     artifactPaths: string[];
     save: (record: TerminalExecutionRecord) => Promise<string | null>;
-    prune: () => Promise<void>;
+    /** Stop admitting retention I/O on shutdown; already sent operations settle normally. */
+    prune: (signal?: AbortSignal) => Promise<void>;
+    reportCheckpointIssue?: (issue: RecordCheckpointIssue) => void;
     /** High-overhead transports may persist only at lifecycle boundaries. */
     checkpointOnStart?: boolean;
     checkpointOnOutput?: boolean;
@@ -99,7 +125,16 @@ export interface CreateSessionOpts {
   };
 }
 
+type RecordWork = {
+  sessionId: string;
+  pending: Set<Promise<void>>;
+  checkpoints: Set<Promise<void>>;
+  checkpointWaiters: Set<() => void>;
+  retention: Set<AbortController>;
+};
+
 interface InternalSession extends PtySession {
+  recordWork: RecordWork;
   /** Total bytes dropped from the front of the ring since session start. */
   droppedBytes: number;
   /** idle-timeout timer — reset on every input/output byte. */
@@ -116,10 +151,13 @@ interface InternalSession extends PtySession {
   closing: boolean;
   /** Set when the process exits naturally — session stays around for view/wait. */
   exitedNaturally: { exitCode: number | null } | null;
+  /** A rejected transport observation is not proof the process exited. */
+  processExitConfirmed: boolean;
   executionRecord?: CreateSessionOpts["executionRecord"];
   recordQueue: Promise<void>;
   recordWriting: boolean;
   recordDirty: boolean;
+  reportedRecordCheckpointIssues: Set<RecordCheckpointIssueReason>;
   persistedRecordFingerprint?: string;
   persistedRecordAt?: number;
   recordTimer: ReturnType<typeof setTimeout> | null;
@@ -147,23 +185,102 @@ function shortSessionId(
 
 export class PtySessionManager {
   private chats = new Map<string, Map<string, InternalSession>>();
+  private pendingCreates = new Map<string, Set<Promise<PtySession>>>();
+  // Record work can outlive a tool's short checkpoint wait and a forgotten
+  // foreground session. Keep ownership until the underlying transport settles.
+  private recordWork = new Map<string, Set<RecordWork>>();
+
+  private trackRecordWork(
+    chatId: string,
+    work: RecordWork,
+    operation: Promise<void>,
+    checkpoint = false,
+  ): void {
+    let groups = this.recordWork.get(chatId);
+    if (!groups) this.recordWork.set(chatId, (groups = new Set()));
+    groups.add(work);
+    const pending = operation
+      .catch(() => undefined)
+      .finally(() => {
+        work.pending.delete(pending);
+        work.checkpoints.delete(pending);
+        if (!work.pending.size && !work.retention.size) {
+          const groups = this.recordWork.get(chatId);
+          groups?.delete(work);
+          if (groups?.size === 0) this.recordWork.delete(chatId);
+        }
+        for (const notify of work.checkpointWaiters) notify();
+      });
+    work.pending.add(pending);
+    if (checkpoint) work.checkpoints.add(pending);
+  }
+
+  /** Wait only for this record's writes; a slow transport must remain pending. */
+  async waitForPendingRecord(
+    chatId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const groups = [...(this.recordWork.get(chatId) ?? [])].filter(
+      (work) => work.sessionId === sessionId,
+    );
+    const pending = () => groups.some((work) => work.checkpoints.size > 0);
+    if (!pending()) return false;
+    return new Promise<boolean>((resolve) => {
+      const finish = (stillPending: boolean) => {
+        clearTimeout(timer);
+        for (const work of groups) work.checkpointWaiters.delete(notify);
+        resolve(stillPending);
+      };
+      const notify = () => {
+        // Coalesced writes stay owned by the same group until its final save.
+        if (!pending()) finish(false);
+      };
+      const timer = setTimeout(() => finish(true), RECORD_CHECKPOINT_WAIT_MS);
+      for (const work of groups) work.checkpointWaiters.add(notify);
+      // Timeout removes observers even if the underlying transport never settles.
+      notify();
+    });
+  }
 
   async create(chatId: string, opts: CreateSessionOpts): Promise<PtySession> {
     const chat = this.chats.get(chatId);
-    const count = chat ? chat.size : 0;
+    const count =
+      [...(chat?.values() ?? [])].filter(
+        (session) => !session.processExitConfirmed,
+      ).length + (this.pendingCreates.get(chatId)?.size ?? 0);
     if (count >= MAX_CONCURRENT_PTYS_PER_CHAT) {
       throw new Error(
         `MAX_CONCURRENT_PTYS_PER_CHAT reached (limit=${MAX_CONCURRENT_PTYS_PER_CHAT}) for chatId=${chatId}`,
       );
     }
 
+    // Reserve synchronously, before any asynchronous factory can spawn. The
+    // same promise is owned by closeAll if shutdown starts during creation.
+    let pending = this.pendingCreates.get(chatId);
+    if (!pending) this.pendingCreates.set(chatId, (pending = new Set()));
+    const creation = Promise.resolve().then(() =>
+      this.createSession(chatId, opts),
+    );
+    pending.add(creation);
+    try {
+      return await creation;
+    } finally {
+      pending.delete(creation);
+      if (!pending.size) this.pendingCreates.delete(chatId);
+    }
+  }
+
+  private async createSession(
+    chatId: string,
+    opts: CreateSessionOpts,
+  ): Promise<PtySession> {
     // The factory is invoked BY the manager so that concurrency cap rejection
     // above happens without spawning anything. If the factory itself throws,
     // nothing leaks — there is no handle to clean up. If wiring the handle
     // *after* it's spawned throws, we best-effort kill the orphan so it
     // doesn't leak in the sandbox.
     const handle = await opts.createHandle();
-    const sessionId = shortSessionId(chat);
+    const sessionId = shortSessionId(this.chats.get(chatId));
     const now = Date.now();
 
     try {
@@ -189,6 +306,9 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
+        get recordPersistenceFailed() {
+          return this.recordPersistenceStatus === "failed";
+        },
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,
@@ -197,10 +317,19 @@ export class PtySessionManager {
         unsubscribe: null,
         closing: false,
         exitedNaturally: null,
+        processExitConfirmed: false,
         executionRecord: opts.executionRecord,
+        recordWork: {
+          sessionId,
+          pending: new Set(),
+          checkpoints: new Set(),
+          checkpointWaiters: new Set(),
+          retention: new Set(),
+        },
         recordQueue: Promise.resolve(),
         recordWriting: false,
         recordDirty: false,
+        reportedRecordCheckpointIssues: new Set(),
         recordTimer: null,
         exitReason: null,
       };
@@ -223,7 +352,12 @@ export class PtySessionManager {
         .then(
           (info) => {
             session.exitedNaturally = { exitCode: info.exitCode };
-            void this.checkpoint(session);
+            session.processExitConfirmed = info.observationFailed !== true;
+            if (info.observationFailed)
+              session.exitReason ??= "transport_error";
+            void this.checkpoint(session).finally(() =>
+              this.pruneCompleted(chatId),
+            );
           },
           () => {
             session.exitedNaturally = { exitCode: null };
@@ -247,8 +381,20 @@ export class PtySessionManager {
       // Keep retention outside the critical command launch path. Some file
       // transports expand one scan into many remote exec/file requests, so
       // they defer retention instead of doing it for every command.
-      if (opts.executionRecord?.pruneOnStart !== false)
-        void opts.executionRecord?.prune();
+      if (opts.executionRecord && opts.executionRecord.pruneOnStart !== false) {
+        const controller = new AbortController();
+        const work = session.recordWork;
+        work.retention.add(controller);
+        this.trackRecordWork(
+          chatId,
+          work,
+          Promise.resolve()
+            .then(() => opts.executionRecord!.prune(controller.signal))
+            .finally(() => {
+              work.retention.delete(controller);
+            }),
+        );
+      }
 
       return session;
     } catch (wiringErr) {
@@ -320,10 +466,56 @@ export class PtySessionManager {
   }
 
   async closeAll(chatId: string): Promise<void> {
-    const chat = this.chats.get(chatId);
-    if (!chat) return;
-    const sessions = Array.from(chat.values());
-    await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
+    const sessions = Array.from(this.chats.get(chatId)?.values() ?? []);
+    const pending = [...(this.pendingCreates.get(chatId) ?? [])];
+    const groups = new Set([
+      ...(this.recordWork.get(chatId) ?? []),
+      ...sessions.map((session) => session.recordWork),
+    ]);
+    // Include only factories admitted before this drain. Later responses own
+    // their own creations, even if those factories finish first.
+    const created = await Promise.allSettled(pending);
+    for (const result of created) {
+      if (result.status === "fulfilled") {
+        const session = result.value as InternalSession;
+        if (!sessions.includes(session)) sessions.push(session);
+        groups.add(session.recordWork);
+      }
+    }
+    // Capture only work owned at shutdown. A later response on this chat
+    // must not be canceled or included in this response's drain.
+    for (const work of groups) {
+      for (const controller of work.retention) controller.abort();
+    }
+    const results = await Promise.allSettled(
+      sessions.map((s) => this.killAndRemove(s, "closeAll")),
+    );
+    // The short checkpoint wait bounds a tool call, not receiver lifetime.
+    // Await actual transports, including coalesced final writes, under their
+    // existing deadlines. Already dispatched native work is never replayed.
+    for (const work of groups) {
+      while (work.pending.size) await Promise.allSettled([...work.pending]);
+    }
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
+
+  /** At most three observations per session; a wait deadline is not a failed write. */
+  private reportRecordCheckpointIssue(
+    session: InternalSession,
+    reason: RecordCheckpointIssueReason,
+  ): void {
+    if (session.reportedRecordCheckpointIssues.has(reason)) return;
+    session.reportedRecordCheckpointIssues.add(reason);
+    try {
+      session.executionRecord?.reportCheckpointIssue?.({
+        terminalSessionId: session.sessionId,
+        sessionKind: session.kind,
+        reason,
+      });
+    } catch {
+      // Diagnostics must not change persistence, coalescing, or cancellation.
+    }
   }
 
   /** Persist bounded evidence before a tool yields or live handles are removed. */
@@ -385,8 +577,11 @@ export class PtySessionManager {
           )
             continue;
           record.updatedAt = Date.now();
+          session.recordPersistenceStatus = "pending";
           const path = await internal.executionRecord!.save(record);
-          session.recordPersistenceFailed = !path;
+          session.recordPersistenceStatus = path ? "saved" : "failed";
+          if (!path)
+            this.reportRecordCheckpointIssue(internal, "save_unacknowledged");
           if (path) {
             session.recordPath = path;
             // Only acknowledge successful writes; unchanged failed snapshots retry.
@@ -396,19 +591,26 @@ export class PtySessionManager {
         }
       })()
         .catch(() => {
-          session.recordPersistenceFailed = true;
+          session.recordPersistenceStatus = "failed";
+          this.reportRecordCheckpointIssue(internal, "checkpoint_threw");
         })
         .finally(async () => {
           internal.recordWriting = false;
           if (internal.recordDirty) await this.checkpoint(session);
         });
+      this.trackRecordWork(
+        session.chatId,
+        internal.recordWork,
+        internal.recordQueue,
+        true,
+      );
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       internal.recordQueue,
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          session.recordPersistenceFailed = true;
+          this.reportRecordCheckpointIssue(internal, "wait_deadline");
           resolve();
         }, RECORD_CHECKPOINT_WAIT_MS);
       }),
@@ -429,6 +631,17 @@ export class PtySessionManager {
   }
 
   // ─── internals ──────────────────────────────────────────────────────────
+
+  private pruneCompleted(chatId: string): void {
+    // Retain a bounded in-memory history independently of the live-process cap.
+    // Persisted records and outstanding writes retain their separate ownership.
+    const completed = [...(this.chats.get(chatId)?.values() ?? [])].filter(
+      (session) => session.processExitConfirmed && !session.closing,
+    );
+    for (const session of completed.slice(0, -MAX_CONCURRENT_PTYS_PER_CHAT)) {
+      this.removeSession(session);
+    }
+  }
 
   private onData(session: InternalSession, bytes: Uint8Array): void {
     // Copy into an owned Uint8Array so callers can recycle buffers

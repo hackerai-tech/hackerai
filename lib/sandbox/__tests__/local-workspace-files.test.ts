@@ -19,17 +19,22 @@ const input = (extra = {}) =>
   workspaceRequest.parse({ chatId: "chat", action: "list", ...extra });
 beforeEach(() => {
   jest.clearAllMocks();
+  query.mockReset();
+  run.mockReset();
   process.env.CONVEX_SERVICE_ROLE_KEY = "test";
   process.env.CENTRIFUGO_WS_URL = "wss://test.invalid";
   process.env.CENTRIFUGO_TOKEN_SECRET = "test";
-  query.mockResolvedValueOnce("environment:machine").mockResolvedValueOnce([
-    {
-      connectionId: "session",
-      environmentId: "machine",
-      name: "Test Mac",
-      osInfo: { platform: "darwin" },
-    },
-  ]);
+  query
+    .mockResolvedValueOnce("desktop-environment:machine")
+    .mockResolvedValueOnce([
+      {
+        connectionId: "session",
+        environmentId: "machine",
+        isDesktop: true,
+        name: "Test Mac",
+        osInfo: { platform: "darwin" },
+      },
+    ]);
   run.mockResolvedValue({
     exitCode: 0,
     stdout: JSON.stringify({

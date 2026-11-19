@@ -7,12 +7,11 @@ const useChatHandlersSrc = fs.readFileSync(
 );
 
 describe("useChatHandlers chat action contracts", () => {
-  it("routes chat submissions through the shared action error boundary", () => {
+  it("routes ordinary chat actions through the shared error boundary", () => {
     expect(useChatHandlersSrc).toMatch(/const runChatAction = /);
 
     for (const description of [
       "send message",
-      "send fallback message",
       "regenerate response",
       "retry response",
       "regenerate edited message",

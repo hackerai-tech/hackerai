@@ -1,4 +1,5 @@
 import type { ToolResultCycle } from "./tool-loop-observer";
+import { requiresManualAgentResume } from "./manual-agent-resume";
 import type { StopCondition } from "ai";
 import {
   detectDoomLoop,
@@ -46,10 +47,13 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToPostSummarizationIncomplete: boolean;
   stoppedDueToStepLimit?: boolean;
 }): AgentAutoContinueStopSource | null {
-  // A hard step ceiling must win over overlapping context/compaction flags.
+  // A lost host or abandoned browser handoff continues only on explicit resume.
+  if (requiresManualAgentResume(state.finishReason)) return null;
+  // Hard stops must win over overlapping context/compaction flags.
   if (
     state.stoppedDueToStepLimit ||
-    state.finishReason === STEP_LIMIT_FINISH_REASON
+    state.finishReason === STEP_LIMIT_FINISH_REASON ||
+    state.finishReason === DOOM_LOOP_FINISH_REASON
   )
     return null;
   if (state.stoppedDueToTokenExhaustion) {

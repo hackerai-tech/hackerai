@@ -16,6 +16,11 @@ type MockConnection = {
 };
 
 let mockConnections: MockConnection[] | undefined;
+let mockSandboxPreference = "e2b";
+let mockChatMode = "ask";
+const mockSetSandboxPreference = jest.fn();
+const mockSetChatMode = jest.fn();
+const mockSetSelectedModel = jest.fn();
 const mockGetToken = jest.fn<() => Promise<{ token: string }>>();
 const mockRegenerateToken = jest.fn<() => Promise<{ token: string }>>();
 const mockWriteText = jest.fn<(text: string) => Promise<void>>();
@@ -38,6 +43,14 @@ jest.mock("convex/react", () => ({
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     localConnections: mockConnections,
+    sandboxPreference: mockSandboxPreference,
+    setSandboxPreference: mockSetSandboxPreference,
+    chatMode: mockChatMode,
+    setChatMode: mockSetChatMode,
+    subscription: "free",
+    chatModeAccessResolved: true,
+    selectedModel: "hackerai-pro",
+    setSelectedModel: mockSetSelectedModel,
   }),
 }));
 
@@ -94,6 +107,8 @@ describe("RemoteControlTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockConnections = [];
+    mockSandboxPreference = "e2b";
+    mockChatMode = "ask";
     mockGetToken.mockResolvedValue({ token: "test-token" });
     mockRegenerateToken.mockResolvedValue({ token: "regenerated-token" });
     mockWriteText.mockResolvedValue(undefined);
@@ -148,6 +163,28 @@ describe("RemoteControlTab", () => {
     expect(screen.getByText("bobbys-mac")).toBeInTheDocument();
     expect(screen.getByText("Desktop app connected")).toBeInTheDocument();
     expect(screen.queryByText("No active connections")).not.toBeInTheDocument();
+  });
+
+  it("requires a click to select the exact runner and enter Agent mode", () => {
+    mockConnections = [remoteConnection, secondRemoteConnection];
+    render(<RemoteControlTab />);
+    expect(mockSetSandboxPreference).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole("button", { name: "Select" })[1]);
+    expect(mockSetSandboxPreference).toHaveBeenCalledWith("conn-remote-2", {
+      remember: true,
+    });
+    expect(mockSetSelectedModel).toHaveBeenCalledWith("auto");
+    expect(mockSetChatMode).toHaveBeenCalledWith("agent");
+  });
+
+  it("allows a selected runner to switch from Ask back to Agent", () => {
+    mockConnections = [remoteConnection];
+    mockSandboxPreference = remoteConnection.connectionId;
+    mockChatMode = "ask";
+    render(<RemoteControlTab />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    expect(mockSetChatMode).toHaveBeenCalledWith("agent");
   });
 
   it("replaces setup with a connect-another action when already connected", () => {

@@ -23,8 +23,10 @@ import {
   WORKSPACE_PREVIEW_LIMIT,
   WORKSPACE_DOWNLOAD_LIMIT,
 } from "@/lib/sandbox/workspace-files";
-import { downloadFile } from "@/lib/utils/file-download";
-import { isTauriEnvironment } from "../hooks/useTauri";
+import {
+  downloadFile,
+  type DownloadFileResult,
+} from "@/lib/utils/file-download";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
   ssr: false,
@@ -139,50 +141,49 @@ export function CapturedFilePreview({
   const download = async () => {
     setBusy(true);
     setError("");
+    let result: DownloadFileResult;
+    let failure: string | undefined;
     try {
-      const downloadName = file.partial ? `${filename}.excerpt.txt` : filename;
       if (file.text !== undefined)
-        await downloadFile({ filename: downloadName, content: file.text });
+        result = await downloadFile({
+          filename: file.partial ? `${filename}.excerpt.txt` : filename,
+          content: file.text,
+        });
       else if (file.saved?.fileId) {
+        // Signed URLs expire; resolve a fresh one from the stored file on every attempt.
         const url = await getUrl({ fileId: file.saved.fileId });
         if (!url) throw new Error("Saved file is unavailable.");
         const bytes = await readBounded(
           await fetch(url),
           WORKSPACE_DOWNLOAD_LIMIT,
         );
-        if (isTauriEnvironment()) {
-          let content: string;
-          try {
-            content = new TextDecoder("utf-8", {
-              fatal: true,
-              ignoreBOM: true,
-            }).decode(bytes);
-          } catch {
-            throw new Error(
-              "Use the web app to download binary files. Desktop can save UTF-8 text here.",
-            );
-          }
-          await downloadFile({ filename, content });
-        } else {
-          const blobUrl = URL.createObjectURL(new Blob([bytes]));
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = filename;
-          link.click();
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
-        }
+        result = await downloadFile({
+          filename,
+          content: bytes,
+          mimeType: file.saved.mediaType || "application/octet-stream",
+        });
       } else throw new Error("This file has no saved download.");
-      captureAuthenticatedEvent("workspace_file_download", {
-        source: "chat",
-        outcome: "initiated",
-      });
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Download unavailable.",
-      );
-    } finally {
-      setBusy(false);
+      result = { outcome: "failed" };
+      // Network failures surface as TypeError("Failed to fetch"); give a next step instead.
+      failure =
+        cause instanceof Error && !(cause instanceof TypeError) && cause.message
+          ? cause.message
+          : "The saved file could not be loaded. Check your connection and try again.";
     }
+    setBusy(false);
+    captureAuthenticatedEvent("workspace_file_download", {
+      source: "chat",
+      outcome: result.outcome,
+    });
+    // Cancel is a no-op. Failures keep an inline reason beside the retry action.
+    if (result.outcome === "failed")
+      setError(
+        failure ??
+          (result.reason === "unsupported_native"
+            ? "Update HackerAI Desktop to save this file, then try again."
+            : "The file could not be saved. Try again."),
+      );
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -303,9 +304,11 @@ function FileTree({
 export function ChatFilesPanel({
   messages,
   onOpenFile,
+  loading = false,
 }: {
   messages: FileMessage[];
   onOpenFile?: (file: CapturedFile) => void;
+  loading?: boolean;
 }) {
   const files = useMemo(() => collectChatFiles(messages), [messages]);
   const [query, setQuery] = useState("");
@@ -368,7 +371,12 @@ export function ChatFilesPanel({
               }
             />
           </nav>
-          {!files.length && (
+          {loading && (
+            <p role="status" className="text-sm text-muted-foreground">
+              Loading saved files…
+            </p>
+          )}
+          {!files.length && !loading && (
             <p className="text-sm text-muted-foreground">
               No captured file contents yet. Files appear after the Agent reads,
               writes, edits, or delivers them. Use Workspace to browse other

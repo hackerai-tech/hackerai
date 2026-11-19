@@ -1,3 +1,5 @@
+import { ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY } from "@/lib/experiments/abliteration-keys";
+
 export type ExperimentAnalyticsContext = {
   key: string;
   variant: string;
@@ -25,6 +27,8 @@ export function getExperimentAnalyticsProperties(
     }),
     experiment_key: experiment.key,
     experiment_variant: experiment.variant,
-    [`$feature/${experiment.key}`]: experiment.variant,
+    ...(experiment.key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
+      ? { routing_policy: experiment.key }
+      : { [`$feature/${experiment.key}`]: experiment.variant }),
   };
 }

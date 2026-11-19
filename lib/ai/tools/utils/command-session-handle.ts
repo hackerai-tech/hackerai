@@ -13,7 +13,7 @@ import { createResolvableExited } from "./pty-exited-promise";
 export interface CommandSessionHandle extends PtyHandle {
   emitText(text: string): void;
   setPid(pid: number): void;
-  resolveExit(exitCode: number | null): void;
+  resolveExit(exitCode: number | null, observationFailed?: boolean): void;
 }
 
 export function createCommandSessionHandle(opts: {
@@ -25,10 +25,13 @@ export function createCommandSessionHandle(opts: {
   let pid = 0;
   let hasExited = false;
 
-  const resolveExit = (exitCode: number | null) => {
+  const resolveExit = (exitCode: number | null, observationFailed = false) => {
     if (hasExited) return;
-    hasExited = true;
-    resolveOnce({ exitCode });
+    hasExited = !observationFailed;
+    resolveOnce({
+      exitCode,
+      ...(observationFailed ? { observationFailed: true as const } : {}),
+    });
   };
 
   return {
@@ -49,7 +52,7 @@ export function createCommandSessionHandle(opts: {
       if (!terminated) {
         throw new Error("Failed to terminate non-interactive command session.");
       }
-      resolveExit(null);
+      resolveExit(null, true);
     },
     onData(cb): () => void {
       listeners.add(cb);

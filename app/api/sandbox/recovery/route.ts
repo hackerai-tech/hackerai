@@ -3,6 +3,7 @@ import { tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   confirmRecovery,
@@ -12,12 +13,14 @@ import {
 import { failConsent } from "@/lib/cloud-recovery/store";
 import type { cloudWorkspaceRecoveryTask } from "@/trigger/cloud-workspace-recovery";
 export const maxDuration = 60;
+export const runtime = "nodejs";
 const bodySchema = z.union([
   z.object({ token: z.string().uuid(), confirmed: z.boolean() }).strict(),
   z.object({ token: z.string().uuid(), reopen: z.literal(true) }).strict(),
 ]);
 async function owner(request: NextRequest) {
-  const { userId, subscription } = await getUserIDAndPro(request);
+  const { userId, subscription, organizationId } =
+    await getUserIDAndPro(request);
   if (subscription === "free") throw new ChatSDKError("forbidden:api");
   if (
     process.env.VERCEL_ENV &&
@@ -25,7 +28,7 @@ async function owner(request: NextRequest) {
   )
     throw new Error("Recovery environment mismatch");
   await assertUserCanMakeCostIncurringRequest(userId);
-  return userId;
+  return { userId, organizationId };
 }
 function json(body: unknown, status = 200) {
   return NextResponse.json(body, {
@@ -43,18 +46,18 @@ function failure(error: unknown) {
     409,
   );
 }
-export async function GET(request: NextRequest) {
+export const GET = withServiceQueryRecovery(async (request: NextRequest) => {
   try {
-    return json(await recoveryView(await owner(request)));
+    return json(await recoveryView((await owner(request)).userId));
   } catch (error) {
     return failure(error);
   }
-}
+});
 export async function POST(request: NextRequest) {
   try {
     if (request.headers.get("origin") !== new URL(request.url).origin)
       return json({ error: "Invalid origin" }, 403);
-    const userId = await owner(request);
+    const { userId, organizationId } = await owner(request);
     const parsed = bodySchema.safeParse(await request.json());
     if (!parsed.success)
       return json({ error: "Invalid recovery confirmation" }, 400);
@@ -66,6 +69,7 @@ export async function POST(request: NextRequest) {
       userId,
       parsed.data.token,
       parsed.data.confirmed,
+      organizationId,
     );
     if (consent) {
       try {
@@ -82,7 +86,9 @@ export async function POST(request: NextRequest) {
         );
       } catch {
         await failConsent(userId, consent.token).catch(() => {});
-        return json({ status: "support" }, 202);
+        // Atomic settlement revokes an unclaimed token even if dispatch was
+        // accepted. Only the resulting verified state may offer fresh approval.
+        return json(await recoveryView(userId), 202);
       }
     }
     return json(await recoveryView(userId), 202);

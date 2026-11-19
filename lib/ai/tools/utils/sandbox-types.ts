@@ -17,6 +17,18 @@ export function getSandboxArtifactDirectory(
       const directory = paths.join(project, ".hackerai", artifact);
       return sandbox.isWindows() ? directory.replaceAll("\\", "/") : directory;
     }
+    const namespace =
+      sandbox.getConnectionInfo?.().capabilities?.privateArtifactNamespace;
+    if (artifact !== "agent-transcripts" && namespace !== undefined) {
+      if (
+        !/^uid-(0|[1-9][0-9]{0,9})$/.test(namespace) ||
+        !sandbox.supportsCommandStdin?.() ||
+        sandbox.isWindows()
+      ) {
+        throw new Error("Invalid private terminal artifact namespace");
+      }
+      return `/tmp/${artifact}-${namespace}`;
+    }
     return `/tmp/${artifact}`;
   }
   return `/home/user/${artifact}`;
@@ -42,6 +54,7 @@ export interface ConnectionInfo {
     pty: boolean;
     files?: boolean;
     commandStdin?: boolean;
+    privateArtifactNamespace?: string;
     operationChannels?: boolean;
   };
 }

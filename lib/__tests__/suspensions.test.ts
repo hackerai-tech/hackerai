@@ -288,7 +288,7 @@ describe("web suspension-gate transport recovery", () => {
         signal: controller.signal,
       }),
     ).rejects.toThrow("canceled");
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it("rejects a clear initial read that finishes after cancellation", async () => {

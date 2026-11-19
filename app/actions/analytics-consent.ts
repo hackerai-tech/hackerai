@@ -1,5 +1,6 @@
 "use server";
 
+import { INFLUENCER_VISIT_COOKIE } from "@/lib/influencers/visit-handoff";
 import { INFLUENCER_COOKIE } from "@/lib/influencers/policy";
 import {
   INFLUENCER_VISITOR_COOKIE,
@@ -39,6 +40,8 @@ export async function saveAnalyticsConsent(
   });
 
   if (consent === "accepted") return;
+
+  cookieStore.delete(INFLUENCER_VISIT_COOKIE);
 
   // Resolve persisted attribution even when the visitor cookie has expired.
   const { user } = await withAuth();

@@ -18,7 +18,7 @@ import {
   type DowngradeReasonPolicy,
 } from "@/lib/billing/retention-offers";
 import {
-  getDowngradeOfferFlag,
+  getDowngradeOfferPolicy,
   getPauseOfferFlagState,
   type RetentionOfferFlagState,
 } from "@/lib/billing/retention-offers.server";
@@ -123,10 +123,8 @@ export async function evaluateRetentionOffersForUser(args: {
   const subscription =
     args.subscription ??
     (await getCurrentSubscriptionContext(args.stripeCustomerId));
-  const [flagState, downgradeFlag] = await Promise.all([
-    getPauseOfferFlagState(args.userId),
-    getDowngradeOfferFlag(args.userId),
-  ]);
+  const downgradePolicy = getDowngradeOfferPolicy();
+  const flagState = await getPauseOfferFlagState(args.userId);
   const offersEnabled = flagState === "enabled";
   const lastPauseRequestedAtMs = offersEnabled
     ? await lastPauseRequestedAt(args.userId)
@@ -151,8 +149,8 @@ export async function evaluateRetentionOffersForUser(args: {
 
   const downgrade = evaluateDowngradeOfferEligibility({
     ...shared,
-    offersEnabled: downgradeFlag.state === "enabled",
-    reasonPolicy: downgradeFlag.reasonPolicy,
+    offersEnabled: downgradePolicy.state === "enabled",
+    reasonPolicy: downgradePolicy.reasonPolicy,
     downgradeAlreadyScheduled: Boolean(subscription.scheduleId),
     currentPeriodEndMs: subscription.currentPeriodEndMs,
   });
@@ -166,8 +164,8 @@ export async function evaluateRetentionOffersForUser(args: {
   return {
     offersEnabled,
     flagState,
-    downgradeFlagState: downgradeFlag.state,
-    downgradeReasonPolicy: downgradeFlag.reasonPolicy,
+    downgradeFlagState: downgradePolicy.state,
+    downgradeReasonPolicy: downgradePolicy.reasonPolicy,
     pause,
     downgrade:
       downgrade.eligible && !downgradeTarget

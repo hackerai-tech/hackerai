@@ -4,8 +4,8 @@
  */
 
 import { existsSync } from "fs";
-import { execSync } from "child_process";
-import { join, dirname } from "path";
+import { execFileSync } from "child_process";
+import { win32 } from "path";
 
 // Align with LLM context limits (~4096 tokens ≈ 12288 chars)
 export const MAX_OUTPUT_SIZE = 12288;
@@ -14,9 +14,20 @@ export const MAX_OUTPUT_SIZE = 12288;
 export const TRUNCATION_MARKER =
   "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
 
+/** True when `index` falls between the two halves of a well-formed surrogate pair. */
+const splitsSurrogatePair = (text: string, index: number): boolean => {
+  if (index <= 0 || index >= text.length) return false;
+  const before = text.charCodeAt(index - 1);
+  const after = text.charCodeAt(index);
+  return (
+    before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff
+  );
+};
+
 /**
  * Truncates output using 25% head + 75% tail strategy.
  * This preserves both the command start (context) and the end (final results/errors).
+ * A character cut never splits a surrogate pair; the pair is dropped instead.
  */
 export function truncateOutput(
   content: string,
@@ -30,9 +41,15 @@ export function truncateOutput(
   // 25% head + 75% tail strategy
   const headBudget = Math.floor(budgetForContent * 0.25);
   const tailBudget = budgetForContent - headBudget;
+  const tailStart = content.length - tailBudget;
 
-  const head = content.slice(0, headBudget);
-  const tail = content.slice(-tailBudget);
+  const head = content.slice(
+    0,
+    splitsSurrogatePair(content, headBudget) ? headBudget - 1 : headBudget,
+  );
+  const tail = content.slice(
+    splitsSurrogatePair(content, tailStart) ? tailStart + 1 : -tailBudget,
+  );
 
   return head + TRUNCATION_MARKER + tail;
 }
@@ -41,6 +58,13 @@ export interface ShellConfig {
   shell: string;
   shellFlag: string;
 }
+
+export const windowsSystemExecutable = (name: string): string => {
+  const systemRoot = process.env.SystemRoot;
+  const root =
+    systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows";
+  return win32.join(root, "System32", name);
+};
 
 /**
  * Get the default shell for a given platform.
@@ -56,7 +80,7 @@ export function getDefaultShell(platform: string): ShellConfig {
     if (bash) {
       return { shell: bash, shellFlag: "-c" };
     }
-    return { shell: "cmd.exe", shellFlag: "/C" };
+    return { shell: windowsSystemExecutable("cmd.exe"), shellFlag: "/C" };
   }
   // Unix-like systems (Linux, macOS, etc.)
   return { shell: "/bin/bash", shellFlag: "-c" };
@@ -66,7 +90,7 @@ export function getDefaultShell(platform: string): ShellConfig {
  * Locate `bash.exe` from Git for Windows. Tries, in order:
  *   1. `HACKERAI_BASH_PATH` environment override
  *   2. Common install locations
- *   3. `where git` → resolve `<gitDir>/../../bin/bash.exe`
+ *   3. System `where.exe` searches PATH → resolve `<gitDir>/../../bin/bash.exe`
  * Returns null if not found.
  */
 export function findGitBash(): string | null {
@@ -82,18 +106,33 @@ export function findGitBash(): string | null {
   }
 
   try {
-    const out = execSync("where git", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const gitExe = out.split(/\r?\n/).find((l) => l.trim().endsWith("git.exe"));
+    const out = execFileSync(
+      windowsSystemExecutable("where.exe"),
+      ["$PATH:git.exe"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      },
+    );
+    const gitExe = out
+      .split(/\r?\n/)
+      .find(
+        (l) =>
+          win32.isAbsolute(l.trim()) &&
+          l.trim().toLowerCase().endsWith("git.exe"),
+      );
     if (gitExe) {
       // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
-      const bash = join(dirname(dirname(gitExe.trim())), "bin", "bash.exe");
+      const bash = win32.join(
+        win32.dirname(win32.dirname(gitExe.trim())),
+        "bin",
+        "bash.exe",
+      );
       if (existsSync(bash)) return bash;
     }
   } catch {
-    // `where` not found or no git installed — fall through
+    // System where.exe unavailable or no Git on PATH — fall through
   }
 
   return null;
@@ -119,6 +158,15 @@ export function buildShellSpawn(
     return {
       args: [shellFlag, `"${command}"`],
       options: { windowsVerbatimArguments: true },
+    };
+  }
+  if (base === "bash.exe") {
+    // Git for Windows is often launched from PowerShell with only Git/cmd on
+    // PATH. Non-login Bash then has builtins but cannot find base64/mkdir/cat.
+    // Initialize its bundled tools without sourcing profiles or changing cwd.
+    return {
+      args: [shellFlag, `export PATH="/usr/bin:/bin:$PATH"\n${command}`],
+      options: {},
     };
   }
   return { args: [shellFlag, command], options: {} };

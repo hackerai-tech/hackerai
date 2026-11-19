@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import {
+  requireChatId,
   requireChatMessagesArray,
   requireRetiredTemporaryFieldAbsent,
   requireVercelChatMode,
@@ -98,6 +99,52 @@ describe("chat-handler request validation", () => {
         }),
       }),
     );
+  });
+
+  it.each([undefined, null, 1, true, [], { privateValue: "never log" }])(
+    "rejects non-string chatId %p with a bounded HTTP 400 error",
+    (value) => {
+      expect(() => requireChatId(value)).toThrow(
+        expect.objectContaining({
+          type: "bad_request",
+          surface: "api",
+          statusCode: 400,
+          metadata: {
+            invalid_request_field: "chatId",
+            invalid_request_field_type:
+              value === null
+                ? "null"
+                : Array.isArray(value)
+                  ? "array"
+                  : typeof value,
+            invalid_request_field_reason: "not_string",
+          },
+        }),
+      );
+    },
+  );
+
+  it.each(["existing-chat", "", "x".repeat(129)])(
+    "preserves the existing backend string contract for chatId",
+    (value) => {
+      expect(requireChatId(value)).toBe(value);
+    },
+  );
+
+  it("validates chatId before authentication, billing, and persistence", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../chat-handler.ts"),
+      "utf8",
+    );
+    const guard = source.indexOf("const chatId = requireChatId(rawChatId)");
+    expect(guard).toBeGreaterThan(-1);
+    for (const downstream of [
+      "getUserIDAndPro(req)",
+      "assertUserCanMakeCostIncurringRequest(userId,",
+      "handleInitialChatAndUserMessage({",
+    ]) {
+      expect(source.indexOf(downstream)).toBeGreaterThan(guard);
+    }
   });
 
   it("rejects non-array messages as a bad request", () => {

@@ -1,12 +1,20 @@
 import type { LimitRescueRequest } from "@/types/chat";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { toast } from "sonner";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import {
+  BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
+  requiresManualAgentResume,
+  type ManualAgentResumeFinishReason,
+} from "@/lib/chat/manual-agent-resume";
+import type { ChatStatus } from "@/types";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { Button } from "@/components/ui/button";
 import { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  DOOM_LOOP_FINISH_REASON,
   STEP_LIMIT_FINISH_REASON,
   CLIENT_SAVED_FINISH_REASON,
   OUTPUT_LIMIT_FINISH_REASON,
@@ -15,8 +23,26 @@ import {
 import type { SelectedModel } from "@/types/chat";
 import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
+// Each stop needs a person to resume it; the detail names what may not have survived.
+const MANUAL_RESUME_NOTICE_COPY: Record<
+  ManualAgentResumeFinishReason,
+  { reason: string; detail: string }
+> = {
+  [LOCAL_CONNECTION_LOST_FINISH_REASON]: {
+    reason: "The connection to your computer was lost, so this run stopped.",
+    detail:
+      "Saved progress is available. A command that was running may not have finished.",
+  },
+  [BROWSER_HANDOFF_ABANDONED_FINISH_REASON]: {
+    reason: "The Agent paused while waiting for the browser handoff.",
+    detail: "Saved progress is available. You may need to reopen the browser.",
+  },
+};
+
 interface FinishReasonNoticeProps {
   finishReason?: string;
+  continueDisabledReason?: string;
+  status?: ChatStatus;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (
@@ -29,9 +55,12 @@ export const FinishReasonNotice = ({
   finishReason,
   mode,
   onContinue,
+  continueDisabledReason,
+  status,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const pendingRef = useRef(false);
+  const disabledReasonId = useId();
   const [pending, setPending] = useState(false);
   const resume = async (
     selectedModelOverride?: SelectedModel,
@@ -52,6 +81,44 @@ export const FinishReasonNotice = ({
   };
 
   if (!finishReason) return null;
+
+  if (requiresManualAgentResume(finishReason)) {
+    if (status === "streaming") return null;
+    const copy = MANUAL_RESUME_NOTICE_COPY[finishReason];
+    const disabledReason =
+      continueDisabledReason ||
+      (mode === "ask" ? "Switch to Agent to resume." : undefined);
+    const resuming = pending || status === "submitted";
+    return (
+      <div className="mt-2 w-full" role="status" aria-live="polite">
+        <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0 flex-1 basis-60">
+            <p>{copy.reason}</p>
+            <p className="mt-1 text-sm">{copy.detail}</p>
+            {disabledReason && (
+              <p id={disabledReasonId} className="mt-1 text-sm text-foreground">
+                {disabledReason}
+              </p>
+            )}
+          </div>
+          {onContinue && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="min-w-26 text-foreground"
+              disabled={!!disabledReason || resuming}
+              aria-busy={resuming}
+              aria-describedby={disabledReason ? disabledReasonId : undefined}
+              onClick={() => void resume()}
+            >
+              {resuming ? "Resuming…" : "Resume"}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (isAutoContinuing) {
     return (
@@ -78,6 +145,15 @@ export const FinishReasonNotice = ({
   }
 
   const getNoticeContent = () => {
+    if (finishReason === DOOM_LOOP_FINISH_REASON) {
+      return (
+        <>
+          Agent stopped after repeating work without progress. Send a new
+          instruction to change the approach.
+        </>
+      );
+    }
+
     if (
       finishReason === STEP_LIMIT_FINISH_REASON ||
       finishReason === "tool-calls"
@@ -132,12 +208,13 @@ export const FinishReasonNotice = ({
 
   if (!content) return null;
 
-  const showContinue = !!onContinue;
+  // Replaying an unchanged request can restart the cycle that was just halted.
+  const showContinue = !!onContinue && finishReason !== DOOM_LOOP_FINISH_REASON;
   const continueButtonLabel =
     finishReason === CLIENT_SAVED_FINISH_REASON ? "Resume task" : "Continue";
 
   return (
-    <div className="mt-2 w-full">
+    <div className="mt-2 w-full" role="status">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span>{content}</span>
         {showContinue && (
@@ -145,7 +222,9 @@ export const FinishReasonNotice = ({
             type="button"
             size="sm"
             variant="outline"
-            disabled={pending}
+            disabled={
+              pending || !!continueDisabledReason || status === "submitted"
+            }
             onClick={() => void resume()}
           >
             {pending ? "Resuming…" : continueButtonLabel}

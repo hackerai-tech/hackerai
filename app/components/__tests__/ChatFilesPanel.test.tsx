@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ChatFilesPanel, CapturedFilePreview } from "../ChatFilesPanel";
 import { collectChatFiles } from "@/lib/workspace-preview/chat-files";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 const getUrl = jest.fn();
+const mockSaveBinary = jest.fn();
+const mockSaveText = jest.fn();
+let mockTauri = false;
 jest.mock("convex/react", () => ({ useAction: () => getUrl }));
 jest.mock("../ComputerCodeBlock", () => ({
   ComputerCodeBlock: ({ children }: { children: string }) => (
@@ -11,8 +15,74 @@ jest.mock("../ComputerCodeBlock", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
-jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
-jest.mock("../../hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
+jest.mock("sonner", () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
+}));
+// The real shared downloader runs; only the native save dialog is replaced.
+jest.mock("../../hooks/useTauri", () => ({
+  isTauriEnvironment: () => mockTauri,
+  saveFileToLocal: (...args: unknown[]) => mockSaveText(...args),
+  saveBinaryFileToLocal: (...args: unknown[]) => mockSaveBinary(...args),
+  revealFileInDir: jest.fn(),
+}));
+// %PDF followed by bytes that are invalid UTF-8 and a NUL.
+const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0xff, 0x00, 0xfe]);
+const bytesResponse = (bytes: Uint8Array) => ({
+  ok: true,
+  headers: { get: () => String(bytes.length) },
+  body: {
+    getReader: () => {
+      let sent = false;
+      return {
+        read: async () =>
+          sent
+            ? { done: true }
+            : ((sent = true), { done: false, value: bytes }),
+        cancel: async () => {},
+      };
+    },
+  },
+});
+const expiredResponse = { ok: false, headers: { get: () => null }, body: null };
+/** Persisted history: the assistant delivered a PDF; no workspace is reachable. */
+const persistedReport = JSON.stringify([
+  {
+    id: "m-report",
+    role: "assistant",
+    parts: [{ type: "text", text: "Report ready" }],
+    fileDetails: [
+      {
+        fileId: "file-pdf",
+        name: "report.pdf",
+        mediaType: "application/pdf",
+        sizeBytes: pdfBytes.length,
+      },
+    ],
+  },
+]);
+const signedOnlyFetch = (responses: Record<string, unknown>) =>
+  jest.fn(async (url: string) => {
+    if (url in responses) return responses[url];
+    throw new Error("workspace offline");
+  });
+const fetchedUrls = () =>
+  (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url));
+const openPersistedReport = async () => {
+  const { unmount } = render(
+    <ChatFilesPanel messages={JSON.parse(persistedReport)} />,
+  );
+  unmount();
+  render(<ChatFilesPanel messages={JSON.parse(persistedReport)} />);
+  fireEvent.click(screen.getByRole("button", { name: /report\.pdf/ }));
+  return screen.findByRole("button", { name: "Download saved file" });
+};
+afterEach(() => {
+  mockTauri = false;
+  mockSaveBinary.mockReset();
+  mockSaveText.mockReset();
+  (captureAuthenticatedEvent as jest.Mock).mockClear();
+  delete (window as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+});
 const messages = ["cloud", "desktop"].map((environment, index) => ({
   id: `m${index}`,
   role: "assistant",
@@ -98,4 +168,119 @@ it("does not fall back to the current environment when stored content is gone", 
     ),
   );
   expect(global.fetch).not.toHaveBeenCalled();
+});
+
+it("saves exact stored binary bytes on Desktop after reopening with every workspace offline", async () => {
+  mockTauri = true;
+  mockSaveBinary.mockResolvedValue("/Users/me/report.pdf");
+  getUrl.mockResolvedValue("https://signed/report");
+  global.fetch = signedOnlyFetch({
+    "https://signed/report": bytesResponse(pdfBytes),
+  }) as unknown as typeof fetch;
+  fireEvent.click(await openPersistedReport());
+  await waitFor(() => expect(mockSaveBinary).toHaveBeenCalledTimes(1));
+  const [filename, content] = mockSaveBinary.mock.calls[0];
+  expect(filename).toBe("report.pdf");
+  expect(content).toBeInstanceOf(Uint8Array);
+  expect(Array.from(content)).toEqual(Array.from(pdfBytes));
+  expect(mockSaveText).not.toHaveBeenCalled();
+  expect(getUrl).toHaveBeenCalledWith({ fileId: "file-pdf" });
+  expect(fetchedUrls()).toEqual(["https://signed/report"]);
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "workspace_file_download",
+    { source: "chat", outcome: "success" },
+  );
+});
+
+it("resolves a fresh signed URL on each click instead of retrying an expired one", async () => {
+  const write = jest.fn();
+  (window as { showSaveFilePicker?: unknown }).showSaveFilePicker = jest.fn(
+    async () => ({
+      createWritable: async () => ({ write, close: jest.fn() }),
+    }),
+  );
+  getUrl
+    .mockResolvedValueOnce("https://signed/expired")
+    .mockResolvedValueOnce("https://signed/fresh");
+  global.fetch = signedOnlyFetch({
+    "https://signed/expired": expiredResponse,
+    "https://signed/fresh": bytesResponse(pdfBytes),
+  }) as unknown as typeof fetch;
+  const button = await openPersistedReport();
+  fireEvent.click(button);
+  await waitFor(() =>
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saved file is unavailable.",
+    ),
+  );
+  expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
+    "workspace_file_download",
+    { source: "chat", outcome: "failed" },
+  );
+  fireEvent.click(button);
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(Array.from(write.mock.calls[0][0])).toEqual(Array.from(pdfBytes));
+  expect(fetchedUrls()).toEqual([
+    "https://signed/expired",
+    "https://signed/fresh",
+  ]);
+  expect(getUrl).toHaveBeenCalledTimes(2);
+  await waitFor(() =>
+    expect(screen.queryByRole("status")).not.toBeInTheDocument(),
+  );
+});
+
+it.each([
+  ["canceled", () => mockSaveBinary.mockResolvedValue(null), null],
+  [
+    "failed",
+    () => mockSaveBinary.mockRejectedValue("disk full"),
+    "The file could not be saved. Try again.",
+  ],
+  [
+    "failed",
+    () =>
+      mockSaveBinary.mockRejectedValue(
+        "command save_binary_file_with_dialog not found",
+      ),
+    "Update HackerAI Desktop to save this file, then try again.",
+  ],
+] as const)(
+  "reports a %s native save without claiming success",
+  async (outcome, arrange, message) => {
+    mockTauri = true;
+    arrange();
+    getUrl.mockResolvedValue("https://signed/report");
+    global.fetch = signedOnlyFetch({
+      "https://signed/report": bytesResponse(pdfBytes),
+    }) as unknown as typeof fetch;
+    const button = await openPersistedReport();
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "workspace_file_download",
+        { source: "chat", outcome },
+      ),
+    );
+    expect(captureAuthenticatedEvent).toHaveBeenCalledTimes(1);
+    if (message) expect(screen.getByRole("status")).toHaveTextContent(message);
+    else expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(button).toBeEnabled();
+  },
+);
+
+it("keeps text captures as text and names excerpts as excerpts on Desktop", async () => {
+  mockTauri = true;
+  mockSaveText.mockResolvedValue("/Users/me/report.txt.excerpt.txt");
+  const [, excerpt] = collectChatFiles(messages);
+  render(<CapturedFilePreview file={excerpt} onClose={() => {}} />);
+  fireEvent.click(screen.getByLabelText("Download captured excerpt"));
+  await waitFor(() =>
+    expect(mockSaveText).toHaveBeenCalledWith(
+      "report.txt.excerpt.txt",
+      "desktop saved content",
+    ),
+  );
+  expect(mockSaveBinary).not.toHaveBeenCalled();
+  expect(getUrl).not.toHaveBeenCalled();
 });

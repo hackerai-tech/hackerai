@@ -21,7 +21,7 @@ import {
 import {
   getNotesIcon,
   getNotesActionText,
-  getNotesActionType,
+  buildNotesSidebarContent,
   type NotesToolName,
 } from "@/app/components/tools/notes-tool-utils";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
@@ -37,6 +37,7 @@ import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
   computeShellTerminalBlock,
+  getTerminalExecutionPhase,
   getTerminalFailureAction,
   type ShellToolInput,
   type ShellToolOutput,
@@ -171,7 +172,11 @@ export const SharedMessagePartHandler = ({
   }
 
   // New unified file tool
-  if (part.type === "tool-file") {
+  if (
+    part.type === "tool-file" ||
+    part.type === "tool-file_edit" ||
+    part.type === "tool-file_write"
+  ) {
     return renderFileTool(part, idx, openSidebar);
   }
 
@@ -303,6 +308,7 @@ export const SharedMessagePartHandler = ({
   if (
     part.type === "tool-create_note" ||
     part.type === "tool-list_notes" ||
+    part.type === "tool-get_note" ||
     part.type === "tool-update_note" ||
     part.type === "tool-delete_note"
   ) {
@@ -358,6 +364,10 @@ function renderTerminalTool(
       streamingOutput: "",
       isExecuting: false,
       hasResult: part.state === "output-available",
+      executionPhase: getTerminalExecutionPhase({
+        toolState: part.state,
+        errorText: part.errorText,
+      }),
       toolCallId: part.toolCallId || "",
       legacyInteractive: legacyInput?.interactive,
       legacyIsBackground: legacyInput?.is_background,
@@ -554,7 +564,8 @@ function renderFileTool(
     error?: string;
   };
   const filePath = fileInput?.path || "";
-  const fileAction = fileInput?.action || "read";
+  const fileAction =
+    fileInput?.action || (part.type === "tool-file_edit" ? "edit" : "read");
   const brief = fileInput?.brief?.trim() || "";
 
   const getFileRange = () => {
@@ -1083,42 +1094,20 @@ function renderNotesTool(
     category?: string;
     tags?: string[];
     search?: string;
+    target?: string;
   };
-  type NoteCategory =
-    "general" | "findings" | "methodology" | "questions" | "plan";
-
   const notesOutput = part.output as {
     success?: boolean;
     error?: string;
-    note_id?: string;
-    notes?: Array<{
-      note_id: string;
-      title: string;
-      content: string;
-      category: NoteCategory;
-      tags: string[];
-      _creationTime: number;
-      updated_at: number;
-    }>;
-    total_count?: number;
+    note?: { title?: string };
     deleted_title?: string;
-    original?: {
-      title: string;
-      content: string;
-      category: string;
-      tags: string[];
-    };
-    modified?: {
-      title: string;
-      content: string;
-      category: string;
-      tags: string[];
-    };
+    modified?: { title?: string };
   };
 
   const getToolName = (): NotesToolName => {
     if (part.type === "tool-create_note") return "create_note";
     if (part.type === "tool-list_notes") return "list_notes";
+    if (part.type === "tool-get_note") return "get_note";
     if (part.type === "tool-update_note") return "update_note";
     if (part.type === "tool-delete_note") return "delete_note";
     return "create_note";
@@ -1129,6 +1118,9 @@ function renderNotesTool(
   const getTarget = () => {
     if (toolName === "create_note" && notesInput?.title) {
       return notesInput.title;
+    }
+    if (toolName === "get_note") {
+      return notesOutput?.note?.title || notesInput?.note_id;
     }
     if (toolName === "update_note") {
       // Prefer modified title, then input title, then note_id
@@ -1142,6 +1134,7 @@ function renderNotesTool(
     }
     if (toolName === "list_notes") {
       const filters: string[] = [];
+      if (notesInput?.target) filters.push(notesInput.target);
       if (notesInput?.category) filters.push(notesInput.category);
       if (notesInput?.tags?.length)
         filters.push(`tagged: ${notesInput.tags.join(", ")}`);
@@ -1182,64 +1175,16 @@ function renderNotesTool(
       );
     }
 
-    const action = getNotesActionType(toolName);
-    let notes: Array<{
-      note_id: string;
-      title: string;
-      content: string;
-      category: NoteCategory;
-      tags: string[];
-      _creationTime: number;
-      updated_at: number;
-    }> = [];
-    let totalCount = 0;
-    let affectedTitle: string | undefined;
-    let newNoteId: string | undefined;
-    let original: typeof notesOutput.original;
-    let modified: typeof notesOutput.modified;
-
-    if (action === "list" && notesOutput?.notes) {
-      notes = notesOutput.notes;
-      totalCount = notesOutput.total_count || notes.length;
-    } else if (action === "create" && notesInput) {
-      notes = [
-        {
-          note_id: notesOutput?.note_id || "pending",
-          title: notesInput.title || "",
-          content: notesInput.content || "",
-          category: (notesInput.category as NoteCategory) || "general",
-          tags: notesInput.tags || [],
-          _creationTime: Date.now(),
-          updated_at: Date.now(),
-        },
-      ];
-      totalCount = 1;
-      affectedTitle = notesInput.title;
-      newNoteId = notesOutput?.note_id;
-    } else if (action === "update") {
-      // For update, use original/modified for before/after comparison
-      original = notesOutput?.original;
-      modified = notesOutput?.modified;
-      affectedTitle =
-        modified?.title || notesInput?.title || notesInput?.note_id;
-      totalCount = 1;
-    } else if (action === "delete") {
-      affectedTitle = notesOutput?.deleted_title || notesInput?.note_id;
-      totalCount = 0;
-    }
-
     const handleOpenInSidebar = () => {
-      openSidebar({
-        action,
-        notes,
-        totalCount,
-        isExecuting: false,
-        toolCallId: part.toolCallId || "",
-        affectedTitle,
-        newNoteId,
-        original,
-        modified,
-      });
+      openSidebar(
+        buildNotesSidebarContent({
+          toolName,
+          input: part.input,
+          output: part.output,
+          state: part.state,
+          toolCallId: part.toolCallId,
+        }),
+      );
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {

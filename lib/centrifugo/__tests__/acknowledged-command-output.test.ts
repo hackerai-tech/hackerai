@@ -214,9 +214,264 @@ it("discards retained output after confirmed cancellation without claiming full 
   jest.useRealTimers();
 });
 
+describe("resumability for a returning host's session proof", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const open = (deadlineMs = 30_000) => {
+    const sender = new AcknowledgedCommandOutput(
+      "proof",
+      Date.now() + deadlineMs,
+      jest.fn().mockResolvedValue(undefined),
+      () => true,
+    );
+    void sender.delivered.catch(() => {});
+    return sender;
+  };
+
+  it("is resumable only while the window still holds its output", async () => {
+    const running = open();
+    running.append({ type: "stdout", data: "partial" });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(running.resumable).toBe(true);
+    running.append({ type: "exit", exitCode: 0 });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(running.resumable).toBe(true);
+    running.acknowledge(1);
+    expect(running.resumable).toBe(false);
+  });
+
+  it.each([
+    ["stopped", (sender: AcknowledgedCommandOutput) => sender.stop()],
+    ["canceled", (sender: AcknowledgedCommandOutput) => sender.cancel()],
+    [
+      "overflowed",
+      (sender: AcknowledgedCommandOutput) => {
+        // Alternating streams never combine, so each chunk takes a frame.
+        for (let i = 0; i <= 4096; i++)
+          sender.append({ type: i % 2 ? "stderr" : "stdout", data: "x" });
+      },
+    ],
+  ])("is not resumable once %s, though execution may continue", (_, close) => {
+    const sender = open();
+    sender.append({ type: "stdout", data: "partial" });
+    close(sender);
+    expect(sender.resumable).toBe(false);
+  });
+
+  it("reads expiry and lost ownership at once, before the pump's next tick", () => {
+    let active = true;
+    const sender = new AcknowledgedCommandOutput(
+      "proof-now",
+      Date.now() + 5_000,
+      jest.fn().mockResolvedValue(undefined),
+      () => active,
+    );
+    void sender.delivered.catch(() => {});
+    expect(sender.resumable).toBe(true);
+    // The wall clock passes the deadline; no timer has run yet.
+    jest.setSystemTime(Date.now() + 5_000);
+    expect(sender.resumable).toBe(false);
+    jest.setSystemTime(Date.now() - 5_000);
+    expect(sender.resumable).toBe(true);
+    active = false;
+    expect(sender.resumable).toBe(false);
+    // Reading never closes the window itself.
+    active = true;
+    expect(sender.resumable).toBe(true);
+    sender.stop();
+  });
+
+  it("is not resumable after its delivery deadline", async () => {
+    const sender = open(1_000);
+    sender.append({ type: "stdout", data: "partial" });
+    await jest.advanceTimersByTimeAsync(1_500);
+    expect(sender.resumable).toBe(false);
+  });
+});
+
 describe("receipt settlement evidence", () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
+
+  it.each([0, 1250])(
+    "separates a recent output burst from %ims of pending publication",
+    async (pendingAge) => {
+      const settled = jest.fn();
+      const sender = new AcknowledgedCommandOutput(
+        "late-output",
+        Date.now() + 600_000,
+        () => new Promise(() => {}),
+        () => true,
+        settled,
+      );
+      // A long silent command is not evidence of old pending output.
+      await jest.advanceTimersByTimeAsync(300_000);
+      sender.append({ type: "stdout", data: "x".repeat(8 * 1024 * 1024) });
+      await jest.advanceTimersByTimeAsync(pendingAge);
+      sender.append({ type: "stdout", data: "x" });
+      await expect(sender.delivered).rejects.toThrow("buffer exceeded");
+      expect(settled.mock.calls[0][0]).toMatchObject({
+        reason: "buffer_limit",
+        durationMs: 300_000 + pendingAge,
+        pendingBytes: 8 * 1024 * 1024,
+        oldestPendingAgeMs: pendingAge,
+        lastAcknowledgementAgeMs: null,
+        publishInFlightAgeMs: pendingAge,
+      });
+    },
+  );
+
+  it("keeps the original combined queue age and advances only on real ACK progress", async () => {
+    const settled = jest.fn();
+    const sender = new AcknowledgedCommandOutput(
+      "combined-age",
+      Date.now() + 5000,
+      () => new Promise(() => {}),
+      () => true,
+      settled,
+    );
+    sender.append({ type: "stdout", data: "first" });
+    await jest.advanceTimersByTimeAsync(100);
+    sender.append({ type: "stdout", data: "second" });
+    await jest.advanceTimersByTimeAsync(100);
+    sender.append({ type: "stdout", data: "third" });
+    await jest.advanceTimersByTimeAsync(100);
+    sender.acknowledge(0);
+    await jest.advanceTimersByTimeAsync(50);
+    sender.acknowledge(0); // Duplicate.
+    sender.acknowledge(-1); // Stale.
+    sender.acknowledge(1); // Queued but not published.
+    sender.acknowledge(NaN);
+    sender.resume(0); // A duplicate resume is not new receipt.
+    sender.stop();
+    await expect(sender.delivered).rejects.toThrow("completion is unknown");
+    expect(settled.mock.calls[0][0]).toMatchObject({
+      observedFrames: 3,
+      enqueuedFrames: 2,
+      acknowledgedFrames: 1,
+      pendingBytes: 11,
+      oldestPendingAgeMs: 250,
+      lastAcknowledgementAgeMs: 50,
+      publishInFlightAgeMs: 350,
+    });
+  });
+
+  it("distinguishes waiting for receipt from an awaited publication", async () => {
+    const settled = jest.fn();
+    const sender = new AcknowledgedCommandOutput(
+      "receipt-age",
+      Date.now() + 5000,
+      async () => {},
+      () => true,
+      settled,
+    );
+    sender.append({ type: "stdout", data: "sent" });
+    await jest.advanceTimersByTimeAsync(1500);
+    sender.stop();
+    expect(settled.mock.calls[0][0]).toMatchObject({
+      oldestPendingAgeMs: 1500,
+      lastAcknowledgementAgeMs: null,
+      publishInFlightAgeMs: null,
+    });
+    expect(settled.mock.calls[0][0].replayAttempts).toBeGreaterThan(0);
+  });
+
+  it("reports only the current publish age after a failed attempt and freezes it on settlement", async () => {
+    const settled = jest.fn();
+    let finishPublish!: () => void;
+    const publish = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("private transport error"))
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finishPublish = resolve;
+          }),
+      );
+    const sender = new AcknowledgedCommandOutput(
+      "retry-age",
+      Date.now() + 5000,
+      publish,
+      () => true,
+      settled,
+    );
+    sender.append({ type: "stdout", data: "PRIVATE OUTPUT" });
+    await jest.advanceTimersByTimeAsync(1500);
+    sender.stop();
+    const snapshot = settled.mock.calls[0][0];
+    expect(snapshot).toMatchObject({
+      publishFailures: 1,
+      publishAttempts: 2,
+      replayAttempts: 1,
+      oldestPendingAgeMs: 1500,
+      lastAcknowledgementAgeMs: null,
+      publishInFlightAgeMs: 500,
+    });
+    finishPublish();
+    await jest.advanceTimersByTimeAsync(500);
+    sender.acknowledge(0);
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(snapshot.publishInFlightAgeMs).toBe(500);
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE");
+  });
+
+  it("uses null for absent evidence and zero for receipt just confirmed", async () => {
+    const absent = jest.fn();
+    const empty = new AcknowledgedCommandOutput(
+      "empty",
+      Date.now() + 5000,
+      async () => {},
+      () => true,
+      absent,
+    );
+    empty.acknowledge(-1);
+    empty.stop();
+    expect(absent.mock.calls[0][0]).toMatchObject({
+      oldestPendingAgeMs: null,
+      lastAcknowledgementAgeMs: null,
+      publishInFlightAgeMs: null,
+    });
+    const settled = jest.fn();
+    const sender = new AcknowledgedCommandOutput(
+      "received",
+      Date.now() + 5000,
+      async () => {},
+      () => true,
+      settled,
+    );
+    sender.append({ type: "exit", exitCode: 0 });
+    await jest.advanceTimersByTimeAsync(100);
+    sender.acknowledge(0);
+    await expect(sender.delivered).resolves.toBeUndefined();
+    expect(settled.mock.calls[0][0]).toMatchObject({
+      oldestPendingAgeMs: null,
+      lastAcknowledgementAgeMs: 0,
+      publishInFlightAgeMs: null,
+    });
+  });
+
+  it("never emits negative ages when the wall clock moves backward", () => {
+    const settled = jest.fn();
+    const now = Date.now();
+    const sender = new AcknowledgedCommandOutput(
+      "clock",
+      now + 5000,
+      () => new Promise(() => {}),
+      () => true,
+      settled,
+    );
+    sender.append({ type: "stdout", data: "received" });
+    sender.append({ type: "stderr", data: "pending" });
+    sender.acknowledge(0);
+    jest.setSystemTime(now - 1000);
+    sender.stop();
+    expect(settled.mock.calls[0][0]).toMatchObject({
+      oldestPendingAgeMs: 0,
+      lastAcknowledgementAgeMs: 0,
+      publishInFlightAgeMs: 0,
+      durationMs: 0,
+    });
+  });
 
   it("reports recovered receipt once, independent of native execution completion", async () => {
     const settled = jest.fn();

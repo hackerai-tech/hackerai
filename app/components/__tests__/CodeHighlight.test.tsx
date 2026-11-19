@@ -46,6 +46,39 @@ describe("CodeHighlight", () => {
     expect(code).toHaveClass("[overflow-wrap:anywhere]");
   });
 
+  // Inside an RTL Markdown block, code that inherits RTL reorders paths
+  // (`tmp/report.json/`) and flips fence lines and controls.
+  it("keeps inline code and code fences LTR inside right-to-left prose", () => {
+    const { rerender } = render(
+      <div dir="rtl">
+        <CodeHighlight node={{ type: "element", tagName: "code" } as any}>
+          /tmp/report.json
+        </CodeHighlight>
+      </div>,
+    );
+
+    expect(
+      screen.getByText("/tmp/report.json").closest("[dir]"),
+    ).toHaveAttribute("dir", "ltr");
+
+    mockInlineCode = false;
+    rerender(
+      <div dir="rtl">
+        <CodeHighlight
+          className="language-bash"
+          node={{ type: "element", tagName: "code" } as any}
+        >
+          cat /tmp/report.json
+        </CodeHighlight>
+      </div>,
+    );
+
+    expect(screen.getByTestId("shiki").closest("[dir]")).toHaveAttribute(
+      "dir",
+      "ltr",
+    );
+  });
+
   it("keeps large incomplete code fences plain while they stream", () => {
     mockInlineCode = false;
     mockCodeFenceIncomplete = true;

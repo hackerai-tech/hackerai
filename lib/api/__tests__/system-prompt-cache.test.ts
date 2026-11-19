@@ -2,10 +2,8 @@ import { deserialize, serialize } from "node:v8";
 import { TextDecoderStream, WritableStream } from "node:stream/web";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { generateText, streamText, type ModelMessage } from "ai";
-import {
-  addCacheBreakpointToLastUserMessage,
-  buildSystemPrompt,
-} from "../chat-stream-helpers";
+import { buildSystemPrompt } from "../chat-stream-helpers";
+import { addPromptCacheBreakpoints } from "@/lib/ai/prompt-cache";
 import {
   systemPrompt,
   SYSTEM_PROMPT_RUNTIME_BOUNDARY,
@@ -92,6 +90,44 @@ const makePrompt = (
     "ask_approval",
     true,
   );
+
+it("shares the instruction prefix across product modes while sending the current identity exactly once", async () => {
+  const prompts = await Promise.all(
+    (
+      ["auto", "hackerai-standard", "hackerai-pro", "hackerai-max"] as const
+    ).map((mode) =>
+      systemPrompt(
+        "user",
+        "agent",
+        "pro",
+        "model-deepseek-v4-flash-vision",
+        null,
+        null,
+        "ask_approval",
+        true,
+        undefined,
+        mode,
+      ),
+    ),
+  );
+  const prefixes = prompts.map(
+    (prompt) => prompt.split(SYSTEM_PROMPT_RUNTIME_BOUNDARY)[0],
+  );
+  expect(new Set(prefixes).size).toBe(1);
+  expect(prefixes[0]).toContain("Agent tool approval mode: Ask for approval.");
+  for (const [index, label] of ["Auto", "Standard", "Pro", "Max"].entries()) {
+    const prompt = prompts[index];
+    expect(prompt.match(/The selected HackerAI model mode is /g)).toHaveLength(
+      1,
+    );
+    expect(prompt.split(SYSTEM_PROMPT_RUNTIME_BOUNDARY)[1]).toContain(
+      `The selected HackerAI model mode is ${label}.`,
+    );
+    expect(buildSystemPrompt(prompt, "deepseek/deepseek-v4.1-flash-1017")).toBe(
+      prompt,
+    );
+  }
+});
 
 it("keeps an identical instruction prefix across host, profile and date changes", async () => {
   const first = await makePrompt("first-host", "Alice");
@@ -259,7 +295,7 @@ it.each([false, true])(
       },
     });
     const prompt = await makePrompt("synthetic-host", "Alice");
-    const messages = addCacheBreakpointToLastUserMessage(
+    const messages = addPromptCacheBreakpoints(
       [{ role: "user", content: "Reply OK" }],
       claudeRoute,
     ) as ModelMessage[];

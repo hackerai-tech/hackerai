@@ -4,6 +4,71 @@ import {
   stripeObjectId,
 } from "./subscription-payment-failure";
 
+const PAYMENT_METHOD_RECOVERY_STEPS = [
+  "retrieve_customer",
+  "resolve_customer_users",
+  "check_user_suspensions",
+  "list_subscriptions",
+  "resolve_subscription",
+  "emit_payment_method_updated",
+  "retrieve_invoice",
+  "record_involuntary_churn_event",
+  "recover_subscription_payment",
+  "check_subscription_default_history",
+  "update_subscription_default",
+  "pay_invoice",
+] as const;
+
+/**
+ * Last entered default-card recovery boundary only. It does not mean that
+ * boundary's request or write committed, or that it caused the failure.
+ */
+export type PaymentMethodRecoveryStep =
+  (typeof PAYMENT_METHOD_RECOVERY_STEPS)[number];
+
+/** Request-local, optional failure location; never shared between deliveries. */
+export type PaymentMethodRecoveryDiagnostic = {
+  step?: PaymentMethodRecoveryStep;
+};
+
+const recoveryStepSet: ReadonlySet<unknown> = new Set(
+  PAYMENT_METHOD_RECOVERY_STEPS,
+);
+
+/** Record a step without letting optional telemetry interrupt billing work. */
+export function markPaymentMethodRecoveryStep(
+  diagnostic: PaymentMethodRecoveryDiagnostic | undefined,
+  step: PaymentMethodRecoveryStep,
+): void {
+  if (!diagnostic) return;
+  try {
+    diagnostic.step = step;
+  } catch {
+    // A frozen or hostile diagnostic must not change the financial outcome.
+  }
+}
+
+/** Closed failure-context fields; an unreadable or unknown step drops the pair. */
+export function paymentMethodRecoveryFailureFields(
+  diagnostic: PaymentMethodRecoveryDiagnostic | undefined,
+):
+  | {
+      payment_method_recovery_diagnostic_version: 1;
+      payment_method_recovery_step: PaymentMethodRecoveryStep;
+    }
+  | Record<string, never> {
+  try {
+    const step: unknown = diagnostic?.step;
+    if (typeof step !== "string" || !recoveryStepSet.has(step)) return {};
+    return {
+      payment_method_recovery_diagnostic_version: 1,
+      payment_method_recovery_step: step as PaymentMethodRecoveryStep,
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** Stripe delivery order is not change order; read source events before replacing an override. */
 async function canReplaceSubscriptionDefault(
   stripe: Stripe,
@@ -56,6 +121,7 @@ export async function recoverSubscriptionPayment({
   paymentIntent,
   selectionEventId,
   customerEventCreated,
+  diagnostic,
 }: {
   stripe: Stripe;
   subscription: Stripe.Subscription;
@@ -64,6 +130,7 @@ export async function recoverSubscriptionPayment({
   paymentIntent?: Stripe.PaymentIntent | null;
   selectionEventId: string;
   customerEventCreated?: number;
+  diagnostic?: PaymentMethodRecoveryDiagnostic;
 }): Promise<"skipped" | "paid" | "pending"> {
   if (
     !["past_due", "unpaid"].includes(subscription.status) ||
@@ -91,15 +158,21 @@ export async function recoverSubscriptionPayment({
   // A subscription-level default wins over the customer's new default. Keep
   // future renewals on the newly selected card as well as paying this invoice.
   if (stripeObjectId(subscription.default_payment_method) !== paymentMethodId) {
-    if (
-      customerEventCreated !== undefined &&
-      !(await canReplaceSubscriptionDefault(
-        stripe,
-        subscription.id,
-        customerEventCreated,
-      ))
-    )
-      return "skipped";
+    if (customerEventCreated !== undefined) {
+      markPaymentMethodRecoveryStep(
+        diagnostic,
+        "check_subscription_default_history",
+      );
+      if (
+        !(await canReplaceSubscriptionDefault(
+          stripe,
+          subscription.id,
+          customerEventCreated,
+        ))
+      )
+        return "skipped";
+    }
+    markPaymentMethodRecoveryStep(diagnostic, "update_subscription_default");
     await stripe.subscriptions.update(
       subscription.id,
       { default_payment_method: paymentMethodId },
@@ -109,6 +182,7 @@ export async function recoverSubscriptionPayment({
     );
   }
 
+  markPaymentMethodRecoveryStep(diagnostic, "pay_invoice");
   try {
     const paid = await stripe.invoices.pay(
       invoice.id,

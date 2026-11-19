@@ -1,4 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import {
   isCancellationError,
   classifyProviderOverflowError,
@@ -41,6 +42,12 @@ describe("missing error messages", () => {
       });
     },
   );
+
+  it("does not throw when a provider message contains a circular value", () => {
+    const value: { message?: unknown } = {};
+    value.message = value;
+    expect(getErrorMessage(value)).toBe("Unknown error occurred");
+  });
 });
 
 describe("extractRetryAttempts -> request_id", () => {
@@ -351,6 +358,41 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
     expect(serialized).not.toContain(inlineImage);
   });
 
+  it("redacts credential flag assignments from the message, stack and cause", () => {
+    const cause = new Error(
+      "child exited 1: login --password='FAKE_CAUSE_PASSWORD' --retries=3",
+    );
+    const err = Object.assign(
+      new Error(
+        'scanner --api-key=FAKE_API_KEY --token="FAKE QUOTED TOKEN" --max_tokens=4096 failed',
+        { cause },
+      ),
+      { statusCode: 401, code: "EAUTH" },
+    );
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    for (const secret of [
+      "FAKE_API_KEY",
+      "FAKE QUOTED TOKEN",
+      "FAKE_CAUSE_PASSWORD",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(details).toMatchObject({
+      errorMessage:
+        'scanner --api-key="[Redacted]" --token="[Redacted]" --max_tokens=4096 failed',
+      cause: 'child exited 1: login --password="[Redacted]" --retries=3',
+      statusCode: 401,
+      errorCode: "EAUTH",
+    });
+    expect(details.errorStack).toContain(
+      'scanner --api-key="[Redacted]" --token="[Redacted]" --max_tokens=4096 failed',
+    );
+    expect(getProviderErrorCategory(details)).toBe("provider_4xx");
+  });
+
   it("omits malformed response bodies and circular provider data", () => {
     const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
     const responseBody = `<html>${privateAttachmentText}</html>`;
@@ -474,6 +516,41 @@ describe("provider error classification", () => {
     expect(isProviderStreamTerminatedError(err)).toBe(true);
     expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
   });
+
+  it("recognizes the Node read-reset cause without retrying generic fetch failures", () => {
+    const error = new TypeError("fetch failed", {
+      cause: new Error("read ECONNRESET"),
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+      "stream_terminated",
+    );
+    expect(isRetriableProviderStreamDisconnectError(error)).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(new TypeError("fetch failed")),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 400, cause: error }),
+      ),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        new DOMException("The operation was aborted", "AbortError"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([400, 401, 403, 429])(
+    "keeps numeric %s codes ahead of disconnect wording",
+    (code) => {
+      const error = { code, message: "read ECONNRESET" };
+      expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+        code === 429 ? "rate_limited" : "provider_4xx",
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(false);
+    },
+  );
 
   it("allows transient 5xx failures without requiring provider-specific wording", () => {
     expect(
@@ -743,6 +820,64 @@ describe("SSE upstream abort recovery", () => {
     expect(
       extractErrorDetails(error("messages[1].private_payload")),
     ).not.toHaveProperty("providerErrorParam");
+  });
+});
+
+describe("trusted browser read failures are not provider disconnects", () => {
+  const disconnect = (cause: unknown = new Error("read ECONNRESET")) =>
+    Object.assign(new TypeError("fetch failed"), { cause });
+  const brand = <T extends object>(error: T): T => {
+    try {
+      rethrowBrowserHandoffReadError(error);
+    } catch {
+      // Branded by identity, exactly as the browser safety read does.
+    }
+    return error;
+  };
+  const auxiliaryTimeout = () =>
+    Object.assign(new Error("Image analysis timed out after 20000ms"), {
+      name: "AuxiliaryVisionTimeoutError",
+      origin: "auxiliary_vision",
+    });
+
+  it("declines direct, wrapped and retry-history local reads without reclassifying them", () => {
+    const local = Object.freeze(brand(disconnect()));
+    for (const failure of [
+      local,
+      new Error("terminated", { cause: local }),
+      retryError([local]),
+    ]) {
+      expect(isRetriableProviderStreamDisconnectError(failure)).toBe(false);
+    }
+    expect(isRetriableProviderStreamDisconnectError(disconnect())).toBe(true);
+    expect(getProviderErrorCategory(extractErrorDetails(local))).toBe(
+      "stream_terminated",
+    );
+    expect(Object.isFrozen(local)).toBe(true);
+  });
+
+  it("declines a local read whose diagnostic origin is masked by a nested auxiliary wrapper", () => {
+    const masked = brand(disconnect(auxiliaryTimeout()));
+    // The computed origin is diagnostic only and names the wrong owner here.
+    expect(extractErrorDetails(masked).errorOrigin).toBe("auxiliary_vision");
+    expect(isRetriableProviderStreamDisconnectError(masked)).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(disconnect(auxiliaryTimeout())),
+    ).toBe(true);
+  });
+
+  it("keeps spoofed origin strings on genuine provider failures retriable", () => {
+    for (const spoofed of [
+      {
+        code: 503,
+        message: "terminated",
+        origin: "browser_handoff_read",
+        errorOrigin: "browser_handoff_read",
+      },
+      Object.assign(disconnect(), { origin: "browser_handoff_read" }),
+    ]) {
+      expect(isRetriableProviderStreamDisconnectError(spoofed)).toBe(true);
+    }
   });
 });
 

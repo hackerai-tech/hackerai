@@ -1,8 +1,18 @@
 "use client";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
+import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
+import {
+  CloudRecoveryAdmissionContext,
+  useCloudRecoveryAdmission,
+} from "@/app/hooks/useCloudRecoveryAdmission";
+import {
+  BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
+  requiresManualAgentResume,
+} from "@/lib/chat/manual-agent-resume";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type FileUIPart } from "ai";
 import dynamic from "next/dynamic";
 import {
   useRef,
@@ -25,14 +35,19 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
+import { EarlyRenewalPaymentNotice } from "./EarlyRenewalPaymentNotice";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
+import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
+import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
@@ -54,13 +69,21 @@ import {
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
 import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
+  GoalSubmissionUnconfirmedError,
+  isGoalAdmissionRefused,
+  isGoalWorkspaceSelectionRefusal,
+} from "@/lib/chat/goal-submission";
+import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
   resumeAgentLongStream,
+  type AgentLongRunStarted,
 } from "@/lib/chat/agent-long-transport";
 import {
   areMessagesEquivalentForConvexSync,
+  mergePersistedGoalMessages,
   arePersistedMessagesAtLeastAsComplete,
+  normalizeStreamedRecoveryMessages,
 } from "@/lib/chat/message-reconciliation";
 import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
@@ -81,6 +104,7 @@ import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/age
 import { toast } from "sonner";
 import {
   addAuthenticatedExceptionStep,
+  captureAuthenticatedEvent,
   getPostHogRequestHeaders,
 } from "@/lib/analytics/client";
 import {
@@ -100,7 +124,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
@@ -115,7 +139,7 @@ import {
 } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
-import { finalizeNewChatRoute } from "./chat-route";
+import { finalizeNewChatRoute, getRouteChatIdFromPathname } from "./chat-route";
 import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
 import { useChatPerformance } from "@/app/hooks/useChatPerformance";
 import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
@@ -247,17 +271,29 @@ export function getExistingChatLoadState({
 const shouldReleaseStreamedTitle = (
   streamedTitle: string | null,
   persistedTitle: string | null | undefined,
-): boolean => Boolean(streamedTitle && persistedTitle === streamedTitle);
+  titleManuallyEdited: boolean | undefined,
+): boolean =>
+  Boolean(
+    streamedTitle && (titleManuallyEdited || persistedTitle === streamedTitle),
+  );
 
 export function useStreamedChatTitle(
   persistedTitle: string | null | undefined,
+  titleManuallyEdited?: boolean,
 ) {
   const [streamedTitle, setStreamedTitle] = useState<string | null>(null);
 
   // The streamed title only bridges the gap until Convex receives the same
-  // generated title. This guarded adjustment restarts the current render
-  // before children commit with a stale title source.
-  if (shouldReleaseStreamedTitle(streamedTitle, persistedTitle)) {
+  // generated title, or the owner's rename supersedes it. This guarded
+  // adjustment restarts the current render before children commit with a
+  // stale title source.
+  if (
+    shouldReleaseStreamedTitle(
+      streamedTitle,
+      persistedTitle,
+      titleManuallyEdited,
+    )
+  ) {
     setStreamedTitle(null);
   }
 
@@ -403,8 +439,10 @@ function StreamEffects({
   resetRef,
   hasActiveStream,
   sendDisabledReason,
+  finishReason,
 }: {
   sendDisabledReason?: string;
+  finishReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -445,6 +483,7 @@ function StreamEffects({
     agentPermissionMode,
     selectedModel,
     sendDisabledReason,
+    finishReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -489,7 +528,21 @@ function ForkAutoSendEffect({
 
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
-    void onSubmit(new Event("submit") as unknown as React.FormEvent);
+    void Promise.resolve(
+      onSubmit(new Event("submit") as unknown as React.FormEvent),
+    ).catch((error: unknown) => {
+      if (error instanceof GoalSubmissionUnconfirmedError) {
+        captureAuthenticatedEvent("agent_goal_composer_action", {
+          action: "submit_unconfirmed",
+          composer_layout: "unknown",
+          goal_ui_version: 2,
+          reason: "fork_autosend",
+        });
+        toast.info(error.message);
+      } else if (!(error instanceof Error && error.name === "AbortError")) {
+        console.error("Failed to submit restored task:", error);
+      }
+    });
   }, [
     chatId,
     input,
@@ -505,7 +558,7 @@ function ForkAutoSendEffect({
 
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   return (
-    <ConvexErrorBoundary>
+    <ConvexErrorBoundary diagnosticScope="chat_content">
       <ChatContent autoResume={autoResume} />
     </ConvexErrorBoundary>
   );
@@ -516,12 +569,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
-  const routeChatId = params?.id as string | undefined;
+  const pathname = usePathname();
+  // The URL owns the displayed chat. Back/Forward can restore the home-page
+  // tree (no dynamic params) at a /c/<id> URL saved by finalizeNewChatRoute.
+  const routeChatId =
+    (pathname
+      ? getRouteChatIdFromPathname(pathname)
+      : (params?.id as string | undefined)) ?? undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const computerDialogRef = useRef<HTMLDivElement>(null);
   const computerDialogPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const computerDialogShowedGoalRef = useRef(false);
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const { appendDataPart, clearDataStream } =
     useBatchedDataStreamAppend(setDataStream);
@@ -540,6 +600,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
+    sidebarContent,
+    openSidebar,
     closeSidebar,
     chatSidebarOpen,
     initializeChat,
@@ -552,7 +614,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     editingQueuedMessageId,
     removeQueuedMessage,
     setQueuedMessageDelivery,
-    clearQueue,
+    queueChatId,
+    selectMessageQueue,
     todos,
     sandboxPreference,
     setSandboxPreference,
@@ -565,9 +628,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
-    surveyActivation,
-    setSurveyActivation,
   } = useGlobalState();
+  const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
+    useState(false);
+  useEffect(() => {
+    if (sidebarOpen) setHasOpenedComputerSidebar(true);
+  }, [sidebarOpen]);
+
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
   const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
@@ -593,13 +660,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             "input:not([disabled])",
             "select:not([disabled])",
             "textarea:not([disabled])",
+            "summary",
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
-      ).filter(
-        (element) =>
-          element.tabIndex >= 0 && !element.closest("[hidden], [inert]"),
-      );
+      ).filter((element) => {
+        if (
+          element.tabIndex < 0 ||
+          element.closest("[hidden], [inert]") ||
+          element.getClientRects().length === 0
+        )
+          return false;
+        // Closed details can still give descendants layout boxes in Chromium.
+        // Only their direct summary remains keyboard-accessible.
+        for (
+          let parent = element.parentElement;
+          parent && parent !== dialog;
+          parent = parent.parentElement
+        ) {
+          if (
+            parent instanceof HTMLDetailsElement &&
+            !parent.open &&
+            !(element.tagName === "SUMMARY" && element.parentElement === parent)
+          )
+            return false;
+        }
+        return true;
+      });
 
     const hasNestedDialogFocus = () => {
       const focused = document.activeElement;
@@ -611,11 +698,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       // Takeover and its exit prompt render in portals above this dialog.
       if (hasNestedDialogFocus()) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        closeSidebar();
+        // Use the editor's explicit close path so Escape also discards its
+        // draft and respects the disabled close button during a save.
+        const closeGoalEditor = dialog.querySelector<HTMLButtonElement>(
+          'button[aria-label="Close goal editor"]',
+        );
+        if (closeGoalEditor) closeGoalEditor.click();
+        else closeSidebar();
         return;
       }
 
@@ -643,6 +737,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       if (hasNestedDialogFocus()) return;
       const focusableElements = getFocusableElements();
       (
+        dialog.querySelector<HTMLElement>('[aria-label="Goal objective"]') ??
         focusableElements.find((element) =>
           element.matches('[role="tab"][aria-selected="true"]'),
         ) ??
@@ -656,15 +751,52 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       window.clearTimeout(focusTimeout);
       document.removeEventListener("keydown", handleKeyDown);
       const previousFocus = computerDialogPreviousFocusRef.current;
-      if (previousFocus?.isConnected && !hasNestedDialogFocus())
-        previousFocus.focus();
+      const showedGoalEditor = computerDialogShowedGoalRef.current;
+      computerDialogShowedGoalRef.current = false;
+      if (!hasNestedDialogFocus()) {
+        if (
+          previousFocus?.isConnected &&
+          previousFocus !== document.body &&
+          !dialog.contains(previousFocus)
+        )
+          previousFocus.focus();
+        else if (showedGoalEditor)
+          document
+            .querySelector<HTMLButtonElement>(
+              '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+            )
+            ?.focus();
+      }
     };
   }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
+
+  // Record content while open: closing clears it, and the lazy sidebar may not
+  // have mounted the editor when the focus trap first runs.
+  useEffect(() => {
+    if (
+      computerSidebarOverlay &&
+      sidebarOpen &&
+      sidebarContent &&
+      "kind" in sidebarContent &&
+      sidebarContent.kind === "goal"
+    )
+      computerDialogShowedGoalRef.current = true;
+  }, [computerSidebarOverlay, sidebarContent, sidebarOpen]);
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
+  // Committed before the route sync below so a new chat started while the old
+  // saved URL is still visible is not mistaken for a route change.
+  const committedChatIdRef = useCommittedRef(chatId);
+  // Only chats adopted from the URL may resume a server stream. A draft that
+  // gains its saved URL already owns its in-flight request.
+  const [routeAdoptedChatId, setRouteAdoptedChatId] = useState<
+    string | undefined
+  >(routeChatId);
+  const lastSyncedRouteChatIdRef = useRef<string | undefined | null>(null);
+  const freshChatIdAwaitingHomeRef = useRef<string | null>(null);
 
   useEffect(() => {
     clearAgentApprovalSession();
@@ -714,14 +846,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  const [initializedPredictionModeChatId, setInitializedPredictionModeChatId] =
+    useState<string | null>(null);
   // Keep automatic sends blocked until the task's saved environment is applied.
   const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
     string | null
   >(null);
+  const usesCloudRecovery =
+    sandboxPreference === "e2b" && subscription !== "free";
+  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+    chatId: string;
+    sequence: number;
+  } | null>(null);
+  // A remounted Cloud panel must verify fresh state before any send effect runs.
+  const cloudRecoveryScope = useMemo(
+    () => ({
+      chatId,
+      usesCloudRecovery,
+      sequence: cloudConnectionFailure?.sequence,
+    }),
+    [chatId, usesCloudRecovery, cloudConnectionFailure?.sequence],
+  );
+  const cloudRecoveryAdmission = useCloudRecoveryAdmission(cloudRecoveryScope);
   const computerSendDisabledReason =
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
-      : connectionSendDisabledReason;
+      : (usesCloudRecovery && cloudRecoveryAdmission.sendDisabledReason) ||
+        connectionSendDisabledReason;
   const computerSendDisabledReasonRef = useCommittedRef(
     computerSendDisabledReason,
   );
@@ -749,25 +900,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatData && (chatData as any).id === chatId ? chatData : undefined;
   const [chatTitle, setStreamedTitle] = useStreamedChatTitle(
     chatDataForCurrentChat?.title,
+    chatDataForCurrentChat?.title_manually_edited,
   );
   const loadedChatDocumentId = chatDataForCurrentChat?._id;
   const lastRunFinishedAt = chatDataForCurrentChat?.last_run_finished_at;
-
-  // Sync local chat state from URL (single source of truth)
-  useLayoutEffect(() => {
-    setStreamedTitle(null);
-    lastAppliedTodoOutputRef.current = null;
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      resetSandboxPreference();
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -792,6 +928,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const storedPendingUserWait = (chatDataForCurrentChat as any)
+    ?.active_agent_user_wait as ActiveAgentUserWait | undefined;
+  const persistedGoal = useQuery(
+    api.agentGoals.get,
+    chatDataForCurrentChat ? { chatId } : "skip",
+  );
+  const browserHandoff = useQuery(
+    api.browserHandoffs.getForUser,
+    isConvexAuthenticated && chatDataForCurrentChat
+      ? { chatId, agentId: "parent" }
+      : "skip",
+  );
+  const browserNeedsInput =
+    !!browserHandoff &&
+    ["waiting", "claiming", "human", "recovery", "resuming"].includes(
+      browserHandoff.state,
+    );
+
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -827,6 +981,38 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  const recoveryDuringComputerLoad = useRef({ chatId, observed: false });
+  useLayoutEffect(() => {
+    if (recoveryDuringComputerLoad.current.chatId !== chatId)
+      recoveryDuringComputerLoad.current = { chatId, observed: false };
+    if (isExistingChat && initializedSandboxChatId !== chatId) {
+      if (cloudRecoveryAdmission.recoveryStarted)
+        recoveryDuringComputerLoad.current.observed = true;
+      return;
+    }
+    const observedWhileLoading = recoveryDuringComputerLoad.current.observed;
+    recoveryDuringComputerLoad.current.observed = false;
+    if (
+      !usesCloudRecovery ||
+      (!cloudRecoveryAdmission.recoveryStarted && !observedWhileLoading)
+    )
+      return;
+    // Recovery never resumes an old intent. Retain drafts/queued messages for
+    // a fresh explicit send instead of releasing auto-continue after the fence.
+    hasManuallyStoppedRef.current = true;
+    try {
+      if (sessionStorage.getItem("autoSendChatId") === chatId)
+        sessionStorage.removeItem("autoSendChatId");
+    } catch {
+      // Storage may be disabled; the shared send guard still owns admission.
+    }
+  }, [
+    usesCloudRecovery,
+    cloudRecoveryAdmission.recoveryStarted,
+    isExistingChat,
+    initializedSandboxChatId,
+    chatId,
+  ]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
@@ -838,6 +1024,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const closedAgentLongRunIdsRef = useRef(new Set<string>());
   const agentLongRequestGenerationRef = useRef(0);
   const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
     useState(0);
@@ -885,6 +1072,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
   const handleAgentLongRunClosed = (runId: string) => {
+    // Closing the transport can beat useChat consuming buffered correlation
+    // chunks. Those chunks must not restore a finished run and block Goal replies.
+    closedAgentLongRunIdsRef.current.add(runId);
+    if (agentLongRunCorrelationRef.current?.runId === runId)
+      agentLongRunCorrelationRef.current = null;
     setAgentLongRunId((current) => (current === runId ? null : current));
   };
 
@@ -894,6 +1086,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     id: string;
     resolve: () => void;
   } | null>(null);
+  type GoalAdmission = {
+    chatId: string;
+    id: string;
+    resolve: () => void;
+    error?: Error;
+    aborted?: boolean;
+    rejected?: boolean;
+    requestSent?: boolean;
+    stopped?: boolean;
+    accepted: boolean;
+  };
+  const goalAdmissionRef = useRef<GoalAdmission | null>(null);
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
@@ -953,34 +1157,58 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           const request =
             typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
           const queuedMessageId = request?.messages?.at(-1)?.id;
-          return fetchAgentLongStream(
-            init,
-            (run) => {
-              if (
-                requestGeneration !== agentLongRequestGenerationRef.current ||
-                (run.chatId !== undefined &&
-                  run.chatId !== activeChatIdRef.current)
-              ) {
-                return;
-              }
-              if (
-                typeof request?.chatId === "string" &&
-                typeof queuedMessageId === "string"
-              ) {
-                queuedAdmissionRef.current(request.chatId, queuedMessageId);
-              }
-              // Only expose the saved-task route after attachment staging and
-              // user-message persistence have succeeded.
-              if (
-                finalizeNewChatRoute({
-                  chatId: activeChatIdRef.current,
-                  isAbort: false,
-                  isExistingChat: isExistingChatRef.current,
-                })
-              ) {
-                removeDraft("new");
-                setIsExistingChat(true);
-              }
+          const pendingGoal = goalAdmissionRef.current;
+          if (
+            pendingGoal &&
+            pendingGoal.chatId === request?.chatId &&
+            pendingGoal.id === queuedMessageId
+          )
+            pendingGoal.requestSent = true;
+          let recordedRunId: string | undefined;
+          const recordAdmission = (run: AgentLongRunStarted) => {
+            const pending = goalAdmissionRef.current;
+            if (
+              pending &&
+              pending.chatId === request?.chatId &&
+              pending.id === queuedMessageId &&
+              run.chatId === pending.chatId &&
+              !pending.stopped &&
+              !(
+                hasManuallyStoppedRef.current &&
+                pending.chatId === activeChatIdRef.current
+              )
+            )
+              pending.resolve();
+            if (recordedRunId === run.runId) return;
+            if (
+              hasManuallyStoppedRef.current ||
+              requestGeneration !== agentLongRequestGenerationRef.current ||
+              (run.chatId !== undefined &&
+                run.chatId !== activeChatIdRef.current)
+            ) {
+              return;
+            }
+            if (
+              typeof request?.chatId === "string" &&
+              typeof queuedMessageId === "string"
+            ) {
+              queuedAdmissionRef.current(request.chatId, queuedMessageId);
+            }
+            // Only expose the saved-task route after attachment staging and
+            // user-message persistence have succeeded.
+            if (
+              finalizeNewChatRoute({
+                chatId: activeChatIdRef.current,
+                isAbort: false,
+                isExistingChat: isExistingChatRef.current,
+              })
+            ) {
+              removeDraft("new");
+              setIsExistingChat(true);
+            }
+            // An idempotent retry is still durably admitted even when the
+            // original run finished. Acknowledge it without restoring its lease.
+            if (!closedAgentLongRunIdsRef.current.has(run.runId)) {
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
                 agentLongRunCorrelationRef.current = {
@@ -988,8 +1216,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   token: run.runCorrelationToken,
                 };
               }
-            },
+            }
+
+            recordedRunId = run.runId;
+          };
+          return fetchAgentLongStream(
+            init,
+            recordAdmission,
             handleAgentLongRunClosed,
+            recordAdmission,
           );
         }
         if (init?.method !== "GET") {
@@ -1017,7 +1252,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             handleAgentLongRunClosed,
           );
         }
-        return fetchWithErrorHandlers(input, init);
+        const requestChatId = activeChatIdRef.current;
+        const requestGeneration = agentLongRequestGenerationRef.current;
+        const response = await fetchWithErrorHandlers(input, init);
+        // Ask persists its chat before returning a successful response. Expose
+        // that route now so stopping the stream still leaves a reloadable task.
+        if (
+          init?.method === "POST" &&
+          response.ok &&
+          !init.signal?.aborted &&
+          isChatMountedRef.current &&
+          activeChatIdRef.current === requestChatId &&
+          agentLongRequestGenerationRef.current === requestGeneration &&
+          finalizeNewChatRoute({
+            chatId: requestChatId,
+            isAbort: false,
+            isExistingChat: isExistingChatRef.current,
+          })
+        ) {
+          removeDraft("new");
+          setIsExistingChat(true);
+        }
+        return response;
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the Trigger-backed Agent resume endpoint when there is a stored
@@ -1081,13 +1337,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }),
   );
 
-  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+  const [completedPredictionTurn, setCompletedPredictionTurn] =
+    useState<CompletedPredictionTurn | null>(null);
+  const [interruptedPredictionTurn, setInterruptedPredictionTurn] = useState<{
     chatId: string;
-    sequence: number;
   } | null>(null);
 
   const {
-    messages,
+    messages: streamedMessages,
     sendMessage: sendMessageUnchecked,
     setMessages,
     status,
@@ -1095,6 +1352,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     error,
     regenerate: regenerateUnchecked,
     resumeStream,
+    clearError,
   } = useChat({
     id: chatId,
     messages: serverMessages,
@@ -1116,6 +1374,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         if (
           typeof correlationData.runId === "string" &&
           typeof correlationData.token === "string" &&
+          !closedAgentLongRunIdsRef.current.has(correlationData.runId) &&
           (correlationData.chatId === undefined ||
             correlationData.chatId === chatId)
         ) {
@@ -1258,12 +1517,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort, isError }) => {
+    onFinish: ({ isAbort, isError, message, messages: finishedMessages }) => {
+      if (isAbort && goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.aborted = true;
       performanceTracker.setOutcome(
         isError ? "error" : isAbort ? "aborted" : "completed",
       );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
+      }
+      // useChat forwards old Chat instances to the latest callback after
+      // navigation. Its event history still belongs to the originating task.
+      // Check membership rather than the newest user ID: throttled visible
+      // messages may lag a legitimate abort before its assistant is appended.
+      const visibleUser = messagesRef.current.findLast(
+        (item) => item.role === "user",
+      );
+      if (
+        !visibleUser ||
+        finishedMessages?.some((item) => item.id === visibleUser.id)
+      ) {
+        setCompletedPredictionTurn(
+          !isAbort && !isError ? { chatId, messageId: message.id } : null,
+        );
+        setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
       }
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
@@ -1297,6 +1574,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       const structuredStreamError = deserializeChatSDKErrorFromStream(error);
       const displayError = structuredStreamError ?? error;
+      if (
+        goalAdmissionRef.current?.chatId === chatId &&
+        !goalAdmissionRef.current.accepted
+      ) {
+        goalAdmissionRef.current.rejected =
+          isGoalAdmissionRefused(displayError);
+        // Keep the structured refusal so the composer can offer the selector.
+        goalAdmissionRef.current.error = isGoalWorkspaceSelectionRefusal(
+          displayError,
+        )
+          ? displayError
+          : displayError instanceof ChatSDKError
+            ? new Error(
+                formatTaskUiCopy(
+                  typeof displayError.cause === "string"
+                    ? displayError.cause
+                    : displayError.message,
+                ),
+              )
+            : displayError;
+        return; // The composer reports this admission error and preserves its draft.
+      }
       if (displayError instanceof ChatSDKError) {
         const errorMessage =
           typeof displayError.cause === "string"
@@ -1312,6 +1611,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  const messages = useMemo(
+    () => normalizeStreamedRecoveryMessages(streamedMessages),
+    [streamedMessages],
+  );
+
+  useEffect(() => {
+    if (status === "submitted" || status === "streaming" || status === "error")
+      setCompletedPredictionTurn(null);
+  }, [chatId, status]);
 
   useChatPerformance({
     tracker: performanceTracker,
@@ -1330,6 +1639,130 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       return sendMessageUnchecked(...args);
     },
     [sendMessageUnchecked, computerSendDisabledReasonRef],
+  );
+  const sendGoalMessage = useCallback(
+    async (
+      message: {
+        text?: string;
+        files?: FileUIPart[];
+        metadata?: ChatMessage["metadata"];
+      },
+      options?: { body?: Record<string, unknown> },
+    ) => {
+      const disabledReason = computerSendDisabledReasonRef.current;
+      if (disabledReason) throw new Error(disabledReason);
+      if (goalAdmissionRef.current)
+        throw new Error("A goal is already starting.");
+      const id = uuidv4();
+      let accepted = false;
+      let resolveAdmission!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        resolveAdmission = resolve;
+      });
+      const pending: GoalAdmission = {
+        chatId,
+        id,
+        accepted: false,
+        resolve: () => {
+          accepted = true;
+          pending.accepted = true;
+          resolveAdmission();
+        },
+      };
+      goalAdmissionRef.current = pending;
+      try {
+        // The SDK generates a new ID for text-form sends; use explicit parts so
+        // admission can acknowledge this exact message, including attachments.
+        const sending = sendMessage(
+          {
+            id,
+            role: "user",
+            parts: [
+              ...(message.files ?? []),
+              ...(message.text
+                ? [{ type: "text" as const, text: message.text }]
+                : []),
+            ],
+            metadata: message.metadata,
+          },
+          options,
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted) {
+          if (pending.aborted)
+            throw new DOMException("Goal submission stopped", "AbortError");
+          throw (
+            pending.error ??
+            new Error("Goal could not start. Your draft is saved; try again.")
+          );
+        }
+      } catch (error) {
+        // Stream setup can reject in the same turn as admission. Once the
+        // exact message was admitted, a consumer error cannot undo that send.
+        if (accepted) return;
+        const stopped =
+          pending.stopped ||
+          (hasManuallyStoppedRef.current && activeChatIdRef.current === chatId);
+        const rejected = pending.rejected || isGoalAdmissionRefused(error);
+        let persisted: boolean | undefined;
+        if (
+          isChatMountedRef.current &&
+          activeChatIdRef.current === chatId &&
+          !(error instanceof Error && error.name === "AbortError")
+        ) {
+          // Failed requests can leave an optimistic bubble. Remove it only after
+          // confirming it was never persisted; unknown outcomes stay visible.
+          let persistenceTimeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            persisted = await Promise.race([
+              convex
+                .query(api.messages.isUserMessagePersisted, {
+                  chatId,
+                  messageId: id,
+                })
+                .catch(() => undefined),
+              new Promise<undefined>((resolve) => {
+                persistenceTimeout = setTimeout(
+                  () => resolve(undefined),
+                  5_000,
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(persistenceTimeout);
+          }
+          if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
+            if (persisted === false && (!pending.requestSent || rejected))
+              setMessages((current) =>
+                current.filter((item) => item.id !== id),
+              );
+            clearError?.();
+          }
+        }
+        // A late acknowledgement may arrive while the lookup is in flight.
+        if (accepted) return;
+        if (
+          !stopped &&
+          !rejected &&
+          (pending.requestSent ||
+            (!(error instanceof Error && error.name === "AbortError") &&
+              persisted !== false))
+        )
+          throw new GoalSubmissionUnconfirmedError(persisted, chatId);
+        throw error;
+      } finally {
+        if (goalAdmissionRef.current === pending)
+          goalAdmissionRef.current = null;
+      }
+    },
+    [
+      chatId,
+      sendMessage,
+      convex,
+      setMessages,
+      clearError,
+      computerSendDisabledReasonRef,
+    ],
   );
   const regenerate = useCallback<typeof regenerateUnchecked>(
     (...args) => {
@@ -1526,6 +1959,43 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [clearDataStream, setIsAutoResuming],
   );
+
+  useLayoutEffect(() => {
+    if (lastSyncedRouteChatIdRef.current === routeChatId) return;
+    const isInitialSync = lastSyncedRouteChatIdRef.current === null;
+    lastSyncedRouteChatIdRef.current = routeChatId;
+    const freshChatId = freshChatIdAwaitingHomeRef.current;
+    freshChatIdAwaitingHomeRef.current = null;
+    const currentChatId = committedChatIdRef.current;
+    // Keep the mounted draft when its saved URL or explicit New Task
+    // navigation commits. A history traversal still changes ownership.
+    if (
+      !isInitialSync &&
+      (routeChatId === currentChatId ||
+        (routeChatId === undefined && currentChatId === freshChatId))
+    ) {
+      return;
+    }
+
+    const nextChatId = routeChatId ?? uuidv4();
+    // Back/Forward can switch chats within the same mounted home page.
+    if (!isInitialSync && activeChatIdRef.current !== nextChatId) {
+      stopActiveBrowserStream(nextChatId);
+    }
+    setStreamedTitle(null);
+    lastAppliedTodoOutputRef.current = null;
+    if (!routeChatId) resetSandboxPreference();
+    wasNewChatRef.current = !routeChatId;
+    setChatId(nextChatId);
+    setIsExistingChat(!!routeChatId);
+    setRouteAdoptedChatId(routeChatId);
+  }, [
+    routeChatId,
+    committedChatIdRef,
+    resetSandboxPreference,
+    setStreamedTitle,
+    stopActiveBrowserStream,
+  ]);
 
   useEffect(() => {
     setChatNavigationHandler(stopActiveBrowserStream);
@@ -1882,6 +2352,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     const reset = () => {
       const nextChatId = uuidv4();
+      freshChatIdAwaitingHomeRef.current = nextChatId;
       stopActiveBrowserStream(nextChatId);
       setMessages([]);
       setChatId(nextChatId);
@@ -1961,6 +2432,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Legacy chats stored as agent-long map to agent mode
         setChatMode("agent");
       }
+      setInitializedPredictionModeChatId(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
@@ -2119,12 +2591,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Content comparison is required because a partial and completed text part can
     // share the same message ID and part count.
-    const current = messagesRef.current;
+    // Resume prompts are local control messages omitted from saved history.
+    // They must not block a completed answer or file receipt from reconciling.
+    const current = messagesRef.current.filter(
+      (message) => message.role !== "user" || !message.metadata?.isAutoContinue,
+    );
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
     // up, Convex will push the full set and the normal sync below will apply.
-    if (uiMessages.length < current.length) {
+    if (uiMessages.length < current.length && !persistedGoal) {
       return;
     }
 
@@ -2155,13 +2631,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // final save. Never replace more complete local text or tool progress with a
     // stale persisted snapshot; the later Convex update will rerun the effect.
     if (!arePersistedMessagesAtLeastAsComplete(current, uiMessages)) {
+      if (persistedGoal && isExistingChat) {
+        const merged = mergePersistedGoalMessages(current, uiMessages);
+        if (!areMessagesEquivalentForConvexSync(current, merged))
+          setMessages(merged);
+      }
       return;
     }
 
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
+  }, [
+    paginatedMessageResults,
+    setMessages,
+    isExistingChat,
+    chatId,
+    status,
+    persistedGoal,
+  ]);
 
   // Keep the latest visible user turn anchored while its response streams.
   // Auto-continue prompts are hidden from the timeline and must not replace
@@ -2201,19 +2689,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useLatestRef(messageQueue);
-
-  // Clear queue when navigating to a different chat.
-  // Intentionally reads messageQueueRef at cleanup time (latest value).
-  useEffect(() => {
-    return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      if (messageQueueRef.current.length > 0) {
-        clearQueue();
-      }
-    };
-  }, [chatId, clearQueue, messageQueueRef]);
+  useLayoutEffect(() => {
+    selectMessageQueue(chatId);
+  }, [chatId, selectMessageQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
@@ -2223,10 +2701,123 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleDrop,
   });
 
+  // The stream may show the wait tool before the Convex chat subscription
+  // publishes its pending field. Keep that immediate reply out of the queue.
+  const lastVisibleMessage = messages.at(-1);
+  const lastWaitPart =
+    lastVisibleMessage?.role === "assistant" &&
+    Array.isArray(lastVisibleMessage.parts)
+      ? (lastVisibleMessage.parts as any[])
+          .slice()
+          .reverse()
+          .find((part) => part?.type === "tool-wait_for_user")
+      : undefined;
+  // Once persisted, absence means released, not an unpublished stream update.
+  // Retain prior identities too: a later wait must not revive an earlier part.
+  const observedUserWaitsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (storedPendingUserWait)
+      observedUserWaitsRef.current.add(
+        `${chatId}:${storedPendingUserWait.runId}:${storedPendingUserWait.toolCallId}`,
+      );
+  }, [chatId, storedPendingUserWait]);
+  const streamedWaitKey = `${chatId}:${agentLongRunId || activeTriggerRunId}:${lastWaitPart?.toolCallId}`;
+  const pendingUserWait: ActiveAgentUserWait | undefined =
+    (storedPendingUserWait
+      ? { ...storedPendingUserWait, published: true as const }
+      : undefined) ??
+    (status === "streaming" &&
+    !hasManuallyStoppedRef.current &&
+    !observedUserWaitsRef.current.has(streamedWaitKey) &&
+    lastWaitPart?.state === "input-available" &&
+    typeof lastWaitPart.toolCallId === "string" &&
+    (agentLongRunId || activeTriggerRunId)
+      ? {
+          runId: (agentLongRunId || activeTriggerRunId)!,
+          toolCallId: lastWaitPart.toolCallId,
+          status: "waiting",
+          questions: userInputQuestionsSchema.safeParse(
+            lastWaitPart.input?.questions,
+          ).data,
+        }
+      : undefined);
+  const hasPendingUserWait = !!pendingUserWait;
+
+  // The start response can arrive before the Convex subscription catches up.
+  // Keep that exact local run available to Stop after the pending POST settles.
+  const cancellationTriggerRunRef = useCommittedRef(
+    agentLongRunId ?? activeTriggerRunId,
+  );
+
+  // Chat handlers
+  const {
+    handleSubmit,
+    handleStop,
+    handleRegenerate,
+    handleRetry,
+    handleEditMessage,
+    handleSendNow,
+    handleContinue,
+    hasPendingSummarySteer,
+  } = useChatHandlers({
+    chatId,
+    messages,
+    sendMessage,
+    sendGoalMessage,
+    sendQueuedMessage:
+      shouldUseAgentLong ||
+      messageQueue.some((message) => message.deliveryStatus)
+        ? sendQueuedMessage
+        : undefined,
+    stop,
+    regenerate,
+    setMessages,
+    isExistingChat,
+    isUserMessagePersisted: (messageId) =>
+      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
+    status,
+    isSummarizing: summarizationStatus?.status === "started",
+    goalState: persistedGoal?.state,
+    goalGeneration: persistedGoal?.generation,
+    persistedTriggerRunId: activeTriggerRunId,
+    isSendingNowRef,
+    hasManuallyStoppedRef,
+    activeTriggerRunRef: cancellationTriggerRunRef,
+    resumeActiveRun: resumeStream,
+    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
+    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
+    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
+    onStopCallback: () => {
+      if (goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.stopped = true;
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+    },
+    resetAutoContinueCount,
+    sendDisabledReason: computerSendDisabledReason,
+    pendingUserWait,
+  });
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
+      queueChatId === chatId &&
+      // replaceState saves a new chat without updating the router tree/params.
+      (routeChatId
+        ? routeChatId === chatId
+        : !isExistingChat || window.location.pathname === `/c/${chatId}`) &&
+      (!isExistingChat ||
+        (hasLoadedCurrentChat && persistedGoal !== undefined)) &&
       status === "ready" &&
+      !hasPendingSummarySteer &&
+      !hasPendingUserWait &&
+      persistedGoal?.state !== "needs_input" &&
+      persistedGoal?.state !== "blocked" &&
+      persistedGoal?.state !== "queued" &&
+      persistedGoal?.state !== "running" &&
+      !agentLongRunId &&
+      !activeTriggerRunId &&
+      // Hold queued messages until the user explicitly resumes this stop.
+      !requiresManualAgentResume(chatDataForCurrentChat?.finish_reason) &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2272,8 +2863,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    hasPendingSummarySteer,
+    hasPendingUserWait,
+    persistedGoal?.state,
+    agentLongRunId,
+    activeTriggerRunId,
+    chatDataForCurrentChat?.finish_reason,
     shouldUseAgentLong,
     messageQueue,
+    queueChatId,
+    routeChatId,
+    chatId,
+    isExistingChat,
+    hasLoadedCurrentChat,
+    persistedGoal,
     editingQueuedMessageId,
     computerSendDisabledReason,
     isProcessingQueue,
@@ -2286,51 +2889,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
-
-  // The start response can arrive before the Convex subscription catches up.
-  // Keep that exact local run available to Stop after the pending POST settles.
-  const cancellationTriggerRunRef = useCommittedRef(
-    agentLongRunId ?? activeTriggerRunId,
-  );
-
-  // Chat handlers
-  const {
-    handleSubmit,
-    handleStop,
-    handleRegenerate,
-    handleRetry,
-    handleEditMessage,
-    handleSendNow,
-    handleContinue,
-  } = useChatHandlers({
-    chatId,
-    messages,
-    sendMessage,
-    sendQueuedMessage:
-      shouldUseAgentLong ||
-      messageQueue.some((message) => message.deliveryStatus)
-        ? sendQueuedMessage
-        : undefined,
-    stop,
-    regenerate,
-    setMessages,
-    isExistingChat,
-    isUserMessagePersisted: (messageId) =>
-      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
-    status,
-    isSendingNowRef,
-    hasManuallyStoppedRef,
-    activeTriggerRunRef: cancellationTriggerRunRef,
-    resumeActiveRun: resumeStream,
-    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
-    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
-    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
-    onStopCallback: () => {
-      dispatchStreaming({ type: "RESET_ON_FINISH" });
-    },
-    resetAutoContinueCount,
-    sendDisabledReason: computerSendDisabledReason,
-  });
 
   const handleScrollToBottom = useCallback(() => {
     scrollToBottom({ force: true });
@@ -2396,48 +2954,23 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat &&
     !hasResolvedInitialPresentation &&
     !canResolveApprovalPresentation;
-  const showBottomChatInput =
-    (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const isComposerCentered = !hasMessages && !isExistingChat && !isMobile;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  // The mobile goal pill hosts the scroll button when there is room beside it.
+  const [scrollButtonInGoal, setScrollButtonInGoal] = useState(false);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
       : undefined;
+  // The blocked-limit warning mounts the full billing recovery panel.
+  const isQuotaBlocked =
+    rateLimitWarning?.warningType === "token-bucket" &&
+    rateLimitWarning.remainingPercent === 0;
 
   // Get branched chat info directly from chatData (no additional query needed)
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-  useEffect(() => {
-    // Only a new submission arms the survey. Mounting/reconnecting an old
-    // streaming response must not be treated as a fresh activation.
-    const submittedMessage = messages.at(-1);
-    if (
-      status !== "submitted" ||
-      submittedMessage?.role !== "user" ||
-      submittedMessage.metadata?.isAutoContinue
-    )
-      return;
-    setSurveyActivation({
-      chatId,
-      userMessageId: submittedMessage.id,
-      mode: chatMode === "agent" ? "agent" : "ask",
-    });
-  }, [chatId, chatMode, messages, status, setSurveyActivation]);
-  const lastMessage = messages.at(-1);
-  const acquisitionSurveyEligible =
-    surveyActivation?.chatId === chatId &&
-    status === "ready" &&
-    !hasManuallyStoppedRef.current &&
-    !error &&
-    !chatDataForCurrentChat?.active_stream_id &&
-    !chatDataForCurrentChat?.active_trigger_run_id &&
-    chatDataForCurrentChat?.finish_reason === "stop" &&
-    lastMessage?.role === "assistant" &&
-    lastMessage.parts.some(
-      (part) => part.type === "text" && part.text.trim().length > 0,
-    ) &&
-    messages.some((message) => message.id === surveyActivation.userMessageId);
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
@@ -2452,13 +2985,125 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
 
+  const hasActiveGoalRun =
+    !!activeTriggerRunId &&
+    ["queued", "running", "needs_approval"].includes(
+      persistedGoal?.state ?? "",
+    );
+  // A Goal settles its own abandoned handoff run as paused. Its existing Goal
+  // Resume is the only continuation, so the transcript notice has no button.
+  // Goal claims record run-owned message IDs, which survive cancellation.
+  const lastAssistantMessageId = messages.findLast(
+    (message) => message.role === "assistant",
+  )?.id;
+  const isBrowserHandoffAbandoned =
+    chatDataForCurrentChat?.finish_reason ===
+    BROWSER_HANDOFF_ABANDONED_FINISH_REASON;
+  const goalOwnsAbandonedRun =
+    isBrowserHandoffAbandoned &&
+    !!persistedGoal &&
+    ["queued", "running", "waiting", "needs_approval", "paused"].includes(
+      persistedGoal.state,
+    ) &&
+    (!!persistedGoal.activeRunId ||
+      (!!lastAssistantMessageId &&
+        !!persistedGoal.evidenceSources?.some(
+          (source) =>
+            source.messageId === lastAssistantMessageId ||
+            source.runId === lastAssistantMessageId,
+        )));
+  const pauseGoalOnSend = [
+    "queued",
+    "running",
+    "waiting",
+    "needs_approval",
+  ].includes(persistedGoal?.state ?? "");
+  // Opening billing navigates this tab away. Hold it while chat or durable
+  // Agent work is in flight, waiting for input, or awaiting approval. This
+  // only disables the billing action; Send is never disabled by it.
+  const billingNavigationBlocked =
+    status === "submitted" ||
+    status === "streaming" ||
+    (!!currentAgentRunUiId && !isAgentRunUiTerminal) ||
+    hasActiveGoalRun ||
+    pauseGoalOnSend ||
+    !!pendingUserWait ||
+    !!storedAgentApprovalRequest;
+  const stopGoalRunBeforeControl = async (runId: string) => {
+    // Never let a delayed goal control stop a replacement or unrelated run.
+    if (activeTriggerRunId === runId) cancellationTriggerRunRef.current = runId;
+    if (cancellationTriggerRunRef.current !== runId)
+      throw new Error("The goal run changed. Reload before changing the goal.");
+    return handleStop({
+      requireSavedResponse: true,
+      expectedTriggerRunId: runId,
+    });
+  };
+  const goalPanel = (placement: "attached" | "detached") => (
+    <AgentGoalPanel
+      key={chatId}
+      detached={placement === "detached"}
+      waitingForReply={
+        !!pendingUserWait ||
+        (browserNeedsInput &&
+          persistedGoal?.state === "running" &&
+          !!persistedGoal.activeRunId &&
+          browserHandoff?.runId === persistedGoal.activeRunId)
+      }
+      onEdit={() => openSidebar({ kind: "goal", chatId })}
+      chatId={chatId}
+      exists={!!chatDataForCurrentChat}
+      stopRunBeforeControl={stopGoalRunBeforeControl}
+      latestSavedUserMessageAt={paginatedMessageResults?.reduce(
+        (latest, message) =>
+          message.role === "user"
+            ? Math.max(latest, message.created_at)
+            : latest,
+        0,
+      )}
+      eligible={chatMode === "agent" && subscription !== "free"}
+      idle={
+        status === "ready" &&
+        !activeTriggerRunId &&
+        (messageQueue.length === 0 ||
+          // This stop deliberately holds queued messages until a manual resume.
+          isBrowserHandoffAbandoned ||
+          persistedGoal?.state === "blocked" ||
+          persistedGoal?.state === "needs_input")
+      }
+      disabledReason={computerSendDisabledReason}
+      mobileAccessory={
+        <ScrollToBottomButton
+          variant="inline"
+          onClick={handleScrollToBottom}
+          hasMessages={hasMessages}
+          isAtBottom={isAtBottom}
+        />
+      }
+      onMobileAccessoryInlineChange={setScrollButtonInGoal}
+      send={async (message, options) => {
+        hasManuallyStoppedRef.current = false;
+        resetAutoContinueCount();
+        if (!isExistingChat)
+          window.history.replaceState({}, "", `/c/${chatId}`);
+        await sendGoalMessage(message, options);
+      }}
+      settings={{
+        sandboxPreference,
+        agentPermissionMode,
+        selectedModel: requestSelectedModel,
+      }}
+    />
+  );
+
   return (
-    <>
+    <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
       <StreamEffects
+        finishReason={chatDataForCurrentChat?.finish_reason}
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
-        autoResume={autoResume}
+        autoResume={autoResume || routeAdoptedChatId === chatId}
         serverMessages={serverMessages}
         resumeStream={resumeStream}
         setMessages={setMessages}
@@ -2504,7 +3149,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               branchedFromChatTitle={branchedFromChatTitle}
             />
 
-            {sandboxPreference === "e2b" && subscription !== "free" && (
+            {usesCloudRecovery && (
               <div className="mx-auto w-full max-w-[768px] px-4">
                 <CloudWorkspaceRecovery
                   key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
@@ -2518,11 +3163,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             )}
 
             {/* Chat interface */}
-            <div className="bg-background flex flex-col flex-1 relative min-h-0">
+            <div
+              className={`bg-background flex flex-col flex-1 relative min-h-0 ${
+                !showChatLayout && !isChatNotFound
+                  ? "justify-center-safe overflow-y-auto"
+                  : ""
+              }`}
+            >
               {/* Messages area */}
               {isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                  <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="w-full max-w-full sm:max-w-[768px] flex flex-col items-center space-y-8">
                     <div className="text-center">
                       <h1 className="text-2xl font-bold text-foreground mb-2">
                         Task Not Found
@@ -2555,18 +3206,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}
-                      acquisitionSurvey={
-                        acquisitionSurveyEligible && lastMessage
-                          ? {
-                              messageId: lastMessage.id,
-                              mode: surveyActivation!.mode,
-                            }
-                          : undefined
-                      }
                       setMessages={setMessages}
                       onRegenerate={handleRegenerate}
                       onRetry={handleRetry}
-                      onContinue={handleContinue}
+                      onContinue={
+                        goalOwnsAbandonedRun ? undefined : handleContinue
+                      }
                       onReconnect={resumeStream}
                       onEditMessage={handleEditMessage}
                       onBranchMessage={handleBranchMessage}
@@ -2577,6 +3222,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       isMobile={isMobile}
                       tempChatFileDetails={tempChatFileDetails}
                       finishReason={chatDataForCurrentChat?.finish_reason}
+                      continueDisabledReason={computerSendDisabledReason}
                       agentRunSpendCapWarning={agentRunSpendCapWarning}
                       uploadStatus={uploadStatus}
                       summarizationStatus={summarizationStatus}
@@ -2593,84 +3239,110 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   )}
                 </div>
               ) : (
-                <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
-                      <div className="text-center">
-                        <HackingSuggestions />
-                      </div>
-
-                      {/* Centered input (desktop only) */}
-                      {!isMobile && (
-                        <div className="w-full">
-                          <ChatInput
-                            onSubmit={handleSubmit}
-                            onStop={handleStop}
-                            onReconnect={resumeStream}
-                            onSendNow={handleSendNow}
-                            status={status}
-                            hideStop={isAgentRunUiTerminal}
-                            isCentered={true}
-                            hasMessages={hasMessages}
-                            isAtBottom={isAtBottom}
-                            onScrollToBottom={handleScrollToBottom}
-                            isNewChat={!isExistingChat}
-                            chatId={chatId}
-                            rateLimitWarning={
-                              rateLimitWarning ? rateLimitWarning : undefined
-                            }
-                            onDismissRateLimitWarning={
-                              handleDismissRateLimitWarning
-                            }
-                            storedApprovalRequest={storedAgentApprovalRequest}
-                          />
-                        </div>
-                      )}
+                <div
+                  className={`flex flex-col min-h-0 ${isMobile ? "flex-1" : "shrink-0"}`}
+                >
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-4 min-h-0">
+                    <div className="w-full max-w-[768px] flex flex-col items-center">
+                      <HackingSuggestions />
                     </div>
-                  </div>
-
-                  {/* Footer - only show when user is not logged in */}
-                  <div className="flex-shrink-0">
-                    <Footer />
                   </div>
                 </div>
               )}
 
-              {/* Chat Input - Bottom placement (also for mobile new chats) */}
-              {showBottomChatInput ? (
+              {/* Keep one composer mounted across folding and the first message.
+                  Remounting can restore an older saved draft over live input. */}
+              {!isChatNotFound ? (
                 <ComposerOverlay
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
-                  {showChatLayout && (
-                    <BrowserHandoffEntry chatId={chatId} messages={messages} />
-                  )}
+                  {/* Anchor above the entire composer, including browser notices. */}
+                  <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
+                    {!scrollButtonInGoal && (
+                      <ScrollToBottomButton
+                        onClick={handleScrollToBottom}
+                        hasMessages={hasMessages}
+                        isAtBottom={isAtBottom}
+                      />
+                    )}
+                  </div>
                   <ChatInput
+                    completedPredictionTurn={completedPredictionTurn}
+                    predictionModeReady={
+                      !isExistingChat ||
+                      initializedPredictionModeChatId === chatId
+                    }
+                    interruptedPredictionTurn={interruptedPredictionTurn}
+                    latestMessageId={messages.at(-1)?.id}
+                    latestMessageIsAssistant={
+                      messages.at(-1)?.role === "assistant"
+                    }
+                    goalPanel={goalPanel}
+                    hasActiveGoalRun={hasActiveGoalRun}
+                    pauseGoalOnSend={pauseGoalOnSend}
+                    topNotice={
+                      <>
+                        {showChatLayout && (
+                          <BrowserHandoffEntry
+                            chatId={chatId}
+                            messages={messages}
+                            persistedMessages={serverMessages}
+                          />
+                        )}
+                        {/* New chats too: returning subscribers often start there. */}
+                        <EarlyRenewalPaymentNotice
+                          actionDisabled={billingNavigationBlocked}
+                          suppressed={isQuotaBlocked}
+                        />
+                      </>
+                    }
+
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
-                    hideStop={isAgentRunUiTerminal}
+                    hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
+                    isCentered={isComposerCentered}
                     hasMessages={hasMessages}
-                    isAtBottom={isAtBottom}
-                    onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={computerSendDisabledReason}
+                    sendDisabledReason={
+                      pendingUserWait ? undefined : computerSendDisabledReason
+                    }
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
+                    pendingUserWait={pendingUserWait}
+                    pendingGoalQuestions={
+                      !pendingUserWait && persistedGoal?.state === "needs_input"
+                        ? {
+                            generation: persistedGoal.generation,
+                            questions: persistedGoal.judgment?.questions ?? [
+                              {
+                                id: "reply",
+                                header: "Your input",
+                                question:
+                                  persistedGoal.reason ||
+                                  "What should the Agent do next?",
+                                options: [],
+                              },
+                            ],
+                          }
+                        : undefined
+                    }
                   />
                 </ComposerOverlay>
               ) : null}
+              {!showChatLayout && !isChatNotFound && <Footer />}
             </div>
           </div>
 
-          {/* Keep the controller mounted when switching between split and overlay. */}
+          {/* Load on first open, then retain Goal drafts across browser panel closes. */}
           <div
             ref={computerDialogRef}
             className={
@@ -2686,7 +3358,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             }
             aria-label={
               computerSidebarOverlay && sidebarOpen
-                ? "HackerAI’s Computer"
+                ? sidebarContent &&
+                  "kind" in sidebarContent &&
+                  sidebarContent.kind === "goal"
+                  ? "Edit goal"
+                  : "HackerAI’s Computer"
                 : undefined
             }
             tabIndex={computerSidebarOverlay ? -1 : undefined}
@@ -2698,13 +3374,37 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
               }
             >
-              <ComputerSidebar
-                key={chatId ?? "new"}
-                onBrowserContinue={continueBrowserHandoff}
-                chatId={chatId}
-                messages={messages}
-                status={status}
-              />
+              {(sidebarOpen || hasOpenedComputerSidebar) && (
+                <ComputerSidebar
+                  key={chatId ?? "new"}
+                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
+                  continueGoal={async (goal) => {
+                    if (computerSendDisabledReason)
+                      throw new Error(computerSendDisabledReason);
+                    hasManuallyStoppedRef.current = false;
+                    resetAutoContinueCount();
+                    await sendGoalMessage(
+                      { text: goalResumeMessage(goal) },
+                      {
+                        body: {
+                          sandboxPreference: goal.sandboxPreference,
+                          agentPermissionMode: goal.permissionMode,
+                          selectedModel: goal.selectedModel,
+                          mode: "agent",
+                          goal: {
+                            action: "resume",
+                            expectedGeneration: goal.generation,
+                          },
+                        },
+                      },
+                    );
+                  }}
+                  onBrowserContinue={continueBrowserHandoff}
+                  chatId={chatId}
+                  messages={messages}
+                  status={status}
+                />
+              )}
             </div>
           </div>
 
@@ -2715,6 +3415,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           />
         </div>
       </div>
-    </>
+    </CloudRecoveryAdmissionContext.Provider>
   );
 };
