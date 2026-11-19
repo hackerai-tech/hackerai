@@ -148,10 +148,16 @@ function splitShellWords(command: string): string[] {
   return words;
 }
 
-function parseAgentBrowserInvocation(command: string): {
+type AgentBrowserInvocation = {
   action?: string;
   usedViaNpx: boolean;
-} | null {
+  // Matches the CLI wrapper's version class: exactly `--version` or `-V`.
+  versionCheckOnly: boolean;
+};
+
+function parseAgentBrowserInvocation(
+  command: string,
+): AgentBrowserInvocation | null {
   const words = splitShellWords(command);
   let index = 0;
 
@@ -166,7 +172,13 @@ function parseAgentBrowserInvocation(command: string): {
   }
 
   if (!AGENT_BROWSER_COMMAND_RE.test(words[index] ?? "")) return null;
-  return { action: words[index + 1], usedViaNpx };
+  const action = words[index + 1];
+  return {
+    action,
+    usedViaNpx,
+    versionCheckOnly:
+      words.length === index + 2 && (action === "--version" || action === "-V"),
+  };
 }
 
 const KNOWN_AGENT_BROWSER_ACTIONS = new Set([
@@ -251,4 +263,15 @@ export function detectAgentBrowserUsage(
     actions,
     usedViaNpx,
   };
+}
+
+/**
+ * A standalone version check does not request a Browser Preview.
+ * Other recognized browser invocations retain their existing behavior.
+ */
+export function requestsAgentBrowserPreview(command: string): boolean {
+  return splitShellCommands(command).some((shellCommand) => {
+    const invocation = parseAgentBrowserInvocation(shellCommand);
+    return !!invocation && !invocation.versionCheckOnly;
+  });
 }

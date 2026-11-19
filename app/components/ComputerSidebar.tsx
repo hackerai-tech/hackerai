@@ -69,7 +69,10 @@ import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { getNoteMetaSegments } from "./tools/notes-tool-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
-import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
+import {
+  detectAgentBrowserUsage,
+  requestsAgentBrowserPreview,
+} from "@/lib/utils/agent-browser-command";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -773,9 +776,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 chatId={browserChatId}
                 agentId={browserAgentId}
                 liveSelection={showingLiveContent && isFollowingLive}
-                browserRequested={
-                  !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
-                }
+                browserRequested={requestsAgentBrowserPreview(
+                  resolvedTerminal?.command ?? "",
+                )}
                 runActive={status === "streaming" || status === "submitted"}
                 onJumpToLive={handleJumpToLive}
               />

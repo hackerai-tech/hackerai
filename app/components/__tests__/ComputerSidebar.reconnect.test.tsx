@@ -550,6 +550,15 @@ describe("ComputerSidebar reconnect behavior", () => {
     ["agent-browser open https://example.org", true],
     ["MODE=TEST npx agent-browser@latest snapshot -i", true],
     ['printf "READY!"; agent-browser snapshot -i', true],
+    // A standalone version check never starts a browser.
+    ["agent-browser --version", false],
+    ["env MODE=TEST npx -y agent-browser@latest -V", false],
+    ["agent-browser -V; npx agent-browser --version", false],
+    // Anything beyond an exact version flag stays conservative.
+    ["agent-browser --version && agent-browser open about:blank", true],
+    ["agent-browser --version PRIVATE_ARG", true],
+    ["agent-browser --headed -V", true],
+    ["agent-browser", true],
   ])(
     "matches browser invocation rather than mentions: %s",
     (command, expected) => {
@@ -571,6 +580,79 @@ describe("ComputerSidebar reconnect behavior", () => {
       ).toBe(expected);
     },
   );
+
+  it("waits for browser activity after a version check on a registered session", async () => {
+    const originalFetch = global.fetch;
+    const frame = {
+      image: "data:image/png;base64,test",
+      width: 800,
+      height: 600,
+      capturedAt: Date.now(),
+      browserSessionName: "default",
+    };
+    let browserStarted = false;
+    const fetchPreview = jest.fn(async () =>
+      browserStarted
+        ? ({
+            ok: true,
+            json: async () => ({ state: "agent", frame }),
+          } as Response)
+        : ({
+            ok: false,
+            status: 503,
+            json: async () => ({ state: "disconnected" }),
+          } as Response),
+    );
+    mockUseQuery.mockReturnValue({
+      sessionId: "session-a",
+      state: "agent",
+      runActive: true,
+    });
+    global.fetch = fetchPreview;
+
+    try {
+      const props = {
+        sidebarOpen: true,
+        closeSidebar: mockCloseSidebar,
+        browserChatId: "chat",
+        status: "streaming" as const,
+      };
+      const view = render(
+        <ComputerSidebarBase
+          {...props}
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: "agent-browser --version",
+          }}
+        />,
+      );
+      await act(async () => {});
+      expect(fetchPreview).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("region", { name: "Agent browser preview" }),
+      ).not.toBeInTheDocument();
+
+      browserStarted = true;
+      view.rerender(
+        <ComputerSidebarBase
+          {...props}
+          sidebarContent={{
+            ...activeSidebarContent,
+            command:
+              "agent-browser --version && agent-browser open about:blank",
+          }}
+        />,
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      expect(
+        screen.getByAltText("Current Agent browser viewport"),
+      ).toBeVisible();
+      view.unmount();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 
   it("pins the expanded command while later tools arrive", () => {
     const onNavigate = jest.fn();
