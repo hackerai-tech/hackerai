@@ -137,7 +137,8 @@ describe("reconcileGoal step observation", () => {
         usageExhausted: false,
       }),
     );
-    expect(clear).toHaveBeenCalledWith({
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(clear.mock.calls[0][0]).toEqual({
       chatId: "chat",
       triggerRunId: null,
       approvalSessionId: null,
@@ -235,6 +236,30 @@ describe("reconcileGoal step observation", () => {
       expect(operationCounts()).toEqual(counts);
     },
   );
+
+  it("keeps every read and write on an admission's own unbounded client", async () => {
+    const admission = {
+      client: {
+        query: jest
+          .fn()
+          .mockResolvedValueOnce(activeGoal)
+          .mockResolvedValueOnce(reloadedGoal),
+        mutation: jest.fn().mockResolvedValueOnce(null),
+      } as unknown as ReturnType<typeof getConvexClient>,
+    };
+    retrieve.mockResolvedValueOnce(terminalRun());
+    await expect(
+      reconcileGoal("chat", "owner", undefined, admission),
+    ).resolves.toBe(reloadedGoal);
+    // The shared client is never used, so another chat cannot hold this one.
+    expect(getConvexClient).not.toHaveBeenCalled();
+    expect(admission.client.query).toHaveBeenCalledTimes(2);
+    expect(admission.client.mutation).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRunId: "run-1" }),
+      admission,
+    );
+  });
 
   it.each(["settled", "finish_goal failure"])(
     "keeps the %s outcome and operations when the observer throws",

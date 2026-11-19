@@ -57,15 +57,47 @@ const mockGoalMutation = jest.fn<any>();
 const mockGoalQuery = jest.fn<any>();
 const mockRetrieveRun = jest.fn<any>();
 const mockReconcileGoal = jest.fn<any>().mockResolvedValue(null);
+const mockGetGoal = jest.fn<any>();
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation: mockGoalMutation, query: mockGoalQuery }),
+  createIsolatedConvexClient: () => ({
+    mutation: mockGoalMutation,
+    query: mockGoalQuery,
+  }),
+  // The real classifier decides whether a failed write needs a read-back.
+  isConvexOutcomeUnknownError: (
+    jest.requireActual("@/lib/db/convex-client") as any
+  ).isConvexOutcomeUnknownError,
 }));
 jest.mock("@/lib/goals/server", () => ({
+  getGoal: mockGetGoal,
   goalServiceKey: () => "synthetic",
   reconcileGoal: mockReconcileGoal,
 }));
 const mockSandboxContext = jest.fn<any>();
 const mockSandboxClose = jest.fn<any>();
+
+// The mocked persistence records chats it creates, so the pre-dispatch owner
+// read finds them as Convex would. Tests can still override either mock.
+const persistedChats = new Map<string, Record<string, unknown>>();
+const persistInitialChat = async ({
+  chatId,
+  userId,
+  chat,
+}: {
+  chatId: string;
+  userId: string;
+  chat: unknown;
+}) => {
+  if (!chat) persistedChats.set(chatId, { id: chatId, user_id: userId });
+};
+const readPersistedChat = async ({ id }: { id: string }) =>
+  persistedChats.get(id) ?? null;
+const usePersistedChats = () => {
+  persistedChats.clear();
+  mockHandleInitialChatAndUserMessage.mockImplementation(persistInitialChat);
+  require("@/lib/db/actions").getChatById.mockImplementation(readPersistedChat);
+};
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
@@ -188,7 +220,7 @@ describe("web request correlation at Agent dispatch", () => {
       userId: "user-1",
       subscription: "pro",
     });
-    getChatById.mockResolvedValue(null);
+    usePersistedChats();
     getUserCustomization.mockResolvedValue(null);
     stripLocalDesktopSourcePaths.mockImplementation(
       (messages: unknown) => messages,
@@ -379,6 +411,7 @@ describe("web request correlation at Agent dispatch", () => {
     expect(response.status).toBe(200);
     expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
       expect.objectContaining({ messages }),
+      expect.anything(),
     );
   });
 
@@ -475,6 +508,7 @@ describe("web request correlation at Agent dispatch", () => {
       expect(response.status).toBe(200);
       expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
         expect.objectContaining({ sandboxType: sandboxPreference }),
+        expect.anything(),
       );
       expect(
         mockHandleInitialChatAndUserMessage.mock.invocationCallOrder[0],
@@ -505,6 +539,7 @@ describe("web request correlation at Agent dispatch", () => {
       expect(await response.json()).toMatchObject({ runId: "run-existing" });
       expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
         expect.objectContaining({ chatId: "chat-1", userId: "user-1" }),
+        expect.anything(),
       );
       expect(mockTriggerTask).toHaveBeenCalledWith(
         "agent-long",
@@ -722,9 +757,9 @@ describe("web request correlation at Agent dispatch", () => {
     );
     let finish!: () => void;
     mockHandleInitialChatAndUserMessage.mockImplementationOnce(
-      () =>
+      (args: any) =>
         new Promise<void>((resolve) => {
-          finish = resolve;
+          finish = () => void persistInitialChat(args).then(resolve);
         }),
     );
     try {
@@ -754,10 +789,10 @@ describe("web request correlation at Agent dispatch", () => {
       try {
         let finish!: () => void;
         mockHandleInitialChatAndUserMessage.mockImplementationOnce(
-          ({ onPersistenceStep }: any) => {
-            onPersistenceStep(step);
+          (args: any) => {
+            args.onPersistenceStep(step);
             return new Promise<void>((resolve) => {
-              finish = resolve;
+              finish = () => void persistInitialChat(args).then(resolve);
             });
           },
         );
@@ -826,8 +861,9 @@ describe("web request correlation at Agent dispatch", () => {
     const log = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
       mockHandleInitialChatAndUserMessage.mockImplementationOnce(
-        async ({ onPersistenceStep }: any) => {
-          onPersistenceStep("save_user_message");
+        async (args: any) => {
+          args.onPersistenceStep("save_user_message");
+          await persistInitialChat(args);
         },
       );
       mockTriggerTask.mockRejectedValueOnce(new Error("queue unavailable"));
@@ -847,8 +883,9 @@ describe("web request correlation at Agent dispatch", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       mockHandleInitialChatAndUserMessage.mockImplementationOnce(
-        async ({ onPersistenceStep }: any) => {
-          onPersistenceStep("save_user_message");
+        async (args: any) => {
+          args.onPersistenceStep("save_user_message");
+          await persistInitialChat(args);
         },
       );
       let finish!: (token: string) => void;
@@ -874,6 +911,17 @@ describe("web request correlation at Agent dispatch", () => {
 });
 
 describe("Agent trigger route lifecycle", () => {
+  type FinalizeArgs = Parameters<typeof finalizeStartedAgentRun>[0];
+  // An ordinary start passes the owner snapshot it read before dispatch;
+  // these cases default to an unowned chat unless they name a previous owner.
+  const finalize = (args: Omit<FinalizeArgs, "userId"> & { userId?: string }) =>
+    finalizeStartedAgentRun({
+      userId: "user-1",
+      ...(args.goal
+        ? {}
+        : { previousOwner: { runId: null, approvalSessionId: null } }),
+      ...args,
+    });
   beforeEach(() => {
     jest.clearAllMocks();
     jest
@@ -1035,7 +1083,7 @@ describe("Agent trigger route lifecycle", () => {
     mockReplaceActiveTriggerRun.mockResolvedValue("deleting");
 
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
@@ -1058,7 +1106,7 @@ describe("Agent trigger route lifecycle", () => {
     mockReplaceActiveTriggerRun.mockRejectedValueOnce(associationError);
 
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
@@ -1077,7 +1125,7 @@ describe("Agent trigger route lifecycle", () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
         await expect(
-          finalizeStartedAgentRun({
+          finalize({
             chatId: "chat-1",
             runId: "run-1",
             approvalSessionId: "approval-session-1",
@@ -1107,7 +1155,7 @@ describe("Agent trigger route lifecycle", () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
         await expect(
-          finalizeStartedAgentRun({
+          finalize({
             chatId: "chat-1",
             runId: "run-1",
             approvalSessionId: undefined,
@@ -1130,7 +1178,7 @@ describe("Agent trigger route lifecycle", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "run-1",
           approvalSessionId: undefined,
@@ -1155,7 +1203,7 @@ describe("Agent trigger route lifecycle", () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
         await expect(
-          finalizeStartedAgentRun({
+          finalize({
             chatId: "00000000-0000-4000-8000-000000000001",
             runId: "run_000000000000000000000000",
             approvalSessionId: "approval-session-1",
@@ -1173,13 +1221,16 @@ describe("Agent trigger route lifecycle", () => {
           clear_association_result: clearResult,
           association_rejection_reason: null,
         });
-        expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
-          chatId: "00000000-0000-4000-8000-000000000001",
-          triggerRunId: null,
-          approvalSessionId: null,
-          expectedRunId: "run_000000000000000000000000",
-          clearApprovalPending: true,
-        });
+        expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+          {
+            chatId: "00000000-0000-4000-8000-000000000001",
+            triggerRunId: null,
+            approvalSessionId: null,
+            expectedRunId: "run_000000000000000000000000",
+            clearApprovalPending: true,
+          },
+          expect.anything(),
+        );
         expect(mockCancelAgentTriggerRun).toHaveBeenCalledTimes(1);
         expect(JSON.stringify(event)).not.toMatch(
           /private association failure|run-token|session-token|approval-session-1/,
@@ -1204,7 +1255,7 @@ describe("Agent trigger route lifecycle", () => {
     const error = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "run-1",
           approvalSessionId: "approval-session-1",
@@ -1233,7 +1284,7 @@ describe("Agent trigger route lifecycle", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "private chat content",
           runId: "private run content",
           approvalSessionId: undefined,
@@ -1260,7 +1311,7 @@ describe("Agent trigger route lifecycle", () => {
     });
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "run-1",
           approvalSessionId: "approval-session-1",
@@ -1278,7 +1329,7 @@ describe("Agent trigger route lifecycle", () => {
     mockSetActiveTriggerRun.mockResolvedValue("updated");
 
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
@@ -1300,20 +1351,23 @@ describe("Agent trigger route lifecycle", () => {
     mockSetActiveTriggerRun.mockResolvedValue("updated");
 
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
       }),
     ).rejects.toThrow("Token service unavailable");
 
-    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      triggerRunId: null,
-      approvalSessionId: null,
-      expectedRunId: "run-1",
-      clearApprovalPending: true,
-    });
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      {
+        chatId: "chat-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: "run-1",
+        clearApprovalPending: true,
+      },
+      expect.anything(),
+    );
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
       "approval-session-1",
@@ -1334,7 +1388,7 @@ describe("Agent trigger route lifecycle", () => {
       });
     });
     const settled = jest.fn();
-    const started = finalizeStartedAgentRun({
+    const started = finalize({
       chatId: "chat-1",
       runId: "run-1",
       approvalSessionId: undefined,
@@ -1362,7 +1416,7 @@ describe("Agent trigger route lifecycle", () => {
       .mockReset()
       .mockRejectedValueOnce(new Error("Token unavailable"));
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: undefined,
@@ -1377,7 +1431,7 @@ describe("Agent trigger route lifecycle", () => {
   it("cancels a dispatched worker when its goal was replaced before association", async () => {
     mockGoalMutation.mockResolvedValueOnce(false);
     await expect(
-      finalizeStartedAgentRun({
+      finalize({
         chatId: "chat-1",
         runId: "run-old",
         approvalSessionId: undefined,
@@ -1390,15 +1444,12 @@ describe("Agent trigger route lifecycle", () => {
         triggerRunId: null,
         expectedRunId: "run-old",
       }),
+      expect.anything(),
     );
   });
 
   it("keeps the previous cleanup handle when its close fails before replacement", async () => {
-    const { getChatById } = require("@/lib/db/actions");
-    getChatById.mockResolvedValue({
-      active_trigger_run_id: "old",
-      active_agent_approval_session_id: "old-session",
-    });
+    const previousOwner = { runId: "old", approvalSessionId: "old-session" };
     mockReplaceActiveTriggerRun.mockResolvedValue({
       previousRunId: "old",
       previousApprovalSessionId: "old-session",
@@ -1409,46 +1460,49 @@ describe("Agent trigger route lifecycle", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "new",
           approvalSessionId: "new-session",
           expectedRunId: "old",
+          previousOwner,
         }),
       ).rejects.toThrow("close unavailable");
       expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
       expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
         expect.objectContaining({ expectedRunId: "new" }),
+        expect.anything(),
       );
-      await finalizeStartedAgentRun({
+      await finalize({
         chatId: "chat-1",
         runId: "retry",
         approvalSessionId: "retry-session",
         expectedRunId: "old",
+        previousOwner,
       });
       expect(mockReplaceActiveTriggerRun).toHaveBeenCalledTimes(1);
-      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledWith({
-        chatId: "chat-1",
-        triggerRunId: "retry",
-        approvalSessionId: "retry-session",
-        expectedRunId: "old",
-        expectedApprovalSessionId: "old-session",
-      });
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledWith(
+        {
+          chatId: "chat-1",
+          triggerRunId: "retry",
+          approvalSessionId: "retry-session",
+          expectedRunId: "old",
+          expectedApprovalSessionId: "old-session",
+        },
+        expect.anything(),
+      );
     } finally {
       warn.mockRestore();
     }
   });
 
   it("cleans up the previous run before replacing its ownership record", async () => {
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_trigger_run_id: "old-run",
-      active_agent_approval_session_id: "old-session",
-    });
-    await finalizeStartedAgentRun({
+    await finalize({
       chatId: "chat-1",
       runId: "run-1",
       expectedRunId: "old-run",
       approvalSessionId: "new-session",
+      previousOwner: { runId: "old-run", approvalSessionId: "old-session" },
     });
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("old-run");
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
@@ -1464,21 +1518,18 @@ describe("Agent trigger route lifecycle", () => {
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
   it("cancels the unreturned replacement if cancellation of the old worker fails", async () => {
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_trigger_run_id: "old",
-      active_agent_approval_session_id: null,
-    });
     mockCancelAgentTriggerRun
       .mockRejectedValueOnce(new Error("cancellation unavailable"))
       .mockResolvedValue(true);
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "new",
           expectedRunId: "old",
           approvalSessionId: undefined,
+          previousOwner: { runId: "old", approvalSessionId: null },
         }),
       ).rejects.toThrow("cancellation unavailable");
       expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
@@ -1493,24 +1544,22 @@ describe("Agent trigger route lifecycle", () => {
     ]);
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
       expect.objectContaining({ expectedRunId: "new", triggerRunId: null }),
+      expect.anything(),
     );
   });
 
   it("records failure to close the displaced Session and cleans up the replacement", async () => {
     const failure = new Error("previous Session unavailable");
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_trigger_run_id: "old",
-      active_agent_approval_session_id: "old-session",
-    });
     mockCloseAgentApprovalSession.mockRejectedValueOnce(failure);
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "new",
           expectedRunId: "old",
           approvalSessionId: "new-session",
+          previousOwner: { runId: "old", approvalSessionId: "old-session" },
         }),
       ).rejects.toBe(failure);
       expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
@@ -1527,6 +1576,7 @@ describe("Agent trigger route lifecycle", () => {
       ]);
       expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
         expect.objectContaining({ expectedRunId: "new", triggerRunId: null }),
+        expect.anything(),
       );
     } finally {
       warn.mockRestore();
@@ -1534,21 +1584,28 @@ describe("Agent trigger route lifecycle", () => {
   });
 
   it("does not clean up an unexpected concurrent owner", async () => {
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_trigger_run_id: "winner",
-      active_agent_approval_session_id: "winner-session",
-    });
+    mockReplaceActiveTriggerRun.mockResolvedValueOnce("stale");
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
-        finalizeStartedAgentRun({
+        finalize({
           chatId: "chat-1",
           runId: "late",
           approvalSessionId: "late-session",
           expectedRunId: "old",
+          previousOwner: {
+            runId: "winner",
+            approvalSessionId: "winner-session",
+          },
         }),
       ).rejects.toMatchObject({ metadata: { agent_run_association: "stale" } });
-      expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedRunId: null,
+          expectedApprovalSessionId: null,
+        }),
+        expect.anything(),
+      );
       expect(mockCancelAgentTriggerRun.mock.calls).toEqual([["late"]]);
       expect(mockCloseAgentApprovalSession.mock.calls).toEqual([
         ["late-session", "agent-run-association-failed"],
@@ -1559,13 +1616,11 @@ describe("Agent trigger route lifecycle", () => {
   });
 
   it("closes a retained orphan session before admitting a new run", async () => {
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_agent_approval_session_id: "orphan-session",
-    });
-    await finalizeStartedAgentRun({
+    await finalize({
       chatId: "chat-1",
       runId: "new",
       approvalSessionId: "new-session",
+      previousOwner: { runId: null, approvalSessionId: "orphan-session" },
     });
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
@@ -1577,15 +1632,172 @@ describe("Agent trigger route lifecycle", () => {
     ).toBeLessThan(mockReplaceActiveTriggerRun.mock.invocationCallOrder[0]);
   });
 
-  it("does not cancel an idempotently returned same run", async () => {
-    require("@/lib/db/actions").getChatById.mockResolvedValue({
-      active_trigger_run_id: "run-1",
-      active_agent_approval_session_id: "session-1",
+  describe("after an association whose response was lost", () => {
+    // The data layer's shape for a sent write whose response never arrived.
+    const lostResponse = () =>
+      new ChatSDKError("offline:database", "Database temporarily unavailable", {
+        db_operation: "chats.replaceActiveTriggerRun",
+        db_outcome_unknown: true,
+      });
+    const { getChatById } = require("@/lib/db/actions");
+
+    it("keeps both runs intact when read-back finds another owner", async () => {
+      getChatById.mockResolvedValueOnce({
+        user_id: "user-1",
+        active_trigger_run_id: "winner",
+        active_agent_approval_session_id: "winner-session",
+      });
+      mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalize({
+            chatId: "chat-1",
+            userId: "user-1",
+            runId: "run-1",
+            approvalSessionId: "session-1",
+          }),
+        ).rejects.toMatchObject({
+          metadata: { agent_run_association: "unconfirmed" },
+        });
+      } finally {
+        warn.mockRestore();
+      }
+      // The observed owner can detach before the original write executes.
+      expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     });
-    await finalizeStartedAgentRun({
+
+    it.each([
+      ["the read-back also fails", () => Promise.reject(new Error("down"))],
+      [
+        "the previous owner is still recorded",
+        async () => ({ user_id: "user-1", active_trigger_run_id: "old" }),
+      ],
+      [
+        "the approval Session differs",
+        async () => ({
+          user_id: "user-1",
+          active_trigger_run_id: "run-1",
+          active_agent_approval_session_id: "other-session",
+        }),
+      ],
+    ])(
+      "keeps the run, Session and ownership when %s",
+      async (_case, readBack) => {
+        getChatById.mockImplementationOnce(readBack);
+        mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          await expect(
+            finalize({
+              chatId: "chat-1",
+              userId: "user-1",
+              runId: "run-1",
+              approvalSessionId: "session-1",
+              expectedRunId: "old",
+              previousOwner: { runId: "old", approvalSessionId: null },
+            }),
+          ).rejects.toMatchObject({
+            type: "offline",
+            metadata: { agent_run_association: "unconfirmed" },
+          });
+        } finally {
+          warn.mockRestore();
+        }
+        expect(mockCancelAgentTriggerRun).not.toHaveBeenCalledWith("run-1");
+        expect(mockCloseAgentApprovalSession).not.toHaveBeenCalledWith(
+          "session-1",
+          expect.anything(),
+        );
+        expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not return a goal handle for a different generation", async () => {
+      getChatById.mockResolvedValueOnce({
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+      });
+      mockGetGoal.mockResolvedValueOnce({ generation: 3 });
+      mockGoalMutation.mockRejectedValueOnce(new TypeError("fetch failed"));
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalize({
+            chatId: "chat-1",
+            userId: "user-1",
+            runId: "run-1",
+            approvalSessionId: undefined,
+            goal: { userId: "user-1", generation: 2 },
+          }),
+        ).rejects.toMatchObject({
+          metadata: { agent_run_association: "unconfirmed" },
+        });
+      } finally {
+        warn.mockRestore();
+      }
+      expect(mockGetGoal).toHaveBeenCalledWith(
+        "chat-1",
+        "user-1",
+        expect.anything(),
+      );
+      expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        "a Convex function rejection",
+        () =>
+          mockReplaceActiveTriggerRun.mockRejectedValueOnce(
+            new ChatSDKError("bad_request:database", "Database failed", {
+              db_operation: "chats.replaceActiveTriggerRun",
+            }),
+          ),
+        undefined,
+      ],
+      [
+        "a goal ConvexError",
+        () =>
+          mockGoalMutation.mockRejectedValueOnce(
+            new ConvexError("Goal chat unavailable"),
+          ),
+        { userId: "user-1", generation: 2 },
+      ],
+    ])(
+      "treats %s as a known outcome without a read-back",
+      async (_case, reject, goal) => {
+        reject();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          await expect(
+            finalize({
+              chatId: "chat-1",
+              userId: "user-1",
+              runId: "run-1",
+              approvalSessionId: undefined,
+              goal,
+            }),
+          ).rejects.not.toMatchObject({
+            metadata: { agent_run_association: "unconfirmed" },
+          });
+        } finally {
+          warn.mockRestore();
+        }
+        expect(getChatById).not.toHaveBeenCalled();
+        expect(mockGetGoal).not.toHaveBeenCalled();
+        expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      },
+    );
+  });
+
+  it("does not cancel an idempotently returned same run", async () => {
+    await finalize({
       chatId: "chat-1",
       runId: "run-1",
       approvalSessionId: "session-1",
+      previousOwner: { runId: "run-1", approvalSessionId: "session-1" },
     });
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
   });
@@ -1863,7 +2075,8 @@ describe("returned Agent start 403 receipts", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.VERCEL_GIT_COMMIT_SHA;
-    getChatById.mockReset().mockResolvedValue(null);
+    getChatById.mockReset();
+    usePersistedChats();
     getUserCustomization.mockResolvedValue(null);
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "PRIVATE_USER",
@@ -2049,6 +2262,7 @@ describe("goal reservations on oversized dispatch", () => {
       userId: "owner",
       subscription: "pro",
     });
+    usePersistedChats();
     mockGoalMutation.mockReset().mockResolvedValue({ generation: 1 });
     process.env.AGENT_RUN_CORRELATION_SECRET = "test-only-correlation-secret";
   });

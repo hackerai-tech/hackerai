@@ -29,6 +29,7 @@ const AGENT_START_STAGES = [
   "prepare_desktop_attachments",
   "persist_user_message",
   "create_idempotency_key",
+  "read_previous_owner",
   "sessions.start",
   "tasks.trigger",
   "create_tokens_and_associate_run",
