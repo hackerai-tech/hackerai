@@ -74,15 +74,26 @@ function getStorage(): Storage | null {
   }
 }
 
-export function readAgentInputNotificationsEnabled(userId: string): boolean {
+/** Null until the account chooses; older builds removed the key when off. */
+export function readAgentInputNotificationsPreference(
+  userId: string,
+): "on" | "off" | null {
   try {
-    return getStorage()?.getItem(PREFERENCE_PREFIX + userId) === "on";
+    const value = getStorage()?.getItem(PREFERENCE_PREFIX + userId);
+    return value === "on" || value === "off" ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** Returns false when storage is unavailable, so the switch stays off. */
+export function readAgentInputNotificationsEnabled(userId: string): boolean {
+  return readAgentInputNotificationsPreference(userId) === "on";
+}
+
+/**
+ * Returns false when storage is unavailable, so the switch stays off. "Off" is
+ * stored explicitly so a choice made in Settings also suppresses the offer.
+ */
 export function writeAgentInputNotificationsEnabled(
   userId: string,
   enabled: boolean,
@@ -90,8 +101,7 @@ export function writeAgentInputNotificationsEnabled(
   const storage = getStorage();
   if (!storage) return false;
   try {
-    if (enabled) storage.setItem(PREFERENCE_PREFIX + userId, "on");
-    else storage.removeItem(PREFERENCE_PREFIX + userId);
+    storage.setItem(PREFERENCE_PREFIX + userId, enabled ? "on" : "off");
   } catch {
     return false;
   }
@@ -234,6 +244,40 @@ export async function deliverAgentInputNotification({
   }
 }
 
+// ---------------------------------------------------------------------------
+// One-time inline offer (per account, browser profile or Desktop install)
+
+const OFFER_PREFIX = "agent_input_notification_offer:v1:";
+
+/** Records the first foreground offer across windows without saving chat data. */
+export async function claimAgentInputNotificationOffer(
+  userId: string,
+  shouldClaim: () => boolean,
+): Promise<boolean> {
+  const storage = getStorage();
+  const locks = getLockManager();
+  if (!storage || !locks || !shouldClaim()) return false;
+  const key = OFFER_PREFIX + userId;
+  try {
+    return await locks.request(
+      `hackerai-agent-input-offer:${userId}`,
+      async () => {
+        if (
+          !shouldClaim() ||
+          readAgentInputNotificationsPreference(userId) !== null ||
+          storage.getItem(key) !== null
+        ) {
+          return false;
+        }
+        storage.setItem(key, "seen");
+        return storage.getItem(key) === "seen";
+      },
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isDocumentForeground(doc: Document = document): boolean {
   return doc.visibilityState === "visible" && doc.hasFocus();
 }
@@ -352,6 +396,34 @@ export async function showDesktopAgentInputNotification(
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Shared by Settings and the inline offer
+
+/** Reads permission without prompting. */
+export function readAgentInputPermission(
+  transport: AgentInputTransport,
+): Promise<AgentInputPermission> {
+  return transport === "desktop"
+    ? getDesktopNotificationPermission(false)
+    : Promise.resolve(getBrowserNotificationPermission());
+}
+
+/**
+ * Call directly from a click: the browser request starts before any await so
+ * it keeps the user's activation. Saves "on" only when permission is granted.
+ */
+export async function enableAgentInputNotifications(
+  userId: string,
+  transport: AgentInputTransport,
+): Promise<AgentInputPermission> {
+  const result =
+    transport === "desktop"
+      ? await getDesktopNotificationPermission(true)
+      : await requestBrowserNotificationPermission();
+  writeAgentInputNotificationsEnabled(userId, result === "granted");
+  return result;
 }
 
 export async function listenForDesktopNotificationOpen(

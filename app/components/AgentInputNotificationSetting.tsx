@@ -7,9 +7,8 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { useAgentInputNotificationsEnabled } from "./AgentInputNotifications";
 import {
   detectAgentInputTransport,
-  getBrowserNotificationPermission,
-  getDesktopNotificationPermission,
-  requestBrowserNotificationPermission,
+  enableAgentInputNotifications,
+  readAgentInputPermission,
   writeAgentInputNotificationsEnabled,
   type AgentInputPermission,
   type AgentInputTransport,
@@ -28,14 +27,6 @@ const copy = {
       "Notifications are blocked for this site. Allow them in your browser's site settings",
   },
 } satisfies Record<AgentInputTransport, Record<string, string>>;
-
-function readPermission(
-  transport: AgentInputTransport,
-): Promise<AgentInputPermission> {
-  return transport === "desktop"
-    ? getDesktopNotificationPermission(false)
-    : Promise.resolve(getBrowserNotificationPermission());
-}
 
 /** Settings > Agents row. Hidden where notifications cannot work. */
 export function AgentInputNotificationSetting() {
@@ -56,7 +47,7 @@ export function AgentInputNotificationSetting() {
   const refreshPermission = useCallback(() => {
     if (!transport) return () => undefined;
     let current = true;
-    void readPermission(transport).then((next) => {
+    void readAgentInputPermission(transport).then((next) => {
       if (current) setPermission(next);
     });
     return () => {
@@ -93,14 +84,10 @@ export function AgentInputNotificationSetting() {
       writeAgentInputNotificationsEnabled(userId, false);
       return;
     }
+    const request = enableAgentInputNotifications(userId, transport);
     setRequesting(true);
     try {
-      const result =
-        transport === "desktop"
-          ? await getDesktopNotificationPermission(true)
-          : await requestBrowserNotificationPermission();
-      setPermission(result);
-      writeAgentInputNotificationsEnabled(userId, result === "granted");
+      setPermission(await request);
     } finally {
       setRequesting(false);
     }
