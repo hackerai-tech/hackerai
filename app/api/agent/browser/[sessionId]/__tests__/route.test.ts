@@ -1,6 +1,7 @@
 import { after, type NextRequest } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   getActiveBrowserSessionName,
 } from "@/lib/ai/browser-handoff/server";
@@ -128,6 +129,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
       super(state);
     }
   },
+  BrowserPreviewRefreshDeferred: class extends Error {},
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
@@ -208,7 +210,60 @@ it.each([false, true])(
       fresh,
       undefined,
       expect.any(Function),
+      undefined,
     );
+  },
+);
+
+it("defers only a negotiated refresh on the active Agent browser", async () => {
+  mockFailure = "";
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred());
+
+  const response = await preview(true, undefined, "deferWait=1");
+
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({
+    state: "agent",
+    refreshDeferred: true,
+  });
+  expect(mockCapture.mock.calls[0].at(-1)).toEqual({ deferDuringWait: true });
+  expect(getActiveBrowserSessionName).toHaveBeenCalledTimes(2);
+  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
+it("does not acknowledge a deferral after the browser changes", async () => {
+  mockFailure = "";
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred());
+  jest
+    .mocked(getActiveBrowserSessionName)
+    .mockResolvedValueOnce("default")
+    .mockResolvedValueOnce("another-browser");
+
+  const response = await preview(true, undefined, "deferWait=1");
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ state: "stale" });
+});
+
+it.each([
+  ["agent", false, true, "deferWait=1"],
+  ["agent", true, false, "deferWait=1"],
+  ["agent", true, true, ""],
+  ["agent", true, true, "deferWait=1&deferWait=1"],
+  ["human", true, true, "deferWait=1"],
+  ["waiting", true, true, "deferWait=1"],
+] as const)(
+  "keeps the existing capture path for %s, active=%s, fresh=%s, query=%s",
+  async (state, runActive, fresh, query) => {
+    mockFailure = "";
+    mockState = state;
+    mockRunActive = runActive;
+    const response = await preview(fresh, undefined, query);
+    expect(response.status).toBe(200);
+    expect(mockCapture.mock.calls[0].at(-1)).toBeUndefined();
+    expect(await response.json()).toMatchObject({ frame: { image: "fresh" } });
   },
 );
 

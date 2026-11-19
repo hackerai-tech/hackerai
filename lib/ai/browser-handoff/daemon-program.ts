@@ -460,6 +460,15 @@ function ownedStreamPort(root, sockets, address) {
   } catch {}
   return 0;
 }
+/** Only the selected session's still-STARTED WAIT whose exact wrapper incarnation
+ * is visible and not a zombie; any missing, other or uncertain observation is false.
+ * Proves no daemon progress, health or freshness.
+ */
+function activeWait() {
+  const wrapper = wrapperReceipt();
+  return wrapper.wrapper_phase === 'started' && wrapper.wrapper_session_matches === true &&
+    wrapper.w1 === 3 && wrapper.k1 === 0;
+}
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
   if (done) return;
@@ -512,14 +521,24 @@ try {
   precondition = 'owner_mismatch';
   if ([root, sockets, info].some(item => item.uid !== process.getuid())) throw new Error();
   precondition = 'request_invalid';
-  // The internal opt-in never reaches the daemon.
-  const { owned_port: ownedPort, ...request } = JSON.parse(payload);
+  // The internal opt-ins never reach the daemon.
+  const { owned_port: ownedPort, defer_wait: deferWait, ...request } = JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
+  // Upstream runs WAIT under its daemon state lock, so a queued fresh status
+  // request would reach the deadline. A fresh passive preview may yield only to
+  // the selected session's exact still-running WAIT wrapper incarnation on a
+  // daemon that provably holds its own listeners; any doubt sends the original
+  // strict request, never the owned-port shortcut.
+  const deferred = deferWait === true && ownedPort === undefined &&
+    request.action === 'stream_status' && activeWait() &&
+    ownedStreamPort(root, sockets, address) > 0;
   // A non-fresh preview may skip the serialized daemon queue only with listener proof.
-  const port = ownedPort === true && request.action === 'stream_status' ?
+  const port = !deferred && ownedPort === true && request.action === 'stream_status' ?
     ownedStreamPort(root, sockets, address) : 0;
-  if (port) finish(0, { id, success: true, data: { port } });
+  // Helper-only literal: a daemon reply always carries its own id and success.
+  if (deferred) finish(0, { wait_deferred: 1 });
+  else if (port) finish(0, { id, success: true, data: { port } });
   else {
     let buffer = '';
     timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
@@ -569,10 +588,20 @@ try {
 }
 `;
 
+/**
+ * The helper's exact exit-0 output when a defer_wait status request yielded to
+ * the selected session's verified active WAIT. A daemon reply always includes
+ * its own id and success, so it can never equal this literal.
+ */
+export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
+
 type BrowserDaemonRequest =
   // owned_port lets the helper prove the port from the daemon's own listeners;
   // the helper strips it and falls back to this same daemon request otherwise.
   | { action: "stream_status"; owned_port?: true }
+  // defer_wait lets a fresh passive preview yield to a verified active WAIT;
+  // the helper strips it and sends this same strict request otherwise.
+  | { action: "stream_status"; defer_wait: true }
   | { action: "screenshot"; path: string; format: "jpeg"; quality: 65 }
   | {
       action: "viewport";

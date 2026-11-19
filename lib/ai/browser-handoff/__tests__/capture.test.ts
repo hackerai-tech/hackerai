@@ -1,4 +1,5 @@
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   browserSessionReadFailureContext,
   browserRelayRenewFailureContext,
@@ -23,6 +24,7 @@ import {
   BROWSER_DAEMON_PROGRAM,
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   BROWSER_DAEMON_SCREENSHOT_REFUSALS,
+  BROWSER_DAEMON_WAIT_DEFERRED,
   browserDaemonCommand,
 } from "../daemon-program";
 
@@ -1108,6 +1110,147 @@ it("keeps stream-port lookups for TAKE, input and relays on the daemon request",
     { action: "stream_status" },
   ]);
 });
+
+/** The fixture with one stream-status helper output for every status request. */
+function statusFixture(stdout: string) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"stream_status"')
+        ? { exitCode: 0, stdout }
+        : run(command),
+    ),
+  );
+  return sandbox;
+}
+
+it("returns a typed frameless deferral for an opted-in fresh capture during a verified WAIT", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    { deferDuringWait: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect(outcome).not.toBeInstanceOf(BrowserPreviewUnavailable);
+  // Not a capture failure: no diagnostics, bridge, screenshot or file access.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_wait: true },
+  ]);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["no WAIT proof (a port reply)", JSON.stringify({ data: { port: 1234 } })],
+  [
+    "a daemon reply carrying the deferral key",
+    JSON.stringify({
+      id: "hackerai-preview",
+      success: true,
+      wait_deferred: 1,
+      data: { port: 1234 },
+    }),
+  ],
+])(
+  "keeps the strict fresh capture after an opt-in with %s",
+  async (_case, stdout) => {
+    const sandbox = statusFixture(stdout);
+    const before = Date.now();
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      jest.fn(),
+      { deferDuringWait: true },
+    );
+    const requests = daemonRequests(sandbox.commands.run);
+    expect(requests).toEqual([
+      { action: "stream_status", defer_wait: true },
+      {
+        action: "screenshot",
+        path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+        format: "jpeg",
+        quality: 65,
+      },
+    ]);
+    expect(sandbox.commands.run.mock.calls[1][0]).toMatch(/ 1234 frame$/);
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(result.capturedAt).toBeGreaterThanOrEqual(before);
+  },
+);
+
+it("treats the deferral literal as an ordinary invalid status reply without the opt-in", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+  ).catch((error: unknown) => error);
+  // Old readers keep the exact strict failure and its diagnostics.
+  expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+  expect((outcome as BrowserPreviewUnavailable).state).toBe("loading");
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status" },
+  ]);
+  expect(observe.mock.calls).toEqual([
+    [
+      {
+        capture_stage: "stream_status",
+        capture_error_kind: "preview_unavailable",
+        capture_command_exit_code: "none",
+      },
+    ],
+  ]);
+});
+
+it.each([
+  ["a cached view", false, undefined],
+  ["a caller-supplied port", true, 1234],
+] as const)(
+  "never requests a deferral for %s",
+  async (_case, requireFresh, streamPort) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+    const run = sandbox.commands.run.getMockImplementation()!;
+    sandbox.commands.run.mockImplementation(async (command, options) =>
+      command.includes('"owned_port":true')
+        ? { exitCode: 0, stdout: JSON.stringify({ data: { port: 1234 } }) }
+        : run(command, options),
+    );
+    await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      streamPort,
+      undefined,
+      { deferDuringWait: true },
+    );
+    const requests = daemonRequests(sandbox.commands.run);
+    expect(requests.some((request) => "defer_wait" in request)).toBe(false);
+    expect(requests[0]).toEqual(
+      streamPort === undefined
+        ? { action: "stream_status", owned_port: true }
+        : expect.objectContaining({ action: "screenshot" }),
+    );
+  },
+);
 
 it("keeps cached-frame age unknown for ordinary viewing", async () => {
   const sandbox = fixture();
