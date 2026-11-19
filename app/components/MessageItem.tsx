@@ -726,6 +726,7 @@ export const MessageItem = memo(function MessageItem({
           status !== "streaming" && (
             <FinishReasonNotice
               finishReason={finishReason}
+              lastSavedStep={hasAnyContent ? "agent-progress" : "conversation"}
               continueDisabledReason={continueDisabledReason}
               status={status}
               mode={mode}

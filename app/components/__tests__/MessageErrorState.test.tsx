@@ -206,6 +206,32 @@ describe("MessageErrorState", () => {
     expect(onReconnect).not.toHaveBeenCalled();
   });
 
+  it("distinguishes reattaching to the existing run from a new retry after a network drop", () => {
+    const onRetry = jest.fn();
+    const onReconnect = jest.fn();
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={new TypeError("Failed to fetch")}
+          onRetry={onRetry}
+          onReconnect={onReconnect}
+          mode="agent"
+        />
+      </TestWrapper>,
+    );
+
+    const reconnect = screen.getByRole("button", { name: /^reconnect$/i });
+    const retry = screen.getByRole("button", { name: /^retry$/i });
+    expect(reconnect).toHaveAccessibleDescription(
+      /Reconnect shows the existing run again.*Retry starts a new attempt/,
+    );
+    expect(retry).toHaveAccessibleDescription(/Retry starts a new attempt/);
+
+    fireEvent.click(reconnect);
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   it("keeps retry available for ordinary errors", () => {
     const onRetry = jest.fn();
 

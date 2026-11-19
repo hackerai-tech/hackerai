@@ -1522,6 +1522,7 @@ const ChatInputContent = ({
                 isNewChat={isNewChat}
                 sandboxPreference={sandboxPreference}
                 onSelect={setSandboxPreference}
+                confirmEnvironmentChange={!isNewChat && hasMessages}
                 reconnectInstructions={
                   isDesktopPreference(sandboxPreference) &&
                   !selectedNativeDesktop
@@ -1568,6 +1569,7 @@ const ChatInputContent = ({
                   <SandboxSelector
                     value={sandboxPreference}
                     onChange={setSandboxPreference}
+                    confirmEnvironmentChange={!isNewChat && hasMessages}
                     compact
                     size="sm"
                     menuAlign="end"
@@ -1794,6 +1796,7 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
+              confirmEnvironmentChange={!isNewChat && hasMessages}
               replyActionLabel={
                 isWaitingForReply
                   ? questionAnswers.index < answerQuestions.length - 1

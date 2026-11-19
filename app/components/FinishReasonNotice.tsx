@@ -23,20 +23,29 @@ import {
 import type { SelectedModel } from "@/types/chat";
 import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
-// Each stop needs a person to resume it; the detail names what may not have survived.
+// Each stop needs a person to resume it; the detail names what may not have
+// survived. The transcript above is the saved state; nothing after it is known.
 const MANUAL_RESUME_NOTICE_COPY: Record<
   ManualAgentResumeFinishReason,
   { reason: string; detail: string }
 > = {
   [LOCAL_CONNECTION_LOST_FINISH_REASON]: {
-    reason: "The connection to your computer was lost, so this run stopped.",
-    detail:
-      "Saved progress is available. A command that was running may not have finished.",
+    reason: "Run stopped: lost connection to the selected computer.",
+    detail: "A command that was running may not have finished.",
   },
   [BROWSER_HANDOFF_ABANDONED_FINISH_REASON]: {
-    reason: "The Agent paused while waiting for the browser handoff.",
-    detail: "Saved progress is available. You may need to reopen the browser.",
+    reason: "Browser handoff ended before the Agent continued.",
+    detail: "Browser actions, like signing in, may need to be repeated.",
   },
+};
+
+type LastSavedStep = "request" | "agent-progress" | "conversation";
+
+const LAST_SAVED_STEP_COPY: Record<LastSavedStep, string> = {
+  request:
+    "Last saved: your request above. No Agent result was saved for this turn.",
+  "agent-progress": "Last saved: Agent progress shown above.",
+  conversation: "Last saved: the conversation shown above.",
 };
 
 interface FinishReasonNoticeProps {
@@ -44,6 +53,7 @@ interface FinishReasonNoticeProps {
   continueDisabledReason?: string;
   status?: ChatStatus;
   mode?: ChatMode;
+  lastSavedStep?: LastSavedStep;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (
     selectedModelOverride?: SelectedModel,
@@ -57,6 +67,7 @@ export const FinishReasonNotice = ({
   onContinue,
   continueDisabledReason,
   status,
+  lastSavedStep = "conversation",
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const pendingRef = useRef(false);
@@ -93,8 +104,10 @@ export const FinishReasonNotice = ({
       <div className="mt-2 w-full" role="status" aria-live="polite">
         <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0 flex-1 basis-60">
-            <p>{copy.reason}</p>
-            <p className="mt-1 text-sm">{copy.detail}</p>
+            <p className="font-medium text-foreground">{copy.reason}</p>
+            <p className="mt-0.5 text-sm">
+              {LAST_SAVED_STEP_COPY[lastSavedStep]} {copy.detail}
+            </p>
             {disabledReason && (
               <p id={disabledReasonId} className="mt-1 text-sm text-foreground">
                 {disabledReason}
