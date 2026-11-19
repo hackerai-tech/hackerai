@@ -1672,50 +1672,112 @@ describe("Agent trigger route lifecycle", () => {
     const privateReadDetail = "private association read detail";
     const readFails = () => Promise.reject(new Error(privateReadDetail));
 
+    // Each guard row otherwise matches, so the reason names the failed guard.
+    const matchingChat = {
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "session-1",
+    };
     it.each([
-      ["the read-back also fails", readFails, "chat_read_failed"],
+      ["the read-back also fails", readFails, "chat_read_failed", undefined],
+      [
+        "the chat is missing",
+        async () => null,
+        "chat_guard_mismatch",
+        "chat_missing",
+      ],
+      [
+        "another user owns the chat",
+        // Owner precedes deletion and run guards.
+        async () => ({
+          user_id: "other-user",
+          deletion_started_at: 1,
+          active_agent_approval_session_id: "session-1",
+        }),
+        "chat_guard_mismatch",
+        "chat_owner_mismatch",
+      ],
+      [
+        "the chat is being deleted",
+        async () => ({ ...matchingChat, deletion_started_at: 1 }),
+        "chat_guard_mismatch",
+        "chat_deleting",
+      ],
+      [
+        "no run is recorded",
+        // An absent run precedes a wrong paired approval Session.
+        async () => ({
+          user_id: "user-1",
+          active_agent_approval_session_id: "other-session",
+        }),
+        "chat_guard_mismatch",
+        "active_run_missing",
+      ],
       [
         "the previous owner is still recorded",
         async () => ({ user_id: "user-1", active_trigger_run_id: "old" }),
         "chat_guard_mismatch",
+        "active_run_mismatch",
       ],
       [
         "the approval Session differs",
         async () => ({
-          user_id: "user-1",
-          active_trigger_run_id: "run-1",
+          ...matchingChat,
           active_agent_approval_session_id: "other-session",
         }),
         "chat_guard_mismatch",
+        "approval_session_mismatch",
+      ],
+      [
+        "the approval Session is missing",
+        async () => ({ user_id: "user-1", active_trigger_run_id: "run-1" }),
+        "chat_guard_mismatch",
+        "approval_session_mismatch",
       ],
     ] as const)(
       "keeps the run, Session and ownership when %s",
-      async (_case, readBack, result) => {
+      async (_case, readBack, result, guardReason) => {
         getChatById.mockImplementationOnce(readBack);
         mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
         const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
         try {
-          await expect(
-            finalize({
-              chatId: "chat-1",
-              userId: "user-1",
-              runId: "run-1",
-              approvalSessionId: "session-1",
-              expectedRunId: "old",
-              previousOwner: { runId: "old", approvalSessionId: null },
-            }),
-          ).rejects.toMatchObject({
+          const error = await finalize({
+            chatId: "chat-1",
+            userId: "user-1",
+            runId: "run-1",
+            approvalSessionId: "session-1",
+            expectedRunId: "old",
+            previousOwner: { runId: "old", approvalSessionId: null },
+          }).catch((e: unknown) => e);
+          expect(error).toBeInstanceOf(ChatSDKError);
+          // The diagnostic stays server-side: the response is unchanged.
+          expect(error).toMatchObject({
             statusCode: 503,
             type: "offline",
-            metadata: { agent_run_association: "unconfirmed" },
+            surface: "api",
+            cause:
+              "The Agent run started, but its link to this chat could not be confirmed. Reload the chat to reconnect to it before sending again.",
+          });
+          expect((error as ChatSDKError).metadata).toEqual({
+            agent_run_association: "unconfirmed",
           });
           expect(warn).toHaveBeenCalledTimes(1);
           const line = String(warn.mock.calls[0][0]);
-          expect(JSON.parse(line)).toMatchObject({
+          // Exact keys: no owner, Session, error or other read value is logged.
+          expect(JSON.parse(line)).toEqual({
+            level: "warn",
             event: "agent_run_association_read_back",
+            service: "hackerai-web",
+            timestamp: expect.any(String),
             read_back_outcome: "inconclusive",
             read_back_result_version: 1,
             read_back_result: result,
+            ...(guardReason
+              ? {
+                  read_back_chat_guard_version: 1,
+                  read_back_chat_guard_reason: guardReason,
+                }
+              : {}),
             goal_association: false,
           });
           expect(line).not.toContain(privateReadDetail);
@@ -1767,13 +1829,17 @@ describe("Agent trigger route lifecycle", () => {
           });
           expect(warn).toHaveBeenCalledTimes(1);
           const line = String(warn.mock.calls[0][0]);
-          expect(JSON.parse(line)).toMatchObject({
+          const logged = JSON.parse(line);
+          expect(logged).toMatchObject({
             event: "agent_run_association_read_back",
             read_back_outcome: "inconclusive",
             read_back_result_version: 1,
             read_back_result: result,
             goal_association: true,
           });
+          // The chat guards passed; only a chat guard failure has a reason.
+          expect(logged).not.toHaveProperty("read_back_chat_guard_version");
+          expect(logged).not.toHaveProperty("read_back_chat_guard_reason");
           expect(line).not.toContain(privateReadDetail);
         } finally {
           warn.mockRestore();
@@ -1851,12 +1917,15 @@ describe("Agent trigger route lifecycle", () => {
         });
         expect(warn).toHaveBeenCalledTimes(1);
         const line = String(warn.mock.calls[0][0]);
-        expect(JSON.parse(line)).toMatchObject({
+        const logged = JSON.parse(line);
+        expect(logged).toMatchObject({
           event: "agent_run_association_read_back",
           read_back_outcome: "inconclusive",
           read_back_result_version: 1,
           read_back_result: "scope_failed",
         });
+        expect(logged).not.toHaveProperty("read_back_chat_guard_version");
+        expect(logged).not.toHaveProperty("read_back_chat_guard_reason");
         expect(line).not.toContain(privateReadDetail);
       } finally {
         warn.mockRestore();

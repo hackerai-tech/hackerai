@@ -462,18 +462,36 @@ const isAgentRunAssociationUnconfirmed = (error: unknown): boolean =>
   error instanceof ChatSDKError &&
   error.metadata?.agent_run_association === AGENT_RUN_ASSOCIATION_UNCONFIRMED;
 
-/**
- * Why a read-back did or did not confirm the association. Every value except
- * "associated" is inconclusive. A failed read is distinct from a completed
- * read whose guards did not match; "scope_failed" is a failure outside both.
- */
-type AgentRunAssociationReadBackResult =
-  | "associated"
-  | "chat_read_failed"
-  | "chat_guard_mismatch"
-  | "goal_read_failed"
-  | "goal_guard_mismatch"
-  | "scope_failed";
+/** The first chat guard that failed, in the guards' evaluation order. */
+type AgentRunAssociationChatGuardReason =
+  | "chat_missing"
+  | "chat_owner_mismatch"
+  | "chat_deleting"
+  | "active_run_missing"
+  | "active_run_mismatch"
+  | "approval_session_mismatch";
+
+/** Every result except "associated" leaves the original write inconclusive. */
+type AgentRunAssociationReadBack =
+  | {
+      result:
+        | "associated"
+        | "chat_read_failed"
+        | "goal_read_failed"
+        | "goal_guard_mismatch"
+        | "scope_failed";
+    }
+  | {
+      result: "chat_guard_mismatch";
+      chatGuardReason: AgentRunAssociationChatGuardReason;
+    };
+
+const associationChatGuardMismatch = (
+  chatGuardReason: AgentRunAssociationChatGuardReason,
+): AgentRunAssociationReadBack => ({
+  result: "chat_guard_mismatch",
+  chatGuardReason,
+});
 
 /**
  * Confirm the original association from an independent, bounded read. Even a
@@ -492,33 +510,40 @@ const confirmStartedRunAssociation = async ({
   runId: string;
   approvalSessionId: string | undefined;
   goalGeneration?: number;
-}): Promise<AgentRunAssociationReadBackResult> =>
+}): Promise<AgentRunAssociationReadBack> =>
   // A fresh budget: the failed write's deadline may already be spent. Chat and
   // goal reads share it.
   withAgentConvexScope(
     "startAssociationReadBack",
-    async (convex): Promise<AgentRunAssociationReadBackResult> => {
+    async (convex): Promise<AgentRunAssociationReadBack> => {
       let chat: Awaited<ReturnType<typeof getChatById>>;
       try {
         chat = await getChatById({ id: chatId }, convex);
       } catch {
-        return "chat_read_failed";
+        return { result: "chat_read_failed" };
       }
+      if (!chat) return associationChatGuardMismatch("chat_missing");
+      if (chat.user_id !== userId)
+        return associationChatGuardMismatch("chat_owner_mismatch");
+      if (chat.deletion_started_at !== undefined)
+        return associationChatGuardMismatch("chat_deleting");
+      if (chat.active_trigger_run_id !== runId)
+        return associationChatGuardMismatch(
+          chat.active_trigger_run_id
+            ? "active_run_mismatch"
+            : "active_run_missing",
+        );
       if (
-        !chat ||
-        chat.user_id !== userId ||
-        chat.deletion_started_at !== undefined ||
-        chat.active_trigger_run_id !== runId ||
         (chat.active_agent_approval_session_id ?? null) !==
-          (approvalSessionId ?? null)
+        (approvalSessionId ?? null)
       )
-        return "chat_guard_mismatch";
-      if (goalGeneration === undefined) return "associated";
+        return associationChatGuardMismatch("approval_session_mismatch");
+      if (goalGeneration === undefined) return { result: "associated" };
       let savedGoal: Awaited<ReturnType<typeof getGoal>>;
       try {
         savedGoal = await getGoal(chatId, userId, convex);
       } catch {
-        return "goal_read_failed";
+        return { result: "goal_read_failed" };
       }
       if (
         savedGoal != null &&
@@ -526,10 +551,10 @@ const confirmStartedRunAssociation = async ({
         savedGoal.generation === goalGeneration &&
         (savedGoal.activeRunId === undefined || savedGoal.activeRunId === runId)
       )
-        return "associated";
-      return "goal_guard_mismatch";
+        return { result: "associated" };
+      return { result: "goal_guard_mismatch" };
     },
-  ).catch((): AgentRunAssociationReadBackResult => "scope_failed");
+  ).catch((): AgentRunAssociationReadBack => ({ result: "scope_failed" }));
 
 /** The chat's run owner, read before dispatch for an ordinary start. */
 type AgentRunPreviousOwner = {
@@ -680,14 +705,14 @@ export const finalizeStartedAgentRun = async ({
       failureStage === "associate_run" &&
       isConvexOutcomeUnknownError(error)
     ) {
-      const readBackResult = await confirmStartedRunAssociation({
+      const readBack = await confirmStartedRunAssociation({
         chatId,
         userId,
         runId,
         approvalSessionId,
         goalGeneration: goal?.generation,
       });
-      const associated = readBackResult === "associated";
+      const associated = readBack.result === "associated";
       try {
         console.warn(
           JSON.stringify({
@@ -697,7 +722,14 @@ export const finalizeStartedAgentRun = async ({
             timestamp: new Date().toISOString(),
             read_back_outcome: associated ? "associated" : "inconclusive",
             read_back_result_version: 1,
-            read_back_result: readBackResult,
+            read_back_result: readBack.result,
+            // A finite guard name only, never the read owner, run or Session.
+            ...(readBack.result === "chat_guard_mismatch"
+              ? {
+                  read_back_chat_guard_version: 1,
+                  read_back_chat_guard_reason: readBack.chatGuardReason,
+                }
+              : {}),
             goal_association: goal !== undefined,
             chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(
               chatId,
