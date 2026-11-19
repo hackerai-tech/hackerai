@@ -55,6 +55,8 @@ export type SubscriptionInvoiceLineFacts = {
   amount: number;
   periodStartSeconds?: number;
   periodEndSeconds?: number;
+  /** For a credit proration, the invoice whose debit it reverses. */
+  creditedInvoiceId?: string;
 };
 
 export type ReplacedSubscriptionPeriod =
@@ -63,6 +65,8 @@ export type ReplacedSubscriptionPeriod =
       replacedPriceId: string;
       /** End of the old recurring period that the invoice credited back. */
       replacedPeriodEndMs: number;
+      /** Set only when every credit line names the same debited invoice. */
+      creditedInvoiceId?: string;
     }
   | { kind: "not_applicable"; reason: string };
 
@@ -160,9 +164,13 @@ export function replacedSubscriptionPeriodFromUpdateInvoice({
     return notApplicable("replaced_period_not_overlapping");
   }
 
+  const creditedInvoiceId = singleValue(
+    creditLines.map((line) => line.creditedInvoiceId),
+  );
   return {
     kind: "replaced",
     replacedPriceId,
     replacedPeriodEndMs: replacedPeriodEndSeconds * 1000,
+    ...(creditedInvoiceId && { creditedInvoiceId }),
   };
 }

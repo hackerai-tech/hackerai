@@ -2584,11 +2584,23 @@ describe("POST /api/subscription/webhook", () => {
       amount: number,
       proration: boolean,
       periodEnd: number,
+      creditedInvoiceId?: string,
     ) => ({
       ...subscriptionInvoiceLine("sub_annual", priceId, amount, 1),
       parent: {
         type: "subscription_item_details",
-        subscription_item_details: { subscription: "sub_annual", proration },
+        subscription_item_details: {
+          subscription: "sub_annual",
+          proration,
+          ...(creditedInvoiceId && {
+            proration_details: {
+              credited_items: {
+                invoice: creditedInvoiceId,
+                invoice_line_items: ["il_credited"],
+              },
+            },
+          }),
+        },
       },
       period: { start: switchedAt, end: periodEnd },
     });
@@ -2623,6 +2635,7 @@ describe("POST /api/subscription/webhook", () => {
       currentPrice = annualPrice,
       annualProration = true,
       annualLineEnd = annualPeriodEnd,
+      creditedInvoiceId,
       extraLines = [],
     }: {
       replacedPrice?: typeof proMonthly;
@@ -2630,6 +2643,7 @@ describe("POST /api/subscription/webhook", () => {
       currentPrice?: typeof proYearly;
       annualProration?: boolean;
       annualLineEnd?: number;
+      creditedInvoiceId?: string;
       extraLines?: ReturnType<typeof line>[];
     } = {}) {
       const invoice = {
@@ -2643,7 +2657,13 @@ describe("POST /api/subscription/webhook", () => {
         status_transitions: { paid_at: switchedAt },
         lines: {
           data: [
-            line(replacedPrice.id, -2_900, true, monthlyPeriodEnd),
+            line(
+              replacedPrice.id,
+              -2_900,
+              true,
+              monthlyPeriodEnd,
+              creditedInvoiceId,
+            ),
             line(annualPrice.id, 28_800, annualProration, annualLineEnd),
             ...extraLines,
           ],
@@ -2825,6 +2845,35 @@ describe("POST /api/subscription/webhook", () => {
           replaced_period_end_ms: monthlyPeriodEnd * 1000,
           outcomes: ["stale"],
         }),
+      );
+    });
+
+    it("passes the signed credited invoice and annual allowance to the restore", async () => {
+      mockAnnualSwitchPaid({ creditedInvoiceId: "in_tier_change" });
+      mockRestoreAnnualAllowanceSchedule.mockResolvedValue("recorded" as never);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledWith(
+        "user_annual",
+        "pro",
+        expect.objectContaining({
+          invoiceId: "in_annual_switch",
+          replacedPeriodEndMs: monthlyPeriodEnd * 1000,
+          creditedInvoiceId: "in_tier_change",
+          // The standard annual Price uses the tier allowance.
+          cycleAllocationPoints: undefined,
+        }),
+      );
+      // Recording a marker on a missing or timer-only bucket is not a defect.
+      expect(mockPostHogWarn).not.toHaveBeenCalledWith(
+        "billing_annual_allowance_schedule_unchanged",
+        expect.anything(),
+      );
+      expect(mockPostHogInfo).toHaveBeenCalledWith(
+        "billing_annual_allowance_schedule_restored",
+        expect.objectContaining({ outcomes: ["recorded"] }),
       );
     });
 

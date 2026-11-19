@@ -124,6 +124,23 @@ describe("replacedSubscriptionPeriodFromUpdateInvoice", () => {
     expect(classify([monthlyCredit, annualCharge])).toEqual(replaced);
   });
 
+  it("returns the debited invoice only when every credit names the same one", () => {
+    const credited = { ...monthlyCredit, creditedInvoiceId: "in_tier_change" };
+    expect(classify([credited, credited, annualCharge])).toEqual({
+      ...replaced,
+      creditedInvoiceId: "in_tier_change",
+    });
+    // Disagreeing or partial provenance is not evidence for any invoice.
+    expect(
+      classify([
+        credited,
+        { ...credited, creditedInvoiceId: "in_other" },
+        annualCharge,
+      ]),
+    ).toEqual(replaced);
+    expect(classify([credited, monthlyCredit, annualCharge])).toEqual(replaced);
+  });
+
   it("accepts a full annual period charged after a billing-anchor reset", () => {
     expect(
       classify([

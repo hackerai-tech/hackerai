@@ -402,6 +402,12 @@ async function applyTierChangeBuckets({
   return appliedCount;
 }
 
+type AnnualAllowanceTransition = {
+  replacedPeriodEndMs: number;
+  creditedInvoiceId?: string;
+  cycleAllocationPoints?: number;
+};
+
 function isSingleIntervalPrice(
   price: Stripe.Price | undefined,
   interval: "month" | "year",
@@ -431,7 +437,7 @@ async function sameTierMonthlyToAnnualTransition({
   subscription: Stripe.Subscription;
   subscriptionId: string;
   tier: SubscriptionTier;
-}): Promise<{ replacedPeriodEndMs: number } | { skipReason: string } | null> {
+}): Promise<AnnualAllowanceTransition | { skipReason: string } | null> {
   if (tier === "team") return null;
   const items = subscription.items;
   const item = items?.data[0];
@@ -454,6 +460,9 @@ async function sameTierMonthlyToAnnualTransition({
       amount: line.amount,
       periodStartSeconds: line.period?.start,
       periodEndSeconds: line.period?.end,
+      creditedInvoiceId:
+        line.parent?.subscription_item_details?.proration_details
+          ?.credited_items?.invoice ?? undefined,
     })),
     subscriptionId,
     newPriceId: annualPrice.id,
@@ -470,7 +479,11 @@ async function sameTierMonthlyToAnnualTransition({
   if (subscriptionTierFromPrice(replacedPrice) !== tier) {
     return { skipReason: "tier_changed" };
   }
-  return { replacedPeriodEndMs: replaced.replacedPeriodEndMs };
+  return {
+    replacedPeriodEndMs: replaced.replacedPeriodEndMs,
+    creditedInvoiceId: replaced.creditedInvoiceId,
+    cycleAllocationPoints: includedUsagePointsForStripePrice(annualPrice.id),
+  };
 }
 
 async function restoreAnnualAllowanceSchedules({
@@ -478,7 +491,7 @@ async function restoreAnnualAllowanceSchedules({
   tier,
   subscriptionId,
   invoice,
-  replacedPeriodEndMs,
+  transition,
   customerId,
   orgId,
 }: {
@@ -486,22 +499,22 @@ async function restoreAnnualAllowanceSchedules({
   tier: SubscriptionTier;
   subscriptionId: string;
   invoice: Stripe.Invoice;
-  replacedPeriodEndMs: number;
+  transition: AnnualAllowanceTransition;
   customerId: string;
   orgId?: string;
 }): Promise<void> {
   const transitionAtMs = invoicePaidAtMs(invoice);
+  const { replacedPeriodEndMs, creditedInvoiceId } = transition;
   const outcomes = await Promise.all(
     userIds.map((userId) =>
       restoreAnnualAllowanceSchedule(userId, tier, {
         subscriptionId,
         invoiceId: invoice.id,
         occurredAtMs: transitionAtMs,
-        replacedPeriodEndMs,
+        ...transition,
       }),
     ),
   );
-  // A missing bucket or one without a deadline already refills on a timer.
   const needsReview = outcomes.some(
     (outcome) =>
       outcome === "held" ||
@@ -519,11 +532,12 @@ async function restoreAnnualAllowanceSchedules({
     subscription_tier: tier,
     transition_at_ms: transitionAtMs,
     replaced_period_end_ms: replacedPeriodEndMs,
+    credited_invoice_id: creditedInvoiceId,
     outcomes,
   };
   if (needsReview) {
     phLogger.warn("billing_annual_allowance_schedule_unchanged", properties);
-  } else if (outcomes.includes("applied")) {
+  } else if (outcomes.includes("applied") || outcomes.includes("recorded")) {
     phLogger.info("billing_annual_allowance_schedule_restored", properties);
   }
 }
@@ -1472,7 +1486,7 @@ async function handleInvoicePaid(
         tier,
         subscriptionId,
         invoice,
-        replacedPeriodEndMs: annualTransition.replacedPeriodEndMs,
+        transition: annualTransition,
         customerId,
         orgId: orgId ?? undefined,
       });
@@ -2508,7 +2522,7 @@ async function restoreAnnualScheduleAfterSubscriptionUpdate({
     tier,
     subscriptionId: live.id,
     invoice,
-    replacedPeriodEndMs: transition.replacedPeriodEndMs,
+    transition,
     customerId,
     orgId: customerResult.orgId ?? undefined,
   });

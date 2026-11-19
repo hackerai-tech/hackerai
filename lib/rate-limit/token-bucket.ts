@@ -858,24 +858,49 @@ return {
 }
 `;
 
-// Only the exact monthly deadline credited by the paid annual invoice may be
-// removed. Balance, allocation, spend and tier-change debt are untouched; the
-// first timer refill happens at that existing boundary. Recording the annual
-// invoice as the latest paid transition makes APPLY_PAID_BUCKET_RESET_SCRIPT
-// and FREEZE_DELINQUENT_BUCKET_SCRIPT reject older invoices, so they cannot
-// restore the retired deadline. A tie with another transition is ambiguous and
-// left unchanged. The key stays persisted until the next limit call sets its
-// timer-based expiry.
+// Record the verified paid annual invoice as the bucket's latest paid
+// transition, so APPLY_PAID_BUCKET_RESET_SCRIPT and
+// FREEZE_DELINQUENT_BUCKET_SCRIPT reject older invoices and cannot install or
+// restore a monthly deadline. Holds, another subscription, newer evidence and
+// ties leave the bucket unchanged.
+//
+// - Missing bucket: create a marker-only hash. The paid limiter initializes it
+//   exactly like a missing bucket; its TTL equals a fresh bucket's first one.
+// - Timer-only bucket: add the marker, keeping balance and expiry.
+// - Monthly deadline: remove only that deadline. The first timer refill uses
+//   the bucket's own boundary. The deadline must equal the credited Stripe
+//   period, or belong to a completed tier-change migration whose receipt
+//   matches the invoice the credit reverses (KEYS[2]) and whose hash has
+//   the proration fields with no conflicting billing transition.
+//
+// Current balance, allocation and spend are preserved; the annual allocation
+// is scheduled for the first timer refill.
 const RESTORE_ANNUAL_ALLOWANCE_SCHEDULE_SCRIPT = `
 local bucketKey = KEYS[1]
+local migrationReceiptKey = KEYS[2]
 local subscriptionId = ARGV[1]
 local invoiceId = ARGV[2]
 local transitionAtMs = tonumber(ARGV[3])
 local replacedPeriodEndMs = tonumber(ARGV[4])
 local interval = tonumber(ARGV[5])
+local nextAllocation = tonumber(ARGV[6])
+local tierMax = tonumber(ARGV[7])
+
+local function recordPaidTransition()
+  redis.call(
+    "HSET",
+    bucketKey,
+    "billingTransitionType", "paid",
+    "billingTransitionAtMs", transitionAtMs,
+    "billingSubscriptionId", subscriptionId,
+    "billingInvoiceId", invoiceId
+  )
+end
 
 if redis.call("EXISTS", bucketKey) == 0 then
-  return "missing"
+  recordPaidTransition()
+  redis.call("PEXPIRE", bucketKey, 2 * interval)
+  return "recorded"
 end
 
 local periodEnd = tonumber(redis.call("HGET", bucketKey, "billingPeriodEndMs"))
@@ -884,13 +909,11 @@ local existingSubscriptionId = redis.call("HGET", bucketKey, "billingSubscriptio
 local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
 local existingTransitionAtMs = tonumber(redis.call("HGET", bucketKey, "billingTransitionAtMs"))
 
-if not periodEnd then
-  if transitionType == "paid"
-    and existingSubscriptionId == subscriptionId
-    and existingInvoiceId == invoiceId then
-    return "already_applied"
-  end
-  return "no_deadline"
+if not periodEnd
+  and transitionType == "paid"
+  and existingSubscriptionId == subscriptionId
+  and existingInvoiceId == invoiceId then
+  return "already_applied"
 end
 if transitionType == "payment_failed" then
   return "held"
@@ -901,8 +924,29 @@ end
 if existingTransitionAtMs and existingTransitionAtMs >= transitionAtMs then
   return "stale"
 end
+
+if not periodEnd then
+  recordPaidTransition()
+  redis.call("HSET", bucketKey, "nextCycleAllocation", nextAllocation)
+  return "recorded"
+end
+
 if periodEnd ~= replacedPeriodEndMs then
-  return "deadline_mismatch"
+  local startedAt = tonumber(redis.call("HGET", bucketKey, "cycleStartedAt"))
+  local migrated = migrationReceiptKey
+    and redis.call("EXISTS", migrationReceiptKey) == 1
+    and not transitionType
+    and not existingSubscriptionId
+    and not existingInvoiceId
+    and not existingTransitionAtMs
+    and redis.call("HEXISTS", bucketKey, "tierChangeConsumedOffset") == 1
+    and tonumber(redis.call("HGET", bucketKey, "cycleTierMax")) == tierMax
+    and startedAt
+    and startedAt <= transitionAtMs
+    and startedAt < periodEnd
+  if not migrated then
+    return "deadline_mismatch"
+  end
 end
 
 redis.call("HDEL", bucketKey, "billingPeriodEndMs")
@@ -910,11 +954,9 @@ redis.call(
   "HSET",
   bucketKey,
   "refilledAt", periodEnd - interval,
-  "billingTransitionType", "paid",
-  "billingTransitionAtMs", transitionAtMs,
-  "billingSubscriptionId", subscriptionId,
-  "billingInvoiceId", invoiceId
+  "nextCycleAllocation", nextAllocation
 )
+recordPaidTransition()
 return "applied"
 `;
 
@@ -1881,9 +1923,8 @@ export const resetRateLimitBucketAfterPayment = async (
 
 export type AnnualAllowanceScheduleOutcome =
   | "applied"
+  | "recorded"
   | "already_applied"
-  | "missing"
-  | "no_deadline"
   | "held"
   | "other_subscription"
   | "stale"
@@ -1891,9 +1932,8 @@ export type AnnualAllowanceScheduleOutcome =
 
 const ANNUAL_ALLOWANCE_SCHEDULE_OUTCOMES = new Set<string>([
   "applied",
+  "recorded",
   "already_applied",
-  "missing",
-  "no_deadline",
   "held",
   "other_subscription",
   "stale",
@@ -1902,26 +1942,32 @@ const ANNUAL_ALLOWANCE_SCHEDULE_OUTCOMES = new Set<string>([
 
 /**
  * Move a same-tier monthly bucket onto the annual 30-day refill schedule after
- * a paid monthly-to-annual change. Current usage is preserved; the first
- * refill happens at the replaced monthly period's end. Every outcome other
- * than "applied" leaves the bucket unchanged.
+ * a paid monthly-to-annual change, and record that invoice so older monthly
+ * invoices cannot install a deadline afterwards. Current usage and cap are
+ * preserved; the annual allocation takes effect at the first timer refill.
+ * "applied" and "recorded" change the bucket; other outcomes leave it as is.
  */
 export const restoreAnnualAllowanceSchedule = async (
   userId: string,
   subscription: SubscriptionTier,
   transition: BillingCreditTransitionIdentity & {
     replacedPeriodEndMs: number;
+    /** Invoice whose debit the signed credit reverses, when Stripe names it. */
+    creditedInvoiceId?: string;
+    /** Price-specific annual allowance; defaults to the tier allowance. */
+    cycleAllocationPoints?: number;
   },
 ): Promise<AnnualAllowanceScheduleOutcome> => {
   const redis = createRedisClient();
   if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
 
-  if ((MONTHLY_CREDITS[subscription] ?? 0) <= 0) {
+  const tierMax = MONTHLY_CREDITS[subscription] ?? 0;
+  if (tierMax <= 0) {
     throw new Error(
       `Cannot restore an annual allowance for tier "${subscription}"`,
     );
   }
-  const { occurredAtMs, replacedPeriodEndMs } = transition;
+  const { occurredAtMs, replacedPeriodEndMs, creditedInvoiceId } = transition;
   if (
     !Number.isSafeInteger(replacedPeriodEndMs) ||
     replacedPeriodEndMs <= 0 ||
@@ -1932,17 +1978,29 @@ export const restoreAnnualAllowanceSchedule = async (
   }
 
   const outcome = await redis.eval<
-    [string, string, number, number, number],
+    [string, string, number, number, number, number, number],
     string
   >(
     RESTORE_ANNUAL_ALLOWANCE_SCHEDULE_SCRIPT,
-    [getMonthlyBucketKey(userId, subscription)],
+    [
+      getMonthlyBucketKey(userId, subscription),
+      // A completed tier change records its receipt under the paid invoice.
+      ...(creditedInvoiceId
+        ? [
+            tierChangeCompletedKey(
+              tierChangeStashKey(userId, creditedInvoiceId),
+            ),
+          ]
+        : []),
+    ],
     [
       transition.subscriptionId,
       transition.invoiceId,
       Math.floor(occurredAtMs),
       replacedPeriodEndMs,
       THIRTY_DAYS_SECONDS * 1000,
+      normalizeCycleAllocation(tierMax, transition.cycleAllocationPoints),
+      tierMax,
     ],
   );
   if (!ANNUAL_ALLOWANCE_SCHEDULE_OUTCOMES.has(outcome)) {

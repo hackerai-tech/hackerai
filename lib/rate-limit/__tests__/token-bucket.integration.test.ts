@@ -1676,8 +1676,9 @@ describe("token-bucket async functions", () => {
         // Removing the deadline must also record the annual invoice as the
         // latest paid transition so an older invoice cannot restore it.
         expect.stringMatching(
-          /"HDEL", bucketKey, "billingPeriodEndMs"[\s\S]*"billingTransitionAtMs", transitionAtMs[\s\S]*"billingInvoiceId", invoiceId/,
+          /"HDEL", bucketKey, "billingPeriodEndMs"[\s\S]*recordPaidTransition\(\)\s*return "applied"/,
         ),
+        // Without signed credited-invoice evidence, no migration receipt is read.
         ["usage:monthly:user-annual:pro"],
         [
           "sub_annual",
@@ -1685,6 +1686,8 @@ describe("token-bucket async functions", () => {
           transition.occurredAtMs,
           transition.replacedPeriodEndMs,
           30 * 24 * 60 * 60 * 1000,
+          250_000,
+          250_000,
         ],
       );
       // A balance read would let an expired monthly deadline zero the bucket
@@ -1692,6 +1695,42 @@ describe("token-bucket async functions", () => {
       expect(mockLimitFn).not.toHaveBeenCalled();
       expect(mockHsetFn).not.toHaveBeenCalled();
       expect(mockDelFn).not.toHaveBeenCalled();
+    });
+
+    it("checks the completed tier-change receipt for the credited invoice", async () => {
+      mockEvalFn.mockResolvedValueOnce("applied");
+      const { restoreAnnualAllowanceSchedule } = getIsolatedModule();
+
+      await restoreAnnualAllowanceSchedule("user-annual", "pro-plus", {
+        ...transition,
+        creditedInvoiceId: "in_tier_change",
+        cycleAllocationPoints: 900_000,
+      });
+
+      expect(mockEvalFn.mock.calls[0][1]).toEqual([
+        "usage:monthly:user-annual:pro-plus",
+        // Same key the tier-change migration completes under its invoice.
+        "upgrade:carryover:user-annual:in_tier_change:completed",
+      ]);
+      // The scheduled annual allocation never exceeds the tier allowance.
+      expect((mockEvalFn.mock.calls[0][2] as unknown[]).slice(5)).toEqual([
+        600_000, 600_000,
+      ]);
+    });
+
+    it("schedules a price-specific annual allowance below the tier cap", async () => {
+      mockEvalFn.mockResolvedValueOnce("recorded");
+      const { restoreAnnualAllowanceSchedule } = getIsolatedModule();
+
+      await expect(
+        restoreAnnualAllowanceSchedule("user-annual", "pro", {
+          ...transition,
+          cycleAllocationPoints: 200_000,
+        }),
+      ).resolves.toBe("recorded");
+      expect((mockEvalFn.mock.calls[0][2] as unknown[]).slice(5)).toEqual([
+        200_000, 250_000,
+      ]);
     });
 
     it.each([
