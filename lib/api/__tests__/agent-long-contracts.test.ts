@@ -1013,7 +1013,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     // Ask has no run-level finalizer; setup and settlement failures report
     // known costs through the same identity as the normal capture.
     expect(chatHandlerSrc).toMatch(
-      /preemptiveTimeout\?\.clear\(\);\s*await reportIncompleteAskUsageCost\?\.\("setup"\);/,
+      /preemptiveTimeout\?\.clear\(\);[\s\S]{0,450}await reportIncompleteAskUsageCost\?\.\("setup"\);/,
     );
     expect(chatHandlerSrc).toMatch(
       /catch \(error\) \{[\s\S]{0,120}await reportIncompleteAskUsageCost\?\.\("settlement"\);\s*throw error;/,

@@ -306,6 +306,7 @@ it.each([
       hasObservedUsage: () => false,
       releasePaidDailyFreeAllowanceReservation: jest.fn(async () => {}),
       releaseFreeRunLockOnce: jest.fn(async () => {}),
+      settleFailedQaRequest: undefined,
       localConnectionLost: () =>
         run.userStopSignal.signal.reason instanceof LocalConnectionLostError,
       preparationCanceled: false,
@@ -347,60 +348,67 @@ it.each([
   },
 );
 
-it("keeps a preparation error authoritative when a local stop arrives during its cleanup", async () => {
-  const run = startRun();
-  run.runReporting.setStage("preparation");
-  const dependencies = {
-    userStopSignal: run.userStopSignal,
-    runReporting: run.runReporting,
-    agentLongDurationExceeded: false,
-    isHandledUserRateLimitError: () => false,
-    hasObservedUsage: () => false,
-    releasePaidDailyFreeAllowanceReservation: jest.fn(async () => {
+it.each(["allowance cleanup", "QA settlement"])(
+  "keeps a preparation error authoritative when a local stop arrives during %s",
+  async (phase) => {
+    const run = startRun();
+    run.runReporting.setStage("preparation");
+    const loseConnection = async () => {
       run.onLocalConnectionLost(
         new LocalConnectionLostError("selected_host_left"),
       );
-    }),
-    releaseFreeRunLockOnce: jest.fn(async () => {}),
-    localConnectionLost: () =>
-      run.userStopSignal.signal.reason instanceof LocalConnectionLostError,
-    preparationCanceled: false,
-    updateChat: jest.fn(async () => {}),
-    chatId: "chat-test",
-    ctx: { run: { id: "run-test" } },
-    LOCAL_CONNECTION_LOST_FINISH_REASON,
-    recordAgentLongChatMetadataUpdateFailure: jest.fn(),
-    userId: "user-test",
-    usageRefundTracker: { refund: jest.fn(async () => {}) },
-    writer: { write: jest.fn() },
-  };
-  await new Function(
-    "error",
-    ...Object.keys(dependencies),
-    preparationCatchBody,
-  )(
-    new TypeError("PRIVATE preparation failure"),
-    ...Object.values(dependencies),
-  );
-  // Existing product handling still stops for the lost host and refunds.
-  expect(dependencies.updateChat).toHaveBeenCalledWith(
-    expect.objectContaining({
-      finishReason: LOCAL_CONNECTION_LOST_FINISH_REASON,
-    }),
-  );
-  expect(dependencies.usageRefundTracker.refund).toHaveBeenCalledTimes(1);
-  expect(dependencies.writer.write).toHaveBeenCalledWith({ type: "abort" });
-  // Reporting keeps the original failure, not the later first abort.
-  const terminal = run.terminal();
-  expect(terminal).toMatchObject({
-    outcome: "error",
-    failure_kind: "error",
-    failure_category: "type_error",
-    finish_reason: "unknown",
-  });
-  expect(JSON.stringify(terminal)).not.toMatch(/local_stop_|PRIVATE/);
-  run.stopSignal.dispose();
-});
+    };
+    const dependencies = {
+      userStopSignal: run.userStopSignal,
+      runReporting: run.runReporting,
+      agentLongDurationExceeded: false,
+      isHandledUserRateLimitError: () => false,
+      hasObservedUsage: () => false,
+      releasePaidDailyFreeAllowanceReservation:
+        phase === "allowance cleanup" ? loseConnection : async () => {},
+      settleFailedQaRequest:
+        phase === "QA settlement" ? loseConnection : undefined,
+      releaseFreeRunLockOnce: jest.fn(async () => {}),
+      localConnectionLost: () =>
+        run.userStopSignal.signal.reason instanceof LocalConnectionLostError,
+      preparationCanceled: false,
+      updateChat: jest.fn(async () => {}),
+      chatId: "chat-test",
+      ctx: { run: { id: "run-test" } },
+      LOCAL_CONNECTION_LOST_FINISH_REASON,
+      recordAgentLongChatMetadataUpdateFailure: jest.fn(),
+      userId: "user-test",
+      usageRefundTracker: { refund: jest.fn(async () => {}) },
+      writer: { write: jest.fn() },
+    };
+    await new Function(
+      "error",
+      ...Object.keys(dependencies),
+      preparationCatchBody,
+    )(
+      new TypeError("PRIVATE preparation failure"),
+      ...Object.values(dependencies),
+    );
+    // Existing product handling still stops for the lost host and refunds.
+    expect(dependencies.updateChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        finishReason: LOCAL_CONNECTION_LOST_FINISH_REASON,
+      }),
+    );
+    expect(dependencies.usageRefundTracker.refund).toHaveBeenCalledTimes(1);
+    expect(dependencies.writer.write).toHaveBeenCalledWith({ type: "abort" });
+    // Reporting keeps the original failure, not the later first abort.
+    const terminal = run.terminal();
+    expect(terminal).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      failure_category: "type_error",
+      finish_reason: "unknown",
+    });
+    expect(JSON.stringify(terminal)).not.toMatch(/local_stop_|PRIVATE/);
+    run.stopSignal.dispose();
+  },
+);
 if (!outerCatch) throw new Error("Agent run catch block not found");
 const catchBody = ts.transpileModule(
   `return (async () => ${outerCatch.getText(source)})();`,

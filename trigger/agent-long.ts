@@ -6353,12 +6353,6 @@ export const agentLongTask = task({
               ),
             );
           } catch (error) {
-            await settleFailedQaRequest?.().catch(() => {
-              phLogger.warn("Failed to settle QA usage during stream setup", {
-                chatId,
-                endpoint,
-              });
-            });
             const canceledDuringPreparation =
               userStopSignal.signal.aborted &&
               error === userStopSignal.signal.reason;
@@ -6372,6 +6366,14 @@ export const agentLongTask = task({
                   ? "usage_limit"
                   : "error",
             );
+            if (settleFailedQaRequest) {
+              await settleFailedQaRequest().catch(() => {
+                phLogger.warn("Failed to settle QA usage during stream setup", {
+                  chatId,
+                  endpoint,
+                });
+              });
+            }
             if (!hasObservedUsage()) {
               await releasePaidDailyFreeAllowanceReservation();
             }

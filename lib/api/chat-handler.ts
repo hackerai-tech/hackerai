@@ -3591,7 +3591,9 @@ export const createChatHandler = () => {
             // QA settlement reports the cost it charges; settle before the
             // incomplete-cost report so that cost is not reported twice.
             const failedQaSettlement = settleFailedQaRequest?.();
-            await failedQaSettlement?.catch(() => undefined);
+            if (failedQaSettlement) {
+              await failedQaSettlement.catch(() => undefined);
+            }
             await reportIncompleteAskUsageCost?.("setup");
             if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
               await releasePaidDailyFreeAllowanceReservation();

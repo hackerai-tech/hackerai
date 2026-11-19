@@ -36,14 +36,20 @@ function executeCatch(
   );
 }
 
-it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
-  "%s settles setup cancellation without an error chunk",
-  async (file) => {
+it.each([
+  ["trigger/agent-long.ts", false],
+  ["lib/api/chat-handler.ts", false],
+  ["trigger/agent-long.ts", true],
+  ["lib/api/chat-handler.ts", true],
+] as const)(
+  "%s settles setup cancellation without an error chunk (QA=%s)",
+  async (file, qa) => {
     const userStopSignal = new AbortController();
     userStopSignal.abort();
     const writer = { write: jest.fn() };
     const release = jest.fn(async () => {});
     const refund = jest.fn(async () => {});
+    const settleFailedQaRequest = qa ? jest.fn(async () => {}) : undefined;
     const deps = {
       localConnectionLost: () => false,
       userStopSignal,
@@ -57,6 +63,7 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
       reportIncompleteAskUsageCost: jest.fn(async () => {}),
       releasePaidDailyFreeAllowanceReservation: release,
       releaseFreeRunLockOnce: release,
+      settleFailedQaRequest,
       usageRefundTracker: { refund },
       preemptiveTimeout: { clear: jest.fn() },
       subscriberStopped: false,
@@ -82,11 +89,19 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
         "canceled",
       );
     }
-    expect(refund).toHaveBeenCalledTimes(1);
+    if (qa) expect(settleFailedQaRequest).toHaveBeenCalledTimes(1);
+    expect(refund).toHaveBeenCalledTimes(
+      qa && file === "lib/api/chat-handler.ts" ? 0 : 1,
+    );
     expect(release).toHaveBeenCalledTimes(2);
     expect(writer.write).toHaveBeenCalledWith({ type: "abort" });
     if (file === "lib/api/chat-handler.ts") {
       expect(deps.reportIncompleteAskUsageCost).toHaveBeenCalledWith("setup");
+      if (settleFailedQaRequest) {
+        expect(settleFailedQaRequest.mock.invocationCallOrder[0]).toBeLessThan(
+          deps.reportIncompleteAskUsageCost.mock.invocationCallOrder[0],
+        );
+      }
     }
     writer.write.mockClear();
     const unrelated = new Error("Cleanup could not be confirmed");
@@ -143,6 +158,7 @@ it("refunds and aborts after local loss even when finish metadata cannot be save
         hasObservedUsage: () => false,
         releasePaidDailyFreeAllowanceReservation: jest.fn(async () => {}),
         releaseFreeRunLockOnce: jest.fn(async () => {}),
+        settleFailedQaRequest: undefined,
         usageRefundTracker: { refund },
         updateChat,
         recordAgentLongChatMetadataUpdateFailure,
