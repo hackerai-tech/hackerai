@@ -59,6 +59,14 @@
  * not reqwest's internal deadline or any server time. The timing is only
  * reported with that `timeout` snapshot, its 2xx `json_error` receipt and the
  * same invocation's `authorization_response_invalid` rejection class.
+ *
+ * Only when the invocation also offered `includeResponseReadTimingConnector`
+ * (beside the connector and timing channels), a newer native app adds the
+ * existing connector snapshot, copied when those headers arrived, to that
+ * timing. Only `connected` (one call, its time within the headers' time) and
+ * `multiple` (2..8 calls, no time) are accepted. It is the connector's own
+ * result, never a written or delivered request, and does not distinguish DNS,
+ * proxy, TCP or TLS. An older native app sends the v1 timing unchanged.
  */
 
 import type { DesktopInvocationRejectionDiagnostic } from "./desktop-invocation-rejection-diagnostics";
@@ -236,6 +244,15 @@ const RESPONSE_READ_TIMING_KEYS = [
   "headersElapsedMs",
   "readElapsedMs",
 ] as const;
+const RESPONSE_READ_TIMING_CONNECTOR_KEYS = [
+  ...RESPONSE_READ_TIMING_KEYS,
+  "connector",
+] as const;
+/** The connector phases a successful send's response headers support. */
+const TIMING_CONNECTOR_PHASES = [
+  "connected",
+  "multiple",
+] as const satisfies readonly ConnectorPhase[];
 
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
@@ -244,6 +261,7 @@ type IoKindDetail = (typeof IO_KIND_DETAILS)[number];
 type UnmappedIoKind = (typeof UNMAPPED_IO_KINDS)[number];
 type OsFamily = (typeof OS_FAMILIES)[number];
 type ConnectorPhase = (typeof CONNECTOR_PHASES)[number];
+type TimingConnectorPhase = (typeof TIMING_CONNECTOR_PHASES)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 type Mitigation = (typeof MITIGATIONS)[number];
@@ -1172,9 +1190,20 @@ export function readNativeAuthorizationResponseRead(
   }
 }
 
+/** The connector snapshot as a successful send's headers arrived: only the
+ * phases those headers support. */
+export interface NativeAuthorizationResponseReadTimingConnector {
+  readonly phase: TimingConnectorPhase;
+  readonly attempts: number;
+  /** The single connection's time; null for several calls. */
+  readonly elapsedMs: number | null;
+}
+
 export interface NativeAuthorizationResponseReadTiming {
   readonly headersElapsedMs: number;
   readonly readElapsedMs: number;
+  /** Only from an invocation that offered it; absent otherwise. */
+  readonly connector?: NativeAuthorizationResponseReadTimingConnector;
 }
 
 export interface NativeAuthorizationResponseReadTimingDiagnostic {
@@ -1183,6 +1212,17 @@ export interface NativeAuthorizationResponseReadTimingDiagnostic {
   readonly native_authorization_response_read_timing_headers_elapsed_ms: number;
   /** Client monotonic time from just before the JSON read until it failed. */
   readonly native_authorization_response_read_timing_read_elapsed_ms: number;
+  // The connector members are all present together, or all absent.
+  readonly native_authorization_response_read_timing_connector_version?: 1;
+  /** reqwest's connector (DNS, proxy, TCP and TLS as one unit) had returned
+   * one connection, or was called several times, when the headers arrived.
+   * Never a written or delivered request. */
+  readonly native_authorization_response_read_timing_connector_phase?: TimingConnectorPhase;
+  readonly native_authorization_response_read_timing_connector_attempts?: number;
+  /** The one connection's time, within the headers' time; null for several
+   * calls. */
+  readonly native_authorization_response_read_timing_connector_elapsed_ms?:
+    number | null;
 }
 
 const RESPONSE_READ_TIMING_PROPERTIES = [
@@ -1190,26 +1230,72 @@ const RESPONSE_READ_TIMING_PROPERTIES = [
   "native_authorization_response_read_timing_headers_elapsed_ms",
   "native_authorization_response_read_timing_read_elapsed_ms",
 ] as const satisfies readonly (keyof NativeAuthorizationResponseReadTimingDiagnostic)[];
+const RESPONSE_READ_TIMING_CONNECTOR_PROPERTIES = [
+  "native_authorization_response_read_timing_connector_version",
+  "native_authorization_response_read_timing_connector_phase",
+  "native_authorization_response_read_timing_connector_attempts",
+  "native_authorization_response_read_timing_connector_elapsed_ms",
+] as const satisfies readonly (keyof NativeAuthorizationResponseReadTimingDiagnostic)[];
 
 export const NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES: ReadonlySet<string> =
-  new Set(RESPONSE_READ_TIMING_PROPERTIES);
+  new Set([
+    ...RESPONSE_READ_TIMING_PROPERTIES,
+    ...RESPONSE_READ_TIMING_CONNECTOR_PROPERTIES,
+  ]);
+
+/** The phases a response's headers support, with the native snapshot's own
+ * invariants: one connection whose time is within the headers' time, or 2..8
+ * calls with no single time. */
+const isTimingConnector = (
+  phase: unknown,
+  attempts: unknown,
+  elapsedMs: unknown,
+  headersElapsedMs: number,
+): boolean =>
+  TIMING_CONNECTOR_PHASES.some((value) => value === phase) &&
+  isConnector(phase, attempts, elapsedMs) &&
+  (elapsedMs === null || (elapsedMs as number) <= headersElapsedMs);
 
 /** Copy only the closed native read timing schema; anything else is
- * dropped. */
+ * dropped. Only an invocation that offered the connector refinement also
+ * accepts exactly one closed `connector` member. */
 export function parseNativeAuthorizationResponseReadTiming(
   value: unknown,
+  connectorOffered = false,
 ): NativeAuthorizationResponseReadTiming | null {
   try {
-    const values = readClosedObject(value, RESPONSE_READ_TIMING_KEYS);
+    const values =
+      readClosedObject(value, RESPONSE_READ_TIMING_KEYS) ??
+      (connectorOffered
+        ? readClosedObject(value, RESPONSE_READ_TIMING_CONNECTOR_KEYS)
+        : null);
     if (!values) return null;
-    const [version, headersElapsedMs, readElapsedMs] = values;
+    const [version, headersElapsedMs, readElapsedMs, connectorValue] = values;
     if (
       version !== 1 ||
       !isElapsed(headersElapsedMs) ||
       !isElapsed(readElapsedMs)
     )
       return null;
-    return Object.freeze({ headersElapsedMs, readElapsedMs });
+    if (values.length === RESPONSE_READ_TIMING_KEYS.length)
+      return Object.freeze({ headersElapsedMs, readElapsedMs });
+    const connector = readClosedObject(connectorValue, CONNECTOR_KEYS);
+    if (!connector) return null;
+    const [connectorVersion, phase, attempts, elapsedMs] = connector;
+    if (
+      connectorVersion !== 1 ||
+      !isTimingConnector(phase, attempts, elapsedMs, headersElapsedMs)
+    )
+      return null;
+    return Object.freeze({
+      headersElapsedMs,
+      readElapsedMs,
+      connector: Object.freeze({
+        phase,
+        attempts,
+        elapsedMs,
+      } as NativeAuthorizationResponseReadTimingConnector),
+    });
   } catch {
     return null;
   }
@@ -1218,12 +1304,22 @@ export function parseNativeAuthorizationResponseReadTiming(
 export function nativeAuthorizationResponseReadTimingDiagnostic(
   timing: NativeAuthorizationResponseReadTiming,
 ): NativeAuthorizationResponseReadTimingDiagnostic {
+  const { connector } = timing;
   return Object.freeze({
     native_authorization_response_read_timing_version: 1,
     native_authorization_response_read_timing_headers_elapsed_ms:
       timing.headersElapsedMs,
     native_authorization_response_read_timing_read_elapsed_ms:
       timing.readElapsedMs,
+    ...(connector && {
+      native_authorization_response_read_timing_connector_version: 1 as const,
+      native_authorization_response_read_timing_connector_phase:
+        connector.phase,
+      native_authorization_response_read_timing_connector_attempts:
+        connector.attempts,
+      native_authorization_response_read_timing_connector_elapsed_ms:
+        connector.elapsedMs,
+    }),
   });
 }
 
@@ -1249,7 +1345,9 @@ export function isNativeAuthorizationResponseReadTimeout(
 
 /** Read the complete timing group from any property bag's own data
  * properties, or nothing at all. No timing property is read unless the
- * validated groups describe a classified read timeout. */
+ * validated groups describe a classified read timeout. Its connector members
+ * are read only beside a valid timing; an incomplete or invalid set of them
+ * drops alone, leaving the v1 timing. */
 export function readNativeAuthorizationResponseReadTiming(
   source: unknown,
   response: NativeAuthorizationResponseDiagnostic | null,
@@ -1267,14 +1365,28 @@ export function readNativeAuthorizationResponseReadTiming(
       source,
       RESPONSE_READ_TIMING_PROPERTIES,
     );
-    return version === 1 &&
-      isElapsed(headersElapsedMs) &&
-      isElapsed(readElapsedMs)
-      ? nativeAuthorizationResponseReadTimingDiagnostic({
-          headersElapsedMs,
-          readElapsedMs,
-        })
-      : null;
+    if (
+      version !== 1 ||
+      !isElapsed(headersElapsedMs) ||
+      !isElapsed(readElapsedMs)
+    )
+      return null;
+    const [connectorVersion, phase, attempts, elapsedMs] = readDataProperties(
+      source,
+      RESPONSE_READ_TIMING_CONNECTOR_PROPERTIES,
+    );
+    return nativeAuthorizationResponseReadTimingDiagnostic({
+      headersElapsedMs,
+      readElapsedMs,
+      ...(connectorVersion === 1 &&
+        isTimingConnector(phase, attempts, elapsedMs, headersElapsedMs) && {
+          connector: {
+            phase,
+            attempts,
+            elapsedMs,
+          } as NativeAuthorizationResponseReadTimingConnector,
+        }),
+    });
   } catch {
     return null;
   }

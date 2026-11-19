@@ -10045,6 +10045,249 @@ describe("native authorization send receipt", () => {
           });
           expect(timingKeys(finals()[0].properties)).toEqual([]);
         });
+
+        describe("connector at the response headers", () => {
+          const connector = {
+            version: 1,
+            phase: "connected",
+            attempts: 1,
+            elapsedMs: 6900,
+          };
+          const connectorGroup = {
+            native_authorization_response_read_timing_connector_version: 1,
+            native_authorization_response_read_timing_connector_phase:
+              "connected",
+            native_authorization_response_read_timing_connector_attempts: 1,
+            native_authorization_response_read_timing_connector_elapsed_ms: 6900,
+          };
+          const withConnector = (value: unknown) => ({
+            ...timing,
+            connector: value,
+          });
+          const sendConnectorKeys = (
+            properties: Record<string, unknown> = {},
+          ) =>
+            Object.keys(properties).filter((key) =>
+              NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key),
+            );
+          /** A classified read timeout whose timing is `value`. */
+          const timedOut = (value: unknown) => (call: NativeCall) => {
+            timingChannel(call).onmessage!(value);
+            responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(timeoutRead);
+            return reject(invalidResponse);
+          };
+
+          it.each<[string, object, object]>([
+            ["one connection", connector, connectorGroup],
+            [
+              "one connection as long as the headers",
+              { ...connector, elapsedMs: 7480 },
+              {
+                ...connectorGroup,
+                native_authorization_response_read_timing_connector_elapsed_ms: 7480,
+              },
+            ],
+            [
+              "several connector calls",
+              { ...connector, phase: "multiple", attempts: 8, elapsedMs: null },
+              {
+                ...connectorGroup,
+                native_authorization_response_read_timing_connector_phase:
+                  "multiple",
+                native_authorization_response_read_timing_connector_attempts: 8,
+                native_authorization_response_read_timing_connector_elapsed_ms:
+                  null,
+              },
+            ],
+          ])(
+            "offers the refinement and joins the validated snapshot for %s",
+            async (_case, value, group) => {
+              const { calls, replies } = await run(
+                timedOut(withConnector({ ...value })),
+              );
+              expect(calls).toHaveLength(1);
+              // Outside the signed message, beside both channels it joins.
+              expect(calls[0].includeResponseReadTimingConnector).toBe(true);
+              for (const key of [
+                "onAuthorizationConnectorDiagnostic",
+                "onAuthorizationResponseReadTimingDiagnostic",
+              ])
+                expect(calls[0]).toHaveProperty(key);
+              expect(Object.keys(calls[0].message as object)).not.toContain(
+                "includeResponseReadTimingConnector",
+              );
+              expect(sequencedFrames(replies[0])).toEqual([
+                expect.objectContaining({
+                  type: "error",
+                  message: invalidResponse,
+                  sequence: 0,
+                }),
+              ]);
+              expect(finals()).toHaveLength(1);
+              const final = finals()[0];
+              expect(final.properties).toMatchObject({
+                ...jsonGroup,
+                ...timeoutGroup,
+                ...timingGroup,
+                ...group,
+              });
+              expect(timingKeys(final.properties)).toHaveLength(7);
+              // The send-failure connector group is never reused for it.
+              expect(sendConnectorKeys(final.properties)).toEqual([]);
+              const enriched = sanitizeDesktopAckEvent({
+                ...final,
+                properties: {
+                  ...final.properties,
+                  $current_url: "PRIVATE",
+                  native_authorization_response_read_timing_connector_address:
+                    "PRIVATE",
+                },
+              });
+              expect(enriched.properties).toMatchObject({
+                ...timingGroup,
+                ...group,
+              });
+              expect(timingKeys(enriched.properties)).toHaveLength(7);
+              expect(responseKeys(enriched.properties)).toHaveLength(7);
+              expect(readKeys(enriched.properties)).toHaveLength(4);
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain(authorizationId);
+            },
+          );
+
+          it.each<[string, unknown]>([
+            [
+              "a pending call",
+              withConnector({ ...connector, phase: "pending" }),
+            ],
+            ["a failed call", withConnector({ ...connector, phase: "failed" })],
+            [
+              "no connector call",
+              withConnector({
+                ...connector,
+                phase: "not_started",
+                attempts: 0,
+                elapsedMs: null,
+              }),
+            ],
+            [
+              "a connection longer than the headers",
+              withConnector({ ...connector, elapsedMs: 7481 }),
+            ],
+            [
+              "a connection without a time",
+              withConnector({ ...connector, elapsedMs: null }),
+            ],
+            [
+              "several calls with one time",
+              withConnector({ ...connector, phase: "multiple", attempts: 2 }),
+            ],
+            [
+              "more calls than the bound",
+              withConnector({
+                ...connector,
+                phase: "multiple",
+                attempts: 9,
+                elapsedMs: null,
+              }),
+            ],
+            ["another version", withConnector({ ...connector, version: 2 })],
+            [
+              "an extra nested field",
+              withConnector({ ...connector, address: "PRIVATE" }),
+            ],
+            [
+              "a nested identifier",
+              withConnector({
+                ...connector,
+                requestId: "iad1::abcde-1700000000000-0123456789ab",
+                authorizationId,
+              }),
+            ],
+            [
+              "a missing nested field",
+              withConnector({ version: 1, phase: "connected", attempts: 1 }),
+            ],
+            ["a raw string", withConnector("PRIVATE")],
+            ["null", withConnector(null)],
+            [
+              "a class instance",
+              withConnector(
+                Object.assign(
+                  Object.create({ raw: "PRIVATE" }) as object,
+                  connector,
+                ),
+              ),
+            ],
+            [
+              "an extra top-level field",
+              { ...withConnector(connector), message: "PRIVATE" },
+            ],
+          ])(
+            "drops the whole timing for %s and keeps the other groups",
+            async (_case, value) => {
+              const { calls, replies } = await run(timedOut(value));
+              expect(calls[0].includeResponseReadTimingConnector).toBe(true);
+              expect(sequencedFrames(replies[0])).toEqual([
+                expect.objectContaining({
+                  type: "error",
+                  message: invalidResponse,
+                }),
+              ]);
+              expect(finals()[0].properties).toMatchObject({
+                ...jsonGroup,
+                ...timeoutGroup,
+              });
+              expect(timingKeys(finals()[0].properties)).toEqual([]);
+              const serialized = JSON.stringify(captures());
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain(authorizationId);
+            },
+          );
+
+          it("neither offers nor accepts the connector member without the connector channel", async () => {
+            const { Channel } = await import("@tauri-apps/api/core");
+            const create = jest.mocked(Channel).getMockImplementation()!;
+            const mocked = jest.mocked(Channel);
+            for (let index = 0; index < 6; index++)
+              mocked.mockImplementationOnce(create);
+            mocked.mockImplementationOnce(() => {
+              throw new Error("channel unavailable");
+            });
+            const { calls } = await run(timedOut(withConnector(connector)));
+            expect(calls[0]).not.toHaveProperty(
+              "onAuthorizationConnectorDiagnostic",
+            );
+            expect(calls[0]).toHaveProperty(
+              "onAuthorizationResponseReadTimingDiagnostic",
+            );
+            expect(calls[0]).not.toHaveProperty(
+              "includeResponseReadTimingConnector",
+            );
+            // An unoffered member is unexpected, so the whole timing drops.
+            expect(finals()[0].properties).toMatchObject(timeoutGroup);
+            expect(timingKeys(finals()[0].properties)).toEqual([]);
+          });
+
+          it("adds nothing to a successful command, even with a connector timing", async () => {
+            const { calls } = await run(async (call) => {
+              timingChannel(call).onmessage!(withConnector(connector));
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(timeoutRead);
+              (call.onEvent as MockChannel).onmessage!({
+                type: "exit",
+                exitCode: 0,
+              });
+            });
+            expect(calls[0].includeResponseReadTimingConnector).toBe(true);
+            expect(finals()[0].properties).toMatchObject({
+              terminalType: "exit",
+            });
+            expect(timingKeys(finals()[0].properties)).toEqual([]);
+          });
+        });
       });
     });
   });

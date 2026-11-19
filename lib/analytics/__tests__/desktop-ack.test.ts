@@ -2725,6 +2725,180 @@ describe("native authorization response receipt", () => {
         expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
       },
     );
+
+    describe("connector members", () => {
+      const connected = {
+        native_authorization_response_read_timing_connector_version: 1,
+        native_authorization_response_read_timing_connector_phase: "connected",
+        native_authorization_response_read_timing_connector_attempts: 1,
+        native_authorization_response_read_timing_connector_elapsed_ms: 6900,
+      } as const;
+      const connectorChange = (change: Record<string, unknown>) =>
+        Object.fromEntries(
+          Object.entries(change).map(([key, value]) => [
+            `native_authorization_response_read_timing_connector_${key}`,
+            value,
+          ]),
+        );
+
+      it.each<[string, Record<string, unknown>]>([
+        ["one connection", {}],
+        ["one connection as long as the headers", { elapsed_ms: 7480 }],
+        ["several calls", { phase: "multiple", attempts: 8, elapsed_ms: null }],
+      ])(
+        "keeps the complete set for %s through capture and before_send",
+        (_case, change) => {
+          const expected = {
+            ...timing,
+            ...connected,
+            ...connectorChange(change),
+          };
+          const final = settle(
+            joined({
+              nativeAuthorizationResponseReadTiming: {
+                ...expected,
+                native_authorization_response_read_timing_connector_address:
+                  "PRIVATE",
+              },
+            }),
+          );
+          expect(final?.properties).toMatchObject({
+            ...jsonResponse,
+            ...timeoutRead,
+            ...rejection,
+            ...expected,
+          });
+          expect(timingKeys(final!.properties)).toHaveLength(7);
+          const enriched = enrich({
+            ...final!.properties,
+            native_authorization_response_read_timing_connector_address:
+              "PRIVATE",
+          });
+          expect(enriched.properties).toMatchObject(expected);
+          expect(timingKeys(enriched.properties)).toHaveLength(7);
+          expect(responseKeys(enriched.properties)).toHaveLength(7);
+          expect(readKeys(enriched.properties)).toHaveLength(4);
+          expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+        },
+      );
+
+      it.each<[string, Record<string, unknown>]>([
+        ["a connection longer than the headers", { elapsed_ms: 7481 }],
+        ["a connection without a time", { elapsed_ms: null }],
+        ["a connection with several calls", { attempts: 2 }],
+        ["several calls with one time", { phase: "multiple", attempts: 2 }],
+        [
+          "a single call as several",
+          { phase: "multiple", attempts: 1, elapsed_ms: null },
+        ],
+        [
+          "more calls than the bound",
+          { phase: "multiple", attempts: 9, elapsed_ms: null },
+        ],
+        ["a pending call", { phase: "pending" }],
+        ["a failed call", { phase: "failed" }],
+        [
+          "no connector call",
+          { phase: "not_started", attempts: 0, elapsed_ms: null },
+        ],
+        ["another version", { version: 2 }],
+        ["a missing version", { version: undefined }],
+        ["a missing phase", { phase: undefined }],
+        ["a missing time", { elapsed_ms: undefined }],
+        ["a string count", { attempts: "1" }],
+        ["a fractional time", { elapsed_ms: 1.5 }],
+      ])(
+        "drops only the connector members for %s and keeps the v1 timing",
+        (_case, change) => {
+          const invalid = { ...connected, ...connectorChange(change) };
+          const final = settle(
+            joined({
+              nativeAuthorizationResponseReadTiming: { ...timing, ...invalid },
+            }),
+          );
+          expect(final?.properties).toMatchObject({
+            ...timeoutRead,
+            ...rejection,
+            ...timing,
+          });
+          expect(timingKeys(final!.properties)).toHaveLength(3);
+          const enriched = enrich(flat(invalid));
+          expect(enriched.properties).toMatchObject(timing);
+          expect(timingKeys(enriched.properties)).toHaveLength(3);
+        },
+      );
+
+      it("never keeps connector members without their timing", () => {
+        for (const [settlementChange, propertiesChange] of [
+          [
+            {
+              nativeAuthorizationResponseReadTiming: {
+                ...timing,
+                ...connected,
+                native_authorization_response_read_timing_version: 2,
+              },
+            },
+            {
+              ...connected,
+              native_authorization_response_read_timing_version: 2,
+            },
+          ],
+          [
+            {
+              nativeAuthorizationResponseRead: {
+                ...timeoutRead,
+                native_authorization_response_read_kind: "body_read",
+              },
+              nativeAuthorizationResponseReadTiming: {
+                ...timing,
+                ...connected,
+              },
+            },
+            {
+              ...connected,
+              native_authorization_response_read_kind: "body_read",
+            },
+          ],
+        ] as const) {
+          const final = settle(joined(settlementChange));
+          expect(timingKeys(final!.properties)).toEqual([]);
+          expect(timingKeys(enrich(flat(propertiesChange)).properties)).toEqual(
+            [],
+          );
+        }
+      });
+
+      it("never runs a connector getter and keeps the v1 timing", () => {
+        let gets = 0;
+        const hostile = (base: Record<string, unknown>) =>
+          Object.defineProperty(
+            { ...base },
+            "native_authorization_response_read_timing_connector_phase",
+            {
+              enumerable: true,
+              get: () => (gets++ === 0 ? "connected" : "PRIVATE"),
+            },
+          );
+        const final = settle(
+          joined({
+            nativeAuthorizationResponseReadTiming: hostile({
+              ...timing,
+              ...connected,
+            }),
+          }),
+        );
+        expect(final?.properties).toMatchObject(timing);
+        expect(timingKeys(final!.properties)).toHaveLength(3);
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: hostile(flat(connected)),
+        }).properties!;
+        expect(gets).toBe(0);
+        expect(sanitized).toMatchObject(timing);
+        expect(timingKeys(sanitized)).toHaveLength(3);
+        expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+      });
+    });
   });
 });
 

@@ -8,6 +8,10 @@
 //! DNS, TCP and TLS are not distinguished. Nothing is read from the request
 //! URI, the connection or the error, so the snapshot holds no URL, address,
 //! hostname, header, body, error text or identifier.
+//!
+//! With a separate opt-in, the same record is also read once when a send's
+//! response headers are available, for the read timing of a body that later
+//! timed out. That copy claims only phases the headers support.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -212,6 +216,37 @@ where
 pub struct ConnectorPhaseReport<H> {
     tracker: ConnectorPhaseTracker,
     observer: H,
+}
+
+impl<H> ConnectorPhaseReport<H> {
+    /// The same tracker, for a successful send's read timing only. It never
+    /// reports on its own and leaves the send-failure snapshot unchanged.
+    pub fn probe(&self) -> ConnectorPhaseProbe {
+        ConnectorPhaseProbe(self.tracker.clone())
+    }
+}
+
+/// Reads the existing connector record when a send's response headers are
+/// available. Only phases those headers support are returned.
+pub struct ConnectorPhaseProbe(ConnectorPhaseTracker);
+
+impl ConnectorPhaseProbe {
+    /// The snapshot as the headers arrived `headers_elapsed` after the send
+    /// started: either one returned connection, whose time cannot exceed the
+    /// headers' time, or several calls with no single phase or time. A phase a
+    /// response contradicts (not started, pending or failed), an inconsistent
+    /// count or time, or a lost record returns `None`.
+    pub fn at_headers(&self, headers_elapsed: Duration) -> Option<ConnectorPhaseSnapshot> {
+        let snapshot = self.0.snapshot()?;
+        let supported = match (snapshot.phase, snapshot.elapsed_ms) {
+            (ConnectorPhase::Connected, Some(elapsed_ms)) => {
+                snapshot.attempts == 1 && elapsed_ms <= bounded_elapsed_ms(headers_elapsed)
+            }
+            (ConnectorPhase::Multiple, None) => (2..=MAX_ATTEMPTS).contains(&snapshot.attempts),
+            _ => false,
+        };
+        supported.then_some(snapshot)
+    }
 }
 
 /// Without an observer, returns `builder` untouched: reqwest keeps its
@@ -630,6 +665,68 @@ mod tests {
             names,
             ["not_started", "pending", "connected", "failed", "multiple"]
         );
+    }
+
+    #[test]
+    fn authorization_connector_headers_snapshot_claims_only_phases_headers_support() {
+        let probe = |tracker: &ConnectorPhaseTracker| ConnectorPhaseProbe(tracker.clone());
+        let long = Duration::from_secs(60);
+        // Never called: headers cannot have arrived over no connection.
+        let tracker = ConnectorPhaseTracker::default();
+        assert_eq!(probe(&tracker).at_headers(long), None);
+        // A pending or failed single call contradicts an answered send.
+        let mut connecting = connect(&mut layered(&tracker));
+        assert_eq!(probe(&tracker).at_headers(long), None);
+        let failed = ConnectorPhaseTracker::default();
+        let mut refused = connect(&mut layered(&failed));
+        *refused.inner.output.lock().unwrap() = Some(Err("refused"));
+        assert_eq!(poll_once(&mut refused), Poll::Ready(Err("refused")));
+        assert_eq!(probe(&failed).at_headers(long), None);
+
+        // One returned connection: exactly the existing bounded snapshot.
+        *connecting.inner.output.lock().unwrap() = Some(Ok(1));
+        assert_eq!(poll_once(&mut connecting), Poll::Ready(Ok(1)));
+        assert_eq!(probe(&tracker).at_headers(long), Some(snap(&tracker)));
+        // Its time can never exceed the headers' time.
+        if let Some(started) = Instant::now().checked_sub(Duration::from_secs(2)) {
+            tracker
+                .try_with_attempts(|attempts| {
+                    attempts.first_started = Some(started);
+                    attempts.first_settled = Some((started + Duration::from_millis(1500), true));
+                })
+                .unwrap();
+            let at = |ms| probe(&tracker).at_headers(Duration::from_millis(ms));
+            assert_eq!(at(1499), None);
+            let snapshot = at(1500).expect("within the headers' time");
+            assert_eq!(
+                serde_json::to_value(snapshot).unwrap(),
+                serde_json::json!({
+                    "version": 1,
+                    "phase": "connected",
+                    "attempts": 1,
+                    "elapsedMs": 1500,
+                })
+            );
+        }
+
+        // Several calls: the bounded count, with no single time.
+        let mut service = layered(&tracker);
+        let _second = connect(&mut service);
+        let snapshot = probe(&tracker).at_headers(long).expect("several calls");
+        assert_eq!(
+            (snapshot.phase, snapshot.attempts, snapshot.elapsed_ms),
+            (ConnectorPhase::Multiple, 2, None)
+        );
+
+        // A held record is never waited on, and is then lost for good.
+        let holder = Holder::hold(&tracker);
+        assert_eq!(probe(&tracker).at_headers(long), None);
+        assert!(
+            !holder.released(),
+            "the headers snapshot waited for the lock"
+        );
+        holder.release();
+        assert_eq!(probe(&tracker).at_headers(long), None);
     }
 
     /// Accepts connections and counts each POST head. `answer` replies 200;

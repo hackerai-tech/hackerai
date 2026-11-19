@@ -1115,10 +1115,13 @@ async fn redeem_authorized_message<R: tauri::Runtime>(
         None::<fn(authorization_connector_diagnostics::ConnectorPhaseSnapshot)>,
         None::<fn(authorization_response_diagnostics::ResponseReadSnapshot)>,
         None::<fn(authorization_response_diagnostics::ResponseReadTiming)>,
+        false,
     )
     .await
 }
 
+/// `include_read_timing_connector` adds the connector snapshot to a read
+/// timing only when the connector and timing observers also exist.
 #[allow(clippy::too_many_arguments)]
 async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H, I, J>(
     authorization_id: &str,
@@ -1129,6 +1132,7 @@ async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H, I, J>(
     connector_phase_observer: Option<H>,
     response_read_observer: Option<I>,
     response_read_timing_observer: Option<J>,
+    include_read_timing_connector: bool,
 ) -> Result<serde_json::Value, String>
 where
     F: FnOnce(
@@ -1178,6 +1182,11 @@ where
     let request = client
         .post(endpoint)
         .json(&serde_json::json!({ "id": authorization_id, "digest": digest }));
+    // The same connector record, read again only at the response headers.
+    let read_timing_connector = connector_phase
+        .as_ref()
+        .filter(|_| include_read_timing_connector)
+        .map(authorization_connector_diagnostics::ConnectorPhaseReport::probe);
     let send_failure_observer = authorization_connector_diagnostics::with_connector_phase(
         send_failure_observer,
         connector_phase,
@@ -1188,12 +1197,14 @@ where
         &response_rejection_observer,
         &response_read_observer,
         response_read_timing_observer,
-    );
+    )
+    .map(|clock| clock.with_connector(read_timing_connector));
     let response =
         authorization_send_diagnostics::observed_send(request, origin_class, send_failure_observer)
             .await
             .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
-    // Only a successful send has headers to time.
+    // Only a successful send has headers to time; the connector record is
+    // copied here, before the body is read or any observer runs.
     let read_timing = read_clock.map(ResponseReadClock::headers_received);
     authorization_response_diagnostics::observed_approval(
         response,
@@ -1435,6 +1446,9 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // so the read snapshot's shape is frozen. Used only beside the response
     // and read channels.
     on_authorization_response_read_timing_diagnostic: Option<serde_json::Value>,
+    // Only literal `true`, beside the connector and read timing channels, adds
+    // the connector snapshot at the response headers to that read timing.
+    include_response_read_timing_connector: Option<serde_json::Value>,
     // Only literal `true` opts in to the fence origin beside the exact fence
     // rejection; anything else keeps every rejection an exact string.
     include_stream_fence_origin: Option<serde_json::Value>,
@@ -1509,6 +1523,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             ))?,
             on_authorization_response_read_timing_diagnostic: CommandArg::from_command(item(
                 "onAuthorizationResponseReadTimingDiagnostic",
+            ))?,
+            include_response_read_timing_connector: CommandArg::from_command(item(
+                "includeResponseReadTimingConnector",
             ))?,
             include_stream_fence_origin: CommandArg::from_command(item(
                 "includeStreamFenceOrigin",
@@ -1676,6 +1693,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_authorization_connector_diagnostic,
         on_authorization_response_read_diagnostic,
         on_authorization_response_read_timing_diagnostic,
+        include_response_read_timing_connector,
         include_stream_fence_origin,
         include_stream_fence_cleanup,
         include_stream_fence_windows_taskkill,
@@ -1772,6 +1790,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         connector_phase_observer,
         response_read_observer,
         response_read_timing_observer,
+        // Malformed or absent values keep the v1 timing shape.
+        include_response_read_timing_connector == Some(serde_json::Value::Bool(true)),
     )
     .await?;
     authorized_operation_type(&message, &["command"])?;
@@ -2853,8 +2873,8 @@ mod tests {
                 ),
             ] {
                 // The origin opt-in alone, and beside the cleanup, Windows
-                // taskkill, root report, owner phase and stop request source
-                // opt-ins and all eight current channels.
+                // taskkill, root report, owner phase, stop request source and
+                // read timing connector opt-ins and all nine current channels.
                 for with_others in [false, true] {
                     for fence in &optional {
                         let mut body = serde_json::json!({
@@ -2872,6 +2892,7 @@ mod tests {
                                 "onAuthorizationIoDiagnostic",
                                 "onAuthorizationConnectorDiagnostic",
                                 "onAuthorizationResponseReadDiagnostic",
+                                "onAuthorizationResponseReadTimingDiagnostic",
                             ]
                             .into_iter()
                             .enumerate()
@@ -2887,6 +2908,7 @@ mod tests {
                                 body["includeStreamFenceWindowsTaskkillRootReport"] = value.clone();
                                 body["includeStreamFenceCancelWaitOwnerPhase"] = value.clone();
                                 body["includeStreamFenceStopRequestSource"] = value.clone();
+                                body["includeResponseReadTimingConnector"] = value.clone();
                             }
                         }
                         let response = get_ipc_response(

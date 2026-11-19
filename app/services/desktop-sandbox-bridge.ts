@@ -1723,6 +1723,8 @@ export class DesktopSandboxBridge {
     let connectorChannel: object | undefined;
     let responseReadChannel: object | undefined;
     let responseReadTimingChannel: object | undefined;
+    // Set before the invocation, once both channels it joins exist.
+    let readTimingConnectorOffered = false;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1857,14 +1859,22 @@ export class DesktopSandboxBridge {
               if (!responseReadTimingOpen) return;
               responseReadTimingOpen = false;
               if (receiptFenced()) return;
-              responseReadTiming =
-                parseNativeAuthorizationResponseReadTiming(value);
+              // A connector member is accepted only when this call offered it.
+              responseReadTiming = parseNativeAuthorizationResponseReadTiming(
+                value,
+                readTimingConnectorOffered,
+              );
             };
             responseReadTimingChannel = channel;
           } catch {
             responseReadTimingChannel = undefined;
           }
         }
+        // The native app reads the connector record only beside its own
+        // connector channel, and reports it only within the read timing.
+        readTimingConnectorOffered = Boolean(
+          responseReadTimingChannel && connectorChannel,
+        );
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1925,6 +1935,10 @@ export class DesktopSandboxBridge {
               ...(responseReadTimingChannel && {
                 onAuthorizationResponseReadTimingDiagnostic:
                   responseReadTimingChannel,
+              }),
+              // An older native app ignores it and keeps the v1 timing.
+              ...(readTimingConnectorOffered && {
+                includeResponseReadTimingConnector: true,
               }),
               // Outside the signed message; never sent to a legacy command.
               // The cleanup opt-in is only ever offered with the origin one,
