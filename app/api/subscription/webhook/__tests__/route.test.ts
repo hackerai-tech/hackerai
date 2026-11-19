@@ -35,6 +35,7 @@ const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockFreezeRateLimitBucketForDelinquency = jest.fn();
 const mockResetRateLimitBucketAfterPayment = jest.fn();
+const mockRestoreAnnualAllowanceSchedule = jest.fn();
 const mockStashTierChangeBucketState = jest.fn();
 const mockApplyProratedTierChangeBucket = jest.fn();
 const mockClearOrgRemovedUsage = jest.fn();
@@ -142,6 +143,7 @@ jest.mock("@/convex/_generated/api", () => ({
 jest.mock("@/lib/rate-limit", () => ({
   freezeRateLimitBucketForDelinquency: mockFreezeRateLimitBucketForDelinquency,
   resetRateLimitBucketAfterPayment: mockResetRateLimitBucketAfterPayment,
+  restoreAnnualAllowanceSchedule: mockRestoreAnnualAllowanceSchedule,
   stashTierChangeBucketState: mockStashTierChangeBucketState,
   applyProratedTierChangeBucket: mockApplyProratedTierChangeBucket,
   clearOrgRemovedUsage: mockClearOrgRemovedUsage,
@@ -524,6 +526,7 @@ describe("POST /api/subscription/webhook", () => {
       outcome: "applied",
       recoveredFromPaymentFailure: false,
     } as never);
+    mockRestoreAnnualAllowanceSchedule.mockResolvedValue("applied" as never);
     mockStashTierChangeBucketState.mockResolvedValue({} as never);
     mockApplyProratedTierChangeBucket.mockResolvedValue(null as never);
     mockGetReferralRewardConfig.mockReturnValue({
@@ -2559,6 +2562,428 @@ describe("POST /api/subscription/webhook", () => {
       mockApplyProratedTierChangeBucket.mock.calls[0][2].proratedRatio,
     ).toBeCloseTo(13 / 30, 4);
     expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+  });
+
+  describe("monthly-to-annual allowance transition", () => {
+    const day = 24 * 60 * 60;
+    const switchedAt = 1_790_000_000;
+    const monthlyPeriodEnd = switchedAt + 12 * day;
+    const annualPeriodEnd = switchedAt + 353 * day;
+    const proMonthly = {
+      id: "price_pro_monthly",
+      lookup_key: "pro-monthly-plan",
+      recurring: { interval: "month", interval_count: 1 },
+    };
+    const proYearly = {
+      id: "price_pro_yearly",
+      lookup_key: "pro-yearly-plan",
+      recurring: { interval: "year", interval_count: 1 },
+    };
+    const line = (
+      priceId: string,
+      amount: number,
+      proration: boolean,
+      periodEnd: number,
+      creditedInvoiceId?: string,
+    ) => ({
+      ...subscriptionInvoiceLine("sub_annual", priceId, amount, 1),
+      parent: {
+        type: "subscription_item_details",
+        subscription_item_details: {
+          subscription: "sub_annual",
+          proration,
+          ...(creditedInvoiceId && {
+            proration_details: {
+              credited_items: {
+                invoice: creditedInvoiceId,
+                invoice_line_items: ["il_credited"],
+              },
+            },
+          }),
+        },
+      },
+      period: { start: switchedAt, end: periodEnd },
+    });
+    const subscriptionItem = (price: typeof proYearly, id = "si_annual") => ({
+      id,
+      quantity: 1,
+      current_period_start: annualPeriodEnd - 365 * day,
+      current_period_end: annualPeriodEnd,
+      price: {
+        ...price,
+        product: { id: "prod_pro", name: "HackerAI Pro", metadata: {} },
+      },
+    });
+    const liveSubscription = (price: typeof proYearly) => ({
+      id: "sub_annual",
+      customer: "cus_annual",
+      status: "active",
+      latest_invoice: "in_annual_switch",
+      metadata: {},
+      items: { data: [subscriptionItem(price)] },
+    });
+
+    /**
+     * Stripe's paid invoice for switching the same item from month to year.
+     * Defaults mirror the observed customer invoice: both lines are
+     * prorations from the same date, and the annual charge ends exactly at the
+     * current annual item's period end.
+     */
+    function mockAnnualSwitchPaid({
+      replacedPrice = proMonthly,
+      annualPrice = proYearly,
+      currentPrice = annualPrice,
+      annualProration = true,
+      annualLineEnd = annualPeriodEnd,
+      creditedInvoiceId,
+      extraLines = [],
+    }: {
+      replacedPrice?: typeof proMonthly;
+      annualPrice?: typeof proYearly;
+      currentPrice?: typeof proYearly;
+      annualProration?: boolean;
+      annualLineEnd?: number;
+      creditedInvoiceId?: string;
+      extraLines?: ReturnType<typeof line>[];
+    } = {}) {
+      const invoice = {
+        id: "in_annual_switch",
+        customer: "cus_annual",
+        status: "paid",
+        amount_paid: 25_900,
+        currency: "usd",
+        billing_reason: "subscription_update",
+        parent: { subscription_details: { subscription: "sub_annual" } },
+        status_transitions: { paid_at: switchedAt },
+        lines: {
+          data: [
+            line(
+              replacedPrice.id,
+              -2_900,
+              true,
+              monthlyPeriodEnd,
+              creditedInvoiceId,
+            ),
+            line(annualPrice.id, 28_800, annualProration, annualLineEnd),
+            ...extraLines,
+          ],
+          has_more: false,
+        },
+      };
+      mockConstructEvent.mockReturnValue({
+        id: "evt_annual_switch",
+        type: "invoice.paid",
+        created: switchedAt,
+        data: { object: invoice },
+      });
+      mockRetrieveCustomer.mockResolvedValue({
+        deleted: false,
+        id: "cus_annual",
+        metadata: { workOSOrganizationId: "org_annual" },
+      } as never);
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest
+          .fn()
+          .mockResolvedValue([{ userId: "user_annual" }]),
+      } as never);
+      mockRetrieveSubscription.mockResolvedValue(
+        liveSubscription(currentPrice) as never,
+      );
+      const prices = [replacedPrice, annualPrice];
+      mockRetrievePrice.mockImplementation((async (id: string) => {
+        const price = prices.find((candidate) => candidate.id === id);
+        if (!price) throw new Error(`Unexpected Price ${id}`);
+        return price;
+      }) as never);
+      return invoice;
+    }
+
+    /**
+     * The applied same-item month-to-year update, delivered after
+     * invoice.paid. Live Stripe state and the latest invoice are re-read.
+     */
+    function mockAppliedSubscriptionUpdate({
+      invoice,
+      live = liveSubscription(proYearly),
+      previousItemId = "si_annual",
+    }: {
+      invoice: unknown;
+      live?: unknown;
+      previousItemId?: string;
+    }) {
+      mockConstructEvent.mockReturnValue({
+        id: "evt_annual_subscription_updated",
+        type: "customer.subscription.updated",
+        created: switchedAt + 1,
+        data: {
+          object: liveSubscription(proYearly),
+          previous_attributes: {
+            items: { data: [subscriptionItem(proMonthly, previousItemId)] },
+          },
+        },
+      });
+      mockRetrieveSubscription.mockResolvedValue(live as never);
+      mockRetrieveInvoice.mockResolvedValue(invoice as never);
+    }
+
+    afterEach(() => {
+      mockRetrievePrice.mockReset();
+    });
+
+    it.each([
+      { shape: "the observed dual-proration invoice", annualProration: true },
+      { shape: "a full annual period invoice", annualProration: false },
+    ])(
+      "moves the monthly bucket onto the annual schedule for $shape",
+      async ({ annualProration }) => {
+        mockAnnualSwitchPaid({ annualProration });
+
+        const { POST } = await import("../route");
+        expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+        expect(mockApplyProratedTierChangeBucket).not.toHaveBeenCalled();
+        expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledTimes(1);
+        expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledWith(
+          "user_annual",
+          "pro",
+          {
+            subscriptionId: "sub_annual",
+            invoiceId: "in_annual_switch",
+            occurredAtMs: switchedAt * 1000,
+            replacedPeriodEndMs: monthlyPeriodEnd * 1000,
+          },
+        );
+        // Annual term length must never mint a fresh allocation.
+        expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+        expect(mockPostHogWarn).not.toHaveBeenCalledWith(
+          "billing_annual_allowance_schedule_unchanged",
+          expect.anything(),
+        );
+      },
+    );
+
+    it.each([
+      {
+        name: "a monthly Pro to annual Pro+ tier change",
+        options: {
+          annualPrice: {
+            ...proYearly,
+            id: "price_pro_plus_yearly",
+            lookup_key: "pro-plus-yearly-plan",
+          },
+        },
+      },
+      {
+        name: "an annual-to-annual Price replacement",
+        options: {
+          replacedPrice: {
+            ...proYearly,
+            id: "price_pro_yearly_legacy",
+          },
+        },
+      },
+      {
+        name: "a subscription whose current Price is still monthly",
+        options: { currentPrice: proMonthly },
+      },
+      {
+        name: "an invoice with an extra prorated charge",
+        options: {
+          extraLines: [line(proYearly.id, 500, true, annualPeriodEnd)],
+        },
+      },
+      {
+        name: "an annual charge ending before the current item's period end",
+        options: { annualLineEnd: annualPeriodEnd - day },
+      },
+    ])("leaves the bucket unchanged for $name", async ({ options }) => {
+      mockAnnualSwitchPaid(options);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockRestoreAnnualAllowanceSchedule).not.toHaveBeenCalled();
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    });
+
+    it("lets Stripe retry before paid side effects when the replaced Price lookup fails", async () => {
+      // A full-period line selects the current annual Price, so only the
+      // replaced monthly Price needs a lookup.
+      mockAnnualSwitchPaid({ annualProration: false });
+      mockRetrievePrice.mockImplementation((async () => {
+        throw new Error("Stripe unavailable");
+      }) as never);
+
+      const { POST } = await import("../route");
+      await expect(POST(makeWebhookRequest())).rejects.toThrow(
+        "Stripe unavailable",
+      );
+
+      expect(mockRetrievePrice).toHaveBeenCalledWith(proMonthly.id);
+      expect(mockRestoreAnnualAllowanceSchedule).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "unitEconomics.recordRevenueEvent",
+        expect.anything(),
+      );
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "extraUsage.checkAndMarkWebhook",
+        expect.not.objectContaining({ checkOnly: true }),
+      );
+    });
+
+    it("flags an unchanged bucket for review when Redis holds newer evidence", async () => {
+      mockAnnualSwitchPaid();
+      mockRestoreAnnualAllowanceSchedule.mockResolvedValue("stale" as never);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockPostHogWarn).toHaveBeenCalledWith(
+        "billing_annual_allowance_schedule_unchanged",
+        expect.objectContaining({
+          stripe_invoice_id: "in_annual_switch",
+          replaced_period_end_ms: monthlyPeriodEnd * 1000,
+          outcomes: ["stale"],
+        }),
+      );
+    });
+
+    it("passes the signed credited invoice and annual allowance to the restore", async () => {
+      mockAnnualSwitchPaid({ creditedInvoiceId: "in_tier_change" });
+      mockRestoreAnnualAllowanceSchedule.mockResolvedValue("recorded" as never);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledWith(
+        "user_annual",
+        "pro",
+        expect.objectContaining({
+          invoiceId: "in_annual_switch",
+          replacedPeriodEndMs: monthlyPeriodEnd * 1000,
+          creditedInvoiceId: "in_tier_change",
+          // The standard annual Price uses the tier allowance.
+          cycleAllocationPoints: undefined,
+        }),
+      );
+      // Recording a marker on a missing or timer-only bucket is not a defect.
+      expect(mockPostHogWarn).not.toHaveBeenCalledWith(
+        "billing_annual_allowance_schedule_unchanged",
+        expect.anything(),
+      );
+      expect(mockPostHogInfo).toHaveBeenCalledWith(
+        "billing_annual_allowance_schedule_restored",
+        expect.objectContaining({ outcomes: ["recorded"] }),
+      );
+    });
+
+    it("restores the schedule when the applied subscription update follows invoice.paid", async () => {
+      // invoice.paid is processed while Stripe still exposes the monthly item.
+      const invoice = mockAnnualSwitchPaid({ currentPrice: proMonthly });
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockRestoreAnnualAllowanceSchedule).not.toHaveBeenCalled();
+      // That event found no tier stash; only the follow-up update is checked.
+      mockApplyProratedTierChangeBucket.mockClear();
+
+      mockAppliedSubscriptionUpdate({ invoice });
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockRetrieveSubscription).toHaveBeenLastCalledWith(
+        "sub_annual",
+        expect.anything(),
+      );
+      expect(mockRetrieveInvoice).toHaveBeenCalledWith("in_annual_switch");
+      expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledTimes(1);
+      expect(mockRestoreAnnualAllowanceSchedule).toHaveBeenCalledWith(
+        "user_annual",
+        "pro",
+        {
+          subscriptionId: "sub_annual",
+          invoiceId: "in_annual_switch",
+          occurredAtMs: switchedAt * 1000,
+          replacedPeriodEndMs: monthlyPeriodEnd * 1000,
+        },
+      );
+      // Same-tier switches never touch the stash-based tier migration.
+      expect(mockStashTierChangeBucketState).not.toHaveBeenCalled();
+      expect(mockApplyProratedTierChangeBucket).not.toHaveBeenCalled();
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: "the latest invoice is unpaid",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice: { ...invoice, status: "open" },
+        }),
+      },
+      {
+        name: "the latest invoice belongs to another subscription",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice: {
+            ...invoice,
+            parent: { subscription_details: { subscription: "sub_other" } },
+          },
+        }),
+      },
+      {
+        name: "live Stripe state still exposes the monthly item",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice,
+          live: liveSubscription(proMonthly),
+        }),
+      },
+      {
+        name: "the live subscription has a pending update",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice,
+          live: {
+            ...liveSubscription(proYearly),
+            pending_update: { expires_at: switchedAt + day },
+          },
+        }),
+      },
+      {
+        name: "the live subscription is past due",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice,
+          live: { ...liveSubscription(proYearly), status: "past_due" },
+        }),
+      },
+      {
+        name: "the event replaced a different subscription item",
+        setup: (invoice: Record<string, unknown>) => ({
+          invoice,
+          previousItemId: "si_other",
+        }),
+      },
+    ])(
+      "leaves the bucket unchanged on subscription update when $name",
+      async ({ setup }) => {
+        const invoice = mockAnnualSwitchPaid();
+        mockAppliedSubscriptionUpdate(setup(invoice));
+
+        const { POST } = await import("../route");
+        expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+        expect(mockRestoreAnnualAllowanceSchedule).not.toHaveBeenCalled();
+        expect(mockStashTierChangeBucketState).not.toHaveBeenCalled();
+      },
+    );
+
+    it("leaves the bucket unchanged on subscription update without a resolved user", async () => {
+      const invoice = mockAnnualSwitchPaid();
+      mockAppliedSubscriptionUpdate({ invoice });
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest.fn().mockResolvedValue([]),
+      } as never);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(mockRestoreAnnualAllowanceSchedule).not.toHaveBeenCalled();
+    });
   });
 
   it("deactivates referral paid eligibility for deleted HackerAI subscriptions resolved from product fallback", async () => {

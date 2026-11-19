@@ -5,8 +5,10 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 /** Shared by request billing and the Convex usage display. Rejecting a debit
  * must not spend points. Monthly paid cycles and delinquency holds never
  * refill on a timer; only a paid invoice can replace them. Legacy/annual
- * buckets retain their existing 30-day allowance schedule. Final settlement
- * may explicitly consume up to the remaining balance and receive the exact debit. */
+ * buckets retain their existing 30-day allowance schedule. A scheduled
+ * nextCycleAllocation (e.g. after a monthly-to-annual change) replaces the
+ * allocation only at such a timer refill. Final settlement may explicitly
+ * consume up to the remaining balance and receive the exact debit. */
 export const PAID_BUCKET_LIMIT_SCRIPT = `
 local key = KEYS[1]
 local tierMax = tonumber(ARGV[1])
@@ -29,6 +31,12 @@ if not held then
     if now >= periodEnd then tokens = 0 end
   elseif now >= reset then
     refilledAt = refilledAt + math.floor((now - refilledAt) / interval) * interval
+    local nextAllocation = tonumber(redis.call("HGET", key, "nextCycleAllocation"))
+    if nextAllocation then
+      allocation = math.max(0, math.min(tierMax, nextAllocation))
+      redis.call("HSET", key, "cycleAllocation", allocation)
+      redis.call("HDEL", key, "nextCycleAllocation")
+    end
     tokens = allocation
     -- A new allowance cycle has no debt from prior tier transitions.
     redis.call("HSET", key, "tierChangeConsumedOffset", 0)
