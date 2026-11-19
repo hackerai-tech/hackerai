@@ -70,17 +70,50 @@ jest.mock("@/lib/api/agent-approval-session", () => ({
   closeAgentApprovalSession: mockCloseAgentApprovalSession,
 }));
 
-jest.mock("@/lib/api/agent-route-errors", () => ({
-  handleAgentRouteError: jest.fn(() => {
-    throw new Error("unexpected route error");
-  }),
-}));
+jest.mock("@/lib/api/agent-route-errors", () => {
+  // Typed errors keep the real handler, its HTTP response and 503 receipt;
+  // any other error reaching the handler is unexpected in these cases.
+  const web = jest.requireActual<{ Response: typeof Response }>(
+    "next/dist/compiled/@edge-runtime/primitives/fetch",
+  );
+  globalThis.Response ??= web.Response;
+  const actual = jest.requireActual<typeof import("../agent-route-errors")>(
+    "../agent-route-errors",
+  );
+  const { ChatSDKError } =
+    jest.requireActual<typeof import("../../errors")>("../../errors");
+  return {
+    handleAgentRouteError: jest.fn(
+      (input: Parameters<typeof actual.handleAgentRouteError>[0]) => {
+        if (input.error instanceof ChatSDKError)
+          return actual.handleAgentRouteError(input);
+        throw new Error("unexpected route error");
+      },
+    ),
+  };
+});
 
 const requestFor = (chatId: string, runId: string) =>
   ({
     headers: { get: () => null },
     json: async () => ({ chatId, runId }),
   }) as any;
+
+// Places the owned Trigger read just before a request-level warning threshold:
+// the read itself is bounded, so only an earlier slow stage can reach it.
+const authenticateAfter = (delayMs: number) =>
+  mockGetUserIDAndPro.mockImplementationOnce(
+    () =>
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ userId: "user-1" }), delayMs),
+      ),
+  );
+
+const warningsFor = (event: string) =>
+  jest
+    .mocked(console.warn)
+    .mock.calls.map(([line]) => JSON.parse(line as string))
+    .filter((line) => line.event === event);
 
 describe("agent status route", () => {
   beforeEach(() => {
@@ -417,15 +450,20 @@ describe("agent status route", () => {
       { id: "chat-1" },
       expect.objectContaining({ signal: expect.anything() }),
     );
-    // Exactly one read of the owned active run, with only the body callback.
+    // Exactly one read of the owned active run, with the body callback and a
+    // single SDK attempt: the browser's next poll is the retry.
     expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
     const [readRunId, readOptions] = mockRunsRetrieve.mock.calls[0] as [
       unknown,
       Record<string, unknown>,
     ];
     expect(readRunId).toBe("run-1");
-    expect(Object.keys(readOptions)).toEqual(["onResponseBody"]);
+    expect(Object.keys(readOptions).sort()).toEqual([
+      "onResponseBody",
+      "retry",
+    ]);
     expect(readOptions.onResponseBody).toEqual(expect.any(Function));
+    expect(readOptions.retry).toEqual({ maxAttempts: 1 });
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 
@@ -530,7 +568,7 @@ describe("agent status timeout diagnostics", () => {
   });
 
   it.each([false, true])(
-    "distinguishes the validated API-body boundary during a slow owned read (observed=%s)",
+    "distinguishes the validated API-body boundary in the slow and deadline warnings of an owned read (observed=%s)",
     async (observed) => {
       const { createAgentStatusPost } = await import("../agent-status-route");
       let finish!: (value: any) => void;
@@ -544,26 +582,34 @@ describe("agent status timeout diagnostics", () => {
           finish = resolve;
         });
       }) as never);
+      authenticateAfter(9_000);
       const request = requestFor("chat-1", "run-1");
+      // Untrusted headers and unrelated body content must never enter telemetry.
+      request.headers.get = () => "PRIVATE_HEADER";
       request.json = async () => ({
         chatId: "chat-1",
         runId: "run-1",
         prompt: "PRIVATE_REQUEST",
       });
+      let settled = false;
       const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
         request,
-      );
+      ).finally(() => {
+        settled = true;
+      });
       await jest.advanceTimersByTimeAsync(10_000);
-      const first = JSON.parse(
-        jest.mocked(console.warn).mock.calls[0][0] as string,
-      );
+      const [first] = warningsFor("agent_status_slow_request");
       expect(first).toMatchObject({
         stage: "retrieve_trigger_run",
+        chat_id: "chat-1",
+        trigger_run_id: "run-1",
+        elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
         trigger_run_read_diagnostic_version: 1,
         trigger_run_read_api_body: "not_observed",
         trigger_run_read_api_body_elapsed_ms: null,
       });
-      await jest.advanceTimersByTimeAsync(5_000);
+      await jest.advanceTimersByTimeAsync(1_000);
       if (observed && options?.onResponseBody)
         Reflect.apply(options.onResponseBody, undefined, [
           new Proxy(
@@ -575,34 +621,136 @@ describe("agent status timeout diagnostics", () => {
             },
           ),
         ]);
-      await jest.advanceTimersByTimeAsync(5_000);
-      expect(console.warn).toHaveBeenCalledTimes(2);
-      const second = JSON.parse(
-        jest.mocked(console.warn).mock.calls[1][0] as string,
-      );
-      expect(second).toMatchObject({
+      // The read began at 9s, so its 5s deadline answers at 14s.
+      await jest.advanceTimersByTimeAsync(2_999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      const response = await pending;
+      expect(response.status).toBe(503);
+      const [deadline] = warningsFor("agent_status_trigger_read_deadline");
+      expect(deadline).toMatchObject({
         stage: "retrieve_trigger_run",
+        chat_id: "chat-1",
+        trigger_run_id: "run-1",
+        elapsed_ms: 14_000,
+        trigger_run_read_deadline_ms: 5_000,
         trigger_run_read_diagnostic_version: 1,
         trigger_run_read_api_body: observed
           ? "validated_body_observed"
           : "not_observed",
-        trigger_run_read_api_body_elapsed_ms: observed ? 15_000 : null,
+        trigger_run_read_api_body_elapsed_ms: observed ? 2_000 : null,
         trigger_run_read_api_body_elapsed_capped: false,
       });
-      expect(JSON.stringify([first, second])).not.toContain("PRIVATE");
+      expect(JSON.stringify(jest.mocked(console.warn).mock.calls)).not.toMatch(
+        /PRIVATE/,
+      );
+      // Settlement after the response is ignored and adds no warnings.
       finish({
-        status: "EXECUTING",
+        status: "COMPLETED",
         metadata: { chatId: "chat-1", userId: "user-1" },
       });
-      const response = await pending;
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        status: "EXECUTING",
-        terminal: false,
-      });
-      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
       await jest.advanceTimersByTimeAsync(60_000);
-      expect(console.warn).toHaveBeenCalledTimes(2);
+      expect(warningsFor("agent_status_slow_request")).toHaveLength(1);
+      expect(warningsFor("agent_status_trigger_read_deadline")).toHaveLength(1);
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["resolves", "rejects"])(
+    "answers a hanging owned read with a retryable 503 at 5s and ignores a lookup that later %s",
+    async (late) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      const { handleAgentRouteError } = await import("../agent-route-errors");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      let resolveLate!: (value: unknown) => void;
+      let rejectLate!: (error: unknown) => void;
+      mockRunsRetrieve.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolveLate = resolve;
+          rejectLate = reject;
+        }),
+      );
+      let settled = false;
+      const pending = createAgentStatusPost({ endpoint: "/api/agent-long" })(
+        requestFor("chat-1", "run-1"),
+      ).finally(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      const response = await pending;
+
+      // The response body is asserted with real scheduling in
+      // agent-crash-status-polling; here the typed error is the contract.
+      expect(response.status).toBe(503);
+      expect(handleAgentRouteError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.objectContaining({
+            type: "offline",
+            surface: "api",
+            statusCode: 503,
+          }),
+          endpoint: "/api/agent-long",
+          action: "status",
+          context: expect.objectContaining({
+            stage: "retrieve_trigger_run",
+            chatId: "chat-1",
+            runId: "run-1",
+          }),
+        }),
+      );
+      expect(warningsFor("agent_route_service_unavailable")).toEqual([
+        expect.objectContaining({
+          endpoint: "/api/agent-long",
+          action: "status",
+          stage: "retrieve_trigger_run",
+          error_code: "offline:api",
+          http_status: 503,
+        }),
+      ]);
+      expect(warningsFor("agent_status_trigger_read_deadline")).toEqual([
+        expect.objectContaining({
+          endpoint: "/api/agent-long",
+          trigger_run_read_api_body: "not_observed",
+          trigger_run_read_deadline_ms: 5_000,
+        }),
+      ]);
+      // A timeout is not evidence the run ended or is missing: the active
+      // association, approval session and run are left exactly as they were.
+      expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+      expect(mockGetChatById).toHaveBeenCalledTimes(1);
+
+      const unhandled = jest.fn();
+      process.on("unhandledRejection", unhandled);
+      try {
+        if (late === "resolves")
+          resolveLate({
+            status: "COMPLETED",
+            metadata: { chatId: "chat-1", userId: "user-1" },
+          });
+        else rejectLate(new Error("late synthetic provider failure"));
+        await new Promise((resolve) =>
+          jest
+            .requireActual<typeof import("node:timers")>("node:timers")
+            .setImmediate(resolve),
+        );
+        await jest.advanceTimersByTimeAsync(60_000);
+      } finally {
+        process.off("unhandledRejection", unhandled);
+      }
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(handleAgentRouteError).toHaveBeenCalledTimes(1);
+      expect(mockGetChatById).toHaveBeenCalledTimes(1);
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+      expect(mockRecover).not.toHaveBeenCalled();
+      expect(warningsFor("agent_status_slow_request")).toHaveLength(0);
     },
   );
 
@@ -620,11 +768,12 @@ describe("agent status timeout diagnostics", () => {
       else process.env.TRIGGER_API_URL = originalApiURL;
     });
 
-    it("reports the latest matching dispatch phase and a saturated count in both warnings", async () => {
+    it("reports the latest matching dispatch phase and a saturated count in the slow and deadline warnings", async () => {
       registerServiceTransportObserver();
       const { createAgentStatusPost } = await import("../agent-status-route");
       const dispatches: object[] = [];
       let finish!: (value: unknown) => void;
+      authenticateAfter(8_000);
       mockRunsRetrieve.mockImplementationOnce(() => {
         // The SDK dispatches inside the caller's async context; these are the
         // env/default target's exact Undici request messages.
@@ -657,11 +806,18 @@ describe("agent status timeout diagnostics", () => {
       );
       await jest.advanceTimersByTimeAsync(10_000);
       channel("undici:request:headers").publish({ request: dispatches[19] });
-      await jest.advanceTimersByTimeAsync(10_000);
+      // The read began at 8s; its deadline snapshot is taken at 13s.
+      await jest.advanceTimersByTimeAsync(3_000);
+      const response = await pending;
+      expect(response.status).toBe(503);
       const logs = jest
         .mocked(console.warn)
-        .mock.calls.map(([line]) => JSON.parse(line as string));
-      expect(logs).toHaveLength(2);
+        .mock.calls.map(([line]) => JSON.parse(line as string))
+        .filter((log) => "trigger_run_read_api_body" in log);
+      expect(logs.map((log) => log.event)).toEqual([
+        "agent_status_slow_request",
+        "agent_status_trigger_read_deadline",
+      ]);
       expect(
         logs.map((log) => [
           log.stage,
@@ -692,21 +848,24 @@ describe("agent status timeout diagnostics", () => {
       expect(JSON.stringify(logs)).not.toMatch(
         /api\.trigger\.dev|api\/v3|socket_(connection|prior|previous)|node_/,
       );
+      // finish() released the observer: a late response changes nothing.
       finish({
         status: "EXECUTING",
         metadata: { chatId: "chat-1", userId: "user-1" },
       });
-      const response = await pending;
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({
-        status: "EXECUTING",
-        terminal: false,
-      });
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(
+        jest
+          .mocked(console.warn)
+          .mock.calls.filter(([line]) =>
+            String(line).includes("trigger_run_read_api_body"),
+          ),
+      ).toHaveLength(2);
       expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
     });
 
-    it.each(["resolved", "missing", "failed"])(
-      "keeps the %s read outcome and both body warnings when the observer throws",
+    it.each(["resolved", "missing", "failed", "timed out"])(
+      "keeps the %s read outcome and its body warnings when the observer throws",
       async (outcome) => {
         const fail = () => {
           throw new Error("PRIVATE_OBSERVER");
@@ -738,14 +897,31 @@ describe("agent status timeout diagnostics", () => {
               };
             }),
         );
+        authenticateAfter(9_000);
         const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
           requestFor("chat-1", "run-1"),
         );
-        await jest.advanceTimersByTimeAsync(20_000);
+        await jest.advanceTimersByTimeAsync(10_000);
+        if (outcome === "timed out") await jest.advanceTimersByTimeAsync(4_000);
+        else settle();
+        if (outcome === "failed")
+          await expect(pending).rejects.toThrow("unexpected route error");
+        else
+          expect((await pending).status).toBe(
+            { resolved: 200, missing: 404, "timed out": 503 }[outcome],
+          );
         const logs = jest
           .mocked(console.warn)
-          .mock.calls.map(([line]) => JSON.parse(line as string));
-        expect(logs).toHaveLength(2);
+          .mock.calls.map(([line]) => JSON.parse(line as string))
+          .filter((log) => "trigger_run_read_api_body" in log);
+        expect(logs.map((log) => log.event)).toEqual(
+          outcome === "timed out"
+            ? [
+                "agent_status_slow_request",
+                "agent_status_trigger_read_deadline",
+              ]
+            : ["agent_status_slow_request"],
+        );
         for (const log of logs)
           expect(log).toMatchObject({
             stage: "retrieve_trigger_run",
@@ -755,16 +931,10 @@ describe("agent status timeout diagnostics", () => {
             trigger_run_read_transport_request_count: 0,
           });
         expect(JSON.stringify(logs)).not.toContain("PRIVATE");
-        settle();
-        if (outcome === "failed")
-          await expect(pending).rejects.toThrow("unexpected route error");
-        else
-          expect((await pending).status).toBe(
-            outcome === "resolved" ? 200 : 404,
-          );
         expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
+        const warnings = jest.mocked(console.warn).mock.calls.length;
         await jest.advanceTimersByTimeAsync(60_000);
-        expect(console.warn).toHaveBeenCalledTimes(2);
+        expect(console.warn).toHaveBeenCalledTimes(warnings);
       },
     );
   });
@@ -841,11 +1011,12 @@ describe("agent status timeout diagnostics", () => {
     expect((await response).status).toBe(200);
   });
 
+  // The owned Trigger read is bounded before the first threshold; its slow
+  // and deadline warnings are covered by the owned-read tests above.
   it.each([
     "read_request",
     "authenticate",
     "get_chat",
-    "retrieve_trigger_run",
     "clear_terminal_trigger_run",
     "clear_missing_trigger_run",
   ])(
@@ -873,18 +1044,12 @@ describe("agent status timeout diagnostics", () => {
           user_id: "user-1",
           active_trigger_run_id: "run-1",
         },
-        retrieve_trigger_run: {
-          status: "COMPLETED",
-          metadata: { chatId: "chat-1", userId: "user-1" },
-        },
         clear_terminal_trigger_run: undefined,
       };
       if (stage === "read_request") request.json = () => pending;
       if (stage === "authenticate")
         mockGetUserIDAndPro.mockReturnValueOnce(pending);
       if (stage === "get_chat") mockGetChatById.mockReturnValueOnce(pending);
-      if (stage === "retrieve_trigger_run")
-        mockRunsRetrieve.mockReturnValueOnce(pending);
       if (stage === "clear_missing_trigger_run") {
         const { ApiError } = await import("@trigger.dev/sdk");
         const missing = Object.assign(new Error("missing"), { status: 404 });
@@ -913,7 +1078,6 @@ describe("agent status timeout diagnostics", () => {
         timer_lateness_ms: 0,
       });
       if (
-        stage === "retrieve_trigger_run" ||
         stage === "clear_terminal_trigger_run" ||
         stage === "clear_missing_trigger_run"
       ) {
@@ -992,6 +1156,7 @@ describe("agent status timeout diagnostics", () => {
         finish = resolve;
       }),
     );
+    authenticateAfter(9_000);
     const response = createAgentStatusPost({ endpoint: "/api/agent" })(
       requestFor("chat-1", "run-1"),
     );
@@ -1001,7 +1166,8 @@ describe("agent status timeout diagnostics", () => {
       status: "EXECUTING",
       metadata: { chatId: "chat-1", userId: "user-1" },
     });
-    await response;
+    expect((await response).status).toBe(200);
+    // Both the remaining warning and the read deadline are cleared.
     expect(jest.getTimerCount()).toBe(0);
     await jest.advanceTimersByTimeAsync(60_000);
     expect(console.warn).toHaveBeenCalledTimes(1);
@@ -1027,8 +1193,10 @@ describe("agent status timeout diagnostics", () => {
         requestFor("chat-1", "run-1"),
       );
       await jest.advanceTimersByTimeAsync(10_000);
+      // Enter the bounded read 4s before the second threshold.
+      await jest.advanceTimersByTimeAsync(6_000);
       authenticate({ userId: "user-1" });
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(4_000);
       const logs = jest
         .mocked(console.warn)
         .mock.calls.map(([line]) => JSON.parse(line as string));

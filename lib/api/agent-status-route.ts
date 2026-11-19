@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ApiError, runs } from "@trigger.dev/sdk";
 
 import { getUserIDAndPro, type AuthSessionPhase } from "@/lib/auth/get-user-id";
+import { ChatSDKError } from "@/lib/errors";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
@@ -23,6 +24,9 @@ type TriggerRunStatus = {
   tags?: string[];
 };
 
+// The SDK v4.7.7 read cannot be aborted, so this only stops waiting for it.
+// One attempt per poll: the browser's next poll is the retry.
+const TRIGGER_RUN_READ_DEADLINE_MS = 5_000;
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
 const TERMINAL_RUN_STATUSES = new Set([
   "COMPLETED",
@@ -195,11 +199,55 @@ export const createAgentStatusPost =
       triggerRunRead = read;
       const readRunId = runId;
       let run: TriggerRunStatus;
+      let readDeadline: ReturnType<typeof setTimeout> | undefined;
       try {
-        run = (await read.run(() =>
-          runs.retrieve(readRunId, read.requestOptions),
-        )) as TriggerRunStatus;
+        // A late result or rejection is consumed by the race and ignored. The
+        // typed 503 is nonterminal: the run, its association and approval
+        // session stay untouched, and the browser polls this run again.
+        run = (await Promise.race([
+          read.run(() =>
+            runs.retrieve(readRunId, {
+              ...read.requestOptions,
+              retry: { maxAttempts: 1 },
+            }),
+          ),
+          new Promise<never>((_, reject) => {
+            readDeadline = setTimeout(() => {
+              reject(
+                new ChatSDKError(
+                  "offline:api",
+                  "Agent run status is temporarily unavailable. Retry the status check shortly.",
+                ),
+              );
+              try {
+                console.warn(
+                  JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    level: "warn",
+                    event: "agent_status_trigger_read_deadline",
+                    service: "hackerai-web",
+                    environment:
+                      process.env.VERCEL_ENV ??
+                      process.env.NODE_ENV ??
+                      "unknown",
+                    endpoint,
+                    user_id: userId,
+                    chat_id: ownedRun?.chatId,
+                    trigger_run_id: ownedRun?.runId,
+                    stage,
+                    ...read.snapshot(),
+                    elapsed_ms: Date.now() - requestStartedAt,
+                    trigger_run_read_deadline_ms: TRIGGER_RUN_READ_DEADLINE_MS,
+                  }),
+                );
+              } catch {
+                // Optional diagnostics must not replace the deadline response.
+              }
+            }, TRIGGER_RUN_READ_DEADLINE_MS);
+          }),
+        ])) as TriggerRunStatus;
       } finally {
+        clearTimeout(readDeadline);
         // Keep the last state for warnings; ignore events after settlement.
         read.finish();
       }
