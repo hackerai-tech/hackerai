@@ -296,6 +296,12 @@ it("passes the installed SDK contract over real local HTTP and Node fetch", () =
         "schema_rejection",
         "http_403",
         "non_undici_fetch_not_inferred",
+        // The status route's signal cancels the real request (before headers
+        // and during a held body) without affecting a default read, and the
+        // next read succeeds with its own signal and no payload download.
+        "aborted_before_headers",
+        "aborted_held_body",
+        "next_read_independent_signal",
       ],
       node_version: expect.stringMatching(/^\d+\.\d+\.\d+$/),
       trigger_sdk_version: expect.stringMatching(/^\d+\.\d+\.\d+$/),

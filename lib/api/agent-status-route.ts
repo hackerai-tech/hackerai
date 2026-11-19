@@ -24,8 +24,8 @@ type TriggerRunStatus = {
   tags?: string[];
 };
 
-// The SDK v4.7.7 read cannot be aborted, so this only stops waiting for it.
-// One attempt per poll: the browser's next poll is the retry.
+// One attempt per poll, aborted at the deadline (the pinned core patch passes
+// this read's signal to its fetch): the browser's next poll is the retry.
 const TRIGGER_RUN_READ_DEADLINE_MS = 5_000;
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
 const TERMINAL_RUN_STATUSES = new Set([
@@ -200,19 +200,25 @@ export const createAgentStatusPost =
       const readRunId = runId;
       let run: TriggerRunStatus;
       let readDeadline: ReturnType<typeof setTimeout> | undefined;
+      const readAbort = new AbortController();
+      const readOptions = {
+        ...read.requestOptions,
+        retry: { maxAttempts: 1 },
+        signal: readAbort.signal,
+        // Status, tags and metadata are all this route reads. Skip the SDK's
+        // presigned payload/output downloads, which this signal cannot stop.
+        prepareData: <T>(data: T) => data,
+      };
       try {
         // A late result or rejection is consumed by the race and ignored. The
         // typed 503 is nonterminal: the run, its association and approval
         // session stay untouched, and the browser polls this run again.
         run = (await Promise.race([
-          read.run(() =>
-            runs.retrieve(readRunId, {
-              ...read.requestOptions,
-              retry: { maxAttempts: 1 },
-            }),
-          ),
+          read.run(() => runs.retrieve(readRunId, readOptions)),
           new Promise<never>((_, reject) => {
             readDeadline = setTimeout(() => {
+              // Settle with the typed 503 before aborting, so the aborted
+              // fetch's own rejection cannot replace the retry semantics.
               reject(
                 new ChatSDKError(
                   "offline:api",
@@ -243,6 +249,9 @@ export const createAgentStatusPost =
               } catch {
                 // Optional diagnostics must not replace the deadline response.
               }
+              // After the snapshot: stop this expired request, including a
+              // response body still being held.
+              readAbort.abort();
             }, TRIGGER_RUN_READ_DEADLINE_MS);
           }),
         ])) as TriggerRunStatus;

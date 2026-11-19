@@ -450,20 +450,33 @@ describe("agent status route", () => {
       { id: "chat-1" },
       expect.objectContaining({ signal: expect.anything() }),
     );
-    // Exactly one read of the owned active run, with the body callback and a
-    // single SDK attempt: the browser's next poll is the retry.
+    // Exactly one read of the owned active run, with the body callback, a
+    // single SDK attempt (the browser's next poll is the retry), its own
+    // cancellation signal and no payload/output hydration.
     expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
     const [readRunId, readOptions] = mockRunsRetrieve.mock.calls[0] as [
       unknown,
-      Record<string, unknown>,
+      {
+        onResponseBody?: unknown;
+        retry?: unknown;
+        signal?: AbortSignal;
+        prepareData?: (data: unknown, response: unknown) => unknown;
+      },
     ];
     expect(readRunId).toBe("run-1");
     expect(Object.keys(readOptions).sort()).toEqual([
       "onResponseBody",
+      "prepareData",
       "retry",
+      "signal",
     ]);
     expect(readOptions.onResponseBody).toEqual(expect.any(Function));
     expect(readOptions.retry).toEqual({ maxAttempts: 1 });
+    const data = { payloadPresignedUrl: "https://fixture.invalid/payload" };
+    expect(readOptions.prepareData?.(data, undefined)).toBe(data);
+    // A completed read is never aborted.
+    expect(readOptions.signal).toBeInstanceOf(AbortSignal);
+    expect(readOptions.signal?.aborted).toBe(false);
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 
@@ -656,25 +669,48 @@ describe("agent status timeout diagnostics", () => {
     },
   );
 
-  it.each(["resolves", "rejects"])(
-    "answers a hanging owned read with a retryable 503 at 5s and ignores a lookup that later %s",
+  it.each(["rejects as soon as it is aborted", "resolves later anyway"])(
+    "answers a hanging owned read with a retryable 503 at 5s, aborts it, and ignores a lookup that %s",
     async (late) => {
       const { createAgentStatusPost } = await import("../agent-status-route");
       const { handleAgentRouteError } = await import("../agent-route-errors");
+      const { ApiError } = await import("@trigger.dev/sdk");
       mockGetChatById.mockResolvedValue({
         id: "chat-1",
         user_id: "user-1",
         active_trigger_run_id: "run-1",
         active_agent_approval_session_id: "approval-1",
       } as never);
+      let signal!: AbortSignal;
       let resolveLate!: (value: unknown) => void;
-      let rejectLate!: (error: unknown) => void;
-      mockRunsRetrieve.mockReturnValueOnce(
-        new Promise((resolve, reject) => {
+      mockRunsRetrieve.mockImplementationOnce(((
+        _runId: string,
+        options: { signal: AbortSignal },
+      ) => {
+        signal = options.signal;
+        return new Promise((resolve, reject) => {
           resolveLate = resolve;
-          rejectLate = reject;
-        }),
-      );
+          // Like the SDK's real fetch: an aborted request rejects at once with
+          // its own (here: missing-looking) error. It must not replace the 503.
+          if (late === "rejects as soon as it is aborted")
+            signal.addEventListener("abort", () =>
+              reject(
+                Object.assign(
+                  new ApiError(
+                    undefined as never,
+                    undefined as never,
+                    undefined as never,
+                    undefined as never,
+                  ),
+                  { status: 404 },
+                ),
+              ),
+            );
+        });
+      }) as never);
+      // Attached before the deadline: the abort-driven rejection happens then.
+      const unhandled = jest.fn();
+      process.on("unhandledRejection", unhandled);
       let settled = false;
       const pending = createAgentStatusPost({ endpoint: "/api/agent-long" })(
         requestFor("chat-1", "run-1"),
@@ -683,8 +719,10 @@ describe("agent status timeout diagnostics", () => {
       });
       await jest.advanceTimersByTimeAsync(4_999);
       expect(settled).toBe(false);
+      expect(signal.aborted).toBe(false);
       await jest.advanceTimersByTimeAsync(1);
       const response = await pending;
+      expect(signal.aborted).toBe(true);
 
       // The response body is asserted with real scheduling in
       // agent-crash-status-polling; here the typed error is the contract.
@@ -726,15 +764,11 @@ describe("agent status timeout diagnostics", () => {
       expect(mockRunsRetrieve).toHaveBeenCalledTimes(1);
       expect(mockGetChatById).toHaveBeenCalledTimes(1);
 
-      const unhandled = jest.fn();
-      process.on("unhandledRejection", unhandled);
       try {
-        if (late === "resolves")
-          resolveLate({
-            status: "COMPLETED",
-            metadata: { chatId: "chat-1", userId: "user-1" },
-          });
-        else rejectLate(new Error("late synthetic provider failure"));
+        resolveLate({
+          status: "COMPLETED",
+          metadata: { chatId: "chat-1", userId: "user-1" },
+        });
         await new Promise((resolve) =>
           jest
             .requireActual<typeof import("node:timers")>("node:timers")

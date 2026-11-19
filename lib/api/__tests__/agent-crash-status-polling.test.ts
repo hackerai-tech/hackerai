@@ -166,19 +166,31 @@ it("keeps the real streaming client on its run through a hanging status read and
   const unhandled = jest.fn();
   process.on("unhandledRejection", unhandled);
   try {
-    // The first lookup never answers in time; the next poll's lookup does.
-    let rejectLateLookup!: (error: Error) => void;
+    // The first lookup is held until aborted, like a real stalled fetch; the
+    // next poll's lookup answers.
+    const lookupSignals: AbortSignal[] = [];
     mockRunsRetrieve
       .mockImplementationOnce(
-        () =>
-          new Promise((_, reject) => {
-            rejectLateLookup = reject;
-          }),
+        (_runId: string, { signal }: { signal: AbortSignal }) => {
+          lookupSignals.push(signal);
+          return new Promise((_, reject) =>
+            signal.addEventListener(
+              "abort",
+              () => reject(new Error("synthetic aborted lookup")),
+              { once: true },
+            ),
+          );
+        },
       )
-      .mockResolvedValueOnce({
-        status: "EXECUTING",
-        metadata: { chatId: "chat", userId: "owner" },
-      });
+      .mockImplementationOnce(
+        async (_runId: string, { signal }: { signal: AbortSignal }) => {
+          lookupSignals.push(signal);
+          return {
+            status: "EXECUTING",
+            metadata: { chatId: "chat", userId: "owner" },
+          };
+        },
+      );
     let releaseReply!: () => void;
     const replyReady = new Promise<void>((resolve) => {
       releaseReply = resolve;
@@ -230,10 +242,13 @@ it("keeps the real streaming client on its run through a hanging status read and
     await jest.advanceTimersByTimeAsync(4_999);
     expect(statusRequests).toHaveLength(1);
     expect(statusResponses).toEqual([]);
+    expect(lookupSignals[0].aborted).toBe(false);
     await jest.advanceTimersByTimeAsync(1);
     expect(statusResponses).toEqual([
       { status: 503, body: expect.objectContaining({ code: "offline:api" }) },
     ]);
+    // The expired lookup itself is stopped, not just abandoned.
+    expect(lookupSignals[0].aborted).toBe(true);
     // A nonterminal 503 leaves the client attached to the same run; its next
     // scheduled poll sees the run is still executing.
     await jest.advanceTimersByTimeAsync(5_000);
@@ -241,6 +256,10 @@ it("keeps the real streaming client on its run through a hanging status read and
       expect.objectContaining({ status: 503 }),
       { status: 200, body: { status: "EXECUTING", terminal: false } },
     ]);
+    // That poll's lookup has its own signal, untouched by the earlier abort.
+    expect(lookupSignals).toHaveLength(2);
+    expect(lookupSignals[1]).not.toBe(lookupSignals[0]);
+    expect(lookupSignals[1].aborted).toBe(false);
     expect(statusRequests).toEqual([
       { chatId: "chat", runId: "run" },
       { chatId: "chat", runId: "run" },
@@ -269,8 +288,7 @@ it("keeps the real streaming client on its run through a hanging status read and
       ["run", expect.objectContaining({ retry: { maxAttempts: 1 } })],
     ]);
 
-    // The abandoned lookup settling later is handled and changes nothing.
-    rejectLateLookup(new Error("late synthetic provider failure"));
+    // The aborted lookup's own rejection was handled and changed nothing.
     await new Promise((resolve) =>
       jest
         .requireActual<typeof import("node:timers")>("node:timers")
