@@ -77,6 +77,7 @@ import {
   type DesktopStreamFenceCancelWaitOwnerPhase,
   type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
+  type DesktopStreamFenceStopRequestSource,
   type NativeStreamFenceWindowsTaskkill,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -1532,7 +1533,8 @@ export class DesktopSandboxBridge {
     // joins only that rejection as this invocation's first terminal. An
     // `owner_stop_requested` origin's cleanup failure rides the same rejection
     // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
-    // receipt, and a `cancel_wait_timeout` origin's owner phase.
+    // receipt, its `requested_pid_not_found` report's first stop request
+    // source, and a `cancel_wait_timeout` origin's owner phase.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's
@@ -1540,9 +1542,10 @@ export class DesktopSandboxBridge {
     const streamFenceOffered =
       Boolean(receiptOwner) &&
       !usesPublishedLegacyDesktopCommands(nativeAppVersion);
-    // The owner phase is scoped to Windows Desktop: no other platform offers
-    // it, so no other platform ever reports it.
-    const streamFenceOwnerPhaseOffered =
+    // The owner phase and the stop request source are scoped to Windows
+    // Desktop: no other platform offers either, so no other platform ever
+    // reports them.
+    const streamFenceWindowsOffered =
       streamFenceOffered && this.nativePlatform === "windows";
     const receiptFenced = () =>
       this.isStoppingOrStopped ||
@@ -1563,6 +1566,8 @@ export class DesktopSandboxBridge {
     let streamFenceWindowsTaskkill: NativeStreamFenceWindowsTaskkill | null =
       null;
     let streamFenceOwnerPhase: DesktopStreamFenceCancelWaitOwnerPhase | null =
+      null;
+    let streamFenceStopRequestSource: DesktopStreamFenceStopRequestSource | null =
       null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
@@ -1627,6 +1632,7 @@ export class DesktopSandboxBridge {
                 streamFenceCleanupFailure,
                 streamFenceWindowsTaskkill,
                 streamFenceOwnerPhase,
+                streamFenceStopRequestSource,
               )
             : null;
         onSettled(
@@ -1891,9 +1897,12 @@ export class DesktopSandboxBridge {
                 includeStreamFenceWindowsTaskkillRootReport: true,
               }),
               // Only with the origin opt-in, and only to Windows Desktop. An
-              // older native app ignores it and keeps the origin alone.
-              ...(streamFenceOwnerPhaseOffered && {
+              // older native app ignores it and keeps the origin alone. The
+              // stop request source opt-in, offered only beside all four
+              // above, likewise leaves an older app's v2 receipt unchanged.
+              ...(streamFenceWindowsOffered && {
                 includeStreamFenceCancelWaitOwnerPhase: true,
+                includeStreamFenceStopRequestSource: true,
               }),
             },
             invocationTrace,
@@ -1916,9 +1925,12 @@ export class DesktopSandboxBridge {
           streamFenceOrigin = fenceRejection?.origin ?? null;
           streamFenceCleanupFailure = fenceRejection?.cleanupFailure ?? null;
           streamFenceWindowsTaskkill = fenceRejection?.windowsTaskkill ?? null;
-          // Never kept unless this invocation offered it.
-          streamFenceOwnerPhase = streamFenceOwnerPhaseOffered
+          // Never kept unless this invocation offered them.
+          streamFenceOwnerPhase = streamFenceWindowsOffered
             ? (fenceRejection?.cancelWaitOwnerPhase ?? null)
+            : null;
+          streamFenceStopRequestSource = streamFenceWindowsOffered
+            ? (fenceRejection?.stopRequestSource ?? null)
             : null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.

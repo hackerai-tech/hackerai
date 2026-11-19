@@ -2043,6 +2043,492 @@ describe("stream fence origin", () => {
             ).toEqual(kept);
           expect(gets).toBe(0);
         });
+
+        describe("first stop request source", () => {
+          const sources = [
+            "cancel_ipc",
+            "document_invalidation",
+            "application_exit",
+          ];
+          const withSource = (
+            streamFenceStopRequestSource: unknown,
+            receipt: unknown = notFound,
+            cleanup?: unknown,
+          ) => ({
+            ...withTaskkill(receipt, cleanup),
+            streamFenceStopRequestSource,
+          });
+          const notFoundParsed = {
+            ...treeParsed,
+            windowsTaskkill: {
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "requested_pid_not_found",
+            },
+          };
+          const reported = {
+            ...stopGroup,
+            ...cleanupGroup,
+            ...code(128),
+            ...rootPair("requested_pid_not_found"),
+          };
+          const sourcePair = (source: string) => ({
+            desktop_stream_fence_stop_request_source_version: 1,
+            desktop_stream_fence_stop_request_source: source,
+          });
+          const build = (
+            stopRequestSource: unknown,
+            windowsTaskkill: Record<string, unknown> = notFound,
+            origin = "owner_stop_requested",
+            cleanupFailure: unknown = "tree_unconfirmed",
+          ) =>
+            desktopStreamFenceDiagnostic(
+              authorizedUnknown,
+              stopUnconfirmed,
+              origin,
+              cleanupFailure,
+              windowsTaskkill as never,
+              null,
+              stopRequestSource,
+            );
+          const read = (source: unknown) =>
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            );
+
+          it.each(sources)(
+            "joins the %s source beside its not-found report and keeps every earlier group",
+            (source) => {
+              const parsed = parseNativeStreamFenceRejection(
+                withSource({ version: 1, source }),
+              );
+              expect(parsed).toEqual({
+                ...notFoundParsed,
+                stopRequestSource: source,
+              });
+              expect(Object.isFrozen(parsed)).toBe(true);
+              const diagnostic = desktopStreamFenceDiagnostic(
+                authorizedUnknown,
+                stopUnconfirmed,
+                parsed!.origin,
+                parsed!.cleanupFailure,
+                parsed!.windowsTaskkill,
+                parsed!.cancelWaitOwnerPhase,
+                parsed!.stopRequestSource,
+              );
+              expect(diagnostic).toEqual({
+                ...reported,
+                ...sourcePair(source),
+              });
+              expect(Object.isFrozen(diagnostic)).toBe(true);
+              // The property-bag reader keeps exactly the same groups.
+              expect(
+                read({ ...diagnostic, message: "PRIVATE", pid: 4242 }),
+              ).toEqual(diagnostic);
+            },
+          );
+
+          it("keeps an older native app's v2 receipt without the sibling", () => {
+            const parsed = parseNativeStreamFenceRejection(
+              withTaskkill(notFound),
+            );
+            expect(parsed).toEqual(notFoundParsed);
+            expect(parsed).not.toHaveProperty("stopRequestSource");
+            expect(build(parsed!.stopRequestSource)).toEqual(reported);
+          });
+
+          it.each<[string, () => unknown]>([
+            [
+              "a human action",
+              () => ({ version: 1, source: "user_clicked_stop" }),
+            ],
+            ["an unlisted source", () => ({ version: 1, source: "PRIVATE" })],
+            ["a numeric source", () => ({ version: 1, source: 0 })],
+            [
+              "an unsupported version",
+              () => ({ version: 2, source: "cancel_ipc" }),
+            ],
+            [
+              "a string version",
+              () => ({ version: "1", source: "cancel_ipc" }),
+            ],
+            ["a missing version", () => ({ source: "cancel_ipc" })],
+            ["a missing source", () => ({ version: 1 })],
+            [
+              "an extra PID",
+              () => ({ version: 1, source: "cancel_ipc", pid: 4242 }),
+            ],
+            [
+              "an extra time",
+              () => ({ version: 1, source: "cancel_ipc", elapsedMs: 15_000 }),
+            ],
+            [
+              "an extra path",
+              () => ({ version: 1, source: "cancel_ipc", cwd: "C:\\PRIVATE" }),
+            ],
+            [
+              "an inherited receipt",
+              () => Object.create({ version: 1, source: "cancel_ipc" }),
+            ],
+            [
+              "a null-prototype receipt",
+              () =>
+                Object.assign(Object.create(null), {
+                  version: 1,
+                  source: "cancel_ipc",
+                }),
+            ],
+            ["a bare string", () => "cancel_ipc"],
+            ["null", () => null],
+            [
+              "a source accessor",
+              () =>
+                Object.defineProperty({ version: 1 }, "source", {
+                  enumerable: true,
+                  get: fail,
+                }),
+            ],
+            [
+              "a throwing proxy",
+              () =>
+                new Proxy(
+                  { version: 1, source: "cancel_ipc" },
+                  { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+                ),
+            ],
+          ])(
+            "keeps the exact message and every earlier receipt beside %s",
+            (_case, receipt) => {
+              expect(
+                parseNativeStreamFenceRejection(withSource(receipt())),
+              ).toEqual(notFoundParsed);
+            },
+          );
+
+          it("never reads the sibling beside anything but a parsed not-found report", () => {
+            const tree = { version: 1, failure: "tree_unconfirmed" };
+            // [case, native rejection without the sibling, parsed]
+            const cases: [string, Record<string, unknown>, unknown][] = [
+              [
+                "an unclassified report",
+                withTaskkill({ ...notFound, rootReport: "unclassified" }),
+                {
+                  ...treeParsed,
+                  windowsTaskkill: {
+                    outcome: "nonzero_exit",
+                    exitCode: 128,
+                    rootReport: "unclassified",
+                  },
+                },
+              ],
+              [
+                "a v1 exit 128",
+                withTaskkill({
+                  version: 1,
+                  outcome: "nonzero_exit",
+                  exitCode: 128,
+                }),
+                {
+                  ...treeParsed,
+                  windowsTaskkill: { outcome: "nonzero_exit", exitCode: 128 },
+                },
+              ],
+              [
+                "a not-found report beside exit 255",
+                withTaskkill({ ...notFound, exitCode: 255 }),
+                treeParsed,
+              ],
+              [
+                "a not-found report beside another cleanup failure",
+                withTaskkill(notFound, {
+                  version: 1,
+                  failure: "leader_wait_timed_out",
+                }),
+                {
+                  message: STOP_UNCONFIRMED,
+                  origin: "owner_stop_requested",
+                  cleanupFailure: "leader_wait_timed_out",
+                },
+              ],
+              [
+                "the stop origin alone",
+                { message: STOP_UNCONFIRMED, streamFence: stop },
+                {
+                  message: STOP_UNCONFIRMED,
+                  origin: "owner_stop_requested",
+                },
+              ],
+              [
+                "the timeout origin",
+                {
+                  message: STOP_UNCONFIRMED,
+                  streamFence: { version: 1, origin: "cancel_wait_timeout" },
+                },
+                { message: STOP_UNCONFIRMED, origin: "cancel_wait_timeout" },
+              ],
+              [
+                "a malformed origin",
+                {
+                  ...withTaskkill(notFound),
+                  streamFence: { version: 2, origin: "owner_stop_requested" },
+                },
+                { message: STOP_UNCONFIRMED, origin: null },
+              ],
+              [
+                "a cleanup sibling under another origin",
+                {
+                  ...withTaskkill(notFound, tree),
+                  streamFence: { version: 1, origin: "owner_timeout" },
+                },
+                { message: STOP_UNCONFIRMED, origin: "owner_timeout" },
+              ],
+            ];
+            for (const [label, native, parsed] of cases) {
+              let reads = 0;
+              const receipt = new Proxy(
+                { version: 1, source: "cancel_ipc" },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    reads++;
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                  ownKeys(target) {
+                    reads++;
+                    return Reflect.ownKeys(target);
+                  },
+                },
+              );
+              expect([
+                label,
+                parseNativeStreamFenceRejection({
+                  ...native,
+                  streamFenceStopRequestSource: receipt,
+                }),
+              ]).toEqual([label, parsed]);
+              expect([label, reads]).toEqual([label, 0]);
+            }
+            // Beside a phase sibling, which a timeout never sends with a
+            // report, each is read only beside its own origin.
+            expect(
+              parseNativeStreamFenceRejection({
+                ...withSource({ version: 1, source: "document_invalidation" }),
+                streamFenceCancelWaitOwnerPhase: {
+                  version: 1,
+                  phase: "owner_streaming",
+                },
+              }),
+            ).toEqual({
+              ...notFoundParsed,
+              stopRequestSource: "document_invalidation",
+            });
+            // Any further key still rejects the whole shape.
+            expect(
+              parseNativeStreamFenceRejection({
+                ...withSource({ version: 1, source: "cancel_ipc" }),
+                pid: 4242,
+              }),
+            ).toBeNull();
+          });
+
+          it("joins a listed source only to a validated not-found report", () => {
+            for (const source of ["PRIVATE", "", 1, undefined, null, {}])
+              expect(build(source)).toEqual(reported);
+            // Another report, code, outcome or leg never carries a source.
+            expect(
+              build("cancel_ipc", { ...notFound, rootReport: "unclassified" }),
+            ).toEqual({
+              ...stopGroup,
+              ...cleanupGroup,
+              ...code(128),
+              ...rootPair("unclassified"),
+            });
+            expect(build("cancel_ipc", { ...notFound, exitCode: 255 })).toEqual(
+              { ...stopGroup, ...cleanupGroup, ...code(255) },
+            );
+            expect(
+              build("cancel_ipc", { outcome: "nonzero_exit", exitCode: 128 }),
+            ).toEqual({ ...stopGroup, ...cleanupGroup, ...code(128) });
+            expect(
+              build("cancel_ipc", notFound, undefined, "leader_wait_failed"),
+            ).toEqual({
+              ...stopGroup,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+            });
+            for (const origin of origins.filter(
+              (value) => value !== "owner_stop_requested",
+            ))
+              expect(build("cancel_ipc", notFound, origin)).not.toHaveProperty(
+                "desktop_stream_fence_stop_request_source",
+              );
+            // Only the exact authorized fence rejection admits any group.
+            expect(
+              desktopStreamFenceDiagnostic(
+                authorizedUnknown,
+                null,
+                "owner_stop_requested",
+                "tree_unconfirmed",
+                notFound as never,
+                null,
+                "cancel_ipc",
+              ),
+            ).toBeNull();
+          });
+
+          it("reads the pair only beside a validated not-found report on an acknowledged terminal", () => {
+            const pair = sourcePair("cancel_ipc");
+            for (const [base, acknowledged, kept] of [
+              [reported, false, { ...stopGroup }],
+              [reported, undefined, { ...stopGroup }],
+              [
+                { ...reported, ...rootPair("unclassified") },
+                true,
+                { ...reported, ...rootPair("unclassified") },
+              ],
+              [
+                { ...stopGroup, ...cleanupGroup, ...code(128) },
+                true,
+                { ...stopGroup, ...cleanupGroup, ...code(128) },
+              ],
+              [
+                { ...reported, ...code(255) },
+                true,
+                { ...stopGroup, ...cleanupGroup, ...code(255) },
+              ],
+              [
+                {
+                  ...reported,
+                  desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+                },
+                true,
+                {
+                  ...stopGroup,
+                  desktop_stream_fence_cleanup_version: 1,
+                  desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+                },
+              ],
+            ] as const) {
+              let reads = 0;
+              const counted = new Proxy(
+                { ...base, ...pair },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    if (typeof key === "string" && key in pair) reads++;
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                },
+              );
+              // Called directly: a missing flag is the reader's own default.
+              expect(
+                readDesktopStreamFenceDiagnostic(
+                  counted,
+                  authorizedUnknown,
+                  stopUnconfirmed,
+                  acknowledged,
+                ),
+              ).toEqual(kept);
+              expect(reads).toBe(0);
+            }
+          });
+
+          it("joins the source only to the eligible fence snapshot it validated", () => {
+            const pair = sourcePair("application_exit");
+            // Reading the source can mutate the bag's previously read fields.
+            const changing = (
+              change?: (target: Record<string, unknown>) => void,
+            ) =>
+              new Proxy<Record<string, unknown>>(
+                { ...reported, ...pair },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    if (key === "desktop_stream_fence_stop_request_source")
+                      change?.(target);
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                },
+              );
+            // A stable snapshot keeps the source.
+            expect(read(changing())).toEqual({ ...reported, ...pair });
+            for (const change of [
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_windows_taskkill_root_report =
+                  "unclassified";
+              },
+              (target: Record<string, unknown>) => {
+                delete target.desktop_stream_fence_windows_taskkill_root_report_version;
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_stop_request_source_version = 2;
+                target.desktop_stream_fence_stop_request_source = "cancel_ipc";
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_origin = "owner_timeout";
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_cleanup_failure =
+                  "leader_wait_failed";
+              },
+            ])
+              // A mixed snapshot keeps only the earlier validated report.
+              expect(read(changing(change))).toEqual(reported);
+          });
+
+          it("drops only an invalid or hostile source pair", () => {
+            let gets = 0;
+            const pair = sourcePair("cancel_ipc");
+            const accessor = { ...reported } as Record<string, unknown>;
+            for (const key of Object.keys(pair))
+              Object.defineProperty(accessor, key, {
+                enumerable: true,
+                get() {
+                  gets++;
+                  return pair[key as keyof typeof pair];
+                },
+              });
+            for (const source of [
+              { ...reported },
+              { ...reported, ...sourcePair("PRIVATE") },
+              { ...reported, ...sourcePair("user_clicked_stop") },
+              {
+                ...reported,
+                ...pair,
+                desktop_stream_fence_stop_request_source_version: 2,
+              },
+              {
+                ...reported,
+                ...pair,
+                desktop_stream_fence_stop_request_source_version: "1",
+              },
+              {
+                ...reported,
+                desktop_stream_fence_stop_request_source: "cancel_ipc",
+              },
+              {
+                ...reported,
+                desktop_stream_fence_stop_request_source_version: 1,
+              },
+              Object.assign(Object.create(pair), reported),
+              accessor,
+              new Proxy(
+                { ...reported, ...pair },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    if (typeof key === "string" && key in pair) fail();
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                },
+              ),
+            ])
+              expect(read(source)).toEqual(reported);
+            expect(gets).toBe(0);
+          });
+        });
       });
     });
   });
