@@ -11696,13 +11696,28 @@ describe("native authorization send receipt", () => {
               properties: { ...properties },
             });
 
-          it.each(["cancel_ipc", "document_invalidation", "application_exit"])(
-            "offers Windows Desktop the opt-in and joins the %s source to its not-found report",
-            async (source) => {
+          // Taskkill's same not-found exit code, with an unclassified report.
+          const unclassified128 = { ...notFound, rootReport: "unclassified" };
+          const unclassifiedGroup = {
+            ...notFoundGroup,
+            desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+          };
+
+          it.each(
+            ["cancel_ipc", "document_invalidation", "application_exit"].flatMap(
+              (source) => [
+                [source, "requested_pid_not_found", notFound, notFoundGroup],
+                [source, "unclassified", unclassified128, unclassifiedGroup],
+              ],
+            ),
+          )(
+            "offers Windows Desktop the opt-in and joins the %s source to its exit 128 %s report",
+            async (source, _class, receipt, group) => {
               const cwd = "C:\\Users\\PRIVATE-CWD\\project";
               const { calls, replies } = await run(
-                () => Promise.reject(withSource({ version: 1, source })),
-                { version: "0.0.87", nativeOs: "windows", command: { cwd } },
+                () =>
+                  Promise.reject(withSource({ version: 1, source }, receipt)),
+                { version: "0.0.88", nativeOs: "windows", command: { cwd } },
               );
               expect(calls).toHaveLength(1);
               expect(calls[0]).toMatchObject({
@@ -11728,7 +11743,7 @@ describe("native authorization send receipt", () => {
                 },
               ]);
               const expected = {
-                ...notFoundGroup,
+                ...(group as Record<string, unknown>),
                 desktop_stream_fence_stop_request_source_version: 1,
                 desktop_stream_fence_stop_request_source: source,
               };
@@ -11805,9 +11820,9 @@ describe("native authorization send receipt", () => {
               enumerable: true,
               get: fail,
             });
-          const unclassifiedGroup = {
-            ...notFoundGroup,
-            desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+          const unclassified255Group = {
+            ...unclassifiedGroup,
+            desktop_stream_fence_windows_taskkill_exit_code: 255,
           };
           const v1Group = Object.fromEntries(
             Object.entries(notFoundGroup).filter(
@@ -11858,13 +11873,29 @@ describe("native authorization send receipt", () => {
               notFoundGroup,
             ],
             [
-              "a source beside an unclassified report",
+              "an older native app's unclassified exit 128 receipt alone",
+              () => withTaskkill(unclassified128),
+              unclassifiedGroup,
+            ],
+            [
+              "an unlisted source beside an unclassified exit 128 report",
+              () =>
+                withSource({ version: 1, source: "PRIVATE" }, unclassified128),
+              unclassifiedGroup,
+            ],
+            [
+              "a source getter beside an unclassified exit 128 report",
+              () => withSource(sourceGetter(), unclassified128),
+              unclassifiedGroup,
+            ],
+            [
+              "a source beside an unclassified exit 255 report",
               () =>
                 withSource(
                   { version: 1, source: "cancel_ipc" },
-                  { ...notFound, rootReport: "unclassified" },
+                  { ...unclassified128, exitCode: 255 },
                 ),
-              unclassifiedGroup,
+              unclassified255Group,
             ],
             [
               "a source beside a v1 receipt",

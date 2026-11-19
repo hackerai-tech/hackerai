@@ -2072,6 +2072,34 @@ describe("stream fence origin", () => {
             ...code(128),
             ...rootPair("requested_pid_not_found"),
           };
+          // Taskkill's same not-found exit code, with an unclassified report.
+          const unclassified128 = { ...notFound, rootReport: "unclassified" };
+          const unclassifiedReported = {
+            ...reported,
+            ...rootPair("unclassified"),
+          };
+          const unclassified255 = { ...unclassified128, exitCode: 255 };
+          const unclassified255Reported = {
+            ...stopGroup,
+            ...cleanupGroup,
+            ...code(255),
+            ...rootPair("unclassified"),
+          };
+          // [root report, native v2 receipt, parsed receipt, analytics groups]
+          const qualifying = [
+            [
+              "requested_pid_not_found",
+              notFound,
+              notFoundParsed.windowsTaskkill,
+              reported,
+            ],
+            [
+              "unclassified",
+              unclassified128,
+              { ...notFoundParsed.windowsTaskkill, rootReport: "unclassified" },
+              unclassifiedReported,
+            ],
+          ] as const;
           const sourcePair = (source: string) => ({
             desktop_stream_fence_stop_request_source_version: 1,
             desktop_stream_fence_stop_request_source: source,
@@ -2099,14 +2127,19 @@ describe("stream fence origin", () => {
               true,
             );
 
-          it.each(sources)(
-            "joins the %s source beside its not-found report and keeps every earlier group",
-            (source) => {
+          it.each(
+            sources.flatMap((source) =>
+              qualifying.map((row) => [source, ...row] as const),
+            ),
+          )(
+            "joins the %s source beside its exit 128 %s report and keeps every earlier group",
+            (source, _report, receipt, windowsTaskkill, groups) => {
               const parsed = parseNativeStreamFenceRejection(
-                withSource({ version: 1, source }),
+                withSource({ version: 1, source }, receipt),
               );
               expect(parsed).toEqual({
-                ...notFoundParsed,
+                ...treeParsed,
+                windowsTaskkill,
                 stopRequestSource: source,
               });
               expect(Object.isFrozen(parsed)).toBe(true);
@@ -2120,7 +2153,7 @@ describe("stream fence origin", () => {
                 parsed!.stopRequestSource,
               );
               expect(diagnostic).toEqual({
-                ...reported,
+                ...groups,
                 ...sourcePair(source),
               });
               expect(Object.isFrozen(diagnostic)).toBe(true);
@@ -2131,14 +2164,19 @@ describe("stream fence origin", () => {
             },
           );
 
-          it("keeps an older native app's v2 receipt without the sibling", () => {
-            const parsed = parseNativeStreamFenceRejection(
-              withTaskkill(notFound),
-            );
-            expect(parsed).toEqual(notFoundParsed);
-            expect(parsed).not.toHaveProperty("stopRequestSource");
-            expect(build(parsed!.stopRequestSource)).toEqual(reported);
-          });
+          it.each(qualifying)(
+            "keeps an older native app's v2 %s receipt without the sibling",
+            (_report, receipt, windowsTaskkill, groups) => {
+              const parsed = parseNativeStreamFenceRejection(
+                withTaskkill(receipt),
+              );
+              expect(parsed).toEqual({ ...treeParsed, windowsTaskkill });
+              expect(parsed).not.toHaveProperty("stopRequestSource");
+              expect(
+                build(parsed!.stopRequestSource, receipt as never),
+              ).toEqual(groups);
+            },
+          );
 
           it.each<[string, () => unknown]>([
             [
@@ -2202,24 +2240,27 @@ describe("stream fence origin", () => {
           ])(
             "keeps the exact message and every earlier receipt beside %s",
             (_case, receipt) => {
-              expect(
-                parseNativeStreamFenceRejection(withSource(receipt())),
-              ).toEqual(notFoundParsed);
+              for (const [, taskkill, windowsTaskkill] of qualifying)
+                expect(
+                  parseNativeStreamFenceRejection(
+                    withSource(receipt(), taskkill),
+                  ),
+                ).toEqual({ ...treeParsed, windowsTaskkill });
             },
           );
 
-          it("never reads the sibling beside anything but a parsed not-found report", () => {
+          it("never reads the sibling beside anything but a parsed exit 128 report", () => {
             const tree = { version: 1, failure: "tree_unconfirmed" };
             // [case, native rejection without the sibling, parsed]
             const cases: [string, Record<string, unknown>, unknown][] = [
               [
-                "an unclassified report",
-                withTaskkill({ ...notFound, rootReport: "unclassified" }),
+                "an unclassified exit 255 report",
+                withTaskkill(unclassified255),
                 {
                   ...treeParsed,
                   windowsTaskkill: {
                     outcome: "nonzero_exit",
-                    exitCode: 128,
+                    exitCode: 255,
                     rootReport: "unclassified",
                   },
                 },
@@ -2333,16 +2374,24 @@ describe("stream fence origin", () => {
             ).toBeNull();
           });
 
-          it("joins a listed source only to a validated not-found report", () => {
+          it("joins a listed source only to a validated exit 128 report", () => {
             for (const source of ["PRIVATE", "", 1, undefined, null, {}])
-              expect(build(source)).toEqual(reported);
-            // Another report, code, outcome or leg never carries a source.
+              for (const [, receipt, , groups] of qualifying)
+                expect(build(source, receipt as never)).toEqual(groups);
+            expect(build("cancel_ipc", unclassified128)).toEqual({
+              ...unclassifiedReported,
+              ...sourcePair("cancel_ipc"),
+            });
+            // Another code, outcome or leg never carries a source.
+            expect(build("cancel_ipc", unclassified255)).toEqual(
+              unclassified255Reported,
+            );
             expect(
-              build("cancel_ipc", { ...notFound, rootReport: "unclassified" }),
+              build("cancel_ipc", { ...unclassified128, exitCode: -1 }),
             ).toEqual({
               ...stopGroup,
               ...cleanupGroup,
-              ...code(128),
+              ...code(-1),
               ...rootPair("unclassified"),
             });
             expect(build("cancel_ipc", { ...notFound, exitCode: 255 })).toEqual(
@@ -2351,19 +2400,21 @@ describe("stream fence origin", () => {
             expect(
               build("cancel_ipc", { outcome: "nonzero_exit", exitCode: 128 }),
             ).toEqual({ ...stopGroup, ...cleanupGroup, ...code(128) });
-            expect(
-              build("cancel_ipc", notFound, undefined, "leader_wait_failed"),
-            ).toEqual({
-              ...stopGroup,
-              desktop_stream_fence_cleanup_version: 1,
-              desktop_stream_fence_cleanup_failure: "leader_wait_failed",
-            });
+            for (const receipt of [notFound, unclassified128])
+              expect(
+                build("cancel_ipc", receipt, undefined, "leader_wait_failed"),
+              ).toEqual({
+                ...stopGroup,
+                desktop_stream_fence_cleanup_version: 1,
+                desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+              });
             for (const origin of origins.filter(
               (value) => value !== "owner_stop_requested",
             ))
-              expect(build("cancel_ipc", notFound, origin)).not.toHaveProperty(
-                "desktop_stream_fence_stop_request_source",
-              );
+              for (const receipt of [notFound, unclassified128])
+                expect(build("cancel_ipc", receipt, origin)).not.toHaveProperty(
+                  "desktop_stream_fence_stop_request_source",
+                );
             // Only the exact authorized fence rejection admits any group.
             expect(
               desktopStreamFenceDiagnostic(
@@ -2378,15 +2429,20 @@ describe("stream fence origin", () => {
             ).toBeNull();
           });
 
-          it("reads the pair only beside a validated not-found report on an acknowledged terminal", () => {
+          it("reads the pair only beside a validated exit 128 report on an acknowledged terminal", () => {
             const pair = sourcePair("cancel_ipc");
             for (const [base, acknowledged, kept] of [
               [reported, false, { ...stopGroup }],
               [reported, undefined, { ...stopGroup }],
+              [unclassifiedReported, false, { ...stopGroup }],
+              [unclassified255Reported, true, unclassified255Reported],
               [
-                { ...reported, ...rootPair("unclassified") },
+                {
+                  ...unclassifiedReported,
+                  desktop_stream_fence_windows_taskkill_root_report_version: 2,
+                },
                 true,
-                { ...reported, ...rootPair("unclassified") },
+                { ...stopGroup, ...cleanupGroup, ...code(128) },
               ],
               [
                 { ...stopGroup, ...cleanupGroup, ...code(128) },
@@ -2464,6 +2520,11 @@ describe("stream fence origin", () => {
                 target.desktop_stream_fence_windows_taskkill_exit_code = 255;
               },
               (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_windows_taskkill_root_report =
+                  "unclassified";
+                target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+              },
+              (target: Record<string, unknown>) => {
                 target.desktop_stream_fence_stop_request_source_version = 2;
                 target.desktop_stream_fence_stop_request_source = "cancel_ipc";
               },
@@ -2477,6 +2538,39 @@ describe("stream fence origin", () => {
             ])
               // A mixed snapshot keeps only the earlier validated report.
               expect(read(changing(change))).toEqual(reported);
+
+            // Likewise from the unclassified exit 128 report.
+            const unclassified = (
+              change?: (target: Record<string, unknown>) => void,
+            ) =>
+              new Proxy<Record<string, unknown>>(
+                { ...unclassifiedReported, ...pair },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    if (key === "desktop_stream_fence_stop_request_source")
+                      change?.(target);
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                },
+              );
+            expect(read(unclassified())).toEqual({
+              ...unclassifiedReported,
+              ...pair,
+            });
+            for (const change of [
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+              },
+              (target: Record<string, unknown>) => {
+                delete target.desktop_stream_fence_windows_taskkill_root_report_version;
+                delete target.desktop_stream_fence_windows_taskkill_root_report;
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_windows_taskkill_root_report =
+                  "requested_pid_not_found";
+              },
+            ])
+              expect(read(unclassified(change))).toEqual(unclassifiedReported);
           });
 
           it("drops only an invalid or hostile source pair", () => {
@@ -2526,6 +2620,24 @@ describe("stream fence origin", () => {
               ),
             ])
               expect(read(source)).toEqual(reported);
+            // Beside the unclassified exit 128 report as well.
+            const unclassifiedAccessor = { ...unclassifiedReported };
+            for (const key of Object.keys(pair))
+              Object.defineProperty(
+                unclassifiedAccessor,
+                key,
+                Object.getOwnPropertyDescriptor(accessor, key)!,
+              );
+            for (const source of [
+              { ...unclassifiedReported, ...sourcePair("PRIVATE") },
+              {
+                ...unclassifiedReported,
+                ...pair,
+                desktop_stream_fence_stop_request_source_version: 2,
+              },
+              unclassifiedAccessor,
+            ])
+              expect(read(source)).toEqual(unclassifiedReported);
             expect(gets).toBe(0);
           });
         });

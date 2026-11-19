@@ -266,8 +266,8 @@ export function sanitizeDesktopAckEvent<
     // invalid one drops alone, leaving the origin pair. Its Windows taskkill
     // group is read only beside a validated `tree_unconfirmed` cleanup pair,
     // and an invalid one drops alone, leaving both pairs. Its stop request
-    // source pair is read only beside that group's validated
-    // `requested_pid_not_found` report, and an invalid one drops alone. Its
+    // source pair is read only beside that group's validated root report of
+    // the not-found code, and an invalid one drops alone. Its
     // owner phase pair is read only beside a validated `cancel_wait_timeout`
     // origin on an acknowledged terminal, and an invalid one drops alone.
     // The acknowledgement that admits them is the same single snapshot that

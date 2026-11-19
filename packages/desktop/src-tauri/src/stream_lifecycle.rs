@@ -212,13 +212,25 @@ pub(crate) enum StopRequestSource {
     ApplicationExit,
 }
 
-/// Carried only beside the version 2 `requested_pid_not_found` taskkill
-/// receipt of the stop request that recorded it, in that same rejection, and
-/// only when separately opted in.
+/// Carried only beside the version 2 taskkill receipt of the stop request that
+/// recorded it, for its not-found exit code with either root report, in that
+/// same rejection, and only when separately opted in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct FenceStopRequestSourceReceipt {
     version: u8,
     source: StopRequestSource,
+}
+
+/// Only taskkill's not-found exit, classified `requested_pid_not_found` or
+/// `unclassified`, exposes its stop request's source. Every other code, a
+/// codeless exit and an output error never do.
+fn exposes_stop_request_source(failure: TaskkillFailure) -> bool {
+    use crate::platform::TASKKILL_NOT_FOUND_EXIT;
+    match failure {
+        TaskkillFailure::RequestedPidNotFound => true,
+        TaskkillFailure::NonzeroExit(code) => code == Some(TASKKILL_NOT_FOUND_EXIT),
+        TaskkillFailure::OutputError => false,
+    }
 }
 
 /// The last step the owner matched by a timed-out cancellation wait had
@@ -325,8 +337,8 @@ pub(crate) struct FenceReceipts {
     /// The same failure's version 2 receipt, when it has one.
     pub(crate) windows_taskkill_root_report: Option<FenceWindowsTaskkillReceipt>,
     pub(crate) cancel_wait_owner_phase: Option<FenceCancelWaitOwnerPhaseReceipt>,
-    /// The same stop request's first source, only beside a classified
-    /// `requested_pid_not_found` taskkill report.
+    /// The same stop request's first source, only beside a taskkill report
+    /// of its not-found exit code, classified or `unclassified`.
     pub(crate) stop_request_source: Option<FenceStopRequestSourceReceipt>,
 }
 
@@ -526,9 +538,10 @@ impl StreamLifecycle {
     /// explicit stop request whose unconfirmed leg was recorded with that
     /// origin, the leg's closed v1 receipt, and only for a `tree_unconfirmed`
     /// leg from the Windows taskkill path, that failure's closed v1 receipt,
-    /// and its closed v2 receipt when it has one. Only beside a classified
-    /// `requested_pid_not_found` report, the same stop request's first source
-    /// as its closed v1 receipt. Only for a cancellation wait timeout, its
+    /// and its closed v2 receipt when it has one. Only beside a report of
+    /// taskkill's not-found exit code, `requested_pid_not_found` or
+    /// `unclassified`, the same stop request's first source as its closed v1
+    /// receipt. Only for a cancellation wait timeout, its
     /// matched owner's closed v1 phase receipt.
     pub(crate) fn fence_receipts(&self) -> Option<FenceReceipts> {
         self.state().fence.map(|fence| FenceReceipts {
@@ -549,7 +562,7 @@ impl StreamLifecycle {
                 .map(|phase| FenceCancelWaitOwnerPhaseReceipt { version: 1, phase }),
             stop_request_source: fence
                 .stop_source
-                .filter(|_| fence.taskkill == Some(TaskkillFailure::RequestedPidNotFound))
+                .filter(|_| fence.taskkill.is_some_and(exposes_stop_request_source))
                 .map(|source| FenceStopRequestSourceReceipt { version: 1, source }),
         })
     }
@@ -1198,8 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_lifecycle_stop_request_source_is_read_only_beside_its_requested_pid_not_found_report()
-    {
+    fn stream_lifecycle_stop_request_source_is_read_only_beside_its_not_found_exit_report() {
         use CleanupFailure::*;
         use TaskkillFailure::*;
         let receipt = |fence: Fence| {
@@ -1209,9 +1221,18 @@ mod tests {
                 .fence_receipts()
                 .and_then(|receipts| receipts.stop_request_source)
         };
-        let not_found = Fence::stop_requested(TreeUnconfirmed, Some(RequestedPidNotFound));
-        // A fence recorded without a source never has one.
-        assert_eq!(receipt(not_found), None);
+        // Taskkill's not-found exit, classified or not.
+        let not_found_exits = [
+            Fence::stop_requested(TreeUnconfirmed, Some(RequestedPidNotFound)),
+            Fence::stop_requested(
+                TreeUnconfirmed,
+                Some(NonzeroExit(Some(crate::platform::TASKKILL_NOT_FOUND_EXIT))),
+            ),
+        ];
+        for not_found in not_found_exits {
+            // A fence recorded without a source never has one.
+            assert_eq!(receipt(not_found), None, "{not_found:?}");
+        }
         for (source, wire) in [
             (StopRequestSource::CancelIpc, "cancel_ipc"),
             (
@@ -1225,11 +1246,19 @@ mod tests {
                 serde_json::to_value(expected).unwrap(),
                 serde_json::json!({ "version": 1, "source": wire })
             );
-            assert_eq!(receipt(not_found.requested_by(source)), Some(expected));
-            // Every stop request records its source, but only the classified
-            // not-found report beside a tree-only leg exposes it.
+            for not_found in not_found_exits {
+                let requested = not_found.requested_by(source);
+                assert_eq!(receipt(requested), Some(expected), "{not_found:?}");
+            }
+            // Every stop request records its source, but only the not-found
+            // exit's report beside a tree-only leg exposes it.
             for fence in [
-                Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(NonZeroI32::new(128)))),
+                Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(NonZeroI32::new(255)))),
+                Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(NonZeroI32::new(1)))),
+                Fence::stop_requested(
+                    TreeUnconfirmed,
+                    Some(NonzeroExit(NonZeroI32::new(-1_073_741_510))),
+                ),
                 Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(None))),
                 Fence::stop_requested(TreeUnconfirmed, Some(OutputError)),
                 Fence::stop_requested(TreeUnconfirmed, None),
@@ -1642,29 +1671,45 @@ mod unix_tests {
         assert_eq!(owner_phase(&first), None);
         assert_eq!(stop_request_source(&first), None);
 
-        // The first not-found stop keeps its own first source; a later stop's
-        // identical report never replaces it.
-        let not_found = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
-        let (stop, later_stop) = (
-            launch(not_found.clone(), "stop").await,
-            launch(not_found.clone(), "later-stop").await,
-        );
-        release_with(
-            stop,
-            Some(
-                Fence::stop_requested(
-                    CleanupFailure::TreeUnconfirmed,
-                    Some(TaskkillFailure::RequestedPidNotFound),
-                )
-                .requested_by(StopRequestSource::CancelIpc),
+        // The first stop with taskkill's not-found exit, classified or not,
+        // keeps its own first source; a later stop's report never replaces it.
+        for (taskkill, source) in [
+            (
+                TaskkillFailure::RequestedPidNotFound,
+                StopRequestSource::CancelIpc,
             ),
-        )
-        .await;
-        release_with(later_stop, later_tree_stop()).await;
-        assert_eq!(
-            stop_request_source(&not_found),
-            Some(StopRequestSource::CancelIpc)
-        );
+            (
+                TaskkillFailure::NonzeroExit(Some(platform::TASKKILL_NOT_FOUND_EXIT)),
+                StopRequestSource::DocumentInvalidation,
+            ),
+        ] {
+            let not_found = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+            let (stop, later_stop) = (
+                launch(not_found.clone(), "stop").await,
+                launch(not_found.clone(), "later-stop").await,
+            );
+            release_with(
+                stop,
+                Some(
+                    Fence::stop_requested(CleanupFailure::TreeUnconfirmed, Some(taskkill))
+                        .requested_by(source),
+                ),
+            )
+            .await;
+            release_with(later_stop, later_tree_stop()).await;
+            // Its own root report, never the later stop's classified one.
+            assert_eq!(
+                not_found
+                    .fence_receipts()
+                    .and_then(|receipts| receipts.windows_taskkill_root_report),
+                FenceWindowsTaskkillReceipt::with_root_report(taskkill),
+            );
+            assert_eq!(
+                stop_request_source(&not_found),
+                Some(source),
+                "{taskkill:?}"
+            );
+        }
 
         // The first tree-only stop keeps its own taskkill failure.
         let tree = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
