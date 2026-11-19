@@ -238,10 +238,10 @@ describe("createAgentCompactionReporter", () => {
   const setup = (
     outcomes: Array<AgentCompactionTallyOutcome | Error> = [],
     signal = new AbortController().signal,
+    onError = jest.fn(),
   ) => {
     const sent: number[] = [];
     const work: Promise<void>[] = [];
-    const onError = jest.fn();
     const reporter = createAgentCompactionReporter({
       send: async (count) => {
         sent.push(count);
@@ -286,7 +286,7 @@ describe("createAgentCompactionReporter", () => {
     expect(work).toHaveLength(1);
   });
 
-  it("retries the latest unconfirmed snapshot once before the run drains", async () => {
+  it("retries the latest unconfirmed snapshot once when cleanup flushes", async () => {
     const { reporter, sent, onError, settled } = setup([
       "stale",
       new Error("transport failed"),
@@ -298,12 +298,36 @@ describe("createAgentCompactionReporter", () => {
     await settled();
     expect(onError).toHaveBeenCalledTimes(1);
 
-    reporter.flush();
-    await settled();
-    reporter.flush(); // already confirmed
-    await settled();
-
+    // Cleanup awaits the returned queue itself, not the drained work set.
+    await reporter.flush();
     expect(sent).toEqual([0, 1, 1]);
+    await reporter.flush(); // already confirmed
+    expect(sent).toEqual([0, 1, 1]);
+  });
+
+  it("keeps the queue usable when failure logging throws", async () => {
+    const { reporter, sent } = setup(
+      [new Error("transport failed")],
+      undefined,
+      jest.fn(() => {
+        throw new Error("logger unavailable");
+      }),
+    );
+
+    reporter.report(1);
+    await expect(reporter.flush()).resolves.toBeUndefined();
+    expect(sent).toEqual([1, 1]);
+  });
+
+  it("does not retry again in cleanup if the stream already retried", async () => {
+    const { reporter, sent, settled } = setup(["stale", "stale"]);
+
+    reporter.report(1);
+    await settled();
+    await reporter.flush();
+    await reporter.flush();
+
+    expect(sent).toEqual([1, 1]);
   });
 
   it("stops reporting once the chat is gone", async () => {

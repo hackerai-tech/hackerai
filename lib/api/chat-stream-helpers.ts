@@ -608,7 +608,8 @@ export type AgentCompactionTallyOutcome =
  * Persists one Agent run's completed-compaction count as absolute snapshots.
  * Sends run one at a time and carry the latest count, so queued reports
  * coalesce. `flush` resends the latest unconfirmed snapshot once, for example
- * when the run's first report raced its chat association.
+ * when the run's first report raced its chat association, and returns the
+ * queue so the caller can wait for it. Each send is bounded by `send` itself.
  */
 export function createAgentCompactionReporter({
   send,
@@ -624,6 +625,7 @@ export function createAgentCompactionReporter({
   let latest: number | undefined;
   let confirmed = -1;
   let closed = false;
+  let retryScheduled = false;
   let queue: Promise<void> = Promise.resolve();
 
   const deliver = async () => {
@@ -637,7 +639,11 @@ export function createAgentCompactionReporter({
         closed = true;
       }
     } catch (error) {
-      onError(error);
+      try {
+        onError(error);
+      } catch {
+        // Display-only reporting must never fail the run, even while logging.
+      }
     }
   };
   const enqueue = () => {
@@ -652,8 +658,17 @@ export function createAgentCompactionReporter({
       latest = Math.max(latest ?? 0, completedCount);
       enqueue();
     },
-    flush() {
-      if (!closed && latest !== undefined && latest > confirmed) enqueue();
+    flush(): Promise<void> {
+      if (
+        retryScheduled ||
+        closed ||
+        latest === undefined ||
+        latest <= confirmed
+      )
+        return Promise.resolve();
+      retryScheduled = true;
+      enqueue();
+      return queue;
     },
   };
 }

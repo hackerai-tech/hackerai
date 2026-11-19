@@ -2060,6 +2060,9 @@ export const agentLongTask = task({
     let taskOutcomeSurvey: Awaited<ReturnType<typeof selectTaskOutcomeSurvey>>;
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
+    // Keep the reporter available to cleanup if the stream never finalizes.
+    let compactionReporter:
+      ReturnType<typeof createAgentCompactionReporter> | undefined;
     let terminalAgentState: AgentStreamState | undefined;
     const stopSignal = createAgentStopSignal({
       onAbort: (source) => {
@@ -2475,7 +2478,7 @@ export const agentLongTask = task({
 
       // Display-only count for the chat header. One tracker spans every
       // provider stream and fallback of this run, so its count is absolute.
-      const compactionReporter = createAgentCompactionReporter({
+      const runCompactionReporter = createAgentCompactionReporter({
         send: (completedCount) =>
           recordAgentCompactionTally({
             chatId,
@@ -2492,11 +2495,12 @@ export const agentLongTask = task({
             error_name: error instanceof Error ? error.name : typeof error,
           }),
       });
+      compactionReporter = runCompactionReporter;
       const summarizationTracker = new SummarizationTracker(
-        compactionReporter.report,
+        runCompactionReporter.report,
       );
       // Tracking starts at zero only for this actual Agent run.
-      compactionReporter.report(0);
+      runCompactionReporter.report(0);
       chatLogger.startStream();
 
       let terminalRequestedModelSlug: string | undefined;
@@ -4657,7 +4661,7 @@ export const agentLongTask = task({
                 mode,
                 triggerRunId: ctx.run.id,
               });
-              compactionReporter.flush();
+              if (!triggerSignal.aborted) void runCompactionReporter.flush();
               await drainBackgroundRunWork();
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
@@ -6012,7 +6016,9 @@ export const agentLongTask = task({
                         mode,
                         triggerRunId: ctx.run.id,
                       });
-                      compactionReporter.flush();
+                      // Settle any unconfirmed count before signaling a new run.
+                      if (!triggerSignal.aborted)
+                        void runCompactionReporter.flush();
                       await drainBackgroundRunWork();
                       // Final reconciliation can change the finish reason to
                       // budget-exhausted; do it before analytics and
@@ -6686,6 +6692,12 @@ export const agentLongTask = task({
           error: stringifyRedactedError(error),
         });
       });
+      // One final display-only retry while this run still owns the chat,
+      // including setup failures that never reached the stream drain. A hard
+      // Trigger abort does not wait for it.
+      if (compactionReporter && !triggerSignal.aborted) {
+        await compactionReporter.flush().catch(() => undefined);
+      }
       await finishCloudSandboxLifecycle();
       runCleanupMap.delete(ctx.run.id);
       if (goalClaimed) {

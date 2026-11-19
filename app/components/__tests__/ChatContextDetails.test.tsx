@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   beforeAll,
@@ -9,7 +9,10 @@ import {
   it,
   jest,
 } from "@jest/globals";
-import { CONTEXT_DETAILS_STORAGE_KEY } from "@/app/hooks/useContextDetailsPreference";
+import {
+  CONTEXT_DETAILS_STORAGE_KEY,
+  useContextDetailsPreference,
+} from "@/app/hooks/useContextDetailsPreference";
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -75,14 +78,19 @@ describe("Context details in the chat header", () => {
 
   it("stays hidden until enabled, then appears only for Agent chats", () => {
     const agentChat = { default_model_slug: "agent" as const };
-    renderHeader(agentChat).unmount();
-    expect(trigger()).not.toBeInTheDocument();
+    const expectHidden = (view: ReturnType<typeof renderHeader>) => {
+      // Assert while mounted; after unmount every query is trivially empty.
+      expect(screen.getByText("Share")).toBeInTheDocument();
+      expect(trigger()).not.toBeInTheDocument();
+      view.unmount();
+    };
+    expectHidden(renderHeader(agentChat));
 
     window.localStorage.setItem(CONTEXT_DETAILS_STORAGE_KEY, "true");
-    renderHeader({ default_model_slug: "ask" }).unmount();
+    expectHidden(renderHeader({ default_model_slug: "ask" }));
+    const emptyChat = renderHeader(agentChat, { hasMessages: false });
     expect(trigger()).not.toBeInTheDocument();
-    renderHeader(agentChat, { hasMessages: false }).unmount();
-    expect(trigger()).not.toBeInTheDocument();
+    emptyChat.unmount();
 
     for (const chat of [
       agentChat,
@@ -93,6 +101,37 @@ describe("Context details in the chat header", () => {
       expect(trigger()).toBeInTheDocument();
       view.unmount();
     }
+  });
+});
+
+describe("useContextDetailsPreference", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("keeps this tab's choice when saving fails but reading still works", () => {
+    const { result } = renderHook(() => useContextDetailsPreference());
+    const setItem = jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+    try {
+      act(() => result.current[1](true));
+      expect(window.localStorage.getItem(CONTEXT_DETAILS_STORAGE_KEY)).toBe(
+        null,
+      );
+      expect(result.current[0]).toBe(true);
+    } finally {
+      setItem.mockRestore();
+    }
+
+    // A later successful write clears the fallback and is stored normally.
+    act(() => result.current[1](false));
+    expect(result.current[0]).toBe(false);
+    act(() => result.current[1](true));
+    expect(window.localStorage.getItem(CONTEXT_DETAILS_STORAGE_KEY)).toBe(
+      "true",
+    );
+    act(() => result.current[1](false));
   });
 });
 
