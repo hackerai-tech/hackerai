@@ -69,6 +69,7 @@ import {
   acquireFreeRunConcurrencyLock,
   checkFreeMonthlyCostLimit,
   checkRateLimit,
+  createQaProviderCapacityCheck,
   deductUsage,
   deductUsageDelta,
   addUsageDeductionDelta,
@@ -884,6 +885,11 @@ export const createChatHandler = () => {
           ));
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
+      const checkQaProviderCapacity = createQaProviderCapacityCheck(
+        userId,
+        subscription,
+        rateLimitInfo.qaSpendPool,
+      );
 
       chatLogger.setRateLimit(
         {
@@ -1251,6 +1257,7 @@ export const createChatHandler = () => {
                       usageTracker.nonModelCost += costDollars;
                       chatLogger?.getBuilder().addToolCost(costDollars);
                     },
+                    checkQaProviderCapacity,
                   )
                 : Promise.resolve(undefined);
             // A QA title starts only after its failure settlement is ready.
@@ -1945,6 +1952,8 @@ export const createChatHandler = () => {
               summarizationTracker,
               usageTracker,
               getQaDiscardedRetryCostDollars,
+              checkQaProviderCapacity,
+              checkBudgetBeforeStep: checkQaProviderCapacity,
               budgetMonitor,
               sandboxManager,
               getTodoManager,

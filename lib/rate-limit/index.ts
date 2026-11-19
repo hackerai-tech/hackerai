@@ -31,6 +31,7 @@ import { getLimitPressureContext } from "@/lib/limit-pressure";
 // Re-export token bucket functions
 export {
   checkTokenBucketLimit,
+  createQaProviderCapacityCheck,
   deductUsage,
   deductUsageDelta,
   refundUsage,

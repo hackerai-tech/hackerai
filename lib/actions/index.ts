@@ -9,6 +9,7 @@ import {
   UIMessage,
   UIMessageStreamWriter,
 } from "ai";
+import { withProviderCapacityCheck } from "@/lib/ai/provider-capacity-guard";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 import {
@@ -151,6 +152,7 @@ export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (message: string) =>
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
   onCost?: (costDollars: number) => void,
+  checkProviderCapacity?: () => Promise<void>,
 ): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
   const firstMessageParts = firstMessage?.parts ?? [];
@@ -184,7 +186,10 @@ export const generateTitleFromUserMessage = async (
 
   try {
     const result = await generateText({
-      model: myProvider.languageModel("title-generator-model"),
+      model: withProviderCapacityCheck(
+        myProvider.languageModel("title-generator-model"),
+        checkProviderCapacity,
+      ),
       providerOptions: buildProviderOptions(
         false,
         undefined,
@@ -250,11 +255,13 @@ export const generateTitleFromUserMessageWithWriter = async (
   writer: UIMessageStreamWriter,
   onTitleGenerated?: (title: string) => Promise<unknown>,
   onCost?: (costDollars: number) => void,
+  checkProviderCapacity?: () => Promise<void>,
 ): Promise<string | undefined> => {
   try {
     const chatTitle = await generateTitleFromUserMessage(
       truncatedMessages,
       onCost,
+      checkProviderCapacity,
     );
 
     writer.write({

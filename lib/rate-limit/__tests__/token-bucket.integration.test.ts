@@ -3048,6 +3048,38 @@ describe("routine QA spending pool", () => {
     expectNoWalletActivity();
   });
 
+  it("revalidates the admitted QA pool immediately before a provider request", async () => {
+    const {
+      checkTokenBucketLimit,
+      createQaProviderCapacityCheck,
+      deductUsageDelta,
+    } = loadModule();
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+    const check = createQaProviderCapacityCheck(
+      QA_USER,
+      "pro",
+      admission.qaSpendPool,
+    )!;
+    await check();
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(admission.remaining);
+
+    // A concurrent run consumes the room after this request was admitted.
+    await deductUsageDelta(QA_USER, "pro", admission.remaining);
+    await expect(check()).rejects.toMatchObject(qaCapError);
+
+    // Policy drift must never let this request use the new ledger.
+    setDevelopmentEnv();
+    await expect(check()).rejects.toMatchObject({
+      metadata: { capReason: "billing_unavailable", qaSpendPool: "preview" },
+    });
+    expect(store.has(DEV_POOL)).toBe(false);
+    expectNoWalletActivity();
+  });
+
   it("rejects an exhausted pool with qa_spend_cap, without wallet or allowance fallback, across restarts", async () => {
     store.set(PREVIEW_POOL, { tokens: 200, refunds: new Set() });
     const first = loadModule();

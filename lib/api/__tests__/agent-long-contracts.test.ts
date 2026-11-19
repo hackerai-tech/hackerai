@@ -1742,7 +1742,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const checkedModel = withProviderCapacityCheck\(\s*telemetryModel,\s*ctx\.checkQaProviderCapacity,?\s*\);\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(checkedModel, ctx\.providerStreamTimeout\)\s*:\s*checkedModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,

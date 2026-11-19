@@ -144,6 +144,7 @@ import {
   checkFreeMonthlyCostLimit,
   checkRateLimit,
   checkRateLimitCapacity,
+  createQaProviderCapacityCheck,
   isHandledUserRateLimitError,
   deductUsage,
   deductUsageDelta,
@@ -2813,6 +2814,11 @@ export const agentLongTask = task({
                 ));
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
+            const checkQaProviderCapacity = createQaProviderCapacityCheck(
+              userId,
+              subscription,
+              rateLimitInfo.qaSpendPool,
+            );
             chatLogger?.setRateLimit(
               {
                 pointsDeducted: rateLimitInfo.pointsDeducted,
@@ -3496,6 +3502,7 @@ export const agentLongTask = task({
                       usageTracker.nonModelCost += costDollars;
                       chatLogger?.getBuilder().addToolCost(costDollars);
                     },
+                    checkQaProviderCapacity,
                   )
                 : Promise.resolve(undefined);
             // A QA title starts only after its failure settlement is ready.
@@ -4365,6 +4372,7 @@ export const agentLongTask = task({
               summarizationTracker,
               usageTracker,
               getQaDiscardedRetryCostDollars,
+              checkQaProviderCapacity,
               budgetMonitor,
               sandboxManager,
               getTodoManager,
@@ -4425,6 +4433,7 @@ export const agentLongTask = task({
                     userStopSignal.signal.throwIfAborted();
                   }
                 }
+                await checkQaProviderCapacity?.();
               },
               ...(subagentCompletionGate ? { subagentCompletionGate } : {}),
               ...(useMaxKimiReasoning && {

@@ -1129,6 +1129,30 @@ const checkQaSpendPoolLimit = async (
   }
 };
 
+/** Recheck the exact pool that admitted the request without reserving points. */
+export const createQaProviderCapacityCheck = (
+  userId: string,
+  subscription: SubscriptionTier,
+  admittedPool: RateLimitInfo["qaSpendPool"],
+): (() => Promise<void>) | undefined => {
+  if (!admittedPool) return;
+  return async () => {
+    const pool = resolveQaSpendPool(userId, subscription);
+    if (pool?.environment !== admittedPool) {
+      throw createQaSpendPoolUnavailableError(
+        { environment: admittedPool },
+        subscription,
+      );
+    }
+    await checkQaSpendPoolLimit(
+      createRedisClient("qa-debit"),
+      pool,
+      subscription,
+      0,
+    );
+  };
+};
+
 /**
  * Check rate limit using token bucket and deduct estimated input cost upfront.
  * Used for all paid users (Pro, Pro+, Ultra, Team) in both agent and ask modes.

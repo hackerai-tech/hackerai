@@ -50,6 +50,7 @@ import {
   guardLanguageModelProviderResponse,
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
+import { withProviderCapacityCheck } from "@/lib/ai/provider-capacity-guard";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import {
@@ -1345,7 +1346,14 @@ export const subagentTask = task({
                     providerHistory.record(entry, generationAttempt),
                 },
               );
-              const boundedModel = withProviderStreamTimeout(languageModel, {
+              const qaSettlement = qaUsageSettlement;
+              const checkedModel = withProviderCapacityCheck(
+                languageModel,
+                qaSettlement
+                  ? () => qaSettlement.fence(getCurrentRunCostDollars())
+                  : undefined,
+              );
+              const boundedModel = withProviderStreamTimeout(checkedModel, {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
                 totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
                 onTimeout: ({ phase, timeoutMs, modelId }) => {

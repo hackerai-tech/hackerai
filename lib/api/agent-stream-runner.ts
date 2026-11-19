@@ -45,6 +45,7 @@ import {
 } from "@/lib/ai/abliteration";
 import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import { withProviderCapacityCheck } from "@/lib/ai/provider-capacity-guard";
 import { getProviderRequestMediaCounts } from "@/lib/ai/provider-request-media";
 import { getProviderFailedImageReferenceDiagnostics } from "@/lib/ai/provider-failed-image-reference";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
@@ -890,6 +891,7 @@ export type AgentStreamContext = {
   getTriggerRunCostDollars?: () => number;
   /** Revalidate shared capacity before starting each cost-incurring model step. */
   checkBudgetBeforeStep?: () => Promise<void>;
+  checkQaProviderCapacity?: () => Promise<void>;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
@@ -1160,10 +1162,14 @@ export async function createAgentStream(
           stepIndex,
           activeStepRouting,
         ) ?? historyModel;
+      const checkedModel = withProviderCapacityCheck(
+        telemetryModel,
+        ctx.checkQaProviderCapacity,
+      );
       return recoverAbliterationMedia(
         ctx.providerStreamTimeout
-          ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
-          : telemetryModel,
+          ? withProviderStreamTimeout(checkedModel, ctx.providerStreamTimeout)
+          : checkedModel,
       );
     };
     let recoveryModel = wrapAttempt(languageModel);
