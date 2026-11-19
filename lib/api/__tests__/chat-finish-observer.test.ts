@@ -299,6 +299,7 @@ it("attributes the first title wait separately from settlement in every finishin
       sandboxCostRecorded: false,
       getSandboxSessionUsage: () => sandbox.promise,
       usageTracker: { hasUsage: false },
+      getQaDiscardedRetryCostDollars: () => 0,
       paidDailyFreeAllowanceReservation: null,
       rateLimitInfo: {},
       releaseFreeRunLockOnce,

@@ -166,8 +166,8 @@ export class UsageTracker {
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
   private summarizationStepCosts: ModelStepCost[] = [];
-  // Measurement only: retries may replace billable usage, but incurred model work
-  // must not disappear from experiment cost. Never include this in deductions.
+  // Discarded legs are excluded from customer billing. Their recorded costs
+  // remain available to measurement and the non-production QA spend pool.
   private discardedModelSteps: ModelStepCost[] = [];
   private modelCallsStarted = 0;
   private retryResets = 0;
@@ -432,6 +432,18 @@ export class UsageTracker {
         });
   }
 
+  /**
+   * Raw spend on recorded discarded legs. Prefer the provider's reported cost
+   * and estimate available tokens when it is absent. Unreported calls add no
+   * estimate without a token receipt. Customer billing excludes this amount.
+   */
+  computeDiscardedRetryCostDollars(fallbackModel: string): number {
+    return this.discardedModelSteps.reduce(
+      (total, step) => total + this.stepMeasurementCost(step, fallbackModel),
+      0,
+    );
+  }
+
   /** Observed costs, not billing. Missing/failed unreported calls are not zero. */
   measurementProperties(fallbackModel: string) {
     const modelSteps = [...this.discardedModelSteps, ...this.modelStepCosts];
@@ -473,7 +485,8 @@ export class UsageTracker {
         (step) => step.measurementCost === undefined,
       ).length,
       usage_observed_model_cost_dollars: observedModelCost,
-      usage_discarded_retry_cost_dollars: sumCost(this.discardedModelSteps),
+      usage_discarded_retry_cost_dollars:
+        this.computeDiscardedRetryCostDollars(fallbackModel),
       usage_summary_cost_dollars: sumCost(this.summarizationStepCosts),
       ...servingProviderCostProperties(stepCosts),
       // Includes tool/auxiliary-vision costs plus any sandbox and Trigger run

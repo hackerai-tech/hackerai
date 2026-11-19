@@ -1290,6 +1290,7 @@ describe("Agent final usage settlement with an active goal", () => {
       titlePromise: Promise.resolve(),
       getSandboxSessionUsage: async () => ({ totalCostDollars: 0 }),
       getTriggerRunUsage: () => ({ totalCostDollars: 0 }),
+      getQaDiscardedRetryCostDollars: () => 0,
       usageTracker: {
         providerCost: 0,
         nonModelCost: 0,

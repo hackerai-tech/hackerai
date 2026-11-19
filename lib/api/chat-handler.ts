@@ -941,6 +941,10 @@ export const createChatHandler = () => {
           let settleFailedQaRequest: (() => Promise<void>) | undefined;
           try {
             const usageTracker = new UsageTracker();
+            const getQaDiscardedRetryCostDollars = () =>
+              rateLimitInfo.qaSpendPool
+                ? usageTracker.computeDiscardedRetryCostDollars(selectedModel)
+                : 0;
             paidDailyFreeAllowanceUsageTracker = usageTracker;
             const auxiliaryVision = directGlmVisionEnabled
               ? {
@@ -1435,7 +1439,12 @@ export const createChatHandler = () => {
                     }
                     sandboxCostRecorded = true;
 
-                    if (!usageTracker.hasUsage) {
+                    const discardedRetryCostDollars =
+                      getQaDiscardedRetryCostDollars();
+                    if (
+                      !usageTracker.hasUsage &&
+                      discardedRetryCostDollars === 0
+                    ) {
                       // Release an unused rescue lease so a failed provider start
                       // does not block the user's next sequential rescue.
                       if (paidDailyFreeAllowanceReservation) {
@@ -1472,7 +1481,8 @@ export const createChatHandler = () => {
                     // Use the same resolved provider/hybrid total that powers
                     // mid-run settlement. This preserves authoritative step costs
                     // and estimates only the individual steps missing provider cost.
-                    const settledCostDollars = usageCostRecord.costDollars;
+                    const settledCostDollars =
+                      usageCostRecord.costDollars + discardedRetryCostDollars;
                     let usageLog: UsageLogPersistence | "not_applicable" =
                       "not_applicable";
 
@@ -1934,6 +1944,7 @@ export const createChatHandler = () => {
               abortController: userStopSignal,
               summarizationTracker,
               usageTracker,
+              getQaDiscardedRetryCostDollars,
               budgetMonitor,
               sandboxManager,
               getTodoManager,

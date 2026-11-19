@@ -3668,6 +3668,10 @@ export const agentLongTask = task({
                   );
             let activeModelName = selectedModel;
 
+            const getQaDiscardedRetryCostDollars = () =>
+              rateLimitInfo.qaSpendPool
+                ? usageTracker.computeDiscardedRetryCostDollars(selectedModel)
+                : 0;
             let hasRecordedUsage = false;
             let preFallbackCacheRead = 0;
             let preFallbackCacheWrite = 0;
@@ -3738,7 +3742,9 @@ export const agentLongTask = task({
                   usageTracker.addTriggerRunCost(triggerRunCost);
                   chatLogger?.getBuilder().addToolCost(triggerRunCost);
                 }
-                if (!usageTracker.hasUsage) {
+                const discardedRetryCostDollars =
+                  getQaDiscardedRetryCostDollars();
+                if (!usageTracker.hasUsage && discardedRetryCostDollars === 0) {
                   // Release an unused rescue lease so a failed provider start
                   // does not block the user's next sequential rescue.
                   if (paidDailyFreeAllowanceReservation) {
@@ -3769,7 +3775,8 @@ export const agentLongTask = task({
                 // Use the same resolved provider/hybrid total that powers
                 // mid-run settlement. This preserves authoritative step costs
                 // and estimates only the individual steps missing provider cost.
-                const settledCostDollars = usageCostRecord.costDollars;
+                const settledCostDollars =
+                  usageCostRecord.costDollars + discardedRetryCostDollars;
                 let usageLog: UsageLogPersistence | "not_applicable" =
                   "not_applicable";
                 if (paidDailyFreeAllowanceReservation) {
@@ -4357,6 +4364,7 @@ export const agentLongTask = task({
               abortController: userStopSignal,
               summarizationTracker,
               usageTracker,
+              getQaDiscardedRetryCostDollars,
               budgetMonitor,
               sandboxManager,
               getTodoManager,

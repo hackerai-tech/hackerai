@@ -847,6 +847,7 @@ export type AgentStreamContext = {
   abortController: AbortController;
   summarizationTracker: SummarizationTracker;
   usageTracker: UsageTracker;
+  getQaDiscardedRetryCostDollars?: () => number;
   budgetMonitor: BudgetMonitor | null;
   sandboxManager: {
     getSandboxType(toolName: string): string | undefined;
@@ -3331,6 +3332,7 @@ export async function createAgentStream(
       const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
       const currentCostDollars =
         ctx.usageTracker.computeCostDollars(activeStepModelName) +
+        (ctx.getQaDiscardedRetryCostDollars?.() ?? 0) +
         sandboxCostDollars +
         triggerRunCostDollars;
       if (isAgentMode(ctx.mode)) {

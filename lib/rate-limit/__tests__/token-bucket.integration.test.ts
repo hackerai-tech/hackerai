@@ -2924,46 +2924,75 @@ describe("routine QA spending pool", () => {
   });
 
   it.each([
-    [0, 0],
-    [0.02, 260],
-  ])(
-    "settles failed QA attachment setup at $%s of measured cost",
-    async (costDollars, expectedDebit) => {
-      const {
-        checkTokenBucketLimit,
-        prepareQaSetupUsageSettlement,
-        UsageRefundTracker,
-      } = loadModule();
-      const admission = await checkTokenBucketLimit(
-        QA_USER,
-        "pro",
-        ESTIMATED_INPUT_TOKENS,
-      );
-      const tracker = new UsageRefundTracker();
-      tracker.setUser(QA_USER, "pro");
-      tracker.recordDeductions(admission);
-      const measureCostDollars = jest.fn(async () => costDollars);
-      const settle = prepareQaSetupUsageSettlement({
-        userId: QA_USER,
-        subscription: "pro",
-        rateLimitInfo: admission,
-        usageRefundTracker: tracker,
-        usageSettlementId: "failed-attachment",
-        measureCostDollars,
-      })!;
-
-      // The attachment error's immediate cleanup must wait for measured cost.
-      await tracker.refund();
-      expect(store.get(PREVIEW_POOL)!.tokens).toBe(
-        CAP_POINTS - ESTIMATED_POINTS,
-      );
-      await Promise.all([settle(), settle()]);
-      await tracker.refund();
-      expect(measureCostDollars).toHaveBeenCalledTimes(1);
-      expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - expectedDebit);
-      expectNoWalletActivity();
+    {
+      scenario: "reuses the refund ID after a lost zero-cost refund receipt",
+      costDollars: 0,
+      expectedDebit: 0,
     },
-  );
+    {
+      scenario: "keeps measured sandbox spend after failed attachment setup",
+      costDollars: 0.02,
+      expectedDebit: 260,
+    },
+    {
+      scenario: "does not replay an unconfirmed positive setup debit",
+      costDollars: 0.1,
+      expectedDebit: 1_300,
+    },
+  ])("$scenario", async ({ costDollars, expectedDebit }) => {
+    const {
+      checkTokenBucketLimit,
+      prepareQaSetupUsageSettlement,
+      UsageRefundTracker,
+    } = loadModule();
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+    const tracker = new UsageRefundTracker();
+    tracker.setUser(QA_USER, "pro");
+    tracker.recordDeductions(admission);
+    const measureCostDollars = jest.fn(async () => costDollars);
+    const settle = prepareQaSetupUsageSettlement({
+      userId: QA_USER,
+      subscription: "pro",
+      rateLimitInfo: admission,
+      usageRefundTracker: tracker,
+      usageSettlementId: "failed-attachment",
+      measureCostDollars,
+    })!;
+
+    // The attachment error's immediate cleanup must wait for measured cost.
+    await tracker.refund();
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - ESTIMATED_POINTS);
+
+    if (costDollars === 0) {
+      const commitRefund = fakeRedis.eval.getMockImplementation()!;
+      fakeRedis.eval.mockImplementationOnce(async (...args) => {
+        await commitRefund(...args);
+        throw new Error("Fake Redis lost the committed refund response");
+      });
+    }
+    const loseDebitReceipt = expectedDebit > ESTIMATED_POINTS;
+    if (loseDebitReceipt) loseNextDebitResponse = true;
+    const attempts = Promise.all([settle(), settle()]);
+    if (loseDebitReceipt) {
+      await expect(attempts).rejects.toThrow("could not be fully settled");
+      await expect(settle()).rejects.toThrow("could not be fully settled");
+    } else {
+      await attempts;
+    }
+    if (costDollars === 0) {
+      const refundIds = fakeRedis.eval.mock.calls.map(([, , args]) => args[0]);
+      expect(refundIds).toHaveLength(2);
+      expect(refundIds[1]).toBe(refundIds[0]);
+    }
+    await tracker.refund();
+    expect(measureCostDollars).toHaveBeenCalledTimes(1);
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - expectedDebit);
+    expectNoWalletActivity();
+  });
 
   it("preserves a QA debit when its response is lost and final settlement runs", async () => {
     const { checkTokenBucketLimit, deductUsage, deductUsageDelta } =

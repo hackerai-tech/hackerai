@@ -149,11 +149,16 @@ export const prepareQaSetupUsageSettlement = ({
   if (!qaSpendPool) return;
 
   usageRefundTracker.deferRefundsToSettlement();
+  let measuredCostDollars: number | undefined;
+  let debitStarted = false;
   const settle = async () => {
-    const costDollars = await measureCostDollars();
+    const costDollars = measuredCostDollars ?? (await measureCostDollars());
     if (!Number.isFinite(costDollars) || costDollars < 0) {
       throw new Error("QA setup cost could not be measured");
     }
+    // Once a refund is attempted, later attempts must reuse the same measured
+    // cost and refund ID, even if the first response was lost.
+    measuredCostDollars = costDollars;
     if (costDollars === 0) {
       const refund = await usageRefundTracker.refundWithResult();
       if (refund.status === "failed") {
@@ -161,6 +166,7 @@ export const prepareQaSetupUsageSettlement = ({
       }
       return;
     }
+    debitStarted = true;
     const deduction = await deductUsage(
       userId,
       subscription,
@@ -182,6 +188,20 @@ export const prepareQaSetupUsageSettlement = ({
       throw new Error("QA setup usage could not be fully settled");
     }
   };
+
+  const settleWithSafeRetry = async () => {
+    try {
+      await settle();
+    } catch (error) {
+      if (debitStarted) throw error;
+      await settle();
+    }
+  };
+
   let settlement: Promise<void> | undefined;
-  return () => (settlement ??= settle());
+  return () =>
+    (settlement ??= settleWithSafeRetry().catch((error) => {
+      if (!debitStarted) settlement = undefined;
+      throw error;
+    }));
 };

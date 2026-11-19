@@ -1142,6 +1142,9 @@ describe("UsageTracker", () => {
         0.00016,
       );
       expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.05016);
+      expect(tracker.computeDiscardedRetryCostDollars("model-default")).toBe(
+        0.25,
+      );
 
       const usage = tracker.createUsageCostRecord({
         selectedModel: "agent-model-free",
