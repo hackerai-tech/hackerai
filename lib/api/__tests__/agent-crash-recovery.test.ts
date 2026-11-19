@@ -120,16 +120,75 @@ it("does not persist a prefix when the retained stream fails", async () => {
   expect(mockSave).not.toHaveBeenCalled();
 });
 
+const serializedBytes = (records: unknown[]) =>
+  records.reduce<number>(
+    (sum, record) =>
+      record === undefined
+        ? sum
+        : sum + Buffer.byteLength(JSON.stringify(record), "utf8"),
+    0,
+  );
+
 it("does not save a partial replay when its request-wide byte budget is exceeded", async () => {
-  mockRead.mockResolvedValue(
-    stream([
-      ...text("first", "x".repeat(4 * 1024 * 1024)),
-      ...text("second", "x".repeat(4 * 1024 * 1024)),
-    ]),
+  // Valid UI control/error records count toward the cap even though the
+  // reducer discards them; the diagnostic must attribute those bytes.
+  const discarded = [
+    { type: "data-agent-heartbeat", data: { timestamp: 1 } },
+    // Non-ASCII so UTF-8 bytes differ from JavaScript string length.
+    { type: "error", errorText: "private provider échec" },
+  ];
+  expect(serializedBytes(discarded)).toBeGreaterThan(
+    JSON.stringify(discarded[0]).length + JSON.stringify(discarded[1]).length,
   );
-  await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
-    AgentCrashRecoveryReplayLimitError,
+  const prefix = [
+    undefined,
+    ...discarded,
+    ...text("first", "x".repeat(4 * 1024 * 1024)),
+    { type: "start", messageId: "second" },
+    { type: "text-start", id: "text" },
+  ];
+  const crossing = {
+    type: "text-delta",
+    id: "text",
+    delta: "private" + "x".repeat(4 * 1024 * 1024),
+  };
+  mockRead.mockResolvedValue(stream([...prefix, crossing]));
+  const error = await recoverCrashedAgentRun(input).catch((e) => e);
+  expect(error).toBeInstanceOf(AgentCrashRecoveryReplayLimitError);
+  expect(error.message).toBe("Agent crash recovery replay budget exceeded");
+  expect(error.context).toEqual({
+    replay_limit_diagnostic_version: 1,
+    replay_prefix_bytes: serializedBytes(prefix),
+    replay_discarded_prefix_bytes: serializedBytes(discarded),
+    replay_prefix_record_count: prefix.length,
+    replay_crossing_record_bytes: serializedBytes([crossing]),
+  });
+  expect(error.context.replay_prefix_bytes).toBeLessThanOrEqual(
+    8 * 1024 * 1024,
   );
+  expect(JSON.stringify(error.context)).not.toContain("private");
+  expect(mockSave).not.toHaveBeenCalled();
+});
+
+it("rejects one oversized boundary record before validating it, reporting only its saturated size", async () => {
+  const start = { type: "start", messageId: "first" };
+  // Schema-invalid on purpose: the byte cap must win before validation, and
+  // the unvalidated record's type/content must not reach the diagnostic.
+  const crossing = {
+    type: "private-unvalidated",
+    payload: "x".repeat(8 * 1024 * 1024 + 64),
+  };
+  mockRead.mockResolvedValue(stream([start, crossing]));
+  const error = await recoverCrashedAgentRun(input).catch((e) => e);
+  expect(error).toBeInstanceOf(AgentCrashRecoveryReplayLimitError);
+  expect(error.context).toEqual({
+    replay_limit_diagnostic_version: 1,
+    replay_prefix_bytes: serializedBytes([start]),
+    replay_discarded_prefix_bytes: 0,
+    replay_prefix_record_count: 1,
+    replay_crossing_record_bytes: 8 * 1024 * 1024 + 1,
+  });
+  expect(JSON.stringify(error.context)).not.toContain("private");
   expect(mockSave).not.toHaveBeenCalled();
 });
 

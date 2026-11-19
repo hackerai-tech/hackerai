@@ -282,6 +282,7 @@ export const createAgentStatusPost =
                 chat_id: chatId.slice(0, 128),
                 user_id: userId.slice(0, 128),
                 trigger_run_id: runId.slice(0, 128),
+                ...error.context,
               }),
             );
             // Report the real terminal state so clients stop polling. Preserve
