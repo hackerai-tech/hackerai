@@ -858,6 +858,66 @@ return {
 }
 `;
 
+// Only the exact monthly deadline credited by the paid annual invoice may be
+// removed. Balance, allocation, spend and tier-change debt are untouched; the
+// first timer refill happens at that existing boundary. Recording the annual
+// invoice as the latest paid transition makes APPLY_PAID_BUCKET_RESET_SCRIPT
+// and FREEZE_DELINQUENT_BUCKET_SCRIPT reject older invoices, so they cannot
+// restore the retired deadline. A tie with another transition is ambiguous and
+// left unchanged. The key stays persisted until the next limit call sets its
+// timer-based expiry.
+const RESTORE_ANNUAL_ALLOWANCE_SCHEDULE_SCRIPT = `
+local bucketKey = KEYS[1]
+local subscriptionId = ARGV[1]
+local invoiceId = ARGV[2]
+local transitionAtMs = tonumber(ARGV[3])
+local replacedPeriodEndMs = tonumber(ARGV[4])
+local interval = tonumber(ARGV[5])
+
+if redis.call("EXISTS", bucketKey) == 0 then
+  return "missing"
+end
+
+local periodEnd = tonumber(redis.call("HGET", bucketKey, "billingPeriodEndMs"))
+local transitionType = redis.call("HGET", bucketKey, "billingTransitionType")
+local existingSubscriptionId = redis.call("HGET", bucketKey, "billingSubscriptionId")
+local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
+local existingTransitionAtMs = tonumber(redis.call("HGET", bucketKey, "billingTransitionAtMs"))
+
+if not periodEnd then
+  if transitionType == "paid"
+    and existingSubscriptionId == subscriptionId
+    and existingInvoiceId == invoiceId then
+    return "already_applied"
+  end
+  return "no_deadline"
+end
+if transitionType == "payment_failed" then
+  return "held"
+end
+if existingSubscriptionId and existingSubscriptionId ~= subscriptionId then
+  return "other_subscription"
+end
+if existingTransitionAtMs and existingTransitionAtMs >= transitionAtMs then
+  return "stale"
+end
+if periodEnd ~= replacedPeriodEndMs then
+  return "deadline_mismatch"
+end
+
+redis.call("HDEL", bucketKey, "billingPeriodEndMs")
+redis.call(
+  "HSET",
+  bucketKey,
+  "refilledAt", periodEnd - interval,
+  "billingTransitionType", "paid",
+  "billingTransitionAtMs", transitionAtMs,
+  "billingSubscriptionId", subscriptionId,
+  "billingInvoiceId", invoiceId
+)
+return "applied"
+`;
+
 const enforceStoredCycleAllocation = async (
   redis: RedisClient,
   monthlyKey: string,
@@ -1817,6 +1877,78 @@ export const resetRateLimitBucketAfterPayment = async (
         paymentFailureAtMs: paymentFailureAtMsRaw,
       }),
   };
+};
+
+export type AnnualAllowanceScheduleOutcome =
+  | "applied"
+  | "already_applied"
+  | "missing"
+  | "no_deadline"
+  | "held"
+  | "other_subscription"
+  | "stale"
+  | "deadline_mismatch";
+
+const ANNUAL_ALLOWANCE_SCHEDULE_OUTCOMES = new Set<string>([
+  "applied",
+  "already_applied",
+  "missing",
+  "no_deadline",
+  "held",
+  "other_subscription",
+  "stale",
+  "deadline_mismatch",
+]);
+
+/**
+ * Move a same-tier monthly bucket onto the annual 30-day refill schedule after
+ * a paid monthly-to-annual change. Current usage is preserved; the first
+ * refill happens at the replaced monthly period's end. Every outcome other
+ * than "applied" leaves the bucket unchanged.
+ */
+export const restoreAnnualAllowanceSchedule = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  transition: BillingCreditTransitionIdentity & {
+    replacedPeriodEndMs: number;
+  },
+): Promise<AnnualAllowanceScheduleOutcome> => {
+  const redis = createRedisClient();
+  if (!redis) throw new Error(RATE_LIMIT_SERVICE_NOT_CONFIGURED);
+
+  if ((MONTHLY_CREDITS[subscription] ?? 0) <= 0) {
+    throw new Error(
+      `Cannot restore an annual allowance for tier "${subscription}"`,
+    );
+  }
+  const { occurredAtMs, replacedPeriodEndMs } = transition;
+  if (
+    !Number.isSafeInteger(replacedPeriodEndMs) ||
+    replacedPeriodEndMs <= 0 ||
+    !Number.isFinite(occurredAtMs) ||
+    occurredAtMs <= 0
+  ) {
+    throw new Error("Invalid annual allowance transition");
+  }
+
+  const outcome = await redis.eval<
+    [string, string, number, number, number],
+    string
+  >(
+    RESTORE_ANNUAL_ALLOWANCE_SCHEDULE_SCRIPT,
+    [getMonthlyBucketKey(userId, subscription)],
+    [
+      transition.subscriptionId,
+      transition.invoiceId,
+      Math.floor(occurredAtMs),
+      replacedPeriodEndMs,
+      THIRTY_DAYS_SECONDS * 1000,
+    ],
+  );
+  if (!ANNUAL_ALLOWANCE_SCHEDULE_OUTCOMES.has(outcome)) {
+    throw new Error("Unexpected annual allowance transition result");
+  }
+  return outcome as AnnualAllowanceScheduleOutcome;
 };
 
 export type CycleAllocationCapResult = {

@@ -1655,6 +1655,86 @@ describe("token-bucket async functions", () => {
     });
   });
 
+  describe("annual allowance schedule restoration", () => {
+    const transition = {
+      subscriptionId: "sub_annual",
+      invoiceId: "in_annual_switch",
+      occurredAtMs: 1_790_000_000_000,
+      replacedPeriodEndMs: 1_791_036_800_000,
+    };
+
+    it("checks the exact credited deadline on the same tier's bucket in one script", async () => {
+      mockEvalFn.mockResolvedValueOnce("applied");
+      const { restoreAnnualAllowanceSchedule } = getIsolatedModule();
+
+      await expect(
+        restoreAnnualAllowanceSchedule("user-annual", "pro", transition),
+      ).resolves.toBe("applied");
+
+      expect(mockEvalFn).toHaveBeenCalledTimes(1);
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        // Removing the deadline must also record the annual invoice as the
+        // latest paid transition so an older invoice cannot restore it.
+        expect.stringMatching(
+          /"HDEL", bucketKey, "billingPeriodEndMs"[\s\S]*"billingTransitionAtMs", transitionAtMs[\s\S]*"billingInvoiceId", invoiceId/,
+        ),
+        ["usage:monthly:user-annual:pro"],
+        [
+          "sub_annual",
+          "in_annual_switch",
+          transition.occurredAtMs,
+          transition.replacedPeriodEndMs,
+          30 * 24 * 60 * 60 * 1000,
+        ],
+      );
+      // A balance read would let an expired monthly deadline zero the bucket
+      // before the transition.
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockHsetFn).not.toHaveBeenCalled();
+      expect(mockDelFn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { tier: "free" as const, replacedPeriodEndMs: 1_791_036_800_000 },
+      { tier: "pro" as const, replacedPeriodEndMs: 0 },
+      { tier: "pro" as const, replacedPeriodEndMs: 1_791_036_800_000.5 },
+    ])(
+      "rejects $tier with deadline $replacedPeriodEndMs before Redis",
+      async ({ tier, replacedPeriodEndMs }) => {
+        const { restoreAnnualAllowanceSchedule } = getIsolatedModule();
+
+        await expect(
+          restoreAnnualAllowanceSchedule("user-annual", tier, {
+            ...transition,
+            replacedPeriodEndMs,
+          }),
+        ).rejects.toThrow();
+        expect(mockEvalFn).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      {
+        result: () => Promise.reject(new Error("Redis down")),
+        error: "Redis down",
+      },
+      {
+        result: () => Promise.resolve(null),
+        error: "Unexpected annual allowance transition result",
+      },
+    ])(
+      "throws on $error so Stripe retries the transition",
+      async ({ result, error }) => {
+        mockEvalFn.mockImplementationOnce(result);
+        const { restoreAnnualAllowanceSchedule } = getIsolatedModule();
+
+        await expect(
+          restoreAnnualAllowanceSchedule("user-annual", "pro", transition),
+        ).rejects.toThrow(error);
+      },
+    );
+  });
+
   describe("capCurrentCycleAllocation", () => {
     it("initializes a missing bucket at the requested allocation", async () => {
       const { capCurrentCycleAllocation } = getIsolatedModule();

@@ -6,6 +6,7 @@ import Stripe from "stripe";
 import {
   freezeRateLimitBucketForDelinquency,
   resetRateLimitBucketAfterPayment,
+  restoreAnnualAllowanceSchedule,
   stashTierChangeBucketState,
   applyProratedTierChangeBucket,
   clearOrgRemovedUsage,
@@ -16,7 +17,10 @@ import {
   isCheckoutPaymentAnalyticsEvent,
 } from "@/lib/billing/checkout-payment-analytics";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
-import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
+import {
+  getInvoicePaidBucketResetMode,
+  replacedSubscriptionPeriodFromUpdateInvoice,
+} from "@/lib/billing/subscription-invoice-reset";
 import {
   priceBillingInterval,
   subscriptionMrrDollars,
@@ -396,6 +400,132 @@ async function applyTierChangeBuckets({
       : `[Subscription Webhook] ${source}: no tier-change state found; skipping bucket reset`,
   );
   return appliedCount;
+}
+
+function isSingleIntervalPrice(
+  price: Stripe.Price | undefined,
+  interval: "month" | "year",
+): boolean {
+  return (
+    priceBillingInterval(price) === interval &&
+    (price?.recurring?.interval_count ?? 1) === 1
+  );
+}
+
+/**
+ * Verify, from the paid invoice lines and the current subscription, that this
+ * update replaced a same-tier monthly period of the same subscription with
+ * its current annual item. Returns the monthly deadline that the invoice
+ * credited. Tier changes keep using their stashed migration.
+ *
+ * The current item, not the invoice's first priced line, identifies the new
+ * Price: an all-proration update invoice lists the old Price first.
+ */
+async function sameTierMonthlyToAnnualTransition({
+  invoice,
+  subscription,
+  subscriptionId,
+  tier,
+}: {
+  invoice: Stripe.Invoice;
+  subscription: Stripe.Subscription;
+  subscriptionId: string;
+  tier: SubscriptionTier;
+}): Promise<{ replacedPeriodEndMs: number } | { skipReason: string } | null> {
+  if (tier === "team") return null;
+  const items = subscription.items;
+  const item = items?.data[0];
+  const annualPrice = item?.price;
+  if (!annualPrice || !isSingleIntervalPrice(annualPrice, "year")) return null;
+
+  if (items?.has_more || items?.data.length !== 1) {
+    return { skipReason: "current_items_ambiguous" };
+  }
+  if (invoice.status !== "paid") return { skipReason: "invoice_not_paid" };
+  if (subscriptionTierFromPrice(annualPrice) !== tier) {
+    return { skipReason: "annual_price_tier_unverified" };
+  }
+
+  const replaced = replacedSubscriptionPeriodFromUpdateInvoice({
+    lines: (await invoiceLineItems(invoice)).map((line) => ({
+      subscriptionId: invoiceLineSubscriptionId(line),
+      priceId: invoiceLinePriceId(line),
+      proration: invoiceLineIsProration(line),
+      amount: line.amount,
+      periodStartSeconds: line.period?.start,
+      periodEndSeconds: line.period?.end,
+    })),
+    subscriptionId,
+    newPriceId: annualPrice.id,
+    newPeriodEndSeconds: (item as { current_period_end?: number })
+      .current_period_end,
+  });
+  if (replaced.kind !== "replaced") return { skipReason: replaced.reason };
+
+  // Let Stripe retry a lookup failure before any paid side effects run.
+  const replacedPrice = await stripe.prices.retrieve(replaced.replacedPriceId);
+  if (!isSingleIntervalPrice(replacedPrice, "month")) {
+    return { skipReason: "replaced_price_not_monthly" };
+  }
+  if (subscriptionTierFromPrice(replacedPrice) !== tier) {
+    return { skipReason: "tier_changed" };
+  }
+  return { replacedPeriodEndMs: replaced.replacedPeriodEndMs };
+}
+
+async function restoreAnnualAllowanceSchedules({
+  userIds,
+  tier,
+  subscriptionId,
+  invoice,
+  replacedPeriodEndMs,
+  customerId,
+  orgId,
+}: {
+  userIds: string[];
+  tier: SubscriptionTier;
+  subscriptionId: string;
+  invoice: Stripe.Invoice;
+  replacedPeriodEndMs: number;
+  customerId: string;
+  orgId?: string;
+}): Promise<void> {
+  const transitionAtMs = invoicePaidAtMs(invoice);
+  const outcomes = await Promise.all(
+    userIds.map((userId) =>
+      restoreAnnualAllowanceSchedule(userId, tier, {
+        subscriptionId,
+        invoiceId: invoice.id,
+        occurredAtMs: transitionAtMs,
+        replacedPeriodEndMs,
+      }),
+    ),
+  );
+  // A missing bucket or one without a deadline already refills on a timer.
+  const needsReview = outcomes.some(
+    (outcome) =>
+      outcome === "held" ||
+      outcome === "other_subscription" ||
+      outcome === "stale" ||
+      outcome === "deadline_mismatch",
+  );
+  const properties = {
+    userId: userIds[0],
+    user_ids: userIds,
+    org_id: orgId,
+    stripe_customer_id: customerId,
+    stripe_subscription_id: subscriptionId,
+    stripe_invoice_id: invoice.id,
+    subscription_tier: tier,
+    transition_at_ms: transitionAtMs,
+    replaced_period_end_ms: replacedPeriodEndMs,
+    outcomes,
+  };
+  if (needsReview) {
+    phLogger.warn("billing_annual_allowance_schedule_unchanged", properties);
+  } else if (outcomes.includes("applied")) {
+    phLogger.info("billing_annual_allowance_schedule_restored", properties);
+  }
 }
 
 async function getPaidTierChangeInvoice(
@@ -1271,6 +1401,15 @@ async function handleInvoicePaid(
   const includedUsagePoints = includedUsagePointsForStripePrice(
     entitlementPrice?.id,
   );
+  const annualTransition =
+    resetMode.mode === "subscription_update_proration"
+      ? await sameTierMonthlyToAnnualTransition({
+          invoice,
+          subscription,
+          subscriptionId,
+          tier,
+        })
+      : null;
 
   await setReferralCodesPaidEligibility({
     userIds,
@@ -1324,10 +1463,29 @@ async function handleInvoicePaid(
     return;
   }
 
-  // Mid-cycle tier change: apply only a previously stashed bucket migration.
-  // Missing state is intentionally a no-op so quantity/anchor changes cannot
-  // mint a fresh monthly allocation.
+  // A verified same-tier switch only changes the allowance schedule. Tier
+  // changes still require an existing stash to update the remaining allocation.
   if (resetMode.mode === "subscription_update_proration") {
+    if (annualTransition && "replacedPeriodEndMs" in annualTransition) {
+      await restoreAnnualAllowanceSchedules({
+        userIds,
+        tier,
+        subscriptionId,
+        invoice,
+        replacedPeriodEndMs: annualTransition.replacedPeriodEndMs,
+        customerId,
+        orgId: orgId ?? undefined,
+      });
+      return;
+    }
+    if (annualTransition) {
+      phLogger.info("billing_annual_allowance_transition_not_applicable", {
+        stripe_subscription_id: subscriptionId,
+        stripe_invoice_id: invoice.id,
+        subscription_tier: tier,
+        skip_reason: annualTransition.skipReason,
+      });
+    }
     await applyTierChangeBuckets({
       userIds,
       tier,
