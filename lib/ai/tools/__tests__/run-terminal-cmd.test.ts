@@ -60,6 +60,9 @@ import { createGetTerminalFiles } from "../get-terminal-files";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setImmediate } from "node:timers";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
@@ -522,6 +525,131 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         'Process exited with code 1\n{"result":{"processStarted":true,"exitCode":1,"output":"compile passed\\n","error":"killed"}}',
     });
   });
+
+  test("reports the shell exit separately from whether setup created the entry point", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "setup-fixture-"));
+    await writeFile(
+      join(cwd, "install.sh"),
+      `if [ "$1" = "skip-scaffold" ]; then
+  echo "scaffolding skipped"
+  exit 0
+fi
+echo "fetching dependencies"
+echo "dependency install failed" >&2
+exit 7
+`,
+    );
+    const fixtureCommands = [
+      "sh install.sh; echo setup finished",
+      "sh install.sh | tee install.log",
+      "sh install.sh skip-scaffold",
+      "sh install.sh",
+      "test -f server.js",
+    ];
+    const records = new Map<string, string>();
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "local-fixture",
+      getWorkingDirectory: () => cwd,
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
+      files: {
+        write: async (path: string, data: string) => {
+          records.set(path, data);
+        },
+        read: async (path: string) => {
+          if (!records.has(path)) throw new Error("missing");
+          return records.get(path)!;
+        },
+        list: async () => [],
+        remove: async (path: string) => {
+          records.delete(path);
+        },
+      },
+      commands: {
+        run: jest.fn(async (command: string, opts: any) => {
+          // Only fixture commands reach the real shell; record maintenance
+          // probes are answered without touching the host.
+          if (!fixtureCommands.some((fixture) => command.endsWith(fixture)))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          return new Promise<{
+            stdout: string;
+            stderr: string;
+            exitCode: number;
+            pid?: number;
+          }>((resolve, reject) => {
+            const child = spawn("/bin/sh", ["-c", command], {
+              cwd,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            child.stdout.on("data", (chunk: Buffer) =>
+              opts.onStdout?.(chunk.toString()),
+            );
+            child.stderr.on("data", (chunk: Buffer) =>
+              opts.onStderr?.(chunk.toString()),
+            );
+            child.once("error", reject);
+            child.once("close", (code) =>
+              resolve({
+                stdout: "",
+                stderr: "",
+                exitCode: code ?? 1,
+                pid: child.pid,
+              }),
+            );
+          });
+        }),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    const tool = createRunTerminalCmd(context);
+    const run = async (command: string) => {
+      const output = (await runTool(tool, {
+        command,
+        is_background: false,
+        interactive: false,
+      })) as { result: Record<string, unknown> };
+      const modelOutput = (await getModelOutput(tool, output)) as {
+        value: string;
+      };
+      return { result: output.result, modelOutput: modelOutput.value };
+    };
+
+    try {
+      const chained = await run("sh install.sh; echo setup finished");
+      expect(chained.result).toMatchObject({
+        status: "completed",
+        exitCode: 0,
+      });
+      expect(chained.result.output).toContain("dependency install failed");
+      expect(chained.result.output).toContain("setup finished");
+      expect(chained.modelOutput).toMatch(/^Process exited with code 0\n/);
+
+      const piped = await run("sh install.sh | tee install.log");
+      expect(piped.result).toMatchObject({ status: "completed", exitCode: 0 });
+      expect(piped.result.output).toContain("dependency install failed");
+
+      const split = await run("sh install.sh");
+      expect(split.result).toMatchObject({ status: "failed", exitCode: 7 });
+      expect(split.modelOutput).toMatch(/^Process exited with code 7\n/);
+
+      const skipped = await run("sh install.sh skip-scaffold");
+      expect(skipped.result).toMatchObject({
+        status: "completed",
+        exitCode: 0,
+      });
+      expect(skipped.result.output).toContain("scaffolding skipped");
+
+      const entryPoint = await run("test -f server.js");
+      expect(entryPoint.result).toMatchObject({
+        status: "failed",
+        exitCode: 1,
+      });
+    } finally {
+      await context.ptySessionManager.closeAll("chat-1");
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
 
   test("does not report approval denial as a process exit", async () => {
     const requestToolApproval = jest.fn(async () => ({
