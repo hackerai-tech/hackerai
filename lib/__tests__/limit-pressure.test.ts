@@ -54,6 +54,19 @@ describe("limit pressure helpers", () => {
     });
   });
 
+  it("treats the QA cap as a spending guardrail without billing offers", () => {
+    expect(
+      getLimitPressureContext({
+        subscription: "pro",
+        capReason: "qa_spend_cap",
+      }),
+    ).toMatchObject({
+      costGuardrail: true,
+      paidMonthlyExhaustion: false,
+      eligibleCtas: [],
+    });
+  });
+
   it("routes extra-usage caps to the spending-limit guardrail instead of upgrade", () => {
     expect(
       shouldShowUpgradeCta({

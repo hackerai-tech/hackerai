@@ -41,6 +41,13 @@ import {
 } from "@/lib/limit-pressure";
 import { isUserRateLimitKey } from "./key-cleanup";
 import {
+  createQaSpendCapError,
+  createQaSpendPoolUnavailableError,
+  resolveQaSpendPool,
+  type QaSpendPool,
+  type QaSpendPoolEnvironment,
+} from "./qa-spending-policy";
+import {
   NORMAL_USAGE_MULTIPLIER,
   POINTS_PER_DOLLAR,
   includedPointsToExtraUsagePoints,
@@ -1004,13 +1011,11 @@ export const getCycleExpireSeconds = (
  * Create rate limiter for a user (shared between agent and ask modes).
  * Single monthly bucket replacing the old session+weekly dual buckets.
  */
-const createRateLimiter = (
-  redis: ReturnType<typeof createRedisClient>,
-  userId: string,
-  subscription: SubscriptionTier,
+const createMonthlyRateLimiter = (
+  redis: RedisClient,
+  storageKey: string,
+  monthlyLimit: number,
 ) => {
-  const { monthly: monthlyLimit } = getBudgetLimits(subscription);
-
   return {
     monthlyLimit,
     monthly: {
@@ -1020,17 +1025,101 @@ const createRateLimiter = (
           options?: { rate?: number; allowPartial?: boolean },
         ) =>
           limitPaidBucket(
-            redis!,
-            `usage:monthly:${key}`,
+            redis,
+            key,
             monthlyLimit,
             options?.rate ?? 1,
             Date.now(),
             options?.allowPartial ?? false,
           ),
       },
-      key: `${userId}:${subscription}`,
+      key: storageKey,
     },
   };
+};
+
+const createRateLimiter = (
+  redis: RedisClient,
+  userId: string,
+  subscription: SubscriptionTier,
+) =>
+  createMonthlyRateLimiter(
+    redis,
+    getMonthlyBucketKey(userId, subscription),
+    getBudgetLimits(subscription).monthly,
+  );
+
+/**
+ * Billing ledger for one usage operation. Approved QA users on personal paid
+ * plans in a verified Preview/Development runtime use a shared, capped pool
+ * through the same paid-bucket script; everyone else keeps their own bucket.
+ */
+type UsageLedger = { kind: "customer" } | { kind: "qa"; pool: QaSpendPool };
+
+/**
+ * `expectedQaSpendPool` is the ledger recorded at admission
+ * (`RateLimitInfo.qaSpendPool ?? null`). When supplied and the current policy
+ * disagrees, the operation is refused rather than moved to another ledger.
+ * `undefined` resolves the current policy only.
+ */
+const resolveUsageLedger = (
+  userId: string,
+  subscription: SubscriptionTier,
+  expectedQaSpendPool?: QaSpendPoolEnvironment | null,
+): UsageLedger | null => {
+  const pool = resolveQaSpendPool(userId, subscription);
+  if (
+    expectedQaSpendPool !== undefined &&
+    (pool?.environment ?? null) !== expectedQaSpendPool
+  ) {
+    console.warn(
+      "[token-bucket] QA spending policy changed during a run; refusing to move usage between ledgers",
+    );
+    return null;
+  }
+  return pool ? { kind: "qa", pool } : { kind: "customer" };
+};
+
+const createQaRateLimiter = (redis: RedisClient, pool: QaSpendPool) =>
+  createMonthlyRateLimiter(redis, pool.storageKey, pool.capPoints);
+
+/**
+ * QA admission and post-wait capacity checks. Never reads the customer bucket
+ * or Extra Usage wallet, and rejects an empty pool even for a zero-cost
+ * capacity recheck so a resumed run cannot continue past the cap.
+ */
+const checkQaSpendPoolLimit = async (
+  redis: RedisClient | null,
+  pool: QaSpendPool,
+  subscription: SubscriptionTier,
+  estimatedCost: number,
+): Promise<RateLimitInfo> => {
+  if (!redis) throw createQaSpendPoolUnavailableError(pool, subscription);
+  try {
+    const { monthly } = createQaRateLimiter(redis, pool);
+    const result = await monthly.limiter.limit(monthly.key, {
+      rate: estimatedCost,
+    });
+    if (!result.success || (estimatedCost <= 0 && result.remaining <= 0)) {
+      throw createQaSpendCapError(pool, subscription, result.reset);
+    }
+    const limit = finiteNonNegativePoints(result.limit) ?? pool.capPoints;
+    return {
+      remaining: result.remaining,
+      resetTime: new Date(result.reset),
+      limit,
+      monthly: {
+        remaining: result.remaining,
+        limit,
+        resetTime: new Date(result.reset),
+      },
+      pointsDeducted: estimatedCost,
+      qaSpendPool: pool.environment,
+    };
+  } catch (error) {
+    if (error instanceof ChatSDKError) throw error;
+    throw createQaSpendPoolUnavailableError(pool, subscription);
+  }
 };
 
 /**
@@ -1047,6 +1136,16 @@ export const checkTokenBucketLimit = async (
   organizationId?: string,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
+
+  const qaSpendPool = resolveQaSpendPool(userId, subscription);
+  if (qaSpendPool) {
+    return checkQaSpendPoolLimit(
+      redis,
+      qaSpendPool,
+      subscription,
+      calculateTokenCost(estimatedInputTokens, "input", modelName),
+    );
+  }
 
   if (!redis) {
     if (process.env.NODE_ENV === "production") {
@@ -1418,21 +1517,32 @@ export const deductUsageDelta = async (
   organizationId?: string,
   usageSettlementId?: string,
   settlementSequence?: number,
+  expectedQaSpendPool?: QaSpendPoolEnvironment | null,
 ): Promise<UsageDeductionResult> => {
+  const uncoveredFailure = (): UsageDeductionResult => ({
+    ...emptyUsageDeductionResult(),
+    uncoveredPoints: nonNegativePoints(additionalCostPoints),
+    usageDeductionFailed: nonNegativePoints(additionalCostPoints) > 0,
+    usageDeductionFailureReason: "deduction_failed",
+  });
+  const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
+  if (!ledger) return uncoveredFailure();
+
   const redis = createRedisClient();
   if (!redis) {
+    // A QA pool never falls back to unmetered usage, including in local dev.
+    if (ledger.kind === "qa") return uncoveredFailure();
     if (process.env.NODE_ENV !== "production") {
       return emptyUsageDeductionResult();
     }
-    throwRateLimitServiceNotConfigured();
+    return throwRateLimitServiceNotConfigured();
   }
 
   try {
-    const { monthly, monthlyLimit } = createRateLimiter(
-      redis,
-      userId,
-      subscription,
-    );
+    const { monthly, monthlyLimit } =
+      ledger.kind === "qa"
+        ? createQaRateLimiter(redis, ledger.pool)
+        : createRateLimiter(redis, userId, subscription);
     if (monthlyLimit === 0) return emptyUsageDeductionResult();
 
     return deductAdditionalUsagePoints({
@@ -1440,7 +1550,8 @@ export const deductUsageDelta = async (
       userId,
       subscription,
       additionalCostPoints,
-      extraUsageConfig,
+      // QA usage is never charged to a customer Extra Usage wallet.
+      extraUsageConfig: ledger.kind === "qa" ? undefined : extraUsageConfig,
       organizationId,
       usageSettlementId,
       settlementOperationId:
@@ -1450,12 +1561,7 @@ export const deductUsageDelta = async (
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
-    return {
-      ...emptyUsageDeductionResult(),
-      uncoveredPoints: nonNegativePoints(additionalCostPoints),
-      usageDeductionFailed: nonNegativePoints(additionalCostPoints) > 0,
-      usageDeductionFailureReason: "deduction_failed",
-    };
+    return uncoveredFailure();
   }
 };
 
@@ -1487,9 +1593,13 @@ export const deductUsage = async (
   > & { usageDeductionOutcomeUnknown?: boolean },
   actualModelName?: string,
   usageSettlementId?: string,
+  expectedQaSpendPool?: QaSpendPoolEnvironment | null,
 ): Promise<UsageDeductionResult> => {
+  const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
   const redis = createRedisClient();
-  if (!redis) {
+  // A QA pool never falls back to unmetered usage, including in local dev;
+  // that case settles below as uncovered without touching any ledger.
+  if (!redis && ledger?.kind === "customer") {
     if (process.env.NODE_ENV !== "production") {
       return emptyUsageDeductionResult();
     }
@@ -1519,11 +1629,10 @@ export const deductUsage = async (
   };
 
   try {
-    const { monthly, monthlyLimit } = createRateLimiter(
-      redis,
-      userId,
-      subscription,
-    );
+    const monthlyLimit =
+      ledger?.kind === "qa"
+        ? ledger.pool.capPoints
+        : getBudgetLimits(subscription).monthly;
     if (monthlyLimit === 0) return emptyUsageDeductionResult();
 
     // Calculate estimated input cost (already deducted upfront)
@@ -1599,6 +1708,20 @@ export const deductUsage = async (
       );
     }
 
+    // Refuse to settle against a changed ledger, a QA pool without Redis, or a
+    // QA ledger whose admission debited a wallet (QA admissions never do).
+    if (
+      !ledger ||
+      !redis ||
+      (ledger.kind === "qa" && initialExtraUsagePoints > 0)
+    ) {
+      return withFinalCoverage(lastKnownDeductionResult, "deduction_failed");
+    }
+    const { monthly } =
+      ledger.kind === "qa"
+        ? createQaRateLimiter(redis, ledger.pool)
+        : createRateLimiter(redis, userId, subscription);
+
     const initialCoveredPoints =
       initialDeduction !== undefined
         ? initialIncludedPoints +
@@ -1649,6 +1772,7 @@ export const deductUsage = async (
         const refunded = await refundBucketTokens(
           userId,
           subscription,
+          ledger,
           includedRefundPoints,
           usageSettlementId
             ? `${usageSettlementId}:settlement-refund`
@@ -1681,7 +1805,8 @@ export const deductUsage = async (
       userId,
       subscription,
       additionalCostPoints: Math.ceil(costDifference),
-      extraUsageConfig,
+      // QA usage is never charged to a customer Extra Usage wallet.
+      extraUsageConfig: ledger.kind === "qa" ? undefined : extraUsageConfig,
       organizationId,
       usageSettlementId,
       settlementOperationId: usageSettlementId
@@ -1731,6 +1856,7 @@ return {1, nextTokens}
 const refundBucketTokens = async (
   userId: string,
   subscription: SubscriptionTier,
+  ledger: UsageLedger,
   pointsToRefund: number,
   refundId: string,
 ): Promise<boolean> => {
@@ -1739,8 +1865,14 @@ const refundBucketTokens = async (
   const redis = createRedisClient();
   if (!redis) return false;
 
-  const { monthly: monthlyLimit } = getBudgetLimits(subscription);
-  const monthlyKey = getMonthlyBucketKey(userId, subscription);
+  const monthlyLimit =
+    ledger.kind === "qa"
+      ? ledger.pool.capPoints
+      : getBudgetLimits(subscription).monthly;
+  const monthlyKey =
+    ledger.kind === "qa"
+      ? ledger.pool.storageKey
+      : getMonthlyBucketKey(userId, subscription);
 
   try {
     await redis.eval(
@@ -2859,12 +2991,26 @@ export const refundUsage = async (
   extraUsagePointsDeducted: number,
   organizationId?: string,
   includedRefundId: string = randomUUID(),
+  expectedQaSpendPool?: QaSpendPoolEnvironment | null,
 ): Promise<UsageRefundResult> => {
+  const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
+  // QA admissions never debit a wallet, so wallet points under a QA ledger
+  // mean the policy changed after admission. Leave both amounts unrefunded
+  // rather than credit a ledger that was never charged.
+  if (!ledger || (ledger.kind === "qa" && extraUsagePointsDeducted > 0)) {
+    return {
+      includedPointsRefunded: 0,
+      extraUsagePointsRefunded: 0,
+      includedRefundFailed: pointsDeducted > 0,
+      extraUsageRefundFailed: extraUsagePointsDeducted > 0,
+    };
+  }
   const includedRefundPromise =
     pointsDeducted > 0
       ? refundBucketTokens(
           userId,
           subscription,
+          ledger,
           pointsDeducted,
           includedRefundId,
         )

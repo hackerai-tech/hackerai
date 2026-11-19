@@ -28,6 +28,7 @@ import { buildPromptCacheOptions } from "@/lib/ai/prompt-cache";
 import type {
   ChatMode,
   ExtraUsageConfig,
+  RateLimitInfo,
   SandboxPreference,
   SelectedModel,
   SubscriptionTier,
@@ -157,14 +158,7 @@ export function sendRateLimitWarnings(
   options: {
     subscription: SubscriptionTier;
     mode: ChatMode;
-    rateLimitInfo: {
-      remaining: number;
-      limit: number;
-      resetTime: Date;
-      monthly?: { remaining: number; limit: number; resetTime: Date };
-      extraUsagePointsDeducted?: number;
-      rateLimitSkipped?: boolean;
-    };
+    rateLimitInfo: RateLimitInfo;
     extraUsageConfig?: ExtraUsageConfig;
     paidDailyFreeAllowance?: {
       costLimitDollars: number;
@@ -179,6 +173,9 @@ export function sendRateLimitWarnings(
     extraUsageConfig,
     paidDailyFreeAllowance,
   } = options;
+
+  // The shared QA pool is separate from the user's subscription and wallet.
+  if (rateLimitInfo.qaSpendPool) return;
 
   if (paidDailyFreeAllowance) {
     writeRateLimitWarning(writer, {

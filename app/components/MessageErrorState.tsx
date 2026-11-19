@@ -86,6 +86,7 @@ export const MessageErrorState = (props: MessageErrorStateProps) => {
   const isUsageBlock =
     error instanceof ChatSDKError &&
     error.type === "rate_limit" &&
+    !error.metadata?.qaSpendPool &&
     error.metadata?.capReason !== "free_concurrency";
   return isUsageBlock ? (
     <BlockedChatBillingRecovery onRetry={() => props.onRetry()}>

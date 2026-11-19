@@ -2820,7 +2820,7 @@ export const agentLongTask = task({
                 remaining: rateLimitInfo.remaining,
                 subscription,
               },
-              extraUsageConfig,
+              rateLimitInfo.qaSpendPool ? undefined : extraUsageConfig,
             );
 
             sendRateLimitWarnings(writer, {
@@ -3842,6 +3842,7 @@ export const agentLongTask = task({
                       : rateLimitInfo,
                     usageRecordArgs.accountingModel,
                     usageTracker.usageSettlementId,
+                    rateLimitInfo.qaSpendPool ?? null,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -3988,6 +3989,7 @@ export const agentLongTask = task({
                     organizationId,
                     usageTracker.usageSettlementId,
                     usageSettlementSequence,
+                    rateLimitInfo.qaSpendPool ?? null,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {

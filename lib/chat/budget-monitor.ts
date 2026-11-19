@@ -6,7 +6,8 @@ import type {
   RateLimitInfo,
   SubscriptionTier,
 } from "@/types";
-import { POINTS_PER_DOLLAR } from "@/lib/rate-limit";
+import { POINTS_PER_DOLLAR, QA_SPEND_CAP_REASON } from "@/lib/rate-limit";
+import { billableCostDollarsToPoints } from "@/lib/rate-limit/token-bucket";
 import {
   emitTokenBucketThresholdWarning,
   type TokenBucketEmitContext,
@@ -37,6 +38,8 @@ export interface BudgetSnapshot {
   extraUsageMonthlyRemainingAtStart?: number;
   capReasonOnExhaustion?: LimitCapReason;
   extraUsageOverflowAllowed?: boolean;
+  /** The run draws from the shared routine-QA pool, never Extra Usage. */
+  qaSpendPool?: RateLimitInfo["qaSpendPool"];
 }
 
 export type BudgetBillingStopReason =
@@ -45,7 +48,8 @@ export type BudgetBillingStopReason =
   | "extra_usage_balance_empty"
   | "extra_usage_balance_insufficient"
   | "monthly_extra_usage_spending_cap_hit"
-  | "extra_usage_overflow_disabled";
+  | "extra_usage_overflow_disabled"
+  | "qa_spend_cap_exhausted";
 
 export interface BudgetAbortDetails {
   capReason: LimitCapReason;
@@ -88,6 +92,25 @@ export function captureBudgetSnapshot(args: {
     rateLimitInfo.rateLimitSkipped
   ) {
     return null;
+  }
+  if (rateLimitInfo.qaSpendPool) {
+    return {
+      monthlyLimitPoints,
+      // The QA admission already reserved the estimate. The stream total
+      // includes the actual input cost, so compare against pre-reservation room.
+      monthlyRemainingAtStart: Math.min(
+        monthlyLimitPoints,
+        rateLimitInfo.monthly!.remaining + (rateLimitInfo.pointsDeducted ?? 0),
+      ),
+      monthlyResetTime,
+      extraUsageEnabledAtStart: false,
+      extraUsageHasBalanceAtStart: false,
+      extraUsageBalanceAtStart: 0,
+      extraUsageAutoReload: false,
+      extraUsageOverflowAllowed: false,
+      capReasonOnExhaustion: QA_SPEND_CAP_REASON,
+      qaSpendPool: rateLimitInfo.qaSpendPool,
+    };
   }
   return {
     monthlyLimitPoints,
@@ -134,9 +157,9 @@ export class BudgetMonitor {
 
   checkAfterStep(currentCostDollars: number): BudgetCheckDecision {
     const { snapshot } = this;
-    const usedSinceStartPoints = Math.ceil(
-      currentCostDollars * POINTS_PER_DOLLAR,
-    );
+    const usedSinceStartPoints = snapshot.qaSpendPool
+      ? billableCostDollarsToPoints(currentCostDollars)
+      : Math.ceil(currentCostDollars * POINTS_PER_DOLLAR);
     const agentRunSpendCap = this.options.agentRunSpendCap;
     if (
       agentRunSpendCap &&
@@ -152,9 +175,10 @@ export class BudgetMonitor {
         monthlyRemainingDollars:
           Math.round(monthlyRemainingDollars * 100) / 100,
         capBasis: agentRunSpendCap.basis,
-        premiumContinuationAllowed: canContinueProAgentRunWithPremium(
-          this.options.extraUsageConfig,
-        ),
+        // Premium continuation bills Extra Usage, which QA runs never use.
+        premiumContinuationAllowed:
+          !snapshot.qaSpendPool &&
+          canContinueProAgentRunWithPremium(this.options.extraUsageConfig),
       };
       writeRateLimitWarning(this.writer, {
         warningType: "agent-run-spend-cap",
@@ -299,6 +323,7 @@ export class BudgetMonitor {
     capReason: LimitCapReason;
     overflowDollars: number;
   }): BudgetBillingStopReason {
+    if (this.snapshot.qaSpendPool) return "qa_spend_cap_exhausted";
     if (this.snapshot.extraUsageOverflowAllowed === false) {
       return "extra_usage_overflow_disabled";
     }
@@ -329,6 +354,7 @@ export class BudgetMonitor {
     cutOff?: boolean;
     capReason?: LimitCapReason;
   }): void {
+    if (this.snapshot.qaSpendPool && !args.cutOff) return;
     const ctx: TokenBucketEmitContext = {
       bucketType: this.snapshot.budgetPeriod ?? "monthly",
       usedPercent: args.usedPercent,

@@ -28,6 +28,7 @@ export type LimitCapReason =
   | "monthly_near_limit"
   | "extra_usage_active"
   | "agent_run_spend_cap"
+  | "qa_spend_cap"
   | (string & {});
 
 export type LimitType =
@@ -73,6 +74,7 @@ const COST_GUARDRAIL_REASONS = new Set<string>([
   "team_member_disabled",
   "team_pool_disabled",
   "auto_reload_failed",
+  "qa_spend_cap",
 ]);
 
 export function getLimitTypeForCapReason(
@@ -100,7 +102,8 @@ export function getLimitTypeForCapReason(
   ) {
     return "extra_usage";
   }
-  if (capReason === "billing_unavailable") return "billing";
+  if (capReason === "billing_unavailable" || capReason === "qa_spend_cap")
+    return "billing";
   return "monthly";
 }
 
@@ -168,7 +171,7 @@ export function getExtraUsageLimitCta(args: {
     return null;
   }
 
-  if (capReason === "billing_unavailable") {
+  if (capReason === "billing_unavailable" || capReason === "qa_spend_cap") {
     return null;
   }
 

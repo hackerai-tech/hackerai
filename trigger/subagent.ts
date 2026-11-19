@@ -785,6 +785,7 @@ export const subagentTask = task({
         { pointsDeducted: 0, extraUsagePointsDeducted: 0 },
         responseModel ?? selectedModel,
         usageTracker.usageSettlementId,
+        rateLimitInfo.qaSpendPool ?? null,
       );
       usageSettled = true;
       const usageLogArgs = {

@@ -132,6 +132,12 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} legacy per-run safety cap. Continue to keep working.`;
   }
 
+  // Preview/Development QA pool: no plan, credit or dollar wording, since the
+  // tracked amounts include pricing markup and no billing action applies.
+  if (data.capReason === "qa_spend_cap" && data.remainingPercent === 0) {
+    return `The shared QA spending pool for this environment is used up${data.cutOff ? " and this response was cut off" : ""}. It resets ${timeString}.`;
+  }
+
   if (data.subscription === "free" && data.bucketType === "daily") {
     if (data.remainingPercent === 0) {
       return `You've used today's free Agent allowance${data.cutOff ? " and this response was cut off" : ""}. Upgrade to continue. Resets ${timeString} at midnight UTC.`;
@@ -189,6 +195,7 @@ const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 export const RateLimitWarning = (props: RateLimitWarningProps) => {
   const isBlocked =
     props.data.warningType === "token-bucket" &&
+    props.data.capReason !== "qa_spend_cap" &&
     props.data.remainingPercent === 0;
   return isBlocked ? (
     <BlockedChatBillingRecovery>

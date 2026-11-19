@@ -349,6 +349,90 @@ describe("captureBudgetSnapshot", () => {
   });
 });
 
+describe("routine QA spending pool", () => {
+  const resetTime = new Date("2026-12-01T00:00:00.000Z");
+  const qaRateLimitInfo: RateLimitInfo = {
+    remaining: 1_000,
+    resetTime,
+    limit: 10_000,
+    monthly: { remaining: 1_000, limit: 10_000, resetTime },
+    pointsDeducted: 50,
+    qaSpendPool: "preview",
+  };
+  // A QA account may also have a funded wallet; QA runs must ignore it.
+  const fundedWallet: ExtraUsageConfig = {
+    enabled: true,
+    hasBalance: true,
+    balanceDollars: 100,
+    autoReloadEnabled: true,
+  };
+
+  it("cuts off at the QA pool without Extra Usage or allowance fallbacks", () => {
+    const snapshot = captureBudgetSnapshot({
+      rateLimitInfo: { ...qaRateLimitInfo, pointsDeducted: 300 },
+      extraUsageConfig: fundedWallet,
+      subscription: "pro",
+    });
+    expect(snapshot).toMatchObject({
+      monthlyLimitPoints: 10_000,
+      monthlyRemainingAtStart: 1_300,
+      extraUsageEnabledAtStart: false,
+      extraUsageOverflowAllowed: false,
+      capReasonOnExhaustion: "qa_spend_cap",
+    });
+
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(snapshot!, writer, "pro", {
+      extraUsageConfig: fundedWallet,
+    });
+
+    expect(monitor.checkAfterStep(0.09).type).toBe("continue");
+    expect(writer.write).not.toHaveBeenCalled();
+    expect(monitor.checkAfterStep(0.1)).toMatchObject({
+      type: "abort",
+      details: {
+        capReason: "qa_spend_cap",
+        billingStopReason: "qa_spend_cap_exhausted",
+        extraUsageAvailable: false,
+        extraUsageEnabled: false,
+      },
+    });
+    expect(writer.write).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warningType: "token-bucket",
+          cutOff: true,
+          capReason: "qa_spend_cap",
+        }),
+      }),
+    );
+    expect(writer.write).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ warningType: "extra-usage-active" }),
+      }),
+    );
+  });
+
+  it("does not offer premium continuation billed to Extra Usage at a QA run cap", () => {
+    const snapshot = captureBudgetSnapshot({
+      rateLimitInfo: qaRateLimitInfo,
+      extraUsageConfig: fundedWallet,
+      subscription: "pro",
+    })!;
+    const onAgentRunSpendCapHit = jest.fn();
+    const monitor = new BudgetMonitor(snapshot, makeWriter(), "pro", {
+      agentRunSpendCap: { capDollars: 0.01, basis: "fixed_5_dollars" },
+      extraUsageConfig: fundedWallet,
+      onAgentRunSpendCapHit,
+    });
+
+    expect(monitor.checkAfterStep(0.02).type).toBe("abort-agent-run-spend-cap");
+    expect(onAgentRunSpendCapHit).toHaveBeenCalledWith(
+      expect.objectContaining({ premiumContinuationAllowed: false }),
+    );
+  });
+});
+
 it("cuts off total serving cost at the remaining daily Free Agent budget", () => {
   const writer = makeWriter();
   const monitor = new BudgetMonitor(

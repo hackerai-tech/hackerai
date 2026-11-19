@@ -2632,3 +2632,443 @@ describe("token-bucket async functions", () => {
     });
   });
 });
+
+describe("routine QA spending pool", () => {
+  // Synthetic WorkOS-shaped IDs; no real accounts.
+  const QA_USER = `user_${"01QAROUTINEA".padEnd(26, "0")}`;
+  const BILLING_FIXTURE = `user_${"01BILLINGFIXTURE".padEnd(26, "0")}`;
+  const PREVIEW_POOL = "usage:qa-spend:v1:preview";
+  const DEV_POOL = "usage:qa-spend:v1:development";
+  const customerKey = (userId: string) => `usage:monthly:${userId}:pro`;
+  // $1 raw spend cap = 13,000 billable points at the 1.3x multiplier.
+  const CAP_POINTS = 13_000;
+  // 100k default-priced input tokens = 650 points.
+  const ESTIMATED_INPUT_TOKENS = 100_000;
+  const ESTIMATED_POINTS = 650;
+  const RESET = Date.now() + 10 * 24 * 60 * 60 * 1000;
+  const walletConfig = {
+    enabled: true,
+    hasBalance: true,
+    balanceDollars: 50,
+    autoReloadEnabled: true,
+  };
+  const ENV_KEYS = [
+    "QA_MONTHLY_QUOTA_USER_IDS",
+    "QA_MONTHLY_QUOTA_DENY_USER_IDS",
+    "QA_SPEND_CAP_DOLLARS",
+    "HACKERAI_ENVIRONMENT",
+    "VERCEL",
+    "VERCEL_ENV",
+    "VERCEL_TARGET_ENV",
+    "TRIGGER_SECRET_KEY",
+    "WORKOS_API_KEY",
+    "NODE_ENV",
+  ] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  // Shared Redis state survives module reloads, like a process restart.
+  let store: Map<string, { tokens: number; refunds: Set<string> }>;
+  let touchedKeys: string[];
+  let redisAvailable: boolean;
+  const mockDeductFromBalance = jest.fn();
+  const mockRefundToBalance = jest.fn();
+  const mockDeductFromTeamBalance = jest.fn();
+  const mockRefundToTeamBalance = jest.fn();
+
+  // Mirrors PAID_BUCKET_LIMIT_SCRIPT within one window: a new key starts
+  // full, rejected debits spend nothing, partial debits report the amount.
+  const fakeLimitPaidBucket = async (
+    _redis: unknown,
+    key: string,
+    tierMax: number,
+    debit = 0,
+    _nowMs?: number,
+    allowPartial = false,
+  ) => {
+    touchedKeys.push(key);
+    const bucket = store.get(key) ?? { tokens: tierMax, refunds: new Set() };
+    bucket.tokens = Math.max(0, Math.min(tierMax, bucket.tokens));
+    const points = Math.ceil(debit);
+    const success = points <= bucket.tokens;
+    let deducted = 0;
+    if (success || allowPartial) {
+      deducted = Math.min(points, bucket.tokens);
+      bucket.tokens -= deducted;
+    }
+    store.set(key, bucket);
+    return {
+      success,
+      remaining: bucket.tokens,
+      reset: RESET,
+      limit: tierMax,
+      ...(allowPartial && { deducted }),
+    };
+  };
+
+  // Mirrors REFUND_BUCKET_TOKENS_SCRIPT: idempotent per refund ID, capped.
+  const fakeRedis = {
+    exists: jest.fn(async () => 1),
+    hget: jest.fn(async () => null),
+    eval: jest.fn(
+      async (script: string, keys: string[], args: (string | number)[]) => {
+        if (!script.includes("refundField")) return [-1, -1, 0];
+        const [key] = keys;
+        const [refundField, points, cap] = args;
+        touchedKeys.push(key);
+        const bucket = store.get(key) ?? { tokens: 0, refunds: new Set() };
+        if (bucket.refunds.has(String(refundField))) return [0, bucket.tokens];
+        bucket.refunds.add(String(refundField));
+        bucket.tokens = Math.min(bucket.tokens + Number(points), Number(cap));
+        store.set(key, bucket);
+        return [1, bucket.tokens];
+      },
+    ),
+  };
+
+  const loadModule = () => {
+    let isolated: typeof import("../token-bucket");
+    jest.isolateModules(() => {
+      jest.doMock("../paid-bucket", () => ({
+        limitPaidBucket: fakeLimitPaidBucket,
+      }));
+      jest.doMock("../redis", () => ({
+        createRedisClient: () => (redisAvailable ? fakeRedis : null),
+        formatTimeRemaining: () => "in 10 days",
+      }));
+      jest.doMock("../../extra-usage", () => ({
+        deductFromBalance: mockDeductFromBalance,
+        refundToBalance: mockRefundToBalance,
+        deductFromTeamBalance: mockDeductFromTeamBalance,
+        refundToTeamBalance: mockRefundToTeamBalance,
+      }));
+      isolated = require("../token-bucket");
+    });
+    return isolated!;
+  };
+
+  const setPreviewEnv = () => {
+    process.env.QA_MONTHLY_QUOTA_USER_IDS = QA_USER;
+    process.env.QA_MONTHLY_QUOTA_DENY_USER_IDS = BILLING_FIXTURE;
+    process.env.QA_SPEND_CAP_DOLLARS = "1";
+    process.env.HACKERAI_ENVIRONMENT = "preview";
+    process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_TARGET_ENV = "preview";
+    process.env.TRIGGER_SECRET_KEY = "tr_preview_synthetic";
+    process.env.WORKOS_API_KEY = "sk_test_synthetic";
+  };
+  const setDevelopmentEnv = () => {
+    delete process.env.VERCEL;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_TARGET_ENV;
+    process.env.HACKERAI_ENVIRONMENT = "development";
+    process.env.TRIGGER_SECRET_KEY = "tr_dev_synthetic";
+  };
+  const expectNoWalletActivity = () => {
+    expect(mockDeductFromBalance).not.toHaveBeenCalled();
+    expect(mockRefundToBalance).not.toHaveBeenCalled();
+    expect(mockDeductFromTeamBalance).not.toHaveBeenCalled();
+    expect(mockRefundToTeamBalance).not.toHaveBeenCalled();
+  };
+  const qaCapError = {
+    type: "rate_limit",
+    metadata: expect.objectContaining({
+      capReason: "qa_spend_cap",
+      paidMonthlyExhaustion: false,
+      addCreditAvailable: false,
+      upgradeAvailable: false,
+      eligibleCtas: [],
+    }),
+  };
+
+  beforeEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+    for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+    store = new Map();
+    touchedKeys = [];
+    redisAvailable = true;
+    setPreviewEnv();
+    // The customer's own included allowance is already exhausted.
+    store.set(customerKey(QA_USER), { tokens: 0, refunds: new Set() });
+    store.set(customerKey(BILLING_FIXTURE), { tokens: 0, refunds: new Set() });
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it("admits an approved Preview paid QA request from the shared pool when the customer bucket is empty", async () => {
+    const { checkTokenBucketLimit } = loadModule();
+
+    const info = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      walletConfig,
+    );
+
+    expect(info).toMatchObject({
+      qaSpendPool: "preview",
+      pointsDeducted: ESTIMATED_POINTS,
+      remaining: CAP_POINTS - ESTIMATED_POINTS,
+      monthly: { limit: CAP_POINTS },
+    });
+    expect(info.extraUsagePointsDeducted).toBeUndefined();
+    expect(info.rateLimitSkipped).toBeUndefined();
+    expect(touchedKeys).toEqual([PREVIEW_POOL]);
+    expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
+    expectNoWalletActivity();
+  });
+
+  it("keeps admission, mid-run debit, final settlement and refunds on the same QA ledger", async () => {
+    const {
+      checkTokenBucketLimit,
+      deductUsageDelta,
+      deductUsage,
+      refundUsage,
+    } = loadModule();
+
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      walletConfig,
+    );
+    const delta = await deductUsageDelta(
+      QA_USER,
+      "pro",
+      1_000,
+      walletConfig,
+      undefined,
+      "settlement-1",
+      1,
+      admission.qaSpendPool ?? null,
+    );
+    expect(delta).toMatchObject({
+      includedPointsDeducted: 1_000,
+      extraUsagePointsDeducted: 0,
+      usageDeductionFailed: false,
+    });
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(
+      CAP_POINTS - ESTIMATED_POINTS - 1_000,
+    );
+
+    // Actual $0.10 raw cost = 1,300 points; 350 of the 1,650 debited return.
+    const final = await deductUsage(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      0,
+      0,
+      walletConfig,
+      0.1,
+      undefined,
+      0,
+      undefined,
+      { pointsDeducted: ESTIMATED_POINTS + 1_000, extraUsagePointsDeducted: 0 },
+      undefined,
+      "settlement-1",
+      admission.qaSpendPool ?? null,
+    );
+    expect(final).toMatchObject({
+      includedPointsDeducted: 1_300,
+      extraUsagePointsDeducted: 0,
+      uncoveredPoints: 0,
+    });
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - 1_300);
+
+    // An error refund retried with the same ID is applied once.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await refundUsage(
+        QA_USER,
+        "pro",
+        500,
+        0,
+        undefined,
+        "refund-1",
+        admission.qaSpendPool ?? null,
+      );
+    }
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - 800);
+
+    expect(new Set(touchedKeys)).toEqual(new Set([PREVIEW_POOL]));
+    expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
+    expectNoWalletActivity();
+  });
+
+  it("rejects an exhausted pool with qa_spend_cap, without wallet or allowance fallback, across restarts", async () => {
+    store.set(PREVIEW_POOL, { tokens: 200, refunds: new Set() });
+    const first = loadModule();
+
+    const delta = await first.deductUsageDelta(
+      QA_USER,
+      "pro",
+      500,
+      walletConfig,
+    );
+    expect(delta).toMatchObject({
+      includedPointsDeducted: 200,
+      extraUsagePointsDeducted: 0,
+      uncoveredPoints: 300,
+      usageDeductionFailed: true,
+      usageDeductionFailureReason: "extra_usage_unavailable",
+    });
+
+    // New admission and the zero-cost capacity recheck after a wait.
+    await expect(
+      first.checkTokenBucketLimit(
+        QA_USER,
+        "pro",
+        ESTIMATED_INPUT_TOKENS,
+        walletConfig,
+      ),
+    ).rejects.toMatchObject(qaCapError);
+    await expect(
+      first.checkTokenBucketLimit(QA_USER, "pro", 0, walletConfig),
+    ).rejects.toMatchObject(qaCapError);
+
+    // A fresh process sees the same exhausted Redis pool.
+    const restarted = loadModule();
+    await expect(
+      restarted.checkTokenBucketLimit(QA_USER, "pro", 0, walletConfig),
+    ).rejects.toMatchObject(qaCapError);
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(0);
+    expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
+    expect(touchedKeys).not.toContain(customerKey(QA_USER));
+    expectNoWalletActivity();
+  });
+
+  it("keeps Preview and Development pools separate", async () => {
+    store.set(PREVIEW_POOL, { tokens: 0, refunds: new Set() });
+    setDevelopmentEnv();
+    const { checkTokenBucketLimit } = loadModule();
+
+    const info = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+
+    expect(info.qaSpendPool).toBe("development");
+    expect(store.get(DEV_POOL)!.tokens).toBe(CAP_POINTS - ESTIMATED_POINTS);
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(0);
+  });
+
+  it.each([
+    [
+      "Vercel Production, even for an approved ID",
+      QA_USER,
+      () => {
+        process.env.VERCEL_ENV = "production";
+      },
+    ],
+    [
+      "a deny-listed billing fixture",
+      BILLING_FIXTURE,
+      () => {
+        process.env.QA_MONTHLY_QUOTA_USER_IDS = `${QA_USER}`;
+      },
+    ],
+    [
+      "an unconfigured spend cap",
+      QA_USER,
+      () => {
+        delete process.env.QA_SPEND_CAP_DOLLARS;
+      },
+    ],
+  ])(
+    "keeps normal customer quota under %s",
+    async (_name, userId, configure) => {
+      configure();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { checkTokenBucketLimit } = loadModule();
+
+      await expect(
+        checkTokenBucketLimit(userId, "pro", ESTIMATED_INPUT_TOKENS),
+      ).rejects.toMatchObject({
+        metadata: expect.objectContaining({ capReason: "monthly_exhausted" }),
+      });
+      expect(touchedKeys).toEqual([customerKey(userId)]);
+      expect(store.has(PREVIEW_POOL)).toBe(false);
+      warn.mockRestore();
+    },
+  );
+
+  it("denies QA usage when Redis is unavailable instead of skipping limits in local dev", async () => {
+    setDevelopmentEnv();
+    process.env.NODE_ENV = "development";
+    redisAvailable = false;
+    const { checkTokenBucketLimit, deductUsageDelta } = loadModule();
+
+    await expect(
+      checkTokenBucketLimit(QA_USER, "pro", ESTIMATED_INPUT_TOKENS),
+    ).rejects.toMatchObject({
+      type: "rate_limit",
+      metadata: {
+        capReason: "billing_unavailable",
+        qaSpendPool: "development",
+      },
+    });
+    await expect(
+      deductUsageDelta(QA_USER, "pro", 500, walletConfig),
+    ).resolves.toMatchObject({
+      includedPointsDeducted: 0,
+      uncoveredPoints: 500,
+      usageDeductionFailed: true,
+    });
+    expectNoWalletActivity();
+  });
+
+  it("refuses to move a refund or settlement to a ledger other than the admission ledger", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    store.set(PREVIEW_POOL, { tokens: 5_000, refunds: new Set() });
+    const { refundUsage, deductUsage } = loadModule();
+
+    // Admitted on the customer bucket before the QA policy was enabled.
+    const refund = await refundUsage(
+      QA_USER,
+      "pro",
+      500,
+      0,
+      undefined,
+      "refund-stale",
+      null,
+    );
+    expect(refund).toMatchObject({
+      includedPointsRefunded: 0,
+      includedRefundFailed: true,
+    });
+
+    // Admitted on the Development pool; this process now resolves Preview.
+    const final = await deductUsage(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      0,
+      0,
+      undefined,
+      0.01,
+      undefined,
+      0,
+      undefined,
+      { pointsDeducted: ESTIMATED_POINTS, extraUsagePointsDeducted: 0 },
+      undefined,
+      "settlement-stale",
+      "development",
+    );
+    expect(final).toMatchObject({
+      includedPointsDeducted: ESTIMATED_POINTS,
+      usageDeductionFailed: true,
+      usageDeductionFailureReason: "deduction_failed",
+    });
+
+    expect(touchedKeys).toEqual([]);
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(5_000);
+    expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
+    warn.mockRestore();
+  });
+});

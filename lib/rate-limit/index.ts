@@ -70,6 +70,15 @@ export {
   type TierChangeIdentity,
 } from "./token-bucket";
 
+export {
+  QA_SPEND_CAP_REASON,
+  getQaSpendPolicyStatus,
+  resolveQaSpendPool,
+  type QaSpendPool,
+  type QaSpendPoolEnvironment,
+  type QaSpendPolicyStatus,
+} from "./qa-spending-policy";
+
 // Re-export sliding window functions
 export {
   checkFreeUserRateLimit,
@@ -191,6 +200,8 @@ export const checkRateLimitCapacity = async (
       : checkFreeUserRateLimitCapacity(quotaSubject, undefined, freeLimits);
   }
 
+  // A QA pool rejects its own exhaustion with `qa_spend_cap`, so a result
+  // here always has QA capacity and never consults Extra Usage.
   const current = await checkTokenBucketLimit(
     userId,
     subscription,
@@ -199,6 +210,7 @@ export const checkRateLimitCapacity = async (
     modelName,
     organizationId,
   );
+  if (current.qaSpendPool) return current;
   if (current.remaining > 0 || canUseExtraUsage(extraUsageConfig)) {
     return current;
   }

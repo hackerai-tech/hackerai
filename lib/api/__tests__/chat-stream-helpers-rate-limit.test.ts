@@ -128,6 +128,17 @@ describe("sendRateLimitWarnings", () => {
     );
   });
 
+  it("does not advertise wallet use when the last QA points were reserved", () => {
+    const writer = makeWriter();
+    sendRateLimitWarnings(writer, {
+      subscription: "pro",
+      mode: "ask",
+      rateLimitInfo: { ...emptyMonthlyBucket, qaSpendPool: "preview" },
+      extraUsageConfig: { enabled: true, hasBalance: true },
+    });
+    expect(writer.write).not.toHaveBeenCalled();
+  });
+
   it("does not show extra usage active when the extra-usage monthly cap is exhausted", () => {
     const writer = makeWriter();
 

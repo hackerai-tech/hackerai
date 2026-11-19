@@ -94,6 +94,31 @@ describe("UsageRefundTracker", () => {
       125,
       undefined,
       expect.any(String),
+      null,
+    );
+  });
+
+  it("refunds a QA reservation against the pool selected at admission", async () => {
+    const tracker = createEmptyTracker();
+    tracker.setUser("user-123", "pro");
+    tracker.recordDeductions({
+      remaining: 900,
+      resetTime: new Date(),
+      limit: 1_000,
+      pointsDeducted: 100,
+      qaSpendPool: "preview",
+    });
+
+    await tracker.refund();
+
+    expect(refundUsage).toHaveBeenCalledWith(
+      "user-123",
+      "pro",
+      100,
+      0,
+      undefined,
+      expect.any(String),
+      "preview",
     );
   });
 
@@ -207,6 +232,7 @@ describe("UsageRefundTracker", () => {
       50,
       undefined,
       expect.any(String),
+      null,
     );
     expect(refundUsage).toHaveBeenNthCalledWith(
       2,
@@ -216,6 +242,7 @@ describe("UsageRefundTracker", () => {
       50,
       undefined,
       undefined,
+      null,
     );
   });
 

@@ -587,6 +587,12 @@ export type RateLimitInfo = {
   extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
+  /**
+   * Set when admission debited the shared routine-QA spending pool for this
+   * environment instead of the customer's bucket. Pass `qaSpendPool ?? null`
+   * to settlement and refunds so they stay on the admission ledger.
+   */
+  qaSpendPool?: "preview" | "development";
 };
 
 export interface ExtraUsageConfig {

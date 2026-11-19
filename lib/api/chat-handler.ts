@@ -892,7 +892,7 @@ export const createChatHandler = () => {
           remaining: rateLimitInfo.remaining,
           subscription,
         },
-        extraUsageConfig,
+        rateLimitInfo.qaSpendPool ? undefined : extraUsageConfig,
       );
 
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
@@ -1545,6 +1545,7 @@ export const createChatHandler = () => {
                           : rateLimitInfo,
                         usageRecordArgs.accountingModel,
                         usageTracker.usageSettlementId,
+                        rateLimitInfo.qaSpendPool ?? null,
                       );
                       if (usageSettlementState) {
                         usageRefundTracker.recordDeductions({
@@ -1698,6 +1699,7 @@ export const createChatHandler = () => {
                     organizationId,
                     usageTracker.usageSettlementId,
                     usageSettlementSequence,
+                    rateLimitInfo.qaSpendPool ?? null,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {

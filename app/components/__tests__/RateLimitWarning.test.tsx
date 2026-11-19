@@ -333,6 +333,38 @@ describe("RateLimitWarning", () => {
       ).toBeInTheDocument();
     },
   );
+
+  it.each([true, false])(
+    "names the QA spending pool cap without billing actions (cutOff=%s)",
+    (cutOff) => {
+      render(
+        <RateLimitWarning
+          data={{
+            ...monthlyWarning,
+            subscription: "pro",
+            remainingPercent: 0,
+            capReason: "qa_spend_cap",
+            cutOff,
+            resetTime: new Date(Date.now() + 2 * 60 * 60_000 + 30_000),
+          }}
+          onDismiss={jest.fn()}
+        />,
+      );
+
+      const message = screen.getByText(/shared QA spending pool/i);
+      expect(message).toHaveTextContent(
+        cutOff
+          ? "The shared QA spending pool for this environment is used up and this response was cut off. It resets in 2 hours."
+          : "The shared QA spending pool for this environment is used up. It resets in 2 hours.",
+      );
+      expect(message).not.toHaveTextContent(/\$|monthly|subscription/i);
+      expect(screen.getAllByRole("button")).toEqual([
+        screen.getByRole("button", { name: "Dismiss warning" }),
+      ]);
+      expect(captureAddCreditCtaImpression).not.toHaveBeenCalled();
+      expect(captureUpgradeCtaImpression).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it("shows the daily Free Agent allowance and reset on a mid-stream cutoff", () => {

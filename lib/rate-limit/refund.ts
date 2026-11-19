@@ -20,6 +20,7 @@ export class UsageRefundTracker {
   private userId: string | undefined;
   private subscription: SubscriptionTier | undefined;
   private organizationId: string | undefined;
+  private qaSpendPool: RateLimitInfo["qaSpendPool"];
   private refundInFlight: Promise<UsageRefundOutcome> | undefined;
   private includedRefundId: string | undefined;
 
@@ -42,6 +43,7 @@ export class UsageRefundTracker {
   recordDeductions(rateLimitInfo: RateLimitInfo): void {
     this.pointsDeducted = rateLimitInfo.pointsDeducted ?? 0;
     this.extraUsagePointsDeducted = rateLimitInfo.extraUsagePointsDeducted ?? 0;
+    this.qaSpendPool = rateLimitInfo.qaSpendPool;
   }
 
   /**
@@ -107,6 +109,7 @@ export class UsageRefundTracker {
         this.extraUsagePointsDeducted,
         this.organizationId,
         includedRefundId,
+        this.qaSpendPool ?? null,
       );
     } catch (error) {
       console.error("Failed to refund usage:", error);
