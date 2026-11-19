@@ -9,6 +9,7 @@ import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
+import { getAgentContextPolicy } from "@/lib/ai/agent-context-budget";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
@@ -471,7 +472,11 @@ export const createChatHandler = () => {
           newMessages: requestMessages,
           regenerate,
           mode,
-          agentModelContextEnabled,
+          agentContextPolicy: getAgentContextPolicy({
+            subscription,
+            mode,
+            selectedModelOverride,
+          }),
           useClientMessagesForRegenerate,
         }),
       ]);

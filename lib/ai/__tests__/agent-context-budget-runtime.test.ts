@@ -1,12 +1,13 @@
 /**
- * Runs the shared Agent stream runner with the paid 480K context snapshot and
- * checks that the initial request, prepareStep, compaction and retries agree,
- * and that actual exposure is emitted once at the first real model request.
+ * Runs the shared Agent stream runner for paid Auto/Standard runs and checks
+ * that the initial request, prepareStep, compaction and retries all use the
+ * default 480K policy, bounded by the actual route.
  */
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { phLogger } from "@/lib/posthog/server";
-import type { PaidAgentContextAssignment } from "@/lib/experiments/paid-agent-context";
+import { getAgentContextPolicy } from "@/lib/ai/agent-context-budget";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
@@ -144,22 +145,23 @@ const FULL_ROUTE = [
   "z-ai/glm-5.3",
 ];
 const MESSAGES = [{ role: "user", content: "Continue" }];
+const PAID = ["pro", "pro-plus", "ultra", "team"] as const;
+const SELECTIONS = [
+  undefined,
+  "auto",
+  "hackerai-standard",
+  "hackerai-pro",
+  "hackerai-max",
+] as const;
 
-const assignment = (
-  variant: "control" | "test",
-): PaidAgentContextAssignment => ({
-  flagKey: "paid_agent_context_480k_v1",
-  variant,
-  requestedSelection: "auto",
-});
-
-const exposures = () =>
+// The retired experiment's exposure event and attribution must not return.
+const experimentTelemetry = () =>
   jest
     .mocked(phLogger.event)
     .mock.calls.filter(
       ([name, properties]) =>
-        name === "agent_model_context_exposed" &&
-        properties.flag_key === "paid_agent_context_480k_v1",
+        name === "agent_model_context_exposed" ||
+        JSON.stringify(properties).includes("paid_agent_context"),
     );
 
 const newState = () =>
@@ -240,10 +242,42 @@ beforeEach(() => {
   mockStreamText.mockImplementation((options) => options);
 });
 
+describe("agent context policy", () => {
+  it.each(
+    (["free", ...PAID] as const).flatMap((subscription) =>
+      (["agent", "ask"] as const).flatMap((mode) =>
+        SELECTIONS.map((selected) => ({ subscription, mode, selected })),
+      ),
+    ),
+  )(
+    "$subscription $mode selector=$selected",
+    ({
+      subscription,
+      mode,
+      selected,
+    }: {
+      subscription: SubscriptionTier;
+      mode: ChatMode;
+      selected: SelectedModel | undefined;
+    }) => {
+      const paidAgent = subscription !== "free" && mode === "agent";
+      const explicit =
+        selected === "hackerai-pro" || selected === "hackerai-max";
+      expect(
+        getAgentContextPolicy({
+          subscription,
+          mode,
+          selectedModelOverride: selected,
+        }),
+      ).toBe(!paidAgent ? "baseline" : explicit ? "expanded" : "paid_480k");
+    },
+  );
+});
+
 describe("paid 480K context through the shared Agent runner", () => {
-  it("uses one 480K policy for the request, compaction and retries, exposing once", async () => {
+  it("uses one 480K policy for the request, compaction and retries without an assignment", async () => {
     const state = newState();
-    const ctx = createContext({ paidAgentContext: assignment("test") });
+    const ctx = createContext();
     const first = await start(ctx, state);
     expect(state.ctxUsage.maxTokens).toBe(500_000);
 
@@ -256,27 +290,9 @@ describe("paid 480K context through the shared Agent runner", () => {
     );
     expect(await state.compactionPolicy!.resolve()).toMatchObject({
       expandedAgentContext: true,
-      policy: expect.stringMatching(/^paid_480k_/),
+      policy: "paid_480k_large_v2_context_v1",
     });
-    // Preparation and startup compaction are not exposure.
-    expect(exposures()).toHaveLength(0);
-
     first.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-    expect(exposures()).toHaveLength(1);
-    expect(exposures()[0][1]).toMatchObject({
-      userId: "user",
-      eventUuid: expect.any(String),
-      flag_key: "paid_agent_context_480k_v1",
-      experiment_variant: "test",
-      "$feature/paid_agent_context_480k_v1": "test",
-      paid_agent_context_selection: "auto",
-      paid_agent_context_max_tokens: 500_000,
-      paid_agent_context_threshold_tokens: 480_000,
-      paid_agent_context_480k_active: true,
-      paid_agent_context_route_supports_480k: true,
-      run_id: "run-1",
-      model: DEEPSEEK,
-    });
 
     const retry = await start(ctx, state);
     await retry.prepareStep({ steps: [], stepNumber: 0, messages: MESSAGES });
@@ -284,58 +300,52 @@ describe("paid 480K context through the shared Agent runner", () => {
       expect.objectContaining({ ctxMaxTokens: 500_000 }),
     );
     retry.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-    expect(exposures()).toHaveLength(1);
+    expect(experimentTelemetry()).toEqual([]);
   });
 
-  it("keeps the 256K control policy and exposes control at the same point", async () => {
-    const state = newState();
-    const stream = await start(
-      createContext({ paidAgentContext: assignment("control") }),
-      state,
-    );
-    await stream.prepareStep({ steps: [], stepNumber: 0, messages: MESSAGES });
-    expect(state.ctxUsage.maxTokens).toBe(276_000);
-    expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        ctxMaxTokens: 276_000,
-        preparedInputTokens: undefined,
-      }),
-    );
-    const compaction = await state.compactionPolicy!.resolve();
-    expect(compaction.expandedAgentContext).toBeUndefined();
-    expect(compaction.policy).not.toMatch(/paid_480k|max_|pro_/);
-    stream.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-    expect(exposures()).toHaveLength(1);
-    expect(exposures()[0][1]).toMatchObject({
-      experiment_variant: "control",
-      paid_agent_context_max_tokens: 276_000,
-      paid_agent_context_threshold_tokens: 256_000,
-      paid_agent_context_480k_active: false,
-      paid_agent_context_route_supports_480k: true,
-    });
-  });
+  it.each(
+    PAID.flatMap((subscription) =>
+      ([undefined, "auto", "hackerai-standard"] as const).map((selected) => ({
+        subscription,
+        selected,
+      })),
+    ),
+  )(
+    "applies 480K to $subscription selector=$selected",
+    async ({ subscription, selected }) => {
+      const state = newState();
+      const stream = await start(
+        createContext({ subscription, selectedModelOverride: selected }),
+        state,
+      );
+      await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: MESSAGES,
+      });
+      expect(state.ctxUsage.maxTokens).toBe(500_000);
+      expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ctxMaxTokens: 500_000 }),
+      );
+      expect((await state.compactionPolicy!.resolve()).policy).toBe(
+        "paid_480k_large_v2_context_v1",
+      );
+    },
+  );
 
   it.each([
     ["a smaller transparent fallback", ["x-ai/grok-4.6"], 468_000],
     ["an unverified fallback", ["vendor/unknown-model"], 276_000],
-  ])(
-    "bounds treatment by %s and reports the route did not reach 480K",
-    async (_label, fallbacks, budget) => {
-      mockFallbackSlugs.mockReturnValue(fallbacks);
-      const state = newState();
-      const stream = await start(
-        createContext({ paidAgentContext: assignment("test") }),
-        state,
-      );
-      expect(state.ctxUsage.maxTokens).toBe(budget);
-      stream.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-      expect(exposures()[0][1]).toMatchObject({
-        paid_agent_context_max_tokens: budget,
-        paid_agent_context_480k_active: false,
-        paid_agent_context_route_supports_480k: false,
-      });
-    },
-  );
+  ])("bounds the budget by %s", async (_label, fallbacks, budget) => {
+    mockFallbackSlugs.mockReturnValue(fallbacks);
+    const state = newState();
+    const stream = await start(createContext(), state);
+    expect(state.ctxUsage.maxTokens).toBe(budget);
+    await stream.prepareStep({ steps: [], stepNumber: 0, messages: MESSAGES });
+    expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ctxMaxTokens: budget }),
+    );
+  });
 
   it("refuses to send a prompt that fits 500K to a route with a 500K member", async () => {
     mockRunSummarizationStep.mockResolvedValue({
@@ -344,19 +354,13 @@ describe("paid 480K context through the shared Agent runner", () => {
     });
     const text = " ordinary".repeat(474_000);
     const messages = [{ role: "user", content: text }];
-    const fits = await start(
-      createContext({ paidAgentContext: assignment("test") }),
-      newState(),
-    );
+    const fits = await start(createContext(), newState());
     await expect(
       fits.prepareStep({ steps: [], stepNumber: 0, messages }),
     ).resolves.toBeDefined();
 
     mockFallbackSlugs.mockReturnValue([...FULL_ROUTE, "x-ai/grok-4.6"]);
-    const overflow = await start(
-      createContext({ paidAgentContext: assignment("test") }),
-      newState(),
-    );
+    const overflow = await start(createContext(), newState());
     await expect(
       overflow.prepareStep({ steps: [], stepNumber: 0, messages }),
     ).rejects.toThrow(
@@ -383,20 +387,14 @@ describe("paid 480K context through the shared Agent runner", () => {
     };
     // Messages plus system stay below 468K on their own.
     const messages = [{ role: "user", content: " ordinary".repeat(458_000) }];
-    const fits = await start(
-      createContext({ paidAgentContext: assignment("test"), tools }),
-      newState(),
-    );
+    const fits = await start(createContext({ tools }), newState());
     await expect(
       fits.prepareStep({ steps: [], stepNumber: 0, messages }),
     ).resolves.toBeDefined();
 
     mockFallbackSlugs.mockReturnValue([...FULL_ROUTE, "x-ai/grok-4.6"]);
     const state = newState();
-    const overflow = await start(
-      createContext({ paidAgentContext: assignment("test"), tools }),
-      state,
-    );
+    const overflow = await start(createContext({ tools }), state);
     expect(state.ctxUsage.maxTokens).toBe(468_000);
     await expect(
       overflow.prepareStep({ steps: [], stepNumber: 0, messages }),
@@ -405,43 +403,140 @@ describe("paid 480K context through the shared Agent runner", () => {
     );
   });
 
+  it("compacts in-run when tool schemas push a request past the 480K trigger", async () => {
+    const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
+    // ~45K tokens of schema that is sent with every request.
+    const tools = {
+      run_terminal_cmd: {
+        description: " field".repeat(45_000),
+        inputSchema: jsonSchema({
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        }),
+      },
+    };
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: {
+        id: "summary",
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text: "<context_summary>Scan reviewed</context_summary>",
+          },
+        ],
+      },
+      summarizationUsage: {},
+    });
+    const state = newState();
+    const stream = await start(
+      createContext({
+        tools,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+      }),
+      state,
+    );
+    expect(state.ctxUsage.maxTokens).toBe(500_000);
+    // Messages and system alone stay below the 480K trigger; with the schema
+    // the request exceeds the 500K send guard unless it is compacted first.
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: `Review the scan${" ordinary".repeat(465_000)}`,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "scan",
+            toolName: "run_terminal_cmd",
+            input: { command: "cat scan.txt" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "scan",
+            toolName: "run_terminal_cmd",
+            output: { type: "text", value: "scan parsed" },
+          },
+        ],
+      },
+    ];
+
+    const prepared = (await stream.prepareStep({
+      steps: [{ toolResults: [] }],
+      stepNumber: 1,
+      messages,
+    })) as { messages: ModelMessage[] };
+
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    const sent = JSON.stringify(prepared.messages);
+    expect(sent).toContain("Scan reviewed");
+    expect(sent).not.toContain("Review the scan");
+  });
+
   it.each([
     [
       "explicit Pro",
       { selectedModelOverride: "hackerai-pro", agentModelContextEnabled: true },
       496_000,
+      "pro_large_v2_context_v1",
     ],
-    ["Max", { selectedModelOverride: "hackerai-max" }, 276_000],
-    ["Free", { subscription: "free" }, 276_000],
-    ["Ask", { mode: "ask" }, 276_000],
+    [
+      "explicit Max",
+      { selectedModelOverride: "hackerai-max", agentModelContextEnabled: true },
+      496_000,
+      "max_large_v2_context_v1",
+    ],
+    // A selector without the caller's expanded snapshot stays at baseline.
+    ["unentitled Max", { selectedModelOverride: "hackerai-max" }, 276_000, ""],
+    ["Free", { subscription: "free" }, 276_000, ""],
+    ["Ask", { mode: "ask" }, 276_000, ""],
   ])(
-    "ignores a leaked treatment snapshot for %s",
-    async (_label, overrides, budget) => {
+    "keeps %s outside the paid 480K policy",
+    async (_label, overrides, budget, expandedPolicy) => {
       const state = newState();
-      const stream = await start(
-        createContext({ paidAgentContext: assignment("test"), ...overrides }),
-        state,
-      );
+      const stream = await start(createContext(overrides), state);
       await stream.prepareStep({
         steps: [],
         stepNumber: 0,
         messages: MESSAGES,
       });
       expect(state.ctxUsage.maxTokens).toBe(budget);
-      expect((await state.compactionPolicy!.resolve()).policy).not.toMatch(
-        /paid_480k/,
-      );
-      stream.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-      expect(exposures()).toHaveLength(0);
+      const { policy } = await state.compactionPolicy!.resolve();
+      if (expandedPolicy) expect(policy).toBe(expandedPolicy);
+      else expect(policy).not.toMatch(/paid_480k|max_|pro_/);
     },
   );
 
-  it("does not expose a request aborted before the first model step", async () => {
-    const ctx = createContext({ paidAgentContext: assignment("test") });
-    const stream = await start(ctx, newState());
-    ctx.abortController.abort();
+  it("keeps the explicit Pro context exposure under its own flag", async () => {
+    const stream = await start(
+      createContext({
+        selectedModelOverride: "hackerai-pro",
+        agentModelContextEnabled: true,
+        agentModelContextVariant: "test",
+      }),
+      newState(),
+    );
     stream.experimental_onStepStart({ model: { modelId: DEEPSEEK } });
-    expect(exposures()).toHaveLength(0);
-    expect(ctx.paidAgentContext).not.toHaveProperty("exposure");
+    const exposures = jest
+      .mocked(phLogger.event)
+      .mock.calls.filter(([name]) => name === "agent_model_context_exposed");
+    expect(exposures).toHaveLength(1);
+    expect(exposures[0][1]).toMatchObject({
+      flag_key: "agent_pro_context_v1",
+      context_max_tokens: 496_000,
+    });
   });
 });

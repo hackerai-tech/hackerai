@@ -84,78 +84,25 @@ describe("Agent run reporting", () => {
     },
   );
 
-  it("attributes paid 480K assignment and later exposure to run and cost records", () => {
-    const { reporter } = setup();
-    const assignment: Parameters<typeof reporter.setPaidAgentContext>[0] = {
-      flagKey: "paid_agent_context_480k_v1",
-      variant: "test",
-      requestedSelection: "auto",
-    };
-    reporter.setPaidAgentContext(assignment);
-    // The runner records exposure on the same snapshot after assignment.
-    assignment!.exposure = {
-      modelId: "deepseek/deepseek-v4.1-flash-1017",
-      contextMaxTokens: 500_000,
-      compactionThresholdTokens: 480_000,
-      routeSupports480k: true,
-    };
+  it("passes run and cost records through without retired experiment fields", () => {
+    const { reporter, events } = setup();
     const terminal = jest.fn();
     const cost = jest.fn();
     reporter.captureTerminal(terminal, { outcome: "success" });
     reporter.captureCost(cost, { usage: "recorded" });
-    expect(terminal).toHaveBeenCalledWith({
-      outcome: "success",
-      paidAgentContext: assignment,
-    });
-    expect(cost).toHaveBeenCalledWith({
-      usage: "recorded",
-      paidAgentContext: assignment,
-    });
-  });
-
-  it.each([true, false])(
-    "keeps paid 480K attribution on fallback records for missing outcomes (exposed=%s)",
-    (exposed) => {
-      const { reporter, events } = setup();
-      reporter.setPaidAgentContext({
-        flagKey: "paid_agent_context_480k_v1",
-        variant: "control",
-        requestedSelection: "hackerai-standard",
-        ...(exposed && {
-          exposure: {
-            modelId: "deepseek/deepseek-v4.1-flash-1017",
-            contextMaxTokens: 276_000,
-            compactionThresholdTokens: 256_000,
-            routeSupports480k: true,
-          },
-        }),
-      });
-      reporter.fail(new Error("stream failed"));
-      reporter.finalize({ canceled: false });
-      expect(events().map((event) => event.event)).toEqual([
-        "hackerai-agent_run",
-        "hackerai-usage_cost",
-      ]);
-      for (const event of events()) {
-        expect(event.properties).toMatchObject({
-          "$feature/paid_agent_context_480k_v1": "control",
-          paid_agent_context_variant: "control",
-          paid_agent_context_exposed: exposed,
-        });
-        expect(event.properties.paid_agent_context_threshold_tokens).toBe(
-          exposed ? 256_000 : undefined,
-        );
-      }
-    },
-  );
-
-  it("adds no paid 480K fields to unassigned runs", () => {
-    const { reporter, events } = setup();
-    const terminal = jest.fn();
-    reporter.captureTerminal(terminal, { outcome: "success" });
     expect(terminal).toHaveBeenCalledWith({ outcome: "success" });
-    reporter.finalize({ canceled: false });
-    expect(JSON.stringify(events())).not.toContain("paid_agent_context");
+    expect(cost).toHaveBeenCalledWith({ usage: "recorded" });
+
+    const fallback = setup();
+    fallback.reporter.fail(new Error("stream failed"));
+    fallback.reporter.finalize({ canceled: false });
+    expect(fallback.events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    expect(JSON.stringify([...events(), ...fallback.events()])).not.toContain(
+      "paid_agent_context",
+    );
   });
 
   it("reports database setup failure once without pretending missing costs are zero", () => {

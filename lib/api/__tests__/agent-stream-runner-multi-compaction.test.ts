@@ -1422,7 +1422,10 @@ describe("createAgentStream repeated compaction", () => {
   it("compacts an oversized restored prefix before the first provider step when UI usage is small", async () => {
     mockGetProviderPromptPressure.mockReturnValue(null);
     mockHistoryFlag.mockResolvedValue(true);
-    const model = "deepseek/deepseek-v4.1-flash-1017";
+    // Paid Auto stays route-aware; a new, unverified DeepSeek ID (history is
+    // DeepSeek-only) keeps the baseline budget. A restored prefix over 480K
+    // would exceed the history byte cap.
+    const model = "deepseek/deepseek-v4-unverified";
     const source: ModelMessage[] = [
       { role: "user", content: "Original request" },
     ];
@@ -1449,7 +1452,7 @@ describe("createAgentStream repeated compaction", () => {
     });
     mockRunSummarizationStep.mockImplementation(async (options) =>
       options.preparedInputTokens >
-      getSummarizationThresholdTokens(MAX_TOKENS_PAID)
+      getSummarizationThresholdTokens(options.ctxMaxTokens)
         ? {
             summarizationAttempted: true,
             needsSummarization: true,
@@ -1470,7 +1473,6 @@ describe("createAgentStream repeated compaction", () => {
     const stream = (await createAgentStream(
       "model-deepseek-v4-flash-0731",
       createTestStreamContext({
-        agentModelContextEnabled: true,
         trackedProvider: { languageModel: () => ({ modelId: model }) },
         usageTracker: {},
         summarizationTracker: {
@@ -1498,6 +1500,9 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(prepared.messages)).toContain("Verified checkpoint");
     expect(JSON.stringify(prepared.messages).includes(retained)).toBe(false);
     expect(prepared.system).toBe("system");
+    expect(mockRunSummarizationStep.mock.calls[0][0].ctxMaxTokens).toBe(
+      MAX_TOKENS_PAID,
+    );
     expect(state.ctxUsage.maxTokens).toBe(MAX_TOKENS_PAID);
   });
 
@@ -1910,9 +1915,9 @@ describe("createAgentStream repeated compaction", () => {
       );
     });
 
-    describe("paid treatment annotation growth", () => {
-      // Production shape: paid Auto treatment on a verified 1M route resolves
-      // a 500K budget with a 480K compaction threshold.
+    describe("paid Auto annotation growth", () => {
+      // Production shape: a paid Auto run on a verified 1M route resolves a
+      // 500K budget with a 480K compaction threshold, with no assignment.
       const PAID_MODEL_ID = "z-ai/glm-5.3";
       const PAID_BUDGET = 500_000;
       // Mirrors the observed failure: rolling history ~220K tokens, previous
@@ -1957,11 +1962,6 @@ describe("createAgentStream repeated compaction", () => {
         const stream = (await createAgentStream(
           "test-model",
           createTestStreamContext({
-            paidAgentContext: {
-              flagKey: "paid_agent_context_480k_v1",
-              variant: "test",
-              requestedSelection: "auto",
-            },
             trackedProvider: {
               languageModel: () => ({ modelId: PAID_MODEL_ID }),
             },
@@ -2167,15 +2167,11 @@ describe("createAgentStream repeated compaction", () => {
         expect(countCanary(prepared.messages)).toBe(1);
       });
 
-      it("keeps the baseline Agent compaction decision and sends its annotation", async () => {
-        // The ~298K annotation would cross the baseline 256K threshold if the
+      it("keeps the Free Agent baseline compaction decision and sends its annotation", async () => {
+        // The ~298K annotation would cross the baseline threshold if the
         // route-aware decision applied outside its own send guard.
         const { state, stream } = await createPaidStream({
-          paidAgentContext: {
-            flagKey: "paid_agent_context_480k_v1",
-            variant: "control",
-            requestedSelection: "auto",
-          },
+          subscription: "free",
         });
         state.lastStepInputTokens = 100;
 
@@ -2564,10 +2560,13 @@ describe("createAgentStream repeated compaction", () => {
             }) as any,
             state,
           );
+          // Paid Agent Auto compacts with the expanded 480K summarizer.
           expect(await state.compactionPolicy!.resolve()).toMatchObject({
-            model: platformAuthorized
-              ? "model-abliterated"
-              : "model-glm-5.3-flash",
+            model: !platformAuthorized
+              ? "model-glm-5.3-flash"
+              : mode === "agent"
+                ? "model-abliterated-large-v2"
+                : "model-abliterated",
           });
           expect(phLogger.event).not.toHaveBeenCalledWith(
             "compaction_model_started",
@@ -7286,6 +7285,8 @@ describe("createAgentStream repeated compaction", () => {
     const stream = (await createAgentStream(
       "test-model",
       createTestStreamContext({
+        // Free Agent keeps the baseline, non-route-aware estimate path.
+        subscription: "free",
         tools: {
           large_tool: {
             description: "Inspect local state.",
@@ -7355,6 +7356,8 @@ describe("createAgentStream repeated compaction", () => {
       const stream = (await createAgentStream(
         "test-model",
         createTestStreamContext({
+          // Free Agent keeps the baseline, non-route-aware estimate path.
+          subscription: "free",
           tools: {
             large_tool: {
               description: "Inspect local state.",

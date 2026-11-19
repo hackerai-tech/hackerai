@@ -1,6 +1,7 @@
 import { MAX_OUTPUT_TOKENS } from "./output-limits";
 import { getMaxTokensForSubscription } from "@/lib/token-limits";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 /**
  * Context policy for one top-level Agent run. Resolve it once at entry and use
@@ -9,9 +10,39 @@ import type { ChatMode, SubscriptionTier } from "@/types";
  *
  * - `baseline`: the subscription budget (276K paid, 256K before compaction).
  * - `expanded`: permanent explicit Pro/Max policy (route half-window).
- * - `paid_480k`: paid Auto/Standard treatment of `paid_agent_context_480k_v1`.
+ * - `paid_480k`: paid Auto/Standard policy (480K compaction trigger).
  */
 export type AgentContextPolicy = "baseline" | "expanded" | "paid_480k";
+
+const isPaidSubscription = (subscription: SubscriptionTier) =>
+  subscription === "pro" ||
+  subscription === "pro-plus" ||
+  subscription === "ultra" ||
+  subscription === "team";
+
+/**
+ * The single policy decision for a top-level Agent run. Subagents do not call
+ * this: their records carry a routed model key rather than the parent selector.
+ */
+export function getAgentContextPolicy({
+  subscription,
+  mode,
+  selectedModelOverride,
+}: {
+  subscription: SubscriptionTier;
+  mode: ChatMode;
+  selectedModelOverride: SelectedModel | undefined;
+}): AgentContextPolicy {
+  if (isExpandedAgentContextEligible(subscription, mode, selectedModelOverride))
+    return "expanded";
+  return mode === "agent" &&
+    isPaidSubscription(subscription) &&
+    (selectedModelOverride === undefined ||
+      selectedModelOverride === "auto" ||
+      selectedModelOverride === "hackerai-standard")
+    ? "paid_480k"
+    : "baseline";
+}
 
 // Conservative operating budget, inspired by Hermes's half-window default.
 // The existing compaction reserve is applied on top of this budget. This is
@@ -20,7 +51,7 @@ export const MAX_AGENT_CONTEXT_TOKENS = Math.floor(
   (1_048_576 - MAX_OUTPUT_TOKENS) * 0.5,
 );
 
-// Treatment target: compaction triggers at exactly 480K after the existing 20K
+// Paid Auto/Standard target: compaction triggers at exactly 480K after the existing 20K
 // reserve. It is capped by verified route capacity minus the output reserve and
 // deliberately does not use the half-window heuristic above.
 export const PAID_AGENT_CONTEXT_MAX_TOKENS = 500_000;
