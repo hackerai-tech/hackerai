@@ -210,6 +210,40 @@ pub fn build_command(
     cmd
 }
 
+/// How a bounded wait for a command's leader ended: reaped, at its existing
+/// deadline, or with an error, never its detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaderWait {
+    Reaped,
+    TimedOut,
+    Failed,
+}
+
+impl LeaderWait {
+    fn of<T, E, D>(waited: Result<Result<T, E>, D>) -> Self {
+        match waited {
+            Ok(Ok(_)) => Self::Reaped,
+            Ok(Err(_)) => Self::Failed,
+            Err(_) => Self::TimedOut,
+        }
+    }
+}
+
+/// The results of `graceful_kill`'s existing checks, never a PID, output or
+/// OS error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GracefulKill {
+    pub(crate) tree_stopped: bool,
+    pub(crate) leader: LeaderWait,
+}
+
+impl GracefulKill {
+    /// `graceful_kill`'s unchanged rule: the tree stopped and the shell reaped.
+    pub(crate) fn confirmed(self) -> bool {
+        self.tree_stopped && self.leader == LeaderWait::Reaped
+    }
+}
+
 /// Gracefully kill a child process.
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
@@ -218,6 +252,12 @@ pub fn build_command(
 /// as `cancel_process_tree` defines it, was confirmed stopped and the shell
 /// reaped; anything else is unknown.
 pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
+    graceful_kill_observed(child).await.confirmed()
+}
+
+/// `graceful_kill`, which delegates here, reporting which of its checks were
+/// confirmed. The signals, waits, commands and their order are unchanged.
+pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) -> GracefulKill {
     use std::time::Duration;
     #[cfg(unix)]
     let stopped = {
@@ -256,11 +296,11 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
 
     // Reap the process to avoid zombies, without waiting forever on a shell
     // that cannot be stopped.
-    let reaped = matches!(
-        tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
-        Ok(Ok(_))
-    );
-    stopped && reaped
+    let leader = LeaderWait::of(tokio::time::timeout(Duration::from_secs(5), child.wait()).await);
+    GracefulKill {
+        tree_stopped: stopped,
+        leader,
+    }
 }
 
 #[cfg(unix)]
@@ -580,5 +620,45 @@ mod tests {
             taskkill_outcome(4243, Ok(output(exited(128), b"", REPORT))),
             unclassified
         );
+    }
+
+    #[test]
+    fn graceful_kill_keeps_its_confirmation_rule_over_each_reported_check() {
+        use LeaderWait::*;
+        // The bounded wait's own result, never its detail.
+        assert_eq!(LeaderWait::of::<_, (), ()>(Ok(Ok(()))), Reaped);
+        assert_eq!(LeaderWait::of::<(), _, ()>(Ok(Err(()))), Failed);
+        assert_eq!(LeaderWait::of::<(), (), _>(Err(())), TimedOut);
+        for tree_stopped in [true, false] {
+            for leader in [Reaped, TimedOut, Failed] {
+                // Exactly the prior `stopped && reaped`.
+                assert_eq!(
+                    GracefulKill {
+                        tree_stopped,
+                        leader
+                    }
+                    .confirmed(),
+                    tree_stopped && leader == Reaped,
+                    "{tree_stopped} {leader:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_kill_reports_a_stopped_and_reaped_command_and_an_already_reaped_one() {
+        let confirmed = GracefulKill {
+            tree_stopped: true,
+            leader: LeaderWait::Reaped,
+        };
+        let mut running = build_command("sleep 30", None, None).spawn().unwrap();
+        assert_eq!(graceful_kill_observed(&mut running).await, confirmed);
+        let mut finished = build_command("exit 0", None, None).spawn().unwrap();
+        finished.wait().await.unwrap();
+        assert_eq!(graceful_kill_observed(&mut finished).await, confirmed);
+        // The Boolean contract every other caller uses is unchanged.
+        let mut again = build_command("sleep 30", None, None).spawn().unwrap();
+        assert!(graceful_kill(&mut again).await);
     }
 }

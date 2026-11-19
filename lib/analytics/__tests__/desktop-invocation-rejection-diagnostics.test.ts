@@ -1120,27 +1120,29 @@ describe("stream fence origin", () => {
       ).toEqual(stopGroup);
     });
 
-    it.each(origins.filter((origin) => origin !== "owner_stop_requested"))(
-      "never reads a cleanup sibling beside the %s origin",
-      (origin) => {
-        const cleanup = watched({ version: 1, failure: "tree_unconfirmed" });
-        const parsed = parseNativeStreamFenceRejection(
-          sibling(cleanup.proxy, { version: 1, origin }),
-        );
-        expect(parsed).toEqual({ message: STOP_UNCONFIRMED, origin });
-        expect(parsed).not.toHaveProperty("cleanupFailure");
-        expect(cleanup.reads.count).toBe(0);
-        // Nor does the group admit one.
-        expect(
-          desktopStreamFenceDiagnostic(
-            authorizedUnknown,
-            stopUnconfirmed,
-            origin,
-            "tree_unconfirmed",
-          ),
-        ).toEqual({ ...group, desktop_stream_fence_origin: origin });
-      },
-    );
+    it.each(
+      origins.filter(
+        (origin) =>
+          origin !== "owner_stop_requested" && origin !== "owner_timeout",
+      ),
+    )("never reads a cleanup sibling beside the %s origin", (origin) => {
+      const cleanup = watched({ version: 1, failure: "tree_unconfirmed" });
+      const parsed = parseNativeStreamFenceRejection(
+        sibling(cleanup.proxy, { version: 1, origin }),
+      );
+      expect(parsed).toEqual({ message: STOP_UNCONFIRMED, origin });
+      expect(parsed).not.toHaveProperty("cleanupFailure");
+      expect(cleanup.reads.count).toBe(0);
+      // Nor does the group admit one.
+      expect(
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          origin,
+          "tree_unconfirmed",
+        ),
+      ).toEqual({ ...group, desktop_stream_fence_origin: origin });
+    });
 
     it("never reads a cleanup sibling beside a malformed origin", () => {
       const cleanup = watched({ version: 1, failure: "tree_unconfirmed" });
@@ -1317,7 +1319,14 @@ describe("stream fence origin", () => {
       for (const [base, acknowledged] of [
         [stopGroup, false],
         [stopGroup, undefined],
-        [group, true],
+        [
+          { ...group, desktop_stream_fence_origin: "owner_process_error" },
+          true,
+        ],
+        [
+          { ...group, desktop_stream_fence_origin: "cancel_wait_timeout" },
+          true,
+        ],
       ] as const) {
         let reads = 0;
         const counted = new Proxy(
@@ -1392,6 +1401,295 @@ describe("stream fence origin", () => {
           ),
         ).toEqual(stopGroup);
       expect(gets).toBe(0);
+    });
+
+    describe("owner timeout", () => {
+      const timeout = { version: 1, origin: "owner_timeout" };
+      const timeoutGroup = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_timeout",
+      };
+      // Every explicit-stop-only sibling a native app could spoof beside it.
+      const stopOnly = {
+        streamFenceWindowsTaskkill: {
+          version: 2,
+          outcome: "nonzero_exit",
+          exitCode: 128,
+          rootReport: "requested_pid_not_found",
+        },
+        streamFenceStopRequestSource: { version: 1, source: "cancel_ipc" },
+      };
+      const stopOnlyGroups = {
+        desktop_stream_fence_windows_taskkill_version: 1,
+        desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+        desktop_stream_fence_windows_taskkill_exit_code: 128,
+        desktop_stream_fence_windows_taskkill_root_report_version: 1,
+        desktop_stream_fence_windows_taskkill_root_report:
+          "requested_pid_not_found",
+        desktop_stream_fence_stop_request_source_version: 1,
+        desktop_stream_fence_stop_request_source: "cancel_ipc",
+      };
+
+      it.each(failures)(
+        "unwraps the exact message beside the timeout origin and its %s failure",
+        (failure) => {
+          const parsed = parseNativeStreamFenceRejection(
+            sibling({ version: 1, failure }, timeout),
+          );
+          expect(parsed).toEqual({
+            message: STOP_UNCONFIRMED,
+            origin: "owner_timeout",
+            cleanupFailure: failure,
+          });
+          expect(Object.isFrozen(parsed)).toBe(true);
+          const diagnostic = desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            parsed!.origin,
+            parsed!.cleanupFailure,
+          );
+          expect(diagnostic).toEqual({
+            ...timeoutGroup,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: failure,
+          });
+          expect(Object.isFrozen(diagnostic)).toBe(true);
+        },
+      );
+
+      it("keeps the origin alone from a native app without the timeout's leg", () => {
+        const parsed = parseNativeStreamFenceRejection(rejection(timeout));
+        expect(parsed).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_timeout",
+        });
+        expect(parsed).not.toHaveProperty("cleanupFailure");
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            parsed!.origin,
+            parsed!.cleanupFailure,
+          ),
+        ).toEqual(timeoutGroup);
+      });
+
+      it("keeps the exact message and timeout origin beside a malformed or hostile leg", () => {
+        let gets = 0;
+        const accessor = Object.defineProperty({ version: 1 }, "failure", {
+          enumerable: true,
+          get() {
+            gets++;
+            return "tree_unconfirmed";
+          },
+        });
+        for (const cleanup of [
+          { version: 1, failure: "PRIVATE" },
+          { version: 2, failure: "tree_unconfirmed" },
+          { version: 1, failure: "tree_unconfirmed", pid: 4242 },
+          Object.create({ version: 1, failure: "tree_unconfirmed" }),
+          accessor,
+          new Proxy(
+            { version: 1, failure: "tree_unconfirmed" },
+            {
+              getPrototypeOf: fail,
+              ownKeys: fail,
+              get: fail,
+              getOwnPropertyDescriptor: fail,
+            },
+          ),
+          "tree_unconfirmed",
+          null,
+        ])
+          expect(
+            parseNativeStreamFenceRejection(sibling(cleanup, timeout)),
+          ).toEqual({ message: STOP_UNCONFIRMED, origin: "owner_timeout" });
+        expect(gets).toBe(0);
+        // A leg beside a malformed timeout origin is never read.
+        const watchedLeg = watched({ version: 1, failure: "tree_unconfirmed" });
+        expect(
+          parseNativeStreamFenceRejection(
+            sibling(watchedLeg.proxy, { version: 2, origin: "owner_timeout" }),
+          ),
+        ).toEqual({ message: STOP_UNCONFIRMED, origin: null });
+        expect(watchedLeg.reads.count).toBe(0);
+      });
+
+      it("never reads or joins a taskkill receipt or stop source beside its leg", () => {
+        const taskkill = watched({ ...stopOnly.streamFenceWindowsTaskkill });
+        const source = watched({ ...stopOnly.streamFenceStopRequestSource });
+        const parsed = parseNativeStreamFenceRejection({
+          ...sibling({ version: 1, failure: "tree_unconfirmed" }, timeout),
+          streamFenceWindowsTaskkill: taskkill.proxy,
+          streamFenceStopRequestSource: source.proxy,
+        });
+        expect(parsed).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_timeout",
+          cleanupFailure: "tree_unconfirmed",
+        });
+        expect(taskkill.reads.count + source.reads.count).toBe(0);
+        // Nor does the group admit them, even when offered directly.
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            "owner_timeout",
+            "tree_unconfirmed",
+            {
+              outcome: "nonzero_exit",
+              exitCode: 128,
+              rootReport: "requested_pid_not_found",
+            },
+            null,
+            "cancel_ipc",
+          ),
+        ).toEqual({ ...timeoutGroup, ...cleanupGroup });
+        // An explicit stop's same receipts are unchanged.
+        expect(
+          parseNativeStreamFenceRejection({
+            ...sibling({ version: 1, failure: "tree_unconfirmed" }),
+            ...stopOnly,
+          }),
+        ).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_stop_requested",
+          cleanupFailure: "tree_unconfirmed",
+          windowsTaskkill: {
+            outcome: "nonzero_exit",
+            exitCode: 128,
+            rootReport: "requested_pid_not_found",
+          },
+          stopRequestSource: "cancel_ipc",
+        });
+      });
+
+      it("reads the leg only beside a validated timeout origin on an acknowledged terminal", () => {
+        const read = readDesktopStreamFenceDiagnostic(
+          { ...timeoutGroup, ...cleanupGroup, message: "PRIVATE" },
+          authorizedUnknown,
+          stopUnconfirmed,
+          true,
+        );
+        expect(read).toEqual({ ...timeoutGroup, ...cleanupGroup });
+        expect(Object.isFrozen(read)).toBe(true);
+        // Without an acknowledged terminal, or a valid origin, nothing beyond
+        // the validated origin is read.
+        for (const [base, acknowledged, kept] of [
+          [timeoutGroup, false, timeoutGroup],
+          [timeoutGroup, undefined, timeoutGroup],
+          [{ ...timeoutGroup, desktop_stream_fence_version: 2 }, true, null],
+        ] as const) {
+          let reads = 0;
+          const counted = new Proxy(
+            { ...base, ...cleanupGroup },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && key in cleanupGroup) reads++;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              counted,
+              authorizedUnknown,
+              stopUnconfirmed,
+              acknowledged,
+            ),
+          ).toEqual(kept);
+          expect(reads).toBe(0);
+        }
+        // Outside the authorized lifecycle_stop_unconfirmed gate, nothing.
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            { ...timeoutGroup, ...cleanupGroup },
+            authorizedUnknown,
+            desktopInvocationUnknownDiagnostic(
+              authorizedUnknown,
+              "lifecycle_page_replaced",
+            ),
+            true,
+          ),
+        ).toBeNull();
+      });
+
+      it("never reads or keeps spoofed taskkill or source keys beside its leg", () => {
+        let reads = 0;
+        const counted = new Proxy(
+          { ...timeoutGroup, ...cleanupGroup, ...stopOnlyGroups },
+          {
+            getOwnPropertyDescriptor(target, key) {
+              if (typeof key === "string" && key in stopOnlyGroups) reads++;
+              return Reflect.getOwnPropertyDescriptor(target, key);
+            },
+          },
+        );
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            counted,
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          ),
+        ).toEqual({ ...timeoutGroup, ...cleanupGroup });
+        expect(reads).toBe(0);
+        // An explicit stop's same groups are still kept.
+        expect(
+          readDesktopStreamFenceDiagnostic(
+            { ...stopGroup, ...cleanupGroup, ...stopOnlyGroups },
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          ),
+        ).toEqual({ ...stopGroup, ...cleanupGroup, ...stopOnlyGroups });
+      });
+
+      it("drops only an invalid or hostile leg pair", () => {
+        let gets = 0;
+        const accessor = { ...timeoutGroup } as Record<string, unknown>;
+        for (const key of Object.keys(cleanupGroup))
+          Object.defineProperty(accessor, key, {
+            enumerable: true,
+            get() {
+              gets++;
+              return cleanupGroup[key as keyof typeof cleanupGroup];
+            },
+          });
+        for (const source of [
+          {
+            ...timeoutGroup,
+            ...cleanupGroup,
+            desktop_stream_fence_cleanup_version: 2,
+          },
+          {
+            ...timeoutGroup,
+            ...cleanupGroup,
+            desktop_stream_fence_cleanup_failure: "PRIVATE",
+          },
+          Object.assign(Object.create(cleanupGroup), timeoutGroup),
+          accessor,
+          new Proxy(
+            { ...timeoutGroup, ...cleanupGroup },
+            {
+              get: fail,
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && key in cleanupGroup) fail();
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          ),
+        ])
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            ),
+          ).toEqual(timeoutGroup);
+        expect(gets).toBe(0);
+      });
     });
 
     describe("Windows taskkill receipt", () => {
@@ -2322,9 +2620,21 @@ describe("stream fence origin", () => {
                 "a cleanup sibling under another origin",
                 {
                   ...withTaskkill(notFound, tree),
+                  streamFence: { version: 1, origin: "owner_process_error" },
+                },
+                { message: STOP_UNCONFIRMED, origin: "owner_process_error" },
+              ],
+              [
+                "a timeout's tree_unconfirmed leg",
+                {
+                  ...withTaskkill(notFound, tree),
                   streamFence: { version: 1, origin: "owner_timeout" },
                 },
-                { message: STOP_UNCONFIRMED, origin: "owner_timeout" },
+                {
+                  message: STOP_UNCONFIRMED,
+                  origin: "owner_timeout",
+                  cleanupFailure: "tree_unconfirmed",
+                },
               ],
             ];
             for (const [label, native, parsed] of cases) {
