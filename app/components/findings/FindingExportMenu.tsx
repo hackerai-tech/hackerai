@@ -246,7 +246,8 @@ export function FindingPdfButton({
           if (!isBusy) void exporter.exportAs("pdf");
         }}
         className={cn(
-          "shrink-0 aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
+          // Narrow cards stack the footer; keep a larger touch target there.
+          "shrink-0 @max-[28rem]:min-h-10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
           className,
         )}
       >

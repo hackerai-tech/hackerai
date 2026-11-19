@@ -96,7 +96,7 @@ export function FindingCard({
       <div className="min-w-0 flex-1 text-left">
         <div
           className={cn(
-            "truncate text-sm font-medium",
+            "line-clamp-2 break-words text-sm font-medium",
             closed ? "text-foreground/85" : "text-foreground",
           )}
         >

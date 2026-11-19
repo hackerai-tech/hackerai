@@ -254,7 +254,7 @@ export const MessageItem = memo(function MessageItem({
     workPartIndexes,
     trailingTextParts,
     trailingTextOffset,
-    savedHuntResults,
+    savedResults,
   } = useMemo(() => splitWorkedForParts(message.parts), [message.parts]);
   const workProjection = useMemo(
     () =>
@@ -267,10 +267,10 @@ export const MessageItem = memo(function MessageItem({
     workPresentation === "timeline-shell" ? trailingTextParts : nonFileParts;
   const shouldRenderWorkedFor =
     message.metadata?.mode === "agent" && workPresentation === "inline";
-  // Saved hunt results are kept out of the work and shown once below the
-  // answer, so they stay visible when Worked for is collapsed. Other views
-  // render them in place with the rest of the message.
-  const showsSavedHuntResults =
+  // Saved hunt results and read reports are kept out of the work and shown
+  // once below the answer, so they stay visible when Worked for is collapsed.
+  // Other views render them in place with the rest of the message.
+  const showsSavedResults =
     shouldRenderWorkedFor || workPresentation === "timeline-shell";
 
   const shouldCollapseUserMessage =
@@ -373,10 +373,10 @@ export const MessageItem = memo(function MessageItem({
     </>
   );
 
-  const renderSavedHuntResults = () =>
-    showsSavedHuntResults && savedHuntResults.length > 0 ? (
-      <div key="saved-hunt-results" className="space-y-3">
-        {savedHuntResults.map(({ part, partIndex }) =>
+  const renderSavedResults = () =>
+    showsSavedResults && savedResults.length > 0 ? (
+      <div key="saved-results" className="space-y-3">
+        {savedResults.map(({ part, partIndex }) =>
           renderAssistantPart(part, partIndex),
         )}
       </div>
@@ -483,7 +483,7 @@ export const MessageItem = memo(function MessageItem({
 
             {/* Render text and other parts */}
             {(renderedNonFileParts.length > 0 ||
-              (showsSavedHuntResults && savedHuntResults.length > 0)) && (
+              (showsSavedResults && savedResults.length > 0)) && (
               <div
                 data-testid="message-content"
                 className={`${
@@ -550,7 +550,7 @@ export const MessageItem = memo(function MessageItem({
                         sharedFileDetails={effectiveFileDetails}
                       />
                     ))}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : shouldShowWorkingTimer ? (
                   <>
@@ -582,14 +582,14 @@ export const MessageItem = memo(function MessageItem({
                         )}
                       </div>
                     )}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : trailingTextParts.length === 0 ? (
                   // If a run stops before producing final text, keep the work
                   // visible inline instead of leaving only a collapsed header.
                   <>
                     {renderWorkParts()}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : (
                   <>
@@ -619,7 +619,7 @@ export const MessageItem = memo(function MessageItem({
                         )}
                       </div>
                     )}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 )}
               </div>

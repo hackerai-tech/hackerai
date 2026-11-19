@@ -27,14 +27,14 @@ export type IndexedMessagePart = { part: MessagePart; partIndex: number };
 export type WorkedForParts = {
   fileParts: FilePart[];
   nonFileParts: MessagePart[];
-  /** Work shown in Worked for; excludes saved hunt results. */
+  /** Work shown in Worked for; excludes saved results. */
   workParts: MessagePart[];
   workPartIndexes: number[];
   trailingTextParts: MessagePart[];
   /** Index of the first trailing text part among non-file parts. */
   trailingTextOffset: number;
-  /** Saved hunt result parts, with their indexes in the message. */
-  savedHuntResults: IndexedMessagePart[];
+  /** Saved hunt results and read reports, with their message indexes. */
+  savedResults: IndexedMessagePart[];
 };
 
 export type AgentWorkActivity = {
@@ -760,6 +760,15 @@ export const isSavedHuntResultPart = (part: MessagePart) => {
   return result?.success === true && !toolPartHasKnownFailure(part);
 };
 
+/**
+ * Saved receipts shown outside collapsed work: confirmed hunt results and a
+ * successfully read report, whose card carries the Download PDF action the
+ * Agent points to. Created, updated and listed reports keep their place.
+ */
+export const isSavedResultPart = (part: MessagePart) =>
+  isSavedHuntResultPart(part) ||
+  (getPartType(part) === "tool-get_report" && reportToolSucceeded(part));
+
 export function splitWorkedForParts(
   parts: ChatMessage["parts"],
 ): WorkedForParts {
@@ -796,11 +805,9 @@ export function splitWorkedForParts(
   }
 
   const work: IndexedMessagePart[] = [];
-  const savedHuntResults: IndexedMessagePart[] = [];
+  const savedResults: IndexedMessagePart[] = [];
   for (const indexed of indexedNonFileParts.slice(0, trailingStart)) {
-    (isSavedHuntResultPart(indexed.part) ? savedHuntResults : work).push(
-      indexed,
-    );
+    (isSavedResultPart(indexed.part) ? savedResults : work).push(indexed);
   }
 
   return {
@@ -810,6 +817,6 @@ export function splitWorkedForParts(
     workPartIndexes: work.map(({ partIndex }) => partIndex),
     trailingTextParts: nonFileParts.slice(trailingStart, trailingEnd),
     trailingTextOffset: trailingStart,
-    savedHuntResults,
+    savedResults,
   };
 }
