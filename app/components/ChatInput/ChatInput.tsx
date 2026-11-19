@@ -55,6 +55,7 @@ import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
+import { AgentInputNotificationPrompt } from "../AgentInputNotificationPrompt";
 import {
   WaitingForReplyBanner,
   WAITING_FOR_REPLY_DESCRIPTION_ID,
@@ -374,7 +375,8 @@ const ChatInputContent = ({
     handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
-  const { activeToolApprovalRequest } = useAgentApproval();
+  const { activeToolApprovalRequest, toolApprovalSendStates } =
+    useAgentApproval();
 
   const isGenerating =
     hasActiveGoalRun || status === "submitted" || status === "streaming";
@@ -475,6 +477,22 @@ const ChatInputContent = ({
       definition_version: 1,
     });
   }, [isWaitingForReply, pendingUserWait]);
+  // Real Agent waits only: pre-run goal questions, answers being sent, settled
+  // approvals and stopping runs get no offer.
+  const notificationOfferKey =
+    !user || !chatId
+      ? undefined
+      : showAgentApprovalPrompt &&
+          approvalRequest &&
+          (toolApprovalSendStates[approvalRequest.approvalId] ?? "idle") ===
+            "idle"
+        ? `${user.id}:${chatId}:approval:${approvalRequest.approvalId}:${approvalRequest.toolCallId}`
+        : isWaitingForReply &&
+            pendingUserWait?.status === "waiting" &&
+            !submissionPending &&
+            !isStoppingAgent
+          ? `${user.id}:${chatId}:wait:${pendingUserWait.runId}:${pendingUserWait.toolCallId}`
+          : undefined;
   const hasJoinedComposerPanels =
     !!user &&
     !showAgentApprovalPrompt &&
@@ -1460,6 +1478,14 @@ const ChatInputContent = ({
         className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
+        {/* Outside the scrolling stack so notices cannot push it out of view;
+            the stack shrinks first, keeping the card's actions reachable. */}
+        {user && notificationOfferKey && (
+          <AgentInputNotificationPrompt
+            key={notificationOfferKey}
+            userId={user.id}
+          />
+        )}
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
