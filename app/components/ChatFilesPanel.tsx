@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -27,7 +27,11 @@ import {
   downloadFile,
   type DownloadFileResult,
 } from "@/lib/utils/file-download";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  elapsedMs,
+  telemetryNow,
+  trackWorkspaceFiles,
+} from "@/lib/analytics/workspace-files";
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
   ssr: false,
 });
@@ -76,34 +80,60 @@ async function readBounded(
   return bytes;
 }
 
+type PreviewSettled = {
+  fileId: string;
+  outcome: "success" | "failed" | "unavailable";
+  durationMs?: number;
+};
+
+/**
+ * `visible` opts into Files preview telemetry; callers outside the Computer
+ * Files tabs (Activity, standalone panels) omit it and report no previews.
+ */
 export function CapturedFilePreview({
   file,
   onClose,
+  visible,
 }: {
   file: CapturedFile;
   onClose: () => void;
+  visible?: boolean;
 }) {
   const getUrl = useAction(api.s3Actions.getFileUrlAction);
   const [preview, setPreview] = useState<WorkspacePreview | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [changes, setChanges] = useState(false);
+  const [settled, setSettled] = useState<PreviewSettled | null>(null);
+  const reportedPreview = useRef<string | null>(null);
   const filename = file.saved?.filename ?? file.name;
+  const fileKind =
+    file.text !== undefined || !file.saved
+      ? "captured_result"
+      : "saved_attachment";
+  const fileId = file.id;
   useEffect(() => {
     const controller = new AbortController();
     let objectUrl: string | undefined;
     setPreview(null);
     setError("");
     setChanges(false);
+    setSettled(null);
     if (file.text !== undefined) {
       setPreview({ name: filename, path: file.path, text: file.text });
+      // Captured text renders without a load, so there is no latency to report.
+      setSettled({ fileId, outcome: "success" });
       return () => controller.abort();
     }
+    const started = telemetryNow();
+    const settle = (outcome: PreviewSettled["outcome"]) =>
+      setSettled({ fileId, outcome, durationMs: elapsedMs(started) });
     async function load() {
       if (!file.saved?.fileId) {
         setError(
           "This older file has no saved-file reference. It cannot be recovered from the current workspace.",
         );
+        settle("unavailable");
         return;
       }
       const imageType =
@@ -118,9 +148,15 @@ export function CapturedFilePreview({
         );
         return;
       }
+      // Missing stored files are unavailable; undecodable bytes are an
+      // unsupported format. Neither is a failed read.
+      let failure: PreviewSettled["outcome"] | null = "failed";
       try {
         const url = await getUrl({ fileId: file.saved.fileId });
-        if (!url) throw new Error("Saved file is unavailable.");
+        if (!url) {
+          failure = "unavailable";
+          throw new Error("Saved file is unavailable.");
+        }
         const bytes = await readBounded(
           await fetch(url, { signal: controller.signal }),
           WORKSPACE_PREVIEW_LIMIT,
@@ -131,17 +167,19 @@ export function CapturedFilePreview({
             new Blob([bytes], { type: imageType }),
           );
           setPreview({ name: filename, path: file.path, url: objectUrl });
-        } else
-          setPreview({
-            name: filename,
-            path: file.path,
-            text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-          });
+        } else {
+          failure = null;
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          setPreview({ name: filename, path: file.path, text });
+        }
+        settle("success");
       } catch (cause) {
-        if (!controller.signal.aborted)
+        if (!controller.signal.aborted) {
           setError(
             cause instanceof Error ? cause.message : "Preview unavailable.",
           );
+          if (failure) settle(failure);
+        }
       }
     }
     void load();
@@ -149,10 +187,28 @@ export function CapturedFilePreview({
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [file.saved?.fileId, file.text, file.path, filename, getUrl]);
+  }, [file.saved?.fileId, file.text, file.path, filename, getUrl, fileId]);
+  // Report once per file after it settles and while its tab is visible.
+  useEffect(() => {
+    if (
+      !visible ||
+      !settled ||
+      settled.fileId !== fileId ||
+      reportedPreview.current === fileId
+    )
+      return;
+    const accepted = trackWorkspaceFiles("workspace_file_preview", {
+      outcome: settled.outcome,
+      file_kind: fileKind,
+      entry_point: "computer_files",
+      duration_ms: settled.durationMs,
+    });
+    if (accepted) reportedPreview.current = fileId;
+  }, [visible, settled, fileId, fileKind]);
   const download = async () => {
     setBusy(true);
     setError("");
+    const started = telemetryNow();
     let result: DownloadFileResult;
     let failure: string | undefined;
     try {
@@ -184,9 +240,15 @@ export function CapturedFilePreview({
           : "The saved file could not be loaded. Check your connection and try again.";
     }
     setBusy(false);
-    captureAuthenticatedEvent("workspace_file_download", {
-      source: "chat",
+    trackWorkspaceFiles("workspace_file_download", {
       outcome: result.outcome,
+      source: "chat",
+      file_kind: fileKind,
+      // Activity and standalone viewers share this preview; keep their
+      // downloads, but separate them from the Computer Files tabs.
+      entry_point: visible === undefined ? "other" : "computer_files",
+      reason: result.reason,
+      duration_ms: elapsedMs(started),
     });
     // Cancel is a no-op. Failures keep an inline reason beside the retry action.
     if (result.outcome === "failed")

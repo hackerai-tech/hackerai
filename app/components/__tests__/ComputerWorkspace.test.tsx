@@ -8,7 +8,12 @@ import {
 import { ComputerWorkspace } from "../ComputerWorkspace";
 import type { SidebarContent } from "@/types/chat";
 import { downloadFile } from "@/lib/utils/file-download";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 
+const tracked = (event: string) =>
+  (captureQueuedAuthenticatedEvent as jest.Mock).mock.calls
+    .filter(([call]) => call.event === event)
+    .map(([call]) => call.properties);
 const mockGetUrl = jest.fn();
 let mockOverlay = false;
 let mockNative = false;
@@ -30,7 +35,7 @@ jest.mock("../ComputerCodeBlock", () => ({
   ),
 }));
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(() => true),
 }));
 jest.mock("../../contexts/GlobalState", () => ({
   useGlobalState: () => ({ sandboxPreference: "cloud" }),
@@ -91,6 +96,56 @@ beforeEach(() => {
   mockSavedQuery.mockClear();
   mockSavedPage = { results: [], status: "Exhausted", loadMore: () => {} };
   global.fetch = jest.fn().mockRejectedValue(new Error("offline"));
+  (captureQueuedAuthenticatedEvent as jest.Mock).mockClear();
+});
+
+it("reports Files exposure and first view only once Computer and then Files are visible", () => {
+  const base = { ...props, selection: activity };
+  const { rerender } = render(
+    <ComputerWorkspace {...base} open={false} selection={null} />,
+  );
+  // Mounted in the background: the Files tab has not been offered yet.
+  expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+  rerender(<ComputerWorkspace {...base} />);
+  expect(tracked("workspace_files_exposed")).toEqual([
+    { telemetry_version: 1, surface: "web" },
+  ]);
+  expect(tracked("workspace_files_viewed")).toEqual([]);
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  expect(tracked("workspace_files_viewed")).toEqual([
+    { telemetry_version: 1, surface: "web" },
+  ]);
+  // Minimize, reopen and revisit: still one exposure and one view.
+  rerender(<ComputerWorkspace {...base} open={false} selection={null} />);
+  rerender(<ComputerWorkspace {...base} selection={null} />);
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  expect(tracked("workspace_files_exposed")).toHaveLength(1);
+  expect(tracked("workspace_files_viewed")).toHaveLength(1);
+  const [{ dedupeKey: first }, { dedupeKey: second }] = (
+    captureQueuedAuthenticatedEvent as jest.Mock
+  ).mock.calls.map(([call]) => call);
+  expect(first).not.toEqual(second);
+  expect(first).not.toContain("chat");
+});
+
+it("reports a captured result preview from its Files tab once the tab is visible", async () => {
+  render(<ComputerWorkspace {...props} />);
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  expect(tracked("workspace_file_preview")).toEqual([
+    {
+      outcome: "success",
+      file_kind: "captured_result",
+      entry_point: "computer_files",
+      telemetry_version: 1,
+      surface: "web",
+    },
+  ]);
 });
 
 it("reopens an older saved report outside loaded history and downloads its exact bytes with the workspace offline", async () => {
@@ -555,6 +610,26 @@ it("saves retained binary workspace bytes through native Save after the workspac
     expect(
       screen.queryByText(/Binary downloads are available in the web app/),
     ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(tracked("workspace_file_download")).toEqual([
+        {
+          outcome: "success",
+          source: "workspace",
+          file_kind: "workspace_snapshot",
+          entry_point: "computer_files",
+          telemetry_version: 1,
+          surface: "desktop",
+          duration_ms: expect.any(Number),
+        },
+      ]),
+    );
+    expect(tracked("workspace_file_preview")).toEqual([
+      expect.objectContaining({
+        outcome: "success",
+        file_kind: "live_workspace",
+        entry_point: "computer_files",
+      }),
+    ]);
   } finally {
     view.unmount();
     URL.createObjectURL = originalCreate;

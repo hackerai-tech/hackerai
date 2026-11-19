@@ -438,6 +438,32 @@ describe("PostHogProvider", () => {
       telemetry_sample_rate: 1,
     });
     expect(JSON.stringify(summary)).not.toContain("private");
+    const filesEvent = config.before_send({
+      event: "workspace_file_download",
+      properties: {
+        distinct_id: "user-123",
+        $session_id: "session-123",
+        telemetry_version: 1,
+        entry_point: "computer_files",
+        file_kind: "saved_attachment",
+        outcome: "success",
+        duration_ms: 20,
+        $current_url: "private-chat-url",
+        fileName: "private-filename",
+        $set: { email: "private-profile" },
+      },
+      $set_once: { email: "private-profile" },
+    });
+    expect(filesEvent?.properties).toEqual({
+      distinct_id: "user-123",
+      $session_id: "session-123",
+      telemetry_version: 1,
+      entry_point: "computer_files",
+      file_kind: "saved_attachment",
+      outcome: "success",
+      duration_ms: 20,
+    });
+    expect(JSON.stringify(filesEvent)).not.toContain("private");
     const ordinaryEvent = {
       event: "ordinary_event",
       properties: { retained: "value" },

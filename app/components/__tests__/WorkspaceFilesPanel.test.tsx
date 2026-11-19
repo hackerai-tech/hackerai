@@ -6,9 +6,20 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { LiveWorkspaceFilesPanel as WorkspaceFilesPanel } from "../WorkspaceFilesPanel";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { downloadFile } from "@/lib/utils/file-download";
 let mockNative = false;
+const tracked = (event: string) =>
+  (captureQueuedAuthenticatedEvent as jest.Mock).mock.calls
+    .filter(([call]) => call.event === event)
+    .map(([call]) => call.properties);
+const liveEvent = (properties: Record<string, unknown>) => ({
+  file_kind: "live_workspace",
+  entry_point: "other",
+  telemetry_version: 1,
+  duration_ms: expect.any(Number),
+  ...properties,
+});
 
 jest.mock("../ComputerCodeBlock", () => ({
   ComputerCodeBlock: ({ children }: { children: string }) => (
@@ -17,7 +28,7 @@ jest.mock("../ComputerCodeBlock", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(() => true),
 }));
 jest.mock("../AllFilesDialog", () => ({
   AllFilesDialog: () => <div>Saved artifacts dialog</div>,
@@ -42,6 +53,8 @@ beforeEach(() => {
   mockNative = false;
   global.fetch = fetchMock;
   fetchMock.mockReset();
+  (captureQueuedAuthenticatedEvent as jest.Mock).mockClear();
+  (downloadFile as jest.Mock).mockReset();
 });
 
 it("navigates, searches and refreshes the pinned live workspace, then previews escaped text", async () => {
@@ -84,9 +97,11 @@ it("navigates, searches and refreshes the pinned live workspace, then previews e
   expect(
     await screen.findByRole("button", { name: "Open folder reports" }),
   ).toBeVisible();
-  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-    "workspace_files_viewed",
-  );
+  // Visibility is reported by the Computer workspace, not by this mount.
+  expect(tracked("workspace_files_viewed")).toEqual([]);
+  expect(tracked("workspace_file_preview")).toEqual([
+    liveEvent({ outcome: "success", surface: "web" }),
+  ]);
 });
 
 it("offers explicit resume for a paused workspace and keeps saved artifacts accessible", async () => {
@@ -167,6 +182,8 @@ it("aborts an in-flight preview when navigating away and never displays its late
     resolvePreview(response({ data: btoa("OLD PREVIEW") })),
   );
   expect(screen.queryByText("OLD PREVIEW")).not.toBeInTheDocument();
+  // An intentional abort is neither a success nor a failure.
+  expect(tracked("workspace_file_preview")).toEqual([]);
 });
 
 it.each(["Tree view", "List view", "Grid view"])(
@@ -251,10 +268,7 @@ it("keeps refresh and layout choices usable through the compact file menu", asyn
 it("passes exact chunked binary bytes to native Save and preserves cancellation", async () => {
   mockNative = true;
   const bytes = new Uint8Array([0x50, 0x4b, 0xff, 0x00]);
-  (downloadFile as jest.Mock)
-    .mockClear()
-    .mockResolvedValue({ outcome: "canceled" });
-  (captureAuthenticatedEvent as jest.Mock).mockClear();
+  (downloadFile as jest.Mock).mockResolvedValue({ outcome: "canceled" });
   fetchMock.mockImplementation(async (_url, options) => {
     const body = JSON.parse(options.body);
     if (body.action !== "download")
@@ -280,9 +294,101 @@ it("passes exact chunked binary bytes to native Save and preserves cancellation"
       content: bytes,
     }),
   );
-  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-    "workspace_file_download",
-    { outcome: "canceled", surface: "desktop" },
-  );
+  expect(tracked("workspace_file_download")).toEqual([
+    liveEvent({ outcome: "canceled", source: "workspace", surface: "desktop" }),
+  ]);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it.each([
+  [
+    "a rejected read",
+    response({ error: "file_changed" }, false),
+    { outcome: "failed" },
+  ],
+  [
+    "a status without bytes",
+    response({ state: "disconnected", sandboxId: "owned" }),
+    { outcome: "failed", reason: "unavailable" },
+  ],
+])(
+  "reports %s as a failed download without invoking the save",
+  async (_case, downloadResponse, expected) => {
+    fetchMock.mockImplementation(async (_url, options) =>
+      JSON.parse(options.body).action === "download"
+        ? downloadResponse
+        : response(listing([file])),
+    );
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Download report.txt" }),
+    );
+    await waitFor(() =>
+      expect(tracked("workspace_file_download")).toEqual([
+        liveEvent({ ...expected, source: "workspace", surface: "web" }),
+      ]),
+    );
+    expect(downloadFile).not.toHaveBeenCalled();
+  },
+);
+
+it("reports a browser anchor download as initiated, not as a confirmed save", async () => {
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = jest.fn(() => "blob:live");
+  URL.revokeObjectURL = jest.fn();
+  const click = jest
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(() => {});
+  fetchMock.mockImplementation(async (_url, options) =>
+    JSON.parse(options.body).action === "download"
+      ? response({ data: btoa("hello"), size: 5, revision: "r1" })
+      : response(listing([file])),
+  );
+  try {
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Download report.txt" }),
+    );
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(tracked("workspace_file_download")).toEqual([
+      liveEvent({ outcome: "initiated", source: "workspace", surface: "web" }),
+    ]);
+  } finally {
+    click.mockRestore();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
+});
+
+it.each([
+  [
+    "unavailable for a status without bytes",
+    response({ state: "disconnected", sandboxId: "owned" }),
+    [liveEvent({ outcome: "unavailable", surface: "web" })],
+  ],
+  [
+    "failed for a rejected read",
+    response({ error: "rate_limited" }, false),
+    [liveEvent({ outcome: "failed", surface: "web" })],
+  ],
+  [
+    "nothing for an unsupported binary format",
+    response({ data: btoa("\u0000\u0001"), size: 2, revision: "r1" }),
+    [],
+  ],
+])("reports a live preview as %s", async (_case, previewResponse, expected) => {
+  fetchMock.mockImplementation(async (_url, options) =>
+    JSON.parse(options.body).action === "preview"
+      ? previewResponse
+      : response(listing([{ ...file, name: "notes" }])),
+  );
+  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: "List view" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Preview notes" }));
+  // The read has settled once the file request is no longer busy.
+  await waitFor(() =>
+    expect(document.querySelector('[aria-busy="true"]')).toBeNull(),
+  );
+  expect(tracked("workspace_file_preview")).toEqual(expected);
 });

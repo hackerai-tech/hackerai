@@ -18,7 +18,11 @@ import {
   RefreshCw,
   Search,
 } from "lucide-react";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  elapsedMs,
+  telemetryNow,
+  trackWorkspaceFiles,
+} from "@/lib/analytics/workspace-files";
 import { WorkspaceFileTree } from "./WorkspaceFileTree";
 import WorkspaceFilePreview, {
   type WorkspacePreview,
@@ -191,10 +195,7 @@ export function LiveWorkspaceFilesPanel({
     return () => controller.abort();
   }, [request, path, query, offset, version]);
 
-  useEffect(() => {
-    captureAuthenticatedEvent("workspace_files_viewed");
-    return () => fileRequest.current?.abort();
-  }, []);
+  useEffect(() => () => fileRequest.current?.abort(), []);
   useEffect(
     () => () => {
       if (preview?.url) URL.revokeObjectURL(preview.url);
@@ -218,6 +219,29 @@ export function LiveWorkspaceFilesPanel({
     fileRequest.current = controller;
     setFileBusy(true);
     setError(null);
+    const started = telemetryNow();
+    const entryPoint = onOpenFile ? "computer_files" : "other";
+    const trackPreview = (outcome: "success" | "failed" | "unavailable") =>
+      trackWorkspaceFiles("workspace_file_preview", {
+        outcome,
+        file_kind: "live_workspace",
+        entry_point: entryPoint,
+        duration_ms: elapsedMs(started),
+      });
+    const trackDownload = (
+      outcome: "success" | "initiated" | "canceled" | "failed",
+      reason?: "unsupported_native" | "unavailable",
+    ) =>
+      trackWorkspaceFiles("workspace_file_download", {
+        outcome,
+        source: "workspace",
+        file_kind: "live_workspace",
+        entry_point: entryPoint,
+        reason,
+        duration_ms: elapsedMs(started),
+      });
+    // Binary content has no preview; that format limit is not a failed read.
+    let unsupported = false;
     try {
       const filePath =
         selectedPath ?? (path ? `${path}/${entry.name}` : entry.name);
@@ -230,6 +254,8 @@ export function LiveWorkspaceFilesPanel({
       if (!data.data && data.data !== "") {
         setStatus(data);
         setListing(null);
+        if (download) trackDownload("failed", "unavailable");
+        else trackPreview("unavailable");
         return;
       }
       const chunks: Uint8Array[] = [];
@@ -270,10 +296,7 @@ export function LiveWorkspaceFilesPanel({
             filename: entry.name,
             content: bytes,
           });
-          captureAuthenticatedEvent("workspace_file_download", {
-            outcome: saved.outcome,
-            surface: "desktop",
-          });
+          trackDownload(saved.outcome, saved.reason);
         } else {
           const url = URL.createObjectURL(new Blob([bytes]));
           const link = document.createElement("a");
@@ -283,10 +306,7 @@ export function LiveWorkspaceFilesPanel({
           link.click();
           link.remove();
           setTimeout(() => URL.revokeObjectURL(url), 30_000);
-          captureAuthenticatedEvent("workspace_file_download", {
-            outcome: "initiated",
-            surface: "web",
-          });
+          trackDownload("initiated");
         }
       } else {
         const type =
@@ -306,14 +326,17 @@ export function LiveWorkspaceFilesPanel({
               ignoreBOM: true,
             }).decode(bytes);
           } catch {
+            unsupported = true;
             throw new Error(
               "This binary file has no preview. Download it to open it.",
             );
           }
-          if (text.includes("\0"))
+          if (text.includes("\0")) {
+            unsupported = true;
             throw new Error(
               "This binary file has no preview. Download it to open it.",
             );
+          }
           nextPreview = { name: entry.name, path: filePath, text };
         }
         if (onOpenFile) {
@@ -334,12 +357,16 @@ export function LiveWorkspaceFilesPanel({
             loadedAt: Date.now(),
           });
         } else setPreview(nextPreview);
+        trackPreview("success");
       }
     } catch (cause) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted) {
         setError(
           cause instanceof Error ? cause.message : "Unable to read file.",
         );
+        if (download) trackDownload("failed");
+        else if (!unsupported) trackPreview("failed");
+      }
     } finally {
       if (!controller.signal.aborted) setFileBusy(false);
     }
@@ -792,9 +819,6 @@ export function WorkspaceFilesPanel({
 }) {
   const { sandboxPreference } = useGlobalState();
   const [tab, setTab] = useState<"chat" | "workspace">("chat");
-  useEffect(() => {
-    captureAuthenticatedEvent("workspace_files_viewed", { source: "chat" });
-  }, []);
   return (
     <div className="flex min-h-0 flex-1 flex-col sm:pt-3">
       <div

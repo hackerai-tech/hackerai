@@ -1,8 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ChatFilesPanel, CapturedFilePreview } from "../ChatFilesPanel";
 import { collectChatFiles } from "@/lib/workspace-preview/chat-files";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { WORKSPACE_DOWNLOAD_LIMIT } from "@/lib/sandbox/workspace-files";
+const tracked = (event: string) =>
+  (captureQueuedAuthenticatedEvent as jest.Mock).mock.calls
+    .filter(([call]) => call.event === event)
+    .map(([call]) => call.properties);
+const savedDownload = (outcome: string, surface: string) => ({
+  outcome,
+  source: "chat",
+  file_kind: "saved_attachment",
+  entry_point: "other",
+  telemetry_version: 1,
+  surface,
+  duration_ms: expect.any(Number),
+});
 const getUrl = jest.fn();
 const mockSaveBinary = jest.fn();
 const mockSaveText = jest.fn();
@@ -14,7 +27,7 @@ jest.mock("../ComputerCodeBlock", () => ({
   ),
 }));
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(() => true),
 }));
 jest.mock("sonner", () => ({
   toast: { success: jest.fn(), error: jest.fn() },
@@ -81,7 +94,7 @@ afterEach(() => {
   mockTauri = false;
   mockSaveBinary.mockReset();
   mockSaveText.mockReset();
-  (captureAuthenticatedEvent as jest.Mock).mockClear();
+  (captureQueuedAuthenticatedEvent as jest.Mock).mockClear();
   delete (window as { showSaveFilePicker?: unknown }).showSaveFilePicker;
 });
 const messages = ["cloud", "desktop"].map((environment, index) => ({
@@ -187,10 +200,11 @@ it("saves exact stored binary bytes on Desktop after reopening with every worksp
   expect(mockSaveText).not.toHaveBeenCalled();
   expect(getUrl).toHaveBeenCalledWith({ fileId: "file-pdf" });
   expect(fetchedUrls()).toEqual(["https://signed/report"]);
-  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-    "workspace_file_download",
-    { source: "chat", outcome: "success" },
-  );
+  expect(tracked("workspace_file_download")).toEqual([
+    savedDownload("success", "desktop"),
+  ]);
+  // A PDF has no in-app preview; an unsupported format is not a failed read.
+  expect(tracked("workspace_file_preview")).toEqual([]);
 });
 
 it("resolves a fresh signed URL on each click instead of retrying an expired one", async () => {
@@ -214,10 +228,9 @@ it("resolves a fresh signed URL on each click instead of retrying an expired one
       "Saved file is unavailable.",
     ),
   );
-  expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
-    "workspace_file_download",
-    { source: "chat", outcome: "failed" },
-  );
+  expect(tracked("workspace_file_download")).toEqual([
+    savedDownload("failed", "web"),
+  ]);
   fireEvent.click(button);
   await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
   expect(Array.from(write.mock.calls[0][0])).toEqual(Array.from(pdfBytes));
@@ -229,6 +242,10 @@ it("resolves a fresh signed URL on each click instead of retrying an expired one
   await waitFor(() =>
     expect(screen.queryByRole("status")).not.toBeInTheDocument(),
   );
+  expect(tracked("workspace_file_download")).toEqual([
+    savedDownload("failed", "web"),
+    savedDownload("success", "web"),
+  ]);
 });
 
 it("opens the browser picker before any network work and skips it entirely when canceled", async () => {
@@ -242,10 +259,9 @@ it("opens the browser picker before any network work and skips it entirely when 
   }) as unknown as typeof fetch;
   fireEvent.click(await openPersistedReport());
   await waitFor(() =>
-    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-      "workspace_file_download",
-      { source: "chat", outcome: "canceled" },
-    ),
+    expect(tracked("workspace_file_download")).toEqual([
+      savedDownload("canceled", "web"),
+    ]),
   );
   expect(picker).toHaveBeenCalledTimes(1);
   expect(getUrl).not.toHaveBeenCalled();
@@ -269,11 +285,12 @@ it("opens the browser picker before any network work and skips it entirely when 
 });
 
 it.each([
-  ["canceled", () => mockSaveBinary.mockResolvedValue(null), null],
+  ["canceled", () => mockSaveBinary.mockResolvedValue(null), null, undefined],
   [
     "failed",
     () => mockSaveBinary.mockRejectedValue("disk full"),
     "The file could not be saved. Try again.",
+    undefined,
   ],
   [
     "failed",
@@ -282,10 +299,11 @@ it.each([
         "command save_binary_file_with_dialog not found",
       ),
     "Update HackerAI Desktop to save this file, then try again.",
+    "unsupported_native",
   ],
 ] as const)(
   "reports a %s native save without claiming success",
-  async (outcome, arrange, message) => {
+  async (outcome, arrange, message, reason) => {
     mockTauri = true;
     arrange();
     getUrl.mockResolvedValue("https://signed/report");
@@ -295,12 +313,11 @@ it.each([
     const button = await openPersistedReport();
     fireEvent.click(button);
     await waitFor(() =>
-      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
-        "workspace_file_download",
-        { source: "chat", outcome },
-      ),
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledTimes(1),
     );
-    expect(captureAuthenticatedEvent).toHaveBeenCalledTimes(1);
+    expect(tracked("workspace_file_download")).toEqual([
+      { ...savedDownload(outcome, "desktop"), ...(reason && { reason }) },
+    ]);
     if (message) expect(screen.getByRole("status")).toHaveTextContent(message);
     else expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(button).toBeEnabled();
@@ -372,4 +389,84 @@ it("keeps text captures as text and names excerpts as excerpts on Desktop", asyn
   );
   expect(mockSaveBinary).not.toHaveBeenCalled();
   expect(getUrl).not.toHaveBeenCalled();
+});
+
+it("reports a saved preview once, only after it settles in a visible Files tab", async () => {
+  const text = Uint8Array.from("saved notes", (c) => c.charCodeAt(0));
+  getUrl.mockResolvedValue("https://signed/notes");
+  global.fetch = signedOnlyFetch({
+    "https://signed/notes": bytesResponse(text),
+  }) as unknown as typeof fetch;
+  const [saved] = collectChatFiles([
+    {
+      id: "m",
+      role: "assistant",
+      fileDetails: [{ fileId: "notes", name: "notes.txt" }],
+    },
+  ]);
+  const { rerender } = render(
+    <CapturedFilePreview file={saved} onClose={() => {}} visible={false} />,
+  );
+  expect(await screen.findByText("saved notes")).toBeInTheDocument();
+  // Loaded in a background tab: not yet a preview the user saw.
+  expect(tracked("workspace_file_preview")).toEqual([]);
+  rerender(<CapturedFilePreview file={saved} onClose={() => {}} visible />);
+  rerender(
+    <CapturedFilePreview file={saved} onClose={() => {}} visible={false} />,
+  );
+  rerender(<CapturedFilePreview file={saved} onClose={() => {}} visible />);
+  expect(tracked("workspace_file_preview")).toEqual([
+    {
+      outcome: "success",
+      file_kind: "saved_attachment",
+      entry_point: "computer_files",
+      telemetry_version: 1,
+      surface: "web",
+      duration_ms: expect.any(Number),
+    },
+  ]);
+});
+
+it("separates captured results, unavailable stored files and untracked viewers", async () => {
+  const [captured] = collectChatFiles(messages);
+  const { unmount } = render(
+    <CapturedFilePreview file={captured} onClose={() => {}} visible />,
+  );
+  expect(await screen.findByText("cloud saved content")).toBeVisible();
+  // Captured text has no load to time.
+  expect(tracked("workspace_file_preview")).toEqual([
+    {
+      outcome: "success",
+      file_kind: "captured_result",
+      entry_point: "computer_files",
+      telemetry_version: 1,
+      surface: "web",
+    },
+  ]);
+  unmount();
+
+  getUrl.mockResolvedValue(null);
+  const [gone] = collectChatFiles([
+    {
+      id: "m",
+      role: "assistant",
+      fileDetails: [{ fileId: "stored", name: "gone.txt" }],
+    },
+  ]);
+  const view = render(
+    <CapturedFilePreview file={gone} onClose={() => {}} visible />,
+  );
+  await waitFor(() =>
+    expect(tracked("workspace_file_preview")).toHaveLength(2),
+  );
+  expect(tracked("workspace_file_preview")[1]).toMatchObject({
+    outcome: "unavailable",
+    file_kind: "saved_attachment",
+  });
+  view.unmount();
+
+  // Activity and standalone viewers omit `visible` and report no previews.
+  render(<CapturedFilePreview file={captured} onClose={() => {}} />);
+  expect(await screen.findByText("cloud saved content")).toBeVisible();
+  expect(tracked("workspace_file_preview")).toHaveLength(2);
 });

@@ -40,7 +40,11 @@ import {
   type LoadedWorkspaceFile,
 } from "./WorkspaceFilesPanel";
 import WorkspaceFilePreview from "./WorkspaceFilePreview";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  elapsedMs,
+  telemetryNow,
+  trackWorkspaceFiles,
+} from "@/lib/analytics/workspace-files";
 import { downloadFile } from "@/lib/utils/file-download";
 import { isTauriEnvironment } from "../hooks/useTauri";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
@@ -150,6 +154,27 @@ export function ComputerWorkspace({
     },
     [],
   );
+
+  // Background mounts keep tabs alive while hidden; count only what users see.
+  // Refs survive effect replay, so each chat reports once per mounted workspace.
+  const exposedChat = useRef<string | null>(null);
+  const viewedChat = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    if (
+      exposedChat.current !== chatId &&
+      trackWorkspaceFiles("workspace_files_exposed", {})
+    ) {
+      exposedChat.current = chatId;
+    }
+    if (
+      active === "files" &&
+      viewedChat.current !== chatId &&
+      trackWorkspaceFiles("workspace_files_viewed", {})
+    ) {
+      viewedChat.current = chatId;
+    }
+  }, [open, active, chatId]);
 
   // Reconcile explicit open requests before rendering the selected panel. Streaming
   // updates and Activity timeline navigation retain the user's selected tab.
@@ -491,6 +516,7 @@ export function ComputerWorkspace({
                   return file ? (
                     <CapturedFilePreview
                       file={file}
+                      visible={open && active === tab.id}
                       onClose={() => closeTab(tab.id)}
                     />
                   ) : saved.loading ? (
@@ -535,16 +561,26 @@ function LoadedFilePreview({
   const download = async () => {
     setBusy(true);
     setError("");
+    const started = telemetryNow();
+    const track = (
+      outcome: "success" | "initiated" | "canceled" | "failed",
+      reason?: "unsupported_native",
+    ) =>
+      trackWorkspaceFiles("workspace_file_download", {
+        outcome,
+        source: "workspace",
+        file_kind: "workspace_snapshot",
+        entry_point: "computer_files",
+        reason,
+        duration_ms: elapsedMs(started),
+      });
     try {
       if (isTauriEnvironment()) {
         const result = await downloadFile({
           filename: loaded.file.name,
           content: loaded.bytes,
         });
-        captureAuthenticatedEvent("workspace_file_download", {
-          outcome: result.outcome,
-          surface: "desktop",
-        });
+        track(result.outcome, result.reason);
       } else {
         const url = URL.createObjectURL(new Blob([loaded.bytes]));
         const link = document.createElement("a");
@@ -554,12 +590,10 @@ function LoadedFilePreview({
         link.click();
         link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 30_000);
-        captureAuthenticatedEvent("workspace_file_download", {
-          outcome: "initiated",
-          surface: "web",
-        });
+        track("initiated");
       }
     } catch (cause) {
+      track("failed");
       setError(cause instanceof Error ? cause.message : "Download failed.");
     } finally {
       setBusy(false);
