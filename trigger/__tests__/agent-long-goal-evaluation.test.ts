@@ -53,6 +53,7 @@ function setup({
     chatId: "chat",
     userId: "user",
     judgeGoalCompletion: judge,
+    checkQaProviderCapacity: undefined,
     goalFinalMessages: [
       {
         id: "r1",

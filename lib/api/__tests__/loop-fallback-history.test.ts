@@ -153,6 +153,7 @@ it.each([
       shouldRetryWithoutImageToolResults: false,
       omitImageViewToolResultsForProviderRetry,
       describeImageAttachmentsWithAuxiliaryVision,
+      checkQaProviderCapacity: undefined,
       generateId: () => "continuation",
       AGENT_LOOP_CONTINUATION_PROMPT,
       usageTracker: { prepareModelRetry: jest.fn() },
