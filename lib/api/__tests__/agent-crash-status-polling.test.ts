@@ -124,9 +124,28 @@ it("closes the real streaming client after an oversized crash replay instead of 
     expect(mockSaveMessage).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     expect(mockCloseApproval).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('"event":"agent_crash_recovery_blocked"'),
+    const blocked = warn.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .filter((line) => line.event === "agent_crash_recovery_blocked");
+    // The second message's large delta crosses the cap; nothing was discarded.
+    const deltaBytes = Buffer.byteLength(
+      JSON.stringify({
+        type: "text-delta",
+        id: "second",
+        delta: "x".repeat(4 * 1024 * 1024),
+      }),
     );
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({
+      action: "status",
+      reason: "replay_byte_limit",
+      replay_limit_diagnostic_version: 1,
+      replay_discarded_prefix_bytes: 0,
+      replay_prefix_record_count: 5,
+      replay_crossing_record_bytes: deltaBytes,
+    });
+    expect(blocked[0].replay_prefix_bytes).toBeGreaterThan(deltaBytes);
+    expect(blocked[0].replay_prefix_bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
   } finally {
     global.fetch = originalFetch;
     warn.mockRestore();

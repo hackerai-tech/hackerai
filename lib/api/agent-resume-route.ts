@@ -133,6 +133,7 @@ export const createAgentResumeGet =
                 chat_id: chatId.slice(0, 128),
                 user_id: userId.slice(0, 128),
                 trigger_run_id: runId.slice(0, 128),
+                ...error.context,
               }),
             );
             return NextResponse.json(

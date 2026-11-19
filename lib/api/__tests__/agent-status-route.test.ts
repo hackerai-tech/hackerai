@@ -236,7 +236,13 @@ describe("agent status route", () => {
       metadata: { chatId: "chat-1", userId: "user-1" },
     } as never);
     mockRecover.mockRejectedValueOnce(
-      new AgentCrashRecoveryReplayLimitError() as never,
+      new AgentCrashRecoveryReplayLimitError({
+        replay_limit_diagnostic_version: 1,
+        replay_prefix_bytes: 0,
+        replay_discarded_prefix_bytes: 0,
+        replay_prefix_record_count: 0,
+        replay_crossing_record_bytes: 0,
+      }) as never,
     );
 
     const response = await createAgentStatusPost({ endpoint: "/api/agent" })(

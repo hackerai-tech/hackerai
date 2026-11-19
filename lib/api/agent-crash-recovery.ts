@@ -79,6 +79,7 @@ export async function recoverCrashedAgentRun({
     });
     const groups: UIMessageChunk[][] = [];
     let bytes = 0,
+      discardedBytes = 0,
       records = 0,
       chunkCount = 0;
     // Buffer only a bounded, complete replay before any writes. In particular,
@@ -89,16 +90,31 @@ export async function recoverCrashedAgentRun({
         throw new Error("Agent crash recovery record budget exceeded");
       // The SDK exposes empty S2 control records as undefined.
       if (raw === undefined) continue;
-      bytes += Buffer.byteLength(JSON.stringify(raw), "utf8");
-      if (bytes > MAX_REPLAY_BYTES)
-        throw new AgentCrashRecoveryReplayLimitError();
+      const recordBytes = Buffer.byteLength(JSON.stringify(raw), "utf8");
+      bytes += recordBytes;
+      if (bytes > MAX_REPLAY_BYTES) {
+        // The crossing record is unvalidated: report only its bounded size.
+        throw new AgentCrashRecoveryReplayLimitError({
+          replay_limit_diagnostic_version: 1,
+          replay_prefix_bytes: bytes - recordBytes,
+          replay_discarded_prefix_bytes: discardedBytes,
+          replay_prefix_record_count: records - 1,
+          replay_crossing_record_bytes: Math.min(
+            recordBytes,
+            MAX_REPLAY_BYTES + 1,
+          ),
+        });
+      }
       const validated = await uiMessageChunkSchema().validate!(raw);
       if (!validated.success)
         throw new Error("Agent crash recovery invalid stream chunk");
       const chunk = validated.value;
       // UI control events are not conversation history. Provider retries may
       // also leave an error marker before a later assistant message.
-      if (chunk.type.startsWith("data-") || chunk.type === "error") continue;
+      if (chunk.type.startsWith("data-") || chunk.type === "error") {
+        discardedBytes += recordBytes;
+        continue;
+      }
       if (chunk.type === "start") {
         if (!chunk.messageId || groups.length >= MAX_REPLAY_MESSAGES)
           throw new Error("Agent crash recovery message boundary invalid");
