@@ -1533,8 +1533,8 @@ export class DesktopSandboxBridge {
     // joins only that rejection as this invocation's first terminal. An
     // `owner_stop_requested` origin's cleanup failure rides the same rejection
     // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
-    // receipt, its `requested_pid_not_found` report's first stop request
-    // source, and a `cancel_wait_timeout` origin's owner phase.
+    // receipt, its not-found exit code report's first stop request source,
+    // and a `cancel_wait_timeout` origin's owner phase.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's

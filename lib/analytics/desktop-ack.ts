@@ -377,8 +377,8 @@ export class DesktopAckTelemetry {
       // Its cleanup pair joins only an `owner_stop_requested` origin on an
       // acknowledged terminal, its taskkill group only that pair's
       // `tree_unconfirmed` failure, its root report pair only that group's
-      // code, and its stop request source pair only that report's
-      // `requested_pid_not_found` class; its owner phase pair joins only a
+      // code, and its stop request source pair only that report beside the
+      // not-found code, of either class; its owner phase pair joins only a
       // `cancel_wait_timeout` origin on an acknowledged terminal; otherwise
       // the prior pairs alone, as before.
       const streamFence = readDesktopStreamFenceDiagnostic(

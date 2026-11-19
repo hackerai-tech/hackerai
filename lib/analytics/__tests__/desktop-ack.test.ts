@@ -4144,17 +4144,34 @@ describe("invocation rejection message class", () => {
                 desktop_stream_fence_stop_request_source: "cancel_ipc",
               } as const;
               const reported = { ...treePairs, ...notFound } as const;
+              // The same exit 128 with an unclassified report.
+              const unclassified = {
+                ...reported,
+                desktop_stream_fence_windows_taskkill_root_report:
+                  "unclassified",
+              } as const;
 
-              it.each([
-                "cancel_ipc",
-                "document_invalidation",
-                "application_exit",
-              ])(
-                "keeps the unsampled %s pair beside its not-found report through capture and before_send",
-                (source) => {
+              it.each(
+                ["cancel_ipc", "document_invalidation", "application_exit"]
+                  .flatMap((source) =>
+                    [reported, unclassified].map(
+                      (report) => [source, report] as const,
+                    ),
+                  )
+                  .map(
+                    ([source, report]) =>
+                      [
+                        source,
+                        report.desktop_stream_fence_windows_taskkill_root_report,
+                        report,
+                      ] as const,
+                  ),
+              )(
+                "keeps the unsampled %s pair beside its exit 128 %s report through capture and before_send",
+                (source, _class, report) => {
                   jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
                   const expected = {
-                    ...reported,
+                    ...report,
                     desktop_stream_fence_stop_request_source_version: 1,
                     desktop_stream_fence_stop_request_source: source,
                   };
@@ -4221,28 +4238,27 @@ describe("invocation rejection message class", () => {
                   { desktop_stream_fence_stop_request_source_version: 1 },
                 ],
               ])("drops only the source pair for %s", (_case, carried) => {
-                const final = settle({
-                  ...fenced,
-                  streamFence: { ...reported, ...carried },
-                });
-                expect(fenceKeys(final!.properties)).toEqual(
-                  Object.keys(reported),
-                );
-                expect(final?.properties).toMatchObject(reported);
-                expect(
-                  sanitize({ ...coarse, ...reported, ...carried }),
-                ).toEqual({ ...coarse, ...reported });
+                for (const report of [reported, unclassified]) {
+                  const final = settle({
+                    ...fenced,
+                    streamFence: { ...report, ...carried },
+                  });
+                  expect(fenceKeys(final!.properties)).toEqual(
+                    Object.keys(report),
+                  );
+                  expect(final?.properties).toMatchObject(report);
+                  expect(
+                    sanitize({ ...coarse, ...report, ...carried }),
+                  ).toEqual({ ...coarse, ...report });
+                }
               });
 
               it.each<[string, Record<string, unknown>]>([
                 [
-                  "an unclassified report",
+                  "an unclassified exit 255 report",
                   {
-                    ...treePairs,
-                    ...withoutRoot,
-                    ...root,
-                    desktop_stream_fence_windows_taskkill_root_report:
-                      "unclassified",
+                    ...unclassified,
+                    desktop_stream_fence_windows_taskkill_exit_code: 255,
                   },
                 ],
                 ["a code without a report", { ...treePairs, ...withoutRoot }],

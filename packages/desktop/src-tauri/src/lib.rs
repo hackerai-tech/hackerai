@@ -1432,7 +1432,8 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // others, adds a cancellation wait timeout's matched owner phase.
     include_stream_fence_cancel_wait_owner_phase: Option<serde_json::Value>,
     // Only literal `true`, beside the four taskkill root report opt-ins, adds
-    // the first stop request source beside a `requested_pid_not_found` report.
+    // the first stop request source beside a report of taskkill's not-found
+    // exit code, `requested_pid_not_found` or `unclassified`.
     include_stream_fence_stop_request_source: Option<serde_json::Value>,
 }
 
@@ -1560,8 +1561,9 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// all three, the Windows taskkill failure recorded with a `tree_unconfirmed`
 /// leg is added as a further sibling, as its exact v1 receipt. With all four,
 /// that sibling is instead its v2 receipt when it has one. With all five, a
-/// v2 `requested_pid_not_found` receipt is joined by the same stop request's
-/// first source. Separately, with the origin and owner phase opt-ins, a
+/// v2 receipt of taskkill's not-found exit code, `requested_pid_not_found` or
+/// `unclassified`, is joined by the same stop request's first source.
+/// Separately, with the origin and owner phase opt-ins, a
 /// `cancel_wait_timeout` origin's recorded owner phase is added as that
 /// origin's sibling.
 #[allow(clippy::too_many_arguments)]
@@ -1604,8 +1606,8 @@ fn authorized_stream_rejection(
                 .filter(|_| include_stream_fence_windows_taskkill_root_report);
             rejection["streamFenceWindowsTaskkill"] =
                 serde_json::json!(root_report.unwrap_or(taskkill));
-            // The fence exposes a source only with its own classified
-            // not-found report, which rides only that v2 receipt.
+            // The fence exposes a source only with its own report of the
+            // not-found exit code, which rides only that v2 receipt.
             if let Some(source) = receipts
                 .stop_request_source
                 .filter(|_| root_report.is_some() && include_stream_fence_stop_request_source)
@@ -3660,19 +3662,25 @@ mod tests {
         };
         let not_found_v1 =
             with_receipt(json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 128 }));
-        let report = |class: &str| {
+        let report = |code: i32, class: &str| {
             with_receipt(json!({
                 "version": 2,
                 "outcome": "nonzero_exit",
-                "exitCode": 128,
+                "exitCode": code,
                 "rootReport": class,
             }))
         };
-        let not_found_v2 = report("requested_pid_not_found");
-        let mut with_source = not_found_v2.clone();
-        with_source["streamFenceStopRequestSource"] =
-            json!({ "version": 1, "source": "application_exit" });
-        let unclassified = report("unclassified");
+        let sourced = |rejection: &Value| {
+            let mut rejection = rejection.clone();
+            rejection["streamFenceStopRequestSource"] =
+                json!({ "version": 1, "source": "application_exit" });
+            rejection
+        };
+        let not_found_v2 = report(128, "requested_pid_not_found");
+        let with_source = sourced(&not_found_v2);
+        let unclassified = report(128, "unclassified");
+        let unclassified_with_source = sourced(&unclassified);
+        let unclassified_255 = report(255, "unclassified");
         let leader_cleanup = with_cleanup("tree_and_leader_wait_failed");
         let yes = || Some(json!(true));
         // [origin, cleanup, taskkill, root report] literal `true` opt-ins.
@@ -3708,15 +3716,33 @@ mod tests {
                     ([false, true, true, true], yes(), &exact),
                 ],
             ),
-            // Recorded with every stop, yet never beside an unclassified
-            // report, a not-found report beside another leg (never recorded)
-            // or any other origin.
+            // The same not-found exit code with an unclassified report: the
+            // same five literal opt-ins, otherwise every prior shape.
             (
                 Some((
                     CleanupFailure::TreeUnconfirmed,
                     Some(TaskkillFailure::NonzeroExit(NonZeroI32::new(128))),
                 )),
-                vec![(all, yes(), &unclassified)],
+                vec![
+                    (all, yes(), &unclassified_with_source),
+                    (all, None, &unclassified),
+                    (all, Some(json!("true")), &unclassified),
+                    (all, Some(Value::Null), &unclassified),
+                    ([true, true, true, false], yes(), &not_found_v1),
+                    ([true, true, false, true], yes(), &tree_cleanup),
+                    ([true, false, true, true], yes(), &stopped),
+                    ([false, true, true, true], yes(), &exact),
+                ],
+            ),
+            // Recorded with every stop, yet never beside any other exit code,
+            // a not-found report beside another leg (never recorded) or any
+            // other origin.
+            (
+                Some((
+                    CleanupFailure::TreeUnconfirmed,
+                    Some(TaskkillFailure::NonzeroExit(NonZeroI32::new(255))),
+                )),
+                vec![(all, yes(), &unclassified_255)],
             ),
             (
                 Some((
@@ -3781,7 +3807,7 @@ mod tests {
                 .map(|_| ());
                 // Redeemed once, then fenced with the exact original message;
                 // only a fifth literal `true` beside the four earlier ones adds
-                // the first source, and only beside its not-found report.
+                // the first source, and only beside its not-found exit's report.
                 assert_eq!(response, Err(expected.clone()), "{label}");
             }
             assert_eq!(approvals.load(Ordering::SeqCst), count);
