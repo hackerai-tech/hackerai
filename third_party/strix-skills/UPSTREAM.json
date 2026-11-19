@@ -1,9 +1,9 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "1152d53579d5b3af37ada8c798f197ab093b99c6",
+  "sourceCommit": "8db295a5b3564be2b430bb3a9afdb4db7850fa24",
   "license": "Apache-2.0",
-  "markdownFileCount": 64,
-  "selectableSkillCount": 53,
+  "markdownFileCount": 65,
+  "selectableSkillCount": 54,
   "internalSkillCount": 10,
   "files": {
     "README.md": "bb2a2ea889d71e709bb24e50c299f247db63e27a40733c86fc4ad8bd0be762dc",
@@ -25,6 +25,7 @@
     "frameworks/fastapi.md": "4d1ee5916a2f8d145afe47a329c630196ca9d9a86e19af85c877d83366db9aa4",
     "frameworks/nestjs.md": "cb1bfd975f89493a9bf3a293b4c4d8e6421ab04ce6d9f900421ab5a3b8ead7dc",
     "frameworks/nextjs.md": "7b4d3d0e26b944800ae5b01ed79908f1d532360cf356941ce8954501e538b8a0",
+    "frameworks/springboot.md": "51abf2cbcfdf87050d914000768ea4d748e074d302b263d74d7a9299f182746d",
     "protocols/graphql.md": "0c133decf9c1a7aebea2ee29eeba59dff7223f3ff45c12e85576f9cf8b03e24c",
     "protocols/oauth.md": "ede8b207c545d352cb70891f808b4ffabe82863347415429962255e98cd1f5cb",
     "reconnaissance/asset_discovery.md": "ed48059db9d39330d5ca665d5c46baf689f8c7aa038d42a09afa2c369010567c",

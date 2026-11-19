@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "1152d53579d5b3af37ada8c798f197ab093b99c6",
+  "sourceCommit": "8db295a5b3564be2b430bb3a9afdb4db7850fa24",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -199,6 +199,17 @@
       "internal": false,
       "sourcePath": "frameworks/nextjs.md",
       "sourceSha256": "7b4d3d0e26b944800ae5b01ed79908f1d532360cf356941ce8954501e538b8a0"
+    },
+    {
+      "id": "frameworks/springboot",
+      "category": "frameworks",
+      "filename": "springboot",
+      "name": "springboot",
+      "description": "Security testing playbook for deployed or source-available Spring Boot services, including Spring MVC/WebFlux, Spring Security, REST controllers, Actuator, Spring Data REST, Jackson serialization, SpEL, outbound clients, and session management. Use when Spring Boot runtime or configuration is confirmed; first identify the MVC/WebFlux mode, active security chains, method-security wiring, management exposure, profiles, and resolved dependency versions. Covers authentication, authorization, CSRF/CORS, Actuator exposure, path matching, DTO over-binding, validation, deserialization, SSRF, session controls, and Spring-specific configuration flaws.",
+      "contentBytes": 10949,
+      "internal": false,
+      "sourcePath": "frameworks/springboot.md",
+      "sourceSha256": "51abf2cbcfdf87050d914000768ea4d748e074d302b263d74d7a9299f182746d"
     },
     {
       "id": "protocols/graphql",
