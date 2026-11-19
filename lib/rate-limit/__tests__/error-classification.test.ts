@@ -4,15 +4,18 @@ import { ChatSDKError } from "@/lib/errors";
 import { isHandledUserRateLimitError } from "../error-classification";
 
 describe("isHandledUserRateLimitError", () => {
-  it("handles user quota exhaustion", () => {
-    expect(
-      isHandledUserRateLimitError(
-        new ChatSDKError("rate_limit:chat", "Daily requests exhausted", {
-          capReason: "daily_requests_exhausted",
-        }),
-      ),
-    ).toBe(true);
-  });
+  it.each(["daily_requests_exhausted", "qa_spend_cap"])(
+    "handles quota exhaustion (%s)",
+    (capReason) => {
+      expect(
+        isHandledUserRateLimitError(
+          new ChatSDKError("rate_limit:chat", "Usage limit reached", {
+            capReason,
+          }),
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("fails closed for unknown chat rate-limit errors", () => {
     expect(

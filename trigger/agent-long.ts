@@ -2625,6 +2625,7 @@ export const agentLongTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          let settleFailedQaRequest: (() => Promise<void>) | undefined;
           try {
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
@@ -3472,18 +3473,23 @@ export const agentLongTask = task({
               }
             }
 
-            const titlePromise = isNewChat
-              ? generateTitleFromUserMessageWithWriter(
-                  messagesForProcessing,
-                  writer,
-                  (title) => updateChatTitle({ chatId, title }),
-                  (costDollars) => {
-                    usageTracker.providerCost += costDollars;
-                    usageTracker.nonModelCost += costDollars;
-                    chatLogger?.getBuilder().addToolCost(costDollars);
-                  },
-                )
-              : Promise.resolve(undefined);
+            const startTitleGeneration = () =>
+              isNewChat
+                ? generateTitleFromUserMessageWithWriter(
+                    messagesForProcessing,
+                    writer,
+                    (title) => updateChatTitle({ chatId, title }),
+                    (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                  )
+                : Promise.resolve(undefined);
+            // A QA title starts only after its failure settlement is ready.
+            let titlePromise = rateLimitInfo.qaSpendPool
+              ? Promise.resolve(undefined)
+              : startTitleGeneration();
 
             let finalMessages = processedMessages;
 
@@ -3707,6 +3713,7 @@ export const agentLongTask = task({
                 // for it so its provider cost cannot race final settlement.
                 await titlePromise;
                 const sandboxUsage = await getSandboxSessionUsage();
+                if (hasRecordedUsage) return;
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;
@@ -3725,6 +3732,10 @@ export const agentLongTask = task({
                   if (paidDailyFreeAllowanceReservation) {
                     await releasePaidDailyFreeAllowanceReservation();
                     hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                  }
+                  if (rateLimitInfo.qaSpendPool) {
+                    hasRecordedUsage = true;
+                    await usageRefundTracker.refundWithResult();
                   }
                   return;
                 }
@@ -3843,6 +3854,9 @@ export const agentLongTask = task({
                     usageRecordArgs.accountingModel,
                     usageTracker.usageSettlementId,
                     rateLimitInfo.qaSpendPool ?? null,
+                    rateLimitInfo.qaSpendPool
+                      ? rateLimitInfo.resetTime.getTime()
+                      : undefined,
                   );
                   if (usageSettlementState) {
                     usageRefundTracker.recordDeductions({
@@ -3949,6 +3963,12 @@ export const agentLongTask = task({
                 await releaseFreeRunLockOnce();
               }
             };
+
+            if (rateLimitInfo.qaSpendPool) {
+              usageRefundTracker.deferRefundsToSettlement();
+              settleFailedQaRequest = deductAccumulatedUsage;
+              titlePromise = startTitleGeneration();
+            }
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
               async ({
@@ -6333,6 +6353,12 @@ export const agentLongTask = task({
               ),
             );
           } catch (error) {
+            await settleFailedQaRequest?.().catch(() => {
+              phLogger.warn("Failed to settle QA usage during stream setup", {
+                chatId,
+                endpoint,
+              });
+            });
             const canceledDuringPreparation =
               userStopSignal.signal.aborted &&
               error === userStopSignal.signal.reason;

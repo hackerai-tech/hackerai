@@ -100,17 +100,24 @@ describe("UsageRefundTracker", () => {
 
   it("refunds a QA reservation against the pool selected at admission", async () => {
     const tracker = createEmptyTracker();
+    const resetTime = new Date("2027-01-01T00:00:00Z");
     tracker.setUser("user-123", "pro");
     tracker.recordDeductions({
       remaining: 900,
-      resetTime: new Date(),
+      resetTime,
       limit: 1_000,
       pointsDeducted: 100,
       qaSpendPool: "preview",
     });
 
+    tracker.deferRefundsToSettlement();
+    await tracker.refund();
+    expect(refundUsage).not.toHaveBeenCalled();
+
+    await tracker.refundWithResult();
     await tracker.refund();
 
+    expect(refundUsage).toHaveBeenCalledTimes(1);
     expect(refundUsage).toHaveBeenCalledWith(
       "user-123",
       "pro",
@@ -119,6 +126,7 @@ describe("UsageRefundTracker", () => {
       undefined,
       expect.any(String),
       "preview",
+      resetTime.getTime(),
     );
   });
 

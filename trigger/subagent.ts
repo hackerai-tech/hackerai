@@ -130,7 +130,11 @@ import {
   isHandledUserRateLimitError,
   recordFreeMonthlySubagentCost,
 } from "@/lib/rate-limit";
-import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
+import {
+  checkSubagentBillingCapacity,
+  createSubagentQaUsageSettlement,
+  type SubagentQaUsageSettlement,
+} from "@/lib/ai/subagents/billing";
 import {
   finalizeHandledSubagentRateLimit,
   type SubagentTerminalOutput as SubagentTaskOutput,
@@ -632,6 +636,8 @@ export const subagentTask = task({
     let extraUsageConfig:
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
     let rateLimitInfo: Awaited<ReturnType<typeof checkSubagentBillingCapacity>>;
+    // Set only for a child admitted on the shared QA pool.
+    let qaUsageSettlement: SubagentQaUsageSettlement | null = null;
     let usageSettled = false;
     let triggerRunCostRecorded = false;
     const selectedModel =
@@ -782,10 +788,17 @@ export const subagentTask = task({
         selectedModel,
         usageTracker.nonModelCost,
         row.organization_id,
-        { pointsDeducted: 0, extraUsagePointsDeducted: 0 },
+        // QA children settle steps as they run; charge only the remainder.
+        qaUsageSettlement?.initialDeduction() ?? {
+          pointsDeducted: 0,
+          extraUsagePointsDeducted: 0,
+        },
         responseModel ?? selectedModel,
         usageTracker.usageSettlementId,
         rateLimitInfo.qaSpendPool ?? null,
+        rateLimitInfo.qaSpendPool
+          ? rateLimitInfo.resetTime.getTime()
+          : undefined,
       );
       usageSettled = true;
       const usageLogArgs = {
@@ -813,9 +826,15 @@ export const subagentTask = task({
       return {
         costDollars,
         billingFailure:
-          deduction.uncoveredPoints > 0 || deduction.usageDeductionFailed,
+          deduction.uncoveredPoints > 0 ||
+          deduction.usageDeductionFailed ||
+          !!qaUsageSettlement?.stopped,
       };
     };
+
+    const getCurrentRunCostDollars = () =>
+      usageTracker.computeCostDollars(selectedModel, responseModel) +
+      resolveTriggerRunCost(triggerUsage.getCurrent()).totalCostDollars;
 
     // Record current model, summary and Trigger cost against the free monthly
     // and per-child caps. Callers decide whether an in-flight step may finish.
@@ -824,9 +843,13 @@ export const subagentTask = task({
     }: {
       abortOnLimit: boolean;
     }): Promise<void> => {
-      const currentCostDollars =
-        usageTracker.computeCostDollars(selectedModel, responseModel) +
-        resolveTriggerRunCost(triggerUsage.getCurrent()).totalCostDollars;
+      const currentCostDollars = getCurrentRunCostDollars();
+      if (qaUsageSettlement) {
+        await qaUsageSettlement.settle(currentCostDollars);
+        if (qaUsageSettlement.stopped && !resultValue && abortOnLimit) {
+          activeAbort.abort();
+        }
+      }
       if (row.subscription === "free") {
         let monthly: Awaited<ReturnType<typeof recordFreeMonthlySubagentCost>>;
         try {
@@ -870,6 +893,15 @@ export const subagentTask = task({
         freeQuotaSubject: row.free_quota_subject,
         extraUsageConfig,
         modelName: selectedModel,
+      });
+      qaUsageSettlement = createSubagentQaUsageSettlement({
+        userId: row.user_id,
+        organizationId: row.organization_id,
+        subscription: row.subscription,
+        extraUsageConfig,
+        modelName: selectedModel,
+        rateLimitInfo,
+        usageSettlementId: usageTracker.usageSettlementId,
       });
 
       runtimeStage = "context_resolution";
@@ -1429,7 +1461,9 @@ export const subagentTask = task({
             const fenceProviderRequest = async () => {
               if (
                 !resultValue &&
-                (freeMonthlyCostLimitExceeded || spendCapExceeded)
+                (freeMonthlyCostLimitExceeded ||
+                  spendCapExceeded ||
+                  qaUsageSettlement?.stopped)
               ) {
                 activeAbort.abort();
                 throw new Error("Subagent usage limit reached");
@@ -1437,6 +1471,16 @@ export const subagentTask = task({
               await waitForBrowserHandoff(activeAbort.signal);
               runtimeStage = "authorization";
               await assertRuntimeAuthorized();
+              if (qaUsageSettlement) {
+                // Charge accrued QA cost and confirm the same pool still has
+                // capacity before this request can add more.
+                try {
+                  await qaUsageSettlement.fence(getCurrentRunCostDollars());
+                } catch (error) {
+                  activeAbort.abort();
+                  throw error;
+                }
+              }
               if (row.subscription === "free") {
                 try {
                   await checkSubagentBillingCapacity({
@@ -1837,7 +1881,12 @@ export const subagentTask = task({
 
               if (isHandledUserRateLimitError(attemptError)) throw attemptError;
               if (resultValue) break;
-              if (freeMonthlyCostLimitExceeded || spendCapExceeded) break;
+              if (
+                freeMonthlyCostLimitExceeded ||
+                spendCapExceeded ||
+                qaUsageSettlement?.stopped
+              )
+                break;
               if (attemptError instanceof SubagentContextBudgetError) {
                 // Compaction could not bring the request under the model
                 // budget. Retrying the same history cannot succeed.

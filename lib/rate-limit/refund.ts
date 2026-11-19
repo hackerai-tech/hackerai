@@ -21,6 +21,8 @@ export class UsageRefundTracker {
   private subscription: SubscriptionTier | undefined;
   private organizationId: string | undefined;
   private qaSpendPool: RateLimitInfo["qaSpendPool"];
+  private qaResetTimestamp: number | undefined;
+  private refundsDeferred = false;
   private refundInFlight: Promise<UsageRefundOutcome> | undefined;
   private includedRefundId: string | undefined;
 
@@ -44,6 +46,9 @@ export class UsageRefundTracker {
     this.pointsDeducted = rateLimitInfo.pointsDeducted ?? 0;
     this.extraUsagePointsDeducted = rateLimitInfo.extraUsagePointsDeducted ?? 0;
     this.qaSpendPool = rateLimitInfo.qaSpendPool;
+    this.qaResetTimestamp = this.qaSpendPool
+      ? rateLimitInfo.resetTime.getTime()
+      : undefined;
   }
 
   /**
@@ -67,11 +72,19 @@ export class UsageRefundTracker {
   }
 
   /**
+   * Let final settlement keep incurred cost and release unused capacity.
+   * Incidental error cleanup must not refund the reservation before then.
+   */
+  deferRefundsToSettlement(): void {
+    this.refundsDeferred = true;
+  }
+
+  /**
    * Refund all tracked deductions without duplicating confirmed refunds.
    * Call this from error handlers to restore credits on failure.
    */
   async refund(): Promise<void> {
-    await this.refundWithResult();
+    if (!this.refundsDeferred) await this.refundWithResult();
   }
 
   /** Refund tracked deductions and report only amounts confirmed restored. */
@@ -110,6 +123,7 @@ export class UsageRefundTracker {
         this.organizationId,
         includedRefundId,
         this.qaSpendPool ?? null,
+        ...(this.qaResetTimestamp === undefined ? [] : [this.qaResetTimestamp]),
       );
     } catch (error) {
       console.error("Failed to refund usage:", error);

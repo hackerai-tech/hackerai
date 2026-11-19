@@ -1594,6 +1594,7 @@ export const deductUsage = async (
   actualModelName?: string,
   usageSettlementId?: string,
   expectedQaSpendPool?: QaSpendPoolEnvironment | null,
+  expectedQaResetTimestamp?: number,
 ): Promise<UsageDeductionResult> => {
   const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
   const redis = createRedisClient();
@@ -1777,6 +1778,7 @@ export const deductUsage = async (
           usageSettlementId
             ? `${usageSettlementId}:settlement-refund`
             : randomUUID(),
+          expectedQaResetTimestamp,
         );
         if (!refunded) {
           return withFinalCoverage(
@@ -1840,10 +1842,19 @@ local bucketKey = KEYS[1]
 local refundField = ARGV[1]
 local pointsToRefund = tonumber(ARGV[2])
 local defaultLimit = tonumber(ARGV[3])
+local qaWindowStart = tonumber(ARGV[4])
 
 local currentTokens = tonumber(redis.call("HGET", bucketKey, "tokens") or "0")
 if redis.call("HEXISTS", bucketKey, refundField) == 1 then
   return {0, currentTokens}
+end
+if qaWindowStart then
+  local currentWindowStart = tonumber(redis.call("HGET", bucketKey, "refilledAt"))
+  local now = tonumber(ARGV[5])
+  local qaWindowEnd = tonumber(ARGV[6])
+  if currentWindowStart ~= qaWindowStart or now >= qaWindowEnd then
+    return {-1, currentTokens}
+  end
 end
 
 local cycleAllocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation"))
@@ -1859,6 +1870,7 @@ const refundBucketTokens = async (
   ledger: UsageLedger,
   pointsToRefund: number,
   refundId: string,
+  expectedQaResetTimestamp?: number,
 ): Promise<boolean> => {
   if (pointsToRefund <= 0) return true;
 
@@ -1874,13 +1886,26 @@ const refundBucketTokens = async (
       ? ledger.pool.storageKey
       : getMonthlyBucketKey(userId, subscription);
 
+  const args: Array<string | number> = [
+    `usage-refund:${refundId}`,
+    pointsToRefund,
+    monthlyLimit,
+  ];
+  // A QA refund may release only capacity reserved in its admission window.
+  // Check inside Redis so a refill cannot race the refund.
+  if (ledger.kind === "qa") {
+    if (!Number.isSafeInteger(expectedQaResetTimestamp)) return false;
+    const reset = expectedQaResetTimestamp!;
+    args.push(reset - THIRTY_DAYS_MS, Date.now(), reset);
+  }
+
   try {
-    await redis.eval(
+    const result = await redis.eval<Array<string | number>, [number, number]>(
       REFUND_BUCKET_TOKENS_SCRIPT,
       [monthlyKey],
-      [`usage-refund:${refundId}`, pointsToRefund, monthlyLimit],
+      args,
     );
-    return true;
+    return ledger.kind === "customer" || result?.[0] === 0 || result?.[0] === 1;
   } catch (error) {
     console.error("Failed to refund bucket tokens:", error);
     return false;
@@ -2992,6 +3017,7 @@ export const refundUsage = async (
   organizationId?: string,
   includedRefundId: string = randomUUID(),
   expectedQaSpendPool?: QaSpendPoolEnvironment | null,
+  expectedQaResetTimestamp?: number,
 ): Promise<UsageRefundResult> => {
   const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
   // QA admissions never debit a wallet, so wallet points under a QA ledger
@@ -3013,6 +3039,7 @@ export const refundUsage = async (
           ledger,
           pointsDeducted,
           includedRefundId,
+          expectedQaResetTimestamp,
         )
       : Promise.resolve(true);
   const extraUsageRefundPromise = (async () => {

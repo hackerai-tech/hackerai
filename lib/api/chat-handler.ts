@@ -936,6 +936,8 @@ export const createChatHandler = () => {
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          // Assigned before any parallel title work starts.
+          let settleFailedQaRequest: (() => Promise<void>) | undefined;
           try {
             const usageTracker = new UsageTracker();
             paidDailyFreeAllowanceUsageTracker = usageTracker;
@@ -1222,18 +1224,23 @@ export const createChatHandler = () => {
             }
 
             // Generate the title in parallel for new tasks.
-            const titlePromise = isNewChat
-              ? generateTitleFromUserMessageWithWriter(
-                  fetched.truncatedMessages,
-                  writer,
-                  (title) => updateChatTitle({ chatId, title }),
-                  (costDollars) => {
-                    usageTracker.providerCost += costDollars;
-                    usageTracker.nonModelCost += costDollars;
-                    chatLogger?.getBuilder().addToolCost(costDollars);
-                  },
-                )
-              : Promise.resolve(undefined);
+            const startTitleGeneration = () =>
+              isNewChat
+                ? generateTitleFromUserMessageWithWriter(
+                    fetched.truncatedMessages,
+                    writer,
+                    (title) => updateChatTitle({ chatId, title }),
+                    (costDollars) => {
+                      usageTracker.providerCost += costDollars;
+                      usageTracker.nonModelCost += costDollars;
+                      chatLogger?.getBuilder().addToolCost(costDollars);
+                    },
+                  )
+                : Promise.resolve(undefined);
+            // A QA title starts only after its failure settlement is ready.
+            let titlePromise = rateLimitInfo.qaSpendPool
+              ? Promise.resolve(undefined)
+              : startTitleGeneration();
 
             const trackedProvider = createTrackedProvider();
 
@@ -1407,6 +1414,7 @@ export const createChatHandler = () => {
                   async () => {
                     // Add cloud sandbox session cost (duration-based).
                     const sandboxUsage = await getSandboxSessionUsage();
+                    if (hasRecordedUsage) return;
                     const sandboxCost = sandboxUsage.totalCostDollars;
                     if (sandboxCost > 0) {
                       usageTracker.providerCost += sandboxCost;
@@ -1425,6 +1433,12 @@ export const createChatHandler = () => {
                       // Nothing billable survived, but discarded retries were
                       // still incurred. Report them without charging.
                       await reportIncompleteAskUsageCost?.("settlement");
+                      // QA failure refunds waited for this point; a request
+                      // with no observed cost releases its whole reservation.
+                      if (rateLimitInfo.qaSpendPool) {
+                        hasRecordedUsage = true;
+                        await usageRefundTracker.refundWithResult();
+                      }
                       return;
                     }
                     hasRecordedUsage = true;
@@ -1546,6 +1560,9 @@ export const createChatHandler = () => {
                         usageRecordArgs.accountingModel,
                         usageTracker.usageSettlementId,
                         rateLimitInfo.qaSpendPool ?? null,
+                        rateLimitInfo.qaSpendPool
+                          ? rateLimitInfo.resetTime.getTime()
+                          : undefined,
                       );
                       if (usageSettlementState) {
                         usageRefundTracker.recordDeductions({
@@ -1660,6 +1677,15 @@ export const createChatHandler = () => {
                 );
               }
             };
+            // A QA pool request keeps observed title, tool, sandbox and model
+            // cost on the pool: ad hoc failure refunds (including the shared
+            // runner's) wait for this request's single settlement, which
+            // prices that cost and releases only the unused reservation.
+            if (rateLimitInfo.qaSpendPool) {
+              usageRefundTracker.deferRefundsToSettlement();
+              settleFailedQaRequest = deductAccumulatedUsage;
+              titlePromise = startTitleGeneration();
+            }
 
             const settleUsageAfterStep: AgentStreamContext["settleUsageAfterStep"] =
               async ({
@@ -3562,6 +3588,10 @@ export const createChatHandler = () => {
             // execute errors are consumed by createUIMessageStream, so the
             // outer request catch and stream onFinish cannot clean them up.
             preemptiveTimeout?.clear();
+            // QA settlement reports the cost it charges; settle before the
+            // incomplete-cost report so that cost is not reported twice.
+            const failedQaSettlement = settleFailedQaRequest?.();
+            await failedQaSettlement?.catch(() => undefined);
             await reportIncompleteAskUsageCost?.("setup");
             if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
               await releasePaidDailyFreeAllowanceReservation();
@@ -3576,7 +3606,10 @@ export const createChatHandler = () => {
                   }
                 },
               ],
-              ["refund_usage", () => usageRefundTracker.refund()],
+              [
+                "refund_usage",
+                () => failedQaSettlement ?? usageRefundTracker.refund(),
+              ],
               ["close_pty_sessions", () => ptySessionManager.closeAll(chatId)],
               ["release_run_lock", () => releaseFreeRunLockOnce()],
             ] as const;

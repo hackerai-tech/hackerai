@@ -2713,10 +2713,16 @@ describe("routine QA spending pool", () => {
       async (script: string, keys: string[], args: (string | number)[]) => {
         if (!script.includes("refundField")) return [-1, -1, 0];
         const [key] = keys;
-        const [refundField, points, cap] = args;
+        const [refundField, points, cap, _qaStart, now, qaEnd] = args;
         touchedKeys.push(key);
         const bucket = store.get(key) ?? { tokens: 0, refunds: new Set() };
         if (bucket.refunds.has(String(refundField))) return [0, bucket.tokens];
+        if (
+          qaEnd !== undefined &&
+          (qaEnd !== RESET || Number(now) >= Number(qaEnd))
+        ) {
+          return [-1, bucket.tokens];
+        }
         bucket.refunds.add(String(refundField));
         bucket.tokens = Math.min(bucket.tokens + Number(points), Number(cap));
         store.set(key, bucket);
@@ -2873,6 +2879,7 @@ describe("routine QA spending pool", () => {
       undefined,
       "settlement-1",
       admission.qaSpendPool ?? null,
+      admission.resetTime.getTime(),
     );
     expect(final).toMatchObject({
       includedPointsDeducted: 1_300,
@@ -2891,6 +2898,7 @@ describe("routine QA spending pool", () => {
         undefined,
         "refund-1",
         admission.qaSpendPool ?? null,
+        admission.resetTime.getTime(),
       );
     }
     expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - 800);
@@ -3070,5 +3078,27 @@ describe("routine QA spending pool", () => {
     expect(store.get(PREVIEW_POOL)!.tokens).toBe(5_000);
     expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
     warn.mockRestore();
+  });
+
+  it("does not add an earlier admission window's refund to the current QA pool", async () => {
+    store.set(PREVIEW_POOL, { tokens: 1_000, refunds: new Set() });
+    const { refundUsage } = loadModule();
+
+    await expect(
+      refundUsage(
+        QA_USER,
+        "pro",
+        500,
+        0,
+        undefined,
+        "old-window",
+        "preview",
+        RESET - 10_000,
+      ),
+    ).resolves.toMatchObject({
+      includedPointsRefunded: 0,
+      includedRefundFailed: true,
+    });
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(1_000);
   });
 });

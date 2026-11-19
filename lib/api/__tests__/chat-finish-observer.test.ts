@@ -300,6 +300,7 @@ it("attributes the first title wait separately from settlement in every finishin
       getSandboxSessionUsage: () => sandbox.promise,
       usageTracker: { hasUsage: false },
       paidDailyFreeAllowanceReservation: null,
+      rateLimitInfo: {},
       releaseFreeRunLockOnce,
       reportIncompleteAskUsageCost,
     });
