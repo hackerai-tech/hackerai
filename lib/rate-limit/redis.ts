@@ -1,35 +1,33 @@
 import { Redis } from "@upstash/redis";
 
-// Singleton Redis client instance
-let redisClient: Redis | null = null;
-let redisInitialized = false;
+type RedisClientPurpose = "default" | "qa-debit";
+
+const redisClients: Partial<Record<RedisClientPurpose, Redis | null>> = {};
 
 /**
- * Get or create a singleton Redis client for rate limiting.
+ * Reuse a Redis client for rate limiting. QA debits use a single HTTP attempt
+ * because a lost response can hide a mutation that already committed.
  * Returns null if Redis is not configured.
  */
-export const createRedisClient = (): Redis | null => {
-  // Return cached client if already initialized
-  if (redisInitialized) {
-    return redisClient;
-  }
+export const createRedisClient = (
+  purpose: RedisClientPurpose = "default",
+): Redis | null => {
+  const cached = redisClients[purpose];
+  if (cached !== undefined) return cached;
 
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
   const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-  redisInitialized = true;
-
-  if (!redisUrl || !redisToken) {
-    redisClient = null;
-    return null;
-  }
-
-  redisClient = new Redis({
-    url: redisUrl,
-    token: redisToken,
-  });
-
-  return redisClient;
+  const client =
+    redisUrl && redisToken
+      ? new Redis({
+          url: redisUrl,
+          token: redisToken,
+          ...(purpose === "qa-debit" && { retry: { retries: 0 } }),
+        })
+      : null;
+  redisClients[purpose] = client;
+  return client;
 };
 
 /**

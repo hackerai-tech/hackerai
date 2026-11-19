@@ -2670,6 +2670,7 @@ describe("routine QA spending pool", () => {
   let store: Map<string, { tokens: number; refunds: Set<string> }>;
   let touchedKeys: string[];
   let redisAvailable: boolean;
+  let loseNextDebitResponse: boolean;
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
   const mockDeductFromTeamBalance = jest.fn();
@@ -2696,6 +2697,10 @@ describe("routine QA spending pool", () => {
       bucket.tokens -= deducted;
     }
     store.set(key, bucket);
+    if (deducted > 0 && loseNextDebitResponse) {
+      loseNextDebitResponse = false;
+      throw new Error("QA debit committed but response was lost");
+    }
     return {
       success,
       remaining: bucket.tokens,
@@ -2794,6 +2799,7 @@ describe("routine QA spending pool", () => {
     store = new Map();
     touchedKeys = [];
     redisAvailable = true;
+    loseNextDebitResponse = false;
     setPreviewEnv();
     // The customer's own included allowance is already exhausted.
     store.set(customerKey(QA_USER), { tokens: 0, refunds: new Set() });
@@ -2905,6 +2911,60 @@ describe("routine QA spending pool", () => {
 
     expect(new Set(touchedKeys)).toEqual(new Set([PREVIEW_POOL]));
     expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
+    expectNoWalletActivity();
+  });
+
+  it("preserves a QA debit when its response is lost and final settlement runs", async () => {
+    const { checkTokenBucketLimit, deductUsage, deductUsageDelta } =
+      loadModule();
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+    loseNextDebitResponse = true;
+    const delta = await deductUsageDelta(
+      QA_USER,
+      "pro",
+      650,
+      undefined,
+      undefined,
+      "lost-receipt",
+      1,
+      "preview",
+    );
+    expect(delta).toMatchObject({
+      includedPointsDeducted: 0,
+      usageDeductionFailed: true,
+      usageDeductionOutcomeUnknown: true,
+    });
+
+    const final = await deductUsage(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      0,
+      0,
+      undefined,
+      0.1,
+      undefined,
+      0,
+      undefined,
+      {
+        pointsDeducted: admission.pointsDeducted,
+        usageDeductionOutcomeUnknown: delta.usageDeductionOutcomeUnknown,
+      },
+      undefined,
+      "lost-receipt",
+      "preview",
+      admission.resetTime.getTime(),
+    );
+    expect(final).toMatchObject({
+      includedPointsDeducted: ESTIMATED_POINTS,
+      uncoveredPoints: 650,
+      usageDeductionOutcomeUnknown: true,
+    });
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - 1_300);
     expectNoWalletActivity();
   });
 

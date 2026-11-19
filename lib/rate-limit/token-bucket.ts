@@ -380,6 +380,7 @@ type MonthlyLimiter = {
 
 const deductAdditionalUsagePoints = async ({
   monthly,
+  qaSpend,
   userId,
   subscription,
   additionalCostPoints,
@@ -389,6 +390,7 @@ const deductAdditionalUsagePoints = async ({
   settlementOperationId,
 }: {
   monthly: MonthlyLimiter;
+  qaSpend: boolean;
   userId: string;
   subscription: SubscriptionTier;
   additionalCostPoints: number;
@@ -435,15 +437,20 @@ const deductAdditionalUsagePoints = async ({
   let includedDeducted = 0;
 
   if (fromBucket > 0) {
-    const bucketResult = await monthly.limiter.limit(monthly.key, {
-      rate: fromBucket,
-      allowPartial: true,
-    });
-    // A concurrent request may have spent part of the peeked balance. Consume
-    // what remains atomically before charging the uncovered cost to Extra Usage.
-    includedDeducted =
-      bucketResult.deducted ??
-      (bucketResult.success !== false ? fromBucket : 0);
+    try {
+      const bucketResult = await monthly.limiter.limit(monthly.key, {
+        rate: fromBucket,
+        allowPartial: true,
+      });
+      // A concurrent request may have spent part of the peeked balance. Consume
+      // what remains atomically before charging the uncovered cost to Extra Usage.
+      includedDeducted =
+        bucketResult.deducted ??
+        (bucketResult.success !== false ? fromBucket : 0);
+    } catch (error) {
+      if (!qaSpend) throw error;
+      return buildDeltaResult(0, 0, "deduction_failed", true);
+    }
   }
 
   const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
@@ -1135,18 +1142,17 @@ export const checkTokenBucketLimit = async (
   modelName?: string,
   organizationId?: string,
 ): Promise<RateLimitInfo> => {
-  const redis = createRedisClient();
-
   const qaSpendPool = resolveQaSpendPool(userId, subscription);
   if (qaSpendPool) {
     return checkQaSpendPoolLimit(
-      redis,
+      createRedisClient("qa-debit"),
       qaSpendPool,
       subscription,
       calculateTokenCost(estimatedInputTokens, "input", modelName),
     );
   }
 
+  const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production") {
       throwRateLimitServiceNotConfigured();
@@ -1528,7 +1534,9 @@ export const deductUsageDelta = async (
   const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
   if (!ledger) return uncoveredFailure();
 
-  const redis = createRedisClient();
+  const redis = createRedisClient(
+    ledger.kind === "qa" ? "qa-debit" : undefined,
+  );
   if (!redis) {
     // A QA pool never falls back to unmetered usage, including in local dev.
     if (ledger.kind === "qa") return uncoveredFailure();
@@ -1547,6 +1555,7 @@ export const deductUsageDelta = async (
 
     return deductAdditionalUsagePoints({
       monthly,
+      qaSpend: ledger.kind === "qa",
       userId,
       subscription,
       additionalCostPoints,
@@ -1597,7 +1606,9 @@ export const deductUsage = async (
   expectedQaResetTimestamp?: number,
 ): Promise<UsageDeductionResult> => {
   const ledger = resolveUsageLedger(userId, subscription, expectedQaSpendPool);
-  const redis = createRedisClient();
+  const redis = createRedisClient(
+    ledger?.kind === "qa" ? "qa-debit" : undefined,
+  );
   // A QA pool never falls back to unmetered usage, including in local dev;
   // that case settles below as uncovered without touching any ledger.
   if (!redis && ledger?.kind === "customer") {
@@ -1804,6 +1815,7 @@ export const deductUsage = async (
     // Otherwise, we need to charge the additional cost.
     const deltaResult = await deductAdditionalUsagePoints({
       monthly,
+      qaSpend: ledger.kind === "qa",
       userId,
       subscription,
       additionalCostPoints: Math.ceil(costDifference),
