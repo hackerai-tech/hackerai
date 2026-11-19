@@ -51,7 +51,17 @@
  * walk of the error's sources. The depth counts walked sources, not the
  * witness's or a physical depth. It is only reported together with a valid
  * `json_error` response receipt; a missing snapshot is unknown, never a kind.
+ *
+ * When that snapshot's kind is `timeout`, a newer native app also sends a
+ * separate read timing on its own channel: two bounded client monotonic
+ * durations, from just before the send until its response headers were
+ * available, then from just before the JSON read until its failure. They are
+ * not reqwest's internal deadline or any server time. The timing is only
+ * reported with that `timeout` snapshot, its 2xx `json_error` receipt and the
+ * same invocation's `authorization_response_invalid` rejection class.
  */
+
+import type { DesktopInvocationRejectionDiagnostic } from "./desktop-invocation-rejection-diagnostics";
 
 const ORIGIN_CLASSES = [
   "canonical_production",
@@ -220,6 +230,11 @@ const RESPONSE_READ_KEYS = [
   "kind",
   "sourceDepth",
   "sourceChainTruncated",
+] as const;
+const RESPONSE_READ_TIMING_KEYS = [
+  "version",
+  "headersElapsedMs",
+  "readElapsedMs",
 ] as const;
 
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
@@ -1151,6 +1166,114 @@ export function readNativeAuthorizationResponseRead(
           sourceDepth,
           sourceChainTruncated,
         } as NativeAuthorizationResponseRead)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationResponseReadTiming {
+  readonly headersElapsedMs: number;
+  readonly readElapsedMs: number;
+}
+
+export interface NativeAuthorizationResponseReadTimingDiagnostic {
+  readonly native_authorization_response_read_timing_version: 1;
+  /** Client monotonic time from just before the send until its headers. */
+  readonly native_authorization_response_read_timing_headers_elapsed_ms: number;
+  /** Client monotonic time from just before the JSON read until it failed. */
+  readonly native_authorization_response_read_timing_read_elapsed_ms: number;
+}
+
+const RESPONSE_READ_TIMING_PROPERTIES = [
+  "native_authorization_response_read_timing_version",
+  "native_authorization_response_read_timing_headers_elapsed_ms",
+  "native_authorization_response_read_timing_read_elapsed_ms",
+] as const satisfies readonly (keyof NativeAuthorizationResponseReadTimingDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES: ReadonlySet<string> =
+  new Set(RESPONSE_READ_TIMING_PROPERTIES);
+
+/** Copy only the closed native read timing schema; anything else is
+ * dropped. */
+export function parseNativeAuthorizationResponseReadTiming(
+  value: unknown,
+): NativeAuthorizationResponseReadTiming | null {
+  try {
+    const values = readClosedObject(value, RESPONSE_READ_TIMING_KEYS);
+    if (!values) return null;
+    const [version, headersElapsedMs, readElapsedMs] = values;
+    if (
+      version !== 1 ||
+      !isElapsed(headersElapsedMs) ||
+      !isElapsed(readElapsedMs)
+    )
+      return null;
+    return Object.freeze({ headersElapsedMs, readElapsedMs });
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationResponseReadTimingDiagnostic(
+  timing: NativeAuthorizationResponseReadTiming,
+): NativeAuthorizationResponseReadTimingDiagnostic {
+  return Object.freeze({
+    native_authorization_response_read_timing_version: 1,
+    native_authorization_response_read_timing_headers_elapsed_ms:
+      timing.headersElapsedMs,
+    native_authorization_response_read_timing_read_elapsed_ms:
+      timing.readElapsedMs,
+  });
+}
+
+/** True only for the one outcome the native app times: the same authorized
+ * invocation's `authorization_response_invalid` rejection of a 2xx
+ * `json_error` response whose read snapshot is `timeout`. Every argument is
+ * already validated. */
+export function isNativeAuthorizationResponseReadTimeout(
+  response: NativeAuthorizationResponseDiagnostic | null,
+  read: NativeAuthorizationResponseReadDiagnostic | null,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): boolean {
+  return (
+    rejection?.desktop_invocation_rejection_reason ===
+      "authorization_response_invalid" &&
+    rejection.desktop_invocation_rejection_adapter === "authorized_native" &&
+    response?.native_authorization_response_approval === "json_error" &&
+    response.native_authorization_response_http_status >= 200 &&
+    response.native_authorization_response_http_status <= 299 &&
+    read?.native_authorization_response_read_kind === "timeout"
+  );
+}
+
+/** Read the complete timing group from any property bag's own data
+ * properties, or nothing at all. No timing property is read unless the
+ * validated groups describe a classified read timeout. */
+export function readNativeAuthorizationResponseReadTiming(
+  source: unknown,
+  response: NativeAuthorizationResponseDiagnostic | null,
+  read: NativeAuthorizationResponseReadDiagnostic | null,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+): NativeAuthorizationResponseReadTimingDiagnostic | null {
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    !isNativeAuthorizationResponseReadTimeout(response, read, rejection)
+  )
+    return null;
+  try {
+    const [version, headersElapsedMs, readElapsedMs] = readDataProperties(
+      source,
+      RESPONSE_READ_TIMING_PROPERTIES,
+    );
+    return version === 1 &&
+      isElapsed(headersElapsedMs) &&
+      isElapsed(readElapsedMs)
+      ? nativeAuthorizationResponseReadTimingDiagnostic({
+          headersElapsedMs,
+          readElapsedMs,
+        })
       : null;
   } catch {
     return null;

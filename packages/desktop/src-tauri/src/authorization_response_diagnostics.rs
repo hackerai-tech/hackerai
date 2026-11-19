@@ -19,9 +19,17 @@
 //! the existing JSON read's error and the extent of one bounded typed walk of
 //! that error's sources. The kind needs positive typed evidence; it never
 //! formats the error or holds its text, the body, a position or a type name.
+//!
+//! A separate read timing, only for its own observer and only beside a
+//! `timeout` read snapshot, holds two bounded monotonic client durations: from
+//! immediately before the existing send until its response headers were
+//! available, then from immediately before the existing JSON read until its
+//! failure was observed. Neither is reqwest's internal deadline, its remaining
+//! budget or any server time.
 
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::time::{Duration, Instant};
 
 use crate::authorization_send_diagnostics::{OriginClass, MAX_SOURCE_LINKS};
 
@@ -146,6 +154,64 @@ pub struct ResponseReadSnapshot {
     source_depth: u8,
     /// Another link existed beyond the last one walked.
     source_chain_truncated: bool,
+}
+
+/// The same bound as the send receipt's elapsed time.
+const MAX_ELAPSED_MS: u64 = 60_000;
+
+fn bounded_elapsed_ms(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis())
+        .unwrap_or(MAX_ELAPSED_MS)
+        .min(MAX_ELAPSED_MS)
+}
+
+/// Sent on its own optional channel, only after a `timeout` read snapshot of
+/// the same response, so every earlier shape is frozen. Both durations are
+/// client monotonic readings bounded to 0..=60000ms; they say when headers
+/// arrived and how long the read waited, not where reqwest's deadline was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseReadTiming {
+    version: u8,
+    headers_elapsed_ms: u64,
+    read_elapsed_ms: u64,
+}
+
+/// Started immediately before the existing send, and only when the response,
+/// read and timing observers all exist, so no other request takes a reading.
+pub struct ResponseReadClock<H> {
+    send_started: Instant,
+    observer: H,
+}
+
+/// The same clock once the send returned a response with its headers.
+pub struct ResponseHeadersClock<H> {
+    headers_elapsed: Duration,
+    observer: H,
+}
+
+impl<H: FnOnce(ResponseReadTiming)> ResponseReadClock<H> {
+    pub fn start<F, G>(
+        observer: &Option<F>,
+        read_observer: &Option<G>,
+        timing_observer: Option<H>,
+    ) -> Option<Self> {
+        if observer.is_none() || read_observer.is_none() {
+            return None;
+        }
+        timing_observer.map(|observer| Self {
+            send_started: Instant::now(),
+            observer,
+        })
+    }
+
+    /// Call as soon as the existing send's future resolved with a response.
+    pub fn headers_received(self) -> ResponseHeadersClock<H> {
+        ResponseHeadersClock {
+            headers_elapsed: self.send_started.elapsed(),
+            observer: self.observer,
+        }
+    }
 }
 
 fn serde_kind(error: &serde_json::Error) -> ResponseReadKind {
@@ -288,19 +354,24 @@ fn read_request_id(headers: &reqwest::header::HeaderMap) -> (RequestIdShape, Opt
 /// Only a rejection is reported, once, with both receipts, before its error is
 /// returned; an approved response has none. Only a failed JSON read is
 /// reported to `read_observer`, once, after them; its error is inspected only
-/// when that observer exists, and only while borrowed. Neither observer can
-/// retry, delay beyond its own call or change the result. Panic containment
-/// applies to unwinding builds only; release builds abort, so production
-/// observers must not panic (they ignore channel send failures).
-pub async fn observed_approval<F, G>(
+/// when that observer exists, and only while borrowed. With a headers clock,
+/// the JSON read is also timed, and that timing is reported to the clock's
+/// observer, once, last, only after both the response receipt and a `timeout`
+/// read snapshot were reported. No observer can retry, delay beyond its own
+/// call or change the result. Panic containment applies to unwinding builds
+/// only; release builds abort, so production observers must not panic (they
+/// ignore channel send failures).
+pub async fn observed_approval<F, G, H>(
     response: reqwest::Response,
     origin_class: OriginClass,
     observer: Option<F>,
     read_observer: Option<G>,
+    read_timing: Option<ResponseHeadersClock<H>>,
 ) -> Result<(), String>
 where
     F: FnOnce(ResponseRejectionReceipt, ResponseMitigationReceipt),
     G: FnOnce(ResponseReadSnapshot),
+    H: FnOnce(ResponseReadTiming),
 {
     let status = response.status();
     // Read before the body consumes the response, and only for an observer.
@@ -311,11 +382,14 @@ where
         )
     });
     let mut read = None;
+    let mut read_elapsed = None;
     let (approval, error) = if !status.is_success() {
         (Approval::NotChecked, NOT_AUTHORIZED)
     } else {
+        let read_started = read_timing.as_ref().map(|_| Instant::now());
         match response.json::<serde_json::Value>().await {
             Err(read_error) => {
+                read_elapsed = read_started.map(|started| started.elapsed());
                 if read_observer.is_some() {
                     read = Some(json_read_snapshot(&read_error));
                 }
@@ -330,11 +404,13 @@ where
         }
     };
     let http_status = status.as_u16();
+    let mut receipt_reported = false;
     if let (Some(observer), Some(((request_id_shape, request_id), mitigation))) =
         (observer, headers)
     {
         // The receipt's status class is closed; an extension status sends none.
         if (100..=599).contains(&http_status) {
+            receipt_reported = true;
             let receipt = ResponseRejectionReceipt {
                 version: 1,
                 http_status,
@@ -353,6 +429,18 @@ where
     }
     if let (Some(read_observer), Some(snapshot)) = (read_observer, read) {
         let _ = catch_unwind(AssertUnwindSafe(|| read_observer(snapshot)));
+        // Only an already classified timeout, beside its own receipt.
+        if let (true, ResponseReadKind::Timeout, Some(clock), Some(read_elapsed)) =
+            (receipt_reported, snapshot.kind, read_timing, read_elapsed)
+        {
+            let timing = ResponseReadTiming {
+                version: 1,
+                headers_elapsed_ms: bounded_elapsed_ms(clock.headers_elapsed),
+                read_elapsed_ms: bounded_elapsed_ms(read_elapsed),
+            };
+            let observer = clock.observer;
+            let _ = catch_unwind(AssertUnwindSafe(|| observer(timing)));
+        }
     }
     Err(error.to_string())
 }
@@ -374,6 +462,16 @@ mod tests {
     /// stays open afterwards, so an attempt to read a declared but unsent body
     /// waits for the client deadline.
     async fn serve(response: Vec<u8>, hold: bool) -> (String, Arc<AtomicUsize>) {
+        serve_after(response, hold, Duration::ZERO).await
+    }
+
+    /// The same endpoint, writing each response only `delay` after it has
+    /// read the request's headers.
+    async fn serve_after(
+        response: Vec<u8>,
+        hold: bool,
+        delay: Duration,
+    ) -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!(
             "http://{}/api/desktop/authorized-operation",
@@ -394,6 +492,7 @@ mod tests {
                 if request.starts_with(b"POST ") {
                     counted.fetch_add(1, Ordering::SeqCst);
                 }
+                tokio::time::sleep(delay).await;
                 let _ = socket.write_all(&response).await;
                 if hold {
                     tokio::spawn(async move {
@@ -430,6 +529,14 @@ mod tests {
     /// The same client with a shorter total budget, only so a held body's
     /// timeout is observed quickly; production keeps 8s.
     async fn answered_within(url: &str, budget: Duration) -> reqwest::Response {
+        request_within(url, budget)
+            .send()
+            .await
+            .expect("the fixture answers")
+    }
+
+    /// The same request, built but not yet sent.
+    fn request_within(url: &str, budget: Duration) -> reqwest::RequestBuilder {
         reqwest::Client::builder()
             .timeout(budget)
             .redirect(reqwest::redirect::Policy::none())
@@ -438,9 +545,6 @@ mod tests {
             .unwrap()
             .post(url)
             .json(&serde_json::json!({ "id": "synthetic", "digest": "synthetic" }))
-            .send()
-            .await
-            .expect("the fixture answers")
     }
 
     type Observation = (ResponseRejectionReceipt, ResponseMitigationReceipt);
@@ -458,6 +562,7 @@ mod tests {
     }
 
     const NO_READ: Option<fn(ResponseReadSnapshot)> = None;
+    const NO_TIMING: Option<ResponseHeadersClock<fn(ResponseReadTiming)>> = None;
 
     /// Runs the check once with both recorders, bounded well below the
     /// client's 8s budget so a body read on a held connection fails the test.
@@ -483,6 +588,7 @@ mod tests {
                 OriginClass::Localhost,
                 Some(observer),
                 Some(read_observer),
+                NO_TIMING,
             )
             .await
         })
@@ -1133,6 +1239,7 @@ mod tests {
                 },
             ),
             NO_READ,
+            NO_TIMING,
         )
         .await;
         assert_eq!(panicking, Err(NOT_AUTHORIZED.to_string()));
@@ -1150,6 +1257,7 @@ mod tests {
                 let _ = mitigation_sender.send(mitigation);
             }),
             NO_READ,
+            NO_TIMING,
         )
         .await;
         assert_eq!(closed, Err(NOT_AUTHORIZED.to_string()));
@@ -1159,6 +1267,7 @@ mod tests {
             OriginClass::Localhost,
             None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
             NO_READ,
+            NO_TIMING,
         )
         .await;
         assert_eq!(direct, Err(NOT_AUTHORIZED.to_string()));
@@ -1180,6 +1289,7 @@ mod tests {
                 OriginClass::Localhost,
                 None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
                 NO_READ,
+                NO_TIMING,
             )
             .await;
             assert_eq!(result, expected);
@@ -1194,6 +1304,7 @@ mod tests {
             OriginClass::Localhost,
             Some(observer),
             Some(|_: ResponseReadSnapshot| panic!("read observer failure")),
+            NO_TIMING,
         )
         .await;
         assert_eq!(panicking_read, Err(INVALID_RESPONSE.to_string()));
@@ -1207,6 +1318,7 @@ mod tests {
             Some(move |snapshot| {
                 let _ = read_sender.send(snapshot);
             }),
+            NO_TIMING,
         )
         .await;
         assert_eq!(closed_read, Err(INVALID_RESPONSE.to_string()));
@@ -1219,6 +1331,7 @@ mod tests {
             Some(move |snapshot| {
                 let _ = read_sender.send(snapshot);
             }),
+            NO_TIMING,
         )
         .await;
         assert_eq!(read_only, Err(INVALID_RESPONSE.to_string()));
@@ -1228,6 +1341,232 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(posts.load(Ordering::SeqCst), 3);
+    }
+
+    struct Timed {
+        result: Result<(), String>,
+        receipts: Vec<Observation>,
+        reads: Vec<ResponseReadSnapshot>,
+        timings: Vec<ResponseReadTiming>,
+        posts: usize,
+    }
+
+    /// One check with a timing observer, wired as in
+    /// `redeem_authorized_message_observed`: the clock starts immediately
+    /// before the send and records the headers as soon as it resolves. The
+    /// response and read observers exist only when asked for.
+    async fn check_timed(
+        response: Vec<u8>,
+        hold: bool,
+        headers_delay: Duration,
+        budget: Duration,
+        (with_response, with_read): (bool, bool),
+    ) -> Timed {
+        let (url, posts) = serve_after(response, hold, headers_delay).await;
+        let (receipts, observer) = recorder();
+        let observer = with_response.then_some(observer);
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let recorded = reads.clone();
+        let read_observer = with_read.then_some(move |snapshot: ResponseReadSnapshot| {
+            recorded.lock().unwrap().push(snapshot)
+        });
+        let timings = Arc::new(Mutex::new(Vec::new()));
+        let recorded = timings.clone();
+        let timing_observer =
+            move |timing: ResponseReadTiming| recorded.lock().unwrap().push(timing);
+        let request = request_within(&url, budget);
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let clock = ResponseReadClock::start(&observer, &read_observer, Some(timing_observer));
+            let response = request.send().await.expect("the fixture answers");
+            let headers = clock.map(ResponseReadClock::headers_received);
+            observed_approval(
+                response,
+                OriginClass::Localhost,
+                observer,
+                read_observer,
+                headers,
+            )
+            .await
+        })
+        .await
+        .expect("the check ends within the client budget");
+        let receipts = receipts.lock().unwrap().clone();
+        let reads = reads.lock().unwrap().clone();
+        let timings = timings.lock().unwrap().clone();
+        Timed {
+            result,
+            receipts,
+            reads,
+            timings,
+            posts: posts.load(Ordering::SeqCst),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_timeout_reports_when_headers_arrived_and_how_long_the_read_waited() {
+        let budget = Duration::from_millis(2000);
+        // Headers at once, then a stalled body: the read waits out the budget.
+        let early = check_timed(truncated_ok(), true, Duration::ZERO, budget, (true, true)).await;
+        // Headers written only late in the budget: the read has what remains.
+        // The 1s left before the deadline is scheduling margin for slow CI.
+        let late = check_timed(
+            truncated_ok(),
+            true,
+            Duration::from_millis(1000),
+            budget,
+            (true, true),
+        )
+        .await;
+        for timed in [&early, &late] {
+            assert_eq!(timed.result, Err(INVALID_RESPONSE.to_string()));
+            assert_eq!(timed.posts, 1);
+            assert_eq!(timed.receipts.len(), 1);
+            let receipt = &timed.receipts[0].0;
+            assert_eq!(
+                (receipt.http_status, receipt.approval),
+                (200, Approval::JsonError)
+            );
+            assert_eq!(timed.reads.len(), 1);
+            assert_eq!(timed.reads[0].kind, ResponseReadKind::Timeout);
+            assert_eq!(timed.timings.len(), 1, "{:?}", timed.timings);
+            let wire = serde_json::to_string(&timed.timings[0]).unwrap();
+            assert!(!wire.contains(PRIVATE) && !wire.contains("127.0.0.1"));
+        }
+        let (early, late) = (early.timings[0], late.timings[0]);
+        println!("observed read timings: early {early:?} late {late:?}");
+        // Loopback headers sent at once arrive well inside the budget, and
+        // the stalled read then waits for nearly all of the rest.
+        assert!(early.headers_elapsed_ms < 300, "{early:?}");
+        assert!(early.read_elapsed_ms >= 1400, "{early:?}");
+        // Headers written after 1000ms are never measured earlier, and the
+        // read then waits at most for what remains of the budget.
+        assert!((1000..2000).contains(&late.headers_elapsed_ms), "{late:?}");
+        assert!(late.read_elapsed_ms <= 1300, "{late:?}");
+    }
+
+    #[tokio::test]
+    async fn only_a_classified_read_timeout_beside_both_observers_reports_timing() {
+        let eight = Duration::from_secs(8);
+        let held = Duration::from_millis(300);
+        // Every other outcome keeps its result and reports no timing, even
+        // with all three observers.
+        for (response, hold, budget, expected, read_kind) in [
+            (
+                json("200 OK", &[], r#"{"approved":true}"#),
+                false,
+                eight,
+                Ok(()),
+                None,
+            ),
+            (
+                json("200 OK", &[], r#"{"approved":false}"#),
+                false,
+                eight,
+                Err(NOT_AUTHORIZED.to_string()),
+                None,
+            ),
+            (
+                json("200 OK", &[], "{"),
+                false,
+                eight,
+                Err(INVALID_RESPONSE.to_string()),
+                Some(ResponseReadKind::SerdeEof),
+            ),
+            (
+                truncated_ok(),
+                false,
+                eight,
+                Err(INVALID_RESPONSE.to_string()),
+                Some(ResponseReadKind::BodyRead),
+            ),
+            // A held non-2xx body is never read, so it never times out.
+            (
+                held_forbidden(&[]),
+                true,
+                held,
+                Err(NOT_AUTHORIZED.to_string()),
+                None,
+            ),
+        ] {
+            let timed = check_timed(response, hold, Duration::ZERO, budget, (true, true)).await;
+            assert_eq!(timed.result, expected);
+            assert_eq!(timed.posts, 1);
+            assert_eq!(
+                timed.reads.iter().map(|read| read.kind).collect::<Vec<_>>(),
+                read_kind.into_iter().collect::<Vec<_>>()
+            );
+            assert!(timed.timings.is_empty(), "{:?}", timed.timings);
+        }
+        // A genuine read timeout without the response or read observer keeps
+        // its result and the other observer's report, and has no timing.
+        for observers in [(false, true), (true, false), (false, false)] {
+            let timed = check_timed(truncated_ok(), true, Duration::ZERO, held, observers).await;
+            assert_eq!(timed.result, Err(INVALID_RESPONSE.to_string()));
+            assert_eq!(timed.posts, 1);
+            assert_eq!(timed.receipts.len(), usize::from(observers.0));
+            assert_eq!(
+                timed.reads.iter().map(|read| read.kind).collect::<Vec<_>>(),
+                if observers.1 {
+                    vec![ResponseReadKind::Timeout]
+                } else {
+                    vec![]
+                }
+            );
+            assert!(timed.timings.is_empty(), "{observers:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_read_timing_has_a_closed_bounded_schema_and_cannot_change_the_result() {
+        assert_eq!(
+            serde_json::to_value(ResponseReadTiming {
+                version: 1,
+                headers_elapsed_ms: 0,
+                read_elapsed_ms: 60_000,
+            })
+            .unwrap(),
+            serde_json::json!({ "version": 1, "headersElapsedMs": 0, "readElapsedMs": 60_000 })
+        );
+        assert_eq!(bounded_elapsed_ms(Duration::ZERO), 0);
+        assert_eq!(bounded_elapsed_ms(Duration::from_millis(60_000)), 60_000);
+        assert_eq!(bounded_elapsed_ms(Duration::from_millis(60_001)), 60_000);
+        assert_eq!(bounded_elapsed_ms(Duration::MAX), 60_000);
+
+        // A failing timing observer runs last: the receipt and the snapshot
+        // were already reported, and the original error and single POST stay.
+        let (url, posts) = serve(truncated_ok(), true).await;
+        let (receipts, observer) = recorder();
+        let observer = Some(observer);
+        let (read_sender, read_receiver) = std::sync::mpsc::channel();
+        let read_observer = Some(move |snapshot: ResponseReadSnapshot| {
+            let _ = read_sender.send(snapshot);
+        });
+        let request = request_within(&url, Duration::from_millis(300));
+        let clock = ResponseReadClock::start(
+            &observer,
+            &read_observer,
+            Some(|_: ResponseReadTiming| panic!("timing observer failure")),
+        );
+        let response = request.send().await.expect("the fixture answers");
+        let result = observed_approval(
+            response,
+            OriginClass::Localhost,
+            observer,
+            read_observer,
+            clock.map(ResponseReadClock::headers_received),
+        )
+        .await;
+        assert_eq!(result, Err(INVALID_RESPONSE.to_string()));
+        assert_eq!(receipts.lock().unwrap().len(), 1);
+        assert_eq!(
+            read_receiver
+                .try_iter()
+                .map(|read| read.kind)
+                .collect::<Vec<_>>(),
+            vec![ResponseReadKind::Timeout]
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
     }
 
     #[test]

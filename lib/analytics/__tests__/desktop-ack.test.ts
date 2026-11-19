@@ -30,6 +30,7 @@ import {
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationConnectorDiagnostic,
@@ -38,6 +39,7 @@ import {
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationResponseReadDiagnostic,
+  type NativeAuthorizationResponseReadTimingDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "../native-authorization-diagnostics";
 import {
@@ -2358,6 +2360,368 @@ describe("native authorization response receipt", () => {
         }).properties!;
         expect(reads).toBe(0);
         expect(sanitized).toEqual({ terminalType: "error", ...jsonResponse });
+        expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+      },
+    );
+  });
+
+  describe("JSON read timeout timing", () => {
+    const jsonResponse: NativeAuthorizationResponseDiagnostic = {
+      ...response,
+      native_authorization_response_http_status: 200,
+      native_authorization_response_approval: "json_error",
+      native_authorization_response_request_id_shape: "absent",
+      native_authorization_response_request_id: null,
+    };
+    const timeoutRead: NativeAuthorizationResponseReadDiagnostic = {
+      native_authorization_response_read_version: 1,
+      native_authorization_response_read_kind: "timeout",
+      native_authorization_response_read_source_depth: 2,
+      native_authorization_response_read_source_chain_truncated: false,
+    };
+    const rejectedKind: DesktopTerminalErrorDiagnostic = {
+      desktop_terminal_error_diagnostic_version: 1,
+      desktop_terminal_error_kind: "invocation_rejected",
+    };
+    const rejection: DesktopInvocationRejectionDiagnostic = {
+      desktop_invocation_rejection_version: 1,
+      desktop_invocation_rejection_reason: "authorization_response_invalid",
+      desktop_invocation_rejection_adapter: "authorized_native",
+    };
+    const timing: NativeAuthorizationResponseReadTimingDiagnostic = {
+      native_authorization_response_read_timing_version: 1,
+      native_authorization_response_read_timing_headers_elapsed_ms: 7480,
+      native_authorization_response_read_timing_read_elapsed_ms: 512,
+    };
+    const timingKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES.has(key),
+      );
+    const readKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key),
+      );
+    /** One settlement carrying every group the timing joins, as the bridge
+     * hands it over. */
+    const joined = (changes: Record<string, unknown> = {}) => ({
+      ...terminalError,
+      terminalError: rejectedKind,
+      invocationRejection: rejection,
+      nativeAuthorizationResponse: jsonResponse,
+      nativeAuthorizationResponseRead: timeoutRead,
+      nativeAuthorizationResponseReadTiming: timing,
+      ...changes,
+    });
+    /** The same groups flattened, as a settled event's properties. */
+    const flat = (changes: Record<string, unknown> = {}) => ({
+      terminalType: "error",
+      ...jsonResponse,
+      ...timeoutRead,
+      ...rejectedKind,
+      ...rejection,
+      ...timing,
+      ...changes,
+    });
+
+    it.each<[number, number]>([
+      [7480, 512],
+      [0, 0],
+      [60_000, 60_000],
+    ])(
+      "keeps one complete timing group beside its classified read timeout: %p ms, %p ms",
+      (headers, read) => {
+        const expected = {
+          ...timing,
+          native_authorization_response_read_timing_headers_elapsed_ms: headers,
+          native_authorization_response_read_timing_read_elapsed_ms: read,
+        };
+        const final = settle(
+          joined({
+            nativeAuthorizationResponseReadTiming: {
+              ...expected,
+              native_authorization_response_read_timing_deadline_ms: 8000,
+              message: "PRIVATE",
+            },
+          }),
+        );
+        expect(final?.properties).toMatchObject({
+          ...jsonResponse,
+          ...timeoutRead,
+          ...rejection,
+          ...expected,
+          terminalType: "error",
+          telemetry_sample_rate: 1,
+        });
+        expect(timingKeys(final!.properties)).toHaveLength(3);
+        expect(final!.properties).not.toHaveProperty(
+          "native_authorization_response_read_timing_deadline_ms",
+        );
+        // Raw incoming keys are stripped before the validated copy.
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_response_read_timing_deadline_ms: 8000,
+          native_authorization_response_read_timing_message: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({
+          ...jsonResponse,
+          ...timeoutRead,
+          ...expected,
+        });
+        // The frozen response and read groups are unchanged beside it.
+        expect(responseKeys(enriched.properties)).toHaveLength(7);
+        expect(readKeys(enriched.properties)).toHaveLength(4);
+        expect(timingKeys(enriched.properties)).toHaveLength(3);
+        expect(enriched.properties).not.toHaveProperty(
+          "native_authorization_response_read_timing_deadline_ms",
+        );
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("keeps every other group unchanged without a timing group", () => {
+      // A current frontend beside an older native app, or an older frontend.
+      const final = settle(
+        joined({ nativeAuthorizationResponseReadTiming: undefined }),
+      );
+      expect(final?.properties).toMatchObject({
+        ...jsonResponse,
+        ...timeoutRead,
+        ...rejection,
+      });
+      expect(timingKeys(final!.properties)).toEqual([]);
+      const without = { ...flat() } as Record<string, unknown>;
+      for (const key of NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES)
+        delete without[key];
+      const enriched = enrich(without);
+      expect(timingKeys(enriched.properties)).toEqual([]);
+      expect(readKeys(enriched.properties)).toHaveLength(4);
+      expect(responseKeys(enriched.properties)).toHaveLength(7);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "unsupported version",
+        { native_authorization_response_read_timing_version: 2 },
+      ],
+      [
+        "missing version",
+        { native_authorization_response_read_timing_version: undefined },
+      ],
+      [
+        "string duration",
+        { native_authorization_response_read_timing_read_elapsed_ms: "512" },
+      ],
+      [
+        "negative duration",
+        { native_authorization_response_read_timing_headers_elapsed_ms: -1 },
+      ],
+      [
+        "duration beyond the bound",
+        { native_authorization_response_read_timing_read_elapsed_ms: 60_001 },
+      ],
+      [
+        "fractional duration",
+        { native_authorization_response_read_timing_headers_elapsed_ms: 1.5 },
+      ],
+      [
+        "NaN duration",
+        { native_authorization_response_read_timing_read_elapsed_ms: NaN },
+      ],
+      [
+        "infinite duration",
+        {
+          native_authorization_response_read_timing_headers_elapsed_ms:
+            Infinity,
+        },
+      ],
+      [
+        "null duration",
+        { native_authorization_response_read_timing_read_elapsed_ms: null },
+      ],
+      [
+        "missing duration",
+        {
+          native_authorization_response_read_timing_headers_elapsed_ms:
+            undefined,
+        },
+      ],
+    ])(
+      "drops only the timing group for %s and keeps the other groups",
+      (_case, change) => {
+        const invalid = { ...timing, ...change };
+        const final = settle(
+          joined({ nativeAuthorizationResponseReadTiming: invalid }),
+        );
+        expect(final?.properties).toMatchObject({
+          ...jsonResponse,
+          ...timeoutRead,
+          ...rejection,
+        });
+        expect(timingKeys(final!.properties)).toEqual([]);
+        const enriched = enrich(flat(change));
+        expect(timingKeys(enriched.properties)).toEqual([]);
+        expect(enriched.properties).toMatchObject({
+          ...jsonResponse,
+          ...timeoutRead,
+          ...rejection,
+        });
+      },
+    );
+
+    it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+      [
+        "a non-timeout read",
+        {
+          nativeAuthorizationResponseRead: {
+            ...timeoutRead,
+            native_authorization_response_read_kind: "body_read",
+          },
+        },
+        { native_authorization_response_read_kind: "body_read" },
+      ],
+      [
+        "no read group",
+        { nativeAuthorizationResponseRead: undefined },
+        { native_authorization_response_read_version: undefined },
+      ],
+      [
+        "an approved_false response",
+        {
+          nativeAuthorizationResponse: {
+            ...jsonResponse,
+            native_authorization_response_approval: "approved_false",
+          },
+        },
+        { native_authorization_response_approval: "approved_false" },
+      ],
+      [
+        "an unread non-2xx response",
+        { nativeAuthorizationResponse: response },
+        response,
+      ],
+      [
+        "no response group",
+        { nativeAuthorizationResponse: undefined },
+        { native_authorization_response_version: undefined },
+      ],
+      [
+        "another rejection class",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_reason: "authorization_not_approved",
+          },
+        },
+        { desktop_invocation_rejection_reason: "authorization_not_approved" },
+      ],
+      [
+        "no rejection class",
+        { invocationRejection: undefined },
+        { desktop_invocation_rejection_version: undefined },
+      ],
+      [
+        "a legacy command set",
+        {
+          invocationRejection: {
+            ...rejection,
+            desktop_invocation_rejection_adapter: "published_legacy_native",
+          },
+        },
+        { desktop_invocation_rejection_adapter: "published_legacy_native" },
+      ],
+      [
+        "another terminal error kind",
+        {
+          terminalError: {
+            ...rejectedKind,
+            desktop_terminal_error_kind: "native_command_timeout",
+          },
+        },
+        { desktop_terminal_error_kind: "native_command_timeout" },
+      ],
+    ])(
+      "drops a timing group joined to %s",
+      (_case, settlementChange, propertiesChange) => {
+        const final = settle(joined(settlementChange));
+        expect(final?.properties).toMatchObject({ terminalType: "error" });
+        expect(timingKeys(final!.properties)).toEqual([]);
+        const enriched = enrich(flat(propertiesChange));
+        expect(timingKeys(enriched.properties)).toEqual([]);
+      },
+    );
+
+    it("does not attach the timing group to non-error finals, starts or summaries", () => {
+      const exitFinal = settle(
+        joined({ terminalType: "exit", terminalExitCode: 0 }),
+      );
+      expect(exitFinal?.properties).toMatchObject({ terminalType: "exit" });
+      expect(timingKeys(exitFinal!.properties)).toEqual([]);
+      for (const terminalType of ["exit", null, undefined])
+        expect(timingKeys(enrich(flat({ terminalType })).properties)).toEqual(
+          [],
+        );
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          timingKeys(
+            sanitizeDesktopAckEvent({ event, properties: flat() }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("drops an inherited timing group", () => {
+      const inherited = Object.create(timing) as object;
+      const final = settle(
+        joined({ nativeAuthorizationResponseReadTiming: inherited }),
+      );
+      expect(final?.properties).toMatchObject(timeoutRead);
+      expect(timingKeys(final!.properties)).toEqual([]);
+      const own = { ...flat() } as Record<string, unknown>;
+      for (const key of NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES)
+        delete own[key];
+      const properties = Object.assign(Object.create(timing) as object, own);
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties,
+      }).properties!;
+      expect(timingKeys(sanitized)).toEqual([]);
+      expect(sanitized).toMatchObject(timeoutRead);
+    });
+
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? 512 : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s timing getter at capture or before_send",
+      (_case, get) => {
+        reads = 0;
+        const hostile = (base: Record<string, unknown>) =>
+          Object.defineProperty(
+            { ...base },
+            "native_authorization_response_read_timing_read_elapsed_ms",
+            { enumerable: true, get },
+          );
+        const final = settle(
+          joined({ nativeAuthorizationResponseReadTiming: hostile(timing) }),
+        );
+        expect(final?.properties).toMatchObject(timeoutRead);
+        expect(timingKeys(final!.properties)).toEqual([]);
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: hostile(flat()),
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(timingKeys(sanitized)).toEqual([]);
+        expect(sanitized).toMatchObject({ ...timeoutRead, ...rejection });
         expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
       },
     );

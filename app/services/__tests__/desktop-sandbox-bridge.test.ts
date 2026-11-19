@@ -37,6 +37,7 @@ import {
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
@@ -9602,6 +9603,10 @@ describe("native authorization send receipt", () => {
         expect(calls[0]).not.toHaveProperty(
           "onAuthorizationResponseReadDiagnostic",
         );
+        // The timing channel is never offered without the read channel.
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationResponseReadTimingDiagnostic",
+        );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: invalidResponse }),
         ]);
@@ -9625,6 +9630,9 @@ describe("native authorization send receipt", () => {
         );
         expect(calls[0]).not.toHaveProperty(
           "onAuthorizationResponseReadDiagnostic",
+        );
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationResponseReadTimingDiagnostic",
         );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: invalidResponse }),
@@ -9672,6 +9680,371 @@ describe("native authorization send receipt", () => {
         expect(readKeys(byCommand.forbidden)).toEqual([]);
         expect(byCommand["no-read"]).toMatchObject(jsonGroup);
         expect(readKeys(byCommand["no-read"])).toEqual([]);
+      });
+
+      describe("read timeout timing", () => {
+        const timeoutRead = { ...read, kind: "timeout", sourceDepth: 2 };
+        const timeoutGroup = {
+          ...readGroup,
+          native_authorization_response_read_kind: "timeout",
+          native_authorization_response_read_source_depth: 2,
+        };
+        const timing = {
+          version: 1,
+          headersElapsedMs: 7480,
+          readElapsedMs: 512,
+        };
+        const timingGroup = {
+          native_authorization_response_read_timing_version: 1,
+          native_authorization_response_read_timing_headers_elapsed_ms: 7480,
+          native_authorization_response_read_timing_read_elapsed_ms: 512,
+        };
+        const timingKeys = (properties: Record<string, unknown> = {}) =>
+          Object.keys(properties).filter((key) =>
+            NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES.has(key),
+          );
+        const timingChannel = (call: NativeCall) =>
+          call.onAuthorizationResponseReadTimingDiagnostic as MockChannel;
+
+        it.each(["before", "after"])(
+          "joins one same-invocation timing delivered %s its timeout snapshot",
+          async (order) => {
+            const { calls, replies } = await run(async (call) => {
+              if (order === "before") timingChannel(call).onmessage!(timing);
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(timeoutRead);
+              if (order === "after") timingChannel(call).onmessage!(timing);
+              // A duplicate cannot replace the first callback attempt.
+              timingChannel(call).onmessage!({
+                ...timing,
+                headersElapsedMs: 1,
+              });
+              return Promise.reject(invalidResponse);
+            });
+
+            expect(calls).toHaveLength(1);
+            const channel = timingChannel(calls[0]);
+            expect(channel).toBeDefined();
+            for (const other of [
+              calls[0].onEvent,
+              calls[0].onAuthorizationDiagnostic,
+              calls[0].onAuthorizationCauseDiagnostic,
+              calls[0].onAuthorizationResponseDiagnostic,
+              calls[0].onAuthorizationMitigationDiagnostic,
+              calls[0].onAuthorizationTransportDiagnostic,
+              calls[0].onAuthorizationIoDiagnostic,
+              calls[0].onAuthorizationConnectorDiagnostic,
+              calls[0].onAuthorizationResponseReadDiagnostic,
+            ])
+              expect(channel).not.toBe(other);
+            expect(Object.keys(calls[0].message as object)).not.toContain(
+              "onAuthorizationResponseReadTimingDiagnostic",
+            );
+            // The product error is the identical single terminal frame.
+            expect(sequencedFrames(replies[0])).toEqual([
+              expect.objectContaining({
+                type: "error",
+                message: invalidResponse,
+                sequence: 0,
+              }),
+            ]);
+            expect(finals()).toHaveLength(1);
+            const final = finals()[0];
+            expect(final.properties).toMatchObject({
+              outcome: "acknowledged",
+              terminalType: "error",
+              telemetry_sample_rate: 1,
+              desktop_terminal_error_kind: "invocation_rejected",
+              desktop_invocation_rejection_reason:
+                "authorization_response_invalid",
+              ...jsonGroup,
+              ...timeoutGroup,
+              ...timingGroup,
+            });
+            expect(timingKeys(final.properties)).toHaveLength(3);
+            for (const event of captures().filter(
+              (event) => event.event !== "desktop_ack_command_settled",
+            ))
+              expect(timingKeys(event.properties)).toEqual([]);
+            const enriched = sanitizeDesktopAckEvent({
+              ...final,
+              properties: {
+                ...final.properties,
+                $current_url: "PRIVATE",
+                native_authorization_response_read_timing_deadline_ms:
+                  "PRIVATE",
+              },
+            });
+            // The frozen response and read groups are unchanged beside it.
+            expect(responseKeys(enriched.properties)).toHaveLength(7);
+            expect(readKeys(enriched.properties)).toHaveLength(4);
+            expect(timingKeys(enriched.properties)).toHaveLength(3);
+            expect(enriched.properties).toMatchObject(timingGroup);
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain(authorizationId);
+            expect(serialized).not.toContain(invalidResponse);
+          },
+        );
+
+        it("keeps the timeout snapshot unchanged when an older native app sends no timing", async () => {
+          const { calls } = await run((call) => {
+            responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(timeoutRead);
+            return reject(invalidResponse);
+          });
+          expect(calls[0]).toHaveProperty(
+            "onAuthorizationResponseReadTimingDiagnostic",
+          );
+          expect(finals()[0].properties).toMatchObject({
+            ...jsonGroup,
+            ...timeoutGroup,
+          });
+          expect(readKeys(finals()[0].properties)).toHaveLength(4);
+          expect(timingKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it.each<[string, (call: NativeCall) => void, string]>([
+          [
+            "a non-timeout snapshot",
+            (call) => {
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(read);
+            },
+            invalidResponse,
+          ],
+          [
+            "no snapshot",
+            (call) => responseChannel(call).onmessage!(jsonRejection),
+            invalidResponse,
+          ],
+          [
+            "no response receipt",
+            (call) => readChannel(call).onmessage!(timeoutRead),
+            invalidResponse,
+          ],
+          [
+            "an approved_false receipt",
+            (call) => {
+              responseChannel(call).onmessage!({
+                ...jsonRejection,
+                approval: "approved_false",
+              });
+              readChannel(call).onmessage!(timeoutRead);
+            },
+            invalidResponse,
+          ],
+          [
+            "an unread non-2xx receipt",
+            (call) => {
+              responseChannel(call).onmessage!(rejection);
+              readChannel(call).onmessage!(timeoutRead);
+            },
+            invalidResponse,
+          ],
+          [
+            "another rejection class",
+            (call) => {
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(timeoutRead);
+            },
+            "Desktop operation was not authorized",
+          ],
+        ])("never joins a timing to %s", async (_case, respond, message) => {
+          const { calls, replies } = await run((call) => {
+            timingChannel(call).onmessage!(timing);
+            respond(call);
+            return reject(message);
+          });
+          expect(calls).toHaveLength(1);
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({ type: "error", message }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          expect(finals()[0].properties).toMatchObject({
+            terminalType: "error",
+          });
+          expect(timingKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("adds no timing to a successful command", async () => {
+          await run(async (call) => {
+            responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(timeoutRead);
+            timingChannel(call).onmessage!(timing);
+            (call.onEvent as MockChannel).onmessage!({
+              type: "exit",
+              exitCode: 0,
+            });
+          });
+          expect(finals()[0].properties).toMatchObject({
+            terminalType: "exit",
+          });
+          expect(readKeys(finals()[0].properties)).toEqual([]);
+          expect(timingKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it.each<[string, () => unknown]>([
+          ["an extra private field", () => ({ ...timing, message: "PRIVATE" })],
+          [
+            "an internal deadline field",
+            () => ({ ...timing, deadlineMs: 8000 }),
+          ],
+          ["a missing version", () => ({ ...timing, version: undefined })],
+          ["another version", () => ({ ...timing, version: 2 })],
+          [
+            "a missing read duration",
+            () => ({ version: 1, headersElapsedMs: 7480 }),
+          ],
+          ["a string duration", () => ({ ...timing, readElapsedMs: "512" })],
+          ["a negative duration", () => ({ ...timing, headersElapsedMs: -1 })],
+          [
+            "a duration beyond the bound",
+            () => ({ ...timing, readElapsedMs: 60_001 }),
+          ],
+          [
+            "a fractional duration",
+            () => ({ ...timing, headersElapsedMs: 1.5 }),
+          ],
+          ["a NaN duration", () => ({ ...timing, readElapsedMs: NaN })],
+          [
+            "an infinite duration",
+            () => ({ ...timing, headersElapsedMs: Infinity }),
+          ],
+          ["a null duration", () => ({ ...timing, readElapsedMs: null })],
+          ["a read snapshot on the timing channel", () => timeoutRead],
+          ["a raw error string", () => "PRIVATE"],
+          ["null", () => null],
+          [
+            "a class instance",
+            () =>
+              Object.assign(
+                Object.create({ raw: "PRIVATE" }) as object,
+                timing,
+              ),
+          ],
+          [
+            "a throwing getter",
+            () =>
+              Object.defineProperty({ ...timing }, "readElapsedMs", {
+                enumerable: true,
+                get() {
+                  throw new Error("PRIVATE");
+                },
+              }),
+          ],
+          [
+            "a throwing proxy",
+            () => {
+              const fail = () => {
+                throw new Error("PRIVATE");
+              };
+              return new Proxy(
+                {},
+                { getPrototypeOf: fail, ownKeys: fail, get: fail },
+              );
+            },
+          ],
+        ])(
+          "drops the timing for %s and keeps the response and read groups",
+          async (_case, value) => {
+            const { calls, replies } = await run((call) => {
+              timingChannel(call).onmessage!(value());
+              // The malformed first attempt closed the timing latch.
+              timingChannel(call).onmessage!(timing);
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(timeoutRead);
+              return reject(invalidResponse);
+            });
+            expect(calls).toHaveLength(1);
+            expect(sequencedFrames(replies[0])).toEqual([
+              expect.objectContaining({
+                type: "error",
+                message: invalidResponse,
+              }),
+            ]);
+            expect(finals()).toHaveLength(1);
+            expect(finals()[0].properties).toMatchObject({
+              ...jsonGroup,
+              ...timeoutGroup,
+            });
+            expect(timingKeys(finals()[0].properties)).toEqual([]);
+            expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+          },
+        );
+
+        it("drops a timing after settlement and releases its callback", async () => {
+          let call!: NativeCall;
+          await run((native) => {
+            call = native;
+            responseChannel(native).onmessage!(jsonRejection);
+            readChannel(native).onmessage!(timeoutRead);
+            return reject(invalidResponse);
+          });
+          const channel = timingChannel(call);
+          expect(channel.cleanupCallback).toHaveBeenCalledTimes(1);
+          channel.onmessage!(timing);
+          expect(finals()).toHaveLength(1);
+          expect(finals()[0].properties).toMatchObject(timeoutGroup);
+          expect(timingKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("drops a timing observed under another analytics owner", async () => {
+          const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+          try {
+            await run((call) => {
+              responseChannel(call).onmessage!(jsonRejection);
+              readChannel(call).onmessage!(timeoutRead);
+              identity.mockReturnValue("another-user");
+              timingChannel(call).onmessage!(timing);
+              // The closed latch keeps it from attaching after the owner returns.
+              identity.mockReturnValue("user-456");
+              timingChannel(call).onmessage!(timing);
+              return reject(invalidResponse);
+            });
+            expect(finals()[0].properties).toMatchObject(timeoutGroup);
+            expect(timingKeys(finals()[0].properties)).toEqual([]);
+          } finally {
+            identity.mockReturnValue("user-456");
+          }
+        });
+
+        it("keeps every other channel when only the timing channel cannot be created", async () => {
+          const { Channel } = await import("@tauri-apps/api/core");
+          const create = jest.mocked(Channel).getMockImplementation()!;
+          const mocked = jest.mocked(Channel);
+          for (let index = 0; index < 8; index++)
+            mocked.mockImplementationOnce(create);
+          mocked.mockImplementationOnce(() => {
+            throw new Error("channel unavailable");
+          });
+          const { calls, replies } = await run((call) => {
+            responseChannel(call).onmessage!(jsonRejection);
+            readChannel(call).onmessage!(timeoutRead);
+            return reject(invalidResponse);
+          });
+          expect(calls).toHaveLength(1);
+          for (const key of [
+            "onEvent",
+            "onAuthorizationResponseDiagnostic",
+            "onAuthorizationResponseReadDiagnostic",
+          ])
+            expect(calls[0]).toHaveProperty(key);
+          expect(calls[0]).not.toHaveProperty(
+            "onAuthorizationResponseReadTimingDiagnostic",
+          );
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: invalidResponse,
+            }),
+          ]);
+          expect(finals()[0].properties).toMatchObject({
+            ...jsonGroup,
+            ...timeoutGroup,
+          });
+          expect(timingKeys(finals()[0].properties)).toEqual([]);
+        });
       });
     });
   });
@@ -12188,10 +12561,10 @@ describe("native authorization send receipt", () => {
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
       // optional receipt, cause, response, mitigation, transport, IO,
-      // connector and response-read channels besides the output one, or
-      // offers the stream fence opt-in.
+      // connector, response-read and read timing channels besides the output
+      // one, or offers the stream fence opt-in.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 9,
+        options?.version || options?.acknowledged === false ? 1 : 10,
       );
       const optional = [
         "onAuthorizationDiagnostic",
@@ -12202,6 +12575,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationIoDiagnostic",
         "onAuthorizationConnectorDiagnostic",
         "onAuthorizationResponseReadDiagnostic",
+        "onAuthorizationResponseReadTimingDiagnostic",
         "includeStreamFenceOrigin",
         "includeStreamFenceCleanup",
         "includeStreamFenceWindowsTaskkill",

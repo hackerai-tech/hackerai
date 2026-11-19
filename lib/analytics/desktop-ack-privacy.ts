@@ -6,6 +6,7 @@ import {
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   readNativeAuthorizationCause,
   readNativeAuthorizationConnector,
@@ -14,6 +15,7 @@ import {
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
   readNativeAuthorizationResponseRead,
+  readNativeAuthorizationResponseReadTiming,
   readNativeAuthorizationTransport,
 } from "./native-authorization-diagnostics";
 import {
@@ -238,6 +240,17 @@ export function sanitizeDesktopAckEvent<
       terminalError?.desktop_terminal_error_kind === "invocation_rejected"
         ? readDesktopInvocationRejectionDiagnostic(event.properties)
         : null;
+    // The read timing joins only a validated `timeout` read group beside its
+    // 2xx `json_error` response group and an `authorization_response_invalid`
+    // rejection class; no timing property is read without them. It likewise
+    // survives only as the validated data copy and drops alone.
+    const nativeAuthorizationResponseReadTiming =
+      readNativeAuthorizationResponseReadTiming(
+        event.properties,
+        nativeAuthorizationResponse,
+        nativeAuthorizationResponseRead,
+        invocationRejection,
+      );
     // The admission class joins only a validated execution_admission class,
     // likewise only as the validated data copy; an invalid one drops alone.
     const invocationAdmission = readDesktopInvocationAdmissionDiagnostic(
@@ -297,6 +310,7 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_READ_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_RESPONSE_READ_TIMING_PROPERTIES.has(key) &&
             !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_REJECTION_PROPERTIES.has(key) &&
             !DESKTOP_INVOCATION_ADMISSION_PROPERTIES.has(key) &&
@@ -340,6 +354,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, nativeAuthorizationMitigation);
     if (nativeAuthorizationResponseRead)
       Object.assign(event.properties, nativeAuthorizationResponseRead);
+    if (nativeAuthorizationResponseReadTiming)
+      Object.assign(event.properties, nativeAuthorizationResponseReadTiming);
     if (terminalError) Object.assign(event.properties, terminalError);
     if (invocationRejection)
       Object.assign(event.properties, invocationRejection);
