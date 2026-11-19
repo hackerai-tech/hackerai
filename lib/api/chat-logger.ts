@@ -4,10 +4,6 @@ import {
   type AgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
 import {
-  paidAgentContextAnalyticsProperties,
-  type PaidAgentContextAssignment,
-} from "@/lib/experiments/paid-agent-context";
-import {
   PAID_DEEPSEEK_1017_KEY,
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
@@ -1385,8 +1381,6 @@ export function resolveAgentAbortSource({
 type AgentCompletionAnalyticsArgs = {
   agentModelContextVariant?: AgentModelContextVariant;
   agentModelContextFlag?: AgentModelContextFlag;
-  /** Added by run reporting for paid_agent_context_480k_v1 assignments. */
-  paidAgentContext?: PaidAgentContextAssignment;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
@@ -1460,7 +1454,6 @@ type AgentCompletionAnalyticsArgs = {
 export function captureAgentRun({
   agentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG,
   agentModelContextVariant,
-  paidAgentContext,
   cacheHistoryTelemetry,
   usageMeasurement,
   abliteratedProviderSummary,
@@ -1676,7 +1669,6 @@ export function captureAgentRun({
       ...(agentModelContextVariant && {
         [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
       }),
-      ...paidAgentContextAnalyticsProperties(paidAgentContext),
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
@@ -2006,7 +1998,6 @@ export function captureAgentCompletionAnalytics(
   captureAgentRun({
     agentModelContextVariant: args.agentModelContextVariant,
     agentModelContextFlag: args.agentModelContextFlag,
-    paidAgentContext: args.paidAgentContext,
     cacheHistoryTelemetry: args.cacheHistoryTelemetry,
     usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
@@ -2101,10 +2092,7 @@ export function captureUsageCost({
   usageSettlementId,
   usageLog,
   subagent,
-  paidAgentContext,
 }: {
-  /** Added by run reporting for paid_agent_context_480k_v1 assignments. */
-  paidAgentContext?: PaidAgentContextAssignment;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
@@ -2265,7 +2253,6 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...paidAgentContextAnalyticsProperties(paidAgentContext),
     },
   });
 }

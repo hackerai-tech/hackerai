@@ -19,10 +19,7 @@ import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { InvalidCompactionSummaryError } from "./startup-compaction";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
-import {
-  PAID_AGENT_CONTEXT_FLAG,
-  type PaidAgentContextVariant,
-} from "@/lib/experiments/paid-agent-context";
+import type { AgentContextPolicy } from "@/lib/ai/agent-context-budget";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
 export const MODERATION_COMPACTION_FLAG_KEY =
@@ -40,8 +37,9 @@ export const INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION =
   "max_inference_context_v1";
 export const INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION =
   "pro_inference_context_v1";
-// The paid Auto/Standard 480K treatment shares the expanded summary input
-// policy, under its own labels so its cohort never mixes with Pro/Max.
+// Paid Auto/Standard 480K context shares the expanded summary input policy,
+// under its own labels so its compactions never mix with Pro/Max. Saved data
+// references these identifiers; keep them stable.
 export const PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION =
   "paid_480k_large_v2_context_v1";
 export const INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION =
@@ -133,9 +131,10 @@ export class CompactionModelPolicy {
       selectedModel?: SelectedModel;
       /** Existing shouldUncensorResponse result, never the continuation signal. */
       platformAuthorized: boolean;
+      /** Shorthand for the `expanded` policy, retained for subagent callers. */
       expandedAgentContext?: boolean;
-      /** Top-level run's paid_agent_context_480k_v1 variant, if assigned. */
-      paidAgentContextVariant?: PaidAgentContextVariant;
+      /** The top-level run's resolved policy; takes precedence over the shorthand. */
+      agentContextPolicy?: AgentContextPolicy;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
@@ -145,14 +144,13 @@ export class CompactionModelPolicy {
   }
 
   private async evaluate(): Promise<CompactionSelection> {
-    const paidContextTreatment =
-      this.context.mode === "agent" &&
-      this.context.expandedAgentContext !== true &&
-      this.context.paidAgentContextVariant === "test";
-    const expandedAgentContext =
-      (this.context.mode === "agent" &&
-        this.context.expandedAgentContext === true) ||
-      paidContextTreatment;
+    const policy =
+      this.context.mode !== "agent"
+        ? "baseline"
+        : (this.context.agentContextPolicy ??
+          (this.context.expandedAgentContext ? "expanded" : "baseline"));
+    const paidContext = policy === "paid_480k";
+    const expandedAgentContext = policy !== "baseline";
     const configured = isAbliterationConfigured();
     const abliterationModel = expandedAgentContext
       ? ABLITERATION_LARGE_V2_MODEL_KEY
@@ -176,7 +174,7 @@ export class CompactionModelPolicy {
         fallbackModel: configured
           ? abliterationModel
           : COMPACTION_FALLBACK_MODEL,
-        policy: paidContextTreatment
+        policy: paidContext
           ? INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
           : expandedAgentContext
             ? this.context.selectedModel === "hackerai-pro"
@@ -202,7 +200,7 @@ export class CompactionModelPolicy {
         : flagEnabled === true && configured
           ? abliterationModel
           : undefined,
-      policy: paidContextTreatment
+      policy: paidContext
         ? PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
         : expandedAgentContext
           ? this.context.selectedModel === "hackerai-pro"
@@ -238,12 +236,6 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      ...(this.context.mode === "agent" &&
-        this.context.paidAgentContextVariant && {
-          [`$feature/${PAID_AGENT_CONTEXT_FLAG}`]:
-            this.context.paidAgentContextVariant,
-          paid_agent_context_variant: this.context.paidAgentContextVariant,
-        }),
       telemetry_version: 8,
       $process_person_profile: false,
     };

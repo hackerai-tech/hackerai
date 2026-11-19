@@ -9,16 +9,9 @@ import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/cont
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
 import {
   getAgentContextBudget,
+  getAgentContextPolicy,
   type AgentContextPolicy,
 } from "@/lib/ai/agent-context-budget";
-import {
-  getPaidAgentContextSelection,
-  PAID_AGENT_CONTEXT_EXPOSURE_EVENT,
-  paidAgentContextAnalyticsProperties,
-  paidAgentContextExposureUuid,
-  routeSupportsPaidAgentContext,
-  type PaidAgentContextAssignment,
-} from "@/lib/experiments/paid-agent-context";
 import {
   restoreProviderRecoveryContext,
   type ProviderRecoveryContext,
@@ -829,8 +822,6 @@ export type AgentStreamContext = {
   ctxMaxTokens: number;
   agentModelContextEnabled?: boolean;
   agentModelContextVariant?: AgentModelContextVariant;
-  /** Run-scoped paid Auto/Standard context assignment; shared by retries. */
-  paidAgentContext?: PaidAgentContextAssignment;
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
@@ -1101,28 +1092,24 @@ export async function createAgentStream(
     ctx.mode === "agent" &&
     ctx.agentModelContextEnabled &&
     contextFlag !== undefined;
-  // The caller resolves this snapshot once per top-level run. Re-check the
-  // selector so explicit Pro/Max, Ask and Free can never inherit it.
-  const paidAgentContext =
-    ctx.paidAgentContext &&
+  // Derived from the run's final selector, so a normalized Max request cannot
+  // keep a stale policy. Explicit Pro/Max still needs the caller's snapshot.
+  const paidContext =
     !expandedContextEnabled &&
-    getPaidAgentContextSelection(
-      ctx.subscription,
-      ctx.mode,
-      ctx.selectedModelOverride,
-    )
-      ? ctx.paidAgentContext
-      : undefined;
-  const paidContextTreatment = paidAgentContext?.variant === "test";
+    getAgentContextPolicy({
+      subscription: ctx.subscription,
+      mode: ctx.mode,
+      selectedModelOverride: ctx.selectedModelOverride,
+    }) === "paid_480k";
   const contextPolicy: AgentContextPolicy = expandedContextEnabled
     ? "expanded"
-    : paidContextTreatment
+    : paidContext
       ? "paid_480k"
       : "baseline";
   // Route-aware budgets, pre-send enforcement and prepared-input estimates.
   const routeAwareContext =
     ctx.mode === "agent" &&
-    (ctx.agentModelContextEnabled === true || paidContextTreatment);
+    (ctx.agentModelContextEnabled === true || paidContext);
   let activeModelInputTokens = 0;
   let lastPreparedInputEstimate = 0;
   // Failure diagnostics only: the compaction decision value actually compared
@@ -2131,8 +2118,7 @@ export async function createAgentStream(
       baselineModel: modelName,
       selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
-      expandedAgentContext: expandedContextEnabled,
-      paidAgentContextVariant: paidAgentContext?.variant,
+      agentContextPolicy: contextPolicy,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -2281,41 +2267,6 @@ export async function createAgentStream(
           compaction_threshold_tokens: summarizationThreshold,
           subscription_tier: ctx.subscription,
           selected_model: ctx.selectedModelOverride,
-          $process_person_profile: false,
-        });
-      }
-      // Actual exposure: the first real model request of the run, for both
-      // arms. The snapshot is shared across retries, so this emits once.
-      if (
-        !abortSignal.aborted &&
-        paidAgentContext &&
-        !paidAgentContext.exposure
-      ) {
-        paidAgentContext.exposure = {
-          modelId: model.modelId,
-          contextMaxTokens: activeContextBudget,
-          compactionThresholdTokens: summarizationThreshold,
-          routeSupports480k: routeSupportsPaidAgentContext(
-            ctx.subscription,
-            lastRequestedSlug,
-            activeStepRouting.fallbackModels ?? [],
-          ),
-        };
-        phLogger.event(PAID_AGENT_CONTEXT_EXPOSURE_EVENT, {
-          userId: ctx.userId,
-          ...(ctx.triggerRunId && {
-            eventUuid: paidAgentContextExposureUuid(ctx.triggerRunId),
-          }),
-          ...paidAgentContextAnalyticsProperties(paidAgentContext),
-          flag_key: paidAgentContext.flagKey,
-          experiment_variant: paidAgentContext.variant,
-          chat_id: ctx.chatId,
-          run_id: ctx.triggerRunId,
-          model: model.modelId,
-          context_max_tokens: activeContextBudget,
-          compaction_threshold_tokens: summarizationThreshold,
-          selected_model: paidAgentContext.requestedSelection,
-          subscription_tier: ctx.subscription,
           $process_person_profile: false,
         });
       }
@@ -3083,8 +3034,7 @@ export async function createAgentStream(
           return summarizationThreshold;
         },
         getLastStepInputTokens: () =>
-          (ctx.agentModelContextEnabled || paidContextTreatment) &&
-          !canSummarizeAgain()
+          (ctx.agentModelContextEnabled || paidContext) && !canSummarizeAgain()
             ? Math.max(
                 state.lastStepInputTokens,
                 lastPreparedInputEstimate +
