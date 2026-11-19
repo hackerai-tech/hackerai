@@ -170,6 +170,35 @@ describe("MessageItem WorkedFor rendering", () => {
       "agent-progress",
     );
   });
+
+  it.each([false, true])(
+    "counts a file as visible progress only when it renders (whitespace text: %s)",
+    (withWhitespace) => {
+      const file = {
+        type: "file",
+        mediaType: "text/plain",
+        url: "/file",
+      } as const;
+      renderMessageItem({
+        mode: "agent",
+        message: {
+          ...assistantMessage,
+          parts: withWhitespace ? [file, { type: "text", text: " " }] : [file],
+        },
+      });
+
+      if (withWhitespace) {
+        expect(screen.queryByTestId("part-file")).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByTestId("part-file")).toBeInTheDocument();
+      }
+      expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+        "data-last-saved-step",
+        withWhitespace ? "conversation" : "agent-progress",
+      );
+    },
+  );
+
   it("shows a saved goal's completion time on its answer", () => {
     renderMessageItem({
       mode: "agent",
