@@ -266,21 +266,9 @@ export function LiveWorkspaceFilesPanel({
       }
       if (download) {
         if (isTauriEnvironment()) {
-          // Existing native Save contract is UTF-8 text only. Do not corrupt binary bytes.
-          let text: string;
-          try {
-            text = new TextDecoder("utf-8", {
-              fatal: true,
-              ignoreBOM: true,
-            }).decode(bytes);
-          } catch {
-            throw new Error(
-              "Binary downloads are available in the web app. Desktop can save UTF-8 text files here.",
-            );
-          }
           const saved = await downloadFile({
             filename: entry.name,
-            content: text,
+            content: bytes,
           });
           captureAuthenticatedEvent("workspace_file_download", {
             outcome: saved.outcome,

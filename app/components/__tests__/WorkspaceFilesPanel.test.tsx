@@ -7,6 +7,8 @@ import {
 } from "@testing-library/react";
 import { LiveWorkspaceFilesPanel as WorkspaceFilesPanel } from "../WorkspaceFilesPanel";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { downloadFile } from "@/lib/utils/file-download";
+let mockNative = false;
 
 jest.mock("../ComputerCodeBlock", () => ({
   ComputerCodeBlock: ({ children }: { children: string }) => (
@@ -21,7 +23,9 @@ jest.mock("../AllFilesDialog", () => ({
   AllFilesDialog: () => <div>Saved artifacts dialog</div>,
 }));
 jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
-jest.mock("../../hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
+jest.mock("../../hooks/useTauri", () => ({
+  isTauriEnvironment: () => mockNative,
+}));
 
 const fetchMock = jest.fn();
 const response = (data: unknown, ok = true) => ({ ok, json: async () => data });
@@ -35,6 +39,7 @@ const listing = (entries: unknown[]) => ({
 const folder = { name: "reports", kind: "directory", size: 0, modified: 1000 };
 const file = { name: "report.txt", kind: "file", size: 5, modified: 1000 };
 beforeEach(() => {
+  mockNative = false;
   global.fetch = fetchMock;
   fetchMock.mockReset();
 });
@@ -241,4 +246,43 @@ it("keeps refresh and layout choices usable through the compact file menu", asyn
   expect(
     await screen.findByRole("navigation", { name: "Workspace file tree" }),
   ).toBeVisible();
+});
+
+it("passes exact chunked binary bytes to native Save and preserves cancellation", async () => {
+  mockNative = true;
+  const bytes = new Uint8Array([0x50, 0x4b, 0xff, 0x00]);
+  (downloadFile as jest.Mock)
+    .mockClear()
+    .mockResolvedValue({ outcome: "canceled" });
+  (captureAuthenticatedEvent as jest.Mock).mockClear();
+  fetchMock.mockImplementation(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.action !== "download")
+      return response(
+        listing([{ ...file, name: "export.zip", size: bytes.length }]),
+      );
+    const offset = body.byteOffset ?? 0;
+    return response({
+      data: btoa(String.fromCharCode(...bytes.slice(offset, offset + 2))),
+      size: bytes.length,
+      revision: "zip-v1",
+      sandboxId: "owned",
+      nextByteOffset: offset === 0 ? 2 : null,
+    });
+  });
+  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Download export.zip" }),
+  );
+  await waitFor(() =>
+    expect(downloadFile).toHaveBeenCalledWith({
+      filename: "export.zip",
+      content: bytes,
+    }),
+  );
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "workspace_file_download",
+    { outcome: "canceled", surface: "desktop" },
+  );
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

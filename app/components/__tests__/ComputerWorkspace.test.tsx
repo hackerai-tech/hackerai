@@ -11,6 +11,7 @@ import { downloadFile } from "@/lib/utils/file-download";
 
 const mockGetUrl = jest.fn();
 let mockOverlay = false;
+let mockNative = false;
 const mockSavedQuery = jest.fn();
 let mockSavedPage: { results: unknown[]; status: string; loadMore: () => void };
 jest.mock("convex/react", () => ({
@@ -38,7 +39,9 @@ jest.mock("@/hooks/use-workspace-layout", () => ({
   useComputerSidebarOverlay: () => mockOverlay,
 }));
 jest.mock("../AllFilesDialog", () => ({ AllFilesDialog: () => null }));
-jest.mock("../../hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
+jest.mock("../../hooks/useTauri", () => ({
+  isTauriEnvironment: () => mockNative,
+}));
 jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
 const messages = ["cloud", "desktop"].map((environment, index) => ({
   id: `m${index}`,
@@ -83,6 +86,7 @@ const props = {
 
 beforeEach(() => {
   mockOverlay = false;
+  mockNative = false;
   mockGetUrl.mockReset();
   mockSavedQuery.mockClear();
   mockSavedPage = { results: [], status: "Exhausted", loadMore: () => {} };
@@ -486,4 +490,74 @@ it("clears a deleted Activity entry without dismissing the selected Files tab", 
     screen.getByText("Agent activity appears here when tools run."),
   ).toBeInTheDocument();
   expect(screen.queryByText("Retained tool")).not.toBeInTheDocument();
+});
+
+it("saves retained binary workspace bytes through native Save after the workspace goes offline", async () => {
+  mockNative = true;
+  const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = jest.fn(() => "blob:qa-image");
+  URL.revokeObjectURL = jest.fn();
+  (downloadFile as jest.Mock)
+    .mockClear()
+    .mockResolvedValue({ outcome: "success" });
+  global.fetch = jest.fn().mockImplementation(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    return {
+      ok: true,
+      json: async () =>
+        body.action === "preview"
+          ? {
+              data: btoa(String.fromCharCode(...bytes)),
+              size: bytes.length,
+              revision: "image-v1",
+              sandboxId: "cloud-owned",
+            }
+          : {
+              state: "running",
+              sandboxId: "cloud-owned",
+              root: "/home/user",
+              environmentLabel: "Cloud",
+              entries: [
+                {
+                  name: "evidence.png",
+                  kind: "file",
+                  size: bytes.length,
+                  modified: 1000,
+                },
+              ],
+              total: 1,
+              nextOffset: null,
+            },
+    };
+  });
+  const view = render(<ComputerWorkspace {...props} />);
+  try {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Workspace", exact: true }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Preview evidence.png" }),
+    );
+    const download = await screen.findByRole("button", {
+      name: "Download previewed file",
+    });
+    global.fetch = jest.fn().mockRejectedValue(new Error("workspace offline"));
+    fireEvent.click(download);
+    await waitFor(() =>
+      expect(downloadFile).toHaveBeenCalledWith({
+        filename: "evidence.png",
+        content: bytes,
+      }),
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/Binary downloads are available in the web app/),
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
 });

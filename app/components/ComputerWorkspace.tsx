@@ -537,13 +537,9 @@ function LoadedFilePreview({
     setError("");
     try {
       if (isTauriEnvironment()) {
-        if (loaded.file.text === undefined)
-          throw new Error(
-            "Binary downloads are available in the web app. Desktop can save UTF-8 text files here.",
-          );
         const result = await downloadFile({
           filename: loaded.file.name,
-          content: loaded.file.text,
+          content: loaded.bytes,
         });
         captureAuthenticatedEvent("workspace_file_download", {
           outcome: result.outcome,
