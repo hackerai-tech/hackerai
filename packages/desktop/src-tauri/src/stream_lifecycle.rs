@@ -21,9 +21,10 @@
 //! members may still be running, so no further streamed command starts in this
 //! native process. The fence keeps the closed origin of the path that set it
 //! first, for a stop request which cleanup leg was unconfirmed and, when that
-//! leg was only the Windows taskkill stop, how taskkill failed, and for a
-//! cancellation wait timeout the matched owner's last published step, for an
-//! optional diagnostic only; it never changes admission.
+//! leg was only the Windows taskkill stop, how taskkill failed, and which call
+//! path first asked that owner to stop, and for a cancellation wait timeout the
+//! matched owner's last published step, for an optional diagnostic only; it
+//! never changes admission.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -198,6 +199,28 @@ impl FenceWindowsTaskkillReceipt {
     }
 }
 
+/// Which native call path first asked an owner to stop: the cancel IPC, a page
+/// generation invalidation (a committed document or a lost web process), or
+/// normal application exit. A closed class of the Rust caller, never a human
+/// action, the process, a PID, a resource or a time. Each owner keeps only the
+/// first; a later request still wakes it but never replaces that source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StopRequestSource {
+    CancelIpc,
+    DocumentInvalidation,
+    ApplicationExit,
+}
+
+/// Carried only beside the version 2 `requested_pid_not_found` taskkill
+/// receipt of the stop request that recorded it, in that same rejection, and
+/// only when separately opted in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FenceStopRequestSourceReceipt {
+    version: u8,
+    source: StopRequestSource,
+}
+
 /// The last step the owner matched by a timed-out cancellation wait had
 /// published when that timeout set the fence, or `released` once that owner's
 /// registration was gone. A closed class of the owner's own code path, never
@@ -302,11 +325,14 @@ pub(crate) struct FenceReceipts {
     /// The same failure's version 2 receipt, when it has one.
     pub(crate) windows_taskkill_root_report: Option<FenceWindowsTaskkillReceipt>,
     pub(crate) cancel_wait_owner_phase: Option<FenceCancelWaitOwnerPhaseReceipt>,
+    /// The same stop request's first source, only beside a classified
+    /// `requested_pid_not_found` taskkill report.
+    pub(crate) stop_request_source: Option<FenceStopRequestSourceReceipt>,
 }
 
-/// The first unconfirmed outcome. Its origin, cleanup leg, taskkill failure and
-/// owner phase are recorded together, so a later outcome can never supply the
-/// detail of an earlier origin.
+/// The first unconfirmed outcome. Its origin, cleanup leg, taskkill failure,
+/// stop request source and owner phase are recorded together, so a later
+/// outcome can never supply the detail of an earlier origin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Fence {
     origin: FenceOrigin,
@@ -315,6 +341,8 @@ struct Fence {
     // Only a stop request whose sole unconfirmed leg was the tree stop records
     // how the Windows taskkill path failed.
     taskkill: Option<TaskkillFailure>,
+    // Only a stop request records the first source its owner observed.
+    stop_source: Option<StopRequestSource>,
     // Only a cancellation wait timeout records its matched owner's phase.
     owner_phase: Option<CancelWaitOwnerPhase>,
 }
@@ -325,6 +353,15 @@ impl Fence {
             cleanup: Some(failure),
             taskkill: taskkill.filter(|_| failure == CleanupFailure::TreeUnconfirmed),
             ..FenceOrigin::OwnerStopRequested.into()
+        }
+    }
+
+    /// The first source the owner observed with its stop request; every other
+    /// origin is unchanged.
+    fn requested_by(self, source: StopRequestSource) -> Self {
+        Self {
+            stop_source: (self.origin == FenceOrigin::OwnerStopRequested).then_some(source),
+            ..self
         }
     }
 
@@ -342,6 +379,7 @@ impl From<FenceOrigin> for Fence {
             origin,
             cleanup: None,
             taskkill: None,
+            stop_source: None,
             owner_phase: None,
         }
     }
@@ -350,9 +388,20 @@ impl From<FenceOrigin> for Fence {
 struct Running {
     serial: u64,
     generation: u64,
-    stop: watch::Sender<bool>,
+    // None until the first stop request, whose source it then keeps.
+    stop: watch::Sender<Option<StopRequestSource>>,
     cleanup: Cleanup,
     phase: OwnerPhase,
+}
+
+impl Running {
+    /// Called under the state lock. Every request notifies the owner, as
+    /// before; only the first request's source is kept.
+    fn request_stop(&self, source: StopRequestSource) {
+        self.stop.send_modify(|first| {
+            first.get_or_insert(source);
+        });
+    }
 }
 
 #[derive(Default)]
@@ -386,7 +435,7 @@ pub(crate) enum Launch {
 /// The only handle allowed to signal or reap a launched command.
 pub(crate) struct OwnedCommand {
     pub(crate) child: Child,
-    stop: watch::Receiver<bool>,
+    stop: watch::Receiver<Option<StopRequestSource>>,
     completion: Completion,
     // Shared with this owner's registration; only this owner publishes to it.
     phase: OwnerPhase,
@@ -477,8 +526,10 @@ impl StreamLifecycle {
     /// explicit stop request whose unconfirmed leg was recorded with that
     /// origin, the leg's closed v1 receipt, and only for a `tree_unconfirmed`
     /// leg from the Windows taskkill path, that failure's closed v1 receipt,
-    /// and its closed v2 receipt when it has one. Only for a cancellation wait
-    /// timeout, its matched owner's closed v1 phase receipt.
+    /// and its closed v2 receipt when it has one. Only beside a classified
+    /// `requested_pid_not_found` report, the same stop request's first source
+    /// as its closed v1 receipt. Only for a cancellation wait timeout, its
+    /// matched owner's closed v1 phase receipt.
     pub(crate) fn fence_receipts(&self) -> Option<FenceReceipts> {
         self.state().fence.map(|fence| FenceReceipts {
             origin: FenceOriginReceipt {
@@ -496,6 +547,10 @@ impl StreamLifecycle {
             cancel_wait_owner_phase: fence
                 .owner_phase
                 .map(|phase| FenceCancelWaitOwnerPhaseReceipt { version: 1, phase }),
+            stop_request_source: fence
+                .stop_source
+                .filter(|_| fence.taskkill == Some(TaskkillFailure::RequestedPidNotFound))
+                .map(|source| FenceStopRequestSourceReceipt { version: 1, source }),
         })
     }
 
@@ -513,6 +568,16 @@ impl StreamLifecycle {
     /// The admitting document is gone: fence its pending launches and ask every
     /// running owner to stop. Never blocks; callers may await the cleanups.
     pub(crate) fn invalidate(&self) -> (u64, Vec<Cleanup>) {
+        self.invalidate_requested_by(StopRequestSource::DocumentInvalidation)
+    }
+
+    /// Normal application exit: exactly `invalidate`, recorded as its own
+    /// stop request source.
+    pub(crate) fn invalidate_for_exit(&self) -> (u64, Vec<Cleanup>) {
+        self.invalidate_requested_by(StopRequestSource::ApplicationExit)
+    }
+
+    fn invalidate_requested_by(&self, source: StopRequestSource) -> (u64, Vec<Cleanup>) {
         let mut state = self.state();
         state.generation += 1;
         let current = state.generation;
@@ -521,7 +586,7 @@ impl StreamLifecycle {
             .values()
             .filter(|running| running.generation < current)
             .map(|running| {
-                running.stop.send_replace(true);
+                running.request_stop(source);
                 running.cleanup.clone()
             })
             .collect();
@@ -563,7 +628,7 @@ impl StreamLifecycle {
                     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
                     state.next_serial += 1;
                     let serial = state.next_serial;
-                    let (stop, stop_requested) = watch::channel(false);
+                    let (stop, stop_requested) = watch::channel(None);
                     let (outcome, cleanup) = watch::channel(None);
                     let phase = OwnerPhase::default();
                     state.running.insert(
@@ -608,7 +673,7 @@ impl StreamLifecycle {
             let mut state = self.state();
             state.canceled.insert(command_id.to_string());
             state.running.get(command_id).map(|running| {
-                running.stop.send_replace(true);
+                running.request_stop(StopRequestSource::CancelIpc);
                 (running.serial, running.cleanup.clone())
             })
         };
@@ -661,7 +726,7 @@ enum Ended {
     Exited(ExitStatus),
     ProcessError(std::io::Error),
     DeliveryFailed,
-    StopRequested,
+    StopRequested(StopRequestSource),
     TimedOut,
 }
 
@@ -684,7 +749,7 @@ pub(crate) async fn run(
         let streaming = stream_until_exit(&mut child, input, on_event);
         tokio::select! {
             biased;
-            _ = stop_requested(&mut stop) => Ended::StopRequested,
+            source = stop_requested(&mut stop) => Ended::StopRequested(source),
             result = tokio::time::timeout(timeout, streaming) => {
                 result.unwrap_or(Ended::TimedOut)
             }
@@ -718,7 +783,7 @@ pub(crate) async fn run(
             });
             unless_confirmed(confirmed, FenceOrigin::OwnerTimeout)
         }
-        Ended::StopRequested => {
+        Ended::StopRequested(source) => {
             let (fence, status) = terminate_owned(&mut child, Some(&phase)).await;
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(match status {
@@ -729,7 +794,8 @@ pub(crate) async fn run(
                     message: "Desktop could not confirm the command stopped".to_string(),
                 },
             });
-            fence
+            // The source this owner observed with its stop request: the first.
+            fence.map(|fence| fence.requested_by(source))
         }
         // The receiver is gone: stop producing output nobody can deliver.
         Ended::DeliveryFailed => {
@@ -745,11 +811,20 @@ fn unless_confirmed(confirmed: bool, origin: FenceOrigin) -> Option<Fence> {
     (!confirmed).then_some(origin.into())
 }
 
-async fn stop_requested(stop: &mut watch::Receiver<bool>) {
-    if stop.wait_for(|requested| *requested).await.is_err() {
+/// Resolves to the first stop request's source once any request was made.
+async fn stop_requested(
+    stop: &mut watch::Receiver<Option<StopRequestSource>>,
+) -> StopRequestSource {
+    match stop
+        .wait_for(Option::is_some)
+        .await
+        .ok()
+        .and_then(|first| *first)
+    {
+        Some(source) => source,
         // The registration outlives its owner, so this is unreachable; never
         // treat a closed signal as a stop request.
-        std::future::pending::<()>().await;
+        None => std::future::pending().await,
     }
 }
 
@@ -871,15 +946,17 @@ fn cleanup_failure(tree_stopped: bool, leader: LeaderWait) -> Option<CleanupFail
 #[cfg(all(test, unix))]
 impl OwnedCommand {
     /// Reap a finished test command, then release ownership as `run` does
-    /// after a stop request whose cleanup reported `failure`, with `taskkill`
-    /// as the tree stop's reported failure.
+    /// after a stop request first made by `source` whose cleanup reported
+    /// `failure`, with `taskkill` as the tree stop's reported failure.
     pub(crate) async fn release_stop_unconfirmed(
         mut self,
         failure: CleanupFailure,
         taskkill: Option<TaskkillFailure>,
+        source: StopRequestSource,
     ) {
         let _ = self.child.wait().await;
-        self.completion.unconfirmed = Some(Fence::stop_requested(failure, taskkill));
+        self.completion.unconfirmed =
+            Some(Fence::stop_requested(failure, taskkill).requested_by(source));
     }
 }
 
@@ -1118,6 +1195,63 @@ mod tests {
             Fence::stop_requested(CleanupFailure::TreeUnconfirmed, None).owner_phase,
             None
         );
+    }
+
+    #[test]
+    fn stream_lifecycle_stop_request_source_is_read_only_beside_its_requested_pid_not_found_report()
+    {
+        use CleanupFailure::*;
+        use TaskkillFailure::*;
+        let receipt = |fence: Fence| {
+            let lifecycle = StreamLifecycle::default();
+            lifecycle.state().fence = Some(fence);
+            lifecycle
+                .fence_receipts()
+                .and_then(|receipts| receipts.stop_request_source)
+        };
+        let not_found = Fence::stop_requested(TreeUnconfirmed, Some(RequestedPidNotFound));
+        // A fence recorded without a source never has one.
+        assert_eq!(receipt(not_found), None);
+        for (source, wire) in [
+            (StopRequestSource::CancelIpc, "cancel_ipc"),
+            (
+                StopRequestSource::DocumentInvalidation,
+                "document_invalidation",
+            ),
+            (StopRequestSource::ApplicationExit, "application_exit"),
+        ] {
+            let expected = FenceStopRequestSourceReceipt { version: 1, source };
+            assert_eq!(
+                serde_json::to_value(expected).unwrap(),
+                serde_json::json!({ "version": 1, "source": wire })
+            );
+            assert_eq!(receipt(not_found.requested_by(source)), Some(expected));
+            // Every stop request records its source, but only the classified
+            // not-found report beside a tree-only leg exposes it.
+            for fence in [
+                Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(NonZeroI32::new(128)))),
+                Fence::stop_requested(TreeUnconfirmed, Some(NonzeroExit(None))),
+                Fence::stop_requested(TreeUnconfirmed, Some(OutputError)),
+                Fence::stop_requested(TreeUnconfirmed, None),
+                Fence::stop_requested(TreeAndLeaderWaitFailed, Some(RequestedPidNotFound)),
+                Fence::stop_requested(LeaderWaitTimedOut, Some(RequestedPidNotFound)),
+            ] {
+                let requested = fence.requested_by(source);
+                assert_eq!(requested.stop_source, Some(source), "{fence:?}");
+                assert_eq!(receipt(requested), None, "{fence:?}");
+            }
+            // No other origin ever records one.
+            for origin in [
+                FenceOrigin::OwnerTimeout,
+                FenceOrigin::OwnerProcessError,
+                FenceOrigin::OwnerDeliveryFailed,
+                FenceOrigin::OwnerOutcomeMissing,
+            ] {
+                assert_eq!(Fence::from(origin).requested_by(source), origin.into());
+            }
+            let timed_out = Fence::cancel_wait_timeout(CancelWaitOwnerPhase::OwnerStreaming);
+            assert_eq!(timed_out.requested_by(source), timed_out);
+        }
     }
 
     /// Yield until `phase` reads `expected`, so a spawned check can run.
@@ -1385,6 +1519,80 @@ mod unix_tests {
             .map(|receipt| receipt.phase)
     }
 
+    fn stop_request_source(lifecycle: &StreamLifecycle) -> Option<StopRequestSource> {
+        lifecycle
+            .fence_receipts()
+            .and_then(|receipts| receipts.stop_request_source)
+            .map(|receipt| receipt.source)
+    }
+
+    /// Yield until a stop request wakes the owner, then mark it seen and
+    /// return the source the owner would observe.
+    async fn woken(
+        stop: &mut watch::Receiver<Option<StopRequestSource>>,
+    ) -> Option<StopRequestSource> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !stop.has_changed().unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "the request never woke its owner"
+            );
+            tokio::task::yield_now().await;
+        }
+        *stop.borrow_and_update()
+    }
+
+    /// Each source first, then both others: every request still wakes the
+    /// owner, none replaces the first source, and the owner's existing stop is
+    /// unchanged: it confirms its tree stopped and records no fence.
+    #[tokio::test]
+    async fn stream_lifecycle_owner_keeps_its_first_stop_request_source_across_competing_requests()
+    {
+        use StopRequestSource::*;
+        let all = [CancelIpc, DocumentInvalidation, ApplicationExit];
+        for first in all {
+            let scratch = Scratch::new();
+            let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+            let mut cmd = platform::build_command(&long_tree(&scratch, "owner"), None, None);
+            let mut owned = started(lifecycle.launch(lifecycle.admit(), "owner", &mut cmd).await);
+            let leader = owned.child.id().unwrap();
+            let descendant: libc::pid_t = wait_for_file(&scratch.path("descendant"))
+                .await
+                .parse()
+                .unwrap();
+            assert_eq!(*owned.stop.borrow_and_update(), None);
+            let mut canceling = None;
+            let others = all.into_iter().filter(|source| *source != first);
+            for source in std::iter::once(first).chain(others) {
+                match source {
+                    // The cancel IPC waits for the owner, so it runs aside.
+                    CancelIpc => {
+                        canceling = Some(tokio::spawn({
+                            let lifecycle = lifecycle.clone();
+                            async move { lifecycle.cancel("owner").await }
+                        }))
+                    }
+                    DocumentInvalidation => drop(lifecycle.invalidate()),
+                    ApplicationExit => drop(lifecycle.invalidate_for_exit()),
+                }
+                assert_eq!(woken(&mut owned.stop).await, Some(first), "{source:?}");
+            }
+            assert_eq!(stop_requested(&mut owned.stop).await, first);
+
+            let (channel, events) = collecting_channel();
+            run(owned, None, Duration::from_secs(120), &channel).await;
+            assert!(canceling.unwrap().await.unwrap(), "{first:?}");
+            assert!(!group_alive(leader));
+            assert!(!process_alive(descendant));
+            assert_eq!(
+                events.lock().unwrap().last().map(String::as_str),
+                Some(r#"{"type":"exit","exitCode":-1}"#)
+            );
+            assert_eq!(lifecycle.fence_receipts(), None, "{first:?}");
+            assert!(lifecycle.state().running.is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn stream_lifecycle_fence_keeps_the_first_stop_leg_with_its_origin_only() {
         let scratch = Scratch::new();
@@ -1393,12 +1601,16 @@ mod unix_tests {
             async move { started(lifecycle.launch(lifecycle.admit(), id, &mut cmd).await) }
         };
 
-        // A later stop's tree-only leg with its classified taskkill report.
+        // A later stop's tree-only leg with its classified taskkill report,
+        // first requested by app exit.
         let later_tree_stop = || {
-            Some(Fence::stop_requested(
-                CleanupFailure::TreeUnconfirmed,
-                Some(TaskkillFailure::RequestedPidNotFound),
-            ))
+            Some(
+                Fence::stop_requested(
+                    CleanupFailure::TreeUnconfirmed,
+                    Some(TaskkillFailure::RequestedPidNotFound),
+                )
+                .requested_by(StopRequestSource::ApplicationExit),
+            )
         };
 
         // The first stop's leg is recorded with its origin and survives a
@@ -1425,8 +1637,34 @@ mod unix_tests {
         assert_eq!(origin(&first), Some(FenceOrigin::OwnerStopRequested));
         assert_eq!(cleanup(&first), Some(CleanupFailure::LeaderWaitFailed));
         assert_eq!(windows_taskkill(&first), None);
-        // A later cancellation timeout never adds its owner's phase either.
+        // A later cancellation timeout never adds its owner's phase either,
+        // nor a later stop its source.
         assert_eq!(owner_phase(&first), None);
+        assert_eq!(stop_request_source(&first), None);
+
+        // The first not-found stop keeps its own first source; a later stop's
+        // identical report never replaces it.
+        let not_found = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+        let (stop, later_stop) = (
+            launch(not_found.clone(), "stop").await,
+            launch(not_found.clone(), "later-stop").await,
+        );
+        release_with(
+            stop,
+            Some(
+                Fence::stop_requested(
+                    CleanupFailure::TreeUnconfirmed,
+                    Some(TaskkillFailure::RequestedPidNotFound),
+                )
+                .requested_by(StopRequestSource::CancelIpc),
+            ),
+        )
+        .await;
+        release_with(later_stop, later_tree_stop()).await;
+        assert_eq!(
+            stop_request_source(&not_found),
+            Some(StopRequestSource::CancelIpc)
+        );
 
         // The first tree-only stop keeps its own taskkill failure.
         let tree = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
@@ -1449,12 +1687,13 @@ mod unix_tests {
             Some(TaskkillFailure::NonzeroExit(None).into())
         );
         // Its codeless exit has no root report, and the later stop's
-        // classified report never supplies one.
+        // classified report never supplies one, nor its source.
         assert_eq!(
             tree.fence_receipts()
                 .and_then(|receipts| receipts.windows_taskkill_root_report),
             None
         );
+        assert_eq!(stop_request_source(&tree), None);
 
         // A later stop never backfills a leg or taskkill failure onto an
         // earlier origin: another owner's outcome, a stop released before
@@ -1481,6 +1720,7 @@ mod unix_tests {
             assert_eq!(origin(&lifecycle), Some(earlier));
             assert_eq!(cleanup(&lifecycle), None, "{earlier:?}");
             assert_eq!(windows_taskkill(&lifecycle), None, "{earlier:?}");
+            assert_eq!(stop_request_source(&lifecycle), None, "{earlier:?}");
             // Only the cancellation timeout records a phase: its own owner's,
             // unchanged by that owner's or a later stop's outcome.
             assert_eq!(
@@ -1968,7 +2208,7 @@ mod unix_tests {
         // RunEvent::Exit runs on the event-loop thread, outside the runtime.
         let exiting = lifecycle.clone();
         let confirmed = tokio::task::spawn_blocking(move || {
-            let (_, cleanups) = exiting.invalidate();
+            let (_, cleanups) = exiting.invalidate_for_exit();
             resolved_blocking(&cleanups, Duration::from_secs(10))
         })
         .await

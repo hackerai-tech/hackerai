@@ -11052,6 +11052,7 @@ describe("native authorization send receipt", () => {
         includeStreamFenceOrigin: true,
         includeStreamFenceCleanup: true,
         includeStreamFenceCancelWaitOwnerPhase: true,
+        includeStreamFenceStopRequestSource: true,
       });
       expect(calls[1]).not.toHaveProperty("includeStreamFenceOrigin");
       expect(calls[1]).not.toHaveProperty("includeStreamFenceCleanup");
@@ -11061,6 +11062,9 @@ describe("native authorization send receipt", () => {
       );
       expect(calls[1]).not.toHaveProperty(
         "includeStreamFenceCancelWaitOwnerPhase",
+      );
+      expect(calls[1]).not.toHaveProperty(
+        "includeStreamFenceStopRequestSource",
       );
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: "[object Object]" }),
@@ -11106,6 +11110,9 @@ describe("native authorization send receipt", () => {
         );
         expect(calls[0]).not.toHaveProperty(
           "includeStreamFenceCancelWaitOwnerPhase",
+        );
+        expect(calls[0]).not.toHaveProperty(
+          "includeStreamFenceStopRequestSource",
         );
         expect(sequencedFrames(replies[0])).toEqual([
           expect.objectContaining({ type: "error", message: stopUnconfirmed }),
@@ -11660,6 +11667,275 @@ describe("native authorization send receipt", () => {
             );
           },
         );
+
+        describe("first stop request source", () => {
+          const notFound = {
+            version: 2,
+            outcome: "nonzero_exit",
+            exitCode: 128,
+            rootReport: "requested_pid_not_found",
+          };
+          const notFoundGroup = {
+            ...treeGroup,
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+            desktop_stream_fence_windows_taskkill_exit_code: 128,
+            desktop_stream_fence_windows_taskkill_root_report_version: 1,
+            desktop_stream_fence_windows_taskkill_root_report:
+              "requested_pid_not_found",
+          };
+          // The opted-in shape: the v2 not-found receipt beside the closed
+          // first source, as Tauri delivers the command's JSON error.
+          const withSource = (
+            streamFenceStopRequestSource: unknown,
+            receipt: unknown = notFound,
+          ) => ({ ...withTaskkill(receipt), streamFenceStopRequestSource });
+          const sanitized = (properties: Record<string, unknown>) =>
+            sanitizeDesktopAckEvent({
+              ...finals()[0],
+              properties: { ...properties },
+            });
+
+          it.each(["cancel_ipc", "document_invalidation", "application_exit"])(
+            "offers Windows Desktop the opt-in and joins the %s source to its not-found report",
+            async (source) => {
+              const cwd = "C:\\Users\\PRIVATE-CWD\\project";
+              const { calls, replies } = await run(
+                () => Promise.reject(withSource({ version: 1, source })),
+                { version: "0.0.87", nativeOs: "windows", command: { cwd } },
+              );
+              expect(calls).toHaveLength(1);
+              expect(calls[0]).toMatchObject({
+                cmd: "execute_authorized_stream_command",
+                includeStreamFenceOrigin: true,
+                includeStreamFenceCleanup: true,
+                includeStreamFenceWindowsTaskkill: true,
+                includeStreamFenceWindowsTaskkillRootReport: true,
+                includeStreamFenceStopRequestSource: true,
+              });
+              expect(Object.keys(calls[0].message as object)).not.toContain(
+                "includeStreamFenceStopRequestSource",
+              );
+              // The product error is the exact original string, as one
+              // terminal.
+              expect(sequencedFrames(replies[0])).toEqual([
+                {
+                  type: "error",
+                  message: stopUnconfirmed,
+                  commandId: "auth-send",
+                  sequence: 0,
+                  outputProtocol: "ack-v1",
+                },
+              ]);
+              const expected = {
+                ...notFoundGroup,
+                desktop_stream_fence_stop_request_source_version: 1,
+                desktop_stream_fence_stop_request_source: source,
+              };
+              expect(finals()).toHaveLength(1);
+              const final = finals()[0];
+              expect(final.properties).toMatchObject({
+                outcome: "acknowledged",
+                terminalAcknowledged: true,
+                desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+                ...expected,
+              });
+              expect(fenceKeys(final.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const enriched = sanitizeDesktopAckEvent({
+                ...final,
+                properties: {
+                  ...final.properties,
+                  $current_url: "PRIVATE",
+                  cwd,
+                  command: "PRIVATE COMMAND",
+                  pid: 4242,
+                },
+                $set: { email: "PRIVATE" },
+              });
+              expect(enriched.properties).toMatchObject(expected);
+              expect(fenceKeys(enriched.properties)).toEqual(
+                Object.keys(expected),
+              );
+              expect(enriched.properties).not.toHaveProperty("pid");
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain("4242");
+              expect(serialized).not.toContain(authorizationId);
+              expect(serialized).not.toContain(stopUnconfirmed);
+              expect(serialized).not.toContain("streamFence");
+            },
+          );
+
+          it.each(["macos", "linux"])(
+            "never offers %s Desktop the opt-in or keeps a source it never requested",
+            async (nativeOs) => {
+              const native = withSource({ version: 1, source: "cancel_ipc" });
+              const { calls } = await run(() => Promise.reject(native), {
+                nativeOs,
+              });
+              expect(calls).toHaveLength(1);
+              // The existing opt-ins are unchanged.
+              expect(calls[0]).toMatchObject({
+                includeStreamFenceOrigin: true,
+                includeStreamFenceCleanup: true,
+                includeStreamFenceWindowsTaskkill: true,
+                includeStreamFenceWindowsTaskkillRootReport: true,
+              });
+              expect(calls[0]).not.toHaveProperty(
+                "includeStreamFenceStopRequestSource",
+              );
+              expect(finals()).toHaveLength(1);
+              const properties = finals()[0].properties;
+              expect(properties).toMatchObject(notFoundGroup);
+              expect(fenceKeys(properties)).toEqual(Object.keys(notFoundGroup));
+              const enriched = sanitized(properties);
+              expect(fenceKeys(enriched.properties)).toEqual(
+                Object.keys(notFoundGroup),
+              );
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("stop_request_source");
+              expect(serialized).not.toContain("cancel_ipc");
+            },
+          );
+
+          const sourceGetter = () =>
+            Object.defineProperty({ version: 1 }, "source", {
+              enumerable: true,
+              get: fail,
+            });
+          const unclassifiedGroup = {
+            ...notFoundGroup,
+            desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+          };
+          const v1Group = Object.fromEntries(
+            Object.entries(notFoundGroup).filter(
+              ([key]) => !key.includes("root_report"),
+            ),
+          );
+          // [case, native rejection, expected fence groups]
+          it.each<[string, () => unknown, Record<string, unknown>]>([
+            // A current frontend beside a native app without the sibling.
+            [
+              "an older native app's v2 receipt alone",
+              () => withTaskkill(notFound),
+              notFoundGroup,
+            ],
+            [
+              "a human action",
+              () => withSource({ version: 1, source: "user_clicked_stop" }),
+              notFoundGroup,
+            ],
+            [
+              "an unlisted source",
+              () => withSource({ version: 1, source: "PRIVATE" }),
+              notFoundGroup,
+            ],
+            [
+              "an extra PID",
+              () => withSource({ version: 1, source: "cancel_ipc", pid: 4242 }),
+              notFoundGroup,
+            ],
+            [
+              "an extra path",
+              () =>
+                withSource({
+                  version: 1,
+                  source: "cancel_ipc",
+                  cwd: "C:\\PRIVATE",
+                }),
+              notFoundGroup,
+            ],
+            [
+              "an unsupported version",
+              () => withSource({ version: 2, source: "cancel_ipc" }),
+              notFoundGroup,
+            ],
+            [
+              "a source getter",
+              () => withSource(sourceGetter()),
+              notFoundGroup,
+            ],
+            [
+              "a source beside an unclassified report",
+              () =>
+                withSource(
+                  { version: 1, source: "cancel_ipc" },
+                  { ...notFound, rootReport: "unclassified" },
+                ),
+              unclassifiedGroup,
+            ],
+            [
+              "a source beside a v1 receipt",
+              () =>
+                withSource(
+                  { version: 1, source: "cancel_ipc" },
+                  { version: 1, outcome: "nonzero_exit", exitCode: 128 },
+                ),
+              v1Group,
+            ],
+          ])(
+            "keeps the exact message and every earlier group for %s on Windows",
+            async (_case, native, expected) => {
+              const { calls, replies } = await run(
+                () => Promise.reject(native()),
+                { nativeOs: "windows" },
+              );
+              expect(calls[0]).toMatchObject({
+                includeStreamFenceWindowsTaskkillRootReport: true,
+                includeStreamFenceStopRequestSource: true,
+              });
+              expect(sequencedFrames(replies[0])).toEqual([
+                expect.objectContaining({
+                  type: "error",
+                  message: stopUnconfirmed,
+                  sequence: 0,
+                }),
+              ]);
+              expect(finals()).toHaveLength(1);
+              const properties = finals()[0].properties;
+              expect(properties).toMatchObject(expected);
+              expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+              const enriched = sanitized(properties);
+              expect(fenceKeys(enriched.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain("streamFence");
+              expect(serialized).not.toContain("stop_request_source");
+            },
+          );
+
+          it("drops every group when the rejection arrives after the connection is stopped", async () => {
+            let release!: () => void;
+            const pending = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            await run(
+              async () => {
+                await pending;
+                return Promise.reject(
+                  withSource({ version: 1, source: "cancel_ipc" }),
+                );
+              },
+              {
+                nativeOs: "windows",
+                beforeAck: async (bridge) => {
+                  await bridge.stop();
+                  release();
+                },
+              },
+            );
+            expect(finals()).toHaveLength(1);
+            expect(finals()[0].properties).toMatchObject({
+              outcome: "incomplete",
+              reason: "stopped",
+            });
+            expect(fenceKeys(finals()[0].properties)).toEqual([]);
+          });
+        });
       });
     });
 
@@ -11900,6 +12176,7 @@ describe("native authorization send receipt", () => {
         "includeStreamFenceWindowsTaskkill",
         "includeStreamFenceWindowsTaskkillRootReport",
         "includeStreamFenceCancelWaitOwnerPhase",
+        "includeStreamFenceStopRequestSource",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

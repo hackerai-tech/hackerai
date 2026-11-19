@@ -4137,6 +4137,179 @@ describe("invocation rejection message class", () => {
                 ),
               ).toEqual(Object.keys(stopOrigin));
             });
+
+            describe("stop request source pair", () => {
+              const sourcePair = {
+                desktop_stream_fence_stop_request_source_version: 1,
+                desktop_stream_fence_stop_request_source: "cancel_ipc",
+              } as const;
+              const reported = { ...treePairs, ...notFound } as const;
+
+              it.each([
+                "cancel_ipc",
+                "document_invalidation",
+                "application_exit",
+              ])(
+                "keeps the unsampled %s pair beside its not-found report through capture and before_send",
+                (source) => {
+                  jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+                  const expected = {
+                    ...reported,
+                    desktop_stream_fence_stop_request_source_version: 1,
+                    desktop_stream_fence_stop_request_source: source,
+                  };
+                  const final = settle({
+                    ...fenced,
+                    // Private extras on the same carrier never survive.
+                    streamFence: {
+                      ...expected,
+                      pid: 4242,
+                      cwd: "C:\\Users\\PRIVATE",
+                      elapsedMs: 987_654_321,
+                    },
+                  });
+                  expect(final?.properties).toMatchObject({
+                    ...expected,
+                    telemetry_sample_rate: 1,
+                  });
+                  expect(fenceKeys(final!.properties)).toEqual(
+                    Object.keys(expected),
+                  );
+                  const enriched = sanitize({
+                    ...final!.properties,
+                    pid: 4242,
+                    command: "PRIVATE",
+                  });
+                  expect(enriched).toMatchObject(expected);
+                  expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+                  expect(enriched).not.toHaveProperty("pid");
+                  const serialized = JSON.stringify([final, enriched]);
+                  expect(serialized).not.toContain("PRIVATE");
+                  expect(serialized).not.toContain("987654321");
+                },
+              );
+
+              it.each<[string, Record<string, unknown>]>([
+                [
+                  "a human action",
+                  {
+                    ...sourcePair,
+                    desktop_stream_fence_stop_request_source:
+                      "user_clicked_stop",
+                  },
+                ],
+                [
+                  "a private source",
+                  {
+                    ...sourcePair,
+                    desktop_stream_fence_stop_request_source: "PRIVATE",
+                  },
+                ],
+                [
+                  "an unsupported version",
+                  {
+                    ...sourcePair,
+                    desktop_stream_fence_stop_request_source_version: 2,
+                  },
+                ],
+                [
+                  "a missing version",
+                  { desktop_stream_fence_stop_request_source: "cancel_ipc" },
+                ],
+                [
+                  "a missing source",
+                  { desktop_stream_fence_stop_request_source_version: 1 },
+                ],
+              ])("drops only the source pair for %s", (_case, carried) => {
+                const final = settle({
+                  ...fenced,
+                  streamFence: { ...reported, ...carried },
+                });
+                expect(fenceKeys(final!.properties)).toEqual(
+                  Object.keys(reported),
+                );
+                expect(final?.properties).toMatchObject(reported);
+                expect(
+                  sanitize({ ...coarse, ...reported, ...carried }),
+                ).toEqual({ ...coarse, ...reported });
+              });
+
+              it.each<[string, Record<string, unknown>]>([
+                [
+                  "an unclassified report",
+                  {
+                    ...treePairs,
+                    ...withoutRoot,
+                    ...root,
+                    desktop_stream_fence_windows_taskkill_root_report:
+                      "unclassified",
+                  },
+                ],
+                ["a code without a report", { ...treePairs, ...withoutRoot }],
+                [
+                  "a not-found report beside exit 255",
+                  {
+                    ...reported,
+                    desktop_stream_fence_windows_taskkill_exit_code: 255,
+                  },
+                ],
+                [
+                  "another cleanup failure",
+                  {
+                    ...reported,
+                    desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+                  },
+                ],
+              ])(
+                "never reads or keeps the source pair beside %s",
+                (_case, carried) => {
+                  const kept = sanitize({ ...coarse, ...carried });
+                  expect(fenceKeys(kept)).not.toContain(
+                    "desktop_stream_fence_stop_request_source",
+                  );
+                  let reads = 0;
+                  const carrier = new Proxy(
+                    { ...carried, ...sourcePair },
+                    {
+                      getOwnPropertyDescriptor(target, key) {
+                        if (typeof key === "string" && key in sourcePair)
+                          reads++;
+                        return Reflect.getOwnPropertyDescriptor(target, key);
+                      },
+                    },
+                  );
+                  const final = settle({ ...fenced, streamFence: carrier });
+                  expect(fenceKeys(final!.properties)).toEqual(fenceKeys(kept));
+                  expect(
+                    sanitize({ ...coarse, ...carried, ...sourcePair }),
+                  ).toEqual(kept);
+                  expect(reads).toBe(0);
+                },
+              );
+
+              it("never keeps the pair on an unacknowledged terminal", () => {
+                const final = settle({
+                  ...fenced,
+                  outcome: "incomplete",
+                  reason: "deadline_exceeded",
+                  terminalAcknowledged: false,
+                  streamFence: { ...reported, ...sourcePair },
+                });
+                expect(fenceKeys(final!.properties)).toEqual(
+                  Object.keys(stopOrigin),
+                );
+                expect(
+                  fenceKeys(
+                    sanitize({
+                      ...coarse,
+                      terminalAcknowledged: false,
+                      ...reported,
+                      ...sourcePair,
+                    }),
+                  ),
+                ).toEqual(Object.keys(stopOrigin));
+              });
+            });
           });
 
           it("never keeps the group on an unacknowledged terminal", () => {

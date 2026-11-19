@@ -558,6 +558,23 @@ function knownRootReport(
     : known;
 }
 
+/** Only this root report can carry its stop request's first source. */
+const STREAM_FENCE_STOP_REQUEST_SOURCE_ROOT_REPORT = "requested_pid_not_found";
+
+/** A closed class of the native call path that first asked the owner, whose
+ * `requested_pid_not_found` stop then set the fence, to stop: the cancel IPC,
+ * a page generation invalidation (a committed document or a lost web
+ * process), or normal application exit. It names the Rust caller only: never
+ * a human action, the process, a PID, a resource or a time. */
+const STREAM_FENCE_STOP_REQUEST_SOURCES = [
+  "cancel_ipc",
+  "document_invalidation",
+  "application_exit",
+] as const;
+
+export type DesktopStreamFenceStopRequestSource =
+  (typeof STREAM_FENCE_STOP_REQUEST_SOURCES)[number];
+
 /** Only this origin can carry its matched owner's phase. */
 const STREAM_FENCE_OWNER_PHASE_ORIGIN = "cancel_wait_timeout";
 
@@ -650,8 +667,10 @@ const STREAM_FENCE_REJECTION_KEYS = ["message", "streamFence"] as const;
 const STREAM_FENCE_CLEANUP_KEY = "streamFenceCleanup";
 const STREAM_FENCE_TASKKILL_KEY = "streamFenceWindowsTaskkill";
 const STREAM_FENCE_OWNER_PHASE_KEY = "streamFenceCancelWaitOwnerPhase";
+const STREAM_FENCE_STOP_REQUEST_SOURCE_KEY = "streamFenceStopRequestSource";
 const STREAM_FENCE_ORIGIN_KEYS = ["version", "origin"] as const;
 const STREAM_FENCE_OWNER_PHASE_KEYS = ["version", "phase"] as const;
+const STREAM_FENCE_STOP_REQUEST_SOURCE_KEYS = ["version", "source"] as const;
 const STREAM_FENCE_CLEANUP_KEYS = ["version", "failure"] as const;
 const STREAM_FENCE_TASKKILL_KEYS = ["version", "outcome"] as const;
 const STREAM_FENCE_TASKKILL_CODE_KEYS = [
@@ -677,6 +696,23 @@ export interface NativeStreamFenceRejection {
   /** Present only beside a `cancel_wait_timeout` origin, for the closed v1
    * `streamFenceCancelWaitOwnerPhase` sibling. */
   readonly cancelWaitOwnerPhase?: DesktopStreamFenceCancelWaitOwnerPhase;
+  /** Present only beside a v2 `requested_pid_not_found` taskkill receipt, for
+   * the closed v1 `streamFenceStopRequestSource` sibling. */
+  readonly stopRequestSource?: DesktopStreamFenceStopRequestSource;
+}
+
+/** The closed v1 stop request source in `receipt`, or null. Never throws. */
+function parseStreamFenceStopRequestSource(
+  receipt: unknown,
+): DesktopStreamFenceStopRequestSource | null {
+  const values = readClosedOwnData(
+    receipt,
+    STREAM_FENCE_STOP_REQUEST_SOURCE_KEYS,
+  );
+  return values?.[0] === 1
+    ? (STREAM_FENCE_STOP_REQUEST_SOURCES.find((known) => known === values[1]) ??
+        null)
+    : null;
 }
 
 /** The closed v1 owner phase in `receipt`, or null. Never throws. */
@@ -752,7 +788,11 @@ function parseStreamFenceCleanup(
  * `streamFenceCancelWaitOwnerPhase` sibling, `{ version: 1, phase }` with a
  * listed phase, is read only beside a `cancel_wait_timeout` origin; a
  * malformed one, or one beside any other origin, keeps the exact message and
- * origin. Never throws; a getter never runs. */
+ * origin. Likewise a `streamFenceStopRequestSource` sibling,
+ * `{ version: 1, source }` with a listed source, is read only beside a parsed
+ * v2 `requested_pid_not_found` taskkill receipt; a malformed one, or one
+ * beside anything else, keeps every other parsed receipt. Never throws; a
+ * getter never runs. */
 export function parseNativeStreamFenceRejection(
   error: unknown,
 ): NativeStreamFenceRejection | null {
@@ -761,13 +801,16 @@ export function parseNativeStreamFenceRejection(
   const taskkillSibling =
     sibling && own?.includes(STREAM_FENCE_TASKKILL_KEY) === true;
   const phaseSibling = own?.includes(STREAM_FENCE_OWNER_PHASE_KEY) === true;
+  const sourceSibling =
+    own?.includes(STREAM_FENCE_STOP_REQUEST_SOURCE_KEY) === true;
   if (
     !own ||
     own.length !==
       STREAM_FENCE_REJECTION_KEYS.length +
         (sibling ? 1 : 0) +
         (taskkillSibling ? 1 : 0) +
-        (phaseSibling ? 1 : 0) ||
+        (phaseSibling ? 1 : 0) +
+        (sourceSibling ? 1 : 0) ||
     !STREAM_FENCE_REJECTION_KEYS.every((key) => own.includes(key))
   )
     return null;
@@ -801,12 +844,22 @@ export function parseNativeStreamFenceRejection(
           ])?.[0],
         )
       : null;
+  const stopRequestSource =
+    sourceSibling &&
+    windowsTaskkill?.rootReport === STREAM_FENCE_STOP_REQUEST_SOURCE_ROOT_REPORT
+      ? parseStreamFenceStopRequestSource(
+          readOwnDataValues(error as object, [
+            STREAM_FENCE_STOP_REQUEST_SOURCE_KEY,
+          ])?.[0],
+        )
+      : null;
   return Object.freeze({
     message: STOP_UNCONFIRMED_MESSAGE,
     origin,
     ...(cleanupFailure && { cleanupFailure }),
     ...(windowsTaskkill && { windowsTaskkill }),
     ...(cancelWaitOwnerPhase && { cancelWaitOwnerPhase }),
+    ...(stopRequestSource && { stopRequestSource }),
   });
 }
 
@@ -829,6 +882,10 @@ interface DesktopStreamFenceWindowsTaskkillGroup {
    * only beside the not-found code. */
   readonly desktop_stream_fence_windows_taskkill_root_report_version?: 1;
   readonly desktop_stream_fence_windows_taskkill_root_report?: DesktopStreamFenceWindowsTaskkillRootReport;
+  /** The first stop request source pair, only beside the
+   * `requested_pid_not_found` root report. */
+  readonly desktop_stream_fence_stop_request_source_version?: 1;
+  readonly desktop_stream_fence_stop_request_source?: DesktopStreamFenceStopRequestSource;
 }
 
 interface NoStreamFenceWindowsTaskkillGroup {
@@ -837,6 +894,8 @@ interface NoStreamFenceWindowsTaskkillGroup {
   readonly desktop_stream_fence_windows_taskkill_exit_code?: never;
   readonly desktop_stream_fence_windows_taskkill_root_report_version?: never;
   readonly desktop_stream_fence_windows_taskkill_root_report?: never;
+  readonly desktop_stream_fence_stop_request_source_version?: never;
+  readonly desktop_stream_fence_stop_request_source?: never;
 }
 
 interface DesktopStreamFenceOwnerPhaseGroup {
@@ -851,8 +910,9 @@ interface NoStreamFenceOwnerPhaseGroup {
 
 /** The fence origin pair, only beside `owner_stop_requested` the complete
  * cleanup pair, only beside its `tree_unconfirmed` failure the complete
- * Windows taskkill group, and only beside `cancel_wait_timeout` the complete
- * owner phase pair. */
+ * Windows taskkill group, with the stop request source pair only beside its
+ * `requested_pid_not_found` report, and only beside `cancel_wait_timeout` the
+ * complete owner phase pair. */
 export type DesktopStreamFenceDiagnostic = DesktopStreamFenceOriginGroup &
   (
     | (DesktopStreamFenceCleanupGroup &
@@ -891,6 +951,11 @@ const STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES = [
   "desktop_stream_fence_windows_taskkill_root_report",
 ] as const satisfies readonly (keyof DesktopStreamFenceWindowsTaskkillGroup)[];
 
+const STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES = [
+  "desktop_stream_fence_stop_request_source_version",
+  "desktop_stream_fence_stop_request_source",
+] as const satisfies readonly (keyof DesktopStreamFenceWindowsTaskkillGroup)[];
+
 const STREAM_FENCE_OWNER_PHASE_PROPERTIES = [
   "desktop_stream_fence_cancel_wait_owner_phase_version",
   "desktop_stream_fence_cancel_wait_owner_phase",
@@ -904,6 +969,7 @@ export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
   ...STREAM_FENCE_TASKKILL_PROPERTIES,
   STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
   ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
+  ...STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES,
   ...STREAM_FENCE_OWNER_PHASE_PROPERTIES,
 ]);
 
@@ -966,9 +1032,11 @@ function refinesStopUnconfirmed(
  * failure; any other failure value leaves the origin pair alone. Only its
  * `tree_unconfirmed` failure adds the complete taskkill group, for a listed
  * outcome and valid code; anything else leaves both pairs alone. Only that
- * code adds a valid root report's pair; an invalid one drops alone. Only a
- * `cancel_wait_timeout` origin adds the complete owner phase pair, for a
- * listed phase; any other value leaves the origin pair alone. */
+ * code adds a valid root report's pair; an invalid one drops alone. Only that
+ * report's `requested_pid_not_found` class adds a listed stop request
+ * source's pair; an invalid one drops alone. Only a `cancel_wait_timeout`
+ * origin adds the complete owner phase pair, for a listed phase; any other
+ * value leaves the origin pair alone. */
 export function desktopStreamFenceDiagnostic(
   rejection: DesktopInvocationRejectionDiagnostic | null,
   unknown: DesktopInvocationUnknownDiagnostic | null,
@@ -976,6 +1044,7 @@ export function desktopStreamFenceDiagnostic(
   cleanupFailure: unknown = null,
   windowsTaskkill: UncheckedWindowsTaskkill | null = null,
   cancelWaitOwnerPhase: unknown = null,
+  stopRequestSource: unknown = null,
 ): DesktopStreamFenceDiagnostic | null {
   if (!refinesStopUnconfirmed(rejection, unknown)) return null;
   const known = STREAM_FENCE_ORIGINS.find((value) => value === origin);
@@ -1010,6 +1079,13 @@ export function desktopStreamFenceDiagnostic(
           windowsTaskkill.rootReport,
         )
       : null;
+  const source =
+    taskkill?.desktop_stream_fence_windows_taskkill_root_report ===
+    STREAM_FENCE_STOP_REQUEST_SOURCE_ROOT_REPORT
+      ? STREAM_FENCE_STOP_REQUEST_SOURCES.find(
+          (value) => value === stopRequestSource,
+        )
+      : undefined;
   const pair = {
     desktop_stream_fence_version: 1,
     desktop_stream_fence_origin: known,
@@ -1020,7 +1096,19 @@ export function desktopStreamFenceDiagnostic(
     desktop_stream_fence_cleanup_version: 1,
     desktop_stream_fence_cleanup_failure: failure,
   } as const;
-  return Object.freeze(taskkill ? { ...cleanup, ...taskkill } : cleanup);
+  return Object.freeze(
+    taskkill
+      ? {
+          ...cleanup,
+          ...taskkill,
+          ...(source &&
+            ({
+              desktop_stream_fence_stop_request_source_version: 1,
+              desktop_stream_fence_stop_request_source: source,
+            } as const)),
+        }
+      : cleanup,
+  );
 }
 
 /** Own data values of `keys` on any property bag; a missing key or accessor
@@ -1043,10 +1131,12 @@ function ownDataValuesOrUndefined(
  * one drops alone. The taskkill group is read only beside a validated
  * `tree_unconfirmed` cleanup pair, and an invalid one, including a code beside
  * `output_error` or an accessor code, drops alone. The root report pair is
- * read only beside a validated code, and an invalid one drops alone. The
- * owner phase pair is read only beside a validated `cancel_wait_timeout`
- * origin on an acknowledged terminal, and an invalid one drops alone. A getter
- * never runs; a throwing proxy reads as nothing. */
+ * read only beside a validated code, and an invalid one drops alone. The stop
+ * request source pair is read only beside a validated
+ * `requested_pid_not_found` report from the same snapshot, and an invalid one
+ * drops alone. The owner phase pair is read only beside a validated
+ * `cancel_wait_timeout` origin on an acknowledged terminal, and an invalid one
+ * drops alone. A getter never runs; a throwing proxy reads as nothing. */
 export function readDesktopStreamFenceDiagnostic(
   source: unknown,
   rejection: DesktopInvocationRejectionDiagnostic | null,
@@ -1156,6 +1246,9 @@ export function readDesktopStreamFenceDiagnostic(
   // drops alone.
   const exitCode = taskkill.desktop_stream_fence_windows_taskkill_exit_code;
   if (exitCode === undefined) return taskkill;
+  const taskkillOutcome =
+    taskkill.desktop_stream_fence_windows_taskkill_outcome;
+  let reported: DesktopStreamFenceDiagnostic;
   try {
     const [version, rootReport] = ownDataValuesOrUndefined(
       source,
@@ -1171,25 +1264,61 @@ export function readDesktopStreamFenceDiagnostic(
     ]);
     if (
       taskkillVersion !== 1 ||
-      outcome !== taskkill.desktop_stream_fence_windows_taskkill_outcome ||
+      outcome !== taskkillOutcome ||
       code !== exitCode
     )
       return taskkill;
-    return (
+    reported =
       desktopStreamFenceDiagnostic(
         rejection,
         unknown,
         taskkill.desktop_stream_fence_origin,
         taskkill.desktop_stream_fence_cleanup_failure,
-        {
-          outcome: taskkill.desktop_stream_fence_windows_taskkill_outcome,
-          exitCode,
-          rootReport,
-        },
-      ) ?? taskkill
-    );
+        { outcome: taskkillOutcome, exitCode, rootReport },
+      ) ?? taskkill;
   } catch {
     return taskkill;
+  }
+  // The stop request source pair is read only beside a validated
+  // `requested_pid_not_found` report, and an invalid one drops alone.
+  const rootReport = reported.desktop_stream_fence_windows_taskkill_root_report;
+  if (rootReport !== STREAM_FENCE_STOP_REQUEST_SOURCE_ROOT_REPORT)
+    return reported;
+  try {
+    const [version, stopRequestSource] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES,
+    );
+    if (version !== 1) return reported;
+    // The source joins only the taskkill and report snapshot validated
+    // above; one that changed meanwhile keeps only that earlier snapshot.
+    const [taskkillVersion, outcome, code, reportVersion, report] =
+      ownDataValuesOrUndefined(source, [
+        ...STREAM_FENCE_TASKKILL_PROPERTIES,
+        STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
+        ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
+      ]);
+    if (
+      taskkillVersion !== 1 ||
+      outcome !== taskkillOutcome ||
+      code !== exitCode ||
+      reportVersion !== 1 ||
+      report !== rootReport
+    )
+      return reported;
+    return (
+      desktopStreamFenceDiagnostic(
+        rejection,
+        unknown,
+        reported.desktop_stream_fence_origin,
+        reported.desktop_stream_fence_cleanup_failure,
+        { outcome: taskkillOutcome, exitCode, rootReport },
+        null,
+        stopRequestSource,
+      ) ?? reported
+    );
+  } catch {
+    return reported;
   }
 }
 
