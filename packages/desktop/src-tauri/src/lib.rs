@@ -10,6 +10,7 @@ mod file_acl_tests;
 mod file_read_tests;
 mod file_save;
 mod lifecycle_diagnostics;
+mod notifications;
 mod platform;
 mod pty;
 mod stream_lifecycle;
@@ -4331,7 +4332,9 @@ pub fn run() {
             execute_authorized_pty_input,
             execute_authorized_pty_resize,
             execute_authorized_pty_kill,
-            execute_pty_kill
+            execute_pty_kill,
+            notifications::agent_notification_permission,
+            notifications::show_agent_input_notification
         ]))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
@@ -4384,6 +4387,7 @@ pub fn run() {
             ));
             #[cfg(target_os = "linux")]
             watch_linux_web_process(app);
+            notifications::init(app.handle());
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
