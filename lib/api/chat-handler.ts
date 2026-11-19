@@ -78,6 +78,7 @@ import {
   getPaidDailyFreeAllowanceStatus,
   hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
+  prepareQaSetupUsageSettlement,
   recordPaidDailyFreeAllowanceCost,
   recordFreeMonthlyCost,
   replaceUsageSettlementState,
@@ -936,7 +937,7 @@ export const createChatHandler = () => {
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
-          // Assigned before any parallel title work starts.
+          // Starts with setup cost, then switches to final stream settlement.
           let settleFailedQaRequest: (() => Promise<void>) | undefined;
           try {
             const usageTracker = new UsageTracker();
@@ -1113,6 +1114,17 @@ export const createChatHandler = () => {
                 },
               });
             };
+
+            settleFailedQaRequest = prepareQaSetupUsageSettlement({
+              userId,
+              subscription,
+              rateLimitInfo,
+              usageRefundTracker,
+              usageSettlementId: usageTracker.usageSettlementId,
+              measureCostDollars: async () =>
+                usageTracker.computeCostDollars(selectedModel) +
+                (await getSandboxSessionUsage()).totalCostDollars,
+            });
 
             let sandboxContext: string | null = null;
             let sandboxFallbackReminder: string | null = null;
@@ -1682,7 +1694,6 @@ export const createChatHandler = () => {
             // runner's) wait for this request's single settlement, which
             // prices that cost and releases only the unused reservation.
             if (rateLimitInfo.qaSpendPool) {
-              usageRefundTracker.deferRefundsToSettlement();
               settleFailedQaRequest = deductAccumulatedUsage;
               titlePromise = startTitleGeneration();
             }

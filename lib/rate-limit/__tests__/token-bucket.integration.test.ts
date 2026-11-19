@@ -2737,7 +2737,12 @@ describe("routine QA spending pool", () => {
   };
 
   const loadModule = () => {
-    let isolated: typeof import("../token-bucket");
+    let isolated: typeof import("../token-bucket") &
+      Pick<
+        typeof import("../usage-settlement"),
+        "prepareQaSetupUsageSettlement"
+      > &
+      Pick<typeof import("../refund"), "UsageRefundTracker">;
     jest.isolateModules(() => {
       jest.doMock("../paid-bucket", () => ({
         limitPaidBucket: fakeLimitPaidBucket,
@@ -2752,7 +2757,11 @@ describe("routine QA spending pool", () => {
         deductFromTeamBalance: mockDeductFromTeamBalance,
         refundToTeamBalance: mockRefundToTeamBalance,
       }));
-      isolated = require("../token-bucket");
+      isolated = {
+        ...require("../token-bucket"),
+        ...require("../usage-settlement"),
+        ...require("../refund"),
+      };
     });
     return isolated!;
   };
@@ -2913,6 +2922,48 @@ describe("routine QA spending pool", () => {
     expect(store.get(customerKey(QA_USER))!.tokens).toBe(0);
     expectNoWalletActivity();
   });
+
+  it.each([
+    [0, 0],
+    [0.02, 260],
+  ])(
+    "settles failed QA attachment setup at $%s of measured cost",
+    async (costDollars, expectedDebit) => {
+      const {
+        checkTokenBucketLimit,
+        prepareQaSetupUsageSettlement,
+        UsageRefundTracker,
+      } = loadModule();
+      const admission = await checkTokenBucketLimit(
+        QA_USER,
+        "pro",
+        ESTIMATED_INPUT_TOKENS,
+      );
+      const tracker = new UsageRefundTracker();
+      tracker.setUser(QA_USER, "pro");
+      tracker.recordDeductions(admission);
+      const measureCostDollars = jest.fn(async () => costDollars);
+      const settle = prepareQaSetupUsageSettlement({
+        userId: QA_USER,
+        subscription: "pro",
+        rateLimitInfo: admission,
+        usageRefundTracker: tracker,
+        usageSettlementId: "failed-attachment",
+        measureCostDollars,
+      })!;
+
+      // The attachment error's immediate cleanup must wait for measured cost.
+      await tracker.refund();
+      expect(store.get(PREVIEW_POOL)!.tokens).toBe(
+        CAP_POINTS - ESTIMATED_POINTS,
+      );
+      await Promise.all([settle(), settle()]);
+      await tracker.refund();
+      expect(measureCostDollars).toHaveBeenCalledTimes(1);
+      expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - expectedDebit);
+      expectNoWalletActivity();
+    },
+  );
 
   it("preserves a QA debit when its response is lost and final settlement runs", async () => {
     const { checkTokenBucketLimit, deductUsage, deductUsageDelta } =

@@ -1,6 +1,8 @@
-import type { RateLimitInfo } from "@/types";
+import type { RateLimitInfo, SubscriptionTier } from "@/types";
+import type { UsageRefundTracker } from "./refund";
 import {
   billableCostDollarsToPoints,
+  deductUsage,
   extraUsagePointsToIncludedPoints,
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
@@ -125,4 +127,61 @@ export const replaceUsageSettlementState = (
   state.usageDeductionFailureReason = state.usageDeductionOutcomeUnknown
     ? "deduction_failed"
     : cumulativeResult.usageDeductionFailureReason;
+};
+
+/** Measure and settle a failed QA setup before releasing its reservation. */
+export const prepareQaSetupUsageSettlement = ({
+  userId,
+  subscription,
+  rateLimitInfo,
+  usageRefundTracker,
+  usageSettlementId,
+  measureCostDollars,
+}: {
+  userId: string;
+  subscription: SubscriptionTier;
+  rateLimitInfo: RateLimitInfo;
+  usageRefundTracker: UsageRefundTracker;
+  usageSettlementId: string;
+  measureCostDollars: () => Promise<number>;
+}): (() => Promise<void>) | undefined => {
+  const { qaSpendPool, resetTime } = rateLimitInfo;
+  if (!qaSpendPool) return;
+
+  usageRefundTracker.deferRefundsToSettlement();
+  const settle = async () => {
+    const costDollars = await measureCostDollars();
+    if (!Number.isFinite(costDollars) || costDollars < 0) {
+      throw new Error("QA setup cost could not be measured");
+    }
+    if (costDollars === 0) {
+      const refund = await usageRefundTracker.refundWithResult();
+      if (refund.status === "failed") {
+        throw new Error("QA setup reservation could not be released");
+      }
+      return;
+    }
+    const deduction = await deductUsage(
+      userId,
+      subscription,
+      0,
+      0,
+      0,
+      undefined,
+      costDollars,
+      undefined,
+      0,
+      undefined,
+      rateLimitInfo,
+      undefined,
+      usageSettlementId,
+      qaSpendPool,
+      resetTime.getTime(),
+    );
+    if (deduction.usageDeductionFailed) {
+      throw new Error("QA setup usage could not be fully settled");
+    }
+  };
+  let settlement: Promise<void> | undefined;
+  return () => (settlement ??= settle());
 };

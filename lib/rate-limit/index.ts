@@ -97,6 +97,7 @@ export {
   createUsageSettlementState,
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,
+  prepareQaSetupUsageSettlement,
   shouldSettleUsageMidRun,
   replaceUsageSettlementState,
   type UsageSettlementState,

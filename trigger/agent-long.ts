@@ -154,6 +154,7 @@ import {
   getPaidDailyFreeAllowanceStatus,
   hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
+  prepareQaSetupUsageSettlement,
   recordPaidDailyFreeAllowanceCost,
   recordFreeMonthlyCost,
   replaceUsageSettlementState,
@@ -3319,6 +3320,17 @@ export const agentLongTask = task({
                 }),
               },
             );
+            settleFailedQaRequest = prepareQaSetupUsageSettlement({
+              userId,
+              subscription,
+              rateLimitInfo,
+              usageRefundTracker,
+              usageSettlementId: usageTracker.usageSettlementId,
+              measureCostDollars: async () =>
+                usageTracker.computeCostDollars(selectedModel) +
+                (await getSandboxSessionUsage()).totalCostDollars +
+                getTriggerRunUsage().totalCostDollars,
+            });
             const tools = baseTools;
             const getToolsForModel = getBaseToolsForModel;
             finishE2BIdleLeaseRelease = async () => {
@@ -3965,7 +3977,6 @@ export const agentLongTask = task({
             };
 
             if (rateLimitInfo.qaSpendPool) {
-              usageRefundTracker.deferRefundsToSettlement();
               settleFailedQaRequest = deductAccumulatedUsage;
               titlePromise = startTitleGeneration();
             }

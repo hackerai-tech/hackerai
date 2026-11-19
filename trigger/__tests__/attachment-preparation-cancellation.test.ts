@@ -83,6 +83,21 @@ it.each([
         userStopSignal.signal.reason,
       ),
     ).resolves.toBeUndefined();
+    if (qa) {
+      // The catch executes the supplied settlement in isolation. Also check
+      // that the live handler installs it before it can start a sandbox.
+      const source = fs.readFileSync(
+        path.resolve(__dirname, "../..", file),
+        "utf8",
+      );
+      const settlementSetup = source.indexOf(
+        "settleFailedQaRequest = prepareQaSetupUsageSettlement(",
+      );
+      expect(settlementSetup).toBeGreaterThan(-1);
+      expect(settlementSetup).toBeLessThan(
+        source.indexOf("prepareSandboxContextForPrompt("),
+      );
+    }
     if (file === "trigger/agent-long.ts") {
       expect(deps.runReporting.fail).toHaveBeenCalledWith(
         userStopSignal.signal.reason,
