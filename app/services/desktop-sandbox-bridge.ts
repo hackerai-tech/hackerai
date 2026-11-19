@@ -35,9 +35,11 @@ import {
   nativeAuthorizationMitigationDiagnostic,
   nativeAuthorizationResponseDiagnostic,
   nativeAuthorizationResponseReadDiagnostic,
+  nativeAuthorizationResponseReadTimingDiagnostic,
   nativeAuthorizationTransportDiagnostic,
   parseNativeAuthorizationResponseMitigation,
   parseNativeAuthorizationResponseRead,
+  parseNativeAuthorizationResponseReadTiming,
   parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendConnector,
@@ -46,6 +48,7 @@ import {
   parseNativeAuthorizationSendTransport,
   type NativeAuthorizationResponseMitigation,
   type NativeAuthorizationResponseRead,
+  type NativeAuthorizationResponseReadTiming,
   type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
   type NativeAuthorizationSendConnector,
@@ -1560,6 +1563,7 @@ export class DesktopSandboxBridge {
     let responseOpen = true;
     let mitigationOpen = true;
     let responseReadOpen = true;
+    let responseReadTimingOpen = true;
     let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
     let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
       null;
@@ -1577,6 +1581,7 @@ export class DesktopSandboxBridge {
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
     let responseRead: NativeAuthorizationResponseRead | null = null;
+    let responseReadTiming: NativeAuthorizationResponseReadTiming | null = null;
     let invocationRejected = false;
     // The stream keeps only the first terminal it is handed, so the kind
     // latches with it, synchronously before append can settle. A later
@@ -1622,6 +1627,7 @@ export class DesktopSandboxBridge {
         responseOpen = false;
         mitigationOpen = false;
         responseReadOpen = false;
+        responseReadTimingOpen = false;
         terminalLatched = true;
         const streamFence =
           terminalErrorKind === "invocation_rejected"
@@ -1685,6 +1691,19 @@ export class DesktopSandboxBridge {
                   responseReceipt.approval === "json_error" && {
                     nativeAuthorizationResponseRead:
                       nativeAuthorizationResponseReadDiagnostic(responseRead),
+                    // Only this invocation's classified read timeout.
+                    ...(responseReadTiming &&
+                      responseRead.kind === "timeout" &&
+                      terminalErrorKind === "invocation_rejected" &&
+                      invocationRejection?.desktop_invocation_rejection_reason ===
+                        "authorization_response_invalid" &&
+                      invocationRejection?.desktop_invocation_rejection_adapter ===
+                        "authorized_native" && {
+                        nativeAuthorizationResponseReadTiming:
+                          nativeAuthorizationResponseReadTimingDiagnostic(
+                            responseReadTiming,
+                          ),
+                      }),
                   }),
               }),
           },
@@ -1703,6 +1722,7 @@ export class DesktopSandboxBridge {
     let ioChannel: object | undefined;
     let connectorChannel: object | undefined;
     let responseReadChannel: object | undefined;
+    let responseReadTimingChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1829,6 +1849,22 @@ export class DesktopSandboxBridge {
             responseReadChannel = undefined;
           }
         }
+        // A read timing is only ever reported with a timeout read snapshot.
+        if (responseReadChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!responseReadTimingOpen) return;
+              responseReadTimingOpen = false;
+              if (receiptFenced()) return;
+              responseReadTiming =
+                parseNativeAuthorizationResponseReadTiming(value);
+            };
+            responseReadTimingChannel = channel;
+          } catch {
+            responseReadTimingChannel = undefined;
+          }
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1884,6 +1920,11 @@ export class DesktopSandboxBridge {
               }),
               ...(responseReadChannel && {
                 onAuthorizationResponseReadDiagnostic: responseReadChannel,
+              }),
+              // An older native app ignores it and sends no timing.
+              ...(responseReadTimingChannel && {
+                onAuthorizationResponseReadTimingDiagnostic:
+                  responseReadTimingChannel,
               }),
               // Outside the signed message; never sent to a legacy command.
               // The cleanup opt-in is only ever offered with the origin one,
@@ -1999,6 +2040,7 @@ export class DesktopSandboxBridge {
         ioChannel,
         connectorChannel,
         responseReadChannel,
+        responseReadTimingChannel,
       ]) {
         try {
           (

@@ -1114,11 +1114,13 @@ async fn redeem_authorized_message<R: tauri::Runtime>(
         >,
         None::<fn(authorization_connector_diagnostics::ConnectorPhaseSnapshot)>,
         None::<fn(authorization_response_diagnostics::ResponseReadSnapshot)>,
+        None::<fn(authorization_response_diagnostics::ResponseReadTiming)>,
     )
     .await
 }
 
-async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H, I>(
+#[allow(clippy::too_many_arguments)]
+async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H, I, J>(
     authorization_id: &str,
     mut message: serde_json::Value,
     window: &tauri::WebviewWindow<R>,
@@ -1126,6 +1128,7 @@ async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H, I>(
     response_rejection_observer: Option<G>,
     connector_phase_observer: Option<H>,
     response_read_observer: Option<I>,
+    response_read_timing_observer: Option<J>,
 ) -> Result<serde_json::Value, String>
 where
     F: FnOnce(
@@ -1139,7 +1142,9 @@ where
     ),
     H: FnOnce(authorization_connector_diagnostics::ConnectorPhaseSnapshot),
     I: FnOnce(authorization_response_diagnostics::ResponseReadSnapshot),
+    J: FnOnce(authorization_response_diagnostics::ResponseReadTiming),
 {
+    use authorization_response_diagnostics::ResponseReadClock;
     if authorization_id.len() != 64
         || !authorization_id
             .bytes()
@@ -1177,15 +1182,25 @@ where
         send_failure_observer,
         connector_phase,
     );
+    // Read only with the timing, response and read observers; otherwise no
+    // clock is read at all.
+    let read_clock = ResponseReadClock::start(
+        &response_rejection_observer,
+        &response_read_observer,
+        response_read_timing_observer,
+    );
     let response =
         authorization_send_diagnostics::observed_send(request, origin_class, send_failure_observer)
             .await
             .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
+    // Only a successful send has headers to time.
+    let read_timing = read_clock.map(ResponseReadClock::headers_received);
     authorization_response_diagnostics::observed_approval(
         response,
         origin_class,
         response_rejection_observer,
         response_read_observer,
+        read_timing,
     )
     .await?;
     Ok(message)
@@ -1416,6 +1431,10 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     on_authorization_connector_diagnostic: Option<serde_json::Value>,
     // Independent optional channel for typed JSON response-read failures.
     on_authorization_response_read_diagnostic: Option<serde_json::Value>,
+    // A read timeout's send-to-headers and read durations, on its own channel
+    // so the read snapshot's shape is frozen. Used only beside the response
+    // and read channels.
+    on_authorization_response_read_timing_diagnostic: Option<serde_json::Value>,
     // Only literal `true` opts in to the fence origin beside the exact fence
     // rejection; anything else keeps every rejection an exact string.
     include_stream_fence_origin: Option<serde_json::Value>,
@@ -1487,6 +1506,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             ))?,
             on_authorization_response_read_diagnostic: CommandArg::from_command(item(
                 "onAuthorizationResponseReadDiagnostic",
+            ))?,
+            on_authorization_response_read_timing_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationResponseReadTimingDiagnostic",
             ))?,
             include_stream_fence_origin: CommandArg::from_command(item(
                 "includeStreamFenceOrigin",
@@ -1632,7 +1654,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
 ) -> Result<(), tauri::ipc::InvokeError> {
     use authorization_connector_diagnostics::ConnectorPhaseSnapshot;
     use authorization_response_diagnostics::{
-        ResponseMitigationReceipt, ResponseReadSnapshot, ResponseRejectionReceipt,
+        ResponseMitigationReceipt, ResponseReadSnapshot, ResponseReadTiming,
+        ResponseRejectionReceipt,
     };
     use authorization_send_diagnostics::{
         SendFailureCause, SendFailureReceipt, SendIoSupplement, SendTransportDetail,
@@ -1652,6 +1675,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_authorization_io_diagnostic,
         on_authorization_connector_diagnostic,
         on_authorization_response_read_diagnostic,
+        on_authorization_response_read_timing_diagnostic,
         include_stream_fence_origin,
         include_stream_fence_cleanup,
         include_stream_fence_windows_taskkill,
@@ -1666,6 +1690,9 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     let mitigation_channel =
         authorization_diagnostic_channel_id(on_authorization_mitigation_diagnostic)
             .map(|id| id.channel_on::<R, ResponseMitigationReceipt>(webview()));
+    // The read timing joins the response receipt itself, never a
+    // mitigation marker alone.
+    let has_response_channel = response_channel.is_some();
     // Either channel alone is enough; each send fails on its own.
     let response_rejection_observer = (response_channel.is_some() || mitigation_channel.is_some())
         .then(|| {
@@ -1715,14 +1742,27 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
                     let _ = channel.send(snapshot);
                 }
             });
-    let response_read_observer =
+    let response_read_channel =
         authorization_diagnostic_channel_id(on_authorization_response_read_diagnostic)
-            .map(|id| id.channel_on::<R, ResponseReadSnapshot>(webview()))
-            .map(|channel| {
-                move |snapshot: ResponseReadSnapshot| {
-                    let _ = channel.send(snapshot);
-                }
-            });
+            .map(|id| id.channel_on::<R, ResponseReadSnapshot>(webview()));
+    let has_response_read_channel = response_read_channel.is_some();
+    let response_read_observer = response_read_channel.map(|channel| {
+        move |snapshot: ResponseReadSnapshot| {
+            let _ = channel.send(snapshot);
+        }
+    });
+    // Resolved only beside actual response and read channels.
+    let response_read_timing_observer = (has_response_channel && has_response_read_channel)
+        .then(|| {
+            authorization_diagnostic_channel_id(on_authorization_response_read_timing_diagnostic)
+        })
+        .flatten()
+        .map(|id| id.channel_on::<R, ResponseReadTiming>(webview()))
+        .map(|channel| {
+            move |timing: ResponseReadTiming| {
+                let _ = channel.send(timing);
+            }
+        });
     let message = redeem_authorized_message_observed(
         &authorization_id,
         message,
@@ -1731,6 +1771,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         response_rejection_observer,
         connector_phase_observer,
         response_read_observer,
+        response_read_timing_observer,
     )
     .await?;
     authorized_operation_type(&message, &["command"])?;

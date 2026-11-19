@@ -19,6 +19,7 @@ import {
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
   readNativeAuthorizationResponseRead,
+  readNativeAuthorizationResponseReadTiming,
   readNativeAuthorizationTransport,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationConnectorDiagnostic,
@@ -27,6 +28,7 @@ import {
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationResponseReadDiagnostic,
+  type NativeAuthorizationResponseReadTimingDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "./native-authorization-diagnostics";
 import {
@@ -74,6 +76,10 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** Same response's failed JSON read; only joined to a valid `json_error`
    * response. */
   nativeAuthorizationResponseRead?: NativeAuthorizationResponseReadDiagnostic;
+  /** Same read timeout's timing; only joined to a valid `timeout` read, its
+   * 2xx `json_error` response and an `authorization_response_invalid`
+   * rejection class. */
+  nativeAuthorizationResponseReadTiming?: NativeAuthorizationResponseReadTimingDiagnostic;
   /** Same invocation's first terminal error source; only for a terminal error. */
   terminalError?: DesktopTerminalErrorDiagnostic;
   /** The same invocation's rejection message class; only joined to a valid
@@ -362,6 +368,13 @@ export class DesktopAckTelemetry {
         terminalError?.desktop_terminal_error_kind === "invocation_rejected"
           ? readDesktopInvocationRejectionDiagnostic(result.invocationRejection)
           : null;
+      const nativeAuthorizationResponseReadTiming =
+        readNativeAuthorizationResponseReadTiming(
+          result.nativeAuthorizationResponseReadTiming,
+          nativeAuthorizationResponse,
+          nativeAuthorizationResponseRead,
+          invocationRejection,
+        );
       const invocationAdmission = readDesktopInvocationAdmissionDiagnostic(
         result.invocationAdmission,
         invocationRejection,
@@ -428,6 +441,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
           ...nativeAuthorizationResponseRead,
+          ...nativeAuthorizationResponseReadTiming,
           ...terminalError,
           ...invocationRejection,
           ...invocationAdmission,
