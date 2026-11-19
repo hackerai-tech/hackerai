@@ -412,18 +412,22 @@ export function readAgentInputPermission(
 
 /**
  * Call directly from a click: the browser request starts before any await so
- * it keeps the user's activation. Saves "on" only when permission is granted.
+ * it keeps the user's activation. Saves "on" only when permission is granted;
+ * `saved` reports whether the preference write persisted.
  */
 export async function enableAgentInputNotifications(
   userId: string,
   transport: AgentInputTransport,
-): Promise<AgentInputPermission> {
-  const result =
+): Promise<{ permission: AgentInputPermission; saved: boolean }> {
+  const permission =
     transport === "desktop"
       ? await getDesktopNotificationPermission(true)
       : await requestBrowserNotificationPermission();
-  writeAgentInputNotificationsEnabled(userId, result === "granted");
-  return result;
+  const saved = writeAgentInputNotificationsEnabled(
+    userId,
+    permission === "granted",
+  );
+  return { permission, saved };
 }
 
 export async function listenForDesktopNotificationOpen(

@@ -25,6 +25,7 @@ export function AgentInputNotificationPrompt({ userId }: { userId: string }) {
   );
   const [open, setOpen] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const subscribe = useCallback(
     (onChange: () => void) =>
       subscribeAgentInputNotificationsEnabled(userId, onChange),
@@ -84,10 +85,19 @@ export function AgentInputNotificationPrompt({ userId }: { userId: string }) {
     // Start the request first so browsers see the click's user activation.
     const request = enableAgentInputNotifications(userId, transport);
     setRequesting(true);
-    void request.finally(() => {
-      setRequesting(false);
-      setOpen(false);
-    });
+    setSaveFailed(false);
+    void request.then(
+      ({ permission, saved }) => {
+        setRequesting(false);
+        // Granted but not saved means alerts stay off; keep the offer to retry.
+        if (permission === "granted" && !saved) setSaveFailed(true);
+        else setOpen(false);
+      },
+      () => {
+        setRequesting(false);
+        setOpen(false);
+      },
+    );
   };
 
   return (
@@ -104,9 +114,19 @@ export function AgentInputNotificationPrompt({ userId }: { userId: string }) {
             className="size-4 shrink-0 text-muted-foreground"
             aria-hidden="true"
           />
-          <p className="min-w-0 text-sm leading-5 text-foreground">
-            Get notified next time Agent needs you
-          </p>
+          <div className="min-w-0">
+            <p className="text-sm leading-5 text-foreground">
+              Get notified next time Agent needs you
+            </p>
+            <p
+              role="status"
+              className="text-xs leading-4 text-amber-600 dark:text-amber-400"
+            >
+              {saveFailed
+                ? "Couldn’t save your notification setting. Try again."
+                : ""}
+            </p>
+          </div>
         </div>
         <div className="flex shrink-0 items-center justify-end gap-1">
           <Button

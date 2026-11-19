@@ -87,7 +87,7 @@ export function AgentInputNotificationSetting() {
     const request = enableAgentInputNotifications(userId, transport);
     setRequesting(true);
     try {
-      setPermission(await request);
+      setPermission((await request).permission);
     } finally {
       setRequesting(false);
     }

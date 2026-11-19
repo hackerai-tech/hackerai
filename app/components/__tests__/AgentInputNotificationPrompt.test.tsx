@@ -161,6 +161,48 @@ describe("AgentInputNotificationPrompt", () => {
     expect(readAgentInputNotificationsPreference("user-1")).toBe("on");
   });
 
+  it("stays open to retry when permission is granted but the setting cannot be saved", async () => {
+    requestPermission.mockImplementation(async () => {
+      installBrowserNotifications("granted");
+      return "granted";
+    });
+    const originalSetItem = Storage.prototype.setItem;
+    // Only the preference write fails; the seen marker is stored normally.
+    const setItem = jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (key === "agent_input_notifications:v1:user-1")
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        originalSetItem.call(this, key, value);
+      });
+    const view = renderOffer();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Enable notifications" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Couldn’t save your notification setting. Try again.",
+      ),
+    );
+    expect(readAgentInputNotificationsPreference("user-1")).toBeNull();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeEnabled();
+    const retry = screen.getByRole("button", { name: "Enable notifications" });
+    expect(retry).toBeEnabled();
+
+    setItem.mockRestore();
+    fireEvent.click(retry);
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+
+    await waitFor(() => expect(queryOffer()).not.toBeInTheDocument());
+    expect(readAgentInputNotificationsPreference("user-1")).toBe("on");
+    view.unmount();
+    renderOffer("user-1:chat-1:wait:run-2:call-2");
+    await settle();
+    expect(queryOffer()).not.toBeInTheDocument();
+  });
+
   it("enables Desktop alerts through the native permission command", async () => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     mockInvoke.mockImplementation(async (_command, args) =>
