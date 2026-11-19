@@ -35,13 +35,15 @@ export function sanitizeWorkspaceFilesEvent<
 >(event: T): T {
   if (!event.event || !workspaceFilesEvents.has(event.event)) return event;
 
-  if (event.properties) {
-    event.properties = Object.fromEntries(
-      Object.entries(event.properties).filter(([key]) =>
+  event.properties = {
+    ...Object.fromEntries(
+      Object.entries(event.properties ?? {}).filter(([key]) =>
         allowedProperties.has(key),
       ),
-    );
-  }
+    ),
+    // Files outcomes do not need location. Disable PostHog ingestion enrichment.
+    $geoip_disable: true,
+  };
   delete event.$set;
   delete event.$set_once;
   return event;

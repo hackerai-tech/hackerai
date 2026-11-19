@@ -462,6 +462,7 @@ describe("PostHogProvider", () => {
       file_kind: "saved_attachment",
       outcome: "success",
       duration_ms: 20,
+      $geoip_disable: true,
     });
     expect(JSON.stringify(filesEvent)).not.toContain("private");
     const ordinaryEvent = {
