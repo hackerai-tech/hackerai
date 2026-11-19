@@ -49,6 +49,10 @@ import type {
 import { cn } from "@/lib/utils";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { findingEvidenceLabel } from "@/lib/findings/evidence-status";
+import {
+  findingStatusLabel,
+  getFindingDisposition,
+} from "@/lib/findings/disposition";
 import { getFindingSeverityDotClasses } from "./FindingCard";
 import {
   FINDING_EVIDENCE_BASIS_NOTE,
@@ -560,6 +564,8 @@ export function FindingDetail({
   const finding = localClosure
     ? { ...persistedFinding, ...localClosure }
     : persistedFinding;
+  // Recomputed so a closure saved from this view is labelled immediately.
+  const disposition = getFindingDisposition(finding);
 
   const handleCloseFinding = async () => {
     if (!closureContext.trim()) return;
@@ -667,9 +673,7 @@ export function FindingDetail({
                 </span>
               </span>
               {/* Each separator wraps with the value after it, never alone. */}
-              <MetaItem>
-                {finding.status === "active" ? "Active" : "Closed"}
-              </MetaItem>
+              <MetaItem>{findingStatusLabel(finding, disposition)}</MetaItem>
               <MetaItem>{FINDING_CATEGORY_LABELS[finding.category]}</MetaItem>
               <MetaItem title={FINDING_EVIDENCE_BASIS_NOTE}>
                 <span className="sr-only">Evidence basis: </span>
@@ -775,6 +779,30 @@ export function FindingDetail({
                 </div>
                 <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">
                   {finding.closure_context}
+                </p>
+              </section>
+            ) : null}
+            {disposition?.kind === "corrected" ? (
+              <section
+                className="border-l-2 border-muted-foreground/40 pl-4"
+                aria-labelledby={`${finding.finding_id}-correction-heading`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3
+                    id={`${finding.finding_id}-correction-heading`}
+                    className="text-sm font-semibold text-foreground"
+                  >
+                    Latest correction
+                  </h3>
+                  {disposition.decided_at ? (
+                    <span className="text-xs text-muted-foreground">
+                      Corrected{" "}
+                      <FindingDiscoveredAt timestamp={disposition.decided_at} />
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
+                  {disposition.reason}
                 </p>
               </section>
             ) : null}

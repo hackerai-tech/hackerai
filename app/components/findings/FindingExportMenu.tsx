@@ -1,7 +1,9 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useConvex } from "convex/react";
 import { ChevronDown, Download } from "lucide-react";
+import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -210,6 +212,50 @@ export function FindingExportDialog({
         </p>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * One-click PDF of one saved finding. Reads the current authorized record at
+ * click time, so each file reflects the latest decision and limitations; a
+ * deleted or inaccessible finding fails without exporting anything.
+ */
+export function FindingPdfButton({
+  findingId,
+  className,
+}: {
+  findingId: string;
+  className?: string;
+}) {
+  const convex = useConvex();
+  const exporter = useFindingExport(async () => {
+    const record = await convex.query(api.findings.getFinding, { findingId });
+    if (!record) throw new FindingExportUnavailableError();
+    return [record as FindingDetailRecord];
+  });
+  const { isBusy } = exporter;
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-disabled={isBusy || undefined}
+        aria-busy={isBusy || undefined}
+        onClick={() => {
+          if (!isBusy) void exporter.exportAs("pdf");
+        }}
+        className={cn(
+          // Narrow cards stack the footer; keep a larger touch target there.
+          "shrink-0 @max-[28rem]:min-h-10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
+          className,
+        )}
+      >
+        <Download className="size-4" aria-hidden="true" />
+        {isBusy ? "Exporting…" : "Download PDF"}
+      </Button>
+      <FindingExportStatus exporter={exporter} />
+    </>
   );
 }
 

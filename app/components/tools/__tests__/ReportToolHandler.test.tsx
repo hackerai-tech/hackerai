@@ -49,6 +49,58 @@ it("shows a bounded linked list and pagination hint without full report bodies",
     screen.getByText("More reports are available in this chat."),
   ).toBeVisible();
 });
+it("rehydrates only the exact recorded IDs with current decisions instead of the snapshot", () => {
+  setMockQueryResult([
+    {
+      finding_id: "finding-1",
+      title: "Sensitive data shown in help text",
+      target: "demo.example.test",
+      severity: "medium",
+      cvss_score: 5.3,
+      category: "data_exposure",
+      status: "closed",
+      chat_id: "chat-1",
+      chat_title: "Sample app onboarding review",
+      created_at: 1,
+      updated_at: 3,
+      disposition: {
+        kind: "dismissed",
+        label: "Dismissed",
+        reason: "Synthetic public help text, not sensitive data.",
+      },
+    },
+  ]);
+  render(
+    <ReportToolHandler
+      status="ready"
+      toolName="list_reports"
+      part={{
+        state: "output-available",
+        output: {
+          success: true,
+          reports: [
+            report,
+            { ...report, finding_id: "finding-gone", title: "Old snapshot" },
+          ],
+          is_done: true,
+        },
+      }}
+    />,
+  );
+  expect(
+    screen.getByRole("link", { name: "Sensitive data shown in help text" }),
+  ).toHaveAttribute("href", "/findings?finding=finding-1");
+  expect(screen.queryByText(report.title)).toBeNull();
+  expect(screen.getByText("Dismissed")).toBeVisible();
+  expect(
+    screen.getByText("Synthetic public help text, not sensitive data."),
+  ).toBeVisible();
+  expect(screen.getByText("Not recorded")).toBeVisible();
+  expect(screen.queryByText(/^high$/i)).toBeNull();
+  // A recorded ID with no current authorized record is never presented as live.
+  expect(screen.getByText("Old snapshot")).not.toHaveAttribute("href");
+  expect(screen.getByText("No longer available")).toBeVisible();
+});
 it.each(["get_report", "update_vulnerability_report"])(
   "opens the same report card for %s, including compact history",
   (toolName) => {

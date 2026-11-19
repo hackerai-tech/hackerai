@@ -153,7 +153,7 @@ describe("FindingsPage", () => {
     expect(screen.queryByText("Source Chat")).toBeNull();
     expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
-    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
+    expect(screen.getByText("Unreviewed")).toBeVisible();
     expect(screen.getByRole("list", { name: "Findings" })).toBeVisible();
     expect(screen.getByLabelText("Filter by category")).toBeVisible();
     expect(screen.getByLabelText("Filter by status")).toBeVisible();
@@ -188,6 +188,49 @@ describe("FindingsPage", () => {
       expect(window.location.search).toBe("");
     });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
+  });
+
+  it("shows the saved dismissal separately from evidence and excludes the dismissed severity from active counts", () => {
+    mockUsePaginatedQuery.mockReturnValue({
+      results: [
+        {
+          ...mockFinding,
+          title: "Help text exposure",
+          status: "closed",
+          disposition: {
+            label: "Dismissed",
+            reason: "The fixture contains only public help text.",
+          },
+        },
+        {
+          ...mockFinding,
+          finding_id: "finding-2",
+          title: "Open fixture observation",
+          severity: "low",
+          evidence_status: "inconclusive",
+        },
+      ],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+
+    render(<Page />);
+
+    const dismissed = within(
+      screen.getByRole("link", { name: /Help text exposure/ }),
+    );
+    expect(dismissed.getByText("Dismissed")).toBeVisible();
+    expect(
+      dismissed.getByText("The fixture contains only public help text."),
+    ).toBeVisible();
+    expect(dismissed.getByText("Not recorded")).toBeVisible();
+    expect(screen.getByText("Inconclusive")).toBeVisible();
+    expect(screen.getByText("1 active · 1 closed")).toBeVisible();
+    const breakdown = within(
+      screen.getByRole("group", { name: "Active findings by severity" }),
+    );
+    expect(breakdown.getByText("1 Low")).toBeVisible();
+    expect(breakdown.queryByText(/High/)).toBeNull();
   });
 
   it("only shows selection controls after opting in and discards cancelled or filtered selections", async () => {
