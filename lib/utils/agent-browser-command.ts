@@ -3,17 +3,28 @@ const SHELL_WHITESPACE_RE = /\s/;
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const AGENT_BROWSER_COMMAND_RE = /^agent-browser(?:@[^\s;&|()]+)?$/;
 
-function splitShellCommands(command: string): string[] {
+/**
+ * With `stripComments`, an unquoted, unescaped `#` that starts a word hides the
+ * rest of its physical line, including apparent separators. Only the Browser
+ * Preview predicate opts in; worker usage detection keeps its existing input.
+ */
+function splitShellCommands(
+  command: string,
+  { stripComments = false }: { stripComments?: boolean } = {},
+): string[] {
   const commands: string[] = [];
   let start = 0;
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let redirectionOperatorOpen = false;
+  let atWordStart = true;
 
   for (let index = 0; index < command.length; index++) {
     const character = command[index];
     if (escaped) {
       escaped = false;
+      // A line continuation is removed, so it does not end the current word.
+      if (character !== "\n") atWordStart = false;
       continue;
     }
     if (character === "\\" && quote !== "'") {
@@ -26,6 +37,7 @@ function splitShellCommands(command: string): string[] {
     }
     if (character === "'" || character === '"') {
       quote = character;
+      atWordStart = false;
       continue;
     }
     if (redirectionOperatorOpen) {
@@ -41,12 +53,26 @@ function splitShellCommands(command: string): string[] {
     }
     if (character === ">" || character === "<") {
       redirectionOperatorOpen = true;
+      atWordStart = false;
+      continue;
+    }
+    if (stripComments && character === "#" && atWordStart) {
+      commands.push(command.slice(start, index));
+      const newline = command.indexOf("\n", index + 1);
+      if (newline === -1) {
+        return commands;
+      }
+      index = newline;
+      start = newline + 1;
       continue;
     }
     if (SHELL_COMMAND_SEPARATORS.has(character)) {
       commands.push(command.slice(start, index));
       start = index + 1;
+      atWordStart = true;
+      continue;
     }
+    atWordStart = stripComments && SHELL_WHITESPACE_RE.test(character);
   }
 
   commands.push(command.slice(start));
@@ -148,10 +174,16 @@ function splitShellWords(command: string): string[] {
   return words;
 }
 
-function parseAgentBrowserInvocation(command: string): {
+type AgentBrowserInvocation = {
   action?: string;
   usedViaNpx: boolean;
-} | null {
+  // Matches the CLI wrapper's version class: exactly `--version` or `-V`.
+  versionCheckOnly: boolean;
+};
+
+function parseAgentBrowserInvocation(
+  command: string,
+): AgentBrowserInvocation | null {
   const words = splitShellWords(command);
   let index = 0;
 
@@ -166,7 +198,13 @@ function parseAgentBrowserInvocation(command: string): {
   }
 
   if (!AGENT_BROWSER_COMMAND_RE.test(words[index] ?? "")) return null;
-  return { action: words[index + 1], usedViaNpx };
+  const action = words[index + 1];
+  return {
+    action,
+    usedViaNpx,
+    versionCheckOnly:
+      words.length === index + 2 && (action === "--version" || action === "-V"),
+  };
 }
 
 const KNOWN_AGENT_BROWSER_ACTIONS = new Set([
@@ -251,4 +289,17 @@ export function detectAgentBrowserUsage(
     actions,
     usedViaNpx,
   };
+}
+
+/**
+ * A standalone version check does not request a Browser Preview.
+ * Other recognized browser invocations retain their existing behavior.
+ */
+export function requestsAgentBrowserPreview(command: string): boolean {
+  return splitShellCommands(command, { stripComments: true }).some(
+    (shellCommand) => {
+      const invocation = parseAgentBrowserInvocation(shellCommand);
+      return !!invocation && !invocation.versionCheckOnly;
+    },
+  );
 }
