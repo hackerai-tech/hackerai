@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { useContextDetailsPreference } from "@/app/hooks/useContextDetailsPreference";
 import type { SubscriptionTier } from "@/types";
 
 interface PersonalizationTabProps {
@@ -42,6 +43,8 @@ const PersonalizationTab = ({
   );
   const [predictionError, setPredictionError] = useState(false);
   const savingPredictions = useRef(false);
+  const [showContextDetails, setShowContextDetails] =
+    useContextDetailsPreference();
   const changePredictions = async (enabled: boolean) => {
     if (!predictions || savingPredictions.current) return;
     savingPredictions.current = true;
@@ -171,6 +174,27 @@ const PersonalizationTab = ({
           }
           disabled={!predictions || pendingPredictions !== null}
           onCheckedChange={changePredictions}
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 pb-3">
+        <div className="min-w-0">
+          <label htmlFor="show-context-details" className="font-medium">
+            Show context details
+          </label>
+          <p
+            id="show-context-details-description"
+            className="mt-1 text-sm text-muted-foreground"
+          >
+            Show completed Agent compactions in the chat header on this device.
+          </p>
+        </div>
+        <Switch
+          id="show-context-details"
+          className="mt-1 shrink-0 data-[state=checked]:bg-blue-600"
+          aria-describedby="show-context-details-description"
+          checked={showContextDetails}
+          onCheckedChange={setShowContextDetails}
         />
       </div>
     </div>

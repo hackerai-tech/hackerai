@@ -116,6 +116,7 @@ import {
 import {
   sendRateLimitWarnings,
   SummarizationTracker,
+  createAgentCompactionReporter,
   appendSystemReminderToLastUserMessage,
   countFileAttachments,
   estimatePreflightInputTokens,
@@ -178,6 +179,7 @@ import {
   getChatById,
   getCurrentAgentEntitlementContext,
   prepareForNewStream,
+  recordAgentCompactionTally,
   setConvexUrl,
 } from "@/lib/db/actions";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
@@ -2471,7 +2473,30 @@ export const agentLongTask = task({
 
       userStopSignal.signal.throwIfAborted();
 
-      const summarizationTracker = new SummarizationTracker();
+      // Display-only count for the chat header. One tracker spans every
+      // provider stream and fallback of this run, so its count is absolute.
+      const compactionReporter = createAgentCompactionReporter({
+        send: (completedCount) =>
+          recordAgentCompactionTally({
+            chatId,
+            runId: ctx.run.id,
+            completedCount,
+          }),
+        registerBackgroundWork: registerBackgroundRunWork,
+        signal: AbortSignal.any([userStopSignal.signal, triggerSignal]),
+        onError: (error) =>
+          triggerLogger.warn("[agent-long] compaction count not saved", {
+            event: "agent_compaction_tally_report_failed",
+            run_id: ctx.run.id,
+            chat_id: chatId,
+            error_name: error instanceof Error ? error.name : typeof error,
+          }),
+      });
+      const summarizationTracker = new SummarizationTracker(
+        compactionReporter.report,
+      );
+      // Tracking starts at zero only for this actual Agent run.
+      compactionReporter.report(0);
       chatLogger.startStream();
 
       let terminalRequestedModelSlug: string | undefined;
@@ -4632,6 +4657,7 @@ export const agentLongTask = task({
                 mode,
                 triggerRunId: ctx.run.id,
               });
+              compactionReporter.flush();
               await drainBackgroundRunWork();
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
@@ -5986,6 +6012,7 @@ export const agentLongTask = task({
                         mode,
                         triggerRunId: ctx.run.id,
                       });
+                      compactionReporter.flush();
                       await drainBackgroundRunWork();
                       // Final reconciliation can change the finish reason to
                       // budget-exhausted; do it before analytics and

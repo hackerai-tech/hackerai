@@ -518,6 +518,15 @@ export class SummarizationTracker {
     atStep: number;
   }> = [];
 
+  /**
+   * @param onCompactionRecorded Called synchronously with this tracker's
+   * running count after each accepted compaction. Rejected summaries, which
+   * only reach `recordSummarizationUsage`, never call it.
+   */
+  constructor(
+    private readonly onCompactionRecorded?: (completedCount: number) => void,
+  ) {}
+
   get summarizationCount(): number {
     return this.records.length;
   }
@@ -542,6 +551,11 @@ export class SummarizationTracker {
     });
 
     this.recordSummarizationUsage(usage, usageTracker);
+    try {
+      this.onCompactionRecorded?.(this.records.length);
+    } catch {
+      // Display-only reporting must never change generation or billing.
+    }
   }
 
   /** Account for generated-summary usage, whether accepted or rejected. */
@@ -585,6 +599,63 @@ export class SummarizationTracker {
     }
     return { ...message, parts };
   }
+}
+
+export type AgentCompactionTallyOutcome =
+  "recorded" | "unchanged" | "stale" | "not_found" | "deleting";
+
+/**
+ * Persists one Agent run's completed-compaction count as absolute snapshots.
+ * Sends run one at a time and carry the latest count, so queued reports
+ * coalesce. `flush` resends the latest unconfirmed snapshot once, for example
+ * when the run's first report raced its chat association.
+ */
+export function createAgentCompactionReporter({
+  send,
+  registerBackgroundWork,
+  signal,
+  onError,
+}: {
+  send: (completedCount: number) => Promise<AgentCompactionTallyOutcome>;
+  registerBackgroundWork: (work: Promise<void>) => void;
+  signal: AbortSignal;
+  onError: (error: unknown) => void;
+}) {
+  let latest: number | undefined;
+  let confirmed = -1;
+  let closed = false;
+  let queue: Promise<void> = Promise.resolve();
+
+  const deliver = async () => {
+    if (closed || latest === undefined || latest <= confirmed) return;
+    const completedCount = latest;
+    try {
+      const outcome = await send(completedCount);
+      if (outcome === "recorded" || outcome === "unchanged") {
+        confirmed = Math.max(confirmed, completedCount);
+      } else if (outcome === "not_found" || outcome === "deleting") {
+        closed = true;
+      }
+    } catch (error) {
+      onError(error);
+    }
+  };
+  const enqueue = () => {
+    queue = queue.then(deliver);
+    registerBackgroundWork(queue);
+  };
+
+  return {
+    report(completedCount: number) {
+      // A compaction that finishes after the run was stopped is not counted.
+      if (signal.aborted) return;
+      latest = Math.max(latest ?? 0, completedCount);
+      enqueue();
+    },
+    flush() {
+      if (!closed && latest !== undefined && latest > confirmed) enqueue();
+    },
+  };
 }
 
 /**

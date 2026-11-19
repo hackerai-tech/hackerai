@@ -70,6 +70,9 @@ const {
   setActiveTriggerRun,
   replaceActiveTriggerRun,
   updateChat,
+  recordAgentCompactionTally,
+  getChatByIdFromClient,
+  getChatById,
 } = require("../chats") as typeof import("../chats");
 
 const makeCtx = (
@@ -1392,6 +1395,135 @@ it("admits the replacement after worker cleanup clears the observed session", as
     "chat-doc",
     expect.objectContaining({ active_trigger_run_id: "new" }),
   );
+});
+
+describe("Agent compaction tally", () => {
+  const makeChat = (fields: Record<string, unknown> = {}): any => ({
+    _id: "chat-doc",
+    id: "chat-1",
+    user_id: "user-1",
+    active_trigger_run_id: "run-1",
+    update_time: 100,
+    ...fields,
+  });
+  /** Applies each patch to `chat`, as Convex would within one transaction. */
+  const recordOn = (
+    chat: any,
+    runId: string,
+    completedCount: number,
+    deletionFenced = false,
+  ) => {
+    const { ctx, patch } = makeCtx(chat, deletionFenced);
+    patch.mockImplementation(async (_id: unknown, fields: any) => {
+      Object.assign(chat, fields);
+    });
+    return recordAgentCompactionTally.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat-1",
+      runId,
+      completedCount,
+    });
+  };
+
+  it("starts at zero for the active run without touching update_time", async () => {
+    const chat = makeChat();
+    const { ctx, patch } = makeCtx(chat);
+    await expect(
+      recordAgentCompactionTally.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        runId: "run-1",
+        completedCount: 0,
+      }),
+    ).resolves.toBe("recorded");
+    expect(patch).toHaveBeenCalledWith("chat-doc", {
+      agent_compaction_tally: { total: 0, runId: "run-1", runCount: 0 },
+    });
+  });
+
+  it("adds each run's count once despite repeated, older or late snapshots", async () => {
+    const chat = makeChat();
+    expect(await recordOn(chat, "run-1", 0)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 1)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 2)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 2)).toBe("unchanged");
+    expect(await recordOn(chat, "run-1", 1)).toBe("stale");
+    expect(chat.agent_compaction_tally.total).toBe(2);
+
+    chat.active_trigger_run_id = "run-2";
+    expect(await recordOn(chat, "run-1", 3)).toBe("stale");
+    expect(await recordOn(chat, "run-2", 0)).toBe("recorded");
+    expect(await recordOn(chat, "run-2", 1)).toBe("recorded");
+    expect(chat.agent_compaction_tally).toEqual({
+      total: 3,
+      runId: "run-2",
+      runCount: 1,
+    });
+    expect(chat.update_time).toBe(100);
+  });
+
+  it.each([
+    ["an inactive run", makeChat({ active_trigger_run_id: "run-2" }), false],
+    ["a detached chat", makeChat({ active_trigger_run_id: undefined }), false],
+    ["a deleting chat", makeChat({ deletion_started_at: 1 }), false],
+    ["a deleting account", makeChat(), true],
+  ])("does not write for %s", async (_label, chat, deletionFenced) => {
+    const { ctx, patch } = makeCtx(chat, deletionFenced);
+    await expect(
+      recordAgentCompactionTally.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        runId: "run-1",
+        completedCount: 1,
+      }),
+    ).resolves.toMatch(/^(stale|deleting)$/);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, Number.NaN])(
+    "rejects an invalid count %p",
+    async (completedCount) => {
+      const { ctx, patch } = makeCtx(makeChat());
+      await expect(
+        recordAgentCompactionTally.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          runId: "run-1",
+          completedCount,
+        }),
+      ).rejects.toThrow("Invalid completed compaction count");
+      expect(patch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("exposes only the count to the owner and keeps the tally private", async () => {
+    const tally = { total: 3, runId: "run-1", runCount: 1 };
+    const ownerRead = async (chat: any) => {
+      const { ctx } = makeCtx(chat);
+      ctx.auth = {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-1" }),
+      };
+      return getChatByIdFromClient.handler(ctx, { id: "chat-1" });
+    };
+
+    const tracked = await ownerRead(
+      makeChat({ agent_compaction_tally: tally }),
+    );
+    expect(tracked).toHaveProperty("agent_compaction_count", 3);
+    expect(tracked).not.toHaveProperty("agent_compaction_tally");
+
+    const untracked = await ownerRead(makeChat());
+    expect(untracked).not.toHaveProperty("agent_compaction_count");
+
+    const { ctx } = makeCtx(makeChat({ agent_compaction_tally: tally }));
+    const backend = await getChatById.handler(ctx, {
+      serviceKey: "key",
+      id: "chat-1",
+    });
+    expect(backend).not.toHaveProperty("agent_compaction_tally");
+  });
 });
 
 describe("Goal clock during durable user waits", () => {

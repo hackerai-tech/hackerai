@@ -1,4 +1,8 @@
-import { SummarizationTracker } from "@/lib/api/chat-stream-helpers";
+import {
+  SummarizationTracker,
+  createAgentCompactionReporter,
+  type AgentCompactionTallyOutcome,
+} from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
   getNotes: jest.fn(),
@@ -196,5 +200,121 @@ describe("SummarizationTracker", () => {
     };
 
     expect(tracker.processMessageForSave(message)).toBe(message);
+  });
+
+  it("reports the running count only for accepted compactions", () => {
+    const observed: number[] = [];
+    const tracker = new SummarizationTracker((count) => observed.push(count));
+    const usageTracker = makeUsageTracker();
+
+    tracker.recordSummarizationUsage(
+      { inputTokens: 50, outputTokens: 5 },
+      usageTracker as any,
+    );
+    tracker.recordSummarization(1, undefined, usageTracker as any);
+    tracker.recordSummarization(2, undefined, usageTracker as any);
+
+    expect(observed).toEqual([1, 2]);
+  });
+
+  it("keeps recording and billing when the observer fails", () => {
+    const tracker = new SummarizationTracker(() => {
+      throw new Error("reporting unavailable");
+    });
+    const usageTracker = makeUsageTracker();
+
+    tracker.recordSummarization(
+      1,
+      { inputTokens: 100, outputTokens: 10 },
+      usageTracker as any,
+    );
+
+    expect(tracker.summarizationCount).toBe(1);
+    expect(usageTracker.summarizationInputTokens).toBe(100);
+  });
+});
+
+describe("createAgentCompactionReporter", () => {
+  const setup = (
+    outcomes: Array<AgentCompactionTallyOutcome | Error> = [],
+    signal = new AbortController().signal,
+  ) => {
+    const sent: number[] = [];
+    const work: Promise<void>[] = [];
+    const onError = jest.fn();
+    const reporter = createAgentCompactionReporter({
+      send: async (count) => {
+        sent.push(count);
+        const outcome = outcomes.shift() ?? "recorded";
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+      registerBackgroundWork: (promise) => work.push(promise),
+      signal,
+      onError,
+    });
+    const settled = () => Promise.all(work);
+    return { reporter, sent, work, onError, settled };
+  };
+
+  it("sends absolute snapshots in order and coalesces queued reports", async () => {
+    const { reporter, sent, work, settled } = setup();
+
+    reporter.report(0);
+    await settled();
+    reporter.report(1);
+    reporter.report(2);
+    await settled();
+
+    // Reports queued together send only the latest absolute count.
+    expect(sent).toEqual([0, 2]);
+    expect(work).toHaveLength(3);
+  });
+
+  it("does not report a compaction completed after the run stopped", async () => {
+    const run = new AbortController();
+    const { reporter, sent, work, settled } = setup([], run.signal);
+
+    reporter.report(0);
+    await settled();
+    run.abort();
+    reporter.report(1);
+    reporter.flush();
+    await settled();
+
+    expect(sent).toEqual([0]);
+    expect(work).toHaveLength(1);
+  });
+
+  it("retries the latest unconfirmed snapshot once before the run drains", async () => {
+    const { reporter, sent, onError, settled } = setup([
+      "stale",
+      new Error("transport failed"),
+    ]);
+
+    reporter.report(0); // races the run's chat association
+    await settled();
+    reporter.report(1); // transport failure
+    await settled();
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    reporter.flush();
+    await settled();
+    reporter.flush(); // already confirmed
+    await settled();
+
+    expect(sent).toEqual([0, 1, 1]);
+  });
+
+  it("stops reporting once the chat is gone", async () => {
+    const { reporter, sent, settled } = setup(["deleting"]);
+
+    reporter.report(0);
+    await settled();
+    reporter.report(1);
+    reporter.flush();
+    await settled();
+
+    expect(sent).toEqual([0]);
   });
 });
