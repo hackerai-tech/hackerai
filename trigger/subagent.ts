@@ -931,6 +931,10 @@ export const subagentTask = task({
           return getUserFriendlyProviderError(error);
         },
         execute: async ({ writer }) => {
+          const qaProviderBilling = qaUsageSettlement;
+          const checkQaProviderCapacity = qaProviderBilling
+            ? () => qaProviderBilling.fence(getCurrentRunCostDollars())
+            : undefined;
           try {
             let modelHandoffNoteIds: string[] = [];
             const acceptResult = async (input: unknown) => {
@@ -1239,6 +1243,7 @@ export const subagentTask = task({
                 usageTracker.providerCost += costDollars;
                 usageTracker.nonModelCost += costDollars;
               },
+              checkAutoReviewProviderCapacity: checkQaProviderCapacity,
               onAutoReviewCircuitBreaker: () => activeAbort.abort(),
               onPostWaitAuthorizationDenied: () => activeAbort.abort(),
               onApprovalExpired: () => activeAbort.abort(),
@@ -1346,12 +1351,9 @@ export const subagentTask = task({
                     providerHistory.record(entry, generationAttempt),
                 },
               );
-              const qaSettlement = qaUsageSettlement;
               const checkedModel = withProviderCapacityCheck(
                 languageModel,
-                qaSettlement
-                  ? () => qaSettlement.fence(getCurrentRunCostDollars())
-                  : undefined,
+                checkQaProviderCapacity,
               );
               const boundedModel = withProviderStreamTimeout(checkedModel, {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
@@ -1460,6 +1462,7 @@ export const subagentTask = task({
               ensureSandbox,
               getTodos: () => getTodoManager().getAllTodos(),
               usageTracker,
+              checkProviderCapacity: checkQaProviderCapacity,
             });
             const getSystemPrompt = async () =>
               systemPrompt +

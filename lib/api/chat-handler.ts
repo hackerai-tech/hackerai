@@ -76,6 +76,7 @@ import {
   createUsageSettlementState,
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,
+  isQaSpendPoolError,
   getPaidDailyFreeAllowanceStatus,
   hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
@@ -963,6 +964,7 @@ export const createChatHandler = () => {
                     source: "file_view";
                   }) => {
                     return await describeImageWithAuxiliaryVision({
+                      checkProviderCapacity: checkQaProviderCapacity,
                       ...args,
                       requestId,
                       userId,
@@ -2109,6 +2111,7 @@ export const createChatHandler = () => {
                   try {
                     state.finalMessages =
                       await describeImageAttachmentsWithAuxiliaryVision({
+                        checkProviderCapacity: checkQaProviderCapacity,
                         messages: omitImageViewToolResultsForProviderRetry(
                           state.finalMessages,
                         ).messages,
@@ -2127,6 +2130,7 @@ export const createChatHandler = () => {
                     preemptiveTimeout?.clear();
                     await usageRefundTracker.refund();
                     userStopSignal.signal.throwIfAborted();
+                    if (isQaSpendPoolError(summaryError)) throw summaryError;
                     chatLogger?.emitUnexpectedError(summaryError);
                     throw error;
                   }
@@ -2399,6 +2403,7 @@ export const createChatHandler = () => {
                         try {
                           recoveredVisionMessages =
                             await describeImageAttachmentsWithAuxiliaryVision({
+                              checkProviderCapacity: checkQaProviderCapacity,
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
                                   loopRecoveryMessages ?? state.finalMessages,

@@ -135,9 +135,14 @@ export class CompactionModelPolicy {
       expandedAgentContext?: boolean;
       /** The top-level run's resolved policy; takes precedence over the shorthand. */
       agentContextPolicy?: AgentContextPolicy;
+      checkProviderCapacity?: () => Promise<void>;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
+
+  get checkProviderCapacity(): (() => Promise<void>) | undefined {
+    return this.context.checkProviderCapacity;
+  }
 
   resolve(): Promise<CompactionSelection> {
     return (this.assignment ??= this.evaluate());

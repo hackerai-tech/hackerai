@@ -7,6 +7,7 @@ jest.mock("ai", () => ({
 import { generateText } from "ai";
 
 import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { ChatSDKError } from "@/lib/errors";
 import {
   AUXILIARY_VISION_SLUG,
   DEEPSEEK_V4_FLASH_VISION_SLUG,
@@ -34,6 +35,49 @@ describe("auxiliary vision", () => {
     jest.restoreAllMocks();
     jest.useRealTimers();
   });
+
+  it.each([0, 1])(
+    "stops the attachment provider after %d attempt(s) when the QA pool drains",
+    async (allowedAttempts) => {
+      const exhausted = new ChatSDKError(
+        "rate_limit:chat",
+        "QA spend cap reached",
+        {
+          qaSpendPool: "preview",
+          capReason: "qa_spend_cap",
+        },
+      );
+      const checkProviderCapacity = jest.fn().mockRejectedValue(exhausted);
+      if (allowedAttempts)
+        checkProviderCapacity.mockResolvedValueOnce(undefined);
+      const modelRunner = jest.fn().mockRejectedValue(
+        Object.assign(new Error("Provider is temporarily rate limited"), {
+          statusCode: 429,
+        }),
+      );
+      await expect(
+        describeImageAttachmentsWithAuxiliaryVision({
+          messages: [
+            {
+              id: "image-test",
+              role: "user",
+              parts: [
+                {
+                  type: "file",
+                  mediaType: "image/png",
+                  url: "data:image/png;base64,aW1hZ2U=",
+                },
+              ],
+            },
+          ],
+          checkProviderCapacity,
+          modelRunner,
+        }),
+      ).rejects.toBe(exhausted);
+      expect(checkProviderCapacity).toHaveBeenCalledTimes(allowedAttempts + 1);
+      expect(modelRunner).toHaveBeenCalledTimes(allowedAttempts);
+    },
+  );
 
   it.each([
     [503, "provider_5xx", 503],

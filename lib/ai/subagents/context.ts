@@ -90,6 +90,7 @@ export type SubagentModelContextOptions = {
   ensureSandbox?: EnsureSandbox;
   getTodos?: () => Todo[];
   usageTracker: UsageTracker;
+  checkProviderCapacity?: () => Promise<void>;
 };
 
 /**
@@ -135,6 +136,7 @@ export function createSubagentModelContext(
     selectedModel: options.selectedModel,
     // Child records do not carry the parent's moderation authorization.
     platformAuthorized: false,
+    checkProviderCapacity: options.checkProviderCapacity,
     expandedAgentContext: isExpandedAgentContextEligible(
       options.subscription,
       "agent",

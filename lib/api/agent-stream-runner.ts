@@ -1553,6 +1553,7 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    checkProviderCapacity: ctx.checkQaProviderCapacity,
     getAttachmentMessages: () => state.finalMessages,
     cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
@@ -2126,6 +2127,7 @@ export async function createAgentStream(
       selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
       agentContextPolicy: contextPolicy,
+      checkProviderCapacity: ctx.checkQaProviderCapacity,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,

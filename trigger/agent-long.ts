@@ -152,6 +152,7 @@ import {
   createUsageSettlementState,
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,
+  isQaSpendPoolError,
   getPaidDailyFreeAllowanceStatus,
   hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
@@ -2644,6 +2645,7 @@ export const agentLongTask = task({
                     source: "file_view";
                   }) => {
                     return await describeImageWithAuxiliaryVision({
+                      checkProviderCapacity: checkQaProviderCapacity,
                       ...args,
                       requestId: ctx.run.id,
                       userId,
@@ -3198,6 +3200,7 @@ export const agentLongTask = task({
                 usageTracker.nonModelCost += costDollars;
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
+              checkAutoReviewProviderCapacity: checkQaProviderCapacity,
               onAutoReviewCircuitBreaker: () =>
                 stopSignal.abort("auto_review_circuit_breaker"),
               onPostWaitAuthorizationDenied: () =>
@@ -3720,6 +3723,7 @@ export const agentLongTask = task({
                         [...goalRunMessageIds],
                         messagesForAccounting,
                         userStopSignal.signal,
+                        checkQaProviderCapacity,
                       );
                   })();
                   // Goal storage/verifier outages must never skip settlement of
@@ -4953,6 +4957,7 @@ export const agentLongTask = task({
                   try {
                     state.finalMessages =
                       await describeImageAttachmentsWithAuxiliaryVision({
+                        checkProviderCapacity: checkQaProviderCapacity,
                         messages: omitImageViewToolResultsForProviderRetry(
                           state.finalMessages,
                         ).messages,
@@ -4970,6 +4975,7 @@ export const agentLongTask = task({
                       });
                   } catch (summaryError) {
                     userStopSignal.signal.throwIfAborted();
+                    if (isQaSpendPoolError(summaryError)) throw summaryError;
                     chatLogger?.emitUnexpectedError(summaryError);
                     throw error;
                   }
@@ -5311,6 +5317,7 @@ export const agentLongTask = task({
                         try {
                           recoveredVisionMessages =
                             await describeImageAttachmentsWithAuxiliaryVision({
+                              checkProviderCapacity: checkQaProviderCapacity,
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
                                   loopRecoveryMessages ?? state.finalMessages,

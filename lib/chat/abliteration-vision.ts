@@ -18,6 +18,7 @@ import {
   extractErrorDetails,
   getProviderErrorCategory,
 } from "@/lib/utils/error-utils";
+import { isQaSpendPoolError } from "@/lib/rate-limit/qa-spending-policy";
 
 export class AbliterationVisionError extends Error {
   readonly origin = "auxiliary_vision";
@@ -83,6 +84,7 @@ export function createAbliterationVisionPreprocessor({
   triggerRunId,
   abortSignal,
   onCost,
+  checkProviderCapacity,
   describe = describeImageWithAuxiliaryVision,
   getAttachmentMessages,
   cacheDescription,
@@ -93,6 +95,7 @@ export function createAbliterationVisionPreprocessor({
   triggerRunId?: string;
   abortSignal: AbortSignal;
   onCost: (cost: number) => void;
+  checkProviderCapacity?: () => Promise<void>;
   describe?: typeof describeImageWithAuxiliaryVision;
   /** Only messages whose file metadata was reloaded through the owner check. */
   getAttachmentMessages?: () => UIMessage[];
@@ -202,6 +205,7 @@ export function createAbliterationVisionPreprocessor({
                       requestId,
                       triggerRunId,
                       abortSignal: recoverySignal,
+                      checkProviderCapacity,
                       canRetry: withinBudget,
                       onCost: (cost) => {
                         spent += cost;
@@ -248,6 +252,10 @@ export function createAbliterationVisionPreprocessor({
             result.status === "rejected",
         );
         if (failures.length) {
+          const qaFailure = failures.find(({ reason }) =>
+            isQaSpendPoolError(reason),
+          );
+          if (qaFailure) throw qaFailure.reason;
           const timeout = failures.find(
             ({ reason }) =>
               getProviderErrorCategory(extractErrorDetails(reason)) ===
@@ -279,7 +287,8 @@ export function createAbliterationVisionPreprocessor({
       }) as T;
     } catch (error) {
       abortSignal.throwIfAborted();
-      if (error instanceof AbliterationVisionError) throw error;
+      if (error instanceof AbliterationVisionError || isQaSpendPoolError(error))
+        throw error;
       throw new AbliterationVisionError(error);
     } finally {
       clearTimeout(recoveryTimeout);

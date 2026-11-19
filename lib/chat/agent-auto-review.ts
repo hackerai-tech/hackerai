@@ -544,6 +544,7 @@ export async function reviewAgentToolAction({
   signal,
   timeoutMs = AGENT_AUTO_REVIEW_TIMEOUT_MS,
   runModel = defaultModelRunner,
+  checkProviderCapacity,
 }: {
   request: AgentToolApprovalRequest;
   authorizationContext: AgentAutoReviewAuthorizationContext;
@@ -551,6 +552,7 @@ export async function reviewAgentToolAction({
   signal?: AbortSignal;
   timeoutMs?: number;
   runModel?: AutoReviewModelRunner;
+  checkProviderCapacity?: () => Promise<void>;
 }): Promise<AgentAutoReviewDecision> {
   const startedAt = Date.now();
   if (!authorizationContext.text.trim()) {
@@ -636,6 +638,10 @@ export async function reviewAgentToolAction({
   }, timeoutMs);
 
   try {
+    if (checkProviderCapacity) {
+      await checkProviderCapacity();
+      controller.signal.throwIfAborted();
+    }
     const result = await runModel({
       system: REVIEWER_SYSTEM_PROMPT,
       prompt: buildReviewPrompt({

@@ -9,6 +9,7 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { isQaSpendPoolError } from "@/lib/rate-limit/qa-spending-policy";
 import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
 import {
   extractErrorDetails,
@@ -232,6 +233,7 @@ export async function describeImageWithAuxiliaryVision({
   triggerRunId,
   abortSignal,
   onCost,
+  checkProviderCapacity,
   modelRunner = defaultModelRunner,
   canRetry = () => true,
 }: {
@@ -245,12 +247,18 @@ export async function describeImageWithAuxiliaryVision({
   triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
+  checkProviderCapacity?: () => Promise<void>;
   modelRunner?: AuxiliaryVisionModelRunner;
   canRetry?: () => boolean;
 }): Promise<AuxiliaryVisionResult> {
   const startedAt = Date.now();
   for (let attempt = 0; ; attempt++) {
     abortSignal?.throwIfAborted();
+    // Capacity errors are terminal, outside the provider retry classifier.
+    if (checkProviderCapacity) {
+      await checkProviderCapacity();
+      abortSignal?.throwIfAborted();
+    }
     const timeoutMs =
       attempt === 0
         ? AUXILIARY_VISION_TIMEOUT_MS
@@ -448,6 +456,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   triggerRunId,
   abortSignal,
   onCost,
+  checkProviderCapacity,
   modelRunner,
   cacheDescription,
 }: {
@@ -458,6 +467,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
   triggerRunId?: string;
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
+  checkProviderCapacity?: () => Promise<void>;
   modelRunner?: AuxiliaryVisionModelRunner;
   cacheDescription?: (args: {
     userId: string;
@@ -569,6 +579,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
               chatId,
               triggerRunId,
               abortSignal: recoverySignal,
+              checkProviderCapacity,
               onCost: (costDollars) => {
                 pendingCostDollars += costDollars;
               },
@@ -614,8 +625,11 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     );
     recoverySignal.throwIfAborted();
     if (failures.size > 0) {
+      const errors = [...failures.values()];
+      const qaError = errors.find(isQaSpendPoolError);
+      if (qaError) throw qaError;
       throw new AggregateError(
-        [...failures.values()],
+        errors,
         `Auxiliary vision failed for ${failures.size} image request(s)`,
       );
     }

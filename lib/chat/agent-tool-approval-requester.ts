@@ -221,6 +221,7 @@ export const buildAgentToolApprovalRequester = ({
   autoReviewAuthorizationContext,
   autoReviewConversationContext,
   onAutoReviewCost,
+  checkAutoReviewProviderCapacity,
   onAutoReviewCircuitBreaker,
   onPostWaitAuthorizationDenied,
   onApprovalExpired,
@@ -256,6 +257,7 @@ export const buildAgentToolApprovalRequester = ({
   autoReviewAuthorizationContext: { text: string; complete: boolean };
   autoReviewConversationContext: { text: string; complete: boolean };
   onAutoReviewCost?: (costDollars: number) => void;
+  checkAutoReviewProviderCapacity?: () => Promise<void>;
   onAutoReviewCircuitBreaker: () => void;
   onPostWaitAuthorizationDenied: () => void;
   /**
@@ -464,6 +466,7 @@ export const buildAgentToolApprovalRequester = ({
             request,
             authorizationContext: autoReviewAuthorizationContext,
             conversationContext: autoReviewConversationContext,
+            checkProviderCapacity: checkAutoReviewProviderCapacity,
             signal,
           });
         } finally {

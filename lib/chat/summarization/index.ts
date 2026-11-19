@@ -11,6 +11,8 @@ import {
 } from "@/lib/chat/summarization/compaction-policy";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { isInferenceCyberModel } from "@/lib/ai/inference";
+import { withProviderCapacityCheck } from "@/lib/ai/provider-capacity-guard";
+import { isQaSpendPoolError } from "@/lib/rate-limit/qa-spending-policy";
 
 import {
   UIMessage,
@@ -579,6 +581,11 @@ const generateSummaryTextWithRetry = async ({
 > => {
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
+  const getLanguageModel = (name: string) =>
+    withProviderCapacityCheck(
+      myProvider.languageModel(name),
+      compactionPolicy?.checkProviderCapacity,
+    );
   try {
     const assignment = await compactionPolicy?.resolve();
     abortSignal?.throwIfAborted();
@@ -617,7 +624,7 @@ const generateSummaryTextWithRetry = async ({
       try {
         for (const [index, modelName] of models.entries()) {
           abortSignal?.throwIfAborted();
-          const languageModel = myProvider.languageModel(modelName);
+          const languageModel = getLanguageModel(modelName);
           const attemptStartedAt = Date.now();
           // Expanded Max recovery needs the same complete-checkpoint safeguards
           // even when the separate moderation compaction experiment is paused.
@@ -716,6 +723,7 @@ const generateSummaryTextWithRetry = async ({
             );
             if (
               abortSignal?.aborted ||
+              isQaSpendPoolError(error) ||
               index === models.length - 1 ||
               !(
                 isAbliterationModel(modelName) ||
@@ -747,9 +755,7 @@ const generateSummaryTextWithRetry = async ({
       }
     }
     if (!startupCompaction || mode !== "agent") {
-      const languageModel = myProvider.languageModel(
-        CONTEXT_COMPACTION_MODEL_NAME,
-      );
+      const languageModel = getLanguageModel(CONTEXT_COMPACTION_MODEL_NAME);
       try {
         const result = await generateSummaryText(
           messagesToSummarize,
@@ -775,7 +781,7 @@ const generateSummaryTextWithRetry = async ({
         }
 
         const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
-        const retryLanguageModel = myProvider.languageModel(retryModelName);
+        const retryLanguageModel = getLanguageModel(retryModelName);
         onRetry?.();
         logContextCompactionRetrying({
           chatId,
@@ -817,7 +823,7 @@ const generateSummaryTextWithRetry = async ({
       abortSignal?.throwIfAborted();
       const attempt: SummarizationAttempt =
         index === 0 ? "primary" : "fallback";
-      const languageModel = myProvider.languageModel(modelName);
+      const languageModel = getLanguageModel(modelName);
       startupCompaction.onAttempt?.({
         variant: STARTUP_COMPACTION_VARIANT,
         fallbackUsed: index > 0,
@@ -843,6 +849,7 @@ const generateSummaryTextWithRetry = async ({
         const retryModelName = CONTEXT_COMPACTION_MODEL_CHAIN[index + 1];
         if (
           abortSignal?.aborted ||
+          isQaSpendPoolError(error) ||
           retryModelName === undefined ||
           !(
             isMalformedProviderJsonError(error) ||
@@ -1134,7 +1141,7 @@ export const compactModelMessagesInRun = async ({
             };
           })
           .catch((error) => {
-            if (abortSignal?.aborted) throw error;
+            if (abortSignal?.aborted || isQaSpendPoolError(error)) throw error;
             return runBoundedSummary();
           })
       : runBoundedSummary();
@@ -1189,7 +1196,7 @@ export const compactModelMessagesInRun = async ({
       runtimeContextTokens: safeCountTokens(runtimeContext),
     };
   } catch (error) {
-    if (abortSignal?.aborted) throw error;
+    if (abortSignal?.aborted || isQaSpendPoolError(error)) throw error;
     const failedAttempt = getSummarizationAttemptFromError(error);
     logContextCompactionFailed({
       chatId,
@@ -1503,7 +1510,7 @@ export const checkAndSummarizeIfNeeded = async ({
       summarizationUsage,
     };
   } catch (error) {
-    if (abortSignal?.aborted) {
+    if (abortSignal?.aborted || isQaSpendPoolError(error)) {
       throw error;
     }
     const failedAttempt = getSummarizationAttemptFromError(error);

@@ -60,6 +60,12 @@ type PolicyEnv = Readonly<Record<string, string | undefined>>;
 
 export const QA_SPEND_CAP_REASON = "qa_spend_cap";
 
+export const isQaSpendPoolError = (error: unknown): error is ChatSDKError =>
+  error instanceof ChatSDKError &&
+  error.type === "rate_limit" &&
+  (error.metadata?.qaSpendPool === "preview" ||
+    error.metadata?.qaSpendPool === "development");
+
 const QA_SPEND_POOL_KEYS: Record<QaSpendPoolEnvironment, string> = {
   preview: "usage:qa-spend:v1:preview",
   development: "usage:qa-spend:v1:development",

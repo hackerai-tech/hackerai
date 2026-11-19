@@ -74,6 +74,7 @@ export {
 export {
   QA_SPEND_CAP_REASON,
   getQaSpendPolicyStatus,
+  isQaSpendPoolError,
   resolveQaSpendPool,
   type QaSpendPool,
   type QaSpendPoolEnvironment,
