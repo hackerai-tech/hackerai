@@ -1427,6 +1427,13 @@ export const createAgentTriggerPost = ({
         return createAgentTriggerPayloadTooLargeResponse();
       };
 
+      const approvalTriggerConfig = {
+        basePayload: agentPayload,
+        machine: triggerMachine,
+        tags: getAgentApprovalTriggerTags(triggerTags),
+        region: triggerRegion,
+        ...approvalDeploymentPin,
+      };
       const approvalSessionBody = approvalSessionId
         ? {
             type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
@@ -1434,13 +1441,7 @@ export const createAgentTriggerPost = ({
             taskIdentifier: AGENT_TRIGGER_TASK_ID,
             tags: triggerTags,
             metadata: triggerMetadata,
-            triggerConfig: {
-              basePayload: agentPayload,
-              machine: triggerMachine,
-              tags: getAgentApprovalTriggerTags(triggerTags),
-              region: triggerRegion,
-              ...approvalDeploymentPin,
-            },
+            triggerConfig: approvalTriggerConfig,
           }
         : undefined;
       if (approvalSessionBody)
