@@ -17,7 +17,7 @@ export type AgentInputTransport = "desktop" | "browser";
 
 /** Fixed, content-free title. Desktop sets the same title natively. */
 export const AGENT_INPUT_NOTIFICATION_TITLE = "HackerAI needs your input";
-/** Native click events carry only a validated chat ID. */
+/** Native click events carry only a chat ID, validated again here. */
 export const AGENT_INPUT_NOTIFICATION_OPEN_EVENT =
   "agent-input-notification-open";
 /** Covers 100 active chats with a question and an approval each. */
@@ -27,11 +27,33 @@ const MAX_SEEN_REQUEST_IDS = 512;
 const PREFERENCE_PREFIX = "agent_input_notifications:v1:";
 const RECEIPTS_PREFIX = "agent_input_notification_receipts:v1:";
 const PREFERENCE_CHANGE_EVENT = "hackerai:agent-input-notifications";
-const CHAT_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Matches `is_chat_id` in the Desktop notifications module. */
+const MAX_CHAT_ID_BYTES = 256;
+const UNSAFE_CHAT_ID_CHARACTER = /[\p{Cc}/\\?#]/u;
 
+function utf8Length(value: string): number | null {
+  try {
+    return encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, "_").length;
+  } catch {
+    return null; // Lone surrogates cannot be routed.
+  }
+}
+
+/** One safe `/c/<id>` path segment; legacy slugs are allowed. */
 export function isAgentInputChatId(chatId: string): boolean {
-  return CHAT_ID_PATTERN.test(chatId);
+  const length = utf8Length(chatId);
+  return (
+    length !== null &&
+    length > 0 &&
+    length <= MAX_CHAT_ID_BYTES &&
+    chatId !== "." &&
+    chatId !== ".." &&
+    !UNSAFE_CHAT_ID_CHARACTER.test(chatId)
+  );
+}
+
+export function agentInputChatPath(chatId: string): string | null {
+  return isAgentInputChatId(chatId) ? `/c/${encodeURIComponent(chatId)}` : null;
 }
 
 const permissionValues = new Set<AgentInputPermission>([
@@ -107,27 +129,23 @@ export type AgentInputNotificationTracker = {
 export function createAgentInputNotificationTracker(): AgentInputNotificationTracker {
   let seeded = false;
   const seen = new Set<string>();
-  const markSeen = (requestId: string) => {
-    seen.add(requestId);
-    if (seen.size > MAX_SEEN_REQUEST_IDS) {
-      seen.delete(seen.values().next().value as string);
-    }
-  };
 
   return {
     observe(pending) {
       // Loading or reconnecting: keep seen IDs so a resumed wait is not new.
       if (pending === undefined) return [];
-      if (!seeded) {
-        seeded = true;
-        for (const item of pending) markSeen(item.requestId);
-        return [];
-      }
       const fresh: PendingAgentInput[] = [];
       for (const item of pending) {
         if (seen.has(item.requestId)) continue;
-        markSeen(item.requestId);
-        fresh.push(item);
+        seen.add(item.requestId);
+        if (seeded) fresh.push(item);
+      }
+      seeded = true;
+      // Forget the oldest finished waits, never one that is still pending.
+      const active = new Set(pending.map((item) => item.requestId));
+      for (const requestId of seen) {
+        if (seen.size <= MAX_SEEN_REQUEST_IDS) break;
+        if (!active.has(requestId)) seen.delete(requestId);
       }
       return fresh;
     },

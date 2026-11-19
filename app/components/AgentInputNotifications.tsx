@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState, useSyncExternalStore } from "react";
+import { useConvexAuth } from "convex/react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import {
@@ -55,6 +56,9 @@ export function AgentInputNotifications() {
   const { user } = useAuth();
   const userId = user?.id;
   const enabled = useAgentInputNotificationsEnabled(userId);
+  // While Convex auth loads, the query answers as signed out; a baseline
+  // taken then would make every existing wait look new once auth resolves.
+  const { isAuthenticated } = useConvexAuth();
   const [transport] = useState(() =>
     detectAgentInputTransport(isTauriEnvironment()),
   );
@@ -63,7 +67,7 @@ export function AgentInputNotifications() {
   return (
     <>
       {transport === "desktop" && <DesktopNotificationOpener key={userId} />}
-      {enabled && (
+      {enabled && isAuthenticated && (
         <AgentInputNotificationSubscriber
           key={`${userId}:${transport}`}
           userId={userId}

@@ -8,6 +8,7 @@ import {
 } from "@jest/globals";
 import {
   MAX_AGENT_INPUT_NOTIFICATION_RECEIPTS,
+  agentInputChatPath,
   claimAgentInputNotificationReceipt,
   createAgentInputNotificationTracker,
   deliverAgentInputNotification,
@@ -49,6 +50,48 @@ describe("createAgentInputNotificationTracker", () => {
     tracker.observe([]);
 
     expect(tracker.observe([question, question])).toEqual([question]);
+  });
+
+  it("never forgets a wait that stays pending while many others finish", () => {
+    const tracker = createAgentInputNotificationTracker();
+    tracker.observe([question]);
+
+    for (let index = 0; index < 600; index++) {
+      const passing = { chatId: "chat-2", requestId: `passing-${index}` };
+      expect(tracker.observe([question, passing])).toEqual([passing]);
+    }
+  });
+});
+
+describe("agentInputChatPath", () => {
+  it.each([
+    [
+      "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "/c/0f8fad5b-d9cb-469f-a165-70867728950e",
+    ],
+    ["legacy_chat-1", "/c/legacy_chat-1"],
+    ["release.notes v2", "/c/release.notes%20v2"],
+    ["a".repeat(256), `/c/${"a".repeat(256)}`],
+  ])("routes %j as one encoded segment", (chatId, path) => {
+    expect(agentInputChatPath(chatId)).toBe(path);
+  });
+
+  it.each([
+    "",
+    ".",
+    "..",
+    "chat/../settings",
+    "https://example.com/c/chat",
+    "chat\\settings",
+    "chat?next=/settings",
+    "chat#top",
+    "chat\nid",
+    "chat\u007f",
+    "\ud800",
+    // 258 UTF-8 bytes, matching the Desktop byte limit.
+    "é".repeat(129),
+  ])("rejects %j", (chatId) => {
+    expect(agentInputChatPath(chatId)).toBeNull();
   });
 });
 

@@ -28,7 +28,7 @@ const IDENTIFIER_PREFIX: &str = "co.hackerai.agent-input.";
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 static INSTALL_DELEGATE: Once = Once::new();
 
-/// `<prefix><chat UUID>.<32 hex nonce>`, unique per alert.
+/// `<prefix><chat ID>.<32 hex nonce>`, unique per alert.
 fn notification_identifier(chat_id: &str) -> String {
     format!(
         "{IDENTIFIER_PREFIX}{chat_id}.{}",
@@ -36,10 +36,11 @@ fn notification_identifier(chat_id: &str) -> String {
     )
 }
 
+/// Splits from the right because chat IDs may contain dots.
 fn chat_id_from_identifier(identifier: &str) -> Option<&str> {
     let (chat_id, nonce) = identifier
         .strip_prefix(IDENTIFIER_PREFIX)?
-        .split_once('.')?;
+        .rsplit_once('.')?;
     let valid_nonce = nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit());
     (is_chat_id(chat_id) && valid_nonce).then_some(chat_id)
 }
@@ -231,6 +232,13 @@ mod tests {
         let second = notification_identifier(CHAT_ID);
         assert_ne!(first, second);
         assert_eq!(chat_id_from_identifier(&first), Some(CHAT_ID));
+        // Legacy slugs, including ones with dots, round-trip unchanged.
+        for legacy in ["legacy_chat-1", "release.notes.v2"] {
+            assert_eq!(
+                chat_id_from_identifier(&notification_identifier(legacy)),
+                Some(legacy)
+            );
+        }
     }
 
     #[test]
@@ -240,7 +248,9 @@ mod tests {
             CHAT_ID.to_string(),
             format!("{IDENTIFIER_PREFIX}{CHAT_ID}"),
             format!("{IDENTIFIER_PREFIX}{CHAT_ID}.short"),
-            format!("{IDENTIFIER_PREFIX}not-a-chat.{nonce}"),
+            format!("{IDENTIFIER_PREFIX}.{nonce}"),
+            format!("{IDENTIFIER_PREFIX}..{nonce}"),
+            format!("{IDENTIFIER_PREFIX}chat/../settings.{nonce}"),
             format!("{IDENTIFIER_PREFIX}{CHAT_ID}.{nonce}.extra"),
             format!("other.{CHAT_ID}.{nonce}"),
         ] {

@@ -1,7 +1,7 @@
 //! Generic Agent input notifications.
 //!
 //! The trusted page may read or request notification permission and ask for
-//! one fixed-title alert about a chat it names by UUID. It cannot supply text,
+//! one fixed-title alert about a chat it names by ID. It cannot supply text,
 //! URLs, or actions. A click focuses the main window and tells a page on a
 //! trusted origin which chat to open, so it routes without reloading.
 
@@ -35,14 +35,18 @@ impl Permission {
     }
 }
 
-/// Hyphenated UUIDs only; nothing else routes.
+const MAX_CHAT_ID_BYTES: usize = 256;
+
+/// One safe `/c/<id>` path segment, matching `isAgentInputChatId` in the web
+/// app. Legacy slugs are allowed; delimiters, controls and dot segments are not.
 fn is_chat_id(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 36
-        && bytes.iter().enumerate().all(|(index, byte)| match index {
-            8 | 13 | 18 | 23 => *byte == b'-',
-            _ => byte.is_ascii_hexdigit(),
-        })
+    !value.is_empty()
+        && value.len() <= MAX_CHAT_ID_BYTES
+        && value != "."
+        && value != ".."
+        && !value
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#'))
 }
 
 fn is_trusted_url(url: &url::Url) -> bool {
@@ -263,18 +267,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_hyphenated_uuid_chat_ids() {
-        assert!(is_chat_id("0f8fad5b-d9cb-469f-a165-70867728950e"));
-        assert!(is_chat_id("0F8FAD5B-D9CB-469F-A165-70867728950E"));
+    fn accepts_only_one_safe_path_segment_as_a_chat_id() {
+        let longest = "a".repeat(MAX_CHAT_ID_BYTES);
+        for value in [
+            "0f8fad5b-d9cb-469f-a165-70867728950e",
+            "legacy_chat-1",
+            "release.notes",
+            longest.as_str(),
+        ] {
+            assert!(is_chat_id(value), "{value}");
+        }
+        let too_long = "é".repeat(MAX_CHAT_ID_BYTES / 2 + 1);
         for value in [
             "",
-            "0f8fad5bd9cb469fa16570867728950e",
-            "{0f8fad5b-d9cb-469f-a165-70867728950e}",
-            "0f8fad5b-d9cb-469f-a165-70867728950e/../settings",
-            "https://example.com/c/0f8fad5b-d9cb-469f-a165-70867728950e",
-            "0f8fad5b-d9cb-469f-a165-70867728950g",
+            ".",
+            "..",
+            "chat/../settings",
+            "https://example.com/c/chat",
+            "chat\\settings",
+            "chat?next=/settings",
+            "chat#top",
+            "chat\nid",
+            "chat\u{7f}",
+            too_long.as_str(),
         ] {
-            assert!(!is_chat_id(value), "{value}");
+            assert!(!is_chat_id(value), "{value:?}");
         }
     }
 

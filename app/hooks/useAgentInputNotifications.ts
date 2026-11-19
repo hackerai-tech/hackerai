@@ -5,10 +5,10 @@ import { useRouter } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
+  agentInputChatPath,
   createAgentInputNotificationTracker,
   deliverAgentInputNotification,
   getBrowserNotificationPermission,
-  isAgentInputChatId,
   isDocumentForeground,
   isPendingAgentInput,
   listenForDesktopNotificationOpen,
@@ -24,7 +24,8 @@ function useOpenChat() {
   return useCallback(
     (chatId: string) => {
       // Open even if the wait was resolved elsewhere; the chat shows its state.
-      if (isAgentInputChatId(chatId)) router.push(`/c/${chatId}`);
+      const path = agentInputChatPath(chatId);
+      if (path) router.push(path);
     },
     [router],
   );

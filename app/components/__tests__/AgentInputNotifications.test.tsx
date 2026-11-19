@@ -16,10 +16,15 @@ const mockPush = jest.fn();
 const mockRouter = { push: mockPush };
 const mockInvoke = jest.fn<(...args: unknown[]) => Promise<unknown>>();
 let mockOpenListener: ((event: { payload: unknown }) => void) | null = null;
+let mockConvexAuthenticated = true;
 
 jest.mock("convex/react", () => ({
   useQuery: (_query: unknown, args: unknown) =>
     args === "skip" ? undefined : mockPending,
+  useConvexAuth: () => ({
+    isAuthenticated: mockConvexAuthenticated,
+    isLoading: !mockConvexAuthenticated,
+  }),
 }));
 jest.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
@@ -120,6 +125,7 @@ describe("AgentInputNotifications", () => {
     mockPush.mockReset();
     mockInvoke.mockReset();
     mockOpenListener = null;
+    mockConvexAuthenticated = true;
     focused = false;
     lockGate = Promise.resolve();
     installWebLocks();
@@ -161,6 +167,37 @@ describe("AgentInputNotifications", () => {
     tab.update([waitA, waitB]);
     await flush();
     expect(MockNotification.instances).toHaveLength(1);
+  });
+
+  it("takes its baseline only after Convex auth resolves", async () => {
+    // During auth loading the query answers as signed out.
+    mockConvexAuthenticated = false;
+    const tab = renderTab();
+    tab.update([]);
+    await flush();
+
+    mockConvexAuthenticated = true;
+    tab.update([waitA]);
+    await flush();
+    expect(MockNotification.instances).toHaveLength(0);
+
+    tab.update([waitA, waitB]);
+    await waitFor(() => expect(MockNotification.instances).toHaveLength(1));
+    expect(MockNotification.instances[0].options).toEqual({
+      tag: waitB.requestId,
+    });
+  });
+
+  it("opens a legacy slug chat from a browser alert", async () => {
+    const legacy = { chatId: "legacy_chat-1", requestId: "legacy-request" };
+    const tab = renderTab();
+    tab.update([]);
+    tab.update([legacy]);
+    await waitFor(() => expect(MockNotification.instances).toHaveLength(1));
+
+    act(() => MockNotification.instances[0].onclick?.());
+
+    expect(mockPush).toHaveBeenCalledWith("/c/legacy_chat-1");
   });
 
   it("delivers distinct waits in the same chat separately", async () => {
@@ -329,7 +366,26 @@ describe("AgentInputNotifications", () => {
     act(() => mockOpenListener?.({ payload: CHAT_A }));
     expect(mockPush).toHaveBeenCalledWith(`/c/${CHAT_A}`);
 
-    act(() => mockOpenListener?.({ payload: "../settings" }));
-    expect(mockPush).toHaveBeenCalledTimes(1);
+    // Legacy slugs route as one encoded segment; delimiters and dot segments never route.
+    act(() => mockOpenListener?.({ payload: "release.notes v2" }));
+    expect(mockPush).toHaveBeenLastCalledWith("/c/release.notes%20v2");
+    for (const payload of ["../settings", "..", "https://evil.test", 42]) {
+      act(() => mockOpenListener?.({ payload }));
+    }
+    expect(mockPush).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks Desktop to show alerts for legacy slug chats", async () => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    mockInvoke.mockResolvedValue(true);
+    const tab = renderTab();
+    tab.update([]);
+    tab.update([{ chatId: "legacy_chat-1", requestId: "legacy-request" }]);
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("show_agent_input_notification", {
+        chatId: "legacy_chat-1",
+      }),
+    );
   });
 });
