@@ -2435,10 +2435,10 @@ export async function createAgentStream(
           steps.length === 0;
         // Records the value only when the existing short-circuited comparison
         // actually evaluates it; no additional estimate is computed.
-        const rollingCheckInputTokens = (): number => {
+        const rollingCheckInputTokens = async (): Promise<number> => {
           // The route-aware send guard counts parsed-file annotations attached
-          // to the prepared request. Apply the same copy-on-write attachment
-          // here so they are counted once, and only for the decision.
+          // to the prepared request and the memoized tool schema estimate.
+          // Count both here so compaction triggers before that guard fails.
           const decisionMessages = routeAwareContext
             ? addOpenRouterFileAnnotationsToLastAssistantMessage(
                 rollingModelMessages,
@@ -2448,7 +2448,8 @@ export async function createAgentStream(
           const inputTokens =
             estimateSummaryInputTokens(decisionMessages) +
             ctx.systemPromptTokens +
-            runtimePromptTokens;
+            runtimePromptTokens +
+            (routeAwareContext ? await getToolSchemaInputEstimate() : 0);
           contextBudgetDecision = { source: "rolling_check", inputTokens };
           return inputTokens;
         };
@@ -2457,15 +2458,16 @@ export async function createAgentStream(
           (providerPromptPressure !== null ||
             state.lastStepInputTokens > summarizationThreshold ||
             (ctx.mode === "agent" &&
-              rollingCheckInputTokens() > summarizationThreshold));
+              (await rollingCheckInputTokens()) > summarizationThreshold));
 
         if (
           canSummarizeAgain() &&
           (shouldCheckDurableSummary || shouldCompactInRun)
         ) {
           if (shouldCheckDurableSummary) {
+            // Same request overhead as the route-aware send guard.
             const durablePreparedInputTokens = routeAwareContext
-              ? lastPreparedInputEstimate
+              ? lastPreparedInputEstimate + (await getToolSchemaInputEstimate())
               : undefined;
             if (durablePreparedInputTokens !== undefined) {
               contextBudgetDecision = {

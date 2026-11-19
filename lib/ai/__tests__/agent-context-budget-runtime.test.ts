@@ -403,6 +403,89 @@ describe("paid 480K context through the shared Agent runner", () => {
     );
   });
 
+  it("compacts in-run when tool schemas push a request past the 480K trigger", async () => {
+    const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
+    // ~45K tokens of schema that is sent with every request.
+    const tools = {
+      run_terminal_cmd: {
+        description: " field".repeat(45_000),
+        inputSchema: jsonSchema({
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        }),
+      },
+    };
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: {
+        id: "summary",
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text: "<context_summary>Scan reviewed</context_summary>",
+          },
+        ],
+      },
+      summarizationUsage: {},
+    });
+    const state = newState();
+    const stream = await start(
+      createContext({
+        tools,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+      }),
+      state,
+    );
+    expect(state.ctxUsage.maxTokens).toBe(500_000);
+    // Messages and system alone stay below the 480K trigger; with the schema
+    // the request exceeds the 500K send guard unless it is compacted first.
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: `Review the scan${" ordinary".repeat(465_000)}`,
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "scan",
+            toolName: "run_terminal_cmd",
+            input: { command: "cat scan.txt" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "scan",
+            toolName: "run_terminal_cmd",
+            output: { type: "text", value: "scan parsed" },
+          },
+        ],
+      },
+    ];
+
+    const prepared = (await stream.prepareStep({
+      steps: [{ toolResults: [] }],
+      stepNumber: 1,
+      messages,
+    })) as { messages: ModelMessage[] };
+
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    const sent = JSON.stringify(prepared.messages);
+    expect(sent).toContain("Scan reviewed");
+    expect(sent).not.toContain("Review the scan");
+  });
+
   it.each([
     [
       "explicit Pro",
