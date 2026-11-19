@@ -56,9 +56,33 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 
+# Agent input notifications on Windows and Linux. The webview gets no plugin
+# permissions; only the two app commands in notifications.rs reach it.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-notification = "=2.8.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.62.2", features = ["UI_Notifications"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }
+# Agent input notifications use the 0.6 family already locked through Tauri.
+# Renamed so the existing objc2 0.5 web view code keeps its import path.
+objc2_06 = { package = "objc2", version = "0.6" }
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+  "std",
+  "block2",
+  "UNNotification",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationResponse",
+  "UNNotificationSettings",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

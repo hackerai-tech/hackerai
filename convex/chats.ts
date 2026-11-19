@@ -2299,6 +2299,71 @@ export const getActiveTriggerRunsForUser = query({
 });
 
 /**
+ * Stable IDs for saved waits only. Notifications are generic, so this never
+ * exposes wait tokens, questions, approval targets, titles, or user IDs.
+ */
+function pendingAgentInputRequestIds(chat: Doc<"chats">): string[] {
+  const runId = chat.active_trigger_run_id;
+  if (
+    !runId ||
+    chat.canceled_at !== undefined ||
+    chat.deletion_started_at !== undefined
+  ) {
+    return [];
+  }
+  const requestIds: string[] = [];
+  const wait = chat.active_agent_user_wait;
+  // A submitting wait already has a reply; a different run's wait is stale.
+  if (wait?.status === "waiting" && wait.runId === runId) {
+    requestIds.push(JSON.stringify(["question", runId, wait.toolCallId]));
+  }
+  // Child-agent approvals keep their own sourceRunId but surface on this run.
+  const approvalId = chat.active_agent_approval_request?.approvalId;
+  if (chat.active_agent_approval_pending === true && approvalId) {
+    requestIds.push(JSON.stringify(["approval", runId, approvalId]));
+  }
+  return requestIds;
+}
+
+export const getPendingAgentInputNotifications = query({
+  args: {},
+  returns: v.array(v.object({ chatId: v.string(), requestId: v.string() })),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    try {
+      await assertUserCanAccessChatHistory(ctx, identity.subject);
+    } catch (error) {
+      if (
+        getConvexErrorCode(getConvexErrorData(error)) ===
+        CHAT_ACCESS_SUSPENDED_CODE
+      ) {
+        return [];
+      }
+      throw error;
+    }
+    if (await isUserDeletionFenced(ctx.db, identity.subject)) return [];
+
+    // Includes project chats: this index is keyed only by owner and run.
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", identity.subject).gt("active_trigger_run_id", ""),
+      )
+      .take(MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN);
+
+    return chats.flatMap((chat) =>
+      chat.user_id === identity.subject
+        ? pendingAgentInputRequestIds(chat).map((requestId) => ({
+            chatId: chat.id,
+            requestId,
+          }))
+        : [],
+    );
+  },
+});
+
+/**
  * Delete all chats for the authenticated backend user using the same bounded
  * batch deleter as the client mutation.
  */

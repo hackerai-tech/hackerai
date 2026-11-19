@@ -63,6 +63,7 @@ const {
   deleteAllChatsForUser,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
+  getPendingAgentInputNotifications,
   setActiveAgentApprovalPending,
   setActiveAgentUserWait,
   claimAgentUserWaitReply,
@@ -1512,4 +1513,188 @@ it("keeps Goal time frozen when approval ends during browser takeover", async ()
   } finally {
     now.mockRestore();
   }
+});
+
+describe("getPendingAgentInputNotifications", () => {
+  const makeReaderCtx = (
+    chats: Record<string, unknown>[],
+    { subject = "user-1", fenced = false } = {},
+  ) => {
+    const indexCalls: Array<{ name: string; eq: unknown[]; gt: unknown[] }> =
+      [];
+    const take = jest.fn<any>().mockResolvedValue(chats);
+    const query = jest.fn((table: string) => ({
+      withIndex: (
+        name: string,
+        build?: (q: Record<string, jest.Mock>) => unknown,
+      ) => {
+        const call = { name, eq: [] as unknown[], gt: [] as unknown[] };
+        const q: Record<string, jest.Mock> = {};
+        q.eq = jest.fn((...args: unknown[]) => (call.eq.push(args), q));
+        q.gt = jest.fn((...args: unknown[]) => (call.gt.push(args), q));
+        build?.(q);
+        indexCalls.push(call);
+        return table === "user_deletion_fences"
+          ? { first: async () => (fenced ? { _id: "fence" } : null) }
+          : { take };
+      },
+    }));
+    const ctx = {
+      auth: {
+        getUserIdentity: async () => (subject ? { subject } : null),
+      },
+      db: { query },
+    } as any;
+    return { ctx, take, indexCalls };
+  };
+
+  const waitingChat = {
+    id: "chat-question",
+    user_id: "user-1",
+    title: "Private engagement title",
+    active_trigger_run_id: "run-1",
+    active_agent_user_wait: {
+      runId: "run-1",
+      toolCallId: "tool-1",
+      tokenId: "secret-wait-token",
+      status: "waiting",
+      questions: [{ question: "Private target question" }],
+    },
+  };
+
+  it("returns only stable chat and request IDs for saved questions and approvals", async () => {
+    const { ctx, take, indexCalls } = makeReaderCtx([
+      waitingChat,
+      {
+        id: "chat-approval",
+        user_id: "user-1",
+        // Project chats share the owner/run index and must be included.
+        project_id: "project-1",
+        active_trigger_run_id: "run-2",
+        active_agent_approval_pending: true,
+        active_agent_approval_request: {
+          approvalId: "approval-1",
+          toolCallId: "tool-2",
+          sourceRunId: "child-run",
+          target: "rm -rf /private/target",
+        },
+      },
+    ]);
+
+    const result = await getPendingAgentInputNotifications.handler(ctx, {});
+
+    expect(result).toEqual([
+      {
+        chatId: "chat-question",
+        requestId: JSON.stringify(["question", "run-1", "tool-1"]),
+      },
+      {
+        chatId: "chat-approval",
+        requestId: JSON.stringify(["approval", "run-2", "approval-1"]),
+      },
+    ]);
+    const serialized = JSON.stringify(result);
+    for (const secret of [
+      "secret-wait-token",
+      "Private target question",
+      "Private engagement title",
+      "rm -rf",
+      "user-1",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(indexCalls).toContainEqual({
+      name: "by_user_and_active_trigger_run",
+      eq: [["user_id", "user-1"]],
+      gt: [["active_trigger_run_id", ""]],
+    });
+    expect(take).toHaveBeenCalledWith(100);
+  });
+
+  it("gives distinct waits in one chat their own request IDs", async () => {
+    const { ctx } = makeReaderCtx([
+      {
+        ...waitingChat,
+        active_agent_approval_pending: true,
+        active_agent_approval_request: {
+          approvalId: "approval-2",
+          toolCallId: "tool-3",
+        },
+      },
+    ]);
+
+    const ids = (await getPendingAgentInputNotifications.handler(ctx, {})).map(
+      (row: { requestId: string }) => row.requestId,
+    );
+
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it.each([
+    [
+      "a reply is being submitted",
+      {
+        active_agent_user_wait: {
+          ...waitingChat.active_agent_user_wait,
+          status: "submitting",
+        },
+      },
+    ],
+    [
+      "the wait belongs to another run",
+      {
+        active_agent_user_wait: {
+          ...waitingChat.active_agent_user_wait,
+          runId: "old-run",
+        },
+      },
+    ],
+    ["the chat was canceled", { canceled_at: 1 }],
+    ["the chat is being deleted", { deletion_started_at: 1 }],
+    [
+      "an approval has no persisted ID",
+      {
+        active_agent_user_wait: undefined,
+        active_agent_approval_pending: true,
+        active_agent_approval_request: undefined,
+      },
+    ],
+  ])("omits a wait when %s", async (_case, fields) => {
+    const { ctx } = makeReaderCtx([{ ...waitingChat, ...fields }]);
+
+    await expect(
+      getPendingAgentInputNotifications.handler(ctx, {}),
+    ).resolves.toEqual([]);
+  });
+
+  it("returns nothing for signed-out, suspended, or deleting accounts", async () => {
+    const {
+      assertUserCanAccessChatHistory,
+    } = require("../lib/suspensionGuards");
+    const { ConvexError } = require("convex/values");
+
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat], { subject: "" }).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+
+    assertUserCanAccessChatHistory.mockRejectedValueOnce(
+      new ConvexError({ code: "CHAT_ACCESS_SUSPENDED" }),
+    );
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat]).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat], { fenced: true }).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+  });
 });

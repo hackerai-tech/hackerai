@@ -13,6 +13,7 @@ import MainSidebar from "./Sidebar";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { hasOpenShortcutOverlay } from "@/lib/keyboard-shortcuts";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { AgentInputNotifications } from "./AgentInputNotifications";
 import {
   loadSettingsDialog,
   onOpenSettingsDialog,
@@ -197,6 +198,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
       <KeyboardShortcuts
         onToggleMobileSidebar={() => setChatSidebarOpen(!chatSidebarOpen)}
       />
+      <AgentInputNotifications />
       {/* Chat Sidebar - Desktop: only mount once isMobile is resolved to avoid flash on mobile */}
       {isMobile === false && (
         <div
