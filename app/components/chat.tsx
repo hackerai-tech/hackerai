@@ -126,6 +126,7 @@ import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { useWorkspaceFilesEnabled } from "./ComputerPanelToggle";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
@@ -2749,6 +2750,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     agentLongRunId ?? activeTriggerRunId,
   );
 
+  // Matches ComputerSidebar's decision to render tabbed Computer.
+  const computerTabsEnabled = useWorkspaceFilesEnabled(chatId);
+
   // Chat handlers
   const {
     handleSubmit,
@@ -2795,6 +2799,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     resetAutoContinueCount,
     sendDisabledReason: computerSendDisabledReason,
     pendingUserWait,
+    computerTabsEnabled,
   });
 
   // Automatic queue processing - send next queued message when ready

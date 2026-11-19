@@ -157,6 +157,7 @@ export function ComputerWorkspace({
     setPreviousSelection(selection);
     if (selection && !isSidebarWorkspaceFiles(selection))
       setActivity(selection);
+    else if (!selection && open) setActivity(null);
   }
   if (open && selection && lastRequest !== openRequest) {
     setLastRequest(openRequest);

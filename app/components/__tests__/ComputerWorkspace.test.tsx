@@ -455,3 +455,35 @@ it("uses direct tabs and a clear close action in the mobile overlay", async () =
   fireEvent.click(screen.getByRole("button", { name: "Close Computer" }));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it("clears a deleted Activity entry without dismissing the selected Files tab", () => {
+  const renderActivity = jest.fn((content: SidebarContent | null) => (
+    <p>{content ? "Retained tool" : "No activity"}</p>
+  ));
+  const { rerender } = render(
+    <ComputerWorkspace
+      {...props}
+      messages={[]}
+      selection={activity}
+      renderActivity={renderActivity}
+    />,
+  );
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  rerender(
+    <ComputerWorkspace
+      {...props}
+      messages={[]}
+      selection={null}
+      renderActivity={renderActivity}
+    />,
+  );
+  expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+  expect(
+    screen.getByText("Agent activity appears here when tools run."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Retained tool")).not.toBeInTheDocument();
+});

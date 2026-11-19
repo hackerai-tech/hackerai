@@ -117,7 +117,7 @@ jest.mock("@/components/ui/tooltip", () => ({
   ),
 }));
 jest.mock("@/components/ui/code-action-buttons", () => ({
-  CodeActionButtons: () => null,
+  CodeActionButtons: () => <div data-testid="code-action-buttons" />,
 }));
 jest.mock("../TerminalCodeBlock", () => ({
   TerminalCodeBlock: ({ command }: { command: string }) => <pre>{command}</pre>,
@@ -273,5 +273,56 @@ describe("ComputerSidebar with Computer tabs", () => {
     rerender(view(withNextParentTool));
     expect(mockWorkspace.props?.openRequest).not.toBe(requestBeforeSubagent);
     expect(mockWorkspace.unmounts).toBe(0);
+  });
+
+  it("shows a subagent's captured edit with the workspace-files preview", () => {
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: "completed", trigger_run_id: "run-child" }
+        : query === "getMessagesOwned"
+          ? [
+              {
+                role: "assistant",
+                sequence: 1,
+                parts: [
+                  {
+                    type: "tool-file",
+                    toolCallId: "child-edit",
+                    state: "output-available",
+                    input: { action: "edit", path: "/work/app.ts" },
+                    output: {
+                      originalContent: "old\n",
+                      modifiedContent: "new\n",
+                    },
+                  },
+                ],
+              },
+            ]
+          : undefined,
+    );
+    mockState = {
+      ...mockState,
+      sidebarContent: {
+        path: "/work/app.ts",
+        content: "new\n",
+        action: "editing",
+        toolCallId: "child-edit",
+        originalContent: "old\n",
+        modifiedContent: "new\n",
+        origin: {
+          kind: "subagent",
+          subagentId: "sa_child",
+          returnContent: {
+            kind: "subagents",
+            parentMessageId: "parent-message",
+            toolCallId: "delegate-tool",
+          },
+        },
+      },
+    };
+    render(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    expect(screen.getByTestId("dynamic-component")).toBeInTheDocument();
+    // The capture preview owns its actions, so the diff toolbar is hidden.
+    expect(screen.queryByTestId("code-action-buttons")).not.toBeInTheDocument();
   });
 });

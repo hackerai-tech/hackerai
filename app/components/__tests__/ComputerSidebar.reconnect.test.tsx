@@ -1426,6 +1426,8 @@ describe("ComputerSidebar reconnect behavior", () => {
     const { rerender } = render(
       <ComputerSidebar messages={[parentMessage]} status="streaming" />,
     );
+    const setContentCalls = mockSetSidebarContent.mock.calls.length;
+    const openCalls = mockOpenSidebar.mock.calls.length;
 
     childStatus = "completed";
     rerender(
@@ -1448,7 +1450,65 @@ describe("ComputerSidebar reconnect behavior", () => {
       />,
     );
 
-    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    // Neither a background replacement nor an explicit open moves the pinned view.
+    expect(mockSetSidebarContent).toHaveBeenCalledTimes(setContentCalls);
+    expect(mockOpenSidebar).toHaveBeenCalledTimes(openCalls);
+  });
+
+  describe("captured-file previews", () => {
+    const editMessage = {
+      id: "assistant-edit",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-file",
+          toolCallId: "edit-1",
+          state: "output-available",
+          input: { action: "edit", path: "/work/app.ts" },
+          output: { originalContent: "old\n", modifiedContent: "new\n" },
+        },
+      ],
+    };
+    const editContent: SidebarContent = {
+      path: "/work/app.ts",
+      content: "new\n",
+      action: "editing",
+      toolCallId: "edit-1",
+      originalContent: "old\n",
+      modifiedContent: "new\n",
+    };
+
+    it.each([
+      [undefined, true],
+      [false, true],
+      [true, false],
+    ])(
+      "with capturedFilesEnabled=%s keeps the edit toolbar: %s",
+      (capturedFilesEnabled, toolbar) => {
+        render(
+          <ComputerSidebarBase
+            sidebarOpen
+            closeSidebar={mockCloseSidebar}
+            sidebarContent={editContent}
+            messages={[editMessage]}
+            status="ready"
+            capturedFilesEnabled={capturedFilesEnabled}
+          />,
+        );
+        // The diff (feature off) or capture preview (feature on) loads dynamically.
+        expect(screen.getByTestId("dynamic-component")).toBeInTheDocument();
+        expect(screen.queryByTestId("code-action-buttons") !== null).toBe(
+          toolbar,
+        );
+      },
+    );
+
+    it("keeps the original diff and toolbar in the standalone sidebar", () => {
+      mockSidebarContent = editContent;
+      render(<ComputerSidebar messages={[editMessage]} status="ready" />);
+      expect(screen.getByTestId("dynamic-component")).toBeInTheDocument();
+      expect(screen.getByTestId("code-action-buttons")).toBeInTheDocument();
+    });
   });
 
   it("still follows newly arriving tools in normal messages", () => {

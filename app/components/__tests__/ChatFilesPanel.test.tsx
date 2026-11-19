@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ChatFilesPanel, CapturedFilePreview } from "../ChatFilesPanel";
 import { collectChatFiles } from "@/lib/workspace-preview/chat-files";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { WORKSPACE_DOWNLOAD_LIMIT } from "@/lib/sandbox/workspace-files";
 const getUrl = jest.fn();
 const mockSaveBinary = jest.fn();
 const mockSaveText = jest.fn();
@@ -305,6 +306,57 @@ it.each([
     expect(button).toBeEnabled();
   },
 );
+
+it.each([
+  [
+    "oversized",
+    { ok: true, length: WORKSPACE_DOWNLOAD_LIMIT + 1 },
+    "File exceeds the size limit for this action.",
+  ],
+  ["rejected", { ok: false, length: 10 }, "Saved file is unavailable."],
+] as const)(
+  "cancels a %s saved-file body and keeps the user-facing reason",
+  async (_case, { ok, length }, message) => {
+    mockTauri = true;
+    // Cleanup failure must not replace the reason shown to the user.
+    const cancel = jest.fn(async () => {
+      throw new Error("cancel failed");
+    });
+    const getReader = jest.fn();
+    getUrl.mockResolvedValue("https://signed/report");
+    global.fetch = signedOnlyFetch({
+      "https://signed/report": {
+        ok,
+        headers: { get: () => String(length) },
+        body: { cancel, getReader },
+      },
+    }) as unknown as typeof fetch;
+    fireEvent.click(await openPersistedReport());
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(message),
+    );
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(getReader).not.toHaveBeenCalled();
+    expect(mockSaveBinary).not.toHaveBeenCalled();
+  },
+);
+
+it("still reads a saved file whose declared size equals the limit", async () => {
+  mockTauri = true;
+  mockSaveBinary.mockResolvedValue("/Users/me/report.pdf");
+  getUrl.mockResolvedValue("https://signed/report");
+  global.fetch = signedOnlyFetch({
+    "https://signed/report": {
+      ...bytesResponse(pdfBytes),
+      headers: { get: () => String(WORKSPACE_DOWNLOAD_LIMIT) },
+    },
+  }) as unknown as typeof fetch;
+  fireEvent.click(await openPersistedReport());
+  await waitFor(() => expect(mockSaveBinary).toHaveBeenCalledTimes(1));
+  expect(Array.from(mockSaveBinary.mock.calls[0][1])).toEqual(
+    Array.from(pdfBytes),
+  );
+});
 
 it("keeps text captures as text and names excerpts as excerpts on Desktop", async () => {
   mockTauri = true;

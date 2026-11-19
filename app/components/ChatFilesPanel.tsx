@@ -32,14 +32,26 @@ const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
   ssr: false,
 });
 
+// Cancelling the body aborts a rejected transfer. Cleanup failures must not
+// replace the error the user sees.
+function discard(stream: { cancel(): Promise<void> } | null | undefined) {
+  void Promise.resolve()
+    .then(() => stream?.cancel())
+    .catch(() => {});
+}
+
 async function readBounded(
   response: Response,
   limit: number,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  if (!response.ok || !response.body)
+  if (!response.ok || !response.body) {
+    discard(response.body);
     throw new Error("Saved file is unavailable.");
-  if (Number(response.headers.get("content-length")) > limit)
+  }
+  if (Number(response.headers.get("content-length")) > limit) {
+    discard(response.body);
     throw new Error("File exceeds the size limit for this action.");
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -53,7 +65,7 @@ async function readBounded(
       chunks.push(value);
     }
   } finally {
-    await reader.cancel();
+    discard(reader);
   }
   const bytes = new Uint8Array(size);
   let offset = 0;

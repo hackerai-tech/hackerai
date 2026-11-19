@@ -121,6 +121,8 @@ interface ComputerSidebarProps {
   browserAgentId?: string;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
   onTakeoverRequestConsumed?: (requestId: string) => void;
+  /** Captured-file previews belong to the workspace-files feature. */
+  capturedFilesEnabled?: boolean;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -366,6 +368,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   browserAgentId = "parent",
   onBrowserContinue,
   onTakeoverRequestConsumed,
+  capturedFilesEnabled = false,
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -473,8 +476,12 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return (live ?? sidebarContent) as typeof sidebarContent;
   }, [sidebarContent, toolExecutions]);
 
-  const capturedFiles = useMemo(() => collectChatFiles(messages), [messages]);
+  const capturedFiles = useMemo(
+    () => (capturedFilesEnabled ? collectChatFiles(messages) : []),
+    [capturedFilesEnabled, messages],
+  );
   const capturedFile =
+    capturedFilesEnabled &&
     resolvedFile &&
     resolvedFile.action !== "viewing" &&
     !resolvedFile.isExecuting &&
@@ -1491,8 +1498,10 @@ const SubagentComputerSidebar = ({
   origin,
   sidebarContent,
   onBrowserContinue,
+  capturedFilesEnabled,
 }: {
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  capturedFilesEnabled: boolean;
   chatId: string;
   closeSidebar: () => void;
   parentMessages: any[];
@@ -1602,6 +1611,7 @@ const SubagentComputerSidebar = ({
       sidebarOpen
       browserChatId={chatId}
       browserAgentId={origin.subagentId}
+      capturedFilesEnabled={capturedFilesEnabled}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}
@@ -1650,6 +1660,8 @@ export const ComputerSidebar: React.FC<{
   } = useGlobalState();
 
   const tabsEnabled = useWorkspaceFilesEnabled(chatId);
+  // The same decision that renders ComputerWorkspace gates captured-file views.
+  const workspaceFilesAvailable = tabsEnabled && !!chatId;
 
   const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
   const keepGoalDraft = useCallback((draft: GoalEditorDraft | undefined) => {
@@ -1759,7 +1771,7 @@ export const ComputerSidebar: React.FC<{
 
   return (
     <>
-      {tabsEnabled && chatId && (
+      {workspaceFilesAvailable && (
         <ComputerWorkspace
           chatId={chatId}
           messages={messages ?? []}
@@ -1779,6 +1791,7 @@ export const ComputerSidebar: React.FC<{
               browserChatId={chatId}
               onBrowserContinue={onBrowserContinue}
               onTakeoverRequestConsumed={consumeBrowserTakeoverRequest}
+              capturedFilesEnabled
             />
           )}
         />
@@ -1805,6 +1818,7 @@ export const ComputerSidebar: React.FC<{
         <SubagentComputerSidebar
           onBrowserContinue={onBrowserContinue}
           key={origin.subagentId}
+          capturedFilesEnabled={workspaceFilesAvailable}
           chatId={chatId ?? ""}
           closeSidebar={closeSidebar}
           parentMessages={messages ?? []}
@@ -1814,7 +1828,7 @@ export const ComputerSidebar: React.FC<{
           sidebarContent={sidebarContent}
         />
       ) : (
-        (!tabsEnabled || !chatId) &&
+        !workspaceFilesAvailable &&
         sidebarOpen && (
           <ComputerSidebarBase
             onBrowserContinue={onBrowserContinue}
