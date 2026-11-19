@@ -1290,20 +1290,23 @@ export function readDesktopStreamFenceDiagnostic(
       STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES,
     );
     if (version !== 1) return reported;
-    // The source joins only the taskkill and report snapshot validated
-    // above; one that changed meanwhile keeps only that earlier snapshot.
-    const [taskkillVersion, outcome, code, reportVersion, report] =
-      ownDataValuesOrUndefined(source, [
-        ...STREAM_FENCE_TASKKILL_PROPERTIES,
-        STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
-        ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
-      ]);
+    // Reading the source can change earlier properties on a proxy. Keep the
+    // already validated report unless the entire qualifying fence and the
+    // source version still match.
+    const fenceKeys = [
+      ...STREAM_FENCE_PROPERTIES,
+      ...STREAM_FENCE_CLEANUP_PROPERTIES,
+      ...STREAM_FENCE_TASKKILL_PROPERTIES,
+      STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
+      ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
+    ] as const;
+    const rechecked = ownDataValuesOrUndefined(source, [
+      ...fenceKeys,
+      STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES[0],
+    ]);
     if (
-      taskkillVersion !== 1 ||
-      outcome !== taskkillOutcome ||
-      code !== exitCode ||
-      reportVersion !== 1 ||
-      report !== rootReport
+      !fenceKeys.every((key, index) => rechecked[index] === reported[key]) ||
+      rechecked.at(-1) !== version
     )
       return reported;
     return (

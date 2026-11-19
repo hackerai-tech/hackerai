@@ -2434,9 +2434,9 @@ describe("stream fence origin", () => {
             }
           });
 
-          it("joins the source only to the report snapshot it validated", () => {
+          it("joins the source only to the eligible fence snapshot it validated", () => {
             const pair = sourcePair("application_exit");
-            // While the source is read, the bag's report or code changes.
+            // Reading the source can mutate the bag's previously read fields.
             const changing = (
               change?: (target: Record<string, unknown>) => void,
             ) =>
@@ -2462,6 +2462,17 @@ describe("stream fence origin", () => {
               },
               (target: Record<string, unknown>) => {
                 target.desktop_stream_fence_windows_taskkill_exit_code = 255;
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_stop_request_source_version = 2;
+                target.desktop_stream_fence_stop_request_source = "cancel_ipc";
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_origin = "owner_timeout";
+              },
+              (target: Record<string, unknown>) => {
+                target.desktop_stream_fence_cleanup_failure =
+                  "leader_wait_failed";
               },
             ])
               // A mixed snapshot keeps only the earlier validated report.
