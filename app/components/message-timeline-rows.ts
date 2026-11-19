@@ -68,6 +68,46 @@ export type DeriveChatTimelineRowsOptions = {
 
 const EMPTY_MESSAGE_IDS: ReadonlySet<string> = new Set();
 
+type FileCardProjection = { keptKey: string; message: ChatMessage };
+
+// Reusing the projected message while its source and kept files are unchanged
+// keeps row identity stable, so settled rows are not re-rendered per derive.
+const fileCardProjections = new WeakMap<ChatMessage, FileCardProjection>();
+
+/**
+ * Saved Agent checkpoints and the response that resumes them can both store
+ * the same generated file. Shows each stored file ID once per user turn by
+ * dropping repeats from later message cards. Stored messages are not changed.
+ */
+function projectGeneratedFileCards(
+  message: ChatMessage,
+  shownFileIds: Set<string>,
+): ChatMessage {
+  const fileDetails = message.fileDetails;
+  if (!fileDetails || fileDetails.length === 0) return message;
+
+  const keptIndexes: number[] = [];
+  fileDetails.forEach((file, index) => {
+    if (shownFileIds.has(file.fileId)) return;
+    shownFileIds.add(file.fileId);
+    keptIndexes.push(index);
+  });
+  if (keptIndexes.length === fileDetails.length) return message;
+
+  const keptKey = keptIndexes.join(",");
+  const cached = fileCardProjections.get(message);
+  if (cached?.keptKey === keptKey) return cached.message;
+
+  // An empty array is intentional: MessageItem treats a missing value as a
+  // cue to use temporary file details, which could restore the duplicate.
+  const projected: ChatMessage = {
+    ...message,
+    fileDetails: keptIndexes.map((index) => fileDetails[index]),
+  };
+  fileCardProjections.set(message, { keptKey, message: projected });
+  return projected;
+}
+
 export function findLatestTimelineAnchorMessageId(
   messages: readonly ChatMessage[],
 ): string | null {
@@ -118,11 +158,18 @@ export function deriveChatTimelineRows({
   restoredAgentMessageIds = EMPTY_MESSAGE_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
+  // Generated file IDs already shown since the latest explicit user turn.
+  // Hidden auto-continue prompts belong to the same uninterrupted response.
+  let shownFileIds = new Set<string>();
 
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
     const message = messages[messageIndex];
     const isAgentAssistant =
       message.role === "assistant" && message.metadata?.mode === "agent";
+
+    if (message.role === "user" && !message.metadata?.isAutoContinue) {
+      shownFileIds = new Set();
+    }
 
     if (!isAgentAssistant) {
       rows.push({
@@ -155,11 +202,15 @@ export function deriveChatTimelineRows({
     // spacing before any Trigger activity arrives, visibly moving the loader.
     if (isPendingEmptyAgentMessage) continue;
 
+    // Only the message card renders generated file cards. Activity rows keep
+    // the stored message so in-place tool file links still resolve.
+    const cardMessage = projectGeneratedFileCards(message, shownFileIds);
+
     if (projection.activities.length === 0) {
       rows.push({
         kind: "message",
         id: `message:${message.id}`,
-        message,
+        message: cardMessage,
         messageIndex,
         workPresentation: "inline",
       });
@@ -237,7 +288,7 @@ export function deriveChatTimelineRows({
     rows.push({
       kind: "message",
       id: `message:${message.id}`,
-      message,
+      message: cardMessage,
       messageIndex,
       workPresentation: "timeline-shell",
     });
