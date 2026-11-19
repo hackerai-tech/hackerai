@@ -18,6 +18,10 @@ import {
   isFreeThreeStepsPolicy,
 } from "@/lib/experiments/abliteration-keys";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
+import {
+  isOpenRouterGenerationId,
+  snapshotOpenRouterResponseIds,
+} from "@/lib/ai/openrouter-stream-error-context";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 type StreamOptions = Parameters<
@@ -35,6 +39,71 @@ type ProviderOutcome =
   | "content_filter"
   | "truncated"
   | "empty";
+
+const GROK_MODEL = /^x-ai\/grok-/;
+/** OpenRouter's documented normalized finish reasons; other raw values are dropped. */
+const OPENROUTER_RAW_FINISH_REASONS = new Set([
+  "stop",
+  "length",
+  "content_filter",
+  "tool_calls",
+  "function_call",
+  "error",
+]);
+/** Report a served upstream only when OpenRouter names it; never infer from the model. */
+const SERVED_PROVIDERS = new Map([["xai", "xAI"]]);
+
+/** Read an own data property without invoking accessors on provider objects. */
+const ownValue = (source: unknown, key: string): unknown => {
+  if (typeof source !== "object" || source === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+};
+
+/**
+ * Same-invocation IDs that let OpenRouter/xAI support locate a Grok filter
+ * outcome. Only validated tokens and allowlisted enums are returned; malformed
+ * metadata yields fewer properties, never an exception.
+ */
+function grokFilterCorrelation(args: {
+  readHeaders: () => unknown;
+  responseGenerationId: string | undefined;
+  providerMetadata: unknown;
+  rawFinishReason: unknown;
+}): Record<string, string | number> {
+  try {
+    const ids = snapshotOpenRouterResponseIds(args.readHeaders);
+    const generationId = ids.generationId ?? args.responseGenerationId;
+    const provider = ownValue(
+      ownValue(args.providerMetadata, "openrouter"),
+      "provider",
+    );
+    const servedProvider =
+      typeof provider === "string"
+        ? SERVED_PROVIDERS.get(provider.toLowerCase())
+        : undefined;
+    return {
+      openrouter_correlation_version: 1,
+      openrouter_response_headers: ids.headers,
+      ...(generationId
+        ? {
+            openrouter_generation_id: generationId,
+            openrouter_generation_id_source: ids.generationId
+              ? "response_header"
+              : "response_metadata",
+          }
+        : {}),
+      ...(ids.requestId ? { openrouter_request_id: ids.requestId } : {}),
+      ...(servedProvider ? { openrouter_served_provider: servedProvider } : {}),
+      ...(typeof args.rawFinishReason === "string" &&
+      OPENROUTER_RAW_FINISH_REASONS.has(args.rawFinishReason)
+        ? { raw_finish_reason: args.rawFinishReason }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
 
 export type ModelStepRouting = {
   plannedBaselineContinuation?: boolean;
@@ -330,6 +399,7 @@ export class AbliteratedModelTelemetry {
           let reasoningCharacters = 0;
           let firstContentMs: number | undefined;
           let responseModel = model.modelId;
+          let responseGenerationId: string | undefined;
           const recordServedRouting = () => {
             if (annotationAppended && !countedAnnotatedServing) {
               this.annotatedServed++;
@@ -463,8 +533,11 @@ export class AbliteratedModelTelemetry {
                     return;
                   }
                   const part = next.value;
-                  if (part.type === "response-metadata" && part.modelId)
-                    responseModel = part.modelId;
+                  if (part.type === "response-metadata") {
+                    if (part.modelId) responseModel = part.modelId;
+                    if (isOpenRouterGenerationId(part.id))
+                      responseGenerationId ??= part.id;
+                  }
                   if (part.type === "text-delta") {
                     textCharacters += part.delta.trim().length;
                     if (part.delta.trim()) expose();
@@ -477,7 +550,7 @@ export class AbliteratedModelTelemetry {
                   }
                   if (part.type === "error") finish("error");
                   if (part.type === "finish") {
-                    finish(
+                    const outcome: ProviderOutcome =
                       part.finishReason.unified === "error"
                         ? "error"
                         : part.finishReason.unified === "content-filter"
@@ -486,27 +559,35 @@ export class AbliteratedModelTelemetry {
                             ? "truncated"
                             : textCharacters > 0 || toolCalls > 0
                               ? "completed"
-                              : "empty",
-                      {
-                        finish_reason: part.finishReason.unified,
-                        input_tokens: part.usage.inputTokens.total,
-                        output_tokens: part.usage.outputTokens.total,
-                        cache_read_tokens: part.usage.inputTokens.cacheRead,
-                        reasoning_tokens: part.usage.outputTokens.reasoning,
-                        ...(part.usage.inputTokens.total !== undefined &&
-                          part.usage.outputTokens.total !== undefined && {
-                            estimated_provider_cost_dollars:
-                              calculateRawModelUsageCostDollars({
-                                inputTokens: part.usage.inputTokens.total,
-                                outputTokens: part.usage.outputTokens.total,
-                                cacheReadTokens:
-                                  part.usage.inputTokens.cacheRead,
-                                modelName: responseModel,
-                              }),
-                            cost_source: "configured_token_rates",
-                          }),
-                      },
-                    );
+                              : "empty";
+                    finish(outcome, {
+                      ...(outcome === "content_filter" &&
+                        model.provider.split(".")[0] === "openrouter" &&
+                        (GROK_MODEL.test(model.modelId) ||
+                          GROK_MODEL.test(responseModel)) &&
+                        grokFilterCorrelation({
+                          readHeaders: () => result.response?.headers,
+                          responseGenerationId,
+                          providerMetadata: part.providerMetadata,
+                          rawFinishReason: part.finishReason.raw,
+                        })),
+                      finish_reason: part.finishReason.unified,
+                      input_tokens: part.usage.inputTokens.total,
+                      output_tokens: part.usage.outputTokens.total,
+                      cache_read_tokens: part.usage.inputTokens.cacheRead,
+                      reasoning_tokens: part.usage.outputTokens.reasoning,
+                      ...(part.usage.inputTokens.total !== undefined &&
+                        part.usage.outputTokens.total !== undefined && {
+                          estimated_provider_cost_dollars:
+                            calculateRawModelUsageCostDollars({
+                              inputTokens: part.usage.inputTokens.total,
+                              outputTokens: part.usage.outputTokens.total,
+                              cacheReadTokens: part.usage.inputTokens.cacheRead,
+                              modelName: responseModel,
+                            }),
+                          cost_source: "configured_token_rates",
+                        }),
+                    });
                   }
                   controller.enqueue(part);
                 } catch (error) {

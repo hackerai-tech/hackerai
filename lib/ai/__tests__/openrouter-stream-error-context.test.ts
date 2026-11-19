@@ -9,6 +9,8 @@ import {
 } from "@/lib/utils/error-utils";
 import { getOpenRouterStreamErrorContext } from "@/lib/utils/openrouter-stream-error-context";
 import { withOpenRouterStreamErrorContext } from "../openrouter-stream-error-context";
+import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliterated-model";
 
 const edge = require("next/dist/compiled/@edge-runtime/primitives/fetch");
 const replacements = {
@@ -387,6 +389,72 @@ it("preserves actual SDK text completion and non-streaming generation", async ()
   expect(doGenerate).toHaveBeenCalledTimes(1);
   expect(doGenerate).toHaveBeenCalledWith(params);
 });
+
+it.each(["ask", "agent"])(
+  "records same-call correlation for an actual SDK %s Grok content-filter finish",
+  async (mode) => {
+    const fetch = jest.fn().mockResolvedValue(
+      new Response(
+        'data: {"id":"gen-sdk-filter","provider":"xAI","model":"x-ai/grok-4.6","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}}\n\ndata: [DONE]\n\n',
+        {
+          headers: {
+            "content-type": "text/event-stream",
+            "x-request-id": "req-sdk-filter",
+            authorization: "PRIVATE_AUTH_CANARY",
+          },
+        },
+      ),
+    );
+    const capture = jest.fn();
+    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+      assignment: {
+        key: ABLITERATED_EXPERIMENT_KEY,
+        variant: "control",
+        modelKey: "model-grok-4.6",
+        baselineModel: "model-grok-4.6",
+      },
+      messageId: "message",
+      chatId: "chat",
+      mode: mode as "ask" | "agent",
+      subscription: "pro",
+    });
+    const wrapped = telemetry.wrap(
+      withOpenRouterStreamErrorContext(
+        createOpenRouter({ apiKey: "synthetic-unused", fetch }).chat(
+          "x-ai/grok-4.6",
+        ),
+      ),
+      0,
+    );
+    const result = streamText({
+      model:
+        mode === "agent"
+          ? withProviderStreamTimeout(wrapped, { timeoutMs: 1000 })
+          : wrapped,
+      prompt: "synthetic",
+      maxRetries: 0,
+    });
+    expect(await result.finishReason).toBe("content-filter");
+    const outcome = capture.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.event === "abliterated_model_provider_outcome");
+    expect(outcome?.properties).toMatchObject({
+      outcome: "content_filter",
+      requested_model: "x-ai/grok-4.6",
+      response_model: "x-ai/grok-4.6",
+      input_tokens: 12,
+      openrouter_response_headers: "present",
+      // No usable generation header: the same stream's response ID is used.
+      openrouter_generation_id: "gen-sdk-filter",
+      openrouter_generation_id_source: "response_metadata",
+      openrouter_request_id: "req-sdk-filter",
+      openrouter_served_provider: "xAI",
+      raw_finish_reason: "content_filter",
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE_");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("delivers diagnostic-only context to existing Ask and Agent error sinks without inheriting a previous response", async () => {
   const { createChatLogger } = require("@/lib/api/chat-logger");
