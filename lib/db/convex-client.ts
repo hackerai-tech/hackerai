@@ -30,13 +30,21 @@ export function getConvexClient(signal?: AbortSignal): ConvexHttpClient {
 }
 
 /**
- * A caller-owned client whose transport and helper retry sleeps share one
- * deadline. Its SDK mutation queue belongs to that caller alone, so an
- * unrelated pending write on the process singleton cannot delay it.
+ * A fresh, unbounded client with its own SDK mutation queue, for a caller that
+ * keeps its existing timing but must not wait behind the shared singleton.
+ */
+export function createIsolatedConvexClient(): ConvexHttpClient {
+  return createServiceConvexClient(getConvexUrl());
+}
+
+/**
+ * A caller-owned client. Its SDK mutation queue belongs to that caller alone,
+ * so an unrelated pending write on the process singleton cannot delay it.
+ * With a signal, transport and helper retry sleeps share that deadline.
  */
 export type ConvexCallScope = {
   client: ConvexHttpClient;
-  signal: AbortSignal;
+  signal?: AbortSignal;
 };
 
 const LOST_TRANSPORT_CODES = new Set([

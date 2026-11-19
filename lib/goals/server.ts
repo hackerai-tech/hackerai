@@ -134,8 +134,8 @@ export async function reconcileGoal(
   chatId: string,
   userId: string,
   onStep?: (step: GoalReconciliationStep) => void,
-  // Bounds this reconciliation's Convex reads and writes; omitted callers keep
-  // the shared client.
+  // Runs this reconciliation's Convex reads and writes on the caller's client;
+  // omitted callers keep the shared one.
   scope?: ConvexCallScope,
 ) {
   // Diagnostics name the step in progress; they cannot alter reconciliation.

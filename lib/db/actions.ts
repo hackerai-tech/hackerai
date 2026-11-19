@@ -482,12 +482,14 @@ const waitForRetryDelay = (delayMs: number) =>
   new Promise((resolve) => setTimeout(resolve, delayMs));
 
 // A scoped caller's deadline also ends retry sleeps, so retries cannot stack
-// past it. Unscoped callers keep their existing unbounded delay.
+// past it. Callers without a deadline keep their existing unbounded delay.
 const waitForScopedRetryDelay = (
   delayMs: number,
   scope: ConvexCallScope | undefined,
 ) =>
-  scope ? abortableDelay(delayMs, scope.signal) : waitForRetryDelay(delayMs);
+  scope?.signal
+    ? abortableDelay(delayMs, scope.signal)
+    : waitForRetryDelay(delayMs);
 
 const runRetryableChatDeletion = async <T>({
   operation,
@@ -822,7 +824,7 @@ export async function getChatById(
           !retryReason ||
           retryDelayMs === undefined ||
           scopeOwnsRetry ||
-          scope?.signal.aborted
+          scope?.signal?.aborted
         ) {
           reportRetryResult(
             retryReason ? "retry_exhausted" : "non_retryable_error",
@@ -1122,7 +1124,7 @@ export async function saveChat(
         if (
           !retryReason ||
           retryDelayMs === undefined ||
-          scope?.signal.aborted
+          scope?.signal?.aborted
         ) {
           throw error;
         }
@@ -1449,7 +1451,8 @@ export async function handleInitialChatAndUserMessage(
     sandboxType?: string;
     onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
   },
-  scope?: ConvexCallScope,
+  // The message save derives its isolated client from this deadline.
+  scope?: ConvexCallScope & { signal: AbortSignal },
 ) {
   const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
     try {
@@ -2433,7 +2436,7 @@ export async function prepareForNewStream(
   } catch (error) {
     throw new ChatSDKError(
       // The caller's expired deadline is temporary, as for the other writes.
-      scope?.signal.aborted ? "offline:database" : "bad_request:database",
+      scope?.signal?.aborted ? "offline:database" : "bad_request:database",
       "Failed to prepare for new stream",
     );
   }

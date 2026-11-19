@@ -68,6 +68,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
   uploadSandboxFiles: jest.fn(),
 }));
 const mockTriggerTask = jest.fn();
+const mockSessionsStart = jest.fn();
 const mockRunsRetrieve = jest.fn();
 jest.mock("@trigger.dev/sdk", () => ({
   ApiError: class ApiError extends Error {},
@@ -78,7 +79,7 @@ jest.mock("@trigger.dev/sdk", () => ({
   },
   idempotencyKeys: { create: async (parts: string[]) => parts.join(":") },
   runs: { retrieve: (...args: unknown[]) => mockRunsRetrieve(...args) },
-  sessions: { start: jest.fn() },
+  sessions: { start: (...args: unknown[]) => mockSessionsStart(...args) },
   streams: {},
   tasks: { trigger: (...args: unknown[]) => mockTriggerTask(...args) },
 }));
@@ -101,8 +102,8 @@ type Call = {
   abandonedByClient: boolean;
 };
 type Stall = Call & {
-  /** Execute the write now (as Convex may after the client gave up). */
-  commit: () => void;
+  /** Execute the function now (as Convex may after the client gave up). */
+  commit: () => unknown;
   respond: (value: unknown) => void;
 };
 type Plan = "stall" | "commit_and_drop_response" | undefined;
@@ -185,6 +186,13 @@ const createFixtureDeployment = () => {
         chat.active_agent_approval_session_id = args.approvalSessionId;
         return true;
       }
+      case "agentGoals:finish": {
+        const goal = goals.get(args.chatId);
+        if (!goal || goal.activeRunId !== args.runId) return null;
+        delete goal.activeRunId;
+        goal.state = "failed";
+        return goal;
+      }
       case "agentGoals:failDispatch":
         goals.get(args.chatId)!.state = "failed";
         return null;
@@ -226,7 +234,7 @@ const createFixtureDeployment = () => {
         // Body fully received; no status line or headers are ever written.
         stalls.push(
           Object.assign(call, {
-            commit: () => void execute(call),
+            commit: () => execute(call),
             respond: send,
           }),
         );
@@ -505,6 +513,62 @@ describe("Agent admission isolation from another chat's pending write", () => {
   });
 });
 
+describe("Agent ordinary-chat owner read before dispatch", () => {
+  it.each([
+    ["Trigger task", "full_access"],
+    ["approval Session", "ask_approval"],
+  ])(
+    "starts no %s when the owner read times out",
+    async (_dispatch, agentPermissionMode) => {
+      // Stall only the owner read after this admission saved its message.
+      fixture.setPlan(({ path }) =>
+        path === "chats:getChatById" &&
+        fixture.paths().includes("messages:saveMessage")
+          ? "stall"
+          : undefined,
+      );
+      useDeadlineClock();
+      let settled = false;
+      const pending = routes
+        .agentStart(
+          post(
+            "http://localhost/api/agent",
+            startBody("chat-owner", { agentPermissionMode }),
+          ),
+        )
+        .finally(() => (settled = true));
+      await fixture.arrived(
+        ({ path }) =>
+          path === "chats:getChatById" &&
+          fixture.paths().includes("messages:saveMessage"),
+      );
+
+      await jest.advanceTimersByTimeAsync(3_999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      const response = await pending;
+
+      expect(response.status).toBe(503);
+      await fixture.stalls[0].abandoned;
+      expect(fixture.stalls[0].abandonedByClient).toBe(true);
+      // Nothing started, so nothing can be orphaned or needs cleanup.
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(mockSessionsStart).not.toHaveBeenCalled();
+      expect(mockCancelRun).not.toHaveBeenCalled();
+      expect(mockCloseSession).not.toHaveBeenCalled();
+      // The saved message stays; no ownership write was attempted.
+      expect(
+        fixture.calls
+          .filter(({ kind }) => kind === "mutation")
+          .map(({ path }) => path),
+      ).toEqual(["chats:saveChat", "messages:saveMessage"]);
+      expect(fixture.chats.get("chat-owner")?.active_trigger_run_id).toBe(
+        undefined,
+      );
+    },
+  );
+});
+
 describe("Agent run association with a lost Convex response", () => {
   it("returns the original run after a committed association loses its response", async () => {
     fixture.setPlan(({ path }) =>
@@ -671,5 +735,111 @@ describe("Agent run association with a lost Convex response", () => {
     expect(fixture.chats.get("chat-d")?.active_trigger_run_id).toBe(
       originalRunId,
     );
+  });
+});
+
+describe("Goal lifecycle timing at Agent start", () => {
+  afterEach(() => {
+    require("@/lib/goals/analytics").captureGoalLifecycle.mockImplementation(
+      async () => undefined,
+    );
+  });
+
+  it("does not bound reconciliation, reservation or its analytics with the message persistence deadline", async () => {
+    // A finished previous goal run that reconciliation must settle and clear.
+    fixture.chats.set("chat-goal-slow", {
+      _id: "doc-chat-goal-slow",
+      _creationTime: 1,
+      id: "chat-goal-slow",
+      title: "Synthetic goal",
+      user_id: "user-1",
+      update_time: 1,
+      active_trigger_run_id: "run-previous",
+    });
+    fixture.goals.set("chat-goal-slow", {
+      _id: "goal-chat-goal-slow",
+      _creationTime: 1,
+      chatId: "chat-goal-slow",
+      userId: "user-1",
+      generation: 2,
+      state: "running",
+      activeRunId: "run-previous",
+      sandboxPreference: "desktop",
+      permissionMode: "full_access",
+      selectedModel: "auto",
+    });
+    fixture.setPlan(({ path }) =>
+      path === "agentGoals:control" ? "stall" : undefined,
+    );
+    useDeadlineClock();
+    // Each slow step takes longer than the deadline that previously covered it.
+    let retrieveStarted!: () => void;
+    const retrieving = new Promise<void>(
+      (resolve) => (retrieveStarted = resolve),
+    );
+    mockRunsRetrieve.mockImplementationOnce(() => {
+      retrieveStarted();
+      return new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              status: "FAILED",
+              metadata: { chatId: "chat-goal-slow", userId: "user-1" },
+            }),
+          7_000,
+        ),
+      );
+    });
+    const { captureGoalLifecycle } = require("@/lib/goals/analytics");
+    let analyticsStarted!: () => void;
+    const analyzing = new Promise<void>(
+      (resolve) => (analyticsStarted = resolve),
+    );
+    captureGoalLifecycle.mockImplementation(async (action: string) => {
+      if (action !== "resumed") return;
+      analyticsStarted();
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+    });
+
+    const pending = routes.agentStart(
+      post(
+        "http://localhost/api/agent",
+        startBody("chat-goal-slow", {
+          goal: { action: "resume", expectedGeneration: 2 },
+        }),
+      ),
+    );
+    await retrieving;
+    await jest.advanceTimersByTimeAsync(7_000);
+    await fixture.arrived(({ path }) => path === "agentGoals:control");
+    // Reconciliation settled and cleared the previous run before reserving.
+    expect(fixture.goals.get("chat-goal-slow")?.activeRunId).toBeUndefined();
+    expect(
+      fixture.chats.get("chat-goal-slow")?.active_trigger_run_id,
+    ).toBeUndefined();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    const reservation = fixture.stalls[0];
+    expect(reservation.abandonedByClient).toBe(false);
+    reservation.respond(reservation.commit());
+    await analyzing;
+    await jest.advanceTimersByTimeAsync(12_000);
+    const response = await pending;
+
+    expect(response.status).toBe(200);
+    const { runId } = await response.json();
+    expect(mockTriggerTask).toHaveBeenCalledWith(
+      "agent-long",
+      expect.objectContaining({ goalGeneration: 2 }),
+      expect.anything(),
+    );
+    expect(fixture.chats.get("chat-goal-slow")?.active_trigger_run_id).toBe(
+      runId,
+    );
+    expect(fixture.goals.get("chat-goal-slow")?.state).toBe("queued");
+    expect(
+      fixture.calls.some(({ abandonedByClient }) => abandonedByClient),
+    ).toBe(false);
+    expect(fixture.paths()).not.toContain("agentGoals:failDispatch");
   });
 });

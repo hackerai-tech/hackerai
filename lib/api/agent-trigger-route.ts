@@ -2,6 +2,7 @@ import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import {
+  createIsolatedConvexClient,
   isConvexOutcomeUnknownError,
   type ConvexCallScope,
 } from "@/lib/db/convex-client";
@@ -501,6 +502,12 @@ const confirmStartedRunAssociation = async ({
     );
   }).catch(() => false);
 
+/** The chat's run owner, read before dispatch for an ordinary start. */
+type AgentRunPreviousOwner = {
+  runId: string | null;
+  approvalSessionId: string | null;
+};
+
 export const finalizeStartedAgentRun = async ({
   expectedRunId = null,
   chatId,
@@ -508,6 +515,7 @@ export const finalizeStartedAgentRun = async ({
   runId,
   approvalSessionId,
   goal,
+  previousOwner,
 }: {
   chatId: string;
   userId: string;
@@ -515,6 +523,8 @@ export const finalizeStartedAgentRun = async ({
   approvalSessionId: string | undefined;
   goal?: { userId: string; generation: number };
   expectedRunId?: string | null;
+  // Required without a goal: the owner snapshot read before dispatch.
+  previousOwner?: AgentRunPreviousOwner;
 }): Promise<StartedAgentRunAccess> => {
   let failureStage:
     | "create_tokens"
@@ -522,8 +532,6 @@ export const finalizeStartedAgentRun = async ({
     | "cancel_previous_run"
     | "close_previous_session" = "create_tokens";
   let access: StartedAgentRunAccess | undefined;
-  // Once sent, the association write can commit even if its response is lost.
-  let associationSent = false;
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
@@ -551,13 +559,11 @@ export const finalizeStartedAgentRun = async ({
     failureStage = "associate_run";
     let expectedApprovalSessionId: string | null = null;
     if (!goal) {
-      const previousChat = await withAgentConvexScope(
-        "startPreviousOwnerRead",
-        (convex) => getChatById({ id: chatId }, convex),
-      );
-      const previousRunId = previousChat?.active_trigger_run_id ?? null;
-      expectedApprovalSessionId =
-        previousChat?.active_agent_approval_session_id ?? null;
+      if (!previousOwner)
+        throw new Error("An ordinary Agent start needs its owner snapshot");
+      const previousRunId = previousOwner.runId;
+      expectedApprovalSessionId = previousOwner.approvalSessionId;
+      // An idempotent dispatch can return the run this snapshot already names.
       if (
         previousRunId !== null &&
         previousRunId !== runId &&
@@ -590,7 +596,6 @@ export const finalizeStartedAgentRun = async ({
     failureStage = "associate_run";
     // An isolated client: an unrelated chat's pending write on the process
     // singleton cannot hold this admission's association in the SDK queue.
-    associationSent = true;
     const association = await withAgentConvexScope(
       "startAssociation",
       async (convex) => {
@@ -661,7 +666,6 @@ export const finalizeStartedAgentRun = async ({
             service: "hackerai-web",
             timestamp: new Date().toISOString(),
             read_back_outcome: associated ? "associated" : "inconclusive",
-            association_sent: associationSent,
             goal_association: goal !== undefined,
             chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(
               chatId,
@@ -677,9 +681,8 @@ export const finalizeStartedAgentRun = async ({
         // Optional diagnostics must not change the association decision.
       }
       if (associated) return access;
-      // The association may still commit. If the previous-owner read failed
-      // first, an idempotent dispatch can still have returned an existing run.
-      // In either case keep its run, Session and ownership for reconnect.
+      // The sent association may still commit. Keep its run, Session and
+      // ownership for reconnect; never replay the write or redispatch.
       throw new ChatSDKError(
         "offline:api",
         "The Agent run started, but its link to this chat could not be confirmed. Reload the chat to reconnect to it before sending again.",
@@ -826,17 +829,21 @@ export const createAgentTriggerPost = ({
     }, 10_000);
     let reservedGoal:
       { chatId: string; userId: string; generation: number } | undefined;
+    // Goal lifecycle reads and writes keep their existing unbounded timing and
+    // order, on one fresh client per admission so another chat's pending write
+    // on the shared singleton cannot hold them.
+    let goalConvex: ConvexCallScope | undefined;
+    const getGoalConvex = () =>
+      (goalConvex ??= { client: createIsolatedConvexClient() });
     const releaseReservedGoal = async () => {
       if (!reservedGoal) return;
       const goal = reservedGoal;
       reservedGoal = undefined;
       try {
-        await withAgentConvexScope("startGoalRelease", (convex) =>
-          convex.client.mutation(goalApi.agentGoals.failDispatch, {
-            serviceKey: goalServiceKey(),
-            ...goal,
-          }),
-        );
+        await getGoalConvex().client.mutation(goalApi.agentGoals.failDispatch, {
+          serviceKey: goalServiceKey(),
+          ...goal,
+        });
       } catch {
         // A persistence outage leaves the goal fenced for explicit recovery.
       }
@@ -997,15 +1004,13 @@ export const createAgentTriggerPost = ({
       }
       stage = "reconcile_goal";
       const existingGoal = existingChat
-        ? await withAgentConvexScope("startGoalReconciliation", (convex) =>
-            reconcileGoal(
-              chatId,
-              userId,
-              (step) => {
-                goalReconciliationStep = step;
-              },
-              convex,
-            ),
+        ? await reconcileGoal(
+            chatId,
+            userId,
+            (step) => {
+              goalReconciliationStep = step;
+            },
+            getGoalConvex(),
           )
         : null;
       // Later local guards did not fail inside a reconciliation step.
@@ -1160,11 +1165,12 @@ export const createAgentTriggerPost = ({
         localDesktopAttachmentsPrepared = true;
       }
 
-      const reserveGoal = async (persistence: ConvexCallScope) => {
+      const reserveGoal = async () => {
         if (!goalRequest) return;
+        const goalClient = getGoalConvex().client;
         const savedGoal =
           goalRequest.action === "start"
-            ? await persistence.client.mutation(goalApi.agentGoals.start, {
+            ? await goalClient.mutation(goalApi.agentGoals.start, {
                 serviceKey: goalServiceKey(),
                 chatId,
                 userId,
@@ -1181,7 +1187,7 @@ export const createAgentTriggerPost = ({
                 permissionMode: agentPermissionMode,
                 selectedModel: selectedModelOverride ?? "auto",
               })
-            : await persistence.client.mutation(goalApi.agentGoals.control, {
+            : await goalClient.mutation(goalApi.agentGoals.control, {
                 serviceKey: goalServiceKey(),
                 chatId,
                 userId,
@@ -1199,16 +1205,16 @@ export const createAgentTriggerPost = ({
         );
       };
 
-      // One isolated, bounded client runs this admission's pre-dispatch writes
-      // in order. Started after Desktop attachment uploads so they cannot
-      // spend it, and outside the singleton's queue so another chat's pending
-      // write cannot hold them.
-      await withAgentConvexScope("startPersistence", async (persistence) => {
-        // Fence an existing goal before writing input that a queued worker
-        // could otherwise consume. New chats must exist before reserving.
-        if (existingChat) await reserveGoal(persistence);
-        stage = "persist_user_message";
-        await handleInitialChatAndUserMessage(
+      // Fence an existing goal before writing input that a queued worker could
+      // otherwise consume. New chats must exist before reserving their goal.
+      if (existingChat) await reserveGoal();
+      stage = "persist_user_message";
+      // One isolated, bounded client runs this admission's chat and message
+      // writes in order. Started after Desktop attachment uploads so they
+      // cannot spend it, and outside the singleton's queue so another chat's
+      // pending write cannot hold them. Goal writes and analytics stay outside.
+      await withAgentConvexScope("startPersistence", (persistence) =>
+        handleInitialChatAndUserMessage(
           {
             chatId,
             userId,
@@ -1223,23 +1229,25 @@ export const createAgentTriggerPost = ({
             },
           },
           persistence,
-        );
-        initialPersistenceStep = undefined;
+        ),
+      );
+      initialPersistenceStep = undefined;
 
-        if (!existingChat) await reserveGoal(persistence);
-        const goal = reservedGoal;
-        if (goal && goalRequest?.action === "start") {
-          const goalMessage = messagesForPersistence.findLast(
-            (m) => m.role === "user",
-          );
-          if (goalMessage)
-            await persistence.client.mutation(goalApi.agentGoals.markMessage, {
+      if (!existingChat) await reserveGoal();
+      if (reservedGoal && goalRequest?.action === "start") {
+        const goalMessage = messagesForPersistence.findLast(
+          (m) => m.role === "user",
+        );
+        if (goalMessage)
+          await getGoalConvex().client.mutation(
+            goalApi.agentGoals.markMessage,
+            {
               serviceKey: goalServiceKey(),
-              ...goal,
+              ...reservedGoal,
               messageId: goalMessage.id,
-            });
-        }
-      });
+            },
+          );
+      }
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =
@@ -1419,45 +1427,66 @@ export const createAgentTriggerPost = ({
         return createAgentTriggerPayloadTooLargeResponse();
       };
 
-      let runId: string;
-      try {
-        stage = triggerApiMethod;
-        if (approvalSessionId) {
-          const approvalTriggerConfig = {
-            basePayload: agentPayload,
-            machine: triggerMachine,
-            tags: getAgentApprovalTriggerTags(triggerTags),
-            region: triggerRegion,
-            ...approvalDeploymentPin,
-          };
-          const approvalSessionBody = {
+      const approvalSessionBody = approvalSessionId
+        ? {
             type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
             externalId: approvalSessionId,
             taskIdentifier: AGENT_TRIGGER_TASK_ID,
             tags: triggerTags,
             metadata: triggerMetadata,
-            triggerConfig: approvalTriggerConfig,
-          };
-          triggerRequestBodyBytes =
-            getAgentTriggerPayloadSizeBytes(approvalSessionBody);
-          if (
-            isAgentTriggerRequestSizeTooLarge({
-              payloadBytes: triggerPayloadBytes,
-              requestBodyBytes: triggerRequestBodyBytes,
-            })
-          ) {
-            return triggerPayloadTooLargeResponse("payload_limit_exceeded");
+            triggerConfig: {
+              basePayload: agentPayload,
+              machine: triggerMachine,
+              tags: getAgentApprovalTriggerTags(triggerTags),
+              region: triggerRegion,
+              ...approvalDeploymentPin,
+            },
           }
+        : undefined;
+      if (approvalSessionBody)
+        triggerRequestBodyBytes =
+          getAgentTriggerPayloadSizeBytes(approvalSessionBody);
+      if (
+        isAgentTriggerRequestSizeTooLarge({
+          payloadBytes: triggerPayloadBytes,
+          requestBodyBytes: triggerRequestBodyBytes,
+        })
+      ) {
+        return triggerPayloadTooLargeResponse("payload_limit_exceeded");
+      }
+
+      // The last ordinary owner read runs before dispatch, so its failure or
+      // timeout cannot leave a started run behind. Goal starts are fenced by
+      // their generation at association instead.
+      let previousOwner: AgentRunPreviousOwner | undefined;
+      if (!reservedGoal) {
+        stage = "read_previous_owner";
+        const ownerChat = await withAgentConvexScope(
+          "startPreviousOwnerRead",
+          (convex) => getChatById({ id: chatId }, convex),
+        );
+        if (!ownerChat || ownerChat.deletion_started_at !== undefined)
+          throw new ChatSDKError(
+            "not_found:chat",
+            "The chat was deleted before the Agent run could start.",
+          );
+        if (ownerChat.user_id !== userId) {
+          guardBoundary = "chat_owner_gate";
+          throw new ChatSDKError("forbidden:chat");
+        }
+        previousOwner = {
+          runId: ownerChat.active_trigger_run_id ?? null,
+          approvalSessionId: ownerChat.active_agent_approval_session_id ?? null,
+        };
+      }
+
+      let runId: string;
+      try {
+        stage = triggerApiMethod;
+        if (approvalSessionBody) {
           const session = await sessions.start(approvalSessionBody);
           runId = session.runId;
         } else {
-          if (
-            isAgentTriggerRequestSizeTooLarge({
-              payloadBytes: triggerPayloadBytes,
-            })
-          ) {
-            return triggerPayloadTooLargeResponse("payload_limit_exceeded");
-          }
           const handle = await tasks.trigger<typeof agentLongTask>(
             AGENT_TRIGGER_TASK_ID,
             agentPayload,
@@ -1486,6 +1515,7 @@ export const createAgentTriggerPost = ({
           runId,
           approvalSessionId,
           goal: reservedGoal,
+          previousOwner,
         });
       // The associated worker owns this generation, even if response creation fails.
       reservedGoal = undefined;

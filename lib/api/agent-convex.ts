@@ -8,21 +8,20 @@ import { getConvexClient, type ConvexCallScope } from "@/lib/db/convex-client";
  *
  * These are Convex budgets within the 30s status and 60s start routes.
  * Authentication, Trigger calls and other services have their own timing.
+ * Goal reconciliation, reservation, marking and release keep their existing
+ * unbounded timing on an admission-local client instead.
  */
 export const AGENT_CONVEX_DEADLINES_MS = {
   statusOwnershipRead: 5_000,
   statusTerminalCleanup: 5_000,
   startChatRead: 4_000,
-  // Includes the Trigger read between the goal read and its settlement.
-  startGoalReconciliation: 6_000,
-  // Goal reservation, chat/message persistence and the goal message marker,
-  // including the existing write retries.
+  // Chat and user-message writes, including their existing write retries.
   startPersistence: 10_000,
+  // Before dispatch: a timeout here cannot leave a started run behind.
   startPreviousOwnerRead: 4_000,
   startAssociation: 6_000,
   startAssociationReadBack: 4_000,
   startCleanup: 4_000,
-  startGoalRelease: 4_000,
 } as const;
 
 type AgentConvexPhase = keyof typeof AGENT_CONVEX_DEADLINES_MS;
@@ -33,7 +32,7 @@ type AgentConvexPhase = keyof typeof AGENT_CONVEX_DEADLINES_MS;
  */
 export async function withAgentConvexScope<T>(
   phase: AgentConvexPhase,
-  operation: (scope: ConvexCallScope) => Promise<T>,
+  operation: (scope: ConvexCallScope & { signal: AbortSignal }) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
   // Named like AbortSignal.timeout's reason so callers classify it the same
