@@ -26,7 +26,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useTauri } from "@/app/hooks/useTauri";
@@ -79,6 +79,7 @@ export function SandboxSelector({
   confirmEnvironmentChange = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const selectorTriggerRef = useRef<HTMLButtonElement>(null);
   const [pendingChange, setPendingChange] = useState<{
     preference: string;
     label: string;
@@ -362,6 +363,7 @@ export function SandboxSelector({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
+            ref={selectorTriggerRef}
             type="button"
             variant="ghost"
             size={size === "md" ? "default" : "sm"}
@@ -565,7 +567,13 @@ export function SandboxSelector({
           if (!nextOpen) setPendingChange(null);
         }}
       >
-        <AlertDialogContent className="gap-5">
+        <AlertDialogContent
+          className="gap-5"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            selectorTriggerRef.current?.focus();
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle className="break-words">
               Switch this chat to {pendingChange?.label}?

@@ -113,11 +113,11 @@ describe("FinishReasonNotice", () => {
   it.each([
     [
       "request",
-      "Last saved: your request above. No Agent result was saved for this turn.",
+      "Last visible: your request above. No Agent result is shown for this turn.",
     ],
-    ["agent-progress", "Last saved: Agent progress shown above."],
+    ["agent-progress", "Last visible: Agent progress shown above."],
   ] as const)(
-    "identifies the last saved %s before an explicit Resume",
+    "identifies the last visible %s without claiming an unconfirmed save",
     (lastSavedStep, expected) => {
       renderNotice({
         finishReason: "local-connection-lost",
@@ -127,6 +127,9 @@ describe("FinishReasonNotice", () => {
       });
 
       expect(screen.getByRole("status")).toHaveTextContent(expected);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Only work still visible after reload is confirmed saved.",
+      );
       expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
     },
   );

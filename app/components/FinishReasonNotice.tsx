@@ -24,7 +24,7 @@ import type { SelectedModel } from "@/types/chat";
 import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
 // Each stop needs a person to resume it; the detail names what may not have
-// survived. The transcript above is the saved state; nothing after it is known.
+// survived. Streamed output can appear before its server save completes.
 const MANUAL_RESUME_NOTICE_COPY: Record<
   ManualAgentResumeFinishReason,
   { reason: string; detail: string }
@@ -43,9 +43,9 @@ type LastSavedStep = "request" | "agent-progress" | "conversation";
 
 const LAST_SAVED_STEP_COPY: Record<LastSavedStep, string> = {
   request:
-    "Last saved: your request above. No Agent result was saved for this turn.",
-  "agent-progress": "Last saved: Agent progress shown above.",
-  conversation: "Last saved: the conversation shown above.",
+    "Last visible: your request above. No Agent result is shown for this turn.",
+  "agent-progress": "Last visible: Agent progress shown above.",
+  conversation: "Last visible: the conversation shown above.",
 };
 
 interface FinishReasonNoticeProps {
@@ -106,7 +106,8 @@ export const FinishReasonNotice = ({
           <div className="min-w-0 flex-1 basis-60">
             <p className="font-medium text-foreground">{copy.reason}</p>
             <p className="mt-0.5 text-sm">
-              {LAST_SAVED_STEP_COPY[lastSavedStep]} {copy.detail}
+              {LAST_SAVED_STEP_COPY[lastSavedStep]} Only work still visible
+              after reload is confirmed saved. {copy.detail}
             </p>
             {disabledReason && (
               <p id={disabledReasonId} className="mt-1 text-sm text-foreground">

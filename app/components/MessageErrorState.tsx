@@ -435,7 +435,10 @@ const MessageErrorContent = ({
             id={reconnectHelpId}
             className="text-xs text-muted-foreground mt-1"
           >
-            Reconnect shows the existing run again. Retry starts a new attempt.
+            Reconnect returns to this stream.{" "}
+            {mode === "agent"
+              ? "Retry checks for an active Agent run, then continues saved work if that run ended."
+              : "Retry starts a new attempt."}
           </p>
         )}
         {isRateLimitError && !isSpendingLimitBlock && timeRemaining > 0 && (

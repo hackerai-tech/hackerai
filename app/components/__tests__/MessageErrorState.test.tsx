@@ -223,9 +223,11 @@ describe("MessageErrorState", () => {
     const reconnect = screen.getByRole("button", { name: /^reconnect$/i });
     const retry = screen.getByRole("button", { name: /^retry$/i });
     expect(reconnect).toHaveAccessibleDescription(
-      /Reconnect shows the existing run again.*Retry starts a new attempt/,
+      /Reconnect returns to this stream.*Retry checks for an active Agent run, then continues saved work if that run ended/,
     );
-    expect(retry).toHaveAccessibleDescription(/Retry starts a new attempt/);
+    expect(retry).toHaveAccessibleDescription(
+      /Retry checks for an active Agent run/,
+    );
 
     fireEvent.click(reconnect);
     expect(onReconnect).toHaveBeenCalledTimes(1);

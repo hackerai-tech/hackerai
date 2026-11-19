@@ -726,7 +726,14 @@ export const MessageItem = memo(function MessageItem({
           status !== "streaming" && (
             <FinishReasonNotice
               finishReason={finishReason}
-              lastSavedStep={hasAnyContent ? "agent-progress" : "conversation"}
+              lastSavedStep={
+                messageText.trim() ||
+                hasFileContent ||
+                workProjection.activities.length > 0 ||
+                message.parts.some((part) => part.type.startsWith("tool-"))
+                  ? "agent-progress"
+                  : "conversation"
+              }
               continueDisabledReason={continueDisabledReason}
               status={status}
               mode={mode}

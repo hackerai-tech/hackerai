@@ -334,7 +334,7 @@ describe("SandboxSelector", () => {
       mockGlobalState.localConnections = [remoteKali];
     });
 
-    it("keeps the selection and permissions when the move is cancelled", () => {
+    it("keeps the selection, permissions, and keyboard position when the move is cancelled", async () => {
       const onChange = jest.fn();
       render(
         <SandboxSelector
@@ -357,9 +357,14 @@ describe("SandboxSelector", () => {
       expect(onChange).not.toHaveBeenCalled();
 
       fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+      );
       expect(onChange).not.toHaveBeenCalled();
       expect(mockGlobalState.setAgentPermissionMode).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "4p3x (remote-k)" }),
+      ).toHaveFocus();
     });
 
     it("switches once and resets permissions to Ask for approval after confirming", () => {

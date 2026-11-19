@@ -62,8 +62,17 @@ jest.mock("../BranchIndicator", () => ({
 }));
 
 jest.mock("../FinishReasonNotice", () => ({
-  FinishReasonNotice: ({ onContinue }: { onContinue?: () => void }) => (
-    <div data-testid="finish-reason-notice">
+  FinishReasonNotice: ({
+    onContinue,
+    lastSavedStep,
+  }: {
+    onContinue?: () => void;
+    lastSavedStep?: string;
+  }) => (
+    <div
+      data-testid="finish-reason-notice"
+      data-last-saved-step={lastSavedStep}
+    >
       {onContinue && <button onClick={() => onContinue()}>Resume</button>}
     </div>
   ),
@@ -141,6 +150,26 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("does not call an invisible step marker visible Agent progress", () => {
+    const { unmount } = renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [{ type: "step-start" }],
+      } as ChatMessage,
+    });
+    expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+      "data-last-saved-step",
+      "conversation",
+    );
+
+    unmount();
+    renderMessageItem({ mode: "agent" });
+    expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+      "data-last-saved-step",
+      "agent-progress",
+    );
+  });
   it("shows a saved goal's completion time on its answer", () => {
     renderMessageItem({
       mode: "agent",
