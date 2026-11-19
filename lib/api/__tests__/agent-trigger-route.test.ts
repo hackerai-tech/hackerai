@@ -1584,6 +1584,7 @@ describe("Agent trigger route lifecycle", () => {
   });
 
   it("does not clean up an unexpected concurrent owner", async () => {
+    mockReplaceActiveTriggerRun.mockResolvedValueOnce("stale");
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await expect(
@@ -1598,7 +1599,13 @@ describe("Agent trigger route lifecycle", () => {
           },
         }),
       ).rejects.toMatchObject({ metadata: { agent_run_association: "stale" } });
-      expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedRunId: null,
+          expectedApprovalSessionId: null,
+        }),
+        expect.anything(),
+      );
       expect(mockCancelAgentTriggerRun.mock.calls).toEqual([["late"]]);
       expect(mockCloseAgentApprovalSession.mock.calls).toEqual([
         ["late-session", "agent-run-association-failed"],

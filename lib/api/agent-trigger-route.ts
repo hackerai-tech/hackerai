@@ -557,39 +557,39 @@ export const finalizeStartedAgentRun = async ({
     };
 
     failureStage = "associate_run";
+    let expectedPreviousRunId = expectedRunId;
     let expectedApprovalSessionId: string | null = null;
     if (!goal) {
       if (!previousOwner)
         throw new Error("An ordinary Agent start needs its owner snapshot");
       const previousRunId = previousOwner.runId;
-      expectedApprovalSessionId = previousOwner.approvalSessionId;
-      // An idempotent dispatch can return the run this snapshot already names.
       if (
         previousRunId !== null &&
         previousRunId !== runId &&
         previousRunId !== expectedRunId
       ) {
-        throw new ChatSDKError(
-          "bad_request:api",
-          "Another Agent run started in this chat. Reconnect to that run before sending again.",
-          { agent_run_association: "stale" },
-        );
-      }
-      // Keep the previous ownership record until both cleanup operations finish.
-      // A failed close must remain discoverable by Stop or a later send.
-      if (previousRunId && previousRunId !== runId) {
-        failureStage = "cancel_previous_run";
-        await cancelAgentTriggerRun(previousRunId);
-      }
-      if (
-        expectedApprovalSessionId &&
-        expectedApprovalSessionId !== approvalSessionId
-      ) {
-        failureStage = "close_previous_session";
-        await closeAgentApprovalSession(
-          expectedApprovalSessionId,
-          "agent-run-replaced",
-        );
+        // Another admission may have attached this same run during dispatch.
+        // Let Convex decide against the current owner. Without cleaning up
+        // the observed owner, only an empty or already matching claim is safe.
+        expectedPreviousRunId = null;
+      } else {
+        expectedApprovalSessionId = previousOwner.approvalSessionId;
+        // Keep the ownership record until both cleanup operations finish.
+        // A failed close must remain discoverable by Stop or a later send.
+        if (previousRunId && previousRunId !== runId) {
+          failureStage = "cancel_previous_run";
+          await cancelAgentTriggerRun(previousRunId);
+        }
+        if (
+          expectedApprovalSessionId &&
+          expectedApprovalSessionId !== approvalSessionId
+        ) {
+          failureStage = "close_previous_session";
+          await closeAgentApprovalSession(
+            expectedApprovalSessionId,
+            "agent-run-replaced",
+          );
+        }
       }
     }
 
@@ -617,7 +617,7 @@ export const finalizeStartedAgentRun = async ({
             : ("stale" as const)
           : await replaceActiveTriggerRun(
               {
-                expectedRunId,
+                expectedRunId: expectedPreviousRunId,
                 expectedApprovalSessionId,
                 chatId,
                 triggerRunId: runId,

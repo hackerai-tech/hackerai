@@ -569,7 +569,44 @@ describe("Agent ordinary-chat owner read before dispatch", () => {
   );
 });
 
-describe("Agent run association with a lost Convex response", () => {
+describe("Agent run association recovery", () => {
+  it("keeps a same-turn run attached after an unrelated owner detaches during dispatch", async () => {
+    const chatId = "chat-idempotent";
+    const sharedRunId = "run_same_turn";
+    fixture.setPlan(({ path }) => {
+      if (
+        path === "chats:getChatById" &&
+        fixture.paths().includes("messages:saveMessage")
+      ) {
+        Object.assign(fixture.chats.get(chatId)!, {
+          active_trigger_run_id: "run_other_turn",
+          active_agent_approval_session_id: "other-session",
+        });
+      }
+      return undefined;
+    });
+    mockTriggerTask.mockImplementationOnce(async () => {
+      const chat = fixture.chats.get(chatId)!;
+      expect(chat.active_trigger_run_id).toBe("run_other_turn");
+      // That owner detaches while dispatch is in flight. A concurrent
+      // admission of the same turn already associated this idempotent run.
+      chat.active_trigger_run_id = sharedRunId;
+      delete chat.active_agent_approval_session_id;
+      return { id: sharedRunId };
+    });
+
+    const response = await routes.agentStart(
+      post("http://localhost/api/agent", startBody(chatId)),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ runId: sharedRunId });
+    expect(fixture.chats.get(chatId)?.active_trigger_run_id).toBe(sharedRunId);
+    expect(mockCancelRun).not.toHaveBeenCalled();
+    expect(mockCloseSession).not.toHaveBeenCalled();
+    expect(fixture.paths()).not.toContain("chats:setActiveTriggerRun");
+  });
+
   it("returns the original run after a committed association loses its response", async () => {
     fixture.setPlan(({ path }) =>
       path === "chats:replaceActiveTriggerRun"
