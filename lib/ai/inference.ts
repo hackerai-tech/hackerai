@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { withInferenceRequestRecovery } from "./inference-request-recovery";
 
 export const INFERENCE_CYBER_MODEL_KEY = "model-inference-cyber";
 export const INFERENCE_CYBER_MODEL_ID = "deepseek-v4.1-flash-1017-cyber";
@@ -13,12 +14,16 @@ export const isInferenceCyberModel = (model?: string) =>
 export const isInferenceConfigured = () =>
   Boolean(process.env.INFERENCE_API_KEY?.trim());
 
-export const inference = createOpenAICompatible({
+const inferenceProvider = createOpenAICompatible({
   name: "inference",
   baseURL: "https://api.inference.net/v1",
   apiKey: process.env.INFERENCE_API_KEY,
   includeUsage: true,
 });
+
+/** The registered model; streaming and summary generation share its recovery. */
+export const inference = (modelId: string) =>
+  withInferenceRequestRecovery(inferenceProvider(modelId));
 
 // USD per million tokens, verified against the provider catalog 2026-10-27.
 export const INFERENCE_CYBER_PRICING = {
