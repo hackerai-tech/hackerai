@@ -2416,7 +2416,105 @@ async function handleCheckoutSessionCompleted(
   });
 }
 
-/** Handle customer.subscription.updated — reset old tier's buckets on plan change. */
+/**
+ * Stripe does not order webhooks. If invoice.paid ran while the subscription
+ * still exposed the monthly item, the applied month-to-year update finishes the
+ * same verified schedule restore. The event only selects candidates; live
+ * Stripe state and the paid latest invoice decide.
+ */
+async function restoreAnnualScheduleAfterSubscriptionUpdate({
+  subscription: eventSubscription,
+  previousItems,
+  tier,
+}: {
+  subscription: Stripe.Subscription;
+  previousItems: Partial<Stripe.ApiList<Stripe.SubscriptionItem>>;
+  tier: SubscriptionTier;
+}): Promise<void> {
+  const previousItem = previousItems.data?.[0];
+  const eventItem = eventSubscription.items?.data[0];
+  const customerId = stripeObjectId(eventSubscription.customer);
+  if (
+    tier === "free" ||
+    tier === "team" ||
+    !customerId ||
+    previousItems.data?.length !== 1 ||
+    eventSubscription.items?.data.length !== 1 ||
+    !eventItem ||
+    !previousItem?.id ||
+    previousItem.id !== eventItem.id ||
+    !isSingleIntervalPrice(previousItem.price, "month") ||
+    !isSingleIntervalPrice(eventItem.price, "year")
+  ) {
+    return;
+  }
+
+  const resolved = await resolveSubscription(eventSubscription.id, true);
+  if (resolved?.kind !== "resolved") return;
+  const live = resolved.subscription;
+  const liveItem = live.items?.data[0];
+  if (
+    resolved.tier !== tier ||
+    live.id !== eventSubscription.id ||
+    stripeObjectId(live.customer) !== customerId ||
+    !ENTITLED_SUBSCRIPTION_STATUSES.has(live.status) ||
+    live.pending_update ||
+    live.items?.has_more ||
+    live.items?.data.length !== 1 ||
+    liveItem?.id !== eventItem.id ||
+    liveItem.price?.id !== eventItem.price.id
+  ) {
+    return;
+  }
+
+  const invoice = await getPaidTierChangeInvoice(live);
+  if (
+    !invoice ||
+    invoiceSubscriptionId(invoice) !== live.id ||
+    stripeObjectId(invoice.customer) !== customerId
+  ) {
+    return;
+  }
+
+  const customerResult = await resolveUserIdsFromCustomer(customerId);
+  if (customerResult.reason === "lookup_failed") {
+    throw new Error("Subscription update customer lookup failed");
+  }
+  if (
+    customerResult.reason === "legacy_user_metadata" ||
+    customerResult.userIds.length === 0
+  ) {
+    return;
+  }
+
+  const transition = await sameTierMonthlyToAnnualTransition({
+    invoice,
+    subscription: live,
+    subscriptionId: live.id,
+    tier,
+  });
+  if (!transition) return;
+  if ("skipReason" in transition) {
+    phLogger.info("billing_annual_allowance_transition_not_applicable", {
+      stripe_subscription_id: live.id,
+      stripe_invoice_id: invoice.id,
+      subscription_tier: tier,
+      skip_reason: transition.skipReason,
+    });
+    return;
+  }
+  await restoreAnnualAllowanceSchedules({
+    userIds: customerResult.userIds,
+    tier,
+    subscriptionId: live.id,
+    invoice,
+    replacedPeriodEndMs: transition.replacedPeriodEndMs,
+    customerId,
+    orgId: customerResult.orgId ?? undefined,
+  });
+}
+
+/** Reconcile usage after an applied subscription change. */
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
@@ -2483,7 +2581,7 @@ async function handleSubscriptionUpdated(
   }
 
   // Only act if the subscription items actually changed (plan change)
-  const previousItems = (previousAttributes as any)?.items;
+  const previousItems = previousAttributes?.items;
   if (!previousItems) return;
 
   const currentPrice = subscription.items?.data[0]?.price;
@@ -2505,12 +2603,20 @@ async function handleSubscriptionUpdated(
 
   const previousPriceId = previousItems?.data?.[0]?.price?.id;
   const previousTier =
-    subscriptionTierFromPrice(
-      previousItems?.data?.[0]?.price as Stripe.Price | undefined,
-    ) ?? null;
+    subscriptionTierFromPrice(previousItems?.data?.[0]?.price) ?? null;
 
-  // If tiers are the same, invoice.paid will handle the reset
-  if (currentTier === previousTier) return;
+  // If tiers are the same, invoice.paid will handle the reset. A month-to-year
+  // switch may have been paid before this item change became visible.
+  if (currentTier === previousTier) {
+    if (currentTier) {
+      await restoreAnnualScheduleAfterSubscriptionUpdate({
+        subscription,
+        previousItems,
+        tier: currentTier,
+      });
+    }
+    return;
+  }
 
   const customerId =
     typeof subscription.customer === "string"
