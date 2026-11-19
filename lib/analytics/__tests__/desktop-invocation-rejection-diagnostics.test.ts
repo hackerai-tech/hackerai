@@ -1515,6 +1515,62 @@ describe("stream fence origin", () => {
         expect(watchedLeg.reads.count).toBe(0);
       });
 
+      it("drops a leg whose read changes the validated timeout origin", () => {
+        const mutations: [string, (error: Record<string, unknown>) => void][] =
+          [
+            [
+              "origin",
+              (error) =>
+                Object.assign(error.streamFence as object, {
+                  origin: "owner_process_error",
+                }),
+            ],
+            [
+              "version",
+              (error) =>
+                Object.assign(error.streamFence as object, { version: 2 }),
+            ],
+            [
+              "replaced fence",
+              (error) => {
+                error.streamFence = {
+                  version: 1,
+                  origin: "owner_stop_requested",
+                };
+              },
+            ],
+          ];
+        for (const [name, mutate] of mutations) {
+          const error: Record<string, unknown> = sibling(null, { ...timeout });
+          error.streamFenceCleanup = new Proxy(
+            { version: 1, failure: "tree_unconfirmed" },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                mutate(error);
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          expect([name, parseNativeStreamFenceRejection(error)]).toEqual([
+            name,
+            { message: STOP_UNCONFIRMED, origin: "owner_timeout" },
+          ]);
+        }
+        // A stable proxy leg is still joined.
+        expect(
+          parseNativeStreamFenceRejection(
+            sibling(
+              new Proxy({ version: 1, failure: "tree_unconfirmed" }, {}),
+              timeout,
+            ),
+          ),
+        ).toEqual({
+          message: STOP_UNCONFIRMED,
+          origin: "owner_timeout",
+          cleanupFailure: "tree_unconfirmed",
+        });
+      });
+
       it("never reads or joins a taskkill receipt or stop source beside its leg", () => {
         const taskkill = watched({ ...stopOnly.streamFenceWindowsTaskkill });
         const source = watched({ ...stopOnly.streamFenceStopRequestSource });
@@ -1689,6 +1745,33 @@ describe("stream fence origin", () => {
             ),
           ).toEqual(timeoutGroup);
         expect(gets).toBe(0);
+      });
+
+      it("drops a leg pair whose read changes the validated timeout pair", () => {
+        const read = (mutation: Record<string, unknown>) =>
+          readDesktopStreamFenceDiagnostic(
+            new Proxy<Record<string, unknown>>(
+              { ...timeoutGroup, ...cleanupGroup },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (typeof key === "string" && key in cleanupGroup)
+                    Object.assign(target, mutation);
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          );
+        for (const mutation of [
+          { desktop_stream_fence_origin: "owner_process_error" },
+          { desktop_stream_fence_origin: "owner_stop_requested" },
+          { desktop_stream_fence_version: 2 },
+        ])
+          expect([mutation, read(mutation)]).toEqual([mutation, timeoutGroup]);
+        // A stable reading keeps the complete pair.
+        expect(read({})).toEqual({ ...timeoutGroup, ...cleanupGroup });
       });
     });
 

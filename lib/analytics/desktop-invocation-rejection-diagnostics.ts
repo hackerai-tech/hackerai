@@ -488,12 +488,16 @@ export type DesktopStreamFenceOrigin = (typeof STREAM_FENCE_ORIGINS)[number];
  * its stop request source. */
 const STREAM_FENCE_STOP_ORIGIN = "owner_stop_requested";
 
+/** The owner's own timeout, whose cleanup joins only an origin unchanged by
+ * reading it. */
+const STREAM_FENCE_TIMEOUT_ORIGIN = "owner_timeout";
+
 /** Only these origins can carry a cleanup failure: the owner's requested stop
  * and its own timeout. A native app before the timeout's leg sends only its
  * origin, which is still accepted alone. */
 const STREAM_FENCE_CLEANUP_ORIGINS = [
   STREAM_FENCE_STOP_ORIGIN,
-  "owner_timeout",
+  STREAM_FENCE_TIMEOUT_ORIGIN,
 ] as const;
 
 function carriesCleanup(origin: DesktopStreamFenceOrigin | null): boolean {
@@ -809,7 +813,8 @@ function parseStreamFenceCleanup(
  * received. A malformed `streamFence` keeps only the exact message; a
  * malformed cleanup, or one beside any origin other than
  * `owner_stop_requested` or `owner_timeout`, which is then never read, keeps
- * the exact message and origin; a malformed taskkill receipt, or one beside
+ * the exact message and origin, as does an `owner_timeout` cleanup whose read
+ * changed that validated fence; a malformed taskkill receipt, or one beside
  * any other origin or cleanup failure, which is then never read, keeps the
  * exact message, origin and cleanup failure. Separately, a
  * `streamFenceCancelWaitOwnerPhase` sibling, `{ version: 1, phase }` with a
@@ -851,11 +856,27 @@ export function parseNativeStreamFenceRejection(
     fence?.[0] === 1
       ? (STREAM_FENCE_ORIGINS.find((known) => known === fence[1]) ?? null)
       : null;
-  const cleanupFailure =
+  const parsedCleanup =
     sibling && carriesCleanup(origin)
       ? parseStreamFenceCleanup(
           readOwnDataValues(error as object, [STREAM_FENCE_CLEANUP_KEY])?.[0],
         )
+      : null;
+  // Reading the cleanup can change the fence on a proxy: a timeout's cleanup
+  // joins only the exact origin pair validated above, else drops alone.
+  const recheckedFence =
+    parsedCleanup && origin === STREAM_FENCE_TIMEOUT_ORIGIN
+      ? readClosedOwnData(
+          readOwnDataValues(error as object, [
+            STREAM_FENCE_REJECTION_KEYS[1],
+          ])?.[0],
+          STREAM_FENCE_ORIGIN_KEYS,
+        )
+      : null;
+  const cleanupFailure =
+    origin !== STREAM_FENCE_TIMEOUT_ORIGIN ||
+    (recheckedFence?.[0] === 1 && recheckedFence[1] === origin)
+      ? parsedCleanup
       : null;
   const windowsTaskkill =
     taskkillSibling &&
@@ -1166,7 +1187,8 @@ function ownDataValuesOrUndefined(
  * `lifecycle_stop_unconfirmed` groups, or nothing at all. No property is read
  * without them. The cleanup pair is read only beside a validated
  * `owner_stop_requested` or `owner_timeout` origin on an acknowledged
- * terminal, and an invalid one drops alone. The taskkill group is read only
+ * terminal, and an invalid one, or an `owner_timeout` one whose read changed
+ * the validated fence pair, drops alone. The taskkill group is read only
  * beside a validated `owner_stop_requested` origin's `tree_unconfirmed`
  * cleanup pair, and an invalid one, including a code beside
  * `output_error` or an accessor code, drops alone. The root report pair is
@@ -1245,6 +1267,22 @@ export function readDesktopStreamFenceDiagnostic(
             failure,
           )
         : fence;
+    // Reading the cleanup can change the fence on a proxy: a timeout's
+    // cleanup joins only the exact origin pair validated above.
+    if (
+      cleaned?.desktop_stream_fence_cleanup_failure !== undefined &&
+      fence.desktop_stream_fence_origin === STREAM_FENCE_TIMEOUT_ORIGIN
+    ) {
+      const [fenceVersion, fenceOrigin] = ownDataValuesOrUndefined(
+        source,
+        STREAM_FENCE_PROPERTIES,
+      );
+      if (
+        fenceVersion !== fence.desktop_stream_fence_version ||
+        fenceOrigin !== fence.desktop_stream_fence_origin
+      )
+        return fence;
+    }
   } catch {
     return fence;
   }

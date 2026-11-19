@@ -1470,6 +1470,20 @@ mod unix_tests {
         )
     }
 
+    /// `command` under a test-owned `/bin/sh -c`, never the user's login
+    /// shell, leading its own process group with piped output, as
+    /// `build_command` places a command.
+    fn fixed_shell(command: &str) -> tokio::process::Command {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(command)
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        cmd.into()
+    }
+
     #[tokio::test]
     async fn stream_lifecycle_unconfirmed_owner_outcome_fences_waiting_and_later_launches() {
         let scratch = Scratch::new();
@@ -1826,7 +1840,7 @@ mod unix_tests {
         // terminal message and no fence.
         let scratch = Scratch::new();
         let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
-        let mut cmd = platform::build_command(&long_tree(&scratch, "timed-out"), None, None);
+        let mut cmd = fixed_shell(&long_tree(&scratch, "timed-out"));
         let owned = started(
             lifecycle
                 .launch(lifecycle.admit(), "timed-out", &mut cmd)
@@ -1854,7 +1868,7 @@ mod unix_tests {
         let fenced = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
         let mut owners = Vec::new();
         for id in ["timeout", "later-stop"] {
-            let mut cmd = platform::build_command(&long_tree(&scratch, id), None, None);
+            let mut cmd = fixed_shell(&long_tree(&scratch, id));
             owners.push(started(fenced.launch(fenced.admit(), id, &mut cmd).await));
         }
         let mut owners = owners.into_iter();
