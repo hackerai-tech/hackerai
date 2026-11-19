@@ -27,6 +27,7 @@ import {
   BROWSER_OPEN_IDLE_ENV_VALUES,
   BROWSER_DAEMON_DEADLINE_PHASES,
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
+  BROWSER_DAEMON_SCREENSHOT_REFUSALS,
   BROWSER_CLI_AT_PREPARE_STATUSES,
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
@@ -751,6 +752,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // Absent means unmeasured (older writer or budget).
   capture_response_diagnostic_version?: 1;
   capture_response_validation?: (typeof BROWSER_DAEMON_RESPONSE_VALIDATIONS)[number];
+  // Fresh screenshot success_false only: the error's fixed upstream message
+  // family, not a transport, errno or cause. Absent means unmeasured.
+  capture_screenshot_refusal_version?: 1;
+  capture_screenshot_refusal?: (typeof BROWSER_DAEMON_SCREENSHOT_REFUSALS)[number];
   capture_cli_at_prepare_diagnostic_version?: 1;
   capture_cli_at_prepare_status?: (typeof BROWSER_CLI_AT_PREPARE_STATUSES)[number];
   capture_cli_at_prepare_major?: number;
@@ -1090,6 +1095,8 @@ export async function captureBrowserFrame(
         | "capture_deadline_phase"
         | "capture_response_diagnostic_version"
         | "capture_response_validation"
+        | "capture_screenshot_refusal_version"
+        | "capture_screenshot_refusal"
         | "capture_cli_at_prepare_diagnostic_version"
         | "capture_cli_at_prepare_status"
         | "capture_cli_at_prepare_major"
@@ -1205,6 +1212,21 @@ export async function captureBrowserFrame(
                 precondition.capture_response_diagnostic_version = 1;
                 precondition.capture_response_validation =
                   BROWSER_DAEMON_RESPONSE_VALIDATIONS[validation[1]];
+              }
+              const refusal = parsed?.s1;
+              if (
+                stage === "fresh_screenshot" &&
+                precondition.capture_response_validation === "success_false" &&
+                Array.isArray(refusal) &&
+                refusal.length === 2 &&
+                refusal[0] === 1 &&
+                Number.isInteger(refusal[1]) &&
+                refusal[1] >= 0 &&
+                refusal[1] < BROWSER_DAEMON_SCREENSHOT_REFUSALS.length
+              ) {
+                precondition.capture_screenshot_refusal_version = 1;
+                precondition.capture_screenshot_refusal =
+                  BROWSER_DAEMON_SCREENSHOT_REFUSALS[refusal[1]];
               }
               const reason = parsed?.diagnostic_reason;
               if (

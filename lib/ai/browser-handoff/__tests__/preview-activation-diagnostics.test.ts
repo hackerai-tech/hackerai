@@ -330,7 +330,8 @@ describe("bounded field append", () => {
 });
 
 // Every capture key a single command-exit stream_status failure can record.
-// The remaining capture keys belong to other stages (decode, bridge, SDK start).
+// The remaining capture keys belong to other stages (decode, bridge, SDK start,
+// fresh screenshot).
 const COMMAND_EXIT_CAPTURE_KEYS = [
   "capture_stage",
   "capture_error_kind",
@@ -406,6 +407,8 @@ const OTHER_STAGE_CAPTURE_KEYS = [
   "capture_fresh_read_http_status",
   "capture_fresh_read_type_error_signal",
   "capture_fresh_read_transport_code",
+  "capture_screenshot_refusal_version",
+  "capture_screenshot_refusal",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
 // A new capture field must be classified here, so the max fixture stays current.
 type UnclassifiedCaptureKey = Exclude<

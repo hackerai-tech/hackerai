@@ -22,6 +22,7 @@ import {
 import {
   BROWSER_DAEMON_PROGRAM,
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
+  BROWSER_DAEMON_SCREENSHOT_REFUSALS,
   browserDaemonCommand,
 } from "../daemon-program";
 
@@ -2779,6 +2780,12 @@ it.each(
           capture_cli_at_prepare_status: "unavailable",
           capture_response_diagnostic_version: 1,
           capture_response_validation: validation,
+          // Only the screenshot action classifies its unrecognized error.
+          ...(stage === "fresh_screenshot" &&
+            validation === "success_false" && {
+              capture_screenshot_refusal_version: 1,
+              capture_screenshot_refusal: "other_or_unavailable",
+            }),
         },
       ],
     ]);
@@ -2820,6 +2827,172 @@ it.each(["stream_status", "fresh_screenshot"] as const)(
     expect(sandbox.commands.run).toHaveBeenCalledTimes(
       stage === "fresh_screenshot" ? 3 : 2,
     );
+  },
+);
+
+it.each<[unknown, (typeof BROWSER_DAEMON_SCREENSHOT_REFUSALS)[number]]>([
+  ["Browser not launched", "browser_not_launched"],
+  ["No active page", "no_active_page"],
+  ["Failed to decode screenshot: PRIVATE", "decode_failed"],
+  ["Failed to save screenshot to /PRIVATE/preview.jpg: PRIVATE", "save_failed"],
+  ["Browser not launched PRIVATE", "other_or_unavailable"],
+  [{ message: "No active page" }, "other_or_unavailable"],
+])(
+  "classifies the real helper's fresh screenshot error %j as %s without changing the capture failure",
+  async (reason, refusal) => {
+    const { sandbox, thrown } = helperSandbox(
+      "fresh_screenshot",
+      JSON.stringify({
+        id: "hackerai-preview",
+        success: false,
+        error: reason,
+        data: "PRIVATE",
+      }),
+    );
+    const observed = jest.fn();
+    const failure = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observed,
+    ).catch((error: unknown) => error);
+    expect(thrown).toHaveLength(1);
+    expect(failure).toBe(thrown[0]);
+    expect(observed.mock.calls).toEqual([
+      [
+        {
+          capture_stage: "fresh_screenshot",
+          capture_error_kind: "command_exit",
+          capture_command_exit_code: 5,
+          capture_cli_at_prepare_diagnostic_version: 1,
+          capture_cli_at_prepare_status: "unavailable",
+          capture_response_diagnostic_version: 1,
+          capture_response_validation: "success_false",
+          capture_screenshot_refusal_version: 1,
+          capture_screenshot_refusal: refusal,
+        },
+      ],
+    ]);
+    const serialized = JSON.stringify(observed.mock.calls);
+    expect(serialized).not.toMatch(/PRIVATE|hackerai-preview|Failed|\//);
+    if (typeof reason === "string") expect(serialized).not.toContain(reason);
+    // No added request or retry; the screenshot file is still removed.
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  [
+    "another ID",
+    "fresh_screenshot",
+    '{"id":"PRIVATE","success":false,"error":"Browser not launched"}',
+    "id_mismatch",
+  ],
+  [
+    "the status action",
+    "stream_status",
+    '{"id":"hackerai-preview","success":false,"error":"Browser not launched"}',
+    "success_false",
+  ],
+] as const)(
+  "leaves the screenshot error unclassified for %s from the real helper",
+  async (_case, stage, line, validation) => {
+    const { sandbox, thrown } = helperSandbox(stage, line);
+    const observed = jest.fn();
+    const failure = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      stage === "fresh_screenshot",
+      undefined,
+      observed,
+    ).catch((error: unknown) => error);
+    expect(failure).toBe(thrown[0]);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_stage: stage,
+      capture_command_exit_code: 5,
+      capture_response_validation: validation,
+    });
+    expect(context).not.toHaveProperty("capture_screenshot_refusal_version");
+    expect(context).not.toHaveProperty("capture_screenshot_refusal");
+  },
+);
+
+it.each<
+  [
+    string,
+    "stream_status" | "fresh_screenshot",
+    unknown,
+    unknown,
+    (typeof BROWSER_DAEMON_SCREENSHOT_REFUSALS)[number] | undefined,
+  ]
+>([
+  [
+    "the last known code",
+    "fresh_screenshot",
+    [1, 3],
+    [1, 4],
+    "other_or_unavailable",
+  ],
+  ["an older writer", "fresh_screenshot", [1, 3], undefined, undefined],
+  ["the status stage", "stream_status", [1, 3], [1, 0], undefined],
+  ["another refusal", "fresh_screenshot", [1, 2], [1, 0], undefined],
+  ["an unknown code", "fresh_screenshot", [1, 3], [1, 5], undefined],
+  ["another version", "fresh_screenshot", [1, 3], [2, 0], undefined],
+])(
+  "accepts the screenshot refusal tuple only after a decoded success_false (%s)",
+  async (_case, stage, r1, s1, refusal) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const error = new CommandExitError({
+      exitCode: 5,
+      stdout: JSON.stringify({ r1, s1, private: "PRIVATE" }),
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command: string) => {
+        if (
+          command.includes(
+            stage === "fresh_screenshot"
+              ? '"action":"screenshot"'
+              : '"action":"stream_status"',
+          )
+        )
+          throw error;
+        return run(command);
+      }),
+    );
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        stage === "fresh_screenshot",
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_stage: stage,
+      capture_command_exit_code: 5,
+    });
+    if (refusal)
+      expect(context).toMatchObject({
+        capture_screenshot_refusal_version: 1,
+        capture_screenshot_refusal: refusal,
+      });
+    else {
+      expect(context).not.toHaveProperty("capture_screenshot_refusal_version");
+      expect(context).not.toHaveProperty("capture_screenshot_refusal");
+    }
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
   },
 );
 
