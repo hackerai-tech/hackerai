@@ -16,6 +16,7 @@ function expectPacketBudgets(text: string) {
     r1: _responseValidation,
     o1: _openInfo,
     l1: _wrapperResult,
+    s1: _screenshotRefusal,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -2334,7 +2335,7 @@ it.each(
   ),
 )(
   "keeps exit5 for %s at %s and records only its refusal code",
-  (_case, _action, line, refused, request) => {
+  (_case, action, line, refused, request) => {
     const d = daemon({ request });
     d.socket.emit("connect");
     d.socket.emit("data", line + "\n");
@@ -2349,7 +2350,12 @@ it.each(
     ]);
     expect(d.output.mock.calls).toHaveLength(1);
     const text = d.output.mock.calls[0][0];
-    expect(JSON.parse(text)).toEqual({ r1: [1, refused], cv: [1, 0] });
+    // Only a screenshot's explicit success false adds its unrecognized error class.
+    expect(JSON.parse(text)).toEqual({
+      r1: [1, refused],
+      ...(action === "screenshot" && refused === 3 && { s1: [1, 4] }),
+      cv: [1, 0],
+    });
     expect(text).not.toMatch(/PRIVATE|hackerai-preview|data|error|true/);
   },
 );
@@ -2378,9 +2384,11 @@ const maximalResponse = (
   chargedBytes?: number,
   o1?: number,
   lr?: unknown,
+  request?: Record<string, unknown>,
 ) => {
   const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
   const d = daemon({
+    request,
     chargedBytes,
     pidFile: "314159",
     processVisibility: "same_uid",
@@ -2555,4 +2563,36 @@ it("drops the wrapper result first, before the declaration, refusal code or any 
   );
   expect(JSON.parse(justOver)).toEqual(JSON.parse(declared));
   expect(JSON.parse(declared)).toMatchObject({ o1: 3, r1: [1, 2] });
+});
+
+it("drops the screenshot refusal class first, before the wrapper result or any existing field", () => {
+  const line =
+    '{"id":"hackerai-preview","success":false,"error":"Failed to save screenshot to /PRIVATE.jpg: PRIVATE"}';
+  const complete = maximalResponse(
+    line,
+    undefined,
+    undefined,
+    [1, 3, 5],
+    screenshotRequest,
+  );
+  expectPacketBudgets(complete);
+  const { s1, ...existing } = JSON.parse(complete);
+  expect(s1).toEqual([1, 3]);
+  expect(existing).toMatchObject({ r1: [1, 3], l1: [1, 3, 5] });
+  // One byte over the cap drops only s1; l1, r1 and every existing field remain.
+  const justOver = maximalResponse(
+    line,
+    545 - Buffer.byteLength(complete),
+    undefined,
+    [1, 3, 5],
+    screenshotRequest,
+  );
+  expect(JSON.parse(justOver)).toEqual(existing);
+  // With the OPEN declaration too, the full context already exceeds the cap.
+  const declared = JSON.parse(
+    maximalResponse(line, undefined, 3, [1, 3, 5], screenshotRequest),
+  );
+  expect(declared).not.toHaveProperty("s1");
+  expect(declared).toMatchObject({ r1: [1, 3], o1: 3, l1: [1, 3, 5] });
+  expect(complete).not.toMatch(/PRIVATE|Failed|error/);
 });

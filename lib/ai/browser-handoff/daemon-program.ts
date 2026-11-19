@@ -133,6 +133,17 @@ export const BROWSER_DAEMON_RESPONSE_VALIDATIONS = [
   "success_other",
 ] as const;
 
+// Wire tuple s1 code is the index. The screenshot action's success_false error
+// matched against fixed agent-browser literals/prefixes: the upstream message
+// family, not a transport, errno or cause. Never the error text or its suffix.
+export const BROWSER_DAEMON_SCREENSHOT_REFUSALS = [
+  "browser_not_launched",
+  "no_active_page",
+  "decode_failed",
+  "save_failed",
+  "other_or_unavailable",
+] as const;
+
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
 const net = require('node:net');
@@ -462,6 +473,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.s1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.s1;
     if (value?.l1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.l1;
     if (value?.o1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.o1;
     if (value?.r1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.r1;
@@ -523,12 +535,20 @@ try {
       if (buffer.length > 2 * 1024 * 1024) return finish(4);
       const newline = buffer.indexOf('\n');
       if (newline < 0) return;
-      // Every refusal keeps exit5; r1 records only which check refused it. Only
-      // the parse can throw before finish marks done, so catch remains invalid_json.
+      // Every refusal keeps exit5; r1 records only which check refused it, s1 only
+      // a screenshot error's fixed message family. Only the parse can throw
+      // before finish marks done, so catch remains invalid_json.
       try {
         const response = JSON.parse(buffer.slice(0, newline));
         const refused = response === null || typeof response !== 'object' || Array.isArray(response) ? 1 :
           response.id !== id ? 2 : response.success === false ? 3 : response.success !== true ? 4 : -1;
+        if (refused === 3 && request.action === 'screenshot') {
+          const error = response.error;
+          return finish(5, { r1: [1, 3], s1: [1, typeof error !== 'string' ? 4 :
+            error === 'Browser not launched' ? 0 : error === 'No active page' ? 1 :
+            error.startsWith('Failed to decode screenshot:') ? 2 :
+            error.startsWith('Failed to save screenshot to ') ? 3 : 4] });
+        }
         if (refused >= 0) return finish(5, { r1: [1, refused] });
         finish(0, response);
       } catch { finish(5, { r1: [1, 0] }); }
