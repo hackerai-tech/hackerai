@@ -36,6 +36,7 @@ import {
   BROWSER_WRAPPER_RESULTS,
   BROWSER_WRAPPER_RESULT_ELAPSED,
   BROWSER_DAEMON_VERSION_FILE_STATUSES,
+  BROWSER_DAEMON_WAIT_DEFERRED,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -59,6 +60,17 @@ export type BrowserSessionLocation = {
 export class BrowserPreviewUnavailable extends Error {
   constructor(readonly state: "loading" | "disconnected" | "closed") {
     super(`Browser preview ${state}`);
+  }
+}
+
+/**
+ * An opted-in fresh capture yielded to the selected session's verified active
+ * WAIT. Carries no frame, freshness or failure context; only the opted-in
+ * passive GET may present it, and nothing else should treat it as a capture.
+ */
+export class BrowserPreviewRefreshDeferred extends Error {
+  constructor() {
+    super("Browser preview refresh deferred");
   }
 }
 
@@ -463,7 +475,9 @@ const monotonicNow = () => {
 /**
  * Only a non-fresh preview passes ownedListener: the helper may then return a
  * port its daemon provably listens on without waiting behind serialized daemon
- * work, and otherwise sends this same status request.
+ * work, and otherwise sends this same status request. Only a fresh passive
+ * preview passes deferDuringWait instead: the helper may then report its exact
+ * deferral literal, which rejects with BrowserPreviewRefreshDeferred.
  */
 export async function getPrivateStreamPort(
   sandbox: Sandbox,
@@ -471,13 +485,16 @@ export async function getPrivateStreamPort(
   browserSessionName: string,
   ownedListener = false,
   onRejected?: (rejection: StatusCommandRejection) => void,
+  deferDuringWait = false,
 ) {
   const command = browserDaemonCommand(
     session.directory,
     browserSessionName,
     ownedListener
       ? { action: "stream_status", owned_port: true }
-      : { action: "stream_status" },
+      : deferDuringWait
+        ? { action: "stream_status", defer_wait: true }
+        : { action: "stream_status" },
   );
   const options = { ...buildSandboxCommandOptions(sandbox), timeoutMs: 7_000 };
   let result: CommandResult;
@@ -519,6 +536,13 @@ export async function getPrivateStreamPort(
     }
   }
   if (result.exitCode !== 0) throw new BrowserPreviewUnavailable("closed");
+  // Only the requested helper-only literal; never a parsed daemon reply field.
+  if (
+    deferDuringWait &&
+    !ownedListener &&
+    result.stdout === BROWSER_DAEMON_WAIT_DEFERRED
+  )
+    throw new BrowserPreviewRefreshDeferred();
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -914,6 +938,10 @@ function statusSdkPhaseContext({
  * Capture a validated frame, requesting a separate screenshot when freshness is required.
  * The optional failure observer receives only bounded context; observer failures
  * cannot replace the original rejection or change capture, cleanup, or retry behavior.
+ * Only the passive preview GET opts into deferDuringWait for a fresh capture that
+ * looks up its own port; it may then reject with BrowserPreviewRefreshDeferred,
+ * which is not a capture failure and reaches no observer. Without verified WAIT
+ * and listener proof the original strict capture runs unchanged.
  */
 export async function captureBrowserFrame(
   sandbox: Sandbox,
@@ -922,12 +950,17 @@ export async function captureBrowserFrame(
   requireFresh = false,
   streamPort?: number,
   onFailure?: (context: BrowserCaptureFailureContext) => void,
+  options?: { deferDuringWait?: boolean },
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
   let returnedBridgeFailure: unknown;
   let statusRejection: StatusCommandRejection | undefined;
   let freshReadPhase: "sdk_read" | "bytes_convert" | undefined;
+  const deferDuringWait =
+    requireFresh &&
+    streamPort === undefined &&
+    options?.deferDuringWait === true;
   try {
     const port =
       streamPort ??
@@ -940,6 +973,7 @@ export async function captureBrowserFrame(
           ((rejection) => {
             statusRejection = rejection;
           }),
+        deferDuringWait,
       ));
     stage = "frame_bridge";
     const result = await sandbox.commands.run(
@@ -1064,6 +1098,13 @@ export async function captureBrowserFrame(
       browserSessionName,
     };
   } catch (error) {
+    // An explicit deferral outcome, never a failure: no diagnostics or relabeling.
+    if (
+      deferDuringWait &&
+      stage === "stream_status" &&
+      error instanceof BrowserPreviewRefreshDeferred
+    )
+      throw error;
     if (onFailure) {
       let kind: BrowserCaptureFailureContext["capture_error_kind"] =
         "unreadable";
