@@ -7,6 +7,8 @@ import {
   stabilizeChatTimelineRows,
   type AgentActivityTimelineRow,
   type AgentToolGroupTimelineRow,
+  type ChatTimelineRow,
+  type MessageTimelineRow,
 } from "../message-timeline-rows";
 import type { ChatMessage } from "@/types";
 
@@ -690,6 +692,143 @@ describe("deriveChatTimelineRows", () => {
     expect(
       second.result.find((row) => row.kind === "agent-tool-group"),
     ).not.toBe(first.result.find((row) => row.kind === "agent-tool-group"));
+  });
+
+  describe("generated file cards across a recovered Agent response", () => {
+    const fileA = {
+      fileId: "file-a",
+      name: "report.md",
+      mediaType: "text/markdown",
+    };
+    const sameNameOtherId = {
+      fileId: "file-b",
+      name: "report.md",
+      mediaType: "text/markdown",
+    };
+    const userTurn = (id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        id,
+        role: "user",
+        parts: [{ type: "text", text: "Write a report" }],
+        ...extra,
+      }) as unknown as ChatMessage;
+    const agentReply = (
+      id: string,
+      fileDetails: unknown[],
+      parts: unknown[] = [{ type: "text", text: "Saved the report" }],
+    ) =>
+      ({
+        ...agentMessage(parts as ChatMessage["parts"]),
+        id,
+        fileDetails,
+      }) as unknown as ChatMessage;
+    const messageRowFor = (rows: ChatTimelineRow[], id: string) =>
+      rows.find(
+        (row): row is MessageTimelineRow =>
+          row.kind === "message" && row.message.id === id,
+      );
+    const fileIdsFor = (rows: ChatTimelineRow[], id: string) =>
+      messageRowFor(rows, id)?.message.fileDetails?.map((file) => file.fileId);
+
+    it("shows a stored file once per turn while preserving stored data and activity metadata", () => {
+      const userMessage = userTurn("user-1", {
+        parts: [
+          { type: "text", text: "Write a report" },
+          {
+            type: "file",
+            fileId: "file-a",
+            name: "report.md",
+            mediaType: "text/markdown",
+          },
+        ],
+      });
+      const checkpoint = agentReply("checkpoint", [fileA]);
+      const autoContinue = userTurn("auto-continue", {
+        metadata: { isAutoContinue: true },
+      });
+      const recovered = agentReply(
+        "recovered",
+        [fileA, sameNameOtherId],
+        [
+          {
+            type: "tool-shell",
+            toolCallId: "tool-1",
+            input: { command: "ls" },
+            state: "output-available",
+          },
+          { type: "text", text: "Saved the report" },
+        ],
+      );
+      const nextUser = userTurn("user-2");
+      const nextTurnReply = agentReply("next-turn", [fileA]);
+      const messages = [
+        userMessage,
+        checkpoint,
+        autoContinue,
+        recovered,
+        nextUser,
+        nextTurnReply,
+      ];
+      const storedSnapshot = JSON.parse(JSON.stringify(messages));
+
+      const rows = deriveChatTimelineRows({
+        messages,
+        status: "ready",
+        lastAssistantMessageIndex: 5,
+        expandedAgentMessageIds: new Set(["recovered"]),
+      });
+
+      expect(fileIdsFor(rows, "checkpoint")).toEqual(["file-a"]);
+      // A different stored file with the same name is still its own card.
+      expect(fileIdsFor(rows, "recovered")).toEqual(["file-b"]);
+      // An explicit user turn starts a new response.
+      expect(fileIdsFor(rows, "next-turn")).toEqual(["file-a"]);
+
+      // User turns and their attachments are untouched.
+      expect(messageRowFor(rows, "user-1")?.message).toBe(userMessage);
+      expect(messageRowFor(rows, "user-2")?.message).toBe(nextUser);
+
+      // Tool activity keeps the original metadata for in-place file links.
+      const toolGroup = rows.find(
+        (row): row is AgentToolGroupTimelineRow =>
+          row.kind === "agent-tool-group",
+      );
+      expect(toolGroup?.message).toBe(recovered);
+      expect(toolGroup?.message.fileDetails).toEqual([fileA, sameNameOtherId]);
+
+      // Projection never mutates stored messages.
+      expect(messages).toEqual(storedSnapshot);
+    });
+
+    it("keeps the earlier card while the recovered reply streams and reuses projected rows", () => {
+      const checkpoint = agentReply("checkpoint", [fileA]);
+      const streaming = agentReply("streaming", [fileA]);
+      const options = {
+        messages: [userTurn("user-1"), checkpoint, streaming],
+        status: "streaming" as const,
+        lastAssistantMessageIndex: 2,
+        expandedAgentMessageIds: new Set<string>(),
+      };
+
+      const firstRows = deriveChatTimelineRows(options);
+      const streamingCard = messageRowFor(firstRows, "streaming")?.message;
+
+      expect(fileIdsFor(firstRows, "checkpoint")).toEqual(["file-a"]);
+      // Keep an empty array so MessageItem cannot fall back to another
+      // source and reintroduce the duplicate card.
+      expect(streamingCard?.fileDetails).toEqual([]);
+      expect(streamingCard?.parts).toBe(streaming.parts);
+
+      const first = stabilizeChatTimelineRows(
+        firstRows,
+        createStableChatTimelineRowsState(),
+      );
+      const second = stabilizeChatTimelineRows(
+        deriveChatTimelineRows(options),
+        first,
+      );
+      expect(second).toBe(first);
+    });
   });
 
   it("keeps settled rows stable while the active message changes", () => {
