@@ -39,8 +39,9 @@ export const createRunTerminalCmdToolSchema = ({
    - Do not chain commands or use shell operators such as \`&&\`, \`|\`, \`;\`, redirects, or substitutions
    - Use separate tool calls for multi-step workflows`
     : `1. Use command chaining and pipes for efficiency:
-   - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
-   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)`;
+   - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && git status --short\`)
+   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)
+   - Use separate calls for critical install, database configuration, and service startup steps. After each, check \`result.status\` and \`result.exitCode\`, then verify the actual postcondition (e.g., the entry point exists or the configured database accepts a connection). The result reports only the outer shell's exit, usually its last operation, so \`;\`, pipes, or a final success message can mask an earlier failure`;
   const pagerGuidance = approvalGated
     ? "4. If the command would use a pager, pass the command's native non-pager flag."
     : "4. If the command would use a pager, append ` | cat` to the command.";
@@ -67,7 +68,7 @@ ${commandCompositionGuidance}
 2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file. If the file tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. A timeout or lost response may hide a completed write: inspect the file before retrying, especially before append.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
-5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
+5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. For a service whose output or lifecycle you need (e.g., a dev server or database), start it with \`is_background\` false and a short initial \`timeout\` (e.g., 10 seconds), use the returned session to view logs or kill it, and check readiness in a separate call. Do not use \`nohup\` or a shell \`&\` when you need a reusable session. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
 6. Dont include any newlines in the command.
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
