@@ -1669,11 +1669,15 @@ describe("Agent trigger route lifecycle", () => {
       expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     });
 
+    const privateReadDetail = "private association read detail";
+    const readFails = () => Promise.reject(new Error(privateReadDetail));
+
     it.each([
-      ["the read-back also fails", () => Promise.reject(new Error("down"))],
+      ["the read-back also fails", readFails, "chat_read_failed"],
       [
         "the previous owner is still recorded",
         async () => ({ user_id: "user-1", active_trigger_run_id: "old" }),
+        "chat_guard_mismatch",
       ],
       [
         "the approval Session differs",
@@ -1682,10 +1686,11 @@ describe("Agent trigger route lifecycle", () => {
           active_trigger_run_id: "run-1",
           active_agent_approval_session_id: "other-session",
         }),
+        "chat_guard_mismatch",
       ],
-    ])(
+    ] as const)(
       "keeps the run, Session and ownership when %s",
-      async (_case, readBack) => {
+      async (_case, readBack, result) => {
         getChatById.mockImplementationOnce(readBack);
         mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
         const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1700,12 +1705,27 @@ describe("Agent trigger route lifecycle", () => {
               previousOwner: { runId: "old", approvalSessionId: null },
             }),
           ).rejects.toMatchObject({
+            statusCode: 503,
             type: "offline",
             metadata: { agent_run_association: "unconfirmed" },
           });
+          expect(warn).toHaveBeenCalledTimes(1);
+          const line = String(warn.mock.calls[0][0]);
+          expect(JSON.parse(line)).toMatchObject({
+            event: "agent_run_association_read_back",
+            read_back_outcome: "inconclusive",
+            read_back_result_version: 1,
+            read_back_result: result,
+            goal_association: false,
+          });
+          expect(line).not.toContain(privateReadDetail);
         } finally {
           warn.mockRestore();
         }
+        expect(getChatById).toHaveBeenCalledTimes(1);
+        expect(mockGetGoal).not.toHaveBeenCalled();
+        expect(mockReplaceActiveTriggerRun).toHaveBeenCalledTimes(1);
+        expect(mockTriggerTask).not.toHaveBeenCalled();
         expect(mockCancelAgentTriggerRun).not.toHaveBeenCalledWith("run-1");
         expect(mockCloseAgentApprovalSession).not.toHaveBeenCalledWith(
           "session-1",
@@ -1715,35 +1735,137 @@ describe("Agent trigger route lifecycle", () => {
       },
     );
 
-    it("does not return a goal handle for a different generation", async () => {
+    it.each([
+      ["a failed goal read", readFails, "goal_read_failed"],
+      [
+        "a different goal generation",
+        async () => ({ generation: 3 }),
+        "goal_guard_mismatch",
+      ],
+    ] as const)(
+      "does not return a goal handle for %s",
+      async (_case, readGoal, result) => {
+        getChatById.mockResolvedValueOnce({
+          user_id: "user-1",
+          active_trigger_run_id: "run-1",
+        });
+        mockGetGoal.mockImplementationOnce(readGoal);
+        mockGoalMutation.mockRejectedValueOnce(new TypeError("fetch failed"));
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+          await expect(
+            finalize({
+              chatId: "chat-1",
+              userId: "user-1",
+              runId: "run-1",
+              approvalSessionId: undefined,
+              goal: { userId: "user-1", generation: 2 },
+            }),
+          ).rejects.toMatchObject({
+            statusCode: 503,
+            metadata: { agent_run_association: "unconfirmed" },
+          });
+          expect(warn).toHaveBeenCalledTimes(1);
+          const line = String(warn.mock.calls[0][0]);
+          expect(JSON.parse(line)).toMatchObject({
+            event: "agent_run_association_read_back",
+            read_back_outcome: "inconclusive",
+            read_back_result_version: 1,
+            read_back_result: result,
+            goal_association: true,
+          });
+          expect(line).not.toContain(privateReadDetail);
+        } finally {
+          warn.mockRestore();
+        }
+        expect(getChatById).toHaveBeenCalledTimes(1);
+        const readBackScope = getChatById.mock.calls[0][1];
+        expect(readBackScope.signal).toBeDefined();
+        expect(mockGetGoal).toHaveBeenCalledTimes(1);
+        expect(mockGetGoal.mock.calls[0][0]).toBe("chat-1");
+        expect(mockGetGoal.mock.calls[0][1]).toBe("user-1");
+        expect(mockGetGoal.mock.calls[0][2]).toBe(readBackScope);
+        expect(mockGoalMutation).toHaveBeenCalledTimes(1);
+        expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+        expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+        expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+        expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it("records a confirmed association without an additional mutation", async () => {
+      const chatId = "00000000-0000-4000-8000-000000000001";
+      const runId = `run_${"a".repeat(24)}`;
       getChatById.mockResolvedValueOnce({
         user_id: "user-1",
-        active_trigger_run_id: "run-1",
+        active_trigger_run_id: runId,
       });
-      mockGetGoal.mockResolvedValueOnce({ generation: 3 });
-      mockGoalMutation.mockRejectedValueOnce(new TypeError("fetch failed"));
+      mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalize({ chatId, runId, approvalSessionId: undefined }),
+        ).resolves.toEqual({ publicAccessToken: "run-token" });
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
+          level: "warn",
+          event: "agent_run_association_read_back",
+          service: "hackerai-web",
+          timestamp: expect.any(String),
+          read_back_outcome: "associated",
+          read_back_result_version: 1,
+          read_back_result: "associated",
+          goal_association: false,
+          chat_id: chatId,
+          trigger_run_id: runId,
+        });
+      } finally {
+        warn.mockRestore();
+      }
+      expect(getChatById).toHaveBeenCalledTimes(1);
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledTimes(1);
+      expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+    });
+
+    it("keeps a read-back scope failure inconclusive", async () => {
+      const convexModule = require("@/lib/db/convex-client");
+      const original = convexModule.getConvexClient;
+      const getClient = jest
+        .spyOn(convexModule, "getConvexClient")
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(() => {
+          throw new Error(privateReadDetail);
+        });
+      mockReplaceActiveTriggerRun.mockRejectedValueOnce(lostResponse());
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
         await expect(
           finalize({
             chatId: "chat-1",
-            userId: "user-1",
             runId: "run-1",
             approvalSessionId: undefined,
-            goal: { userId: "user-1", generation: 2 },
           }),
         ).rejects.toMatchObject({
+          statusCode: 503,
           metadata: { agent_run_association: "unconfirmed" },
         });
+        expect(warn).toHaveBeenCalledTimes(1);
+        const line = String(warn.mock.calls[0][0]);
+        expect(JSON.parse(line)).toMatchObject({
+          event: "agent_run_association_read_back",
+          read_back_outcome: "inconclusive",
+          read_back_result_version: 1,
+          read_back_result: "scope_failed",
+        });
+        expect(line).not.toContain(privateReadDetail);
       } finally {
         warn.mockRestore();
+        getClient.mockRestore();
       }
-      expect(mockGetGoal).toHaveBeenCalledWith(
-        "chat-1",
-        "user-1",
-        expect.anything(),
-      );
+      expect(getChatById).not.toHaveBeenCalled();
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledTimes(1);
       expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     });
 
     it.each([

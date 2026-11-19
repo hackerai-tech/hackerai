@@ -463,6 +463,19 @@ const isAgentRunAssociationUnconfirmed = (error: unknown): boolean =>
   error.metadata?.agent_run_association === AGENT_RUN_ASSOCIATION_UNCONFIRMED;
 
 /**
+ * Why a read-back did or did not confirm the association. Every value except
+ * "associated" is inconclusive. A failed read is distinct from a completed
+ * read whose guards did not match; "scope_failed" is a failure outside both.
+ */
+type AgentRunAssociationReadBackResult =
+  | "associated"
+  | "chat_read_failed"
+  | "chat_guard_mismatch"
+  | "goal_read_failed"
+  | "goal_guard_mismatch"
+  | "scope_failed";
+
+/**
  * Confirm the original association from an independent, bounded read. Even a
  * different owner is inconclusive: that owner can detach before the pending
  * write reaches its fence.
@@ -479,28 +492,44 @@ const confirmStartedRunAssociation = async ({
   runId: string;
   approvalSessionId: string | undefined;
   goalGeneration?: number;
-}): Promise<boolean> =>
-  // A fresh budget: the failed write's deadline may already be spent.
-  withAgentConvexScope("startAssociationReadBack", async (convex) => {
-    const chat = await getChatById({ id: chatId }, convex);
-    if (
-      !chat ||
-      chat.user_id !== userId ||
-      chat.deletion_started_at !== undefined ||
-      chat.active_trigger_run_id !== runId ||
-      (chat.active_agent_approval_session_id ?? null) !==
-        (approvalSessionId ?? null)
-    )
-      return false;
-    if (goalGeneration === undefined) return true;
-    const savedGoal = await getGoal(chatId, userId, convex);
-    return (
-      savedGoal != null &&
-      savedGoal.deletedAt === undefined &&
-      savedGoal.generation === goalGeneration &&
-      (savedGoal.activeRunId === undefined || savedGoal.activeRunId === runId)
-    );
-  }).catch(() => false);
+}): Promise<AgentRunAssociationReadBackResult> =>
+  // A fresh budget: the failed write's deadline may already be spent. Chat and
+  // goal reads share it.
+  withAgentConvexScope(
+    "startAssociationReadBack",
+    async (convex): Promise<AgentRunAssociationReadBackResult> => {
+      let chat: Awaited<ReturnType<typeof getChatById>>;
+      try {
+        chat = await getChatById({ id: chatId }, convex);
+      } catch {
+        return "chat_read_failed";
+      }
+      if (
+        !chat ||
+        chat.user_id !== userId ||
+        chat.deletion_started_at !== undefined ||
+        chat.active_trigger_run_id !== runId ||
+        (chat.active_agent_approval_session_id ?? null) !==
+          (approvalSessionId ?? null)
+      )
+        return "chat_guard_mismatch";
+      if (goalGeneration === undefined) return "associated";
+      let savedGoal: Awaited<ReturnType<typeof getGoal>>;
+      try {
+        savedGoal = await getGoal(chatId, userId, convex);
+      } catch {
+        return "goal_read_failed";
+      }
+      if (
+        savedGoal != null &&
+        savedGoal.deletedAt === undefined &&
+        savedGoal.generation === goalGeneration &&
+        (savedGoal.activeRunId === undefined || savedGoal.activeRunId === runId)
+      )
+        return "associated";
+      return "goal_guard_mismatch";
+    },
+  ).catch((): AgentRunAssociationReadBackResult => "scope_failed");
 
 /** The chat's run owner, read before dispatch for an ordinary start. */
 type AgentRunPreviousOwner = {
@@ -651,13 +680,14 @@ export const finalizeStartedAgentRun = async ({
       failureStage === "associate_run" &&
       isConvexOutcomeUnknownError(error)
     ) {
-      const associated = await confirmStartedRunAssociation({
+      const readBackResult = await confirmStartedRunAssociation({
         chatId,
         userId,
         runId,
         approvalSessionId,
         goalGeneration: goal?.generation,
       });
+      const associated = readBackResult === "associated";
       try {
         console.warn(
           JSON.stringify({
@@ -666,6 +696,8 @@ export const finalizeStartedAgentRun = async ({
             service: "hackerai-web",
             timestamp: new Date().toISOString(),
             read_back_outcome: associated ? "associated" : "inconclusive",
+            read_back_result_version: 1,
+            read_back_result: readBackResult,
             goal_association: goal !== undefined,
             chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(
               chatId,
