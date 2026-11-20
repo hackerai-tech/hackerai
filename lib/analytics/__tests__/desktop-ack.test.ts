@@ -4364,14 +4364,19 @@ describe("invocation rejection message class", () => {
             ...stopOrigin,
             desktop_stream_fence_origin: "owner_timeout",
           } as const;
-          // Every explicit-stop-only group a carrier could spoof beside it.
-          const stopOnly = {
+          // The taskkill groups only its own tree_unconfirmed leg keeps.
+          const taskkill = {
             desktop_stream_fence_windows_taskkill_version: 1,
             desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
             desktop_stream_fence_windows_taskkill_exit_code: 128,
             desktop_stream_fence_windows_taskkill_root_report_version: 1,
             desktop_stream_fence_windows_taskkill_root_report:
               "requested_pid_not_found",
+          } as const;
+          // Every group a carrier could spoof beside it: the taskkill groups
+          // and an explicit stop's source.
+          const stopOnly = {
+            ...taskkill,
             desktop_stream_fence_stop_request_source_version: 1,
             desktop_stream_fence_stop_request_source: "cancel_ipc",
           } as const;
@@ -4384,10 +4389,13 @@ describe("invocation rejection message class", () => {
                 ...timeoutOrigin,
                 desktop_stream_fence_cleanup_version: 1,
                 desktop_stream_fence_cleanup_failure: failure,
+                // Only the tree-only leg keeps its own taskkill groups.
+                ...(failure === "tree_unconfirmed" && taskkill),
               };
               const final = settle({
                 ...fenced,
-                // Spoofed stop-only groups and private extras never survive.
+                // A spoofed source, other legs' taskkill groups and private
+                // extras never survive.
                 streamFence: {
                   ...expected,
                   ...stopOnly,
@@ -4419,6 +4427,101 @@ describe("invocation rejection message class", () => {
               );
             },
           );
+
+          it("keeps its tree_unconfirmed pair alone without a valid taskkill group", () => {
+            const tree = {
+              ...timeoutOrigin,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+            } as const;
+            for (const carried of [
+              // A native app before the timeout's receipt sends none.
+              {},
+              { ...taskkill, desktop_stream_fence_windows_taskkill_version: 2 },
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "PRIVATE",
+              },
+              {
+                ...taskkill,
+                desktop_stream_fence_windows_taskkill_outcome: "output_error",
+              },
+              { desktop_stream_fence_windows_taskkill_version: 1 },
+            ]) {
+              const final = settle({
+                ...fenced,
+                streamFence: { ...tree, ...carried },
+              });
+              expect(fenceKeys(final!.properties)).toEqual(Object.keys(tree));
+              expect(sanitize({ ...coarse, ...tree, ...carried })).toEqual({
+                ...coarse,
+                ...tree,
+              });
+            }
+            // A not-found report beside another code drops alone.
+            const exit255 = {
+              ...tree,
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              desktop_stream_fence_windows_taskkill_exit_code: 255,
+            } as const;
+            const final = settle({
+              ...fenced,
+              streamFence: {
+                ...exit255,
+                desktop_stream_fence_windows_taskkill_root_report_version: 1,
+                desktop_stream_fence_windows_taskkill_root_report:
+                  "requested_pid_not_found",
+              },
+            });
+            expect(final?.properties).toMatchObject(exit255);
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(exit255));
+          });
+
+          it("never runs a taskkill accessor or reads one without an acknowledged terminal", () => {
+            const tree = {
+              ...timeoutOrigin,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+            } as const;
+            const withGetters = (target: Record<string, unknown>) => {
+              const reads = { count: 0 };
+              for (const key of Object.keys(stopOnly))
+                Object.defineProperty(target, key, {
+                  enumerable: true,
+                  get() {
+                    reads.count++;
+                    return stopOnly[key as keyof typeof stopOnly];
+                  },
+                });
+              return { target, reads };
+            };
+            // Accessors on an acknowledged terminal drop alone, unrun.
+            const carrier = withGetters({ ...tree });
+            const final = settle({ ...fenced, streamFence: carrier.target });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(tree));
+            const event = withGetters({ ...coarse, ...tree });
+            expect(
+              sanitizeDesktopAckEvent({
+                event: "desktop_ack_command_settled",
+                properties: event.target,
+              }).properties,
+            ).toEqual({ ...coarse, ...tree });
+            expect(carrier.reads.count + event.reads.count).toBe(0);
+            // Without an acknowledged terminal, only the origin pair.
+            for (const terminalAcknowledged of [false, undefined]) {
+              const unacknowledged = settle({
+                ...fenced,
+                outcome: "incomplete",
+                reason: "deadline_exceeded",
+                terminalAcknowledged,
+                streamFence: { ...tree, ...taskkill },
+              });
+              expect(fenceKeys(unacknowledged!.properties)).toEqual(
+                Object.keys(timeoutOrigin),
+              );
+            }
+          });
 
           it("keeps exactly the timeout origin from an older native app or for an invalid pair", () => {
             for (const carried of [

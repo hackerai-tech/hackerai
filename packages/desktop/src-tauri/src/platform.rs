@@ -235,9 +235,22 @@ impl LeaderWait {
 pub(crate) struct GracefulKill {
     pub(crate) tree_stopped: bool,
     pub(crate) leader: LeaderWait,
+    /// How the tree stop's own Windows taskkill failed, only when the tree was
+    /// unconfirmed on that path; None for every other outcome and platform.
+    pub(crate) taskkill: Option<TaskkillFailure>,
 }
 
 impl GracefulKill {
+    /// The tree stop's own result, as `cancel_process_tree_observed` reported
+    /// it, beside the bounded leader wait.
+    fn of(tree: Result<(), Option<TaskkillFailure>>, leader: LeaderWait) -> Self {
+        Self {
+            tree_stopped: tree.is_ok(),
+            leader,
+            taskkill: tree.err().flatten(),
+        }
+    }
+
     /// `graceful_kill`'s unchanged rule: the tree stopped and the shell reaped.
     pub(crate) fn confirmed(self) -> bool {
         self.tree_stopped && self.leader == LeaderWait::Reaped
@@ -256,11 +269,12 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
 }
 
 /// `graceful_kill`, which delegates here, reporting which of its checks were
-/// confirmed. The signals, waits, commands and their order are unchanged.
+/// confirmed and, on Windows, its one taskkill call's closed failure. The
+/// signals, waits, commands and their order are unchanged.
 pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) -> GracefulKill {
     use std::time::Duration;
     #[cfg(unix)]
-    let stopped = {
+    let stopped: Result<(), Option<TaskkillFailure>> = {
         if let Some(pid) = child.id() {
             // Send SIGTERM first for graceful shutdown
             terminate_process_group(pid, libc::SIGTERM);
@@ -275,20 +289,21 @@ pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) ->
             }
             // A reaped shell does not prove its descendants stopped. Verify
             // the group and escalate survivors before releasing update admission.
-            cancel_process_tree(pid).await
+            cancel_process_tree(pid).await.then_some(()).ok_or(None)
         } else {
             // Already reaped by this owner: no live PID remains to signal.
-            true
+            Ok(())
         }
     };
 
     #[cfg(not(unix))]
     let stopped = {
         // Killing only bash/cmd can leave its native descendants writing
-        // files after the caller releases update admission.
+        // files after the caller releases update admission. The same single
+        // taskkill call `cancel_process_tree` makes, keeping its closed result.
         let stopped = match child.id() {
-            Some(pid) => cancel_process_tree(pid).await,
-            None => true,
+            Some(pid) => cancel_process_tree_observed(pid).await,
+            None => Ok(()),
         };
         let _ = child.kill().await;
         stopped
@@ -297,10 +312,7 @@ pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) ->
     // Reap the process to avoid zombies, without waiting forever on a shell
     // that cannot be stopped.
     let leader = LeaderWait::of(tokio::time::timeout(Duration::from_secs(5), child.wait()).await);
-    GracefulKill {
-        tree_stopped: stopped,
-        leader,
-    }
+    GracefulKill::of(stopped, leader)
 }
 
 #[cfg(unix)]
@@ -322,6 +334,7 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 /// group (`setsid`, `setpgid`, daemonizing) are neither signaled nor counted.
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
+#[cfg(any(unix, test))]
 pub async fn cancel_process_tree(pid: u32) -> bool {
     cancel_process_tree_observed(pid).await.is_ok()
 }
@@ -635,12 +648,58 @@ mod tests {
                 assert_eq!(
                     GracefulKill {
                         tree_stopped,
-                        leader
+                        leader,
+                        taskkill: None,
                     }
                     .confirmed(),
                     tree_stopped && leader == Reaped,
                     "{tree_stopped} {leader:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn graceful_kill_keeps_only_its_tree_stops_own_taskkill_failure() {
+        use LeaderWait::*;
+        let failures = [
+            TaskkillFailure::RequestedPidNotFound,
+            TaskkillFailure::NonzeroExit(NonZeroI32::new(128)),
+            TaskkillFailure::NonzeroExit(NonZeroI32::new(-1_073_741_510)),
+            TaskkillFailure::NonzeroExit(None),
+            TaskkillFailure::OutputError,
+        ];
+        for leader in [Reaped, TimedOut, Failed] {
+            // A confirmed tree stop has no failure to keep.
+            let stopped = GracefulKill::of(Ok(()), leader);
+            assert_eq!(
+                (stopped.tree_stopped, stopped.taskkill),
+                (true, None),
+                "{leader:?}"
+            );
+            assert_eq!(stopped.confirmed(), leader == Reaped, "{leader:?}");
+            // Unix, or another platform: unconfirmed without a taskkill result.
+            let other = GracefulKill::of(Err(None), leader);
+            assert_eq!(
+                (other.tree_stopped, other.taskkill),
+                (false, None),
+                "{leader:?}"
+            );
+            assert!(!other.confirmed(), "{leader:?}");
+            // Windows: exactly the one taskkill call's failure, which never
+            // changes the Boolean confirmation.
+            for failure in failures {
+                let killed = GracefulKill::of(Err(Some(failure)), leader);
+                assert_eq!(
+                    killed,
+                    GracefulKill {
+                        tree_stopped: false,
+                        leader,
+                        taskkill: Some(failure),
+                    },
+                    "{leader:?} {failure:?}"
+                );
+                assert!(!killed.confirmed(), "{leader:?} {failure:?}");
             }
         }
     }
@@ -651,6 +710,7 @@ mod tests {
         let confirmed = GracefulKill {
             tree_stopped: true,
             leader: LeaderWait::Reaped,
+            taskkill: None,
         };
         let mut running = build_command("sleep 30", None, None).spawn().unwrap();
         assert_eq!(graceful_kill_observed(&mut running).await, confirmed);

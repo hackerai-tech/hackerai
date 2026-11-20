@@ -274,15 +274,10 @@ export function sanitizeDesktopAckEvent<
     // The stream fence origin joins only validated authorized unknown and
     // `lifecycle_stop_unconfirmed` groups; no fence property is read without
     // them. It likewise survives only as the validated data copy and drops
-    // alone. Its cleanup pair is read only beside a validated
-    // `owner_stop_requested` origin on an acknowledged terminal, and an
-    // invalid one drops alone, leaving the origin pair. Its Windows taskkill
-    // group is read only beside a validated `tree_unconfirmed` cleanup pair,
-    // and an invalid one drops alone, leaving both pairs. Its stop request
-    // source pair is read only beside that group's validated root report of
-    // the not-found code, and an invalid one drops alone. Its
-    // owner phase pair is read only beside a validated `cancel_wait_timeout`
-    // origin on an acknowledged terminal, and an invalid one drops alone.
+    // alone. An acknowledged stop or owner timeout can carry cleanup.
+    // A tree-only failure can add its Windows taskkill result. Only an
+    // explicit stop with a validated not-found report can add its first
+    // request source. A cancellation-wait timeout can add its owner phase.
     // The acknowledgement that admits them is the same single snapshot that
     // is emitted: an inherited or accessor flag never admits them, is never
     // run and never survives the copy below.
