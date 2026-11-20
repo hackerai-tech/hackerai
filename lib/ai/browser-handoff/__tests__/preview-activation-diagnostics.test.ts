@@ -329,7 +329,7 @@ describe("bounded field append", () => {
   });
 });
 
-// Every capture key a single command-exit stream_status failure can record.
+// All keys available across command-exit stream_status failures.
 // The remaining capture keys belong to other stages (decode, bridge, SDK start,
 // fresh screenshot).
 const COMMAND_EXIT_CAPTURE_KEYS = [
@@ -342,6 +342,9 @@ const COMMAND_EXIT_CAPTURE_KEYS = [
   "capture_deadline_phase",
   "capture_response_diagnostic_version",
   "capture_response_validation",
+  "capture_daemon_socket_queue_version",
+  "capture_daemon_socket_pending_count",
+  "capture_daemon_socket_held_count",
   "capture_cli_at_prepare_diagnostic_version",
   "capture_cli_at_prepare_status",
   "capture_cli_at_prepare_major",
@@ -420,7 +423,21 @@ const EXIT_3_OR_5_CAPTURE_KEYS: ReadonlyArray<string> = [
   "capture_deadline_phase",
   "capture_response_diagnostic_version",
   "capture_response_validation",
+  "capture_daemon_socket_queue_version",
+  "capture_daemon_socket_pending_count",
+  "capture_daemon_socket_held_count",
 ] satisfies ReadonlyArray<(typeof COMMAND_EXIT_CAPTURE_KEYS)[number]>;
+// A connected response deadline excludes exit-2 preconditions and exit-5
+// response validation. Model the largest matching context for the new fields.
+const NON_DEADLINE_EXIT_CAPTURE_KEYS: ReadonlyArray<string> = [
+  "capture_precondition_reason",
+  "capture_precondition_error",
+  "capture_response_diagnostic_version",
+  "capture_response_validation",
+] satisfies ReadonlyArray<(typeof COMMAND_EXIT_CAPTURE_KEYS)[number]>;
+const DEADLINE_CAPTURE_KEYS = COMMAND_EXIT_CAPTURE_KEYS.filter(
+  (key) => !NON_DEADLINE_EXIT_CAPTURE_KEYS.includes(key),
+);
 // A new capture field must be classified here, so the max fixture stays current.
 type UnclassifiedCaptureKey = Exclude<
   keyof BrowserCaptureFailureContext,
@@ -566,9 +583,9 @@ describe("actual phLogger to OTLP export", () => {
     expectBaselineSurvives(attributes, fields);
   });
 
-  it("fits the tuple beside the largest single-stage capture context", async () => {
-    const fields = routeFields(captureWith(COMMAND_EXIT_CAPTURE_KEYS));
-    expect(Object.keys(fields)).toHaveLength(70);
+  it("keeps the loaded reader beside a full daemon deadline context", async () => {
+    const fields = routeFields(captureWith(DEADLINE_CAPTURE_KEYS));
+    expect(Object.keys(fields)).toHaveLength(69);
     const attributes = await exported(
       fields,
       previewCaptureUrl(ENDPOINT, true, 71, READER),
@@ -612,9 +629,15 @@ describe("actual phLogger to OTLP export", () => {
   it.each([71, 73])(
     "omits the whole tuple for a %i-field baseline, exporting the legacy record",
     async (count) => {
-      const extra = OTHER_STAGE_CAPTURE_KEYS.slice(0, count - 70);
+      const deadlineFieldCount = Object.keys(
+        routeFields(captureWith(DEADLINE_CAPTURE_KEYS)),
+      ).length;
+      const extra = OTHER_STAGE_CAPTURE_KEYS.slice(
+        0,
+        count - deadlineFieldCount,
+      );
       const fields = routeFields(
-        captureWith([...COMMAND_EXIT_CAPTURE_KEYS, ...extra]),
+        captureWith([...DEADLINE_CAPTURE_KEYS, ...extra]),
       );
       expect(Object.keys(fields)).toHaveLength(count);
       const legacy = await exported(fields, `${ENDPOINT}?fresh=1`);
