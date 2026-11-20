@@ -94,8 +94,7 @@ import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
 
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
-import { createTrackedProvider, GROK_4_6_SLUG } from "@/lib/ai/providers";
-import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   AGENT_PROVIDER_IDLE_TIMEOUT_MS,
   AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
@@ -4449,7 +4448,6 @@ export const agentLongTask = task({
             const createStream = (
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
-              recoveryResumeModel?: string,
             ) => {
               if (modelName !== selectedModel) {
                 streamCtx.abliteratedStepRouting = undefined;
@@ -4459,7 +4457,6 @@ export const agentLongTask = task({
                 trackedProvider.languageModel(modelName).modelId;
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
-              streamCtx.recoveryResumeModel = recoveryResumeModel;
               setCurrentModelName(modelName);
               return createAgentStream(modelName, streamCtx, state);
             };
@@ -5139,8 +5136,8 @@ export const agentLongTask = task({
                                 loopRecoveryMessages ?? finishedMessages,
                               omittedCount: 0,
                             };
-                      // A Max refusal recovers on DeepSeek, never by retrying
-                      // the refusing model for the refused generation.
+                      // A Max refusal recovers on DeepSeek for the rest of
+                      // this response, never by retrying the refusing model.
                       const maxProviderRefusal =
                         providerContentBlocked &&
                         mode === "agent" &&
@@ -5455,16 +5452,6 @@ export const agentLongTask = task({
                                   : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
-                        // A Max Grok 4.6 refusal uses DeepSeek for one
-                        // generation, then resumes the refused Grok model.
-                        // Read the active step's model before the retry resets it.
-                        const recoveryResumeModel =
-                          maxProviderRefusal &&
-                          retryReason === "content_filter" &&
-                          retryModel === DEEPSEEK_1017_MODEL_KEY &&
-                          terminalRequestedModelSlug === GROK_4_6_SLUG
-                            ? activeModelName
-                            : undefined;
                         streamCtx.ignoredProviderSlugs =
                           hasTerminalProviderStreamError
                             ? getProviderDisconnectIgnoredSlugs(
@@ -5482,7 +5469,6 @@ export const agentLongTask = task({
                             blockedProviderModel,
                             fallbackModel: retryModel,
                             fallbackModelSlug: retryModelSlug,
-                            recoveryResumeModel,
                             ignoredProviderSlugs:
                               streamCtx.ignoredProviderSlugs,
                             userId,
@@ -5678,7 +5664,6 @@ export const agentLongTask = task({
                           blockedProviderModel
                             ? [blockedProviderModel]
                             : undefined,
-                          recoveryResumeModel,
                         );
                         // This retry's onFinish settles its own terminal chunks:
                         // dropped only when the final retry is merged.
@@ -5732,12 +5717,6 @@ export const agentLongTask = task({
                                 );
                                 let finalRetryScheduled = false;
                                 try {
-                                  // A drop after Grok resumed belongs to Grok.
-                                  const failedRetryModel =
-                                    recoveryResumeModel &&
-                                    terminalRequestedModelSlug === GROK_4_6_SLUG
-                                      ? activeModelName
-                                      : retryModel;
                                   const normalizedRetryMessages = retryMessages
                                     .map((message) =>
                                       message.role === "assistant"
@@ -5825,7 +5804,7 @@ export const agentLongTask = task({
                                     ? getNextProviderDisconnectRetryModel({
                                         originalModel:
                                           maxBaselineModel ?? selectedModel,
-                                        failedModel: failedRetryModel,
+                                        failedModel: retryModel,
                                         completedRetryCount:
                                           providerRecoveryAttempts,
                                         selectedModelOverride,
@@ -5847,7 +5826,7 @@ export const agentLongTask = task({
                                       ]),
                                     ];
                                     recordProviderDisconnectRecoveryAttempt({
-                                      failedModel: failedRetryModel,
+                                      failedModel: retryModel,
                                       retryModel: finalRetryModel,
                                       continuation: nextContinuation,
                                     });
@@ -5875,7 +5854,7 @@ export const agentLongTask = task({
                                         extraFileIds: preservedFileIds,
                                         model:
                                           trackedProvider.languageModel(
-                                            failedRetryModel,
+                                            retryModel,
                                           ).modelId,
                                         mode,
                                         generationStartedAt: fallbackStartTime,

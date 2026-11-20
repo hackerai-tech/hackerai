@@ -876,11 +876,6 @@ export type AgentStreamContext = {
   excludedProviderModelSlugs?: readonly string[];
   /** Upstream exclusions apply only to the current recovery model leg. */
   ignoredProviderSlugs?: readonly string[];
-  /**
-   * Recovery leg limited to this stream's first generation. Later steps resume
-   * this model on its normal route, without the recovery leg's exclusions.
-   */
-  recoveryResumeModel?: string;
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -967,10 +962,6 @@ export async function createAgentStream(
   };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
-  // Captured once: callers reuse and mutate one context across retry streams.
-  const recoveryResumeModel = ctx.recoveryResumeModel;
-  const getResumedModel = (stepIndex: number) =>
-    stepIndex > generationStepOffset ? recoveryResumeModel : undefined;
   // A replacement stream can inherit the previous response's SDK parts.
   // Keep each attempt's snapshot from overwriting that recovery prefix.
   const contextPressurePartId = `${CONTEXT_USAGE_SNAPSHOT_ID_PREFIX}-${generationStepOffset}`;
@@ -1131,7 +1122,6 @@ export async function createAgentStream(
   const requestedSlug = requestedLanguageModel.modelId;
   let lastRequestedSlug = requestedSlug;
   let activeStepModelName = modelName;
-  let activeStepResumedAfterRecovery = false;
   let activeStepRouting: ModelStepRouting = {};
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
@@ -1502,15 +1492,14 @@ export async function createAgentStream(
   let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
   const getPreVisionModelName = (stepIndex = generationStepOffset) =>
-    getResumedModel(stepIndex) ??
-    (ctx.abliteratedStepRouting
+    ctx.abliteratedStepRouting
       ? resolveAbliterationModelForGenerationStep({
           treatmentModel: routeModelName,
           baselineModel: ctx.abliteratedStepRouting.baselineModel,
           generationStepLimit: ctx.abliteratedStepRouting.generationStepLimit,
           stepIndex,
         })
-      : routeModelName);
+      : routeModelName;
   const getEffectiveModelName = (stepIndex = generationStepOffset) => {
     const effectiveModel = resolveAgentModelForImageToolResults(
       getPreVisionModelName(stepIndex),
@@ -1535,7 +1524,6 @@ export async function createAgentStream(
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
-    activeStepResumedAfterRecovery = getResumedModel(stepIndex) !== undefined;
     const preVisionModelName = getPreVisionModelName(stepIndex);
     activeStepRouting = {
       plannedBaselineContinuation:
@@ -1605,11 +1593,8 @@ export async function createAgentStream(
         hasPdfAttachments:
           streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
         pdfParserEngine,
-        // The resumed model keeps its normal route and fallbacks.
-        ...(!activeStepResumedAfterRecovery && {
-          excludedModelSlugs: ctx.excludedProviderModelSlugs,
-          ignoredProviderSlugs: ctx.ignoredProviderSlugs,
-        }),
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
+        ignoredProviderSlugs: ctx.ignoredProviderSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
@@ -2275,9 +2260,7 @@ export async function createAgentStream(
     tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal,
-    // The SDK merges stream defaults into each step. Let prepareStep supply
-    // the entire configuration when the recovery and resumed routes differ.
-    providerOptions: recoveryResumeModel ? undefined : initialProviderOptions,
+    providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
       if (preparedRuntimeCheckpoint && !abortSignal.aborted) {
         ctx.runtimeCheckpoint?.recordExposure();
