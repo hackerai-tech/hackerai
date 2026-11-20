@@ -289,7 +289,7 @@ it("removes a deleted historical payload immediately instead of retaining cached
   );
 });
 
-it("keeps Files discoverable, loads it on selection, and preserves its search through keyboard navigation", async () => {
+it("keeps Files discoverable, loads it on selection, and preserves its search through keyboard navigation", () => {
   render(<ComputerWorkspace {...props} selection={activity} />);
   expect(screen.getByRole("tab", { name: "Files" })).toBeVisible();
   expect(
@@ -309,14 +309,6 @@ it("keeps Files discoverable, loads it on selection, and preserves its search th
     "aria-selected",
     "true",
   );
-  expect(
-    screen.getByRole("textbox", { name: "Search chat files" }),
-  ).toHaveValue("report");
-  fireEvent.keyDown(screen.getByRole("button", { name: "Open computer tab" }), {
-    key: "Enter",
-  });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Files" }));
-  expect(screen.getAllByRole("tab", { name: "Files" })).toHaveLength(1);
   expect(
     screen.getByRole("textbox", { name: "Search chat files" }),
   ).toHaveValue("report");
@@ -473,36 +465,10 @@ it("lets users reach overflowed tabs and disables arrows at the corresponding ed
   expect(strip.scrollLeft).toBeLessThan(400);
 });
 
-it("opens the compact menu without replacing the preview and dismisses it without closing Computer", async () => {
-  const onClose = jest.fn();
-  render(<ComputerWorkspace {...props} onClose={onClose} />);
-  fireEvent.click(
-    within(
-      screen.getByRole("navigation", { name: "Files in this chat" }),
-    ).getAllByRole("button", { name: /report.txt/ })[0],
-  );
-  expect(await screen.findByText("desktop historical version")).toBeVisible();
-  fireEvent.keyDown(screen.getByRole("button", { name: "Open computer tab" }), {
-    key: "Enter",
-  });
-  const item = await screen.findByRole("menuitem", { name: "Files" });
-  expect(screen.getByText("desktop historical version")).toBeVisible();
-  fireEvent.keyDown(item, { key: "Escape" });
-  expect(onClose).not.toHaveBeenCalled();
-  expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
-  expect(screen.getByRole("tab", { name: "report.txt" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-});
-
 it("uses direct tabs and a clear close action in the mobile overlay", async () => {
   mockOverlay = true;
   const onClose = jest.fn();
   render(<ComputerWorkspace {...props} onClose={onClose} />);
-  expect(
-    screen.queryByRole("button", { name: "Open computer tab" }),
-  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
   fireEvent.click(screen.getByRole("tab", { name: "Files" }));
   fireEvent.click(

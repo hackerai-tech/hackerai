@@ -18,7 +18,6 @@ import {
   Minimize2,
   Monitor,
   PanelRight,
-  Plus,
   X,
 } from "lucide-react";
 import {
@@ -48,13 +47,6 @@ import {
 import { downloadFile } from "@/lib/utils/file-download";
 import { isTauriEnvironment } from "../hooks/useTauri";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
-
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 type FileTab = { id: string; name: string } & (
   | { kind: "captured"; capturedId: string }
@@ -421,30 +413,6 @@ export function ComputerWorkspace({
                 <ChevronRight size={16} />
               </button>
             </div>
-          )}
-          {!overlay && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  aria-label="Open computer tab"
-                  title="Open tab"
-                  className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <Plus size={16} />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                onEscapeKeyDown={(event) => event.stopPropagation()}
-              >
-                <DropdownMenuItem onSelect={openFiles}>
-                  <FolderOpen size={16} /> Files
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => focusTab("activity")}>
-                  <Monitor size={16} /> Activity
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           )}
           {!overlay && (
             <button
