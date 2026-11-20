@@ -283,16 +283,10 @@ const git = (root, args) =>
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });
-/**
- * Local-only receipt key for one case, based on the current executable bytes.
- * Returns { fingerprint } or { unavailable: reason }; never contacts a provider.
- */
-async function receiptIdentity(root, config, name) {
-  if (!config.reuse) return { unavailable: "config has no reuse identity" };
-  let checkoutCommit;
+function cleanCheckout(root) {
   try {
-    checkoutCommit = git(root, ["rev-parse", "HEAD"]).trim();
-    check(/^[a-f0-9]{40,64}$/.test(checkoutCommit), "Unknown commit");
+    const commit = git(root, ["rev-parse", "HEAD"]).trim();
+    check(/^[a-f0-9]{40,64}$/.test(commit), "Unknown commit");
     if (
       git(root, [
         "--no-optional-locks",
@@ -303,27 +297,58 @@ async function receiptIdentity(root, config, name) {
       ]).length > 0
     )
       return { unavailable: "source checkout has uncommitted changes" };
+    return { commit };
   } catch {
     return { unavailable: "source commit unknown" };
   }
-  let buildId;
+}
+
+async function frontendBuildId(root) {
   try {
     const file = await inside(root, join(root, ".next", "BUILD_ID"));
     const info = await stat(file);
-    check(info.isFile() && info.size > 0 && info.size <= 4096, "Bad build");
-    buildId = await readFile(file);
+    if (info.isFile() && info.size > 0 && info.size <= 4096)
+      return await readFile(file);
   } catch {
-    return { unavailable: "frontend .next/BUILD_ID missing" };
+    // A missing or unreadable build cannot support reuse.
   }
-  // Health probes and target verification may overlap with a local rebuild.
-  await verifyApp(root, config.app);
+  return null;
+}
+
+/**
+ * Local-only receipt key for one case, based on the current executable bytes.
+ * Returns { fingerprint } or { unavailable: reason }; never contacts a provider.
+ */
+async function receiptIdentity(
+  root,
+  config,
+  name,
+  verifyExecutable = verifyApp,
+) {
+  if (!config.reuse) return { unavailable: "config has no reuse identity" };
+  const checkout = cleanCheckout(root);
+  if (!checkout.commit) return checkout;
+  const buildId = await frontendBuildId(root);
+  if (!buildId) return { unavailable: "frontend .next/BUILD_ID missing" };
+
+  // Capture a stable checkout and frontend build around executable hashing.
+  await verifyExecutable(root, config.app);
+  const currentBuildId = await frontendBuildId(root);
+  check(
+    currentBuildId?.equals(buildId),
+    "frontend build changed during verification; rerun preflight",
+  );
+  check(
+    cleanCheckout(root).commit === checkout.commit,
+    "source checkout changed during verification; rerun preflight",
+  );
   // validateConfig fixes key order, so this serialization is canonical.
   const identity = {
     version: 1,
     case: name,
     config,
     executableSha256: config.app.sha256,
-    checkoutCommit,
+    checkoutCommit: checkout.commit,
     host: {
       name: hostname(),
       platform: platform(),
@@ -444,7 +469,7 @@ const WINDOWS_GUIDANCE = [
   "- required Windows CI and native acceptance remain separate gates",
 ];
 
-async function preflightNative(root, config, name, verify) {
+async function preflightNative(root, config, name, verify, verifyExecutable) {
   const report = (state, lines) => {
     console.log(
       [`preflight native ${name}: ${state}`, ...lines, ...OPERATOR_CHECKS].join(
@@ -495,7 +520,7 @@ async function preflightNative(root, config, name, verify) {
   }
   let identity;
   try {
-    identity = await receiptIdentity(root, config, name);
+    identity = await receiptIdentity(root, config, name, verifyExecutable);
   } catch (error) {
     const reason =
       error instanceof QaError
@@ -669,9 +694,13 @@ const readConfig = async (file) =>
 /**
  * Returns a process exit code: preflight native returns 2 when BLOCKED.
  * Invalid input and other command failures throw (exit 1 from the CLI).
- * `verify` is injectable for tests; production uses the live target verifier.
+ * The injected verifiers let tests control concurrent build and service changes.
  */
-export async function main(args, root = ROOT, { verify = verifyTargets } = {}) {
+export async function main(
+  args,
+  root = ROOT,
+  { verify = verifyTargets, verifyExecutable = verifyApp } = {},
+) {
   const [action, session, configFile, ...rest] = args;
   if (action === "help" || !action) {
     console.log(
@@ -694,7 +723,13 @@ export async function main(args, root = ROOT, { verify = verifyTargets } = {}) {
       "Usage: desktop:qa preflight <web|windows-vm|native <config.json> <case>>",
     );
     const name = caseName(rest[0]);
-    return preflightNative(root, await readConfig(configFile), name, verify);
+    return preflightNative(
+      root,
+      await readConfig(configFile),
+      name,
+      verify,
+      verifyExecutable,
+    );
   }
   if (action === "record-result") {
     const [, file, rawCase, outcome, fingerprint] = args;

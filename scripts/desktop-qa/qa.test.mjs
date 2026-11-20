@@ -175,6 +175,11 @@ async function nativeFixture(t) {
           await fx.onVerify?.();
           return {};
         },
+        verifyExecutable: async (checkout, appConfig) => {
+          const executable = await verifyApp(checkout, appConfig);
+          await fx.afterAppVerification?.();
+          return executable;
+        },
       });
       const text = out.join("\n");
       return {
@@ -773,6 +778,33 @@ test("preflight withholds a saved pass if the executable changes during its chec
   assert.match(whileOffline.text, /executable hash changed/);
   assert.doesNotMatch(whileOffline.text, /historical PASS/);
   assert.equal(fx.verifyCalls, 2);
+});
+
+test("preflight withholds reuse when the frontend rebuilds during fingerprinting", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  await fx.recordResult("pass", fingerprint);
+  fx.afterAppVerification = () =>
+    writeFile(join(fx.root, ".next/BUILD_ID"), "build-2");
+
+  const rebuilding = await fx.preflight();
+  assert.equal(rebuilding.code, 2);
+  assert.equal(rebuilding.fingerprint, undefined);
+  assert.match(rebuilding.text, /frontend build changed during verification/);
+  assert.doesNotMatch(rebuilding.text, /prior result: PASS/);
+
+  fx.afterAppVerification = undefined;
+  const settled = await fx.preflight();
+  assert.notEqual(settled.fingerprint, fingerprint);
+  assert.match(settled.text, /different identity/);
+
+  await writeFile(join(fx.root, ".next/BUILD_ID"), "build-1");
+  fx.afterAppVerification = () => writeFile(join(fx.root, "notes.txt"), "edit");
+  const editing = await fx.preflight();
+  assert.equal(editing.code, 2);
+  assert.equal(editing.fingerprint, undefined);
+  assert.match(editing.text, /source checkout changed during verification/);
+  assert.doesNotMatch(editing.text, /prior result: PASS/);
 });
 
 test("a target verification failure blocks and hides a matching PASS", async (t) => {

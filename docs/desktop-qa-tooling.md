@@ -156,8 +156,11 @@ replaces one owner-only file per case under `.artifacts/desktop-qa/.receipts/`.
 A later READY preflight for the same case shows the prior PASS only when the
 fingerprint matches; the latest FAIL/BLOCKED, another case, or any identity
 change requires a fresh run. If a local service is offline, preflight can cite a
-matching historical pass while still reporting BLOCKED. A receipt records an
-operator observation. Collect a new observation when the check requires fresh
+matching historical pass while still reporting BLOCKED. If the checkout or
+frontend build changes during fingerprinting, it reports BLOCKED and asks
+you to rerun preflight. Before relying
+on a saved result for a current native session, confirm the QA window and
+signed-in account. Collect a new observation when the check requires fresh
 evidence.
 
 ## Launch, inspect and stop
