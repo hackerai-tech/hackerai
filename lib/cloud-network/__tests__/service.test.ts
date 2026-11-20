@@ -46,6 +46,7 @@ const CONFIGURED_ENV = [
   "E2B_EU_DOMAIN",
   "E2B_TEMPLATE",
   "E2B_EU_TEMPLATE",
+  "E2B_MANAGED_EGRESS_ENABLED",
   "E2B_MANAGED_EGRESS_USERS",
   "E2B_MANAGED_EGRESS_US_PROXY",
   "E2B_MANAGED_EGRESS_EU_PROXY",
@@ -588,6 +589,7 @@ describe("managed egress pilot", () => {
   const MASKED = { address: PROXY.address, username: PROXY.username };
   const DENY_ALL = ["0.0.0.0/0"];
   type PilotEnv =
+    | "E2B_MANAGED_EGRESS_ENABLED"
     | "E2B_MANAGED_EGRESS_USERS"
     | "E2B_MANAGED_EGRESS_US_PROXY"
     | "E2B_MANAGED_EGRESS_EU_PROXY"
@@ -595,6 +597,7 @@ describe("managed egress pilot", () => {
   const UNAVAILABLE = "Managed network egress is unavailable for this account.";
   function configure(overrides: Partial<Record<PilotEnv, string | undefined>>) {
     const values: Record<PilotEnv, string | undefined> = {
+      E2B_MANAGED_EGRESS_ENABLED: undefined,
       E2B_MANAGED_EGRESS_USERS: "qa-other, owner",
       E2B_MANAGED_EGRESS_US_PROXY: JSON.stringify(PROXY),
       E2B_MANAGED_EGRESS_EU_PROXY: JSON.stringify(EU_PROXY),
@@ -637,27 +640,32 @@ describe("managed egress pilot", () => {
     );
   }
 
-  it("keeps non-enrolled accounts on the exact direct policy in both regions without reading pilot config", async () => {
-    enableEuCluster();
-    configure({
-      E2B_MANAGED_EGRESS_USERS: "owner-other",
-      E2B_MANAGED_EGRESS_US_PROXY: "not json",
-      E2B_MANAGED_EGRESS_EU_PROXY: undefined,
-    });
-    const us = workspace("owner", undefined, "us-workspace");
-    const eu = workspace("owner", undefined, "eu-workspace");
-    inventory({ us: [us.sandboxId], eu: [eu.sandboxId] });
-    connectable(us, eu);
-    await saveNetworkSettings("owner", policy, 1);
-    for (const sandbox of [us, eu])
-      expect(sandbox.updateNetwork.mock.calls).toEqual([
-        [
-          { allowOut: ["api.example.test"], denyOut: DENY_ALL },
-          expect.anything(),
-        ],
-      ]);
-    expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
-  });
+  it.each([undefined, "", "false"])(
+    "keeps non-enrolled accounts on the exact direct policy in both regions without reading pilot config (global toggle %p)",
+    async (enabled) => {
+      enableEuCluster();
+      configure({
+        E2B_MANAGED_EGRESS_ENABLED: enabled,
+        E2B_MANAGED_EGRESS_DESTINATIONS: "*",
+        E2B_MANAGED_EGRESS_USERS: "owner-other",
+        E2B_MANAGED_EGRESS_US_PROXY: "not json",
+        E2B_MANAGED_EGRESS_EU_PROXY: undefined,
+      });
+      const us = workspace("owner", undefined, "us-workspace");
+      const eu = workspace("owner", undefined, "eu-workspace");
+      inventory({ us: [us.sandboxId], eu: [eu.sandboxId] });
+      connectable(us, eu);
+      await saveNetworkSettings("owner", policy, 1);
+      for (const sandbox of [us, eu])
+        expect(sandbox.updateNetwork.mock.calls).toEqual([
+          [
+            { allowOut: ["api.example.test"], denyOut: DENY_ALL },
+            expect.anything(),
+          ],
+        ]);
+      expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+    },
+  );
 
   it("applies Settings to a US and an EU workspace through each region's own proxy", async () => {
     enableEuCluster();
@@ -944,6 +952,22 @@ describe("managed egress pilot", () => {
     ["single label", { E2B_MANAGED_EGRESS_DESTINATIONS: "intranet" }],
     ["uppercase", { E2B_MANAGED_EGRESS_DESTINATIONS: "API.example.test" }],
     ["empty entry", { E2B_MANAGED_EGRESS_DESTINATIONS: "api.example.test,," }],
+    // "*" is general egress only as the sole entry.
+    [
+      "general wildcard mixed with a hostname",
+      { E2B_MANAGED_EGRESS_DESTINATIONS: "*,api.example.test" },
+    ],
+    ["repeated general wildcard", { E2B_MANAGED_EGRESS_DESTINATIONS: "*,*" }],
+    ["bare wildcard label", { E2B_MANAGED_EGRESS_DESTINATIONS: "*.*" }],
+    [
+      "missing proxy under global enrollment",
+      {
+        E2B_MANAGED_EGRESS_ENABLED: "true",
+        E2B_MANAGED_EGRESS_USERS: undefined,
+        E2B_MANAGED_EGRESS_DESTINATIONS: "*",
+        E2B_MANAGED_EGRESS_EU_PROXY: undefined,
+      },
+    ],
   ])(
     "fails closed with a generic error before the writer lease on %s",
     async (_label, overrides) => {
@@ -998,11 +1022,21 @@ describe("managed egress pilot", () => {
     ["us-west-2", "us", "owner", PROXY],
     ["eu-central-1", "eu", "owner", EU_PROXY],
     ["eu-central-1", "eu", "owner-other", undefined],
+    ["us-west-2", "us", "global", PROXY],
+    ["eu-central-1", "eu", "global", EU_PROXY],
   ] as const)(
-    "creates a %s workspace in the %s cluster for %s with the policy acquisition verifies",
+    "creates a %s workspace in the %s cluster for %s enrollment with the policy acquisition verifies",
     async (region, cluster, enrolled, proxy) => {
       enableEuCluster();
-      configure({ E2B_MANAGED_EGRESS_USERS: enrolled });
+      configure(
+        enrolled === "global"
+          ? {
+              E2B_MANAGED_EGRESS_ENABLED: "true",
+              E2B_MANAGED_EGRESS_USERS: undefined,
+              E2B_MANAGED_EGRESS_DESTINATIONS: "*",
+            }
+          : { E2B_MANAGED_EGRESS_USERS: enrolled },
+      );
       const { sandbox } = await createInEmptyInventory(region);
       const [, created] = (Sandbox.create as jest.Mock).mock.calls[0];
       expect(created.metadata.e2bCluster).toBe(cluster);
@@ -1024,6 +1058,13 @@ describe("managed egress pilot", () => {
     ["destinations", { E2B_MANAGED_EGRESS_DESTINATIONS: "203.0.113.7" }],
     // A US create still needs the EU proxy to be valid.
     ["EU proxy", { E2B_MANAGED_EGRESS_EU_PROXY: undefined }],
+    [
+      "global toggle",
+      {
+        E2B_MANAGED_EGRESS_ENABLED: "yes",
+        E2B_MANAGED_EGRESS_USERS: undefined,
+      },
+    ],
   ])(
     "does not reserve or create a workspace when enrolled %s config is invalid",
     async (_label, overrides) => {
@@ -1042,4 +1083,146 @@ describe("managed egress pilot", () => {
       }
     },
   );
+
+  describe("general egress for every account", () => {
+    // "owner" is in no pilot list: the global toggle alone enrolls it.
+    const GENERAL = {
+      E2B_MANAGED_EGRESS_ENABLED: "true",
+      E2B_MANAGED_EGRESS_USERS: undefined,
+      E2B_MANAGED_EGRESS_DESTINATIONS: "*",
+    };
+
+    it.each<[string, NetworkPolicy, ProviderNetwork]>([
+      [
+        "Internet access",
+        { mode: "unrestricted", allow: [] },
+        { allowOut: [], denyOut: [] },
+      ],
+      [
+        "allowed hostnames, wildcards, IPs and CIDRs",
+        {
+          mode: "restricted",
+          allow: [
+            "*.example.test",
+            "198.51.100.0/24",
+            "203.0.113.7",
+            "unlisted.test",
+          ],
+        },
+        {
+          allowOut: [
+            "*.example.test",
+            "198.51.100.0/24",
+            "203.0.113.7",
+            "unlisted.test",
+          ],
+          denyOut: DENY_ALL,
+        },
+      ],
+      [
+        "No internet",
+        { mode: "offline", allow: [] },
+        { allowOut: [], denyOut: DENY_ALL },
+      ],
+    ])(
+      "applies saved %s unchanged through each region's own proxy",
+      async (_label, saved, direct) => {
+        enableEuCluster();
+        configure(GENERAL);
+        beginWith(saved);
+        const us = workspace("owner", undefined, "us-workspace");
+        const eu = workspace("owner", undefined, "eu-workspace");
+        inventory({ us: [us.sandboxId], eu: [eu.sandboxId] });
+        connectable(us, eu);
+        expect(await saveNetworkSettings("owner", saved, 2)).toEqual({
+          policy: saved,
+          revision: 3,
+          status: "ready",
+        });
+        expect(us.updateNetwork.mock.calls[0][0]).toStrictEqual({
+          ...direct,
+          egressProxy: PROXY,
+        });
+        expect(eu.updateNetwork.mock.calls[0][0]).toStrictEqual({
+          ...direct,
+          egressProxy: EU_PROXY,
+        });
+        expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+      },
+    );
+
+    it.each(["TRUE", "1", "yes", " true"])(
+      "fails closed for every account on the invalid global toggle %p",
+      async (value) => {
+        configure({ ...GENERAL, E2B_MANAGED_EGRESS_ENABLED: value });
+        await expect(
+          saveNetworkSettings("owner", policy, 1),
+        ).rejects.toMatchObject({ status: 503, message: UNAVAILABLE });
+        const sandbox = workspace();
+        await expect(
+          ensureCloudNetwork(sandbox as any, "owner", "us"),
+        ).rejects.toMatchObject({ message: UNAVAILABLE });
+        expect(sandbox.getInfo).not.toHaveBeenCalled();
+        expect(mutation).not.toHaveBeenCalled();
+        expect(Sandbox.list).not.toHaveBeenCalled();
+      },
+    );
+
+    it("migrates an existing direct workspace in place on acquisition and keeps the proxy when the policy later changes", async () => {
+      enableEuCluster();
+      configure(GENERAL);
+      // A workspace created before enrollment, with the unsaved default.
+      const sandbox = workspace(
+        "owner",
+        { allowOut: [], denyOut: [] },
+        "eu-workspace",
+      );
+      inventory({ eu: [sandbox.sandboxId] });
+      connectable(sandbox);
+      const internet: NetworkPolicy = { mode: "unrestricted", allow: [] };
+      query.mockResolvedValue(null);
+      beginWith(internet);
+      await ensureCloudNetwork(sandbox as any, "owner", "eu");
+      expect(mutation).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.objectContaining({ policy: internet, expectedRevision: 0 }),
+      );
+      expect(sandbox.updateNetwork.mock.calls).toEqual([
+        [
+          { allowOut: [], denyOut: [], egressProxy: EU_PROXY },
+          expect.anything(),
+        ],
+      ]);
+
+      // A later restriction is reconciled on acquisition without dropping
+      // the proxy that E2B's full-replacement update would otherwise clear.
+      const restricted: NetworkPolicy = {
+        mode: "restricted",
+        allow: ["198.51.100.0/24"],
+      };
+      query.mockResolvedValue({
+        policy: restricted,
+        revision: 4,
+        status: "ready",
+      });
+      beginWith(restricted);
+      sandbox.updateNetwork.mockClear();
+      await ensureCloudNetwork(sandbox as any, "owner", "eu");
+      expect(sandbox.updateNetwork.mock.calls).toEqual([
+        [
+          {
+            allowOut: ["198.51.100.0/24"],
+            denyOut: DENY_ALL,
+            egressProxy: EU_PROXY,
+          },
+          expect.anything(),
+        ],
+      ]);
+      expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+      expect(sandbox.files.get("/home/user/keep.txt")).toBe("unchanged-file");
+      expect(Sandbox.create).not.toHaveBeenCalled();
+      expect(Sandbox.kill).not.toHaveBeenCalled();
+    });
+  });
 });
