@@ -2,6 +2,7 @@
 import type { AnySandbox } from "@/types";
 import { getFunctionName } from "convex/server";
 import { BrowserSessions } from "../browser-sessions";
+import { BROWSER_SESSION_ROOT_REMOVED } from "../browser-session-program";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
@@ -46,7 +47,9 @@ describe("browser preparation attribution", () => {
     jest.clearAllMocks();
     mutation = jest.fn(async () => true);
     jest.mocked(getConvexClient).mockReturnValue({ mutation } as never);
+    jest.spyOn(console, "info").mockImplementation(() => {});
   });
+  afterEach(() => jest.mocked(console.info).mockRestore());
 
   it.each([
     "gate_only",
@@ -141,6 +144,176 @@ describe("browser preparation attribution", () => {
     await owner.prepare(target as unknown as AnySandbox);
     expect(phLogger.info).toHaveBeenCalledTimes(1);
     await owner.cleanup();
+  });
+});
+
+describe("owned browser cleanup diagnostics", () => {
+  const T0 = 1_800_000_000_000;
+  const scope = {
+    userId: "PRIVATE_USER",
+    chatId: "PRIVATE_CHAT",
+    runId: "run_opaque",
+    agentId: "agent_opaque",
+    serviceKey: "PRIVATE_SERVICE_KEY",
+  };
+  let closeFails: boolean;
+  let mutation: jest.Mock;
+  let info: jest.SpyInstance;
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers({ now: T0 });
+    closeFails = false;
+    mutation = jest.fn(async (ref: unknown) => {
+      if (getFunctionName(ref as never) !== "browserHandoffs:closeForBackend")
+        return true;
+      jest.setSystemTime(Date.now() + 2_000);
+      if (closeFails) throw new Error("PRIVATE_CLOSE_ERROR");
+      return null;
+    });
+    jest.mocked(getConvexClient).mockReturnValue({ mutation } as never);
+    info = jest.spyOn(console, "info").mockImplementation(() => {});
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    info.mockRestore();
+    warn.mockRestore();
+  });
+
+  /** Prepare and register one gated root, then end ownership with `cleanup`. */
+  async function cleanUpOwner(cleanup: () => Promise<unknown>) {
+    const run = jest
+      .fn()
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "/usr/bin" })
+      .mockImplementationOnce(async () => {
+        jest.setSystemTime(Date.now() + 1_000);
+        return cleanup();
+      });
+    const owner = new BrowserSessions(scope);
+    await owner.prepare(
+      { sandboxId: "PRIVATE_SANDBOX", commands: { run } } as never,
+      "gate_only",
+    );
+    await owner.cleanup();
+    const closes = mutation.mock.calls.filter(
+      ([ref]) =>
+        getFunctionName(ref as never) === "browserHandoffs:closeForBackend",
+    );
+    const logged = info.mock.calls.map(([line]) => String(line));
+    return {
+      run,
+      closes,
+      logged,
+      snapshots: logged
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "browser_session_owner_cleanup"),
+    };
+  }
+
+  it("records an exact owned-root receipt and acknowledged close as worker-timed bounds", async () => {
+    const { run, closes, logged, snapshots } = await cleanUpOwner(async () => ({
+      exitCode: 0,
+      stdout: `${BROWSER_SESSION_ROOT_REMOVED}\n`,
+    }));
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(closes).toHaveLength(1);
+    expect(snapshots).toEqual([
+      {
+        event: "browser_session_owner_cleanup",
+        diagnostic_version: 1,
+        browser_session_id: closes[0][1].sessionId,
+        trigger_run_id: "run_opaque",
+        cleanup_requested_at: T0,
+        cleanup_settled_at: T0 + 1_000,
+        cleanup_result: "succeeded",
+        owner_root_removal: "observed",
+        close_requested_at: T0 + 1_000,
+        close_settled_at: T0 + 3_000,
+        close_request: "acknowledged",
+      },
+    ]);
+    expect(closes[0][1].sessionId).toMatch(/^[a-f0-9]{32}$/);
+    expect(logged.join("\n")).not.toMatch(
+      /PRIVATE|\/dev\/shm|hackerai-browser-/,
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an absent or legacy receipt", { exitCode: 0, stdout: "" }, "succeeded"],
+    [
+      "an inexact receipt",
+      { exitCode: 0, stdout: `${BROWSER_SESSION_ROOT_REMOVED}\nPRIVATE_OUT\n` },
+      "succeeded",
+    ],
+    [
+      "a receipt from a failed command",
+      { exitCode: 1, stdout: `${BROWSER_SESSION_ROOT_REMOVED}\n` },
+      "failed",
+    ],
+  ])(
+    "leaves root removal unknown for %s",
+    async (_case, result, cleanupResult) => {
+      const { closes, logged, snapshots } = await cleanUpOwner(
+        async () => result,
+      );
+      expect(closes).toHaveLength(1);
+      expect(snapshots).toEqual([
+        expect.objectContaining({
+          cleanup_result: cleanupResult,
+          owner_root_removal: "unknown",
+          close_request: "acknowledged",
+        }),
+      ]);
+      expect(logged.join("\n")).not.toContain("PRIVATE");
+    },
+  );
+
+  it("still closes the registered row when cleanup throws, the close rejects and logging faults", async () => {
+    closeFails = true;
+    info.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    const { closes, snapshots, logged } = await cleanUpOwner(async () => {
+      throw new Error("PRIVATE_SDK_ERROR /dev/shm/hackerai-browser-x");
+    });
+    expect(closes).toHaveLength(1);
+    expect(warn.mock.calls).toEqual([
+      ["[browser-sessions] viewer revocation unavailable"],
+      ["[browser-sessions] cleanup incomplete"],
+    ]);
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        browser_session_id: closes[0][1].sessionId,
+        cleanup_result: "failed",
+        owner_root_removal: "unknown",
+        close_requested_at: T0 + 1_000,
+        close_settled_at: T0 + 3_000,
+        close_request: "rejected",
+      }),
+    ]);
+    expect(logged.join("\n")).not.toContain("PRIVATE");
+  });
+
+  it("records a synchronous close setup failure and preserves the cleanup warning", async () => {
+    const { logged, snapshots } = await cleanUpOwner(async () => {
+      jest.mocked(getConvexClient).mockImplementationOnce(() => {
+        throw new Error("PRIVATE_CLOSE_SETUP_ERROR");
+      });
+      return { exitCode: 0, stdout: `${BROWSER_SESSION_ROOT_REMOVED}\n` };
+    });
+    expect(warn.mock.calls).toEqual([
+      ["[browser-sessions] cleanup incomplete"],
+    ]);
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        cleanup_result: "succeeded",
+        owner_root_removal: "observed",
+        close_request: "rejected",
+      }),
+    ]);
+    expect(logged.join("\n")).not.toContain("PRIVATE");
   });
 });
 
@@ -453,6 +626,7 @@ describe("abandoned parent browser handoff", () => {
     jest.useFakeTimers();
     jest.setSystemTime(1_800_000_000_000);
     jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "info").mockImplementation(() => {});
   });
   afterEach(() => {
     jest.useRealTimers();

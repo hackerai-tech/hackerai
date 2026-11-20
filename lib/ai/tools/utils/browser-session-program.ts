@@ -1,3 +1,9 @@
+/**
+ * Printed (with a newline) only by an explicit cleanup after its own successful
+ * root removal; never by expiry or an already-absent root. Not a deletion time.
+ */
+export const BROWSER_SESSION_ROOT_REMOVED = "hackerai-browser-root-removed-v1";
+
 // Runs inside the cloud sandbox. No authentication data or encryption keys are
 // embedded in this program, its arguments, or its output.
 export const BROWSER_SESSION_PROGRAM = String.raw`
@@ -44,7 +50,15 @@ def ambient_idle_timeout():
     if timeout > 18446744073709551615: return 'unparsed'
     return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
 
-def cleanup():
+def report_root_removed():
+    """Optional constant receipt: this explicit cleanup removed the root itself.
+    Unbuffered, so an output failure cannot change the exit status or exception."""
+    try:
+        os.write(1, b'${BROWSER_SESSION_ROOT_REMOVED}\n')
+    except Exception:
+        pass
+
+def cleanup(report=False):
     try:
         if root.exists():
             try:
@@ -65,6 +79,9 @@ def cleanup():
                     shutil.rmtree(root)
                 except FileNotFoundError:
                     pass  # Completion and the expiry watchdog can race.
+                else:
+                    if report:
+                        report_root_removed()
     finally:
         if shim_root.exists():
             info = shim_root.lstat()
@@ -490,7 +507,7 @@ elif action == 'expire':
         time.sleep(min(5, max(0, deadline - time.time())))
     cleanup()
 elif action == 'cleanup':
-    cleanup()
+    cleanup(report=True)
 elif action == 'status':
     validate()
     name = (root / 'active-session').read_text().strip()
