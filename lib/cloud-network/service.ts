@@ -3,17 +3,28 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { getConfiguredE2BClustersForCleanup } from "@/lib/ai/tools/utils/e2b-cluster";
+import {
+  getConfiguredE2BClustersForCleanup,
+  type E2BCluster,
+} from "@/lib/ai/tools/utils/e2b-cluster";
 import {
   assertCloudWorkspaceAvailable,
   readCloudWorkspaceState,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import {
   DEFAULT_NETWORK_POLICY,
-  e2bNetwork,
   type NetworkPolicy,
   type NetworkSettings,
 } from "./policy";
+import {
+  desiredE2BNetwork,
+  hasDesiredEgressProxy,
+  managedEgressForCluster,
+  ManagedEgressUnavailableError,
+  resolveManagedEgress,
+  type ManagedEgress,
+  type ManagedEgressConfig,
+} from "./managed-egress";
 
 export class NetworkSettingsError extends Error {
   constructor(
@@ -27,6 +38,8 @@ const auth = (userId: string) => ({
   userId,
   serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
 });
+// Revision-only cache for non-enrolled accounts. Managed egress always reads
+// the provider back, so this never holds proxy configuration.
 const checked = new WeakMap<Sandbox, number>();
 
 /** Closed acquisition-verification steps; never carries policy or settings. */
@@ -53,6 +66,21 @@ export function parseCloudNetworkSuboperation(
     : undefined;
 }
 
+/**
+ * Managed egress is resolved, with both regional proxies validated, before any
+ * writer lease or provider call. Its failures stay generic.
+ */
+function selectEgress<T>(select: () => T) {
+  try {
+    return select();
+  } catch (error) {
+    throw new NetworkSettingsError(
+      error instanceof ManagedEgressUnavailableError
+        ? error.message
+        : "Network settings are unavailable. Retry shortly.",
+    );
+  }
+}
 export async function readNetworkSettings(
   userId: string,
 ): Promise<NetworkSettings | null> {
@@ -67,6 +95,7 @@ async function matchesSandboxPolicy(
   sandbox: Sandbox,
   userId: string,
   policy: NetworkPolicy,
+  egress: ManagedEgress | null,
   signal: AbortSignal,
   report?: ReportCloudNetworkSuboperation,
 ) {
@@ -76,13 +105,12 @@ async function matchesSandboxPolicy(
   if (info.metadata?.userID !== userId)
     throw new Error("Workspace ownership mismatch");
   // Replacing egress must not clear an externally managed proxy or transform.
-  if (
-    info.network?.egressProxy ||
-    Object.keys(info.network?.rules ?? {}).length
-  )
+  if (Object.keys(info.network?.rules ?? {}).length)
     throw new Error("Externally managed network configuration");
-  const network = e2bNetwork(policy);
+  const proxyMatches = hasDesiredEgressProxy(info.network?.egressProxy, egress);
+  const network = desiredE2BNetwork(policy, egress);
   return (
+    proxyMatches &&
     sameList(info.network?.allowOut, network.allowOut) &&
     sameList(info.network?.denyOut, network.denyOut)
   );
@@ -91,24 +119,28 @@ async function applyToSandbox(
   sandbox: Sandbox,
   userId: string,
   policy: NetworkPolicy,
+  egress: ManagedEgress | null,
   signal: AbortSignal,
   onWrite: () => void,
 ) {
-  if (await matchesSandboxPolicy(sandbox, userId, policy, signal)) return;
+  if (await matchesSandboxPolicy(sandbox, userId, policy, egress, signal))
+    return;
   onWrite();
-  await sandbox.updateNetwork(e2bNetwork(policy), {
+  // E2B replaces the whole egress configuration, including the proxy.
+  await sandbox.updateNetwork(desiredE2BNetwork(policy, egress), {
     signal,
     requestTimeoutMs: 15_000,
   });
-  if (!(await matchesSandboxPolicy(sandbox, userId, policy, signal)))
+  if (!(await matchesSandboxPolicy(sandbox, userId, policy, egress, signal)))
     throw new Error("Network readback mismatch");
 }
 
 /** One workspace-wide writer, shared by Settings and sandbox acquisition. */
 async function applyNetwork(
   userId: string,
+  config: ManagedEgressConfig | null,
   input?: { policy: NetworkPolicy; expectedRevision: number },
-  connected?: Sandbox,
+  connected?: { sandbox: Sandbox; egress: ManagedEgress | null },
   parentSignal?: AbortSignal,
 ) {
   const client = getConvexClient();
@@ -148,11 +180,21 @@ async function applyNetwork(
     if (!clusters.length) throw new Error("Cloud provider unavailable");
     const seen = new Set<string>();
     if (connected) {
-      await assertCloudWorkspaceAvailable(userId, connected.sandboxId);
-      await applyToSandbox(connected, userId, settings.policy, signal, onWrite);
-      seen.add(connected.sandboxId);
+      const { sandbox } = connected;
+      await assertCloudWorkspaceAvailable(userId, sandbox.sandboxId);
+      await applyToSandbox(
+        sandbox,
+        userId,
+        settings.policy,
+        connected.egress,
+        signal,
+        onWrite,
+      );
+      seen.add(sandbox.sandboxId);
     }
     for (const cluster of clusters) {
+      // Each listed workspace uses the proxy of the cluster that listed it.
+      const egress = managedEgressForCluster(config, cluster.cluster);
       const pages = Sandbox.list({
         ...cluster.connectionOptions,
         requestTimeoutMs: 15_000,
@@ -182,6 +224,7 @@ async function applyNetwork(
             sandbox,
             userId,
             settings.policy,
+            egress,
             signal,
             onWrite,
           );
@@ -195,7 +238,7 @@ async function applyNetwork(
       token,
       success: true,
     });
-    if (connected) checked.set(connected, settings.revision);
+    if (connected && !config) checked.set(connected.sandbox, settings.revision);
     return { ...settings, status: "ready" as const };
   } catch {
     await client
@@ -216,14 +259,22 @@ export async function saveNetworkSettings(
   policy: NetworkPolicy,
   expectedRevision: number,
 ) {
-  return applyNetwork(userId, { policy, expectedRevision });
+  const config = selectEgress(() => resolveManagedEgress(userId));
+  return applyNetwork(userId, config, { policy, expectedRevision });
 }
+/**
+ * `cluster` must be the E2B cluster the acquisition path routed this sandbox
+ * through; it selects the managed egress proxy for an enrolled account.
+ */
 export async function ensureCloudNetwork(
   sandbox: Sandbox,
   userId: string,
+  cluster: E2BCluster,
   signal?: AbortSignal,
   onSuboperation?: ReportCloudNetworkSuboperation,
 ) {
+  const config = selectEgress(() => resolveManagedEgress(userId));
+  const egress = selectEgress(() => managedEgressForCluster(config, cluster));
   // Names the step entered next for failure diagnostics. A reporter failure
   // must never change network policy, provider calls or the original error.
   const report: ReportCloudNetworkSuboperation = (suboperation) => {
@@ -239,7 +290,11 @@ export async function ensureCloudNetwork(
   // An unsaved setting still promises Internet access in the UI; it must not
   // silently inherit stale provider restrictions from a reused workspace.
   const settings = saved ?? defaultNetworkSettings();
-  if (settings.status === "ready" && checked.get(sandbox) === settings.revision)
+  if (
+    !egress &&
+    settings.status === "ready" &&
+    checked.get(sandbox) === settings.revision
+  )
     return;
   // Parent and delegated runs may acquire the same workspace concurrently.
   // A matching, stable ready policy needs no writer lease or provider mutation.
@@ -252,6 +307,7 @@ export async function ensureCloudNetwork(
         sandbox,
         userId,
         settings.policy,
+        egress,
         verificationSignal,
         report,
       )
@@ -265,7 +321,7 @@ export async function ensureCloudNetwork(
       ) {
         report("post_check");
         verificationSignal.throwIfAborted();
-        checked.set(sandbox, settings.revision);
+        if (!egress) checked.set(sandbox, settings.revision);
         return;
       }
     }
@@ -274,8 +330,9 @@ export async function ensureCloudNetwork(
   report("policy_apply");
   await applyNetwork(
     userId,
+    config,
     saved ? undefined : { policy: DEFAULT_NETWORK_POLICY, expectedRevision: 0 },
-    sandbox,
+    { sandbox, egress },
     signal,
   );
 }

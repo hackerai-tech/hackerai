@@ -166,10 +166,14 @@ export async function ensureCloudSandboxConnection(options: {
     state = await readCloudWorkspaceState(options.userId);
     if (!state || (state.phase !== "e2b" && state.phase !== "provisioning"))
       throw new CloudWorkspaceUnavailableError();
+    // ensureSandboxConnection discovers, connects and creates only in this
+    // cluster, so its result is hosted here; it selects that region's egress.
+    const workspaceCluster =
+      getE2BClusterRouting(workspaceRegion).createCluster.cluster;
     if (state) {
       if (
         getE2BClusterRouting(state.region).createCluster.cluster !==
-        getE2BClusterRouting(workspaceRegion).createCluster.cluster
+        workspaceCluster
       ) {
         workspaceGuardDiagnostics = {
           workspace_guard_reason: "workspace_region_mismatch",
@@ -187,7 +191,7 @@ export async function ensureCloudSandboxConnection(options: {
     if (
       failed &&
       (getE2BClusterRouting(failed.region).createCluster.cluster !==
-        getE2BClusterRouting(workspaceRegion).createCluster.cluster ||
+        workspaceCluster ||
         (state?.phase === "e2b" && state.destinationId !== failed.sandboxId))
     )
       throw new CloudWorkspaceUnavailableError();
@@ -233,6 +237,7 @@ export async function ensureCloudSandboxConnection(options: {
     await ensureCloudNetwork(
       result.sandbox,
       options.userId,
+      workspaceCluster,
       options.signal,
       (suboperation) => {
         networkSuboperation =
