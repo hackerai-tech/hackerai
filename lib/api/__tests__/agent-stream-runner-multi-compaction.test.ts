@@ -21,6 +21,7 @@ import {
   MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
 } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
+import type { RateLimitInfo } from "@/types";
 
 const mockStreamText = jest.fn();
 const mockLimitModelImageToolResults = jest.fn();
@@ -179,6 +180,13 @@ const {
   resolveFallbackServedTelemetry,
   retryUsesDifferentModel,
 }: typeof import("@/lib/api/agent-stream-runner") = require("@/lib/api/agent-stream-runner");
+const {
+  UsageTracker,
+}: typeof import("@/lib/usage-tracker") = require("@/lib/usage-tracker");
+const {
+  addUsageDeductionDelta,
+  createUsageSettlementState,
+}: typeof import("@/lib/rate-limit/usage-settlement") = require("@/lib/rate-limit/usage-settlement");
 
 const uiMessage = (id: string, text: string): UIMessage => ({
   id,
@@ -1355,6 +1363,183 @@ describe("createAgentStream repeated compaction", () => {
       }
     },
   );
+
+  describe("QA pool capacity for unsettled spend", () => {
+    const prompt = [
+      { role: "system", content: "system" },
+      { role: "user", content: [{ type: "text", text: "Continue" }] },
+    ];
+    const capError = new Error("QA spend cap reached");
+    // Mirrors the pool rule: room must remain after the unsettled amount.
+    const createPoolCheck = (poolRemaining: number) =>
+      jest.fn(async (unsettledPoints = 0) => {
+        if (poolRemaining <= unsettledPoints) throw capError;
+      });
+    const createModel = (doStream: jest.Mock) => ({
+      specificationVersion: "v3",
+      provider: "test",
+      modelId: "test-model",
+      supportedUrls: {},
+      doGenerate: jest.fn(),
+      doStream,
+    });
+    const emptyStream = async () => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+    });
+    // Admission reserved 650 points ($0.05 at 13,000 points per dollar).
+    const createReservedSettlement = () =>
+      createUsageSettlementState({ pointsDeducted: 650 } as RateLimitInfo);
+    const withSdkWrapping = async (run: () => Promise<void>) => {
+      const wrap = jest.mocked(require("ai").wrapLanguageModel);
+      wrap.mockImplementation(jest.requireActual("ai").wrapLanguageModel);
+      try {
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        await run();
+      } finally {
+        wrap.mockImplementation(({ model }: any) => model);
+      }
+    };
+
+    it.each([
+      { poolRemaining: 300, retryServed: false },
+      { poolRemaining: 1_000, retryServed: true },
+    ])(
+      "rechecks recovery compaction before the retried Agent attempt with $poolRemaining points left",
+      ({ poolRemaining, retryServed }) =>
+        withSdkWrapping(async () => {
+          const usageTracker = new UsageTracker();
+          mockCompactModelMessagesInRun.mockResolvedValue({
+            summaryMessage: uiMessage(
+              "summary",
+              "<context_summary>Continue verification.</context_summary>",
+            ),
+            // Compaction raises the request to $0.08 = 1,040 points.
+            summarizationUsage: {
+              inputTokens: 10,
+              outputTokens: 2,
+              cost: 0.08,
+            },
+          });
+          const rejected = Object.assign(
+            new Error("Content-Length exceeds 5242880 byte limit"),
+            { statusCode: 413 },
+          );
+          const doStream = jest
+            .fn()
+            .mockRejectedValueOnce(rejected)
+            .mockImplementation(emptyStream);
+          const checkQaProviderCapacity = createPoolCheck(poolRemaining);
+          const original = uiMessage("original", "old evidence ".repeat(1000));
+          const state = initAgentStreamState([original], {
+            usedTokens: 4000,
+            maxTokens: 128000,
+          });
+          state.sourceUiMessages = [original];
+          const stream = (await createAgentStream(
+            "test-model",
+            createTestStreamContext({
+              selectedModelOverride: "hackerai-max",
+              trackedProvider: { languageModel: () => createModel(doStream) },
+              usageTracker,
+              summarizationTracker: {
+                hasSummarized: false,
+                summarizationCount: 0,
+                recordSummarization: jest.fn(),
+                recordSummarizationUsage: (usage: any, tracker: UsageTracker) =>
+                  tracker.accumulateSummarization(usage),
+              },
+              checkQaProviderCapacity,
+              usageSettlementState: createReservedSettlement(),
+            }) as any,
+            state,
+          )) as any;
+          const oversized = "old evidence ".repeat(1000);
+          const prepared = await stream.prepareStep({
+            steps: [],
+            messages: [{ role: "user", content: oversized }],
+          });
+          const request = (prepared.model ?? stream.model).doStream({
+            prompt: [
+              { role: "system", content: "system" },
+              { role: "user", content: [{ type: "text", text: oversized }] },
+            ],
+          });
+
+          if (retryServed) {
+            await request;
+            expect(doStream).toHaveBeenCalledTimes(2);
+          } else {
+            await expect(request).rejects.toBe(capError);
+            expect(doStream).toHaveBeenCalledTimes(1);
+          }
+          expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+          expect(checkQaProviderCapacity.mock.calls).toEqual([[0], [390]]);
+        }),
+    );
+
+    it.each(["ask", "agent"])(
+      "counts discarded retry and runtime costs before a %s provider call, net of settled points",
+      (mode) =>
+        withSdkWrapping(async () => {
+          const usageTracker = new UsageTracker();
+          usageTracker.accumulateSummarization({
+            inputTokens: 10,
+            outputTokens: 2,
+            cost: 0.02,
+          });
+          const usageSettlementState = createReservedSettlement();
+          const doStream = jest.fn(emptyStream);
+          const checkQaProviderCapacity = createPoolCheck(300);
+          const state = initAgentStreamState([uiMessage("initial", "Go")], {
+            usedTokens: 1_000,
+            maxTokens: 128_000,
+          });
+          const stream = (await createAgentStream(
+            "test-model",
+            createTestStreamContext({
+              mode,
+              trackedProvider: { languageModel: () => createModel(doStream) },
+              usageTracker,
+              summarizationTracker: {
+                hasSummarized: false,
+                summarizationCount: 0,
+              },
+              getQaDiscardedRetryCostDollars: () => 0.03,
+              getSandboxCostDollars: async () => 0.02,
+              getTriggerRunCostDollars: () => 0.01,
+              checkQaProviderCapacity,
+              usageSettlementState,
+            }) as any,
+            state,
+          )) as any;
+          const prepared = await stream.prepareStep({
+            steps: [],
+            messages: [{ role: "user", content: "Go" }],
+          });
+          const model = prepared.model ?? stream.model;
+
+          // $0.08 measured = 1,040 points; 650 reserved leaves 390 unsettled.
+          await expect(model.doStream({ prompt })).rejects.toBe(capError);
+          expect(checkQaProviderCapacity).toHaveBeenLastCalledWith(390);
+          expect(doStream).not.toHaveBeenCalled();
+
+          // Once those points settle, only later spend needs pool room.
+          addUsageDeductionDelta(usageSettlementState, {
+            includedPointsDeducted: 390,
+            extraUsagePointsDeducted: 0,
+            uncoveredPoints: 0,
+            usageDeductionFailed: false,
+          });
+          await model.doStream({ prompt });
+          expect(checkQaProviderCapacity).toHaveBeenLastCalledWith(0);
+          expect(doStream).toHaveBeenCalledTimes(1);
+        }),
+    );
+  });
 
   it.each(
     [

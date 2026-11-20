@@ -1118,6 +1118,7 @@ const checkQaSpendPoolLimit = async (
   subscription: SubscriptionTier,
   estimatedCost: number,
   expectedResetTimestamp?: number,
+  unsettledPoints = 0,
 ): Promise<RateLimitInfo> => {
   if (!redis) throw createQaSpendPoolUnavailableError(pool, subscription);
   try {
@@ -1132,7 +1133,12 @@ const checkQaSpendPoolLimit = async (
     if (result.windowChanged) {
       throw createQaSpendPoolWindowChangedError(pool, subscription);
     }
-    if (!result.success || (estimatedCost <= 0 && result.remaining <= 0)) {
+    // A read-only recheck also needs room after this request's measured but
+    // not yet settled spend, as zero-unsettled checks need a non-empty pool.
+    if (
+      !result.success ||
+      (estimatedCost <= 0 && result.remaining <= unsettledPoints)
+    ) {
       throw createQaSpendCapError(pool, subscription, result.reset);
     }
     const limit = finiteNonNegativePoints(result.limit) ?? pool.capPoints;
@@ -1154,17 +1160,26 @@ const checkQaSpendPoolLimit = async (
   }
 };
 
-/** Recheck the exact pool that admitted the request without reserving points. */
+/**
+ * Recheck the exact pool that admitted the request without reserving points.
+ * `unsettledPoints` is this request's measured spend not yet debited (see
+ * `getUnsettledUsagePoints`); the pool must still have room after it.
+ */
 export const createQaProviderCapacityCheck = (
   userId: string,
   subscription: SubscriptionTier,
   admittedPool: RateLimitInfo["qaSpendPool"],
   expectedResetTimestamp: number,
-): (() => Promise<void>) | undefined => {
+): ((unsettledPoints?: number) => Promise<void>) | undefined => {
   if (!admittedPool) return;
-  return async () => {
+  return async (unsettledPoints = 0) => {
     const pool = resolveQaSpendPool(userId, subscription);
-    if (pool?.environment !== admittedPool) {
+    // An unmeasurable amount must not be treated as zero.
+    if (
+      pool?.environment !== admittedPool ||
+      !Number.isFinite(unsettledPoints) ||
+      unsettledPoints < 0
+    ) {
       throw createQaSpendPoolUnavailableError(
         { environment: admittedPool },
         subscription,
@@ -1176,6 +1191,7 @@ export const createQaProviderCapacityCheck = (
       subscription,
       0,
       expectedResetTimestamp,
+      Math.ceil(unsettledPoints),
     );
   };
 };

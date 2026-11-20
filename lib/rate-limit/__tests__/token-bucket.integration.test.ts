@@ -3096,6 +3096,52 @@ describe("routine QA spending pool", () => {
     expectNoWalletActivity();
   });
 
+  it("requires room for measured but unsettled spend without consuming the pool", async () => {
+    const {
+      checkTokenBucketLimit,
+      createQaProviderCapacityCheck,
+      createUsageSettlementState,
+      deductUsageDelta,
+      getUnsettledUsagePoints,
+    } = loadModule() as ReturnType<typeof loadModule> &
+      typeof import("../usage-settlement");
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+    const settlement = createUsageSettlementState(admission);
+    const check = createQaProviderCapacityCheck(
+      QA_USER,
+      "pro",
+      admission.qaSpendPool,
+      admission.resetTime.getTime(),
+    )!;
+    // Another run leaves 300 points in the shared pool.
+    await deductUsageDelta(QA_USER, "pro", admission.remaining - 300);
+    touchedKeys = [];
+
+    // Compaction raised this request to $0.08 (1,040 points); 650 were reserved.
+    const uncovered = getUnsettledUsagePoints(settlement, 0.08);
+    expect(uncovered).toBe(390);
+    await check();
+    await expect(check(uncovered)).rejects.toMatchObject(qaCapError);
+    // Settling exactly the remainder would leave nothing for the next call.
+    await expect(check(300)).rejects.toMatchObject(qaCapError);
+
+    const covered = getUnsettledUsagePoints(settlement, 0.06);
+    expect(covered).toBe(130);
+    await check(covered);
+    await check(299);
+    await expect(check(Number.NaN)).rejects.toMatchObject({
+      metadata: { capReason: "billing_unavailable", qaSpendPool: "preview" },
+    });
+
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(300);
+    expect(new Set(touchedKeys)).toEqual(new Set([PREVIEW_POOL]));
+    expectNoWalletActivity();
+  });
+
   it("rejects capacity checks and debits from a previous QA window", async () => {
     const {
       checkTokenBucketLimit,

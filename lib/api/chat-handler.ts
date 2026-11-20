@@ -1959,6 +1959,7 @@ export const createChatHandler = () => {
               usageTracker,
               getQaDiscardedRetryCostDollars,
               checkQaProviderCapacity,
+              usageSettlementState,
               checkBudgetBeforeStep: checkQaProviderCapacity,
               budgetMonitor,
               sandboxManager,

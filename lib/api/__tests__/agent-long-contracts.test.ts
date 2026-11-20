@@ -1742,7 +1742,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const checkedModel = withProviderCapacityCheck\(\s*telemetryModel,\s*ctx\.checkQaProviderCapacity,?\s*\);\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(checkedModel, ctx\.providerStreamTimeout\)\s*:\s*checkedModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const checkedModel = withProviderCapacityCheck\(\s*telemetryModel,\s*checkQaProviderCapacity,?\s*\);\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(checkedModel, ctx\.providerStreamTimeout\)\s*:\s*checkedModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -2143,9 +2143,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "stepOpenRouterMetadata.openrouter_upstream_inference_cost",
       stepIndexArgIdx,
     );
+    const measureCostHelperIdx = agentStreamRunnerSrc.indexOf(
+      "const measureRunCostDollars = async () =>",
+    );
     const sandboxCostIdx = agentStreamRunnerSrc.indexOf(
       "await ctx.getSandboxCostDollars?.()",
-      upstreamCostArgIdx,
+      measureCostHelperIdx,
     );
     const triggerRunCostIdx = agentStreamRunnerSrc.indexOf(
       "ctx.getTriggerRunCostDollars?.() ?? 0",
@@ -2162,9 +2165,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(setCostIdx).toBeGreaterThan(extractIdx);
     expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
     expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
-    expect(sandboxCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    const measureStepCostIdx = agentStreamRunnerSrc.indexOf(
+      "await measureRunCostDollars()",
+      upstreamCostArgIdx,
+    );
+    const checkStepBudgetIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.budgetMonitor?.checkAfterStep(currentCostDollars)",
+      measureStepCostIdx,
+    );
+    expect(measureCostHelperIdx).toBeGreaterThan(-1);
+    expect(sandboxCostIdx).toBeGreaterThan(measureCostHelperIdx);
     expect(triggerRunCostIdx).toBeGreaterThan(sandboxCostIdx);
     expect(budgetCostIdx).toBeGreaterThan(triggerRunCostIdx);
+    expect(measureStepCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(checkStepBudgetIdx).toBeGreaterThan(measureStepCostIdx);
   });
 
   test("agent stream uses finish-step raw usage as OpenRouter metadata cost fallback", () => {

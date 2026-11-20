@@ -4385,6 +4385,7 @@ export const agentLongTask = task({
               usageTracker,
               getQaDiscardedRetryCostDollars,
               checkQaProviderCapacity,
+              usageSettlementState,
               budgetMonitor,
               sandboxManager,
               getTodoManager,

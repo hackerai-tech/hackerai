@@ -251,6 +251,10 @@ import type {
   BudgetMonitor,
 } from "@/lib/chat/budget-monitor";
 import type { UsageRefundTracker } from "@/lib/rate-limit";
+import {
+  getUnsettledUsagePoints,
+  type UsageSettlementState,
+} from "@/lib/rate-limit/usage-settlement";
 import type {
   ProviderReasoningOverride,
   SummarizationTracker,
@@ -894,7 +898,10 @@ export type AgentStreamContext = {
   getTriggerRunCostDollars?: () => number;
   /** Revalidate shared capacity before starting each cost-incurring model step. */
   checkBudgetBeforeStep?: () => Promise<void>;
-  checkQaProviderCapacity?: () => Promise<void>;
+  /** Read-only QA pool check; the pool must cover `unsettledPoints`. */
+  checkQaProviderCapacity?: (unsettledPoints?: number) => Promise<void>;
+  /** Read only: the caller's settlement, compared with measured spend for QA checks. */
+  usageSettlementState?: UsageSettlementState | null;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
@@ -1081,6 +1088,35 @@ export async function createAgentStream(
   let lastRequestedSlug = requestedSlug;
   let activeStepModelName = modelName;
   let activeStepRouting: ModelStepRouting = {};
+  const measureRunCostDollars = async () => {
+    const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
+    const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
+    return {
+      sandboxCostDollars,
+      triggerRunCostDollars,
+      currentCostDollars:
+        ctx.usageTracker.computeCostDollars(activeStepModelName) +
+        (ctx.getQaDiscardedRetryCostDollars?.() ?? 0) +
+        sandboxCostDollars +
+        triggerRunCostDollars,
+    };
+  };
+  // Compaction and discarded legs record usage before the next provider attempt
+  // but settle only after a later step, so the QA pool must also cover that.
+  const qaProviderCapacityCheck = ctx.checkQaProviderCapacity;
+  const checkQaProviderCapacity =
+    qaProviderCapacityCheck &&
+    (async () => {
+      const settlement = ctx.usageSettlementState;
+      await qaProviderCapacityCheck(
+        settlement
+          ? getUnsettledUsagePoints(
+              settlement,
+              (await measureRunCostDollars()).currentCostDollars,
+            )
+          : 0,
+      );
+    });
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
   const abortSignal = combineAbortSignals([
@@ -1167,7 +1203,7 @@ export async function createAgentStream(
         ) ?? historyModel;
       const checkedModel = withProviderCapacityCheck(
         telemetryModel,
-        ctx.checkQaProviderCapacity,
+        checkQaProviderCapacity,
       );
       return recoverAbliterationMedia(
         ctx.providerStreamTimeout
@@ -1564,7 +1600,7 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
-    checkProviderCapacity: ctx.checkQaProviderCapacity,
+    checkProviderCapacity: checkQaProviderCapacity,
     getAttachmentMessages: () => state.finalMessages,
     cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
@@ -2138,7 +2174,7 @@ export async function createAgentStream(
       selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
       agentContextPolicy: contextPolicy,
-      checkProviderCapacity: ctx.checkQaProviderCapacity,
+      checkProviderCapacity: checkQaProviderCapacity,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -3347,13 +3383,8 @@ export async function createAgentStream(
         },
       );
 
-      const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
-      const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
-      const currentCostDollars =
-        ctx.usageTracker.computeCostDollars(activeStepModelName) +
-        (ctx.getQaDiscardedRetryCostDollars?.() ?? 0) +
-        sandboxCostDollars +
-        triggerRunCostDollars;
+      const { sandboxCostDollars, triggerRunCostDollars, currentCostDollars } =
+        await measureRunCostDollars();
       if (isAgentMode(ctx.mode)) {
         try {
           const observation = state.toolLoopObserver.observe(
