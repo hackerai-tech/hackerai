@@ -151,21 +151,22 @@ describe("ChatContextDetails", () => {
     expect(trigger()).toHaveFocus();
   });
 
-  it("opens by tap without inventing a percentage or a zero count", async () => {
+  it("opens by tap without inventing a zero count for an unrecorded history", async () => {
     const user = userEvent.setup();
-    render(<ChatContextDetails snapshot={null} />);
+    // A chat measured now whose earlier compactions were never recorded.
+    render(
+      <ChatContextDetails
+        snapshot={{ usedTokens: 36_000, compactionThresholdTokens: 200_000 }}
+      />,
+    );
 
-    expect(trigger()).toHaveAccessibleName("Context: not measured yet");
+    await user.click(trigger());
+    const details = screen.getByRole("dialog", { name: "Agent context" });
+    expect(details).toHaveTextContent("18% of compaction threshold");
+    expect(details).toHaveTextContent("Completed compactionsUnavailable");
     expect(screen.getByTestId("context-meter-ring")).toHaveAttribute(
       "data-fill",
-      "unmeasured",
+      "0.18",
     );
-    await user.click(trigger());
-
-    const details = screen.getByRole("dialog", { name: "Agent context" });
-    expect(details).toHaveTextContent("Not measured yet");
-    expect(details).toHaveTextContent("Completed compactionsUnavailable");
-    expect(details).not.toHaveTextContent("%");
-    expect(details).not.toHaveTextContent("0");
   });
 });

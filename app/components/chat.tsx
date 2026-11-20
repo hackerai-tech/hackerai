@@ -105,7 +105,7 @@ import {
   selectLatestContextPressure,
 } from "@/lib/chat/context-pressure";
 import { useContextDetailsPreference } from "@/app/hooks/useContextDetailsPreference";
-import { hasAgentContext, type ContextMeterData } from "./ChatContextDetails";
+import type { ContextMeterData } from "./ChatContextDetails";
 import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/agent-partial-save-snapshot";
 import { toast } from "sonner";
 import {
@@ -2945,13 +2945,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     [messages, showContextUsage],
   );
   // Only this chat's loaded record and messages; never a chat in transition.
+  // No meter until this chat has a measured request.
   const contextMeter: ContextMeterData | undefined =
-    showContextUsage &&
+    latestContextPressure &&
     isExistingChat &&
     hasMessages &&
     !isChatNotFound &&
-    chatDataForCurrentChat &&
-    (latestContextPressure || hasAgentContext(chatDataForCurrentChat))
+    chatDataForCurrentChat
       ? {
           chatId,
           snapshot: latestContextPressure,
