@@ -190,6 +190,40 @@ describe("E2B cloud acquisition", () => {
     expect(failedEvents()).toEqual([]);
   });
 
+  it.each([
+    ["us-east-1", "us"],
+    ["us-west-2", "us"],
+    ["eu-central-1", "eu"],
+  ] as const)(
+    "verifies a %s workspace's network with the %s cluster it was acquired from",
+    async (region, cluster) => {
+      process.env.E2B_EU_API_KEY = "test-eu-key";
+      read.mockResolvedValue({
+        version: 1,
+        phase: "provisioning",
+        step: "reserved",
+        token: "creation",
+        region,
+      });
+      await ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+        context: { triggerRunId: "run-1", triggerRegion: region },
+      });
+      expect(ensure).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ triggerRegion: region }),
+      );
+      expect(network).toHaveBeenCalledWith(
+        { sandboxId: "new-e2b" },
+        "user-1",
+        cluster,
+        undefined,
+        expect.any(Function),
+      );
+    },
+  );
+
   it("does not publish a workspace whose network policy could not be applied", async () => {
     jest
       .mocked(ensureCloudNetwork)
@@ -578,12 +612,14 @@ describe("E2B cloud acquisition", () => {
         { code: "ECONNRESET" },
       ),
     });
-    network.mockImplementationOnce(async (_sandbox, _user, _signal, report) => {
-      report?.("settings_read");
-      report?.("ready_cache_check");
-      report?.("provider_info_read");
-      throw original;
-    });
+    network.mockImplementationOnce(
+      async (_sandbox, _user, _cluster, _signal, report) => {
+        report?.("settings_read");
+        report?.("ready_cache_check");
+        report?.("provider_info_read");
+        throw original;
+      },
+    );
     const publish = jest.fn();
     await expect(
       ensureCloudSandboxConnection({ userId: "user-1", setSandbox: publish }),
@@ -592,6 +628,7 @@ describe("E2B cloud acquisition", () => {
     expect(network).toHaveBeenCalledWith(
       { sandboxId: "new-e2b" },
       "user-1",
+      "us",
       undefined,
       expect.any(Function),
     );
@@ -683,7 +720,7 @@ describe("E2B cloud acquisition", () => {
         check?: () => void;
       };
       network.mockImplementationOnce(
-        async (_sandbox, _user, _signal, report) => {
+        async (_sandbox, _user, _cluster, _signal, report) => {
           for (const step of steps) report?.(step as never);
           throw original;
         },
@@ -710,9 +747,11 @@ describe("E2B cloud acquisition", () => {
   );
 
   it("does not carry network step fields into later phases or success", async () => {
-    network.mockImplementation(async (_sandbox, _user, _signal, report) => {
-      report?.("post_check");
-    });
+    network.mockImplementation(
+      async (_sandbox, _user, _cluster, _signal, report) => {
+        report?.("post_check");
+      },
+    );
     const original = Object.assign(new TypeError("fetch failed"), {
       cause: { code: "ECONNRESET" },
     });

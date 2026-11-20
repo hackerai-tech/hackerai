@@ -15,7 +15,12 @@ import {
   clearResumeFailures,
 } from "@/lib/cloud-recovery/store";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { DEFAULT_NETWORK_POLICY, e2bNetwork } from "@/lib/cloud-network/policy";
+import { DEFAULT_NETWORK_POLICY } from "@/lib/cloud-network/policy";
+import {
+  desiredE2BNetwork,
+  managedEgressForCluster,
+  resolveManagedEgress,
+} from "@/lib/cloud-network/managed-egress";
 import {
   CloudAcquisitionTimeoutError,
   CLOUD_RESUME_DEADLINE_MS,
@@ -228,6 +233,9 @@ export const ensureSandboxConnection = async (
     }
   };
   try {
+    // An enrolled account's invalid regional config stops before any provider
+    // call or reservation transition, never falling back to direct egress.
+    const managedEgress = resolveManagedEgress(userID);
     options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
@@ -482,7 +490,12 @@ export const ensureSandboxConnection = async (
       selectedBuild === versionBuild ? SANDBOX_VERSION : "v12";
     // Pin the resolved build, not a mutable tag that could change before create.
     const createTemplate = `${templateName}:${selectedBuild}`;
-    const networkSettings = await readNetworkSettings(userID);
+    // Shares the reconciliation builder, with the proxy of the cluster that
+    // will host the workspace. Managed egress was validated before routing.
+    const network = desiredE2BNetwork(
+      (await readNetworkSettings(userID))?.policy ?? DEFAULT_NETWORK_POLICY,
+      managedEgressForCluster(managedEgress, createCluster.cluster),
+    );
     const reservation =
       options.reservation ?? (await readCloudWorkspaceState(userID));
     if (
@@ -501,7 +514,7 @@ export const ensureSandboxConnection = async (
     // No automatic HTTP/application retry: a failed response can hide a successful
     // provider create. A future request reconciles this token from inventory.
     const sandbox = await Sandbox.create(createTemplate, {
-      network: e2bNetwork(networkSettings?.policy ?? DEFAULT_NETWORK_POLICY),
+      network,
       ...createCluster.connectionOptions,
       ...requestOptions,
       retries: 0,
