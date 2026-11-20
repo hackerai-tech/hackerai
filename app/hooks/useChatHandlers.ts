@@ -124,6 +124,8 @@ interface UseChatHandlersProps {
   ) => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
+  /** Tabbed Computer stays open when its Activity entry is deleted. */
+  computerTabsEnabled?: boolean;
 }
 
 export type RetryOptions = {
@@ -173,6 +175,7 @@ export const useChatHandlers = ({
   goalState,
   goalGeneration,
   persistedTriggerRunId,
+  computerTabsEnabled = false,
 }: UseChatHandlersProps) => {
   const isSubmittingReplyRef = useRef(false);
   const { setIsAutoResuming } = useDataStreamDispatch();
@@ -197,7 +200,7 @@ export const useChatHandlers = ({
     selectedModel,
     sidebarOpen,
     sidebarContent,
-    openSidebar,
+    setSidebarContent,
     closeSidebar,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
@@ -264,6 +267,7 @@ export const useChatHandlers = ({
   const [sendNowReleaseVersion, setSendNowReleaseVersion] = useState(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
+  const computerTabsEnabledRef = useLatestRef(computerTabsEnabled);
   const [summarySteer, setSummarySteer] = useState<{
     chatId: string;
     messageId: string;
@@ -1415,9 +1419,12 @@ export const useChatHandlers = ({
       );
 
       if (!nextSidebarContent) {
-        closeSidebar();
+        // Tabbed Computer may be showing Files; only drop the deleted Activity entry.
+        if (computerTabsEnabledRef.current) setSidebarContent(null);
+        else closeSidebar();
       } else if (nextSidebarContent !== currentSidebarContent) {
-        openSidebar(nextSidebarContent);
+        // Replace content without an open request so a selected Files tab stays.
+        setSidebarContent(nextSidebarContent);
       }
     }
   };

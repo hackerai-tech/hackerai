@@ -312,6 +312,7 @@ let mockBrowserContinue: (message: {
   id: string;
   text: string;
 }) => Promise<void>;
+let mockSelectedComputerTab = false;
 jest.mock("../ComputerSidebar", () => ({
   ComputerSidebar: ({
     onBrowserContinue,
@@ -329,6 +330,17 @@ jest.mock("../ComputerSidebar", () => ({
     return (
       <div data-testid="computer-sidebar">
         Sidebar
+        <div hidden>
+          <button role="tab" aria-selected="true">
+            Hidden computer action
+          </button>
+        </div>
+        <button tabIndex={-1}>Inactive computer tab</button>
+        {mockSelectedComputerTab && (
+          <button role="tab" aria-selected="true">
+            Selected file
+          </button>
+        )}
         <button type="button">First computer action</button>
         {sidebarContent?.kind === "goal" && (
           <button
@@ -348,6 +360,9 @@ jest.mock("../ComputerSidebar", () => ({
           onChange={(e) => setDraft(e.target.value)}
         />
         <button type="button">Last computer action</button>
+        <div hidden>
+          <button>Hidden preview action</button>
+        </div>
         <input aria-label="Hidden computer field" hidden />
         <details>
           <summary>More computer actions</summary>
@@ -581,6 +596,7 @@ describe("Chat Component Integration", () => {
   });
 
   beforeEach(() => {
+    mockSelectedComputerTab = false;
     window.history.replaceState({}, "", "/");
     jest.clearAllMocks();
     require("@/hooks/use-mobile").useIsMobile.mockReturnValue(false);
@@ -3358,6 +3374,35 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("focuses the selected file when Computer becomes a narrow overlay", async () => {
+      mockSelectedComputerTab = true;
+      const rects = jest
+        .spyOn(HTMLElement.prototype, "getClientRects")
+        .mockImplementation(function (this: HTMLElement) {
+          return (this.closest("[hidden]")
+            ? []
+            : [{}]) as unknown as DOMRectList;
+        });
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      await screen.findByTestId("computer-sidebar");
+      act(() => {
+        mockComputerOverlayMedia = true;
+        mockOverlayListeners.forEach((listener) => listener());
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "Selected file" }),
+        ).toHaveFocus(),
+      );
+      rects.mockRestore();
+    });
+
     it("preserves an open editor draft across split and overlay layouts", async () => {
       const view = (
         <TestWrapper>

@@ -132,6 +132,88 @@ it("requires a Desktop update when the binary command is unavailable", async () 
   expect(save).not.toHaveBeenCalled();
 });
 
+describe("lazy content in the browser save picker", () => {
+  const events: string[] = [];
+  const write = jest.fn(async (_data: unknown) => {
+    events.push("write");
+  });
+  const pickerWith = (pick: () => Promise<unknown>) => {
+    (window as { showSaveFilePicker?: unknown }).showSaveFilePicker = jest.fn(
+      () => {
+        events.push("picker");
+        return pick();
+      },
+    );
+  };
+  const handle = {
+    createWritable: async () => {
+      events.push("createWritable");
+      return { write, close: async () => {} };
+    },
+  };
+  beforeEach(() => {
+    events.length = 0;
+    jest.mocked(isTauriEnvironment).mockReturnValue(false);
+  });
+  afterEach(() => {
+    delete (window as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+  });
+
+  it("opens the picker before loading and creates the writable only after bytes resolve", async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]);
+    pickerWith(async () => handle);
+    const content = jest.fn(async () => {
+      events.push("load");
+      return bytes;
+    });
+    await expect(
+      downloadFile({ filename: "report.pdf", content }),
+    ).resolves.toEqual({ outcome: "success" });
+    expect(events).toEqual(["picker", "load", "createWritable", "write"]);
+    expect(write).toHaveBeenCalledWith(bytes);
+  });
+
+  it("does no loading or writing when the picker is canceled", async () => {
+    pickerWith(async () => {
+      throw new DOMException("canceled", "AbortError");
+    });
+    const content = jest.fn(async () => "never");
+    await expect(downloadFile({ filename: "a.txt", content })).resolves.toEqual(
+      {
+        outcome: "canceled",
+      },
+    );
+    expect(content).not.toHaveBeenCalled();
+    expect(events).toEqual(["picker"]);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("rejects with the loader's error without opening a writable", async () => {
+    pickerWith(async () => handle);
+    const failure = new Error("Saved file is unavailable.");
+    await expect(
+      downloadFile({
+        filename: "a.pdf",
+        content: async () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(events).toEqual(["picker"]);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+it("loads lazy content before the native dialog and saves exact bytes", async () => {
+  const bytes = new Uint8Array([37, 80, 68, 70, 0, 255]);
+  jest.mocked(saveBinaryFileToLocal).mockResolvedValue("/chosen/report.pdf");
+  await expect(
+    downloadFile({ filename: "report.pdf", content: async () => bytes }),
+  ).resolves.toEqual({ outcome: "success" });
+  expect(saveBinaryFileToLocal).toHaveBeenCalledWith("report.pdf", bytes);
+  expect(save).not.toHaveBeenCalled();
+});
+
 it.each([
   "save_binary_file_with_dialog not allowed. Command not found",
   "Command save_binary_file_with_dialog not allowed by ACL",

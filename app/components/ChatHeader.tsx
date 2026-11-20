@@ -14,6 +14,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ComputerPanelToggle } from "./ComputerPanelToggle";
 import { ShareDialog } from "./ShareDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
@@ -295,6 +296,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 >
                   <SquarePen className="size-5" />
                 </Button>
+              )}
+              {isExistingChat && id && user && (
+                <ComputerPanelToggle chatId={id} />
               )}
             </div>
           </div>

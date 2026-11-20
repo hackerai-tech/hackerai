@@ -77,6 +77,85 @@ const withMessagePageReadLimit = (
   ),
 });
 
+/** Saved downloads have their own cursor: reopening Files must not depend on
+ * which conversation pages the user has scrolled into view. Only persisted
+ * file references are returned; resolving bytes never requires a workspace. */
+export const getSavedFilesByChatId = query({
+  args: { chatId: v.string(), paginationOpts: paginationOptsValidator },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        id: v.string(),
+        role: v.literal("assistant"),
+        fileDetails: v.array(
+          v.object({
+            fileId: v.id("files"),
+            name: v.string(),
+            mediaType: v.optional(v.string()),
+            sizeBytes: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    pageStatus: v.optional(v.union(v.string(), v.null())),
+    splitCursor: v.optional(v.union(v.string(), v.null())),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return { page: [], isDone: true, continueCursor: "" };
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    await assertChatHistoryOwner(ctx, args.chatId, identity.subject);
+    const result = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+      .order("desc")
+      .paginate(
+        withMessagePageReadLimit({
+          ...args.paginationOpts,
+          numItems: Math.min(args.paginationOpts.numItems, 14),
+        }),
+      );
+    const messages = result.page.filter(
+      (message) =>
+        message.role === "assistant" &&
+        message.user_id === identity.subject &&
+        message.is_hidden !== true &&
+        (message.file_ids?.length ?? 0) > 0,
+    );
+    const fileIds = [...new Set(messages.flatMap((m) => m.file_ids ?? []))];
+    const files = await Promise.all(fileIds.map((id) => ctx.db.get(id)));
+    const ownedFiles = new Map(
+      files.flatMap((file) =>
+        file !== null && file.user_id === identity.subject
+          ? [[file._id, file] as const]
+          : [],
+      ),
+    );
+    return {
+      ...result,
+      page: messages.map((message) => ({
+        id: message.id,
+        role: "assistant" as const,
+        fileDetails: [...new Set(message.file_ids ?? [])].flatMap((fileId) => {
+          const file = ownedFiles.get(fileId);
+          return file
+            ? [
+                {
+                  fileId,
+                  name: file.name,
+                  mediaType: file.media_type,
+                  sizeBytes: file.size,
+                },
+              ]
+            : [];
+        }),
+      })),
+    };
+  },
+});
+
 const getOwnedFileInfo = async (
   ctx: { db: GenericDatabaseReader<DataModel> },
   fileIds: Id<"files">[],

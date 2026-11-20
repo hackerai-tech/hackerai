@@ -126,6 +126,7 @@ import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { useWorkspaceFilesEnabled } from "./ComputerPanelToggle";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
@@ -665,7 +666,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           ].join(", "),
         ),
       ).filter((element) => {
-        if (element.getClientRects().length === 0) return false;
+        if (
+          element.tabIndex < 0 ||
+          element.closest("[hidden], [inert]") ||
+          element.getClientRects().length === 0
+        )
+          return false;
         // Closed details can still give descendants layout boxes in Chromium.
         // Only their direct summary remains keyboard-accessible.
         for (
@@ -729,12 +735,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const focusTimeout = window.setTimeout(() => {
-      if (!hasNestedDialogFocus())
-        (
-          dialog.querySelector<HTMLElement>('[aria-label="Goal objective"]') ??
-          getFocusableElements()[0] ??
-          dialog
-        ).focus();
+      if (hasNestedDialogFocus()) return;
+      const focusableElements = getFocusableElements();
+      (
+        dialog.querySelector<HTMLElement>('[aria-label="Goal objective"]') ??
+        focusableElements.find((element) =>
+          element.matches('[role="tab"][aria-selected="true"]'),
+        ) ??
+        focusableElements[0] ??
+        dialog
+      ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
@@ -2740,6 +2750,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     agentLongRunId ?? activeTriggerRunId,
   );
 
+  // Matches ComputerSidebar's decision to render tabbed Computer.
+  const computerTabsEnabled = useWorkspaceFilesEnabled(chatId);
+
   // Chat handlers
   const {
     handleSubmit,
@@ -2786,6 +2799,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     resetAutoContinueCount,
     sendDisabledReason: computerSendDisabledReason,
     pendingUserWait,
+    computerTabsEnabled,
   });
 
   // Automatic queue processing - send next queued message when ready
@@ -3339,7 +3353,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             className={
               computerSidebarOverlay
                 ? sidebarOpen
-                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pl-[env(safe-area-inset-left)] max-sm:pr-[env(safe-area-inset-right)] sm:p-4"
                   : "hidden"
                 : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
             }
@@ -3367,7 +3381,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {(sidebarOpen || hasOpenedComputerSidebar) && (
                 <ComputerSidebar
-                  key={chatId}
+                  key={chatId ?? "new"}
                   stopGoalRunBeforeControl={stopGoalRunBeforeControl}
                   continueGoal={async (goal) => {
                     if (computerSendDisabledReason)

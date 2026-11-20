@@ -5,6 +5,7 @@ import type { ChatMessage, SidebarContent } from "@/types";
 const mockRegenerate = jest.fn();
 const mockSetMessages = jest.fn();
 const mockOpenSidebar = jest.fn();
+const mockSetSidebarContent = jest.fn();
 const mockCloseSidebar = jest.fn();
 let mockSidebarOpen = false;
 let mockSidebarContent: SidebarContent | null = null;
@@ -37,6 +38,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     sidebarOpen: mockSidebarOpen,
     sidebarContent: mockSidebarContent,
     openSidebar: mockOpenSidebar,
+    setSidebarContent: mockSetSidebarContent,
     closeSidebar: mockCloseSidebar,
   }),
 }));
@@ -76,20 +78,26 @@ const fileToolMessage = (
   ],
 });
 
-const renderHandlers = (messages: ChatMessage[]) =>
-  renderHook(() =>
-    useChatHandlers({
-      chatId: "chat-1",
-      messages,
-      sendMessage: jest.fn(),
-      stop: jest.fn(),
-      regenerate: mockRegenerate,
-      setMessages: mockSetMessages,
-      isExistingChat: false,
-      status: "ready",
-      isSendingNowRef: { current: false },
-      hasManuallyStoppedRef: { current: false },
-    }),
+const renderHandlers = (
+  messages: ChatMessage[],
+  computerTabsEnabled?: boolean,
+) =>
+  renderHook(
+    (props?: { tabs?: boolean }) =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: jest.fn(),
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: false,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        computerTabsEnabled: props?.tabs,
+      }),
+    { initialProps: { tabs: computerTabsEnabled } },
   );
 
 describe("useChatHandlers regeneration sidebar reconciliation", () => {
@@ -122,12 +130,13 @@ describe("useChatHandlers regeneration sidebar reconciliation", () => {
       await regenerateFromRenderedMessage();
     });
 
-    expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect(mockSetSidebarContent).toHaveBeenCalledWith(
       expect.objectContaining({
         toolCallId: "tool-previous",
         content: "previous output",
       }),
     );
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
     expect(mockCloseSidebar).not.toHaveBeenCalled();
   });
 
@@ -150,6 +159,34 @@ describe("useChatHandlers regeneration sidebar reconciliation", () => {
     });
 
     expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+    expect(mockSetSidebarContent).not.toHaveBeenCalled();
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+  });
+
+  it("keeps tabbed Computer open and clears only the deleted Activity entry", async () => {
+    const messages = [
+      userMessage("user-1", "Question"),
+      fileToolMessage("assistant-1", "tool-removed", "removed output"),
+    ];
+    mockSidebarOpen = true;
+    mockSidebarContent = {
+      path: "/tmp/result.txt",
+      content: "removed output",
+      action: "reading",
+      toolCallId: "tool-removed",
+    };
+    // The rendered Regenerate button can hold a handler from before tabs resolved.
+    const { result, rerender } = renderHandlers(messages, false);
+    const regenerateFromRenderedMessage = result.current.handleRegenerate;
+    rerender({ tabs: true });
+
+    await act(async () => {
+      await regenerateFromRenderedMessage();
+    });
+
+    expect(mockSetSidebarContent).toHaveBeenCalledTimes(1);
+    expect(mockSetSidebarContent).toHaveBeenCalledWith(null);
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
     expect(mockOpenSidebar).not.toHaveBeenCalled();
   });
 

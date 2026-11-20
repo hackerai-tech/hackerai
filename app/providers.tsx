@@ -36,6 +36,7 @@ import {
 
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
 import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
+import { sanitizeWorkspaceFilesEvent } from "@/lib/analytics/workspace-files-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import {
@@ -296,10 +297,12 @@ export function PostHogProvider({
             }
             // Last, so no event-specific projection can strip Desktop identity.
             return applyDesktopRuntimeIdentity(
-              enrichFrontendExceptionEvent(sanitizedEvent, {
-                navigatorDiagnosticOwner,
-                reactBoundaryDiagnosticOwner,
-              }),
+              sanitizeWorkspaceFilesEvent(
+                enrichFrontendExceptionEvent(sanitizedEvent, {
+                  navigatorDiagnosticOwner,
+                  reactBoundaryDiagnosticOwner,
+                }),
+              ),
             );
           },
         } satisfies Partial<PostHogConfig>;

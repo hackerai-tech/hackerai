@@ -446,6 +446,17 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarWorkspaceFiles {
+  kind: "workspace-files";
+  chatId: string;
+  toolCallId: string;
+}
+
+export const isSidebarWorkspaceFiles = (
+  content: SidebarContent,
+): content is SidebarWorkspaceFiles =>
+  "kind" in content && content.kind === "workspace-files";
+
 export interface SidebarGoal {
   kind: "goal";
   chatId: string;
@@ -454,6 +465,7 @@ export interface SidebarGoal {
 
 type SidebarContentValue =
   | SidebarGoal
+  | SidebarWorkspaceFiles
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
