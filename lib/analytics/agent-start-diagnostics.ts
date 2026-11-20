@@ -5,10 +5,13 @@ import {
   subscribeAuthenticatedAnalytics,
 } from "@/lib/analytics/client";
 import {
+  AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT,
+  AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_VERSION,
   AGENT_START_BODY_SCAN_LIMIT_CODE_UNITS,
   AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
   AGENT_START_HTTP413_DIAGNOSTIC_VERSION,
   getAgentStartBuildContext,
+  type AgentPartialSaveBodyBucket,
   type AgentStartHeaderMarkerState,
   type AgentStartRequestBodyState,
   type AgentStartRequestIdState,
@@ -67,6 +70,26 @@ function measureBody(
     : { request_body_state: "measured", request_body_utf8_bytes: bytes };
 }
 
+const MIB = 1024 * 1024;
+
+/**
+ * Coarse UTF-8 size of the exact partial-save body handed to fetch. Every
+ * UTF-16 code unit encodes to at least one byte, so a length above 8 MiB is
+ * already above 8 MiB of UTF-8 and needs no scan.
+ */
+export function getAgentPartialSaveBodyBucket(
+  body: unknown,
+): AgentPartialSaveBodyBucket {
+  if (typeof body !== "string") return "unknown";
+  if (body.length > 8 * MIB) return "gt_8_mib";
+  const bytes = countUtf8Bytes(body, 8 * MIB);
+  if (bytes === null) return "unknown";
+  if (bytes <= 4 * MIB) return "lte_4_mib";
+  if (bytes <= 4.5 * MIB) return "gt_4_lte_4_5_mib";
+  if (bytes <= 8 * MIB) return "gt_4_5_lte_8_mib";
+  return "gt_8_mib";
+}
+
 const UNREADABLE = Symbol("unreadable");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -112,12 +135,13 @@ function currentIdentifiedOwner() {
   return owner && getIdentifiedAnalyticsUserId() === owner ? owner : null;
 }
 
-export type AgentStartDiagnostic = {
+export type AgentHttp413Diagnostic = {
   onHttpErrorResponse?: (response: HttpErrorResponseMetadata) => void;
   dispose: () => void;
 };
+export type AgentStartDiagnostic = AgentHttp413Diagnostic;
 
-const NOOP: AgentStartDiagnostic = { dispose: () => {} };
+const NOOP: AgentHttp413Diagnostic = { dispose: () => {} };
 
 /**
  * Observe one Agent start POST. Pass the exact body handed to fetch. Reports at
@@ -126,6 +150,23 @@ const NOOP: AgentStartDiagnostic = { dispose: () => {} };
  * Call `dispose` when the attempt settles. Never throws.
  */
 export function beginAgentStartDiagnostic(body: unknown): AgentStartDiagnostic {
+  return beginAgentHttp413Diagnostic("agent_start", body);
+}
+
+/**
+ * The same one-attempt lifecycle for an Agent partial-save POST. Reports a
+ * coarse body-size bucket instead of a byte count and reads no app marker.
+ */
+export function beginAgentPartialSaveDiagnostic(
+  body: unknown,
+): AgentHttp413Diagnostic {
+  return beginAgentHttp413Diagnostic("partial_save", body);
+}
+
+function beginAgentHttp413Diagnostic(
+  endpoint: "agent_start" | "partial_save",
+  body: unknown,
+): AgentHttp413Diagnostic {
   let cleanup: (() => void) | undefined;
   try {
     const owner = currentIdentifiedOwner();
@@ -171,17 +212,51 @@ export function beginAgentStartDiagnostic(body: unknown): AgentStartDiagnostic {
         // One response per attempt: `finally` disposes whatever the outcome.
         try {
           if (response.status !== 413 || !isCurrent()) return;
-          const appMarker = classifyMarker(
-            readHeader(response, AGENT_START_REJECTION_HEADER),
-            AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
-          );
+          // Only the Agent start route sets an app rejection marker.
+          const appMarker =
+            endpoint === "agent_start"
+              ? classifyMarker(
+                  readHeader(response, AGENT_START_REJECTION_HEADER),
+                  AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
+                )
+              : null;
           const vercelError = classifyMarker(
             readHeader(response, "x-vercel-error"),
             "FUNCTION_PAYLOAD_TOO_LARGE",
           );
           const requestId = readRequestId(response);
           if (!isCurrent()) return;
-          const measuredBody = measureBody(requestBody);
+          const report =
+            appMarker === null
+              ? {
+                  event: AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT,
+                  properties: {
+                    agent_partial_save_http413_diagnostic_version:
+                      AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_VERSION,
+                    http_status: 413,
+                    request_body_utf8_bucket:
+                      getAgentPartialSaveBodyBucket(requestBody),
+                    vercel_error_state: vercelError,
+                    ...requestId,
+                    ...getAgentStartBuildContext(),
+                  },
+                }
+              : {
+                  event: AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
+                  properties: {
+                    agent_start_http413_diagnostic_version:
+                      AGENT_START_HTTP413_DIAGNOSTIC_VERSION,
+                    http_status: 413,
+                    ...measureBody(requestBody),
+                    app_rejection_marker_state: appMarker,
+                    vercel_error_state: vercelError,
+                    ...requestId,
+                    ...getAgentStartBuildContext(),
+                    // Client attempts are not counted; join platform request totals.
+                    attempt_denominator_kind: "unmeasured",
+                  },
+                };
+          // Event identity only; never a request, chat, run or message ID.
           const attemptId: unknown = globalThis.crypto?.randomUUID?.();
           // Check the length before the pattern so no oversized value is scanned.
           if (
@@ -191,22 +266,7 @@ export function beginAgentStartDiagnostic(body: unknown): AgentStartDiagnostic {
             !isCurrent()
           )
             return;
-          captureQueuedAuthenticatedEvent({
-            event: AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
-            properties: {
-              agent_start_http413_diagnostic_version:
-                AGENT_START_HTTP413_DIAGNOSTIC_VERSION,
-              http_status: 413,
-              ...measuredBody,
-              app_rejection_marker_state: appMarker,
-              vercel_error_state: vercelError,
-              ...requestId,
-              ...getAgentStartBuildContext(),
-              // Client attempts are not counted; join platform request totals.
-              attempt_denominator_kind: "unmeasured",
-            },
-            dedupeKey: attemptId,
-          });
+          captureQueuedAuthenticatedEvent({ ...report, dedupeKey: attemptId });
         } catch {
           // Optional diagnostics never change the request, error or status.
         } finally {
