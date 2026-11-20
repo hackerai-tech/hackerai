@@ -387,13 +387,10 @@ export class DesktopAckTelemetry {
         result.invocationUnknown,
         invocationRejection,
       );
-      // Its cleanup pair joins only an `owner_stop_requested` origin on an
-      // acknowledged terminal, its taskkill group only that pair's
-      // `tree_unconfirmed` failure, its root report pair only that group's
-      // code, and its stop request source pair only that report beside the
-      // not-found code, of either class; its owner phase pair joins only a
-      // `cancel_wait_timeout` origin on an acknowledged terminal; otherwise
-      // the prior pairs alone, as before.
+      // The acknowledged terminal admits cleanup for a stop or owner timeout.
+      // A tree-only failure can add its Windows taskkill result. Only an
+      // explicit stop can add its first request source, beside a not-found
+      // report. A cancellation-wait timeout may instead add the owner phase.
       const streamFence = readDesktopStreamFenceDiagnostic(
         result.streamFence,
         invocationRejection,

@@ -1571,36 +1571,105 @@ describe("stream fence origin", () => {
         });
       });
 
-      it("never reads or joins a taskkill receipt or stop source beside its leg", () => {
-        const taskkill = watched({ ...stopOnly.streamFenceWindowsTaskkill });
-        const source = watched({ ...stopOnly.streamFenceStopRequestSource });
-        const parsed = parseNativeStreamFenceRejection({
-          ...sibling({ version: 1, failure: "tree_unconfirmed" }, timeout),
-          streamFenceWindowsTaskkill: taskkill.proxy,
-          streamFenceStopRequestSource: source.proxy,
-        });
-        expect(parsed).toEqual({
-          message: STOP_UNCONFIRMED,
-          origin: "owner_timeout",
-          cleanupFailure: "tree_unconfirmed",
-        });
-        expect(taskkill.reads.count + source.reads.count).toBe(0);
-        // Nor does the group admit them, even when offered directly.
-        expect(
-          desktopStreamFenceDiagnostic(
+      const timeoutTree = {
+        message: STOP_UNCONFIRMED,
+        origin: "owner_timeout",
+        cleanupFailure: "tree_unconfirmed",
+      };
+      const notFoundReceipt = {
+        outcome: "nonzero_exit",
+        exitCode: 128,
+        rootReport: "requested_pid_not_found",
+      };
+      // The timeout's own taskkill and root report groups, never a source.
+      const timeoutTaskkillGroups = {
+        desktop_stream_fence_windows_taskkill_version: 1,
+        desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+        desktop_stream_fence_windows_taskkill_exit_code: 128,
+        desktop_stream_fence_windows_taskkill_root_report_version: 1,
+        desktop_stream_fence_windows_taskkill_root_report:
+          "requested_pid_not_found",
+      };
+
+      it("joins its own taskkill receipt only beside its tree_unconfirmed leg, never a stop source", () => {
+        for (const failure of failures) {
+          const taskkill = watched({ ...stopOnly.streamFenceWindowsTaskkill });
+          const source = watched({ ...stopOnly.streamFenceStopRequestSource });
+          const phase = watched({ version: 1, phase: "owner_cleanup" });
+          const parsed = parseNativeStreamFenceRejection({
+            ...sibling({ version: 1, failure }, timeout),
+            streamFenceWindowsTaskkill: taskkill.proxy,
+            // Spoofed explicit-stop and cancellation-wait siblings.
+            streamFenceStopRequestSource: source.proxy,
+            streamFenceCancelWaitOwnerPhase: phase.proxy,
+          });
+          const tree = failure === "tree_unconfirmed";
+          expect([failure, parsed]).toEqual([
+            failure,
+            {
+              ...timeoutTree,
+              cleanupFailure: failure,
+              ...(tree && { windowsTaskkill: notFoundReceipt }),
+            },
+          ]);
+          expect(Object.isFrozen(parsed)).toBe(true);
+          // Another leg never reads the receipt; no timeout reads a source
+          // or phase.
+          expect([failure, source.reads.count, phase.reads.count]).toEqual([
+            failure,
+            0,
+            0,
+          ]);
+          if (!tree)
+            expect([failure, taskkill.reads.count]).toEqual([failure, 0]);
+          // The group admits the same, even when a source is offered directly.
+          const diagnostic = desktopStreamFenceDiagnostic(
             authorizedUnknown,
             stopUnconfirmed,
             "owner_timeout",
-            "tree_unconfirmed",
-            {
-              outcome: "nonzero_exit",
-              exitCode: 128,
-              rootReport: "requested_pid_not_found",
-            },
-            null,
+            failure,
+            notFoundReceipt,
+            "owner_cleanup",
             "cancel_ipc",
-          ),
-        ).toEqual({ ...timeoutGroup, ...cleanupGroup });
+          );
+          expect([failure, diagnostic]).toEqual([
+            failure,
+            {
+              ...timeoutGroup,
+              ...cleanupGroup,
+              desktop_stream_fence_cleanup_failure: failure,
+              ...(tree && timeoutTaskkillGroups),
+            },
+          ]);
+        }
+        // Every finite receipt a timeout's taskkill can report.
+        for (const [receipt, parsedReceipt] of [
+          [
+            {
+              ...stopOnly.streamFenceWindowsTaskkill,
+              rootReport: "unclassified",
+            },
+            { ...notFoundReceipt, rootReport: "unclassified" },
+          ],
+          [
+            { version: 1, outcome: "nonzero_exit", exitCode: 128 },
+            { outcome: "nonzero_exit", exitCode: 128 },
+          ],
+          [
+            { version: 1, outcome: "nonzero_exit" },
+            { outcome: "nonzero_exit" },
+          ],
+          [
+            { version: 1, outcome: "output_error" },
+            { outcome: "output_error" },
+          ],
+        ])
+          expect(
+            parseNativeStreamFenceRejection({
+              ...sibling({ version: 1, failure: "tree_unconfirmed" }, timeout),
+              streamFenceWindowsTaskkill: receipt,
+            }),
+          ).toEqual({ ...timeoutTree, windowsTaskkill: parsedReceipt });
         // An explicit stop's same receipts are unchanged.
         expect(
           parseNativeStreamFenceRejection({
@@ -1618,6 +1687,120 @@ describe("stream fence origin", () => {
           },
           stopRequestSource: "cancel_ipc",
         });
+      });
+
+      it("drops only a malformed or hostile taskkill receipt beside its leg", () => {
+        let gets = 0;
+        const accessor = Object.defineProperty(
+          { version: 2, outcome: "nonzero_exit", rootReport: "unclassified" },
+          "exitCode",
+          {
+            enumerable: true,
+            get() {
+              gets++;
+              return 128;
+            },
+          },
+        );
+        for (const receipt of [
+          { ...stopOnly.streamFenceWindowsTaskkill, exitCode: 255 },
+          { ...stopOnly.streamFenceWindowsTaskkill, version: 3 },
+          { ...stopOnly.streamFenceWindowsTaskkill, pid: 4242 },
+          { ...stopOnly.streamFenceWindowsTaskkill, stderr: "PRIVATE" },
+          { version: 1, outcome: "output_error", exitCode: 1 },
+          { version: 1, outcome: "nonzero_exit", exitCode: 0 },
+          { version: 1, outcome: "PRIVATE" },
+          Object.create(stopOnly.streamFenceWindowsTaskkill),
+          accessor,
+          new Proxy(stopOnly.streamFenceWindowsTaskkill, {
+            getPrototypeOf: fail,
+            ownKeys: fail,
+            get: fail,
+            getOwnPropertyDescriptor: fail,
+          }),
+          "requested_pid_not_found",
+          null,
+        ])
+          expect(
+            parseNativeStreamFenceRejection({
+              ...sibling({ version: 1, failure: "tree_unconfirmed" }, timeout),
+              streamFenceWindowsTaskkill: receipt,
+            }),
+          ).toEqual(timeoutTree);
+        expect(gets).toBe(0);
+      });
+
+      it("drops a receipt whose read changes the validated timeout pairs", () => {
+        const mutations: [string, (error: Record<string, unknown>) => void][] =
+          [
+            [
+              "origin",
+              (error) =>
+                Object.assign(error.streamFence as object, {
+                  origin: "owner_stop_requested",
+                }),
+            ],
+            [
+              "version",
+              (error) =>
+                Object.assign(error.streamFence as object, { version: 2 }),
+            ],
+            [
+              "replaced fence",
+              (error) => {
+                error.streamFence = {
+                  version: 1,
+                  origin: "owner_process_error",
+                };
+              },
+            ],
+            [
+              "cleanup",
+              (error) =>
+                Object.assign(error.streamFenceCleanup as object, {
+                  failure: "tree_and_leader_wait_timed_out",
+                }),
+            ],
+            [
+              "replaced cleanup",
+              (error) => {
+                error.streamFenceCleanup = {
+                  version: 2,
+                  failure: "tree_unconfirmed",
+                };
+              },
+            ],
+          ];
+        for (const [name, mutate] of mutations) {
+          const error: Record<string, unknown> = sibling(
+            { version: 1, failure: "tree_unconfirmed" },
+            { ...timeout },
+          );
+          error.streamFenceWindowsTaskkill = new Proxy(
+            { ...stopOnly.streamFenceWindowsTaskkill },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                mutate(error);
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          // Only the receipt drops; the pairs validated before it remain.
+          expect([name, parseNativeStreamFenceRejection(error)]).toEqual([
+            name,
+            timeoutTree,
+          ]);
+        }
+        // A stable proxy receipt is still joined.
+        expect(
+          parseNativeStreamFenceRejection({
+            ...sibling({ version: 1, failure: "tree_unconfirmed" }, timeout),
+            streamFenceWindowsTaskkill: new Proxy(
+              { ...stopOnly.streamFenceWindowsTaskkill },
+              {},
+            ),
+          }),
+        ).toEqual({ ...timeoutTree, windowsTaskkill: notFoundReceipt });
       });
 
       it("reads the leg only beside a validated timeout origin on an acknowledged terminal", () => {
@@ -1670,26 +1853,122 @@ describe("stream fence origin", () => {
         ).toBeNull();
       });
 
-      it("never reads or keeps spoofed taskkill or source keys beside its leg", () => {
-        let reads = 0;
-        const counted = new Proxy(
-          { ...timeoutGroup, ...cleanupGroup, ...stopOnlyGroups },
-          {
-            getOwnPropertyDescriptor(target, key) {
-              if (typeof key === "string" && key in stopOnlyGroups) reads++;
-              return Reflect.getOwnPropertyDescriptor(target, key);
+      it("keeps its own taskkill groups only beside its tree_unconfirmed pair, never a spoofed source", () => {
+        const sourceKeys = [
+          "desktop_stream_fence_stop_request_source_version",
+          "desktop_stream_fence_stop_request_source",
+        ];
+        for (const failure of failures) {
+          const reads = { taskkill: 0, source: 0 };
+          const counted = new Proxy(
+            {
+              ...timeoutGroup,
+              ...cleanupGroup,
+              desktop_stream_fence_cleanup_failure: failure,
+              ...stopOnlyGroups,
+              desktop_stream_fence_cancel_wait_owner_phase_version: 1,
+              desktop_stream_fence_cancel_wait_owner_phase: "owner_cleanup",
+              message: "PRIVATE",
             },
-          },
-        );
-        expect(
-          readDesktopStreamFenceDiagnostic(
+            {
+              getOwnPropertyDescriptor(target, key) {
+                if (typeof key === "string" && sourceKeys.includes(key))
+                  reads.source++;
+                else if (
+                  typeof key === "string" &&
+                  key in timeoutTaskkillGroups
+                )
+                  reads.taskkill++;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          const tree = failure === "tree_unconfirmed";
+          const read = readDesktopStreamFenceDiagnostic(
             counted,
             authorizedUnknown,
             stopUnconfirmed,
             true,
-          ),
-        ).toEqual({ ...timeoutGroup, ...cleanupGroup });
-        expect(reads).toBe(0);
+          );
+          expect([failure, read]).toEqual([
+            failure,
+            {
+              ...timeoutGroup,
+              ...cleanupGroup,
+              desktop_stream_fence_cleanup_failure: failure,
+              ...(tree && timeoutTaskkillGroups),
+            },
+          ]);
+          expect(Object.isFrozen(read)).toBe(true);
+          // Another leg never reads the taskkill keys; no timeout reads a
+          // source.
+          expect([failure, reads.source]).toEqual([failure, 0]);
+          if (!tree) expect([failure, reads.taskkill]).toEqual([failure, 0]);
+        }
+        // Every finite group a timeout's taskkill can report.
+        for (const groups of [
+          {
+            ...timeoutTaskkillGroups,
+            desktop_stream_fence_windows_taskkill_root_report: "unclassified",
+          },
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+            desktop_stream_fence_windows_taskkill_exit_code: 128,
+          },
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+          },
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "output_error",
+          },
+        ])
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              { ...timeoutGroup, ...cleanupGroup, ...groups },
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            ),
+          ).toEqual({ ...timeoutGroup, ...cleanupGroup, ...groups });
+        // An invalid group, or root report, drops alone.
+        for (const [carried, kept] of [
+          [
+            {
+              ...timeoutTaskkillGroups,
+              desktop_stream_fence_windows_taskkill_version: 2,
+            },
+            {},
+          ],
+          [
+            {
+              ...timeoutTaskkillGroups,
+              desktop_stream_fence_windows_taskkill_outcome: "output_error",
+            },
+            {},
+          ],
+          [
+            {
+              ...timeoutTaskkillGroups,
+              desktop_stream_fence_windows_taskkill_exit_code: 255,
+            },
+            {
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+              desktop_stream_fence_windows_taskkill_exit_code: 255,
+            },
+          ],
+        ] as const)
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              { ...timeoutGroup, ...cleanupGroup, ...carried },
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            ),
+          ).toEqual({ ...timeoutGroup, ...cleanupGroup, ...kept });
         // An explicit stop's same groups are still kept.
         expect(
           readDesktopStreamFenceDiagnostic(
@@ -1772,6 +2051,49 @@ describe("stream fence origin", () => {
           expect([mutation, read(mutation)]).toEqual([mutation, timeoutGroup]);
         // A stable reading keeps the complete pair.
         expect(read({})).toEqual({ ...timeoutGroup, ...cleanupGroup });
+      });
+
+      it("drops a taskkill or root report group whose read changes the validated timeout pairs", () => {
+        const exit = "desktop_stream_fence_windows_taskkill_exit_code";
+        const root = "desktop_stream_fence_windows_taskkill_root_report";
+        // Mutate the source once its `trigger` key is read.
+        const read = (trigger: string, mutation: Record<string, unknown>) =>
+          readDesktopStreamFenceDiagnostic(
+            new Proxy<Record<string, unknown>>(
+              { ...timeoutGroup, ...cleanupGroup, ...timeoutTaskkillGroups },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (key === trigger) Object.assign(target, mutation);
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+            authorizedUnknown,
+            stopUnconfirmed,
+            true,
+          );
+        const taskkillOnly = {
+          desktop_stream_fence_windows_taskkill_version: 1,
+          desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+          desktop_stream_fence_windows_taskkill_exit_code: 128,
+        };
+        const pairs = { ...timeoutGroup, ...cleanupGroup };
+        for (const mutation of [
+          { desktop_stream_fence_origin: "owner_stop_requested" },
+          { desktop_stream_fence_version: 2 },
+          { desktop_stream_fence_cleanup_failure: "leader_wait_failed" },
+          { desktop_stream_fence_cleanup_version: 2 },
+        ]) {
+          // While reading the taskkill group: only that group drops.
+          expect([mutation, read(exit, mutation)]).toEqual([mutation, pairs]);
+          // While reading the root report: only that pair drops.
+          expect([mutation, read(root, mutation)]).toEqual([
+            mutation,
+            { ...pairs, ...taskkillOnly },
+          ]);
+        }
+        // A stable reading keeps every group.
+        expect(read(root, {})).toEqual({ ...pairs, ...timeoutTaskkillGroups });
       });
     });
 
@@ -2707,6 +3029,8 @@ describe("stream fence origin", () => {
                 },
                 { message: STOP_UNCONFIRMED, origin: "owner_process_error" },
               ],
+              // A timeout's own exit 128 report joins its leg, but never
+              // carries a stop request source.
               [
                 "a timeout's tree_unconfirmed leg",
                 {
@@ -2714,9 +3038,24 @@ describe("stream fence origin", () => {
                   streamFence: { version: 1, origin: "owner_timeout" },
                 },
                 {
-                  message: STOP_UNCONFIRMED,
+                  ...notFoundParsed,
                   origin: "owner_timeout",
-                  cleanupFailure: "tree_unconfirmed",
+                },
+              ],
+              [
+                "a timeout's unclassified exit 128 report",
+                {
+                  ...withTaskkill(unclassified128, tree),
+                  streamFence: { version: 1, origin: "owner_timeout" },
+                },
+                {
+                  ...treeParsed,
+                  origin: "owner_timeout",
+                  windowsTaskkill: {
+                    outcome: "nonzero_exit",
+                    exitCode: 128,
+                    rootReport: "unclassified",
+                  },
                 },
               ],
             ];

@@ -1457,7 +1457,8 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // unconfirmed cleanup leg as a sibling of that origin.
     include_stream_fence_cleanup: Option<serde_json::Value>,
     // Only literal `true`, beside both opt-ins above, adds the Windows taskkill
-    // failure recorded with a stop request's `tree_unconfirmed` leg.
+    // failure recorded with a stop request's or an owner timeout's
+    // `tree_unconfirmed` leg.
     include_stream_fence_windows_taskkill: Option<serde_json::Value>,
     // Only literal `true`, beside all three opt-ins above, upgrades that
     // taskkill failure to its v2 receipt with the closed root report.
@@ -1597,12 +1598,14 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// The exact original rejection, as a string. Only an opted-in invocation's
 /// exact fence rejection, with a recorded origin, is instead that same public
 /// message beside the fence's closed v1 origin. With both opt-ins, a stop
-/// request's recorded unconfirmed leg is added as that origin's sibling. With
-/// all three, the Windows taskkill failure recorded with a `tree_unconfirmed`
-/// leg is added as a further sibling, as its exact v1 receipt. With all four,
-/// that sibling is instead its v2 receipt when it has one. With all five, a
-/// v2 receipt of taskkill's not-found exit code, `requested_pid_not_found` or
-/// `unclassified`, is joined by the same stop request's first source.
+/// request's or an owner timeout's recorded unconfirmed leg is added as that
+/// origin's sibling. With all three, the Windows taskkill failure recorded
+/// with either origin's `tree_unconfirmed` leg is added as a further sibling,
+/// as its exact v1 receipt. With all four, that sibling is instead its v2
+/// receipt when it has one. With all five, a stop request's v2 receipt of
+/// taskkill's not-found exit code, `requested_pid_not_found` or
+/// `unclassified`, is joined by the same stop request's first source; a
+/// timeout never records one.
 /// Separately, with the origin and owner phase opt-ins, a
 /// `cancel_wait_timeout` origin's recorded owner phase is added as that
 /// origin's sibling.
@@ -1634,7 +1637,7 @@ fn authorized_stream_rejection(
     if let Some(cleanup) = receipts.cleanup.filter(|_| include_stream_fence_cleanup) {
         rejection["streamFenceCleanup"] = serde_json::json!(cleanup);
         // The fence records a taskkill failure only with its own stop
-        // request's `tree_unconfirmed` leg.
+        // request's or timeout's `tree_unconfirmed` leg.
         if let Some(taskkill) = receipts
             .windows_taskkill
             .filter(|_| include_stream_fence_windows_taskkill)
@@ -1646,8 +1649,9 @@ fn authorized_stream_rejection(
                 .filter(|_| include_stream_fence_windows_taskkill_root_report);
             rejection["streamFenceWindowsTaskkill"] =
                 serde_json::json!(root_report.unwrap_or(taskkill));
-            // The fence exposes a source only with its own report of the
-            // not-found exit code, which rides only that v2 receipt.
+            // The fence exposes a source only with its own stop request's
+            // report of the not-found exit code, which rides only that v2
+            // receipt.
             if let Some(source) = receipts
                 .stop_request_source
                 .filter(|_| root_report.is_some() && include_stream_fence_stop_request_source)
@@ -3591,6 +3595,167 @@ mod tests {
         }
         assert!(gate.install().is_err(), "the fence also blocks updates");
         state
+    }
+
+    /// A stream lifecycle with its own update gate, fenced the way a real
+    /// owner's own timeout whose `graceful_kill` reported `killed` fences it.
+    #[cfg(unix)]
+    async fn timeout_fenced_stream_state(killed: platform::GracefulKill) -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state
+            .launch(state.admit(), "timed-out", &mut cmd)
+            .await
+            .unwrap()
+        {
+            stream_lifecycle::Launch::Started(owned) => owned.release_timeout(killed).await,
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authorized_stream_rejection_adds_a_timeouts_own_taskkill_receipt_only_when_opted_in() {
+        use crate::platform::{GracefulKill, LeaderWait, TaskkillFailure};
+        use serde_json::{json, Value};
+        use std::num::NonZeroI32;
+
+        let timeout = json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "owner_timeout" },
+        });
+        let with_cleanup = |failure: &str| {
+            let mut rejection = timeout.clone();
+            rejection["streamFenceCleanup"] = json!({ "version": 1, "failure": failure });
+            rejection
+        };
+        let tree_cleanup = with_cleanup("tree_unconfirmed");
+        let with_receipt = |receipt: Value| {
+            let mut rejection = tree_cleanup.clone();
+            rejection["streamFenceWindowsTaskkill"] = receipt;
+            rejection
+        };
+        let not_found_v1 =
+            with_receipt(json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 128 }));
+        let not_found_v2 = with_receipt(json!({
+            "version": 2,
+            "outcome": "nonzero_exit",
+            "exitCode": 128,
+            "rootReport": "requested_pid_not_found",
+        }));
+        let unclassified_v2 = with_receipt(json!({
+            "version": 2,
+            "outcome": "nonzero_exit",
+            "exitCode": 128,
+            "rootReport": "unclassified",
+        }));
+        let output_error = with_receipt(json!({ "version": 1, "outcome": "output_error" }));
+        let killed = |tree_stopped, leader, taskkill| GracefulKill {
+            tree_stopped,
+            leader,
+            taskkill,
+        };
+        let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
+        // [origin, cleanup, taskkill, root report, owner phase, stop source]
+        let all = [true; 6];
+        let without_source = [true, true, true, true, true, false];
+        let v1_only = [true, true, true, false, true, true];
+        let no_taskkill = [true, true, false, true, true, true];
+        let origin_only = [true, false, true, true, true, true];
+        let none = [false, true, true, true, true, true];
+        let fences = [
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::RequestedPidNotFound),
+                ),
+                vec![
+                    // Never a source, even with every opt-in.
+                    (all, &not_found_v2),
+                    (without_source, &not_found_v2),
+                    // Each earlier opt-in keeps its prior shape.
+                    (v1_only, &not_found_v1),
+                    (no_taskkill, &tree_cleanup),
+                    (origin_only, &timeout),
+                    (none, &exact),
+                ],
+            ),
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::NonzeroExit(NonZeroI32::new(128))),
+                ),
+                vec![(all, &unclassified_v2), (v1_only, &not_found_v1)],
+            ),
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::OutputError),
+                ),
+                vec![(all, &output_error), (v1_only, &output_error)],
+            ),
+            // Unix, or a Windows tree stop without a result: the leg alone.
+            (
+                killed(false, LeaderWait::Reaped, None),
+                vec![(all, &tree_cleanup)],
+            ),
+        ];
+        for (reported, cases) in fences {
+            let state = timeout_fenced_stream_state(reported).await;
+            for (opt_ins, expected) in cases {
+                let [origin, cleanup, taskkill, root_report, phase, source] = opt_ins;
+                assert_eq!(
+                    authorized_stream_rejection(
+                        &state,
+                        stream_lifecycle::STOP_UNCONFIRMED.into(),
+                        origin,
+                        cleanup,
+                        taskkill,
+                        root_report,
+                        phase,
+                        source,
+                    )
+                    .0,
+                    *expected,
+                    "{reported:?} {opt_ins:?}"
+                );
+            }
+        }
+        // A combined leg never records its taskkill report.
+        for (leader, failure) in [
+            (LeaderWait::TimedOut, "tree_and_leader_wait_timed_out"),
+            (LeaderWait::Failed, "tree_and_leader_wait_failed"),
+        ] {
+            let state = timeout_fenced_stream_state(killed(
+                false,
+                leader,
+                Some(TaskkillFailure::RequestedPidNotFound),
+            ))
+            .await;
+            assert_eq!(
+                authorized_stream_rejection(
+                    &state,
+                    stream_lifecycle::STOP_UNCONFIRMED.into(),
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                )
+                .0,
+                with_cleanup(failure),
+                "{leader:?}"
+            );
+        }
     }
 
     #[cfg(unix)]
