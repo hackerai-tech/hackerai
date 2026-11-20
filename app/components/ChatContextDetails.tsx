@@ -195,7 +195,11 @@ export function ChatContextDetails({
             </p>
           </div>
         )}
-        <dl className="flex items-baseline justify-between gap-3 border-t pt-3 text-xs text-muted-foreground">
+        <dl
+          aria-live="polite"
+          aria-atomic="true"
+          className="flex items-baseline justify-between gap-3 border-t pt-3 text-xs text-muted-foreground"
+        >
           <dt>Completed compactions</dt>
           <dd
             className={cn(countKnown && "text-[13px] font-medium tabular-nums")}
