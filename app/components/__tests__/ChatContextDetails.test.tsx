@@ -120,14 +120,15 @@ describe("ChatContextDetails", () => {
     expect(trigger()).toHaveFocus();
     expect(trigger()).toHaveAccessibleName(summary);
     expect(await screen.findByRole("tooltip")).toHaveTextContent(summary);
+    // The passive preview shows usage against the threshold, never the count.
+    expect(screen.getByText("124k / 200k tokens")).toBeInTheDocument();
+    expect(screen.queryByText(/compactions/i)).not.toBeInTheDocument();
 
     await user.keyboard("{Enter}");
     const details = screen.getByRole("dialog", { name: "Agent context" });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(details).toHaveTextContent("Last measured input");
-    expect(details).toHaveTextContent("62%");
-    expect(details).toHaveTextContent("124k / 200k tokens");
-    expect(details).toHaveTextContent("About 76k tokens before compaction");
+    expect(details).toHaveTextContent("62% of compaction threshold");
+    expect(details).toHaveTextContent("124k / 200k tokens · last request");
     expect(details).toHaveTextContent("Completed compactions2");
 
     // A later step replaces the measurement in place.
@@ -138,7 +139,7 @@ describe("ChatContextDetails", () => {
       />,
     );
     // Text stays honest above the threshold; only the ring fill is capped.
-    expect(details).toHaveTextContent("105%");
+    expect(details).toHaveTextContent("105% of compaction threshold");
     expect(details).toHaveTextContent("210k / 200k tokens");
     expect(screen.getByTestId("context-meter-ring")).toHaveAttribute(
       "data-fill",

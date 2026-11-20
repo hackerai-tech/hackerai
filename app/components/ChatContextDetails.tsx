@@ -101,17 +101,39 @@ function ContextRing({
   );
 }
 
-/** Shared by the accessible name and the hover/focus hint. */
+const formatTokens = (snapshot: ContextPressureSnapshot) =>
+  `${formatTokenCount(snapshot.usedTokens)} / ${formatTokenCount(
+    snapshot.compactionThresholdTokens,
+  )} tokens`;
+
+/** Accessible name of the trigger and the spoken tooltip text. */
 function getSummary(snapshot: ContextPressureSnapshot | null) {
   if (!snapshot) return "Context: not measured yet";
-  return `Context: ${getContextPressurePercent(snapshot)}% of compaction threshold, ${formatTokenCount(
-    snapshot.usedTokens,
-  )} / ${formatTokenCount(snapshot.compactionThresholdTokens)} tokens`;
+  return `Context: ${getContextPressurePercent(snapshot)}% of compaction threshold, ${formatTokens(snapshot)}`;
+}
+
+/** Percent of the compaction threshold, the primary line on both surfaces. */
+function ThresholdLine({
+  snapshot,
+  className,
+}: {
+  snapshot: ContextPressureSnapshot;
+  className?: string;
+}) {
+  return (
+    <p className={className}>
+      <span className="font-semibold tabular-nums">
+        {getContextPressurePercent(snapshot)}%
+      </span>{" "}
+      of compaction threshold
+    </p>
+  );
 }
 
 /**
- * Composer context meter. Hover or focus previews the summary; click, tap,
- * Enter or Space opens the details. Shows only measured provider input.
+ * Composer context meter. Hover or focus previews percent and tokens; click,
+ * tap, Enter or Space adds the completed compaction count. Shows only the
+ * provider-measured input of the last Agent request.
  */
 export function ChatContextDetails({
   snapshot,
@@ -119,7 +141,6 @@ export function ChatContextDetails({
 }: Omit<ContextMeterData, "chatId">) {
   const [open, setOpen] = useState(false);
   const [hintOpen, setHintOpen] = useState(false);
-  const percent = snapshot ? getContextPressurePercent(snapshot) : undefined;
   const summary = getSummary(snapshot);
   const countKnown = isKnownCount(completedCompactions);
 
@@ -151,8 +172,18 @@ export function ChatContextDetails({
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="top" sideOffset={6}>
-          {summary}
+        {/* The label is what assistive tech reads; the lines are visual. */}
+        <TooltipContent side="top" sideOffset={6} aria-label={summary}>
+          {snapshot ? (
+            <div className="text-center">
+              <ThresholdLine snapshot={snapshot} />
+              <p className="text-primary-foreground/70 tabular-nums">
+                {formatTokens(snapshot)}
+              </p>
+            </div>
+          ) : (
+            summary
+          )}
         </TooltipContent>
       </Tooltip>
       <PopoverContent
@@ -161,48 +192,32 @@ export function ChatContextDetails({
         sideOffset={8}
         collisionPadding={12}
         aria-label="Agent context"
-        className="flex w-[264px] max-w-[calc(100vw-24px)] flex-col gap-3 rounded-xl px-4 py-3.5"
+        className="flex w-auto min-w-48 max-w-[calc(100vw-24px)] flex-col gap-2.5 rounded-xl px-3.5 py-3"
       >
-        <div className="flex items-baseline justify-between gap-4">
-          <p className="text-[13px] font-medium">Context</p>
-          <p className="text-xs text-muted-foreground">Last measured input</p>
-        </div>
         {snapshot ? (
-          <div className="flex flex-col gap-1">
-            <div className="flex items-baseline justify-between gap-3">
-              <p className="text-2xl leading-7 font-semibold tracking-tight tabular-nums">
-                {percent}%
-              </p>
-              <p className="text-[13px] tabular-nums">
-                {formatTokenCount(snapshot.usedTokens)} /{" "}
-                {formatTokenCount(snapshot.compactionThresholdTokens)}{" "}
-                <span className="text-muted-foreground">tokens</span>
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {snapshot.usedTokens < snapshot.compactionThresholdTokens
-                ? `About ${formatTokenCount(snapshot.compactionThresholdTokens - snapshot.usedTokens)} tokens before compaction`
-                : "At or above the compaction threshold"}
+          <div className="flex flex-col gap-0.5">
+            <ThresholdLine
+              snapshot={snapshot}
+              className="text-[13px] leading-[18px]"
+            />
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {formatTokens(snapshot)} · last request
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-1">
-            <p className="text-[15px] leading-5 font-medium">
-              Not measured yet
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Usage appears after the next Agent request.
-            </p>
-          </div>
+          <p className="text-[13px] leading-[18px]">Not measured yet</p>
         )}
         <dl
           aria-live="polite"
           aria-atomic="true"
-          className="flex items-baseline justify-between gap-3 border-t pt-3 text-xs text-muted-foreground"
+          className="flex items-baseline justify-between gap-3 border-t pt-2.5 text-xs text-muted-foreground"
         >
           <dt>Completed compactions</dt>
           <dd
-            className={cn(countKnown && "text-[13px] font-medium tabular-nums")}
+            className={cn(
+              countKnown &&
+                "text-[13px] font-medium text-foreground tabular-nums",
+            )}
           >
             {countKnown ? completedCompactions : "Unavailable"}
           </dd>
