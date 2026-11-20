@@ -33,6 +33,7 @@ import {
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
+  readDesktopStreamFenceRendererCancelDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 const STOP_SOURCES = [
@@ -159,6 +160,16 @@ function enumerableOwnData(
       : null;
   } catch {
     return null;
+  }
+}
+
+/** Whether `source` has no `triggerRunId` of any kind, own or inherited.
+ * Never runs a getter; a throwing proxy reads as having one. */
+function lacksTriggerRunId(source: object): boolean {
+  try {
+    return !("triggerRunId" in source);
+  } catch {
+    return false;
   }
 }
 
@@ -330,6 +341,16 @@ export function sanitizeDesktopAckEvent<
                 isDesktopAckStopSource(value))),
         ),
     );
+    // The renderer cancel attempt pair joins only that validated `cancel_ipc`
+    // source of a final with no `triggerRunId` at all: neither emitted nor
+    // dropped by this copy, nor inherited. It likewise survives only as the
+    // validated data copy and drops alone.
+    const streamFenceRendererCancel =
+      readDesktopStreamFenceRendererCancelDiagnostic(
+        properties,
+        streamFence,
+        !("triggerRunId" in event.properties) && lacksTriggerRunId(properties),
+      );
     if (acknowledgement)
       event.properties.terminalAcknowledged = acknowledgement.value;
     // Copy the same validated send snapshot used by the joined receipts.
@@ -360,6 +381,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, invocationSpawnHint);
     if (invocationUnknown) Object.assign(event.properties, invocationUnknown);
     if (streamFence) Object.assign(event.properties, streamFence);
+    if (streamFenceRendererCancel)
+      Object.assign(event.properties, streamFenceRendererCancel);
   }
   delete event.$set;
   delete event.$set_once;

@@ -5096,6 +5096,272 @@ describe("invocation rejection message class", () => {
                   ),
                 ).toEqual(Object.keys(stopOrigin));
               });
+
+              describe("renderer cancel attempt pair", () => {
+                const attemptPair = {
+                  desktop_stream_fence_renderer_cancel_attempt_version: 1,
+                  desktop_stream_fence_renderer_cancel_attempt:
+                    "relay_command_cancel",
+                } as const;
+                const cancelIpc = { ...reported, ...sourcePair } as const;
+
+                it.each([
+                  "relay_command_cancel",
+                  "output_overflow",
+                  "both",
+                  "unobserved",
+                ])(
+                  "keeps the unsampled %s pair beside a runless cancel_ipc source through capture and before_send",
+                  (attempt) => {
+                    jest
+                      .mocked(sampleDiagnosticOperation)
+                      .mockReturnValue(false);
+                    const expected = {
+                      ...cancelIpc,
+                      ...attemptPair,
+                      desktop_stream_fence_renderer_cancel_attempt: attempt,
+                    };
+                    const final = settle({
+                      ...fenced,
+                      // Private extras on the same carrier never survive.
+                      streamFence: {
+                        ...expected,
+                        commandId: "PRIVATE",
+                        pid: 4242,
+                      },
+                    });
+                    expect(final?.properties).toMatchObject({
+                      ...expected,
+                      telemetry_sample_rate: 1,
+                    });
+                    expect(final!.properties).not.toHaveProperty(
+                      "triggerRunId",
+                    );
+                    expect(fenceKeys(final!.properties)).toEqual(
+                      Object.keys(expected),
+                    );
+                    const enriched = sanitize({
+                      ...final!.properties,
+                      pid: 4242,
+                    });
+                    expect(enriched).toMatchObject(expected);
+                    expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+                    const serialized = JSON.stringify([final, enriched]);
+                    expect(serialized).not.toContain("PRIVATE");
+                    expect(serialized).not.toContain("4242");
+                  },
+                );
+
+                const attemptGetter = () =>
+                  Object.defineProperty(
+                    {
+                      ...cancelIpc,
+                      desktop_stream_fence_renderer_cancel_attempt_version: 1,
+                    },
+                    "desktop_stream_fence_renderer_cancel_attempt",
+                    { enumerable: true, get: () => "both" },
+                  );
+                it.each<[string, () => Record<string, unknown>]>([
+                  [
+                    "a private value",
+                    () => ({
+                      ...cancelIpc,
+                      ...attemptPair,
+                      desktop_stream_fence_renderer_cancel_attempt: "PRIVATE",
+                    }),
+                  ],
+                  [
+                    "an unsupported version",
+                    () => ({
+                      ...cancelIpc,
+                      ...attemptPair,
+                      desktop_stream_fence_renderer_cancel_attempt_version: 2,
+                    }),
+                  ],
+                  [
+                    "a missing version",
+                    () => ({
+                      ...cancelIpc,
+                      desktop_stream_fence_renderer_cancel_attempt:
+                        "relay_command_cancel",
+                    }),
+                  ],
+                  [
+                    "a missing value",
+                    () => ({
+                      ...cancelIpc,
+                      desktop_stream_fence_renderer_cancel_attempt_version: 1,
+                    }),
+                  ],
+                  ["a value getter", attemptGetter],
+                ])("drops only the attempt pair for %s", (_case, carried) => {
+                  const final = settle({ ...fenced, streamFence: carried() });
+                  expect(fenceKeys(final!.properties)).toEqual(
+                    Object.keys(cancelIpc),
+                  );
+                  expect(final?.properties).toMatchObject(cancelIpc);
+                  // Assigned onto the carrier, so no spread runs a getter.
+                  expect(
+                    sanitizeDesktopAckEvent({
+                      event: "desktop_ack_command_settled",
+                      properties: Object.assign(carried(), coarse),
+                    }).properties,
+                  ).toEqual({ ...coarse, ...cancelIpc });
+                });
+
+                it.each<[string, Record<string, unknown>]>([
+                  [
+                    "another stop request source",
+                    {
+                      ...reported,
+                      ...sourcePair,
+                      desktop_stream_fence_stop_request_source:
+                        "document_invalidation",
+                    },
+                  ],
+                  ["no stop request source", reported],
+                  [
+                    "an owner timeout",
+                    {
+                      ...cancelIpc,
+                      desktop_stream_fence_origin: "owner_timeout",
+                    },
+                  ],
+                ])(
+                  "never reads or keeps a fabricated pair beside %s",
+                  (_case, carried) => {
+                    const kept = sanitize({ ...coarse, ...carried });
+                    let reads = 0;
+                    const carrier = new Proxy(
+                      { ...carried, ...attemptPair },
+                      {
+                        getOwnPropertyDescriptor(target, key) {
+                          if (typeof key === "string" && key in attemptPair)
+                            reads++;
+                          return Reflect.getOwnPropertyDescriptor(target, key);
+                        },
+                      },
+                    );
+                    const final = settle({ ...fenced, streamFence: carrier });
+                    expect(fenceKeys(final!.properties)).toEqual(
+                      fenceKeys(kept),
+                    );
+                    expect(
+                      sanitize({ ...coarse, ...carried, ...attemptPair }),
+                    ).toEqual(kept);
+                    expect(reads).toBe(0);
+                  },
+                );
+
+                it.each(["run", "", null])(
+                  "never keeps the pair beside a %p Trigger run ID at capture",
+                  (triggerRunId) => {
+                    capture.mockClear();
+                    telemetry.start({
+                      connectionId: "connection",
+                      commandId: "command",
+                      triggerRunId: triggerRunId as string,
+                    })({
+                      ...fenced,
+                      streamFence: { ...cancelIpc, ...attemptPair },
+                    } as never);
+                    const final = capture.mock.calls.find(
+                      ([event]) =>
+                        event.event === "desktop_ack_command_settled",
+                    )?.[0];
+                    expect(final?.properties).toMatchObject(cancelIpc);
+                    expect(fenceKeys(final!.properties)).toEqual(
+                      Object.keys(cancelIpc),
+                    );
+                  },
+                );
+
+                // Each carrier is passed as built: a spread would drop or
+                // flatten the representation under test.
+                const carrier = () => ({
+                  ...coarse,
+                  ...cancelIpc,
+                  ...attemptPair,
+                });
+                it.each<[string, () => object]>([
+                  ["a valid", () => ({ ...carrier(), triggerRunId: "run" })],
+                  ["an empty", () => ({ ...carrier(), triggerRunId: "" })],
+                  [
+                    "a dropped non-enumerable",
+                    () =>
+                      Object.defineProperty(carrier(), "triggerRunId", {
+                        value: "run",
+                        enumerable: false,
+                      }),
+                  ],
+                  [
+                    "an inherited",
+                    () =>
+                      Object.assign(
+                        Object.create({ triggerRunId: "run" }),
+                        carrier(),
+                      ),
+                  ],
+                ])(
+                  "never keeps the pair beside %s Trigger run ID at before_send",
+                  (_case, properties) => {
+                    const kept = sanitizeDesktopAckEvent({
+                      event: "desktop_ack_command_settled",
+                      properties: properties() as Record<string, unknown>,
+                    }).properties!;
+                    expect(kept).toMatchObject(cancelIpc);
+                    expect(fenceKeys(kept)).toEqual(Object.keys(cancelIpc));
+                  },
+                );
+
+                it("never keeps the pair on an unacknowledged terminal", () => {
+                  const final = settle({
+                    ...fenced,
+                    outcome: "incomplete",
+                    reason: "deadline_exceeded",
+                    terminalAcknowledged: false,
+                    streamFence: { ...cancelIpc, ...attemptPair },
+                  });
+                  expect(fenceKeys(final!.properties)).toEqual(
+                    Object.keys(stopOrigin),
+                  );
+                  expect(
+                    fenceKeys(
+                      sanitize({
+                        ...coarse,
+                        terminalAcknowledged: false,
+                        ...cancelIpc,
+                        ...attemptPair,
+                      }),
+                    ),
+                  ).toEqual(Object.keys(stopOrigin));
+                });
+
+                it("drops the pair when reading it changes the stop request source", () => {
+                  let reads = 0;
+                  const carrier = new Proxy(
+                    { ...cancelIpc, ...attemptPair },
+                    {
+                      getOwnPropertyDescriptor(target, key) {
+                        if (
+                          key ===
+                            "desktop_stream_fence_renderer_cancel_attempt" &&
+                          reads++ === 0
+                        )
+                          (target as Record<string, unknown>)[
+                            "desktop_stream_fence_stop_request_source"
+                          ] = "application_exit";
+                        return Reflect.getOwnPropertyDescriptor(target, key);
+                      },
+                    },
+                  );
+                  const final = settle({ ...fenced, streamFence: carrier });
+                  expect(fenceKeys(final!.properties)).toEqual(
+                    Object.keys(cancelIpc),
+                  );
+                  expect(final!.properties).toMatchObject(cancelIpc);
+                });
+              });
             });
           });
 

@@ -1060,6 +1060,31 @@ const STREAM_FENCE_OWNER_PHASE_PROPERTIES = [
   "desktop_stream_fence_cancel_wait_owner_phase",
 ] as const satisfies readonly (keyof DesktopStreamFenceOwnerPhaseGroup)[];
 
+/** Which of the bridge's two `cancel_stream_command` IPC callers the renderer
+ * attempted for this invocation before its first accepted terminal: the relay
+ * `command_cancel` handler, the operation router's output overflow cleanup,
+ * both, or neither. An attempt is the renderer calling the IPC, never who
+ * initiated the stop or which call reached native code first. */
+const STREAM_FENCE_RENDERER_CANCEL_ATTEMPTS = [
+  "relay_command_cancel",
+  "output_overflow",
+  "both",
+  "unobserved",
+] as const;
+
+export type DesktopStreamFenceRendererCancelAttempt =
+  (typeof STREAM_FENCE_RENDERER_CANCEL_ATTEMPTS)[number];
+
+export interface DesktopStreamFenceRendererCancelDiagnostic {
+  readonly desktop_stream_fence_renderer_cancel_attempt_version: 1;
+  readonly desktop_stream_fence_renderer_cancel_attempt: DesktopStreamFenceRendererCancelAttempt;
+}
+
+const STREAM_FENCE_RENDERER_CANCEL_PROPERTIES = [
+  "desktop_stream_fence_renderer_cancel_attempt_version",
+  "desktop_stream_fence_renderer_cancel_attempt",
+] as const satisfies readonly (keyof DesktopStreamFenceRendererCancelDiagnostic)[];
+
 /** Every group: the final whitelist strips every one and re-adds only the
  * validated copy. */
 export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
@@ -1070,6 +1095,7 @@ export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
   ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
   ...STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES,
   ...STREAM_FENCE_OWNER_PHASE_PROPERTIES,
+  ...STREAM_FENCE_RENDERER_CANCEL_PROPERTIES,
 ]);
 
 /** A taskkill outcome, code and root report, each still to be validated. */
@@ -1481,6 +1507,77 @@ export function readDesktopStreamFenceDiagnostic(
     );
   } catch {
     return reported;
+  }
+}
+
+/** Only a validated `cancel_ipc` first stop request source, which only an
+ * acknowledged Windows Desktop terminal carries, of a command without a
+ * Trigger run ID can carry the renderer cancel attempt pair. */
+function carriesRendererCancelAttempt(
+  fence: DesktopStreamFenceDiagnostic | null,
+  runless: boolean,
+): fence is DesktopStreamFenceDiagnostic {
+  return (
+    runless && fence?.desktop_stream_fence_stop_request_source === "cancel_ipc"
+  );
+}
+
+/** The complete renderer cancel attempt pair for a listed attempt, or null
+ * unless it refines a validated runless `cancel_ipc` fence group. */
+export function desktopStreamFenceRendererCancelDiagnostic(
+  fence: DesktopStreamFenceDiagnostic | null,
+  runless: boolean,
+  attempt: unknown,
+): DesktopStreamFenceRendererCancelDiagnostic | null {
+  if (!carriesRendererCancelAttempt(fence, runless)) return null;
+  const known = STREAM_FENCE_RENDERER_CANCEL_ATTEMPTS.find(
+    (value) => value === attempt,
+  );
+  return known
+    ? Object.freeze({
+        desktop_stream_fence_renderer_cancel_attempt_version: 1,
+        desktop_stream_fence_renderer_cancel_attempt: known,
+      })
+    : null;
+}
+
+/** Read the renderer cancel attempt pair from the property bag that `fence`
+ * was validated from, or nothing at all. No property is read unless `fence`
+ * holds a `cancel_ipc` source and the command is runless. An invalid pair, or
+ * one whose read changed any validated fence property, drops alone. A getter
+ * never runs; a throwing proxy reads as nothing. */
+export function readDesktopStreamFenceRendererCancelDiagnostic(
+  source: unknown,
+  fence: DesktopStreamFenceDiagnostic | null,
+  runless: boolean,
+): DesktopStreamFenceRendererCancelDiagnostic | null {
+  if (
+    !carriesRendererCancelAttempt(fence, runless) ||
+    typeof source !== "object" ||
+    source === null
+  )
+    return null;
+  try {
+    const [version, attempt] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_RENDERER_CANCEL_PROPERTIES,
+    );
+    if (version !== 1) return null;
+    const fenceKeys = Object.keys(
+      fence,
+    ) as (keyof DesktopStreamFenceDiagnostic)[];
+    const rechecked = ownDataValuesOrUndefined(source, [
+      ...fenceKeys,
+      STREAM_FENCE_RENDERER_CANCEL_PROPERTIES[0],
+    ]);
+    if (
+      !fenceKeys.every((key, index) => rechecked[index] === fence[key]) ||
+      rechecked.at(-1) !== version
+    )
+      return null;
+    return desktopStreamFenceRendererCancelDiagnostic(fence, runless, attempt);
+  } catch {
+    return null;
   }
 }
 
