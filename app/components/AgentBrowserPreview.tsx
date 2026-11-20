@@ -26,6 +26,7 @@ import {
   previewActivationMask,
   previewCaptureUrl,
 } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
+import type { SidebarTerminalCommandSource } from "@/types/chat";
 import {
   readBrowserRelay,
   sendBrowserRelayInput,
@@ -112,6 +113,7 @@ export function AgentBrowserPreview({
   agentId,
   liveSelection,
   browserRequested = false,
+  browserRequestSource,
   takeoverRequest,
   onTakeoverRequestConsumed,
   runActive = false,
@@ -124,6 +126,8 @@ export function AgentBrowserPreview({
   agentId: string;
   liveSelection: boolean;
   browserRequested?: boolean;
+  /** Diagnostic-only producer tag of the text that set browserRequested. */
+  browserRequestSource?: SidebarTerminalCommandSource;
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
@@ -293,6 +297,15 @@ export function AgentBrowserPreview({
   useLayoutEffect(() => {
     activationMaskRef.current = activationMask;
   }, [activationMask]);
+  // Sent only beside the browserRequested bit (an absent tag is reported as
+  // unavailable); read at dispatch like the mask so it never restarts polling.
+  const textSourceRef = useRef({
+    source: browserRequestSource,
+    liveSelection,
+  });
+  useLayoutEffect(() => {
+    textSourceRef.current = { source: browserRequestSource, liveSelection };
+  }, [browserRequestSource, liveSelection]);
   // Read at dispatch like the mask, so a state change never restarts polling.
   const sessionStateRef = useRef(session?.state);
   useLayoutEffect(() => {
@@ -438,6 +451,7 @@ export function AgentBrowserPreview({
             activationMaskRef.current,
             process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT,
             deferWait,
+            textSourceRef.current,
           ),
           {
             cache: "no-store",

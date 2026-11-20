@@ -1,7 +1,9 @@
 /**
  * Optional, versioned self-report a preview client attaches to its capture GET:
  * which committed `showPreview` conditions were true at dispatch and which
- * public bundle commit it loaded. These describe the client's polling decision,
+ * public bundle commit it loaded, plus, only beside browserRequested, which
+ * terminal input field produced the display text and whether the selection
+ * followed the live edge. These describe the client's polling decision,
  * not physical browser execution or visible pixels. The server treats them as
  * untrusted diagnostics only; they never affect auth, session selection,
  * capture, caching or the response.
@@ -10,8 +12,46 @@
 export const PREVIEW_DIAGNOSTIC_VERSION_PARAM = "preview_diag_v";
 export const PREVIEW_ACTIVATION_PARAM = "preview_activation";
 export const PREVIEW_READER_PARAM = "preview_reader";
-/** The single String log attribute holding the canonical `[1,mask,reader]` tuple. */
+/**
+ * Optional add-on, valid only beside the browserRequested bit: `1.<source>.<1|0>`.
+ * Older servers ignore it; a missing or invalid value keeps the v1 base.
+ */
+export const PREVIEW_TEXT_SOURCE_PARAM = "preview_text_source";
+/**
+ * The single String log attribute holding the canonical `[1,mask,reader]`
+ * tuple. A valid text-source add-on is appended as a fourth element,
+ * `[1,source,liveSelection]`; positions 0-2 never change, so v1 readers that
+ * read those positions are unaffected.
+ */
 export const PREVIEW_CLIENT_CONTEXT_KEY = "preview_client_context";
+
+/**
+ * The selected terminal's producer tag (`SidebarTerminal.commandSource`) for
+ * the text that set browserRequested: its command (shell or legacy), the brief
+ * an empty command fell back to, the brief an interactive action shows, or
+ * `unavailable` when the producer chose a label or set no tag. Provenance
+ * only, never the text itself.
+ */
+export const PREVIEW_TEXT_SOURCES = [
+  "command",
+  "brief",
+  "interactive_brief",
+  "unavailable",
+] as const;
+export type PreviewTextSource = (typeof PREVIEW_TEXT_SOURCES)[number];
+
+/** Closed 8-value domain: canonical query value → canonical tuple element. */
+const TEXT_SOURCE_ADD_ONS = new Map<string, string>(
+  PREVIEW_TEXT_SOURCES.flatMap((source) =>
+    [true, false].map(
+      (live) =>
+        [`1.${source}.${live ? 1 : 0}`, `[1,"${source}",${live}]`] as const,
+    ),
+  ),
+);
+const MAX_TEXT_SOURCE_LENGTH = Math.max(
+  ...[...TEXT_SOURCE_ADD_ONS.keys()].map((value) => value.length),
+);
 
 const UNKNOWN_READER = "unknown";
 // Leaves room for the logger's own prefix/common/correlation attributes under
@@ -89,7 +129,9 @@ export const PREVIEW_DEFER_WAIT_PARAM = "deferWait";
  * Build the capture GET URL. `fresh=1` keeps its existing name and value so
  * older servers read it unchanged; they ignore the additional optional keys.
  * The reader is the caller's loaded public build commit, or `unknown`.
- * `deferWait=1` is added only beside `fresh=1`.
+ * `deferWait=1` is added only beside `fresh=1`. The text-source add-on is sent
+ * only beside an encodable mask with the browserRequested bit; an unrecognized
+ * source is reported as `unavailable`, and a non-boolean selection omits it.
  */
 export function previewCaptureUrl(
   endpoint: string,
@@ -97,6 +139,7 @@ export function previewCaptureUrl(
   activationMask: number,
   loadedBuildCommit: unknown,
   deferWait = false,
+  textSource?: { source: unknown; liveSelection: unknown },
 ): string {
   const query = new URLSearchParams();
   if (fresh) query.set("fresh", "1");
@@ -108,6 +151,15 @@ export function previewCaptureUrl(
       PREVIEW_READER_PARAM,
       normalizeReader(loadedBuildCommit) ?? UNKNOWN_READER,
     );
+    const live = textSource?.liveSelection;
+    if ((activationMask & 1) === 1 && typeof live === "boolean") {
+      const source = PREVIEW_TEXT_SOURCES.includes(
+        textSource?.source as PreviewTextSource,
+      )
+        ? (textSource?.source as PreviewTextSource)
+        : "unavailable";
+      query.set(PREVIEW_TEXT_SOURCE_PARAM, `1.${source}.${live ? 1 : 0}`);
+    }
   }
   const search = query.toString();
   return search ? `${endpoint}?${search}` : endpoint;
@@ -129,10 +181,26 @@ function single(
     : undefined;
 }
 
+/** Exact canonical add-on element, or nothing; it never affects the base. */
+function textSourceAddOn(params: URLSearchParams): string | undefined {
+  try {
+    const value = single(
+      params,
+      PREVIEW_TEXT_SOURCE_PARAM,
+      MAX_TEXT_SOURCE_LENGTH,
+    );
+    return value === undefined ? undefined : TEXT_SOURCE_ADD_ONS.get(value);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Strictly decode the optional group into its canonical tuple, or nothing.
  * Absent, partial, duplicated, future-version or noncanonical input drops the
- * whole group. Unrelated query keys are never read.
+ * whole group. The text-source add-on is read only when the decoded mask has
+ * the browserRequested bit; any problem with it drops only the add-on.
+ * Unrelated query keys are never read.
  */
 export function parsePreviewClientContext(
   params: URLSearchParams,
@@ -148,7 +216,9 @@ export function parsePreviewClientContext(
     if (!isActivationMask(mask)) return undefined;
     const normalizedReader = normalizeReader(reader);
     if (normalizedReader === undefined) return undefined;
-    return `[1,${mask},"${normalizedReader}"]`;
+    const base = `1,${mask},"${normalizedReader}"`;
+    const addOn = (mask & 1) === 1 ? textSourceAddOn(params) : undefined;
+    return addOn === undefined ? `[${base}]` : `[${base},${addOn}]`;
   } catch {
     return undefined;
   }
