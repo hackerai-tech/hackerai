@@ -75,6 +75,16 @@ export const BROWSER_OPEN_INFO_FLAGS = [
   "help_and_version",
 ] as const;
 
+// Wire code sd1 is the index. That same plain OPEN's own AGENT_BROWSER_SOCKET_DIR
+// declaration, recorded only when its selected socket was missing at return:
+// exactly this root's managed directory, unset/empty, or any other value. Not the
+// value, where the CLI or daemon actually routed, or whether a daemon ran.
+export const BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS = [
+  "managed_directory",
+  "unset_or_empty",
+  "different_directory",
+] as const;
+
 // Wire code k1 is the index. The latest wrapped command's declared first verb
 // token category; not its execution, the daemon's active command or a cause.
 export const BROWSER_WRAPPER_COMMAND_CLASSES = [
@@ -159,6 +169,8 @@ let rootInfo;
 let socketsInfo;
 // Socket progress only: a queued write is not a daemon acknowledgement.
 let deadlinePhase = 'connecting';
+// Only a stream_status request whose selected socket lstat found no entry.
+let statusSocketMissing = false;
 /** Read only a bounded owned private file; never follow links or block on pipes. */
 function readReceipt(filename) {
   let fd;
@@ -377,6 +389,9 @@ function wrapperReceipt() {
       if (Number.isInteger(open.os1) && open.os1 >= 0 && open.os1 <= 4) result.os1 = open.os1;
       // That OPEN's declared help(1)/version(2) tokens; not its effective result.
       if (Number.isInteger(open.o1) && open.o1 >= 0 && open.o1 <= 3) result.o1 = open.o1;
+      // That plain OPEN's socket-directory declaration, beside this current missing socket only.
+      if (statusSocketMissing && open.os1 === 2 && open.o1 === 0 &&
+          Number.isInteger(open.sd1) && open.sd1 >= 0 && open.sd1 <= 2) result.sd1 = open.sd1;
       const declared = daemonVersionFile();
       if (declared) result.dv = declared;
     }
@@ -517,6 +532,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.sd1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.sd1;
     if (value?.s1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.s1;
     if (value?.l1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.l1;
     if (value?.o1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.o1;
@@ -619,6 +635,10 @@ try {
   if (precondition === 'socket_stat' && code === 'ENOENT' && sessionClosed())
     finish(0, { session_closed: 1 });
   else {
+    try {
+      statusSocketMissing = precondition === 'socket_stat' && code === 'ENOENT' &&
+        JSON.parse(payload)?.action === 'stream_status';
+    } catch {}
     const value = { diagnostic_reason: precondition };
     if (['root_stat', 'sockets_stat', 'socket_stat'].includes(precondition)) {
       value.diagnostic_error = code === 'ENOENT' ? 'missing' :

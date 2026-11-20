@@ -2160,6 +2160,117 @@ it.each([
   },
 );
 
+/** The status helper's missing-socket packet after a plain missing-socket OPEN. */
+const missingDirectoryPacket = (override: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    diagnostic_reason: "socket_stat",
+    diagnostic_error: "missing",
+    ...successfulSelectedOpen,
+    p1: [1, 0, 0],
+    os1: 2,
+    o1: 0,
+    sd1: 0,
+    private: "PRIVATE",
+    ...override,
+  });
+
+it.each([
+  [0, "managed_directory"],
+  [1, "unset_or_empty"],
+  [2, "different_directory"],
+])(
+  "projects the plain missing-socket OPEN's socket-directory code %j as one versioned field",
+  async (sd1, declaration) => {
+    const context = await observeDaemonFailure(
+      2,
+      missingDirectoryPacket({ sd1 }),
+    );
+    const { capture_open_socket_directory_v1: projected, ...existing } =
+      context;
+    expect(projected).toBe(declaration);
+    // Every existing field is unchanged beside the one new field.
+    expect(existing).toEqual(
+      await observeDaemonFailure(2, missingDirectoryPacket({ sd1: undefined })),
+    );
+    expect(existing).toMatchObject({
+      capture_stage: "stream_status",
+      capture_precondition_error: "missing",
+      capture_open_socket_return_status: "missing",
+      capture_open_info_flags: "none",
+      capture_daemon_pid_status: "missing",
+    });
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, Record<string, unknown>, number?]>([
+  ["an older writer", { sd1: undefined }],
+  ["an out-of-range code", { sd1: 3 }],
+  ["a negative code", { sd1: -1 }],
+  ["a fractional code", { sd1: 0.5 }],
+  ["a string code", { sd1: "0" }],
+  ["a tuple", { sd1: [1, 0] }],
+  ["a private value", { sd1: "PRIVATE" }],
+  ["an owned socket at return", { os1: 1 }],
+  ["an unmeasured socket at return", { os1: undefined }],
+  ["help tokens", { o1: 1 }],
+  ["unmeasured informational tokens", { o1: undefined }],
+  ["another session's OPEN", { open_session_matches: false }],
+  ["a failed OPEN", { open_exit: 1 }],
+  ["a STARTED OPEN", { open_phase: "started", open_exit: "none" }],
+  ["an unreadable status socket", { diagnostic_error: "permission" }],
+  ["a missing sockets directory", { diagnostic_reason: "sockets_stat" }],
+  ["a deadline exit", {}, 3],
+  ["a refused response", { r1: [1, 2] }, 5],
+])(
+  "omits the socket-directory field for %s",
+  async (_case, override, exitCode = 2) => {
+    const context = await observeDaemonFailure(
+      exitCode,
+      missingDirectoryPacket(override),
+    );
+    expect(context.capture_command_exit_code).toBe(exitCode);
+    expect(context).not.toHaveProperty("capture_open_socket_directory_v1");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it("omits the socket-directory field outside the stream_status stage", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 2,
+    stdout: missingDirectoryPacket(),
+    stderr: "PRIVATE",
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed).toHaveBeenCalledTimes(1);
+  const context = observed.mock.calls[0][0];
+  // The same packet's existing fields still project at this stage.
+  expect(context).toMatchObject({
+    capture_stage: "fresh_screenshot",
+    capture_open_socket_return_status: "missing",
+    capture_open_info_flags: "none",
+  });
+  expect(context).not.toHaveProperty("capture_open_socket_directory_v1");
+});
+
 it.each([
   [0, "wait"],
   [1, "snapshot"],

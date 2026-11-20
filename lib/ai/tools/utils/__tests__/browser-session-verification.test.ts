@@ -299,6 +299,119 @@ process.exit(Number(process.env.FAKE_CLI_EXIT || 0));
   }
 }
 
+// Also exported for a dependency-free Linux run: the real wrapper's OPEN receipt
+// read back by the real status helper at a missing selected socket.
+export function verifyBrowserOpenSocketDirectory() {
+  const root = mkdtempSync("/dev/shm/hackerai-browser-directory-");
+  rmSync(root, { recursive: true });
+  const bin = mkdtempSync("/tmp/hackerai-directory-cli-");
+  const sockets = `${root}/sockets`;
+  // A stand-in CLI that never creates a socket, as when a daemon routed elsewhere.
+  writeFileSync(
+    `${bin}/agent-browser`,
+    `#!${process.execPath}\nprocess.exit(Number(process.env.FAKE_CLI_EXIT || 0));\n`,
+    { mode: 0o700 },
+  );
+  const env = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    AGENT_BROWSER_SESSION: "default",
+    AGENT_BROWSER_SOCKET_DIR: sockets,
+    AGENT_BROWSER_CONFIG: `${root}/config.json`,
+    AGENT_BROWSER_NAMESPACE: undefined,
+    FAKE_CLI_EXIT: undefined,
+  };
+  const lifecycle = (action: "prepare" | "cleanup") => {
+    const result = spawnSync(
+      browserSessionCommand(action, root, Date.now() + 60_000, true),
+      { shell: true, env, encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const run = (
+    args: string[],
+    overrides: Record<string, string | undefined> = {},
+  ) =>
+    spawnSync(`${root.replace("/dev/shm/", "/tmp/")}/bin/agent-browser`, args, {
+      env: { ...env, ...overrides },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const status = () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        BROWSER_DAEMON_PROGRAM,
+        root,
+        "default",
+        JSON.stringify({ action: "stream_status" }),
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.status, 2, result.stderr);
+    assert.doesNotMatch(result.stdout, /PRIVATE|\/dev\/shm|\/tmp\//);
+    const packet = JSON.parse(result.stdout);
+    assert.equal(packet.diagnostic_reason, "socket_stat");
+    assert.equal(packet.diagnostic_error, "missing");
+    return packet;
+  };
+  const openReceipt = () => {
+    const file = `${root}/open-receipt.json`;
+    assert.equal(lstatSync(file).mode & 0o777, 0o600);
+    const text = readFileSync(file, "utf8");
+    assert.ok(Buffer.byteLength(text) <= 512);
+    assert.doesNotMatch(text, /PRIVATE|\/dev\/shm|\/tmp\/|sockets/);
+    return JSON.parse(text);
+  };
+  try {
+    lifecycle("prepare");
+    // Exact comparison only: an equivalent spelling is still another declaration.
+    const declared: [Record<string, string | undefined>, number][] = [
+      [{}, 0],
+      [{ AGENT_BROWSER_SOCKET_DIR: undefined }, 1],
+      [{ AGENT_BROWSER_SOCKET_DIR: "" }, 1],
+      [{ AGENT_BROWSER_SOCKET_DIR: "/tmp/PRIVATE-sockets" }, 2],
+      [{ AGENT_BROWSER_SOCKET_DIR: `${sockets}/` }, 2],
+    ];
+    for (const [overrides, code] of declared) {
+      assert.equal(run(["open", "about:blank"], overrides).status, 0);
+      const open = openReceipt();
+      assert.deepEqual(
+        [open.phase, open.exit, open.os1, open.o1, open.sd1],
+        ["completed", 0, 2, 0, code],
+        JSON.stringify(overrides),
+      );
+      assert.equal(Object.keys(open).at(-1), "sd1");
+      const packet = status();
+      assert.deepEqual([packet.os1, packet.o1, packet.sd1], [2, 0, code]);
+    }
+
+    // Not recorded beside informational tokens, a failed OPEN or an owned socket.
+    const omitted: [string[], Record<string, string | undefined>][] = [
+      [["open", "about:blank", "--help"], {}],
+      [["open", "about:blank"], { FAKE_CLI_EXIT: "1" }],
+    ];
+    for (const [args, overrides] of omitted) {
+      run(args, overrides);
+      assert.equal(openReceipt().sd1, undefined, JSON.stringify(args));
+      assert.equal(status().sd1, undefined);
+    }
+    const bound = spawnSync("python3", [
+      "-c",
+      "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])",
+      `${sockets}/default.sock`,
+    ]);
+    assert.equal(bound.status, 0, String(bound.stderr));
+    assert.equal(run(["open", "about:blank"]).status, 0);
+    assert.deepEqual([openReceipt().os1, openReceipt().sd1], [1, undefined]);
+    return { declared: declared.length, omitted: omitted.length + 1 };
+  } finally {
+    lifecycle("cleanup");
+    rmSync(bin, { recursive: true, force: true });
+  }
+}
+
 if (typeof it !== "undefined") {
   (process.platform === "linux" ? it : it.skip)(
     "resume verification rejects connection changes before and after the command",
@@ -310,6 +423,12 @@ if (typeof it !== "undefined") {
     "a verified close of the current selection is recognized until the next command",
     () => {
       verifyBrowserCloseProof();
+    },
+  );
+  (process.platform === "linux" ? it : it.skip)(
+    "a plain missing-socket OPEN's socket-directory declaration reaches the status helper",
+    () => {
+      verifyBrowserOpenSocketDirectory();
     },
   );
 }

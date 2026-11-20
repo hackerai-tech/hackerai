@@ -32,6 +32,7 @@ import {
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
   BROWSER_OPEN_INFO_FLAGS,
+  BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS,
   BROWSER_WRAPPER_COMMAND_CLASSES,
   BROWSER_WRAPPER_RESULTS,
   BROWSER_WRAPPER_RESULT_ELAPSED,
@@ -849,6 +850,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // its effective CLI result or daemon state. Absent means unmeasured, never none.
   capture_open_info_version?: 1;
   capture_open_info_flags?: (typeof BROWSER_OPEN_INFO_FLAGS)[number];
+  // Status exit2 socket_stat missing only, beside that matching OPEN's missing
+  // at-return socket and no informational tokens: its own AGENT_BROWSER_SOCKET_DIR
+  // declaration class. Never the value or effective routing; absent is unmeasured.
+  capture_open_socket_directory_v1?: (typeof BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS)[number];
   // The selected daemon's .version sidecar declaration beside that matching OPEN's
   // socket; not a verified daemon version, identity or health. Absent is unmeasured.
   capture_daemon_version_file_version?: 1;
@@ -1171,6 +1176,7 @@ export async function captureBrowserFrame(
         | "capture_open_socket_return_status"
         | "capture_open_info_version"
         | "capture_open_info_flags"
+        | "capture_open_socket_directory_v1"
         | "capture_daemon_version_file_version"
         | "capture_daemon_version_file_status"
         | "capture_daemon_version_file_major"
@@ -1470,6 +1476,21 @@ export async function captureBrowserFrame(
                 precondition.capture_open_info_flags =
                   BROWSER_OPEN_INFO_FLAGS[openInfo];
               }
+              const socketDirectory = parsed?.sd1;
+              if (
+                stage === "stream_status" &&
+                code === 2 &&
+                precondition.capture_precondition_reason === "socket_stat" &&
+                precondition.capture_precondition_error === "missing" &&
+                precondition.capture_open_socket_return_status === "missing" &&
+                precondition.capture_open_info_flags === "none" &&
+                Number.isInteger(socketDirectory) &&
+                socketDirectory >= 0 &&
+                socketDirectory <
+                  BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS.length
+              )
+                precondition.capture_open_socket_directory_v1 =
+                  BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS[socketDirectory];
               const daemonVersion = parsed?.dv;
               if (
                 precondition.capture_open_receipt_status === "recorded" &&

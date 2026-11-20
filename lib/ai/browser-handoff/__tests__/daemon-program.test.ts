@@ -21,6 +21,7 @@ function expectPacketBudgets(text: string) {
     o1: _openInfo,
     l1: _wrapperResult,
     s1: _screenshotRefusal,
+    sd1: _socketDirectory,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -1601,6 +1602,104 @@ it.each<[string, Record<string, unknown>, boolean]>([
     expect(value.os1).toBe(selected ? 2 : undefined);
   },
 );
+
+/** A status request whose selected socket is absent after a plain missing-socket OPEN. */
+const missingDirectory = (
+  open: Record<string, unknown> = {},
+  options: Parameters<typeof daemon>[0] = {},
+) =>
+  daemon({
+    ...missingSocket,
+    receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, os1: 2, o1: 0, sd1: 2, ...open },
+    ...options,
+  });
+
+it.each([0, 1, 2])(
+  "forwards the plain missing-socket OPEN's socket-directory code %s at a missing status socket",
+  (code) => {
+    const d = missingDirectory({ sd1: code });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    const { sd1, ...existing } = JSON.parse(text);
+    expect(sd1).toBe(code);
+    // Identical to an older writer's packet apart from the one new code.
+    expect(existing).toEqual(
+      JSON.parse(missingDirectory({ sd1: undefined }).output.mock.calls[0][0]),
+    );
+    expect(existing).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      os1: 2,
+      o1: 0,
+    });
+    expectPacketBudgets(text);
+    expect(text).not.toMatch(/PRIVATE|\/dev\/shm|default|\.sock/);
+  },
+);
+
+it.each<[string, Record<string, unknown>, Parameters<typeof daemon>[0]]>([
+  ["an older writer", { sd1: undefined }, {}],
+  ["an out-of-range code", { sd1: 3 }, {}],
+  ["a negative code", { sd1: -1 }, {}],
+  ["a fractional code", { sd1: 0.5 }, {}],
+  ["a string code", { sd1: "0" }, {}],
+  ["null", { sd1: null }, {}],
+  ["a private value", { sd1: "/PRIVATE/sockets" }, {}],
+  ["an owned socket at return", { os1: 1 }, {}],
+  ["an unreadable socket at return", { os1: 4 }, {}],
+  ["help tokens", { o1: 1 }, {}],
+  ["an older informational writer", { o1: undefined }, {}],
+  ["a STARTED OPEN", { phase: "started", exit: null }, {}],
+  ["a failed OPEN", { exit: 37 }, {}],
+  ["another session's OPEN", { session_key: "a".repeat(64) }, {}],
+  ["a screenshot request", {}, { request: { action: "screenshot" } }],
+  ["a viewport request", {}, { action: "viewport" }],
+  ["an unreadable status socket", {}, { missingCode: "EACCES" }],
+  [
+    "a missing sockets directory",
+    {},
+    { missingPath: directory + "/sockets", missingCode: "ENOENT" },
+  ],
+])(
+  "omits the socket-directory code for %s without changing the failure",
+  (_case, open, options) => {
+    const d = missingDirectory(open, options);
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toHaveProperty("diagnostic_reason");
+    expect(value).not.toHaveProperty("sd1");
+    expect(JSON.stringify(value)).not.toContain("PRIVATE");
+  },
+);
+
+it("drops the socket-directory code first, before o1 or any existing field, at the544 cap", () => {
+  // Every other optional selected-OPEN code is present beside the new one.
+  const near = (sd1?: number, chargedBytes?: number) =>
+    missingDirectory(
+      { sd1, idle_env_version: 1, idle_env: "unparsed" },
+      {
+        chargedBytes,
+        pidFile: "314159",
+        processVisibility: "same_uid",
+        cliReceipt: [1, 1, 999999999],
+        versionFile: "999.999.999",
+      },
+    ).output.mock.calls[0][0] as string;
+  const complete = near(2);
+  expectPacketBudgets(complete);
+  expect(JSON.parse(complete)).toMatchObject({
+    sd1: 2,
+    os1: 2,
+    o1: 0,
+    dv: [1, 1, 999999999],
+  });
+  // One byte over the cap drops only sd1; every existing field remains.
+  const justOver = near(2, 545 - Buffer.byteLength(complete));
+  expect(JSON.parse(justOver)).toEqual(JSON.parse(near()));
+});
 
 /** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
 const maximalOpenSocket = (started: boolean, os1?: number, exit = 999) => {
