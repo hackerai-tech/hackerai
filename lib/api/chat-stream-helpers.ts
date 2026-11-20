@@ -85,6 +85,12 @@ import {
   getProviderStatusCode,
 } from "@/lib/utils/error-utils";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+import {
+  CONTEXT_USAGE_PART_TYPE,
+  isContextUsagePart,
+  type ContextPressureSnapshot,
+} from "@/lib/chat/context-pressure";
+import { AGENT_LONG_HEARTBEAT_PART_TYPE } from "@/lib/chat/agent-long-heartbeat";
 
 /**
  * Check if messages contain file attachments
@@ -509,7 +515,9 @@ export async function runSummarizationStep(options: {
 
 /**
  * Tracks summarization state and handles inserting the summarization badge
- * into message parts at the correct position during save.
+ * into message parts at the correct position during save. It also carries the
+ * current provider attempt's display-only context snapshot to the response
+ * being saved.
  */
 export class SummarizationTracker {
   hasSummarized = false;
@@ -517,6 +525,8 @@ export class SummarizationTracker {
     part: UIMessagePart<any, any>;
     atStep: number;
   }> = [];
+  private contextPressure:
+    { id: string; data: ContextPressureSnapshot } | undefined;
 
   /**
    * @param onCompactionRecorded Called synchronously with this tracker's
@@ -529,6 +539,19 @@ export class SummarizationTracker {
 
   get summarizationCount(): number {
     return this.records.length;
+  }
+
+  /** Each valid measurement replaces the last; only the latest is saved. */
+  recordContextPressure(snapshot: ContextPressureSnapshot, id: string): void {
+    this.contextPressure = { id, data: { ...snapshot } };
+  }
+
+  /**
+   * A new provider attempt saves a new response. It must not inherit the
+   * previous attempt's snapshot, which belongs to that response.
+   */
+  clearContextPressure(): void {
+    this.contextPressure = undefined;
   }
 
   /**
@@ -570,13 +593,46 @@ export class SummarizationTracker {
 
   /**
    * Insert summarization parts into an assistant message at the correct
-   * position (before the step-start for the step where summarization happened).
-   * Returns the original message unchanged if no summarization occurred.
+   * position (before the step-start for the step where summarization happened)
+   * and replace any streamed context snapshot with this attempt's latest one.
+   * Returns the original message unchanged when neither applies.
    */
   processMessageForSave<T extends { role: string; parts: any[] }>(
     message: T,
   ): T {
-    if (message.role !== "assistant" || this.records.length === 0) {
+    if (message.role !== "assistant") return message;
+    const response = withoutContextUsageParts(message);
+    const saved = this.withSummarizationParts(response);
+    // A diagnostics snapshot never makes a response without its own content
+    // eligible for persistence.
+    return response.parts?.some(
+      (part) => part?.type !== AGENT_LONG_HEARTBEAT_PART_TYPE,
+    )
+      ? this.withContextPressure(saved)
+      : saved;
+  }
+
+  /** Appends exactly one tracked snapshot. */
+  private withContextPressure<T extends { role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (!this.contextPressure) return message;
+    return {
+      ...message,
+      parts: [
+        ...message.parts,
+        {
+          type: CONTEXT_USAGE_PART_TYPE,
+          ...this.contextPressure,
+        },
+      ],
+    };
+  }
+
+  private withSummarizationParts<T extends { role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (this.records.length === 0) {
       return message;
     }
     const parts = [...message.parts];
@@ -600,6 +656,15 @@ export class SummarizationTracker {
     return { ...message, parts };
   }
 }
+
+/** Streamed snapshots are replaced by the tracker's value for this response. */
+const withoutContextUsageParts = <T extends { parts: any[] }>(message: T): T =>
+  message.parts?.some(isContextUsagePart)
+    ? {
+        ...message,
+        parts: message.parts.filter((part) => !isContextUsagePart(part)),
+      }
+    : message;
 
 export type AgentCompactionTallyOutcome =
   "recorded" | "unchanged" | "stale" | "not_found" | "deleting";

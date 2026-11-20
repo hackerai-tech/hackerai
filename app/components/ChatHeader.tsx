@@ -18,12 +18,6 @@ import { ShareDialog } from "./ShareDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import { formatTaskTitle } from "@/app/utils/task-ui-copy";
-import { useContextDetailsPreference } from "@/app/hooks/useContextDetailsPreference";
-import {
-  ChatContextDetails,
-  hasAgentContext,
-  type ContextDetailsChat,
-} from "./ChatContextDetails";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -31,11 +25,11 @@ interface ChatHeaderProps {
   chatTitle?: string | null;
   id?: string;
   chatData?:
-    | (ContextDetailsChat & {
+    | {
         title?: string;
         branched_from_chat_id?: string;
         share_id?: string;
-      })
+      }
     | null
     | undefined;
   chatSidebarOpen?: boolean;
@@ -67,7 +61,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   const router = useRouter();
   const isMobile = useIsMobile();
   const [showShareDialog, setShowShareDialog] = useState(false);
-  const [showContextDetails] = useContextDetailsPreference();
   const taskTitle = chatTitle ? formatTaskTitle(chatTitle) : chatTitle;
 
   // Show sidebar toggle for logged-in users
@@ -279,14 +272,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              {showContextDetails &&
-                isExistingChat &&
-                !isChatNotFound &&
-                hasAgentContext(chatData) && (
-                  <ChatContextDetails
-                    completedCompactions={chatData?.agent_compaction_count}
-                  />
-                )}
               {/* Share button stays in the desktop layout so title loading does not shift it. */}
               <button
                 aria-label="Share"

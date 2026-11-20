@@ -7680,3 +7680,96 @@ test("local loss preserves a manual stop reason through model abort and finish",
   });
   expect(state.streamFinishReason).toBe("local-connection-lost");
 });
+
+describe("context pressure snapshot", () => {
+  const threshold = getSummarizationThresholdTokens(MAX_TOKENS_PAID);
+  const createMeasuredStream = async (
+    mode: "agent" | "ask",
+    { recordFails = false } = {},
+  ) => {
+    const writer = { write: jest.fn() };
+    const recorded: unknown[] = [];
+    const tracker = {
+      hasSummarized: false,
+      summarizationCount: 0,
+      recordContextPressure: (snapshot: unknown) => {
+        if (recordFails) throw new Error("diagnostics unavailable");
+        recorded.push(snapshot);
+      },
+      clearContextPressure: () => recorded.push("cleared"),
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: MAX_TOKENS_PAID,
+    });
+    const context = createTestStreamContext({
+      mode,
+      writer,
+      summarizationTracker: tracker,
+      usageTracker: {
+        accumulateStep: jest.fn(() => 0),
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: () => 0,
+      },
+    }) as any;
+    const start = async () =>
+      (await createAgentStream("test-model", context, state)) as any;
+    const finishStep = (stream: any, inputTokens: unknown) =>
+      stream.onStepFinish({
+        usage: { inputTokens, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+        toolCalls: [],
+        toolResults: [],
+      });
+    const snapshotWrites = () =>
+      writer.write.mock.calls
+        .map(([chunk]) => chunk)
+        .filter((chunk) => chunk.type === "data-context-usage");
+    return { start, finishStep, recorded, snapshotWrites, context };
+  };
+
+  it("reports provider input against the active threshold for Agent only", async () => {
+    const agent = await createMeasuredStream("agent");
+    const stream = await agent.start();
+    await agent.finishStep(stream, 120_000);
+    // Malformed and missing reports never fabricate zero or replace it.
+    for (const invalid of [undefined, -1, 1.5, Number.NaN, 0]) {
+      await agent.finishStep(stream, invalid);
+    }
+    const measured = {
+      usedTokens: 120_000,
+      compactionThresholdTokens: threshold,
+    };
+    expect(agent.snapshotWrites()).toEqual([
+      { type: "data-context-usage", id: "context-usage-0", data: measured },
+    ]);
+    expect(agent.recorded).toEqual(["cleared", measured]);
+
+    // A replacement stream starts unmeasured before its own first step.
+    const replacement = await agent.start();
+    expect(agent.recorded.at(-1)).toBe("cleared");
+    await agent.finishStep(replacement, 130_000);
+    expect(agent.recorded.at(-1)).toEqual({
+      usedTokens: 130_000,
+      compactionThresholdTokens: threshold,
+    });
+    await agent.finishStep(replacement, 140_000);
+    const [originalReport, firstReplacement, secondReplacement] =
+      agent.snapshotWrites();
+    expect(firstReplacement.id).not.toBe(originalReport.id);
+    expect(secondReplacement.id).toBe(firstReplacement.id);
+
+    const ask = await createMeasuredStream("ask");
+    await ask.finishStep(await ask.start(), 120_000);
+    expect(ask.snapshotWrites()).toEqual([]);
+    expect(ask.recorded).toEqual(["cleared"]);
+  });
+
+  it("never disrupts the step when the tracker cannot record", async () => {
+    const agent = await createMeasuredStream("agent", { recordFails: true });
+    const stream = await agent.start();
+    await expect(agent.finishStep(stream, 120_000)).resolves.toBeUndefined();
+    expect(agent.snapshotWrites()).toEqual([]);
+    expect(agent.context.abortController.signal.aborted).toBe(false);
+  });
+});

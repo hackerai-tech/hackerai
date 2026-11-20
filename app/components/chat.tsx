@@ -100,6 +100,12 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
+import {
+  CONTEXT_USAGE_PART_TYPE,
+  selectLatestContextPressure,
+} from "@/lib/chat/context-pressure";
+import { useContextDetailsPreference } from "@/app/hooks/useContextDetailsPreference";
+import { hasAgentContext, type ContextMeterData } from "./ChatContextDetails";
 import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/agent-partial-save-snapshot";
 import { toast } from "sonner";
 import {
@@ -1377,6 +1383,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
         return;
       }
+      // A context snapshot replaces itself in its response's parts. It is
+      // display diagnostics, neither Agent progress nor shared stream data.
+      if (dataPart.type === CONTEXT_USAGE_PART_TYPE) return;
       agentLongHasVisibleProgressRef.current = true;
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
@@ -2930,6 +2939,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     });
   const canResolveApprovalPresentation =
     !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
+  const [showContextUsage] = useContextDetailsPreference();
+  const latestContextPressure = useMemo(
+    () => (showContextUsage ? selectLatestContextPressure(messages) : null),
+    [messages, showContextUsage],
+  );
+  // Only this chat's loaded record and messages; never a chat in transition.
+  const contextMeter: ContextMeterData | undefined =
+    showContextUsage &&
+    isExistingChat &&
+    hasMessages &&
+    !isChatNotFound &&
+    chatDataForCurrentChat &&
+    (latestContextPressure || hasAgentContext(chatDataForCurrentChat))
+      ? {
+          chatId,
+          snapshot: latestContextPressure,
+          completedCompactions: chatDataForCurrentChat.agent_compaction_count,
+        }
+      : undefined;
 
   useEffect(() => {
     if (!isExistingChat || canResolveApprovalPresentation) {
@@ -3299,6 +3327,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     hasMessages={hasMessages}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    contextMeter={contextMeter}
                     sendDisabledReason={
                       pendingUserWait ? undefined : computerSendDisabledReason
                     }

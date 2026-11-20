@@ -232,6 +232,75 @@ describe("SummarizationTracker", () => {
     expect(tracker.summarizationCount).toBe(1);
     expect(usageTracker.summarizationInputTokens).toBe(100);
   });
+
+  it("saves only this attempt's latest context snapshot on the response", () => {
+    const tracker = new SummarizationTracker();
+    tracker.recordSummarization(1, undefined, makeUsageTracker() as any);
+    const snapshotPart = (usedTokens: number) => ({
+      type: "data-context-usage",
+      id: "context-usage-0",
+      data: { usedTokens, compactionThresholdTokens: 200_000 },
+    });
+    const response = {
+      role: "assistant",
+      parts: [
+        { type: "step-start" },
+        { type: "text", text: "step 0" },
+        // Streamed in place by the first step; must not move the badge.
+        snapshotPart(90_000),
+        { type: "step-start" },
+        { type: "text", text: "step 1" },
+      ],
+    };
+
+    tracker.recordContextPressure(
+      { usedTokens: 124_000, compactionThresholdTokens: 200_000 },
+      "context-usage-0",
+    );
+    const saved = tracker.processMessageForSave(response);
+    expect(saved.parts.map((part) => part.type)).toEqual([
+      "step-start",
+      "text",
+      "data-summarization",
+      "step-start",
+      "text",
+      "data-context-usage",
+    ]);
+    expect(saved.parts.at(-1)).toEqual(snapshotPart(124_000));
+
+    // A diagnostics-only response gains no snapshot; without a compaction
+    // badge it stays empty, so callers skip persisting it.
+    expect(
+      tracker
+        .processMessageForSave({
+          role: "assistant",
+          parts: [snapshotPart(124_000)],
+        })
+        .parts.map((part) => part.type),
+    ).toEqual(["data-summarization"]);
+    const measuredOnly = new SummarizationTracker();
+    measuredOnly.recordContextPressure(
+      { usedTokens: 124_000, compactionThresholdTokens: 200_000 },
+      "context-usage-0",
+    );
+    expect(
+      measuredOnly.processMessageForSave({
+        role: "assistant",
+        parts: [snapshotPart(124_000)],
+      }).parts,
+    ).toEqual([]);
+
+    // A replacement attempt that has not measured cannot inherit the value.
+    tracker.clearContextPressure();
+    expect(
+      tracker
+        .processMessageForSave({
+          role: "assistant",
+          parts: [{ type: "text", text: "retry" }, snapshotPart(124_000)],
+        })
+        .parts.map((part) => part.type),
+    ).toEqual(["data-summarization", "text"]);
+  });
 });
 
 describe("createAgentCompactionReporter", () => {

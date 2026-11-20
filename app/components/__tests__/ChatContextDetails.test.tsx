@@ -13,36 +13,11 @@ import {
   CONTEXT_DETAILS_STORAGE_KEY,
   useContextDetailsPreference,
 } from "@/app/hooks/useContextDetailsPreference";
-
-jest.mock("@/app/contexts/GlobalState", () => ({
-  useGlobalState: () => ({
-    toggleChatSidebar: jest.fn(),
-    subscription: "pro",
-    isCheckingProPlan: false,
-    initializeNewChat: jest.fn(),
-    closeSidebar: jest.fn(),
-    setChatSidebarOpen: jest.fn(),
-  }),
-}));
-jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push: jest.fn() }),
-}));
-jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
-jest.mock("@/app/components/ShareDialog", () => ({ ShareDialog: () => null }));
-jest.mock("@/app/hooks/usePricingDialog", () => ({
-  redirectToPricing: jest.fn(),
-}));
-jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
-jest.mock("@/lib/analytics/client", () => ({
-  captureUpgradeCtaImpression: jest.fn(),
-}));
-
-// Loaded after the mocks above so the header uses them.
-const ChatHeader = (
-  require("@/app/components/ChatHeader") as typeof import("@/app/components/ChatHeader")
-).default;
-const { ChatContextDetails } =
-  require("@/app/components/ChatContextDetails") as typeof import("@/app/components/ChatContextDetails");
+import { ChatContextDetails } from "@/app/components/ChatContextDetails";
+import {
+  getContextPressurePercent,
+  selectLatestContextPressure,
+} from "@/lib/chat/context-pressure";
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -56,51 +31,44 @@ beforeAll(() => {
   });
 });
 
-const renderHeader = (
-  chatData: Parameters<typeof ChatHeader>[0]["chatData"],
-  { hasMessages = true }: { hasMessages?: boolean } = {},
-) =>
-  render(
-    <ChatHeader
-      hasMessages={hasMessages}
-      hasActiveChat={hasMessages}
-      isExistingChat={hasMessages}
-      chatTitle="Recon staging.example.test"
-      id="chat-1"
-      chatData={chatData}
-    />,
-  );
+const trigger = () => screen.getByTestId("context-details-trigger");
 
-const trigger = () => screen.queryByRole("button", { name: "Context details" });
+describe("selectLatestContextPressure", () => {
+  const usage = (data: unknown) => ({
+    type: "data-context-usage",
+    id: "context-usage",
+    data,
+  });
+  const assistant = (...parts: unknown[]) => ({ role: "assistant", parts });
 
-describe("Context details in the chat header", () => {
-  beforeEach(() => window.localStorage.clear());
-
-  it("stays hidden until enabled, then appears only for Agent chats", () => {
-    const agentChat = { default_model_slug: "agent" as const };
-    const expectHidden = (view: ReturnType<typeof renderHeader>) => {
-      // Assert while mounted; after unmount every query is trivially empty.
-      expect(screen.getByText("Share")).toBeInTheDocument();
-      expect(trigger()).not.toBeInTheDocument();
-      view.unmount();
+  it("reads the latest measured request and never reinterprets legacy or invalid parts", () => {
+    const measured = {
+      usedTokens: 357_000,
+      compactionThresholdTokens: 475_000,
     };
-    expectHidden(renderHeader(agentChat));
+    // A response that has not measured yet keeps the previous measurement.
+    expect(
+      selectLatestContextPressure([
+        assistant({ type: "text", text: "Earlier" }, usage(measured)),
+        assistant({ type: "text", text: "Working" }),
+      ]),
+    ).toEqual(measured);
+    expect(getContextPressurePercent(measured)).toBe(75);
 
-    window.localStorage.setItem(CONTEXT_DETAILS_STORAGE_KEY, "true");
-    expectHidden(renderHeader({ default_model_slug: "ask" }));
-    const emptyChat = renderHeader(agentChat, { hasMessages: false });
-    expect(trigger()).not.toBeInTheDocument();
-    emptyChat.unmount();
-
-    for (const chat of [
-      agentChat,
-      { active_trigger_run_id: "run-1" },
-      { agent_compaction_count: 0 },
-    ]) {
-      const view = renderHeader(chat);
-      expect(trigger()).toBeInTheDocument();
-      view.unmount();
-    }
+    expect(
+      selectLatestContextPressure([
+        assistant(
+          // Legacy capacity snapshots are not where compaction happens.
+          usage({ usedTokens: 50_000, maxTokens: 128_000 }),
+          usage({ usedTokens: 0, compactionThresholdTokens: 200_000 }),
+          usage({ usedTokens: 1.5, compactionThresholdTokens: 200_000 }),
+          usage({ usedTokens: "10", compactionThresholdTokens: 200_000 }),
+          usage({ usedTokens: 10, compactionThresholdTokens: 0 }),
+          usage(null),
+        ),
+        { role: "user", parts: [usage(measured)] },
+      ]),
+    ).toBeNull();
   });
 });
 
@@ -109,6 +77,7 @@ describe("useContextDetailsPreference", () => {
 
   it("keeps this tab's choice when saving fails but reading still works", () => {
     const { result } = renderHook(() => useContextDetailsPreference());
+    expect(result.current[0]).toBe(false);
     const setItem = jest
       .spyOn(Storage.prototype, "setItem")
       .mockImplementation(() => {
@@ -136,44 +105,66 @@ describe("useContextDetailsPreference", () => {
 });
 
 describe("ChatContextDetails", () => {
-  it("opens from the keyboard and shows a recorded zero with its scope", async () => {
+  const summary = "Context: 62% of compaction threshold, 124k / 200k tokens";
+
+  it("previews on keyboard focus and opens measured details with Enter", async () => {
     const user = userEvent.setup();
     const { rerender } = render(
-      <ChatContextDetails completedCompactions={0} />,
+      <ChatContextDetails
+        snapshot={{ usedTokens: 124_000, compactionThresholdTokens: 200_000 }}
+        completedCompactions={2}
+      />,
     );
 
     await user.tab();
     expect(trigger()).toHaveFocus();
+    expect(trigger()).toHaveAccessibleName(summary);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(summary);
+
     await user.keyboard("{Enter}");
-
     const details = screen.getByRole("dialog", { name: "Agent context" });
-    expect(details).toHaveTextContent("This chat");
-    expect(details).toHaveTextContent("Completed compactions0");
-    expect(details).toHaveTextContent(
-      "Includes compactions recorded since tracking began.",
-    );
-    expect(details).not.toHaveTextContent("Unavailable");
-
-    // A later turn updates the reactive count in place.
-    rerender(<ChatContextDetails completedCompactions={2} />);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(details).toHaveTextContent("Last measured input");
+    expect(details).toHaveTextContent("62%");
+    expect(details).toHaveTextContent("124k / 200k tokens");
+    expect(details).toHaveTextContent("About 76k tokens before compaction");
     expect(details).toHaveTextContent("Completed compactions2");
+
+    // A later step replaces the measurement in place.
+    rerender(
+      <ChatContextDetails
+        snapshot={{ usedTokens: 210_000, compactionThresholdTokens: 200_000 }}
+        completedCompactions={2}
+      />,
+    );
+    // Text stays honest above the threshold; only the ring fill is capped.
+    expect(details).toHaveTextContent("105%");
+    expect(details).toHaveTextContent("210k / 200k tokens");
+    expect(screen.getByTestId("context-meter-ring")).toHaveAttribute(
+      "data-fill",
+      "1.00",
+    );
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(trigger()).toHaveFocus();
   });
 
-  it("opens by tap and never reads an unrecorded count as zero", async () => {
+  it("opens by tap without inventing a percentage or a zero count", async () => {
     const user = userEvent.setup();
-    render(<ChatContextDetails completedCompactions={undefined} />);
+    render(<ChatContextDetails snapshot={null} />);
 
-    await user.click(trigger()!);
+    expect(trigger()).toHaveAccessibleName("Context: not measured yet");
+    expect(screen.getByTestId("context-meter-ring")).toHaveAttribute(
+      "data-fill",
+      "unmeasured",
+    );
+    await user.click(trigger());
 
     const details = screen.getByRole("dialog", { name: "Agent context" });
+    expect(details).toHaveTextContent("Not measured yet");
     expect(details).toHaveTextContent("Completed compactionsUnavailable");
-    expect(details).toHaveTextContent(
-      "No compaction count has been recorded for this chat.",
-    );
+    expect(details).not.toHaveTextContent("%");
     expect(details).not.toHaveTextContent("0");
   });
 });

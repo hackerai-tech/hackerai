@@ -180,13 +180,13 @@ const PersonalizationTab = ({
       <div className="flex items-start justify-between gap-4 pb-3">
         <div className="min-w-0">
           <label htmlFor="show-context-details" className="font-medium">
-            Show context details
+            Show context usage
           </label>
           <p
             id="show-context-details-description"
             className="mt-1 text-sm text-muted-foreground"
           >
-            Show completed Agent compactions in the chat header on this device.
+            Show Agent context usage beside the model picker on this device.
           </p>
         </div>
         <Switch
