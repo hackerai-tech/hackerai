@@ -2422,18 +2422,34 @@ const waitDaemon = (options: DaemonOptions = {}, owned: OwnedState = {}) =>
     owned,
   );
 
-it("yields a fresh status request to a verified same-session WAIT with only the helper literal", () => {
-  const d = waitDaemon();
-  expect(d.exit.mock.calls).toEqual([[0]]);
-  // Never queued behind the WAIT that holds the daemon state lock.
-  expect(d.connect).not.toHaveBeenCalled();
-  expect(d.output.mock.calls).toEqual([[BROWSER_DAEMON_WAIT_DEFERRED]]);
-  // Exact wrapper incarnation and the daemon's own listeners were both checked.
-  expect(d.openReceipt).toHaveBeenCalledWith("/proc/271828/stat", 256 | 2048);
-  expect(d.openDescriptors.mock.calls).toEqual([["/proc/314159/fd"]]);
-});
+/** A fresh preview's screenshot after its status already answered. */
+const deferScreenshot = {
+  action: "screenshot",
+  path: directory + "/preview.jpg",
+  format: "jpeg",
+  quality: 65,
+  defer_wait: true,
+};
 
-it.each<[string, DaemonOptions, OwnedState]>([
+it.each([
+  ["status request", deferRequest],
+  // The reproduced gap: a WAIT that started after status already answered.
+  ["screenshot", deferScreenshot],
+])(
+  "yields a fresh %s to a verified same-session WAIT with only the helper literal",
+  (_case, request) => {
+    const d = waitDaemon({ request });
+    expect(d.exit.mock.calls).toEqual([[0]]);
+    // Never queued behind the WAIT that holds the daemon state lock.
+    expect(d.connect).not.toHaveBeenCalled();
+    expect(d.output.mock.calls).toEqual([[BROWSER_DAEMON_WAIT_DEFERRED]]);
+    // Exact wrapper incarnation and the daemon's own listeners were both checked.
+    expect(d.openReceipt).toHaveBeenCalledWith("/proc/271828/stat", 256 | 2048);
+    expect(d.openDescriptors.mock.calls).toEqual([["/proc/314159/fd"]]);
+  },
+);
+
+const declinedWaitCases: [string, DaemonOptions, OwnedState][] = [
   ["no wrapper receipt exists", { receipt: undefined }, {}],
   [
     "the WAIT belongs to another session",
@@ -2474,20 +2490,14 @@ it.each<[string, DaemonOptions, OwnedState]>([
     { fds: { "9": "socket:[5151]" } },
   ],
   ["the recorded port is stale", {}, { stream: "9225" }],
-  [
-    "the opt-in is a string",
-    { request: { ...deferRequest, defer_wait: "true" } },
-    {},
-  ],
-  [
-    "the opt-in is numeric",
-    { request: { ...deferRequest, defer_wait: 1 } },
-    {},
-  ],
-])(
-  "sends the original strict status request, never the owned port, when %s",
+  ["the opt-in is a string", { request: { defer_wait: "true" } }, {}],
+  ["the opt-in is numeric", { request: { defer_wait: 1 } }, {}],
+];
+
+it.each(declinedWaitCases)(
+  "sends the original strict request without the internal flag when %s",
   (_case, options, owned) => {
-    const strict = (request: Record<string, unknown>) => {
+    const observe = (request: Record<string, unknown>) => {
       const d = waitDaemon({ ...options, request }, owned);
       expect(d.exit).not.toHaveBeenCalled();
       expect(d.connect.mock.calls).toEqual([[selectedSocket]]);
@@ -2496,13 +2506,16 @@ it.each<[string, DaemonOptions, OwnedState]>([
       expect(d.exit.mock.calls).toEqual([[3]]);
       return [d.socket.write.mock.calls, d.output.mock.calls[0][0]];
     };
-    const [writes, text] = strict(options.request ?? deferRequest);
-    // Byte-identical to a fresh request that never opted in: the flag is internal.
-    expect(writes).toEqual([
-      ['{"action":"stream_status","id":"hackerai-preview"}\n'],
-    ]);
-    expect(text).toBe(strict({ action: "stream_status" })[1]);
-    expect(text).not.toContain("wait_deferred");
+
+    for (const request of [deferRequest, deferScreenshot]) {
+      const { defer_wait: _flag, ...unopted } = request;
+      const [wire, output] = observe({ ...request, ...options.request });
+      expect(wire).toEqual([
+        [JSON.stringify({ ...unopted, id: "hackerai-preview" }) + "\n"],
+      ]);
+      expect(output).toBe(observe(unopted)[1]);
+      expect(output).not.toContain("wait_deferred");
+    }
   },
 );
 
@@ -2523,36 +2536,44 @@ it("passes a strict daemon reply through unchanged after a declined deferral", (
   expect(JSON.parse(text)).toEqual(response);
 });
 
+const { defer_wait: _waitFlag, ...unoptedScreenshot } = deferScreenshot;
+
 it.each<Record<string, unknown>>([
   { action: "stream_status", defer_wait: true, owned_port: true },
+  { ...deferScreenshot, owned_port: true },
+  unoptedScreenshot,
   {
-    action: "screenshot",
-    path: directory + "/preview.jpg",
-    format: "jpeg",
-    quality: 65,
+    action: "viewport",
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
     defer_wait: true,
   },
-])("never defers outside a fresh status request: %j", (request) => {
-  const d = waitDaemon({ request });
-  expect(d.output.mock.calls.flat()).not.toContain(
-    BROWSER_DAEMON_WAIT_DEFERRED,
-  );
-  // The only other opt-in keeps its own listener shortcut; a screenshot is queued unchanged.
-  if (request.owned_port === true) {
-    expect(d.exit.mock.calls).toEqual([[0]]);
-    expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
-      id: "hackerai-preview",
-      success: true,
-      data: { port: 9223 },
-    });
-  } else {
-    d.socket.emit("connect");
-    const { defer_wait: _flag, ...wire } = request;
-    expect(d.socket.write.mock.calls).toEqual([
-      [JSON.stringify({ ...wire, id: "hackerai-preview" }) + "\n"],
-    ]);
-  }
-});
+])(
+  "never defers outside an opted-in fresh status or screenshot: %j",
+  (request) => {
+    const d = waitDaemon({ request });
+    expect(d.output.mock.calls.flat()).not.toContain(
+      BROWSER_DAEMON_WAIT_DEFERRED,
+    );
+    // A status opt-in keeps its own listener shortcut; anything else is queued unchanged.
+    if (request.action === "stream_status") {
+      expect(d.exit.mock.calls).toEqual([[0]]);
+      expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
+        id: "hackerai-preview",
+        success: true,
+        data: { port: 9223 },
+      });
+    } else {
+      expect(d.exit).not.toHaveBeenCalled();
+      d.socket.emit("connect");
+      const { defer_wait: _flag, owned_port: _port, ...wire } = request;
+      expect(d.socket.write.mock.calls).toEqual([
+        [JSON.stringify({ ...wire, id: "hackerai-preview" }) + "\n"],
+      ]);
+    }
+  },
+);
 
 const screenshotRequest = {
   action: "screenshot",

@@ -1176,6 +1176,7 @@ it.each([
       { deferDuringWait: true },
     );
     const requests = daemonRequests(sandbox.commands.run);
+    // The screenshot keeps the same opt-in; its helper declines without a WAIT.
     expect(requests).toEqual([
       { action: "stream_status", defer_wait: true },
       {
@@ -1183,6 +1184,7 @@ it.each([
         path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
         format: "jpeg",
         quality: 65,
+        defer_wait: true,
       },
     ]);
     expect(sandbox.commands.run.mock.calls[1][0]).toMatch(/ 1234 frame$/);
@@ -1220,6 +1222,123 @@ it("treats the deferral literal as an ordinary invalid status reply without the 
     ],
   ]);
 });
+
+/** The fixture with one fresh-screenshot helper outcome after a successful status. */
+function screenshotFixture(outcome: () => Promise<unknown>) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"screenshot"') ? outcome() : run(command),
+    ),
+  );
+  return sandbox;
+}
+
+it("defers an opted-in fresh screenshot when a WAIT starts after status succeeded", async () => {
+  const sandbox = screenshotFixture(async () => ({
+    exitCode: 0,
+    stdout: BROWSER_DAEMON_WAIT_DEFERRED,
+  }));
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    { deferDuringWait: true, recognizeClosed: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  // Status answered, then the screenshot yielded: no failure context.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_wait: true, recognize_closed: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+      defer_wait: true,
+    },
+  ]);
+  // The helper sent no screenshot: no fresh data I/O or cleanup call.
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.read).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["an unnegotiated capture", false, BROWSER_DAEMON_WAIT_DEFERRED],
+  [
+    "a daemon reply carrying the deferral key",
+    true,
+    JSON.stringify({ id: "hackerai-preview", success: true, wait_deferred: 1 }),
+  ],
+])(
+  "continues the fresh screenshot for %s",
+  async (_case, deferDuringWait, stdout) => {
+    const sandbox = screenshotFixture(async () => ({ exitCode: 0, stdout }));
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      jest.fn(),
+      { deferDuringWait },
+    );
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(
+      daemonRequests(sandbox.commands.run).every(
+        (request) => "defer_wait" in request === deferDuringWait,
+      ),
+    ).toBe(true);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([
+  [
+    "a returned nonzero result",
+    async () => ({ exitCode: 3, stdout: BROWSER_DAEMON_WAIT_DEFERRED }),
+  ],
+  [
+    "an SDK exit rejection",
+    async () => {
+      throw new CommandExitError({
+        exitCode: 3,
+        stderr: "",
+        stdout: BROWSER_DAEMON_WAIT_DEFERRED,
+      });
+    },
+  ],
+])(
+  "keeps the strict screenshot failure and cleanup for the literal on %s",
+  async (_case, outcome) => {
+    const sandbox = screenshotFixture(outcome);
+    const observe = jest.fn();
+    const error = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { deferDuringWait: true },
+    ).catch((caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(BrowserPreviewRefreshDeferred);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "fresh_screenshot",
+    });
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
 
 it.each([
   ["a cached view", false, undefined],

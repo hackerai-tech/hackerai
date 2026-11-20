@@ -649,13 +649,14 @@ try {
     JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
-  // Upstream runs WAIT under its daemon state lock, so a queued fresh status
-  // request would reach the deadline. A fresh passive preview may yield only to
-  // the selected session's exact still-running WAIT wrapper incarnation on a
-  // daemon that provably holds its own listeners; any doubt sends the original
-  // strict request, never the owned-port shortcut.
+  // Upstream runs WAIT under its daemon state lock, so a queued fresh status or
+  // screenshot request would reach the deadline; a WAIT can start after status
+  // already answered. A fresh passive preview may yield only to the selected
+  // session's exact still-running WAIT wrapper incarnation on a daemon that
+  // provably holds its own listeners; any doubt sends the original strict
+  // request, never the owned-port shortcut.
   const deferred = deferWait === true && ownedPort === undefined &&
-    request.action === 'stream_status' && activeWait() &&
+    ['stream_status', 'screenshot'].includes(request.action) && activeWait() &&
     ownedStreamPort(root, sockets, address) > 0;
   // A non-fresh preview may skip the serialized daemon queue only with listener proof.
   const port = !deferred && ownedPort === true && request.action === 'stream_status' ?
@@ -727,9 +728,10 @@ try {
 `;
 
 /**
- * The helper's exact exit-0 output when a defer_wait status request yielded to
- * the selected session's verified active WAIT. A daemon reply always includes
- * its own id and success, so it can never equal this literal.
+ * The helper's exact exit-0 output when a defer_wait status or screenshot
+ * request yielded to the selected session's verified active WAIT without any
+ * daemon traffic. A daemon reply always includes its own id and success, so it
+ * can never equal this literal.
  */
 export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
 
@@ -749,7 +751,14 @@ type BrowserDaemonRequest =
   // defer_wait lets a fresh passive preview yield to a verified active WAIT;
   // the helper strips it and sends this same strict request otherwise.
   | { action: "stream_status"; defer_wait: true; recognize_closed?: true }
-  | { action: "screenshot"; path: string; format: "jpeg"; quality: 65 }
+  // defer_wait has the same meaning for a fresh passive preview's screenshot.
+  | {
+      action: "screenshot";
+      path: string;
+      format: "jpeg";
+      quality: 65;
+      defer_wait?: true;
+    }
   | {
       action: "viewport";
       width: number;
