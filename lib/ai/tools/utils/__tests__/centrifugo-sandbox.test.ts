@@ -8921,6 +8921,175 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    describe("curl progress marker", () => {
+      const bodyObserved =
+        "hackerai_curl_progress_v1 n=0.004000 c=0.031000 a=0.120000 h=200 b=21 r=0.000000\n";
+      const lookupOnly =
+        "hackerai_curl_progress_v1 n=0.004000 c=0.000000 a=0.000000 h=000 b=0 r=0.000000\n";
+      const progressKeys = [
+        "attachment_download_curl_progress_version",
+        "attachment_download_curl_progress_state",
+        "attachment_download_curl_progress_milestone",
+      ];
+      const failingRun =
+        (results: Array<{ stdout: string; exitCode: number }>) =>
+        async (cmd: string) => {
+          const mount = gitBashMountResult(cmd);
+          if (mount) return mount;
+          if (cmd.includes("target_dir_exists"))
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          const next = results.shift()!;
+          return {
+            ...next,
+            stderr: `curl: (${next.exitCode}) private detail https://private.example/object`,
+          };
+        };
+      const download = async (sandbox: CentrifugoSandbox) => {
+        const failure = sandbox.files
+          .downloadFromUrl(
+            "https://private.example/object?signature=secret",
+            "/tmp/hackerai-upload/private.png",
+          )
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(5_000);
+        return (await failure) as Error;
+      };
+
+      it("adds one static write-out to the Windows Bash GET and ignores it on success", async () => {
+        const { sandbox, runs } = createWindowsBashSandbox();
+        const run = (sandbox as any).commands.run as jest.Mock;
+        const original = run.getMockImplementation()!;
+        run.mockImplementation(async (cmd: string, opts?: unknown) => {
+          const result = await original(cmd, opts);
+          return cmd.includes("curl -fsSL")
+            ? { ...result, stdout: bodyObserved }
+            : result;
+        });
+        await expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/image.png",
+            "/tmp/hackerai-upload/image.png",
+          ),
+        ).resolves.toBeUndefined();
+        expect(runs).toEqual([
+          "mkdir -p '/c/temp/hackerai-upload' && curl -fsSL --ssl-no-revoke --retry 3 --retry-delay 1 --retry-all-errors --retry-connrefused " +
+            "-w 'hackerai_curl_progress_v1 n=%{time_namelookup} c=%{time_connect} a=%{time_appconnect} h=%{http_code} b=%{size_download} r=%{time_redirect}' " +
+            "-o '/c/temp/hackerai-upload/image.png' 'https://example.com/image.png'",
+        ]);
+      });
+
+      it("reads only the terminal exit28 result and keeps the existing error", async () => {
+        const { sandbox } = createWindowsBashSandbox();
+        // Earlier attempts reached further; only the selected result counts.
+        const run = jest.fn(
+          failingRun([
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: lookupOnly, exitCode: 28 },
+          ]),
+        );
+        (sandbox as any).commands.run = run;
+        const error = await download(sandbox);
+
+        expect(
+          run.mock.calls.filter(([cmd]) => cmd.includes("curl -fsSL")),
+        ).toHaveLength(3);
+        const context = getAttachmentDownloadFailureContext(error);
+        expect(context).toMatchObject({
+          attachment_download_exit_code: 28,
+          attachment_download_timeout_hint: "unclassified",
+          attachment_download_attempt: 3,
+          attachment_download_curl_progress_version: 1,
+          attachment_download_curl_progress_state: "observed",
+          attachment_download_curl_progress_milestone: "name_lookup",
+        });
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|signature|0\.00|hackerai_curl|200/,
+        );
+
+        // Same failure without marker output: identical error, no inference.
+        const baseline = createWindowsBashSandbox().sandbox;
+        (baseline as any).commands.run = jest.fn(
+          failingRun([
+            { stdout: "", exitCode: 28 },
+            { stdout: "", exitCode: 28 },
+            { stdout: "", exitCode: 28 },
+          ]),
+        );
+        const baselineError = await download(baseline);
+        expect(error.message).toBe(baselineError.message);
+        expect(error.message).not.toContain("hackerai_curl");
+        expect(
+          getAttachmentDownloadFailureContext(baselineError),
+        ).toMatchObject({
+          attachment_download_curl_progress_state: "absent",
+          attachment_download_curl_progress_milestone: null,
+        });
+      });
+
+      it("omits progress when the terminal result is not exit28", async () => {
+        const { sandbox } = createWindowsBashSandbox();
+        (sandbox as any).commands.run = jest.fn(
+          failingRun([
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: bodyObserved, exitCode: 7 },
+            { stdout: bodyObserved, exitCode: 7 },
+          ]),
+        );
+        const context = getAttachmentDownloadFailureContext(
+          await download(sandbox),
+        );
+        expect(context).toMatchObject({ attachment_download_exit_code: 7 });
+        for (const key of progressKeys) expect(context).not.toHaveProperty(key);
+      });
+
+      it.each([
+        ["Windows cmd curl", "win32", "cmd", "curl"],
+        ["POSIX Bash curl", "linux", "bash", "curl"],
+        ["Windows Bash wget", "win32", "bash", "wget"],
+      ])(
+        "leaves %s commands and context unchanged",
+        async (_, platform, shell, client) => {
+          const sandbox = createSandbox({
+            osInfo: {
+              platform,
+              arch: "x86_64",
+              release: "1",
+              hostname: "HOST",
+            },
+          } as any);
+          (sandbox as any).shellKind = shell;
+          (sandbox as any).httpClient = client;
+          (sandbox as any).curlCaps = {
+            retryAllErrors: true,
+            retryConnrefused: true,
+            sslNoRevoke: true,
+          };
+          const run = jest.fn(
+            failingRun([
+              { stdout: bodyObserved, exitCode: 28 },
+              { stdout: bodyObserved, exitCode: 28 },
+              { stdout: bodyObserved, exitCode: 28 },
+            ]),
+          );
+          (sandbox as any).commands.run = run;
+          const context = getAttachmentDownloadFailureContext(
+            await download(sandbox),
+          );
+          expect(context).toMatchObject({ attachment_download_exit_code: 28 });
+          for (const key of progressKeys)
+            expect(context).not.toHaveProperty(key);
+          expect(
+            run.mock.calls.some(([cmd]) => cmd.includes("hackerai_curl")),
+          ).toBe(false);
+        },
+      );
+    });
+
     it.each([
       { client: "curl", exitCode: 26, desktop: true, platform: "windows" },
       { client: "wget", exitCode: 8, desktop: false, platform: "posix" },

@@ -1,4 +1,5 @@
 import {
+  CURL_PROGRESS_WRITE_OUT,
   recordAttachmentDownloadFailure,
   recordAttachmentDownloadBoundary,
   recordAttachmentCommandReceiver,
@@ -3444,6 +3445,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             ? `mkdir -p ${escapedDir} &&`
             : `(if not exist ${escapedDir} mkdir ${escapedDir}) &&`;
         let downloadPart: string;
+        // Windows Git Bash only: the body goes to -o, so stdout carries just
+        // this static marker, read only for a terminal curl exit 28.
+        const curlProgress =
+          httpClient === "curl" && useBash && this.isWindows();
         if (httpClient === "curl") {
           phase = "curl_capabilities";
           const caps = await this.detectCurlCaps(signal);
@@ -3455,6 +3460,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             "--retry-delay 1",
             caps.retryAllErrors ? "--retry-all-errors" : "",
             caps.retryConnrefused ? "--retry-connrefused" : "",
+            curlProgress ? `-w ${escapeValue(CURL_PROGRESS_WRITE_OUT)}` : "",
           ]
             .filter(Boolean)
             .join(" ");
@@ -3618,6 +3624,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 stderr: result.stderr,
                 directoryProbe,
                 clientSelection,
+                ...(curlProgress && { curlProgressStdout: result.stdout }),
               },
             );
           }
