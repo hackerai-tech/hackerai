@@ -288,7 +288,9 @@ export function sanitizeDesktopAckEvent<
     // alone. An acknowledged stop or owner timeout can carry cleanup.
     // A tree-only failure can add its Windows taskkill result. Only an
     // explicit stop with a validated not-found report can add its first
-    // request source. A cancellation-wait timeout can add its owner phase.
+    // request source; only an explicit stop's tree-only failure without any
+    // Windows property can add Darwin's stop source and final group probe.
+    // A cancellation-wait timeout can add its owner phase.
     // The acknowledgement that admits them is the same single snapshot that
     // is emitted: an inherited or accessor flag never admits them, is never
     // run and never survives the copy below.

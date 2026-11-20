@@ -82,6 +82,7 @@ import {
   type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
   type DesktopStreamFenceStopRequestSource,
+  type NativeStreamFenceDarwinStop,
   type NativeStreamFenceWindowsTaskkill,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -1582,7 +1583,9 @@ export class DesktopSandboxBridge {
     // `owner_stop_requested` origin's cleanup failure rides the same rejection
     // and latch, as does a `tree_unconfirmed` failure's Windows taskkill
     // receipt, its not-found exit code report's first stop request source,
-    // and a `cancel_wait_timeout` origin's owner phase.
+    // Darwin's own stop source and final group probe beside a
+    // `tree_unconfirmed` failure, and a `cancel_wait_timeout` origin's owner
+    // phase.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     // The same gate as the optional channels: only an identified owner's
@@ -1595,6 +1598,10 @@ export class DesktopSandboxBridge {
     // reports them.
     const streamFenceWindowsOffered =
       streamFenceOffered && this.nativePlatform === "windows";
+    // Darwin's own stop source and final group probe: offered only to
+    // Darwin Desktop, so no other platform ever reports them.
+    const streamFenceDarwinOffered =
+      streamFenceOffered && this.nativePlatform === "darwin";
     // Only that Windows offer's `cancel_ipc` source of a runless command can
     // report which renderer cancel IPC callers were attempted before this
     // invocation's first terminal; the first terminal closes it. Runless is
@@ -1632,6 +1639,7 @@ export class DesktopSandboxBridge {
       null;
     let streamFenceStopRequestSource: DesktopStreamFenceStopRequestSource | null =
       null;
+    let streamFenceDarwinStop: NativeStreamFenceDarwinStop | null = null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -1700,6 +1708,7 @@ export class DesktopSandboxBridge {
                 streamFenceWindowsTaskkill,
                 streamFenceOwnerPhase,
                 streamFenceStopRequestSource,
+                streamFenceDarwinStop,
               )
             : null;
         const rendererCancel =
@@ -2037,6 +2046,11 @@ export class DesktopSandboxBridge {
                 includeStreamFenceCancelWaitOwnerPhase: true,
                 includeStreamFenceStopRequestSource: true,
               }),
+              // Only with the origin and cleanup opt-ins, and only to Darwin
+              // Desktop. An older native app ignores it and keeps the cleanup.
+              ...(streamFenceDarwinOffered && {
+                includeStreamFenceDarwinStop: true,
+              }),
             },
             invocationTrace,
           );
@@ -2064,6 +2078,9 @@ export class DesktopSandboxBridge {
             : null;
           streamFenceStopRequestSource = streamFenceWindowsOffered
             ? (fenceRejection?.stopRequestSource ?? null)
+            : null;
+          streamFenceDarwinStop = streamFenceDarwinOffered
+            ? (fenceRejection?.darwinStop ?? null)
             : null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.

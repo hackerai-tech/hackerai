@@ -3471,6 +3471,508 @@ describe("stream fence origin", () => {
         });
       });
     });
+
+    describe("Darwin stop source and final group probe", () => {
+      const sources = [
+        "cancel_ipc",
+        "document_invalidation",
+        "application_exit",
+      ];
+      const probes = ["group_visible", "probe_denied", "probe_failed"];
+      const tree = { version: 1, failure: "tree_unconfirmed" };
+      const withDarwin = (
+        streamFenceDarwinStop: unknown,
+        streamFenceCleanup: unknown = tree,
+      ) => ({ ...sibling(streamFenceCleanup), streamFenceDarwinStop });
+      const treeParsed = {
+        message: STOP_UNCONFIRMED,
+        origin: "owner_stop_requested",
+        cleanupFailure: "tree_unconfirmed",
+      };
+      const treeGroups = { ...stopGroup, ...cleanupGroup };
+      const darwinGroup = (source: string, groupProbe: string) => ({
+        desktop_stream_fence_darwin_stop_version: 1,
+        desktop_stream_fence_darwin_stop_source: source,
+        desktop_stream_fence_darwin_stop_group_probe: groupProbe,
+      });
+      const visible = darwinGroup("cancel_ipc", "group_visible");
+      const build = (
+        darwinStop: { source: unknown; groupProbe: unknown } | null,
+        origin = "owner_stop_requested",
+        cleanupFailure: unknown = "tree_unconfirmed",
+        windowsTaskkill: Record<string, unknown> | null = null,
+      ) =>
+        desktopStreamFenceDiagnostic(
+          authorizedUnknown,
+          stopUnconfirmed,
+          origin,
+          cleanupFailure,
+          windowsTaskkill as never,
+          null,
+          null,
+          darwinStop,
+        );
+      const read = (source: unknown, acknowledged = true) =>
+        readDesktopStreamFenceDiagnostic(
+          source,
+          authorizedUnknown,
+          stopUnconfirmed,
+          acknowledged,
+        );
+
+      it.each(sources.flatMap((source) => probes.map((p) => [source, p])))(
+        "joins the %s source and %s probe to its tree_unconfirmed stop",
+        (source, groupProbe) => {
+          const parsed = parseNativeStreamFenceRejection(
+            withDarwin({ version: 1, source, groupProbe }),
+          );
+          expect(parsed).toEqual({
+            ...treeParsed,
+            darwinStop: { source, groupProbe },
+          });
+          expect(Object.isFrozen(parsed)).toBe(true);
+          expect(Object.isFrozen(parsed!.darwinStop)).toBe(true);
+          const diagnostic = desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            stopUnconfirmed,
+            parsed!.origin,
+            parsed!.cleanupFailure,
+            parsed!.windowsTaskkill,
+            parsed!.cancelWaitOwnerPhase,
+            parsed!.stopRequestSource,
+            parsed!.darwinStop,
+          );
+          expect(diagnostic).toEqual({
+            ...treeGroups,
+            ...darwinGroup(source, groupProbe),
+          });
+          expect(Object.isFrozen(diagnostic)).toBe(true);
+          // The property-bag reader keeps exactly the same groups.
+          expect(
+            read({ ...diagnostic, message: "PRIVATE", pid: 4242 }),
+          ).toEqual(diagnostic);
+        },
+      );
+
+      it("keeps an older native app's tree_unconfirmed cleanup without the sibling", () => {
+        const parsed = parseNativeStreamFenceRejection(sibling(tree));
+        expect(parsed).toEqual(treeParsed);
+        expect(build(parsed!.darwinStop ?? null)).toEqual(treeGroups);
+      });
+
+      it.each<[string, () => unknown]>([
+        [
+          "a human action",
+          () => ({
+            version: 1,
+            source: "user_clicked_stop",
+            groupProbe: "group_visible",
+          }),
+        ],
+        [
+          "an unlisted source",
+          () => ({
+            version: 1,
+            source: "PRIVATE",
+            groupProbe: "group_visible",
+          }),
+        ],
+        [
+          "an unlisted probe",
+          () => ({
+            version: 1,
+            source: "cancel_ipc",
+            groupProbe: "descendant_survived",
+          }),
+        ],
+        [
+          "a raw errno",
+          () => ({ version: 1, source: "cancel_ipc", groupProbe: 1 }),
+        ],
+        [
+          "an errno name",
+          () => ({ version: 1, source: "cancel_ipc", groupProbe: "EPERM" }),
+        ],
+        [
+          "an unsupported version",
+          () => ({
+            version: 2,
+            source: "cancel_ipc",
+            groupProbe: "group_visible",
+          }),
+        ],
+        ["a missing probe", () => ({ version: 1, source: "cancel_ipc" })],
+        [
+          "a missing source",
+          () => ({ version: 1, groupProbe: "group_visible" }),
+        ],
+        [
+          "an extra PID",
+          () => ({
+            version: 1,
+            source: "cancel_ipc",
+            groupProbe: "group_visible",
+            pid: 4242,
+          }),
+        ],
+        [
+          "an extra errno",
+          () => ({
+            version: 1,
+            source: "cancel_ipc",
+            groupProbe: "probe_failed",
+            errno: 22,
+          }),
+        ],
+        [
+          "an inherited receipt",
+          () =>
+            Object.create({
+              version: 1,
+              source: "cancel_ipc",
+              groupProbe: "group_visible",
+            }),
+        ],
+        [
+          "a probe accessor",
+          () =>
+            Object.defineProperty(
+              { version: 1, source: "cancel_ipc" },
+              "groupProbe",
+              {
+                enumerable: true,
+                get: fail,
+              },
+            ),
+        ],
+        [
+          "a throwing proxy",
+          () =>
+            new Proxy(
+              { version: 1, source: "cancel_ipc", groupProbe: "group_visible" },
+              { get: fail, getOwnPropertyDescriptor: fail, ownKeys: fail },
+            ),
+        ],
+        ["a bare string", () => "group_visible"],
+      ])(
+        "keeps the exact message, origin and cleanup beside %s",
+        (_case, receipt) => {
+          expect(
+            parseNativeStreamFenceRejection(withDarwin(receipt())),
+          ).toEqual(treeParsed);
+        },
+      );
+
+      it("never reads the sibling beside another leg, origin or any taskkill sibling", () => {
+        // [case, native rejection without the sibling, parsed]
+        const cases: [string, Record<string, unknown>, unknown][] = [
+          [
+            "a combined leg",
+            sibling({ version: 1, failure: "tree_and_leader_wait_timed_out" }),
+            {
+              ...treeParsed,
+              cleanupFailure: "tree_and_leader_wait_timed_out",
+            },
+          ],
+          [
+            "a leader-only leg",
+            sibling({ version: 1, failure: "leader_wait_failed" }),
+            { ...treeParsed, cleanupFailure: "leader_wait_failed" },
+          ],
+          [
+            "an owner timeout's tree-only leg",
+            sibling(tree, { version: 1, origin: "owner_timeout" }),
+            { ...treeParsed, origin: "owner_timeout" },
+          ],
+          [
+            "a cleanup sibling under another origin",
+            sibling(tree, { version: 1, origin: "owner_process_error" }),
+            { message: STOP_UNCONFIRMED, origin: "owner_process_error" },
+          ],
+          [
+            "a malformed cleanup",
+            sibling({ version: 2, failure: "tree_unconfirmed" }),
+            { message: STOP_UNCONFIRMED, origin: "owner_stop_requested" },
+          ],
+          [
+            "a valid Windows taskkill sibling",
+            {
+              ...sibling(tree),
+              streamFenceWindowsTaskkill: {
+                version: 1,
+                outcome: "output_error",
+              },
+            },
+            { ...treeParsed, windowsTaskkill: { outcome: "output_error" } },
+          ],
+          [
+            "an invalid Windows taskkill sibling",
+            { ...sibling(tree), streamFenceWindowsTaskkill: "PRIVATE" },
+            treeParsed,
+          ],
+        ];
+        for (const [label, native, parsed] of cases) {
+          const receipt = watched({
+            version: 1,
+            source: "cancel_ipc",
+            groupProbe: "group_visible",
+          });
+          expect([
+            label,
+            parseNativeStreamFenceRejection({
+              ...native,
+              streamFenceDarwinStop: receipt.proxy,
+            }),
+          ]).toEqual([label, parsed]);
+          expect([label, receipt.reads.count]).toEqual([label, 0]);
+        }
+        // Without its cleanup sibling, or beside any further key, the whole
+        // shape is rejected, as for every earlier sibling.
+        expect(
+          parseNativeStreamFenceRejection({
+            message: STOP_UNCONFIRMED,
+            streamFence: stop,
+            streamFenceDarwinStop: {
+              version: 1,
+              source: "cancel_ipc",
+              groupProbe: "group_visible",
+            },
+          }),
+        ).toBeNull();
+        expect(
+          parseNativeStreamFenceRejection({
+            ...withDarwin({
+              version: 1,
+              source: "cancel_ipc",
+              groupProbe: "group_visible",
+            }),
+            pid: 4242,
+          }),
+        ).toBeNull();
+      });
+
+      it("joins a listed pair only to an explicit stop's tree-only leg without a taskkill receipt", () => {
+        const listed = { source: "cancel_ipc", groupProbe: "group_visible" };
+        expect(build(listed)).toEqual({ ...treeGroups, ...visible });
+        for (const darwinStop of [
+          { source: "PRIVATE", groupProbe: "group_visible" },
+          { source: "cancel_ipc", groupProbe: "PRIVATE" },
+          { source: undefined, groupProbe: "group_visible" },
+          { source: "cancel_ipc", groupProbe: 1 },
+        ])
+          expect(build(darwinStop)).toEqual(treeGroups);
+        // Platform-exclusive: a taskkill argument, valid or not, wins alone.
+        expect(
+          build(listed, undefined, undefined, { outcome: "output_error" }),
+        ).toEqual({
+          ...treeGroups,
+          desktop_stream_fence_windows_taskkill_version: 1,
+          desktop_stream_fence_windows_taskkill_outcome: "output_error",
+        });
+        expect(
+          build(listed, undefined, undefined, { outcome: "PRIVATE" }),
+        ).toEqual(treeGroups);
+        for (const leg of [
+          "leader_wait_timed_out",
+          "leader_wait_failed",
+          "tree_and_leader_wait_timed_out",
+          "tree_and_leader_wait_failed",
+        ])
+          expect(build(listed, undefined, leg)).toEqual({
+            ...stopGroup,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: leg,
+          });
+        for (const origin of origins.filter(
+          (value) => value !== "owner_stop_requested",
+        ))
+          expect(build(listed, origin)).not.toHaveProperty(
+            "desktop_stream_fence_darwin_stop_version",
+          );
+        // Only the exact authorized fence rejection admits any group.
+        expect(
+          desktopStreamFenceDiagnostic(
+            authorizedUnknown,
+            null,
+            "owner_stop_requested",
+            "tree_unconfirmed",
+            null,
+            null,
+            null,
+            listed,
+          ),
+        ).toBeNull();
+      });
+
+      it("reads the group only beside an acknowledged stop's tree-only pairs without any taskkill group property", () => {
+        const pair = visible;
+        const windowsOnly: Record<string, unknown>[] = [
+          {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "output_error",
+          },
+          // Present but invalid still excludes it.
+          { desktop_stream_fence_windows_taskkill_version: 2 },
+          { desktop_stream_fence_windows_taskkill_outcome: "output_error" },
+          { desktop_stream_fence_windows_taskkill_exit_code: 128 },
+        ];
+        // [property bag, acknowledged, kept]
+        const cases: [Record<string, unknown>, boolean | undefined, unknown][] =
+          [
+            [{ ...treeGroups, ...pair }, true, { ...treeGroups, ...pair }],
+            [{ ...treeGroups, ...pair }, false, stopGroup],
+            [{ ...treeGroups, ...pair }, undefined, stopGroup],
+            ...windowsOnly.map(
+              (windows) =>
+                [
+                  { ...treeGroups, ...windows, ...pair },
+                  true,
+                  expect.not.objectContaining({
+                    desktop_stream_fence_darwin_stop_version: 1,
+                  }),
+                ] as [Record<string, unknown>, boolean, unknown],
+            ),
+            [
+              {
+                ...treeGroups,
+                desktop_stream_fence_origin: "owner_timeout",
+                ...pair,
+              },
+              true,
+              { ...treeGroups, desktop_stream_fence_origin: "owner_timeout" },
+            ],
+            [
+              {
+                ...treeGroups,
+                desktop_stream_fence_cleanup_failure:
+                  "tree_and_leader_wait_failed",
+                ...pair,
+              },
+              true,
+              {
+                ...treeGroups,
+                desktop_stream_fence_cleanup_failure:
+                  "tree_and_leader_wait_failed",
+              },
+            ],
+            [{ ...stopGroup, ...pair }, true, stopGroup],
+            [
+              {
+                ...treeGroups,
+                ...pair,
+                desktop_stream_fence_darwin_stop_version: 2,
+              },
+              true,
+              treeGroups,
+            ],
+            [
+              { ...treeGroups, ...darwinGroup("PRIVATE", "group_visible") },
+              true,
+              treeGroups,
+            ],
+            [
+              { ...treeGroups, ...darwinGroup("cancel_ipc", "EPERM") },
+              true,
+              treeGroups,
+            ],
+            [Object.assign(Object.create(pair), treeGroups), true, treeGroups],
+            // A Windows refinement without its taskkill group is never read or
+            // kept, so the projection is still never mixed.
+            [
+              {
+                ...treeGroups,
+                ...pair,
+                desktop_stream_fence_stop_request_source_version: 1,
+                desktop_stream_fence_stop_request_source: "cancel_ipc",
+                desktop_stream_fence_windows_taskkill_root_report_version: 1,
+                desktop_stream_fence_windows_taskkill_root_report:
+                  "unclassified",
+              },
+              true,
+              { ...treeGroups, ...pair },
+            ],
+          ];
+        // Called directly: a missing flag is the reader's own default.
+        for (const [source, acknowledged, kept] of cases)
+          expect(
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              acknowledged,
+            ),
+          ).toEqual(kept);
+        // Reading never runs an accessor; a throwing bag keeps the pairs.
+        let gets = 0;
+        const accessor = { ...treeGroups } as Record<string, unknown>;
+        for (const [key, value] of Object.entries(pair))
+          Object.defineProperty(accessor, key, {
+            enumerable: true,
+            get() {
+              gets++;
+              return value;
+            },
+          });
+        expect(read(accessor)).toEqual(treeGroups);
+        expect(gets).toBe(0);
+        expect(
+          read(
+            new Proxy(
+              { ...treeGroups, ...pair },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (typeof key === "string" && key in pair) fail();
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+          ),
+        ).toEqual(treeGroups);
+      });
+
+      it("joins the group only to the fence snapshot it validated", () => {
+        const changing = (change?: (target: Record<string, unknown>) => void) =>
+          new Proxy<Record<string, unknown>>(
+            { ...treeGroups, ...visible },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                const descriptor = Reflect.getOwnPropertyDescriptor(
+                  target,
+                  key,
+                );
+                if (key === "desktop_stream_fence_darwin_stop_group_probe")
+                  change?.(target);
+                return descriptor;
+              },
+            },
+          );
+        // A stable snapshot keeps the group.
+        expect(read(changing())).toEqual({ ...treeGroups, ...visible });
+        for (const change of [
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_origin = "owner_timeout";
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_cleanup_failure = "leader_wait_failed";
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_darwin_stop_version = 2;
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_darwin_stop_source =
+              "document_invalidation";
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_darwin_stop_group_probe =
+              "probe_denied";
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_windows_taskkill_version = 1;
+          },
+        ])
+          expect(read(changing(change))).toEqual(treeGroups);
+      });
+    });
   });
 
   describe("cancel wait owner phase", () => {

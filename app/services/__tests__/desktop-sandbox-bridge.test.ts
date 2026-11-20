@@ -12822,6 +12822,282 @@ describe("native authorization send receipt", () => {
           });
         });
       });
+
+      describe("Darwin stop source and final group probe", () => {
+        const tree = { version: 1, failure: "tree_unconfirmed" };
+        const treeGroup = {
+          ...stopGroup,
+          desktop_stream_fence_cleanup_version: 1,
+          desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+        };
+        // The opted-in shape: the tree_unconfirmed sibling beside the closed
+        // Darwin stop receipt, as Tauri delivers the command's JSON error.
+        const withDarwin = (
+          streamFenceDarwinStop: unknown,
+          cleanup: unknown = tree,
+        ) => ({ ...withCleanup(cleanup), streamFenceDarwinStop });
+        const visible = {
+          version: 1,
+          source: "cancel_ipc",
+          groupProbe: "group_visible",
+        };
+        const sanitized = (properties: Record<string, unknown>) =>
+          sanitizeDesktopAckEvent({
+            ...finals()[0],
+            properties: { ...properties },
+          });
+
+        it.each([
+          ["cancel_ipc", "group_visible"],
+          ["document_invalidation", "probe_denied"],
+          ["application_exit", "probe_failed"],
+        ])(
+          "offers Darwin Desktop the opt-in and joins the %s source and %s probe to its tree_unconfirmed stop",
+          async (source, groupProbe) => {
+            const cwd = "/Users/PRIVATE-CWD/project";
+            const { calls, replies } = await run(
+              () =>
+                Promise.reject(withDarwin({ version: 1, source, groupProbe })),
+              { version: "0.0.94", command: { cwd } },
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+              cmd: "execute_authorized_stream_command",
+              includeStreamFenceOrigin: true,
+              includeStreamFenceCleanup: true,
+              includeStreamFenceWindowsTaskkill: true,
+              includeStreamFenceWindowsTaskkillRootReport: true,
+              includeStreamFenceDarwinStop: true,
+            });
+            // Windows' own opt-ins are never offered to Darwin.
+            expect(calls[0]).not.toHaveProperty(
+              "includeStreamFenceStopRequestSource",
+            );
+            expect(calls[0]).not.toHaveProperty(
+              "includeStreamFenceCancelWaitOwnerPhase",
+            );
+            expect(Object.keys(calls[0].message as object)).not.toContain(
+              "includeStreamFenceDarwinStop",
+            );
+            // The product error is the exact original string, as one terminal.
+            expect(sequencedFrames(replies[0])).toEqual([
+              {
+                type: "error",
+                message: stopUnconfirmed,
+                commandId: "auth-send",
+                sequence: 0,
+                outputProtocol: "ack-v1",
+              },
+            ]);
+            const expected = {
+              ...treeGroup,
+              desktop_stream_fence_darwin_stop_version: 1,
+              desktop_stream_fence_darwin_stop_source: source,
+              desktop_stream_fence_darwin_stop_group_probe: groupProbe,
+            };
+            expect(finals()).toHaveLength(1);
+            const final = finals()[0];
+            expect(final.properties).toMatchObject({
+              outcome: "acknowledged",
+              terminalAcknowledged: true,
+              telemetry_sample_rate: 1,
+              desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+              ...expected,
+            });
+            expect(fenceKeys(final.properties)).toEqual(Object.keys(expected));
+            const enriched = sanitizeDesktopAckEvent({
+              ...final,
+              properties: {
+                ...final.properties,
+                $current_url: "PRIVATE",
+                cwd,
+                command: "PRIVATE COMMAND",
+                pid: 4242,
+              },
+              $set: { email: "PRIVATE" },
+            });
+            expect(enriched.properties).toMatchObject(expected);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain("4242");
+            expect(serialized).not.toContain(authorizationId);
+            expect(serialized).not.toContain(stopUnconfirmed);
+            expect(serialized).not.toContain("streamFence");
+          },
+        );
+
+        it.each(["windows", "linux"])(
+          "never offers %s Desktop the opt-in or keeps a group it never requested",
+          async (nativeOs) => {
+            const { calls } = await run(
+              () => Promise.reject(withDarwin(visible)),
+              { nativeOs },
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+              includeStreamFenceOrigin: true,
+              includeStreamFenceCleanup: true,
+            });
+            expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+            expect(finals()).toHaveLength(1);
+            const properties = finals()[0].properties;
+            expect(properties).toMatchObject(treeGroup);
+            expect(fenceKeys(properties)).toEqual(Object.keys(treeGroup));
+            const enriched = sanitized(properties);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(treeGroup),
+            );
+            expect(JSON.stringify([captures(), enriched])).not.toContain(
+              "darwin_stop",
+            );
+          },
+        );
+
+        // [case, native rejection, expected fence groups]
+        it.each<[string, () => unknown, Record<string, unknown>]>([
+          [
+            "an older native app's tree_unconfirmed cleanup alone",
+            () => withCleanup(tree),
+            treeGroup,
+          ],
+          [
+            "an extra PID",
+            () => withDarwin({ ...visible, pid: 4242 }),
+            treeGroup,
+          ],
+          [
+            "an extra errno",
+            () => withDarwin({ ...visible, errno: 1 }),
+            treeGroup,
+          ],
+          [
+            "an unlisted probe",
+            () => withDarwin({ ...visible, groupProbe: "PRIVATE" }),
+            treeGroup,
+          ],
+          [
+            "a human action",
+            () => withDarwin({ ...visible, source: "user_clicked_stop" }),
+            treeGroup,
+          ],
+          [
+            "an unsupported version",
+            () => withDarwin({ ...visible, version: 2 }),
+            treeGroup,
+          ],
+          [
+            "a probe getter",
+            () =>
+              withDarwin(
+                Object.defineProperty(
+                  { version: 1, source: "cancel_ipc" },
+                  "groupProbe",
+                  { enumerable: true, get: fail },
+                ),
+              ),
+            treeGroup,
+          ],
+          [
+            "a receipt beside a combined leg",
+            () =>
+              withDarwin(visible, {
+                version: 1,
+                failure: "tree_and_leader_wait_timed_out",
+              }),
+            {
+              ...stopGroup,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure:
+                "tree_and_leader_wait_timed_out",
+            },
+          ],
+          [
+            "a receipt beside a Windows taskkill receipt",
+            () => ({
+              ...withDarwin(visible),
+              streamFenceWindowsTaskkill: {
+                version: 1,
+                outcome: "output_error",
+              },
+            }),
+            {
+              ...treeGroup,
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "output_error",
+            },
+          ],
+        ])(
+          "keeps the exact message and every earlier group for %s on Darwin",
+          async (_case, native, expected) => {
+            const { calls, replies } = await run(() =>
+              Promise.reject(native()),
+            );
+            expect(calls[0]).toMatchObject({
+              includeStreamFenceDarwinStop: true,
+            });
+            expect(sequencedFrames(replies[0])).toEqual([
+              expect.objectContaining({
+                type: "error",
+                message: stopUnconfirmed,
+                sequence: 0,
+              }),
+            ]);
+            expect(finals()).toHaveLength(1);
+            const properties = finals()[0].properties;
+            expect(properties).toMatchObject(expected);
+            expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+            const enriched = sanitized(properties);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain("streamFence");
+            expect(serialized).not.toContain("darwin_stop");
+          },
+        );
+
+        it("never offers or unwraps it through the compatibility command", async () => {
+          const { calls } = await run(async (call) => {
+            if (call.cmd === "execute_authorized_stream_command")
+              throw "Command execute_authorized_stream_command not found";
+            return Promise.reject(withDarwin(visible));
+          });
+          expect(calls[0]).toMatchObject({
+            includeStreamFenceDarwinStop: true,
+          });
+          expect(calls[1]).not.toHaveProperty("includeStreamFenceDarwinStop");
+          expect(fenceKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("never offers it to a published legacy native app", async () => {
+          const { calls } = await run(
+            () => Promise.reject(withDarwin(visible)),
+            { version: "0.0.72" },
+          );
+          expect(calls.map((call) => call.cmd)).toEqual([
+            "execute_stream_command",
+          ]);
+          expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+          expect(fenceKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("never offers it without an identified analytics owner", async () => {
+          const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+          identity.mockReturnValue(null);
+          try {
+            const { calls } = await run(() => Promise.reject(stopUnconfirmed));
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+            expect(finals()).toHaveLength(0);
+          } finally {
+            identity.mockReturnValue("user-456");
+          }
+        });
+      });
     });
 
     describe("cancel wait owner phase", () => {

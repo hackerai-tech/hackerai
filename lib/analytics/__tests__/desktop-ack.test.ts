@@ -5467,6 +5467,202 @@ describe("invocation rejection message class", () => {
             });
           });
         });
+
+        describe("Darwin stop group", () => {
+          const treePairs = {
+            ...stopOrigin,
+            desktop_stream_fence_cleanup_version: 1,
+            desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+          } as const;
+          const darwin = (source: string, groupProbe: string) => ({
+            desktop_stream_fence_darwin_stop_version: 1,
+            desktop_stream_fence_darwin_stop_source: source,
+            desktop_stream_fence_darwin_stop_group_probe: groupProbe,
+          });
+          const visible = darwin("cancel_ipc", "group_visible");
+
+          it.each(
+            ["cancel_ipc", "document_invalidation", "application_exit"].flatMap(
+              (source) =>
+                ["group_visible", "probe_denied", "probe_failed"].map(
+                  (probe) => [source, probe] as const,
+                ),
+            ),
+          )(
+            "keeps the unsampled %s source and %s probe beside its tree_unconfirmed stop through capture and before_send",
+            (source, probe) => {
+              jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+              const expected = { ...treePairs, ...darwin(source, probe) };
+              const final = settle({
+                ...fenced,
+                // Private extras on the same carrier never survive the copy.
+                streamFence: {
+                  ...expected,
+                  pid: 4242,
+                  errno: 1,
+                  cwd: "/Users/PRIVATE",
+                },
+              });
+              expect(final?.properties).toMatchObject({
+                ...expected,
+                telemetry_sampled: false,
+                telemetry_sample_rate: 1,
+              });
+              expect(fenceKeys(final!.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const enriched = sanitize({
+                ...final!.properties,
+                pid: 4242,
+                errno: 1,
+                command: "PRIVATE",
+              });
+              expect(enriched).toMatchObject(expected);
+              expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+              expect(enriched).not.toHaveProperty("pid");
+              expect(enriched).not.toHaveProperty("errno");
+              expect(JSON.stringify([final, enriched])).not.toContain(
+                "PRIVATE",
+              );
+            },
+          );
+
+          it.each<[string, Record<string, unknown>]>([
+            [
+              "an unsupported version",
+              { ...visible, desktop_stream_fence_darwin_stop_version: 2 },
+            ],
+            [
+              "a missing version",
+              {
+                ...visible,
+                desktop_stream_fence_darwin_stop_version: undefined,
+              },
+            ],
+            [
+              "a human action",
+              {
+                ...visible,
+                desktop_stream_fence_darwin_stop_source: "user_clicked_stop",
+              },
+            ],
+            [
+              "a raw errno",
+              { ...visible, desktop_stream_fence_darwin_stop_group_probe: 1 },
+            ],
+            [
+              "an errno name",
+              {
+                ...visible,
+                desktop_stream_fence_darwin_stop_group_probe: "EPERM",
+              },
+            ],
+            [
+              "a missing probe",
+              {
+                ...visible,
+                desktop_stream_fence_darwin_stop_group_probe: undefined,
+              },
+            ],
+          ])("drops only the Darwin group for %s", (_case, carried) => {
+            const final = settle({
+              ...fenced,
+              streamFence: { ...treePairs, ...carried },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(treePairs),
+            );
+            expect(final?.properties).toMatchObject(treePairs);
+            expect(sanitize({ ...coarse, ...treePairs, ...carried })).toEqual({
+              ...coarse,
+              ...treePairs,
+            });
+          });
+
+          it.each<[string, Record<string, unknown>]>([
+            [
+              "another cleanup failure",
+              {
+                ...treePairs,
+                desktop_stream_fence_cleanup_failure:
+                  "tree_and_leader_wait_failed",
+              },
+            ],
+            [
+              "an owner timeout",
+              { ...treePairs, desktop_stream_fence_origin: "owner_timeout" },
+            ],
+            [
+              "a Windows taskkill group",
+              {
+                ...treePairs,
+                desktop_stream_fence_windows_taskkill_version: 1,
+                desktop_stream_fence_windows_taskkill_outcome: "output_error",
+              },
+            ],
+            [
+              "an invalid Windows taskkill version",
+              {
+                ...treePairs,
+                desktop_stream_fence_windows_taskkill_version: 2,
+              },
+            ],
+            [
+              "a Windows taskkill code alone",
+              {
+                ...treePairs,
+                desktop_stream_fence_windows_taskkill_exit_code: 128,
+              },
+            ],
+          ])(
+            "never reads or keeps the Darwin group beside %s",
+            (_case, carried) => {
+              const kept = sanitize({ ...coarse, ...carried });
+              expect(fenceKeys(kept)).not.toContain(
+                "desktop_stream_fence_darwin_stop_version",
+              );
+              let reads = 0;
+              const carrier = new Proxy(
+                { ...carried, ...visible },
+                {
+                  getOwnPropertyDescriptor(target, key) {
+                    if (typeof key === "string" && key in visible) reads++;
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                  },
+                },
+              );
+              const final = settle({ ...fenced, streamFence: carrier });
+              expect(fenceKeys(final!.properties)).toEqual(fenceKeys(kept));
+              expect(sanitize({ ...coarse, ...carried, ...visible })).toEqual(
+                kept,
+              );
+              expect(reads).toBe(0);
+            },
+          );
+
+          it("never keeps the group on an unacknowledged terminal", () => {
+            const final = settle({
+              ...fenced,
+              outcome: "incomplete",
+              reason: "deadline_exceeded",
+              terminalAcknowledged: false,
+              streamFence: { ...treePairs, ...visible },
+            });
+            expect(fenceKeys(final!.properties)).toEqual(
+              Object.keys(stopOrigin),
+            );
+            expect(
+              fenceKeys(
+                sanitize({
+                  ...coarse,
+                  terminalAcknowledged: false,
+                  ...treePairs,
+                  ...visible,
+                }),
+              ),
+            ).toEqual(Object.keys(stopOrigin));
+          });
+        });
       });
 
       describe("cancel wait owner phase", () => {
