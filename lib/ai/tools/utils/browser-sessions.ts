@@ -8,7 +8,10 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
-import { browserSessionCommand } from "./browser-session-program";
+import {
+  BROWSER_SESSION_ROOT_REMOVED,
+  browserSessionCommand,
+} from "./browser-session-program";
 import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -57,6 +60,50 @@ const diagnosticId = (value: string, secret: string) =>
   /^[A-Za-z0-9:_-]{1,128}$/.test(value) && (!secret || !value.includes(secret))
     ? value
     : "unknown";
+
+/** Only the complete constant line from a successful cleanup is evidence. */
+function observedRootRemoval(result: { stdout?: unknown }) {
+  try {
+    return result.stdout === `${BROWSER_SESSION_ROOT_REMOVED}\n`
+      ? ("observed" as const)
+      : ("unknown" as const);
+  } catch {
+    return "unknown" as const;
+  }
+}
+
+/**
+ * One snapshot per registered session after its existing close attempt. Times
+ * are worker clock bounds, not the sandbox deletion time; an acknowledged
+ * close does not prove a backend row existed. Never logs output or errors.
+ */
+function reportOwnerCleanup(
+  session: BrowserSession,
+  scope: BrowserHandoffScope,
+  observation: {
+    cleanup_requested_at: number;
+    cleanup_settled_at: number;
+    cleanup_result: "succeeded" | "failed";
+    owner_root_removal: "observed" | "unknown";
+    close_requested_at: number;
+    close_settled_at: number;
+    close_request: "acknowledged" | "rejected";
+  },
+) {
+  try {
+    console.info(
+      JSON.stringify({
+        event: "browser_session_owner_cleanup",
+        diagnostic_version: 1,
+        browser_session_id: diagnosticId(session.sessionId, scope.serviceKey),
+        trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
+        ...observation,
+      }),
+    );
+  } catch {
+    // Diagnostics cannot change cleanup, close or their reported failures.
+  }
+}
 
 // Convex HTTP reads can outlive Stop; detach the waiter without admitting work.
 function withCancellation<T>(
@@ -802,6 +849,9 @@ export class BrowserSessions {
         async (session) => {
           const { sandbox } = session;
           await session.ready.catch(() => undefined);
+          const cleanupRequestedAt = Date.now();
+          let cleanupResult: "succeeded" | "failed" = "failed";
+          let rootRemoval: "observed" | "unknown" = "unknown";
           try {
             const result = await sandbox.commands.run(
               browserSessionCommand(
@@ -813,18 +863,41 @@ export class BrowserSessions {
             );
             if (result.exitCode !== 0)
               throw new Error("Browser cleanup failed.");
+            cleanupResult = "succeeded";
+            rootRemoval = observedRootRemoval(result);
           } finally {
+            const cleanupSettledAt = Date.now();
             if (session.registered && this.handoffScope) {
-              await getConvexClient()
-                .mutation(api.browserHandoffs.closeForBackend, {
-                  serviceKey: this.handoffScope.serviceKey,
-                  sessionId: session.sessionId,
-                })
-                .catch(() => {
-                  console.warn(
-                    "[browser-sessions] viewer revocation unavailable",
+              const scope = this.handoffScope;
+              const closeRequestedAt = Date.now();
+              let closeRequest: "acknowledged" | "rejected" = "rejected";
+              try {
+                await getConvexClient()
+                  .mutation(api.browserHandoffs.closeForBackend, {
+                    serviceKey: scope.serviceKey,
+                    sessionId: session.sessionId,
+                  })
+                  .then(
+                    () => {
+                      closeRequest = "acknowledged";
+                    },
+                    () => {
+                      console.warn(
+                        "[browser-sessions] viewer revocation unavailable",
+                      );
+                    },
                   );
+              } finally {
+                reportOwnerCleanup(session, scope, {
+                  cleanup_requested_at: cleanupRequestedAt,
+                  cleanup_settled_at: cleanupSettledAt,
+                  cleanup_result: cleanupResult,
+                  owner_root_removal: rootRemoval,
+                  close_requested_at: closeRequestedAt,
+                  close_settled_at: Date.now(),
+                  close_request: closeRequest,
                 });
+              }
             }
           }
         },
