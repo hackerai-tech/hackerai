@@ -177,9 +177,15 @@ function splitShellWords(command: string): string[] {
 type AgentBrowserInvocation = {
   action?: string;
   usedViaNpx: boolean;
-  // Matches the CLI wrapper's version class: exactly `--version` or `-V`.
-  versionCheckOnly: boolean;
+  /**
+   * Exactly `--version`/`-V`, `--help`/`-h`, or `open --help`/`open -h`. These
+   * print and exit without starting a browser; any other shape stays a request.
+   */
+  informationalOnly: boolean;
 };
+
+const AGENT_BROWSER_VERSION_FLAGS = new Set(["--version", "-V"]);
+const AGENT_BROWSER_HELP_FLAGS = new Set(["--help", "-h"]);
 
 function parseAgentBrowserInvocation(
   command: string,
@@ -199,11 +205,17 @@ function parseAgentBrowserInvocation(
 
   if (!AGENT_BROWSER_COMMAND_RE.test(words[index] ?? "")) return null;
   const action = words[index + 1];
+  const argumentCount = words.length - index - 1;
   return {
     action,
     usedViaNpx,
-    versionCheckOnly:
-      words.length === index + 2 && (action === "--version" || action === "-V"),
+    informationalOnly:
+      (argumentCount === 1 &&
+        (AGENT_BROWSER_VERSION_FLAGS.has(action) ||
+          AGENT_BROWSER_HELP_FLAGS.has(action))) ||
+      (argumentCount === 2 &&
+        action === "open" &&
+        AGENT_BROWSER_HELP_FLAGS.has(words[index + 2])),
   };
 }
 
@@ -292,14 +304,14 @@ export function detectAgentBrowserUsage(
 }
 
 /**
- * A standalone version check does not request a Browser Preview.
+ * A standalone version or help check does not request a Browser Preview.
  * Other recognized browser invocations retain their existing behavior.
  */
 export function requestsAgentBrowserPreview(command: string): boolean {
   return splitShellCommands(command, { stripComments: true }).some(
     (shellCommand) => {
       const invocation = parseAgentBrowserInvocation(shellCommand);
-      return !!invocation && !invocation.versionCheckOnly;
+      return !!invocation && !invocation.informationalOnly;
     },
   );
 }
