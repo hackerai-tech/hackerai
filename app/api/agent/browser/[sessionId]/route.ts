@@ -407,6 +407,7 @@ export const GET = withServiceQueryRecovery(async function GET(
         },
         {
           recognizeClosed: true,
+          observeStatusProgress: true,
           ...(allowDeferral && { deferDuringWait: true }),
         },
       );

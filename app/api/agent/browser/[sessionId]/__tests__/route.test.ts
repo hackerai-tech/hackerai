@@ -210,7 +210,7 @@ it.each([false, true])(
       fresh,
       undefined,
       expect.any(Function),
-      { recognizeClosed: true },
+      { recognizeClosed: true, observeStatusProgress: true },
     );
   },
 );
@@ -230,6 +230,7 @@ it("defers only a negotiated refresh on the active Agent browser", async () => {
   expect(mockCapture.mock.calls[0].at(-1)).toEqual({
     deferDuringWait: true,
     recognizeClosed: true,
+    observeStatusProgress: true,
   });
   expect(getActiveBrowserSessionName).toHaveBeenCalledTimes(2);
   expect(phLogger.info).not.toHaveBeenCalled();
@@ -265,7 +266,10 @@ it.each([
     mockRunActive = runActive;
     const response = await preview(fresh, undefined, query);
     expect(response.status).toBe(200);
-    expect(mockCapture.mock.calls[0].at(-1)).toEqual({ recognizeClosed: true });
+    expect(mockCapture.mock.calls[0].at(-1)).toEqual({
+      recognizeClosed: true,
+      observeStatusProgress: true,
+    });
     expect(await response.json()).toMatchObject({ frame: { image: "fresh" } });
   },
 );
