@@ -405,7 +405,10 @@ export const GET = withServiceQueryRecovery(async function GET(
         (context) => {
           captureContext = context;
         },
-        allowDeferral ? { deferDuringWait: true } : undefined,
+        {
+          recognizeClosed: true,
+          ...(allowDeferral && { deferDuringWait: true }),
+        },
       );
     } catch (error) {
       if (!allowDeferral || !(error instanceof BrowserPreviewRefreshDeferred))

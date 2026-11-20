@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   BROWSER_DAEMON_PROGRAM,
+  BROWSER_DAEMON_SESSION_CLOSED,
   BROWSER_DAEMON_WAIT_DEFERRED,
 } from "../daemon-program";
 
@@ -2744,4 +2745,272 @@ it("drops the screenshot refusal class first, before the wrapper result or any e
   expect(declared).not.toHaveProperty("s1");
   expect(declared).toMatchObject({ r1: [1, 3], o1: 3, l1: [1, 3, 5] });
   expect(complete).not.toMatch(/PRIVATE|Failed|error/);
+});
+
+/** One filesystem entry; hard links share the same object and so its identity. */
+type FsNode = {
+  kind: "dir" | "file" | "socket" | "symlink";
+  ino: string; // Decimal inode number.
+  uid?: number;
+  mode?: number;
+  content?: string;
+};
+const proofPath = directory + "/closed-session";
+const activePath = directory + "/active-session";
+const closedSocketPath = directory + "/sockets/default.sock";
+// 2^60 + 1 and 2^60 + 2 collide as Numbers: identity must be compared as BigInt.
+const selection: FsNode = {
+  kind: "file",
+  ino: "1152921504606846977",
+  content: "default",
+};
+const closedRequest = { action: "stream_status", recognize_closed: true };
+/** The selection and its proof as one hard-linked entry. */
+const linked = (node: FsNode) => ({ [activePath]: node, [proofPath]: node });
+
+/** Run the real helper over an in-memory root whose proof links to the selection. */
+function closedDaemon(
+  options: {
+    request?: Record<string, unknown>;
+    files?: Record<string, FsNode | undefined>;
+    socketError?: string;
+    afterProofOpens?: (files: Map<string, FsNode>) => void;
+  } = {},
+) {
+  const files = new Map<string, FsNode>();
+  for (const [file, node] of Object.entries({
+    [directory]: { kind: "dir", ino: "1" },
+    [directory + "/sockets"]: { kind: "dir", ino: "2" },
+    ...linked(selection),
+    ...options.files,
+  } as Record<string, FsNode | undefined>))
+    if (node) files.set(file, node);
+  const stat = (node: FsNode, bigint: boolean) => {
+    const number = (value: bigint) => (bigint ? value : Number(value));
+    return {
+      dev: number(BigInt(64)),
+      ino: number(BigInt(node.ino)),
+      uid: number(BigInt(node.uid ?? 1000)),
+      mode: number(BigInt(node.mode ?? (node.kind === "dir" ? 0o700 : 0o600))),
+      size: number(BigInt(Buffer.byteLength(node.content ?? ""))),
+      isFile: () => node.kind === "file",
+      isDirectory: () => node.kind === "dir",
+      isSocket: () => node.kind === "socket",
+    };
+  };
+  const missing = (code = "ENOENT") =>
+    Object.assign(new Error("PRIVATE filesystem path"), { code });
+  const descriptors = new Map<number, FsNode>();
+  const opened: string[] = [];
+  const socket = Object.assign(new EventEmitter(), {
+    write: jest.fn(),
+    destroy: jest.fn(),
+    setEncoding: jest.fn(),
+  });
+  const connect = jest.fn(() => socket);
+  const exit = jest.fn();
+  const output = jest.fn();
+  runInNewContext(BROWSER_DAEMON_PROGRAM, {
+    require: (specifier: string) => {
+      if (specifier === "node:path") return path;
+      if (specifier === "node:crypto") return { createHash };
+      if (specifier === "node:net") return { createConnection: connect };
+      if (specifier === "node:fs")
+        return {
+          constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
+          lstatSync: (file: string, flags?: { bigint?: boolean }) => {
+            if (file === closedSocketPath && options.socketError)
+              throw missing(options.socketError);
+            const node = files.get(file);
+            if (!node) throw missing();
+            return stat(node, flags?.bigint === true);
+          },
+          openSync: (file: string, flags: number) => {
+            const node = files.get(file);
+            if (!node) throw missing();
+            if (node.kind === "symlink" && flags & 256) throw missing("ELOOP");
+            opened.push(file);
+            const fd = 20 + descriptors.size;
+            descriptors.set(fd, node);
+            if (file === proofPath) options.afterProofOpens?.(files);
+            return fd;
+          },
+          fstatSync: (fd: number, flags?: { bigint?: boolean }) =>
+            stat(descriptors.get(fd)!, flags?.bigint === true),
+          readSync: (fd: number, bytes: Buffer) =>
+            bytes.write(descriptors.get(fd)!.content ?? "", "utf8"),
+          closeSync: (fd: number) => descriptors.delete(fd),
+        };
+      throw new Error("Unexpected process or module access");
+    },
+    process: {
+      argv: [
+        "node",
+        directory,
+        "default",
+        JSON.stringify(options.request ?? closedRequest),
+      ],
+      getuid: () => 1000,
+      platform: "linux",
+      stdout: { write: output },
+      exit,
+    },
+    Buffer,
+    setTimeout: () => 1,
+    clearTimeout: jest.fn(),
+  });
+  return { socket, connect, exit, output, opened, descriptors };
+}
+
+it.each<Record<string, unknown>>([
+  closedRequest,
+  { ...closedRequest, owned_port: true },
+  { ...closedRequest, defer_wait: true },
+])(
+  "answers only the helper literal for a verified close of the absent selected socket: %j",
+  (request) => {
+    const d = closedDaemon({ request });
+    expect(d.exit.mock.calls).toEqual([[0]]);
+    expect(d.output.mock.calls).toEqual([[BROWSER_DAEMON_SESSION_CLOSED]]);
+    expect(d.connect).not.toHaveBeenCalled();
+    // The pinned proof descriptor is released.
+    expect(d.descriptors.size).toBe(0);
+  },
+);
+
+it.each<[string, Parameters<typeof closedDaemon>[0]]>([
+  ["no proof exists (an older wrapper)", { files: { [proofPath]: undefined } }],
+  [
+    "a later command published a new selection inode",
+    { files: { [activePath]: { ...selection, ino: "1152921504606846978" } } },
+  ],
+  [
+    "the proof names another selection",
+    { files: linked({ ...selection, content: "other" }) },
+  ],
+  [
+    "the proof names the selection with extra bytes",
+    { files: linked({ ...selection, content: "default\n" }) },
+  ],
+  [
+    "the proof is a symlink to the selection",
+    { files: { [proofPath]: { kind: "symlink", ino: "9" } } },
+  ],
+  [
+    "the proof is readable by others",
+    { files: linked({ ...selection, mode: 0o640 }) },
+  ],
+  ["another user owns the proof", { files: linked({ ...selection, uid: 0 }) }],
+  ["the proof is empty", { files: linked({ ...selection, content: "" }) }],
+  [
+    "the proof is oversized",
+    { files: linked({ ...selection, content: "x".repeat(513) }) },
+  ],
+  [
+    "the selection is a symlink",
+    { files: { [activePath]: { kind: "symlink", ino: selection.ino } } },
+  ],
+  [
+    "the run root is not private",
+    { files: { [directory]: { kind: "dir", ino: "1", mode: 0o755 } } },
+  ],
+  [
+    "the sockets directory is not private",
+    {
+      files: {
+        [directory + "/sockets"]: { kind: "dir", ino: "2", mode: 0o750 },
+      },
+    },
+  ],
+  [
+    "another user owns the sockets directory",
+    { files: { [directory + "/sockets"]: { kind: "dir", ino: "2", uid: 0 } } },
+  ],
+  [
+    "the socket reappears after the proof opens",
+    {
+      afterProofOpens: (files) =>
+        files.set(closedSocketPath, { kind: "socket", ino: "30" }),
+    },
+  ],
+  [
+    "a stale proof is replaced by a matching one after it opens",
+    {
+      files: { [proofPath]: { ...selection, ino: "5" } },
+      // Rechecking the path instead of the pinned descriptor would accept.
+      afterProofOpens: (files) => files.set(proofPath, selection),
+    },
+  ],
+  [
+    "the opt-in is a string",
+    { request: { ...closedRequest, recognize_closed: "true" } },
+  ],
+  [
+    "the opt-in is numeric",
+    { request: { ...closedRequest, recognize_closed: 1 } },
+  ],
+  [
+    "the request is not a status request",
+    {
+      request: {
+        action: "screenshot",
+        path: directory + "/preview.jpg",
+        format: "jpeg",
+        quality: 65,
+        recognize_closed: true,
+      },
+    },
+  ],
+])(
+  "keeps the unchanged missing-socket exit2 packet when %s",
+  (_case, options) => {
+    const d = closedDaemon(options);
+    expect(d.exit.mock.calls).toEqual([[2]]);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    // Byte-identical to a request that never opted in.
+    const strict = closedDaemon({
+      ...options,
+      request: { action: "stream_status" },
+    });
+    expect(strict.opened).toEqual([]);
+    expect(text).toBe(strict.output.mock.calls[0][0]);
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+    });
+    expect(text).not.toMatch(/session_closed|PRIVATE|default|115292/);
+    expect(d.descriptors.size).toBe(0);
+  },
+);
+
+it("never checks a proof unless the selected socket is exactly missing", () => {
+  const d = closedDaemon({ socketError: "EACCES" });
+  expect(d.exit.mock.calls).toEqual([[2]]);
+  expect(d.opened).toEqual([]);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toMatchObject({
+    diagnostic_reason: "socket_stat",
+    diagnostic_error: "permission",
+  });
+});
+
+it("strips the opt-in before an existing daemon sees the request", () => {
+  const d = closedDaemon({
+    files: { [closedSocketPath]: { kind: "socket", ino: "30" } },
+  });
+  expect(d.connect.mock.calls).toEqual([[closedSocketPath]]);
+  d.socket.emit("connect");
+  expect(d.socket.write.mock.calls).toEqual([
+    ['{"action":"stream_status","id":"hackerai-preview"}\n'],
+  ]);
+  const response = {
+    id: "hackerai-preview",
+    success: true,
+    data: { connected: true, port: 9223 },
+  };
+  d.socket.emit("data", JSON.stringify(response) + "\n");
+  expect(d.exit.mock.calls).toEqual([[0]]);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  // A live socket never consults the close proof.
+  expect(d.opened).toEqual([]);
 });

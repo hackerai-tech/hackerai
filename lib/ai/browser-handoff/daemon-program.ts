@@ -156,6 +156,7 @@ let done = false;
 let precondition = 'arguments';
 let argumentsValid = false;
 let rootInfo;
+let socketsInfo;
 // Socket progress only: a queued write is not a daemon acknowledgement.
 let deadlinePhase = 'connecting';
 /** Read only a bounded owned private file; never follow links or block on pipes. */
@@ -469,6 +470,40 @@ function activeWait() {
   return wrapper.wrapper_phase === 'started' && wrapper.wrapper_session_matches === true &&
     wrapper.w1 === 3 && wrapper.k1 === 0;
 }
+/** Only an opted-in status request whose selected owned socket is absent: true when the
+ * wrapper's private close proof links to the still-current selection inode for this exact
+ * name. The proof stays pinned by its descriptor, so a replaced proof cannot alias a reused
+ * inode; with it pinned the socket is absent again and the selection is unchanged, so no
+ * later command has started. Never exports the name, path or inode; any doubt is false.
+ */
+function sessionClosed() {
+  let fd;
+  try {
+    const opted = JSON.parse(payload);
+    if (opted?.recognize_closed !== true || opted.action !== 'stream_status' || !argumentsValid ||
+        typeof fs.constants?.O_NOFOLLOW !== 'number' || typeof fs.constants.O_NONBLOCK !== 'number' ||
+        [rootInfo, socketsInfo].some(item => !item?.isDirectory() || item.uid !== process.getuid() ||
+          (item.mode & 0o077) !== 0)) return false;
+    const uid = BigInt(process.getuid());
+    // BigInt identities: large inode numbers can collide as Numbers.
+    const valid = entry => entry.isFile() && entry.uid === uid && (entry.mode & 0o077n) === 0n &&
+      entry.size >= 1n && entry.size <= 512n;
+    const proofPath = path.join(directory, 'closed-session');
+    if (!valid(fs.lstatSync(proofPath, { bigint: true }))) return false;
+    fd = fs.openSync(proofPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const proof = fs.fstatSync(fd, { bigint: true });
+    if (!valid(proof)) return false;
+    const bytes = Buffer.alloc(513);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (!Buffer.from(name, 'utf8').equals(bytes.subarray(0, size))) return false;
+    try {
+      fs.lstatSync(path.join(directory, 'sockets', name + '.sock'));
+      return false;
+    } catch (error) { if (error?.code !== 'ENOENT') return false; }
+    const active = fs.lstatSync(path.join(directory, 'active-session'), { bigint: true });
+    return valid(active) && active.dev === proof.dev && active.ino === proof.ino;
+  } catch { return false; } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
   if (done) return;
@@ -509,6 +544,7 @@ try {
   rootInfo = root;
   precondition = 'sockets_stat';
   const sockets = fs.lstatSync(path.join(directory, 'sockets'));
+  socketsInfo = sockets;
   const address = path.join(directory, 'sockets', name + '.sock');
   precondition = 'socket_stat';
   const info = fs.lstatSync(address);
@@ -522,7 +558,8 @@ try {
   if ([root, sockets, info].some(item => item.uid !== process.getuid())) throw new Error();
   precondition = 'request_invalid';
   // The internal opt-ins never reach the daemon.
-  const { owned_port: ownedPort, defer_wait: deferWait, ...request } = JSON.parse(payload);
+  const { owned_port: ownedPort, defer_wait: deferWait, recognize_closed: _closed, ...request } =
+    JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
   // Upstream runs WAIT under its daemon state lock, so a queued fresh status
@@ -576,15 +613,20 @@ try {
     socket.on('close', () => { if (!done) finish(6); });
   }
 } catch (error) {
-  const value = { diagnostic_reason: precondition };
-  if (['root_stat', 'sockets_stat', 'socket_stat'].includes(precondition)) {
-    let code;
-    try { code = Object.getOwnPropertyDescriptor(error, 'code')?.value; } catch {}
-    value.diagnostic_error = code === 'ENOENT' ? 'missing' :
-      code === 'EACCES' || code === 'EPERM' ? 'permission' :
-      code === 'ENOTDIR' ? 'not_directory' : 'other';
+  let code;
+  try { code = Object.getOwnPropertyDescriptor(error, 'code')?.value; } catch {}
+  // Helper-only literal: a daemon reply always carries its own id and success.
+  if (precondition === 'socket_stat' && code === 'ENOENT' && sessionClosed())
+    finish(0, { session_closed: 1 });
+  else {
+    const value = { diagnostic_reason: precondition };
+    if (['root_stat', 'sockets_stat', 'socket_stat'].includes(precondition)) {
+      value.diagnostic_error = code === 'ENOENT' ? 'missing' :
+        code === 'EACCES' || code === 'EPERM' ? 'permission' :
+        code === 'ENOTDIR' ? 'not_directory' : 'other';
+    }
+    finish(2, value);
   }
-  finish(2, value);
 }
 `;
 
@@ -595,13 +637,22 @@ try {
  */
 export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
 
+/**
+ * The helper's exact exit-0 output when a recognize_closed status request found
+ * the selected owned socket absent after the wrapper's verified close of that
+ * still-current selection. A daemon reply can never equal this literal.
+ */
+export const BROWSER_DAEMON_SESSION_CLOSED = '{"session_closed":1}';
+
 type BrowserDaemonRequest =
   // owned_port lets the helper prove the port from the daemon's own listeners;
   // the helper strips it and falls back to this same daemon request otherwise.
-  | { action: "stream_status"; owned_port?: true }
+  // recognize_closed (either status form) only lets an absent socket with a
+  // verified close answer; the helper strips it before any daemon traffic.
+  | { action: "stream_status"; owned_port?: true; recognize_closed?: true }
   // defer_wait lets a fresh passive preview yield to a verified active WAIT;
   // the helper strips it and sends this same strict request otherwise.
-  | { action: "stream_status"; defer_wait: true }
+  | { action: "stream_status"; defer_wait: true; recognize_closed?: true }
   | { action: "screenshot"; path: string; format: "jpeg"; quality: 65 }
   | {
       action: "viewport";

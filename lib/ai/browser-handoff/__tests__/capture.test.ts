@@ -25,6 +25,7 @@ import {
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   BROWSER_DAEMON_SCREENSHOT_REFUSALS,
   BROWSER_DAEMON_WAIT_DEFERRED,
+  BROWSER_DAEMON_SESSION_CLOSED,
   browserDaemonCommand,
 } from "../daemon-program";
 
@@ -1251,6 +1252,104 @@ it.each([
     );
   },
 );
+
+it.each([
+  ["a fresh view", true, {}, { action: "stream_status" }],
+  ["a cached view", false, {}, { action: "stream_status", owned_port: true }],
+  [
+    "a WAIT-deferring fresh view",
+    true,
+    { deferDuringWait: true },
+    { action: "stream_status", defer_wait: true },
+  ],
+] as const)(
+  "returns the existing closed state for a verified close on %s",
+  async (_case, requireFresh, extra, request) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      jest.fn(),
+      { ...extra, recognizeClosed: true },
+    ).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("closed");
+    // The opt-in rides beside each unchanged status form; nothing else runs.
+    expect(daemonRequests(sandbox.commands.run)).toEqual([
+      { ...request, recognize_closed: true },
+    ]);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  "treats the closed literal as an ordinary invalid status reply without the opt-in (fresh:%s)",
+  async (requireFresh) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      jest.fn(),
+      { deferDuringWait: true },
+    ).catch((error: unknown) => error);
+    // Older readers and every other caller keep the exact strict result.
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("loading");
+    expect(
+      daemonRequests(sandbox.commands.run).some(
+        (request) => "recognize_closed" in request,
+      ),
+    ).toBe(false);
+  },
+);
+
+it("keeps the normal capture when an opted-in status returns a port", async () => {
+  const sandbox = fixture();
+  const result = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { recognizeClosed: true },
+  );
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", recognize_closed: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+    },
+  ]);
+  expect(result.image).toBe(
+    `data:image/jpeg;base64,${fresh.toString("base64")}`,
+  );
+});
+
+it("never asks to recognize a close for a caller-supplied port", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+  await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    1234,
+    undefined,
+    { recognizeClosed: true },
+  );
+  expect(
+    daemonRequests(sandbox.commands.run).map((request) => request.action),
+  ).toEqual(["screenshot"]);
+});
 
 it("keeps cached-frame age unknown for ordinary viewing", async () => {
   const sandbox = fixture();
