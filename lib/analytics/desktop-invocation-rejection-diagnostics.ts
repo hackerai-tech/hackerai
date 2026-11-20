@@ -814,22 +814,25 @@ function parseStreamFenceCleanup(
     : null;
 }
 
-/** Whether `error` still carries exactly the closed `owner_timeout` origin
- * and `tree_unconfirmed` cleanup receipts, read again in that order: the
- * cleanup first, then the fence it must still join. Never throws; a getter
- * never runs. */
+/** Recheck the timeout and its tree-only cleanup after reading the optional
+ * taskkill receipt. The cleanup must still match after reading the fence.
+ * Never throws; a getter never runs. */
 function nativeTimeoutTreePairsUnchanged(error: object): boolean {
   const cleanup = parseStreamFenceCleanup(
     readOwnDataValues(error, [STREAM_FENCE_CLEANUP_KEY])?.[0],
   );
+  if (cleanup !== STREAM_FENCE_TASKKILL_FAILURE) return false;
   const fence = readClosedOwnData(
     readOwnDataValues(error, [STREAM_FENCE_REJECTION_KEYS[1]])?.[0],
     STREAM_FENCE_ORIGIN_KEYS,
   );
+  if (fence?.[0] !== 1 || fence[1] !== STREAM_FENCE_TIMEOUT_ORIGIN)
+    return false;
+  // Reading the fence can change the cleanup on a proxy, so it is read last.
   return (
-    cleanup === STREAM_FENCE_TASKKILL_FAILURE &&
-    fence?.[0] === 1 &&
-    fence[1] === STREAM_FENCE_TIMEOUT_ORIGIN
+    parseStreamFenceCleanup(
+      readOwnDataValues(error, [STREAM_FENCE_CLEANUP_KEY])?.[0],
+    ) === STREAM_FENCE_TASKKILL_FAILURE
   );
 }
 
@@ -1234,9 +1237,11 @@ function timeoutPairsUnchanged(
 ): boolean {
   if (fence.desktop_stream_fence_origin !== STREAM_FENCE_TIMEOUT_ORIGIN)
     return true;
+  // Reading the cleanup can change the origin on a proxy, so the origin pair
+  // is read last.
   const keys = [
-    ...STREAM_FENCE_PROPERTIES,
     ...STREAM_FENCE_CLEANUP_PROPERTIES,
+    ...STREAM_FENCE_PROPERTIES,
   ] as const;
   const values = ownDataValuesOrUndefined(source, keys);
   return keys.every((key, index) => values[index] === fence[key]);

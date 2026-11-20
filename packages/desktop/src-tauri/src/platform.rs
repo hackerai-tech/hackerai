@@ -334,6 +334,7 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 /// group (`setsid`, `setpgid`, daemonizing) are neither signaled nor counted.
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
+#[cfg(any(unix, test))]
 pub async fn cancel_process_tree(pid: u32) -> bool {
     cancel_process_tree_observed(pid).await.is_ok()
 }

@@ -1803,6 +1803,49 @@ describe("stream fence origin", () => {
         ).toEqual({ ...timeoutTree, windowsTaskkill: notFoundReceipt });
       });
 
+      it("drops a receipt when the final fence read changes the cleanup", () => {
+        // [case, cleanup a fence trap writes once the receipt was read, parsed]
+        for (const [name, written, parsed] of [
+          [
+            "changed",
+            { version: 1, failure: "leader_wait_failed" },
+            timeoutTree,
+          ],
+          [
+            "stable",
+            { version: 1, failure: "tree_unconfirmed" },
+            { ...timeoutTree, windowsTaskkill: notFoundReceipt },
+          ],
+        ] as const) {
+          let armed = false;
+          const error: Record<string, unknown> = sibling(
+            { version: 1, failure: "tree_unconfirmed" },
+            new Proxy(
+              { ...timeout },
+              {
+                getOwnPropertyDescriptor(target, key) {
+                  if (armed) error.streamFenceCleanup = { ...written };
+                  return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+              },
+            ),
+          );
+          error.streamFenceWindowsTaskkill = new Proxy(
+            { ...stopOnly.streamFenceWindowsTaskkill },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                armed = true;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          expect([name, parseNativeStreamFenceRejection(error)]).toEqual([
+            name,
+            parsed,
+          ]);
+        }
+      });
+
       it("reads the leg only beside a validated timeout origin on an acknowledged terminal", () => {
         const read = readDesktopStreamFenceDiagnostic(
           { ...timeoutGroup, ...cleanupGroup, message: "PRIVATE" },
@@ -2094,6 +2137,46 @@ describe("stream fence origin", () => {
         }
         // A stable reading keeps every group.
         expect(read(root, {})).toEqual({ ...pairs, ...timeoutTaskkillGroups });
+      });
+
+      it("drops a codeless group when the final cleanup read changes the origin", () => {
+        const outputError = {
+          desktop_stream_fence_windows_taskkill_version: 1,
+          desktop_stream_fence_windows_taskkill_outcome: "output_error",
+        };
+        const pairs = { ...timeoutGroup, ...cleanupGroup };
+        // [case, origin a cleanup trap writes once the group was read, kept]
+        for (const [name, written, kept] of [
+          ["changed", "owner_stop_requested", pairs],
+          ["stable", "owner_timeout", { ...pairs, ...outputError }],
+        ] as const) {
+          let armed = false;
+          const source = new Proxy<Record<string, unknown>>(
+            { ...pairs, ...outputError },
+            {
+              getOwnPropertyDescriptor(target, key) {
+                if (key === "desktop_stream_fence_windows_taskkill_outcome")
+                  armed = true;
+                else if (
+                  armed &&
+                  typeof key === "string" &&
+                  key in cleanupGroup
+                )
+                  target.desktop_stream_fence_origin = written;
+                return Reflect.getOwnPropertyDescriptor(target, key);
+              },
+            },
+          );
+          expect([
+            name,
+            readDesktopStreamFenceDiagnostic(
+              source,
+              authorizedUnknown,
+              stopUnconfirmed,
+              true,
+            ),
+          ]).toEqual([name, kept]);
+        }
       });
     });
 
