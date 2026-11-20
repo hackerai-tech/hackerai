@@ -33,9 +33,80 @@ type DownloadInput = {
   /** Kept only for a curl exit 127 with its "inaccessible or not found"
    * wording; omitted when the caller has no recorded selection. */
   clientSelection?: AttachmentClientSelection;
+  /** The selected terminal result's own stdout, supplied only when its
+   * Windows Bash curl command carried CURL_PROGRESS_WRITE_OUT. Never kept. */
+  curlProgressStdout?: string;
 };
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
+
+/** One static `--write-out` line from the selected curl command. Values are
+ * scoped to curl's report, not to individual attempts. No URL, host or
+ * headers; the status and byte count are read here and never kept.
+ * No backslash escape, so Git Bash commands stay free of backslashes.
+ * time_starttransfer is deliberately absent: curl reports it positive for a
+ * stall before any TLS or HTTP bytes, so it cannot prove a response. */
+export const CURL_PROGRESS_WRITE_OUT =
+  "hackerai_curl_progress_v1 n=%{time_namelookup} c=%{time_connect} a=%{time_appconnect} h=%{http_code} b=%{size_download} r=%{time_redirect}";
+// http_code is `%03ld`: 000 (no response) or a status; size_download an integer.
+const CURL_PROGRESS_LINE =
+  /^hackerai_curl_progress_v1 n=(\d{1,7}\.\d{6}) c=(\d{1,7}\.\d{6}) a=(\d{1,7}\.\d{6}) h=(000|[1-5]\d\d) b=(\d{1,15}) r=(\d{1,7}\.\d{6})(?:\r?\n)?$/;
+// A valid line is ~120 characters; anything longer is never scanned.
+const CURL_PROGRESS_MAX_LENGTH = 256;
+
+/** The furthest stage curl reported as completed. A zero timer is not proof a
+ * stage was never reached, and none of these is the failing phase. Only a real
+ * HTTP status proves a response. curl accumulates redirect time across hops,
+ * so any redirect stays ambiguous. */
+type CurlProgressMilestone =
+  | "none_positive"
+  | "name_lookup"
+  | "connect"
+  | "tls_handshake"
+  | "response_status_observed"
+  | "response_body_observed"
+  | "redirected_or_ambiguous";
+
+const positive = (value: string) => /[1-9]/.test(value);
+
+/** Only one exact, internally consistent marker line is read; empty, truncated,
+ * repeated or extra output is never partially interpreted. Raw values are never kept. */
+function curlProgressContext(stdout: string) {
+  const match =
+    stdout.length <= CURL_PROGRESS_MAX_LENGTH
+      ? CURL_PROGRESS_LINE.exec(stdout)
+      : null;
+  let milestone: CurlProgressMilestone | null = null;
+  // Body bytes without any HTTP status contradict each other: never guessed.
+  const observed =
+    match?.[0] === stdout && !(match[4] === "000" && positive(match[5]));
+  if (observed) {
+    const [, lookup, connect, tls, status, bytes, redirect] = match;
+    const response = status !== "000";
+    milestone = positive(redirect)
+      ? "redirected_or_ambiguous"
+      : response && positive(bytes)
+        ? "response_body_observed"
+        : response
+          ? "response_status_observed"
+          : positive(tls)
+            ? "tls_handshake"
+            : positive(connect)
+              ? "connect"
+              : positive(lookup)
+                ? "name_lookup"
+                : "none_positive";
+  }
+  return {
+    attachment_download_curl_progress_version: 1 as const,
+    attachment_download_curl_progress_state: observed
+      ? ("observed" as const)
+      : stdout === ""
+        ? ("absent" as const)
+        : ("unrecognized" as const),
+    attachment_download_curl_progress_milestone: milestone,
+  };
+}
 
 /** Public curl error-buffer wording only, not a proven network phase or the
  * final inner retry. Conflicting observed families stay explicit. */
@@ -331,6 +402,13 @@ function summarize(input: DownloadInput) {
           attachment_download_timeout_version: 1 as const,
           attachment_download_timeout_hint: curlTimeoutHint(stderr),
         }
+      : {}),
+    ...(input.platform === "windows" &&
+    input.shell === "bash" &&
+    input.httpClient === "curl" &&
+    input.exitCode === 28 &&
+    typeof input.curlProgressStdout === "string"
+      ? curlProgressContext(input.curlProgressStdout)
       : {}),
     ...(input.httpClient === "curl" && input.exitCode === 1
       ? curl1Context(stderr, input.stderr.length > 8192)
