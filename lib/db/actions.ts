@@ -2326,6 +2326,32 @@ export async function setActiveTriggerRun(
   }
 }
 
+const AGENT_COMPACTION_TALLY_TIMEOUT_MS = 3_000;
+
+/**
+ * Display-only report of a run's absolute completed-compaction count. Uses
+ * its own bounded client so a slow write cannot hold the shared queue; the
+ * caller decides how to handle a failure.
+ */
+export async function recordAgentCompactionTally({
+  chatId,
+  runId,
+  completedCount,
+}: {
+  chatId: string;
+  runId: string;
+  completedCount: number;
+}) {
+  return await getConvexClient(
+    AbortSignal.timeout(AGENT_COMPACTION_TALLY_TIMEOUT_MS),
+  ).mutation(api.chats.recordAgentCompactionTally, {
+    serviceKey,
+    chatId,
+    runId,
+    completedCount,
+  });
+}
+
 export async function setActiveAgentApprovalPending({
   chatId,
   pending,
