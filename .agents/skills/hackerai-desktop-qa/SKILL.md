@@ -38,10 +38,11 @@ Pick the surface and case name yourself, then run the matching preflight from
 3. Native: `desktop:qa preflight native <config.json> <case>`. Fix any BLOCKED
    reason (exit 2) and rerun. On READY, skip the case only when it shows a prior
    PASS for this exact identity and the case needs no fresh evidence.
-   Otherwise run it, complete the listed window/account/transport checks, and
-   bind the observed pass/fail/blocked outcome to the printed fingerprint with
-   `desktop:qa record-result`. Record FAIL/BLOCKED too, so a stale PASS cannot
-   be reused. Collect a new observation when the check requires fresh evidence.
+   Otherwise run it and complete the window, account and transport checks.
+   If preflight prints a fingerprint, use `desktop:qa record-result` to record
+   the observed PASS, FAIL or BLOCKED result. If no fingerprint is available,
+   report the outcome in the QA handoff. Collect a new observation when the
+   check requires fresh evidence.
 
 ## Prepare and inspect
 

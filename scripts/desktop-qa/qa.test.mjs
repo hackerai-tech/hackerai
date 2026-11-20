@@ -121,7 +121,9 @@ async function nativeFixture(t) {
   withoutGitEnv(t);
   const root = await temp(t);
   let frontendStatus = 200;
-  const port = await listen(t, (_request, response) => {
+  let beforeFrontendReply;
+  const port = await listen(t, async (_request, response) => {
+    await beforeFrontendReply?.();
     response.writeHead(frontendStatus);
     response.end();
   });
@@ -159,8 +161,9 @@ async function nativeFixture(t) {
     receipts: join(root, ".artifacts/desktop-qa/.receipts"),
     verifyCalls: 0,
     verifyError: undefined,
-    setFrontendStatus: (status) => {
+    setFrontendStatus: (status, beforeReply) => {
       frontendStatus = status;
+      beforeFrontendReply = beforeReply;
     },
     save: (value = c) => writeFile(file, JSON.stringify(value)),
     async run(...args) {
@@ -169,6 +172,7 @@ async function nativeFixture(t) {
         verify: async () => {
           fx.verifyCalls++;
           if (fx.verifyError) throw fx.verifyError;
+          await fx.onVerify?.();
           return {};
         },
       });
@@ -742,6 +746,33 @@ test("an operator PASS is reused only for the same case and exact identity", asy
   await missing(join(fx.receipts, "findings-download.json"));
   // Recording recomputes locally; only the three preflights verified targets.
   assert.equal(fx.verifyCalls, 3);
+});
+
+test("preflight withholds a saved pass if the executable changes during its checks", async (t) => {
+  const fx = await nativeFixture(t);
+  const executable = join(fx.root, fx.config.app.executable);
+  const original = await readFile(executable);
+  const { fingerprint } = await fx.preflight();
+  await fx.recordResult("pass", fingerprint);
+  const replaceApp = () => writeFile(executable, "different executable");
+
+  fx.onVerify = replaceApp;
+  const duringVerification = await fx.preflight();
+  assert.equal(duringVerification.code, 2);
+  assert.match(duringVerification.text, /executable hash changed/);
+  assert.doesNotMatch(
+    duringVerification.text,
+    /fingerprint:|prior result: PASS/,
+  );
+
+  fx.onVerify = undefined;
+  await writeFile(executable, original);
+  fx.setFrontendStatus(503, replaceApp);
+  const whileOffline = await fx.preflight();
+  assert.equal(whileOffline.code, 2);
+  assert.match(whileOffline.text, /executable hash changed/);
+  assert.doesNotMatch(whileOffline.text, /historical PASS/);
+  assert.equal(fx.verifyCalls, 2);
 });
 
 test("a target verification failure blocks and hides a matching PASS", async (t) => {

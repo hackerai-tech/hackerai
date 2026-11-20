@@ -284,7 +284,7 @@ const git = (root, args) =>
     stdio: ["ignore", "pipe", "ignore"],
   });
 /**
- * Local-only receipt key for one case. Callers verify the executable hash first.
+ * Local-only receipt key for one case, based on the current executable bytes.
  * Returns { fingerprint } or { unavailable: reason }; never contacts a provider.
  */
 async function receiptIdentity(root, config, name) {
@@ -315,6 +315,8 @@ async function receiptIdentity(root, config, name) {
   } catch {
     return { unavailable: "frontend .next/BUILD_ID missing" };
   }
+  // Health probes and target verification may overlap with a local rebuild.
+  await verifyApp(root, config.app);
   // validateConfig fixes key order, so this serialization is canonical.
   const identity = {
     version: 1,
@@ -480,9 +482,31 @@ async function preflightNative(root, config, name, verify) {
     services.frontend !== "reachable"
       ? "Local frontend is not ready (unreachable, HTTP error or redirect)"
       : offlineService && `Loopback ${offlineService} is not listening`;
+  if (!localBlocker) {
+    try {
+      await verify(config, { root });
+    } catch (error) {
+      return report("BLOCKED", [
+        `reason: ${error instanceof TargetVerificationError ? error.message : "Target verification failed"}`,
+        healthLine,
+        "targets did not verify; prior results are not shown",
+      ]);
+    }
+  }
+  let identity;
+  try {
+    identity = await receiptIdentity(root, config, name);
+  } catch (error) {
+    const reason =
+      error instanceof QaError
+        ? error.message
+        : "Native executable no longer available during preflight";
+    return localBlocker
+      ? local(reason, [healthLine])
+      : report("BLOCKED", [`reason: ${reason}`, healthLine]);
+  }
+  const receipt = identity.fingerprint ? await readReceipt(root, name) : null;
   if (localBlocker) {
-    const identity = await receiptIdentity(root, config, name);
-    const receipt = identity.fingerprint && (await readReceipt(root, name));
     const details = [healthLine];
     if (
       receipt?.outcome === "pass" &&
@@ -493,23 +517,10 @@ async function preflightNative(root, config, name, verify) {
       );
     return local(localBlocker, details);
   }
-  try {
-    await verify(config, { root });
-  } catch (error) {
-    return report("BLOCKED", [
-      `reason: ${error instanceof TargetVerificationError ? error.message : "Target verification failed"}`,
-      healthLine,
-      "targets did not verify; prior results are not shown",
-    ]);
-  }
-  const identity = await receiptIdentity(root, config, name);
   return report("READY", [
     healthLine,
     "targets: backend and worker verified (read-only)",
-    ...priorResult(
-      identity,
-      identity.fingerprint ? await readReceipt(root, name) : null,
-    ),
+    ...priorResult(identity, receipt),
   ]);
 }
 
@@ -695,7 +706,6 @@ export async function main(args, root = ROOT, { verify = verifyTargets } = {}) {
     );
     const config = await readConfig(file);
     // Recompute locally; recording never repeats provider reads.
-    await verifyApp(root, config.app);
     const identity = await receiptIdentity(root, config, name);
     check(
       identity.fingerprint,

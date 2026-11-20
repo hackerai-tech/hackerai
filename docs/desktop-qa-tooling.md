@@ -143,7 +143,8 @@ READY preflight prints a fingerprint over the normalized config, case, verified
 executable hash, checkout commit, host name, platform/arch/OS release, build-ID
 hash and those revisions. Otherwise it prints why reuse is unavailable.
 
-After running the case, bind your observation to that exact fingerprint:
+After running the case, use the fingerprint printed by preflight to record the
+result. If preflight did not print one, put the outcome in the QA handoff.
 
 ```bash
 corepack pnpm desktop:qa record-result .artifacts/desktop-qa/config.json chat-sandbox pass <fingerprint>
