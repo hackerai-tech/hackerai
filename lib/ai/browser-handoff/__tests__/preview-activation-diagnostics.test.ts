@@ -4,6 +4,8 @@ import {
   PREVIEW_CLIENT_CONTEXT_KEY,
   PREVIEW_DIAGNOSTIC_VERSION_PARAM,
   PREVIEW_READER_PARAM,
+  PREVIEW_TERMINAL_INTENT_KEY,
+  PREVIEW_TERMINAL_INTENT_PARAM,
   PREVIEW_TEXT_SOURCE_PARAM,
   PREVIEW_TEXT_SOURCES,
   parsePreviewClientContext,
@@ -13,6 +15,10 @@ import {
 } from "../preview-activation-diagnostics";
 import type { BrowserCaptureFailureContext } from "../server";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  AGENT_BROWSER_PREVIEW_INTENTS,
+  agentBrowserPreviewIntent,
+} from "@/lib/utils/agent-browser-command";
 
 const READER = "0123456789abcdef0123456789abcdef01234567";
 const SERVER_BUILD = "fedcba9876543210fedcba9876543210fedcba98";
@@ -387,6 +393,284 @@ describe("text-source add-on", () => {
       },
     } as unknown as URLSearchParams;
     expect(parsePreviewClientContext(hostile)).toBe(`[1,1,"${READER}"]`);
+  });
+});
+
+describe("terminal intent", () => {
+  const params = (url: string) =>
+    new URL(url, "https://app.example").searchParams;
+  const liveCommand = (intent: unknown) => ({
+    source: "command",
+    liveSelection: true,
+    intent,
+  });
+  const fieldsWith = (count: number) =>
+    Object.fromEntries(
+      Array.from({ length: count }, (_, index) => [`field_${index}`, index]),
+    );
+
+  // `null` is the Browser Preview predicate: every value here is the
+  // eligibility the previous boolean returned for the same command.
+  it.each([
+    ["", null],
+    ["echo agent-browser open https://x.test", null],
+    ["agent-browser-next open https://x.test", null],
+    ["agent-browser --version", null],
+    ["agent-browser -h", null],
+    ["agent-browser open --help", null],
+    ["agent-browser --version && agent-browser --help", null],
+    ["# agent-browser open https://x.test", null],
+    ["pwd # && agent-browser open https://x.test", null],
+    ["agent-browser open https://x.test", "open_only"],
+    ["npx -y agent-browser open about:blank # note", "open_only"],
+    ["cd /tmp && FOO=1 agent-browser open https://x.test", "open_only"],
+    ["agent-browser open --help --headed", "open_only"],
+    ["agent-browser --headed open https://x.test", "option_only"],
+    ["agent-browser --version extra", "option_only"],
+    ["agent-browser snapshot -i", "other_only"],
+    ["agent-browser", "other_only"],
+    // Compound: open+other vs two non-OPEN (an option prefix is not resolved).
+    [
+      "agent-browser open https://x.test && agent-browser snapshot",
+      "multiple_with_open",
+    ],
+    ["agent-browser open a; agent-browser open b", "multiple_with_open"],
+    [
+      "agent-browser snapshot && agent-browser click @e1",
+      "multiple_operations",
+    ],
+    [
+      "agent-browser --headed open a && agent-browser snapshot",
+      "multiple_operations",
+    ],
+    // Compound: version+open vs version+other.
+    [
+      "agent-browser --version && agent-browser open about:blank",
+      "info_with_open",
+    ],
+    [
+      "agent-browser --version && agent-browser snapshot",
+      "info_with_operation",
+    ],
+    [
+      "agent-browser open -h\nagent-browser --session s click @e1",
+      "info_with_operation",
+    ],
+  ])("classifies %j as %p", (command, expected) => {
+    expect(agentBrowserPreviewIntent(command)).toBe(expected);
+  });
+
+  it("is sent only beside a live command source with a closed value", () => {
+    const sent = (
+      mask: number,
+      textSource: Parameters<typeof previewCaptureUrl>[5],
+    ) =>
+      params(
+        previewCaptureUrl(ENDPOINT, true, mask, READER, false, textSource),
+      );
+    for (const intent of AGENT_BROWSER_PREVIEW_INTENTS)
+      expect(
+        sent(1, liveCommand(intent)).getAll(PREVIEW_TERMINAL_INTENT_PARAM),
+      ).toEqual([`1.${intent}`]);
+    const omitted = [
+      sent(1, { ...liveCommand("open_only"), liveSelection: false }),
+      sent(1, { ...liveCommand("open_only"), source: "brief" }),
+      sent(1, { ...liveCommand("open_only"), source: "PRIVATE_COMMAND" }),
+      sent(9, { ...liveCommand("open_only"), liveSelection: undefined }),
+      sent(8, liveCommand("open_only")),
+      sent(1, liveCommand(null)),
+      sent(1, liveCommand("PRIVATE_COMMAND")),
+      sent(1, liveCommand("__proto__")),
+      sent(1, liveCommand(`open_only${"x".repeat(100_000)}`)),
+    ];
+    for (const sentQuery of omitted)
+      expect(sentQuery.has(PREVIEW_TERMINAL_INTENT_PARAM)).toBe(false);
+    // The intent never alters the parameters older servers read.
+    expect(
+      [...sent(1, liveCommand("open_only")).entries()].filter(
+        ([name]) => name !== PREVIEW_TERMINAL_INTENT_PARAM,
+      ),
+    ).toEqual([...sent(1, liveCommand(undefined)).entries()]);
+  });
+
+  it("appends one validated attribute after the unchanged tuple", () => {
+    const fields = fieldsWith(11);
+    for (const intent of AGENT_BROWSER_PREVIEW_INTENTS) {
+      const query = params(
+        previewCaptureUrl(
+          ENDPOINT,
+          true,
+          71,
+          READER,
+          false,
+          liveCommand(intent),
+        ),
+      );
+      const result = withPreviewClientContext(fields, query);
+      expect(Object.keys(result)).toEqual([
+        ...Object.keys(fields),
+        PREVIEW_CLIENT_CONTEXT_KEY,
+        PREVIEW_TERMINAL_INTENT_KEY,
+      ]);
+      expect(result[PREVIEW_CLIENT_CONTEXT_KEY]).toBe(
+        `[1,71,"${READER}",[1,"command",true]]`,
+      );
+      expect(result[PREVIEW_CLIENT_CONTEXT_KEY]).toBe(
+        parsePreviewClientContext(query),
+      );
+      expect(result[PREVIEW_TERMINAL_INTENT_KEY]).toBe(`[1,"${intent}"]`);
+    }
+  });
+
+  const intent = (value: string): Array<[string, string]> => [
+    [PREVIEW_TERMINAL_INTENT_PARAM, value],
+  ];
+  const source = (value: string): Array<[string, string]> => [
+    [PREVIEW_TEXT_SOURCE_PARAM, value],
+  ];
+  it.each([
+    ["absent source", group("1"), intent("1.open_only")],
+    [
+      "history selection",
+      [...group("1"), ...source("1.command.0")],
+      intent("1.open_only"),
+    ],
+    [
+      "brief source",
+      [...group("1"), ...source("1.brief.1")],
+      intent("1.open_only"),
+    ],
+    [
+      "invalid source",
+      [...group("1"), ...source("1.command.true")],
+      intent("1.open_only"),
+    ],
+    [
+      "duplicate source",
+      [...group("1"), ...source("1.command.1"), ...source("1.command.1")],
+      intent("1.open_only"),
+    ],
+    [
+      "mask without browserRequested",
+      [...group("8"), ...source("1.command.1")],
+      intent("1.open_only"),
+    ],
+    [
+      "invalid base",
+      [...group("24"), ...source("1.command.1")],
+      intent("1.open_only"),
+    ],
+    [
+      "future base",
+      [...group("1", READER, "2"), ...source("1.command.1")],
+      intent("1.open_only"),
+    ],
+    ["absent intent", [...group("1"), ...source("1.command.1")], []],
+    [
+      "duplicate intent",
+      [...group("1"), ...source("1.command.1")],
+      [...intent("1.open_only"), ...intent("1.open_only")],
+    ],
+    [
+      "future intent",
+      [...group("1"), ...source("1.command.1")],
+      intent("2.open_only"),
+    ],
+    [
+      "unversioned intent",
+      [...group("1"), ...source("1.command.1")],
+      intent("open_only"),
+    ],
+    [
+      "injected intent",
+      [...group("1"), ...source("1.command.1")],
+      intent('1.open_only","PRIVATE_COMMAND'),
+    ],
+    [
+      "forged intent",
+      [...group("1"), ...source("1.command.1")],
+      intent("1.PRIVATE_COMMAND"),
+    ],
+    [
+      "prototype intent",
+      [...group("1"), ...source("1.command.1")],
+      intent("__proto__"),
+    ],
+    [
+      "oversized intent",
+      [...group("1"), ...source("1.command.1")],
+      intent(`1.open_only${" ".repeat(10_000)}`),
+    ],
+  ] as Array<[string, Array<[string, string]>, Array<[string, string]>]>)(
+    "omits only the intent for a %s",
+    (_name, base, extra) => {
+      const fields = fieldsWith(3);
+      const baseline = withPreviewClientContext(fields, query(base));
+      const result = withPreviewClientContext(
+        fields,
+        query([...base, ...extra]),
+      );
+      expect(result).toEqual(baseline);
+      expect(result).not.toHaveProperty(PREVIEW_TERMINAL_INTENT_KEY);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("keeps the tuple's headroom and never replaces an existing field", () => {
+    const url = params(
+      previewCaptureUrl(
+        ENDPOINT,
+        true,
+        1,
+        READER,
+        false,
+        liveCommand("open_only"),
+      ),
+    );
+    const withIntent = withPreviewClientContext(fieldsWith(69), url);
+    expect(Object.keys(withIntent)).toHaveLength(71);
+    expect(withIntent[PREVIEW_TERMINAL_INTENT_KEY]).toBe('[1,"open_only"]');
+    // The tuple's last slot is not given to the intent.
+    const tupleOnly = withPreviewClientContext(fieldsWith(70), url);
+    expect(Object.keys(tupleOnly)).toEqual([
+      ...Object.keys(fieldsWith(70)),
+      PREVIEW_CLIENT_CONTEXT_KEY,
+    ]);
+    const full = fieldsWith(71);
+    expect(withPreviewClientContext(full, url)).toBe(full);
+    const existing = {
+      ...fieldsWith(3),
+      [PREVIEW_TERMINAL_INTENT_KEY]: "server",
+    };
+    expect(withPreviewClientContext(existing, url)).toEqual({
+      ...existing,
+      [PREVIEW_CLIENT_CONTEXT_KEY]: `[1,1,"${READER}",[1,"command",true]]`,
+    });
+  });
+
+  it("keeps the tuple if only the intent cannot be read", () => {
+    const real = params(
+      previewCaptureUrl(
+        ENDPOINT,
+        true,
+        1,
+        READER,
+        false,
+        liveCommand("open_only"),
+      ),
+    );
+    const hostile = {
+      getAll: (name: string) => {
+        if (name === PREVIEW_TERMINAL_INTENT_PARAM)
+          throw new Error("PRIVATE_COOKIE");
+        return real.getAll(name);
+      },
+    } as unknown as URLSearchParams;
+    const fields = fieldsWith(3);
+    expect(withPreviewClientContext(fields, hostile)).toEqual({
+      ...fields,
+      [PREVIEW_CLIENT_CONTEXT_KEY]: `[1,1,"${READER}",[1,"command",true]]`,
+    });
   });
 });
 
@@ -812,6 +1096,37 @@ describe("actual phLogger to OTLP export", () => {
       withoutTimestamp(
         attributes.filter(({ key }) => key !== PREVIEW_CLIENT_CONTEXT_KEY),
       ),
+    ).toEqual(withoutTimestamp(legacy));
+    expectBaselineSurvives(attributes, fields);
+  });
+
+  it("exports the terminal intent last beside the full daemon deadline context", async () => {
+    const fields = routeFields(captureWith(DEADLINE_CAPTURE_KEYS));
+    expect(Object.keys(fields)).toHaveLength(69);
+    const legacy = await exported(fields, `${ENDPOINT}?fresh=1`);
+    const attributes = await exported(
+      fields,
+      `${previewCaptureUrl(ENDPOINT, true, 1, READER, false, {
+        source: "command",
+        liveSelection: true,
+        intent: "info_with_operation",
+      })}&cmd=PRIVATE_COMMAND&note=PRIVATE_NOTE`,
+    );
+    // Both follow the route's own last field, in order.
+    const index = attributes.findIndex(({ key }) => key === "trigger_run_id");
+    expect(attributes.slice(index + 1, index + 3)).toEqual([
+      {
+        key: PREVIEW_CLIENT_CONTEXT_KEY,
+        value: { stringValue: `[1,1,"${READER}",[1,"command",true]]` },
+      },
+      {
+        key: PREVIEW_TERMINAL_INTENT_KEY,
+        value: { stringValue: '[1,"info_with_operation"]' },
+      },
+    ]);
+    const added = [PREVIEW_CLIENT_CONTEXT_KEY, PREVIEW_TERMINAL_INTENT_KEY];
+    expect(
+      withoutTimestamp(attributes.filter(({ key }) => !added.includes(key))),
     ).toEqual(withoutTimestamp(legacy));
     expectBaselineSurvives(attributes, fields);
   });

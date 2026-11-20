@@ -3,11 +3,14 @@
  * which committed `showPreview` conditions were true at dispatch and which
  * public bundle commit it loaded, plus, only beside browserRequested, which
  * terminal input field produced the display text and whether the selection
- * followed the live edge. These describe the client's polling decision,
- * not physical browser execution or visible pixels. The server treats them as
- * untrusted diagnostics only; they never affect auth, session selection,
- * capture, caching or the response.
+ * followed the live edge, and for a live command, its closed invocation shape.
+ * These describe the client's polling decision, not physical browser
+ * execution or visible pixels. The server treats them as untrusted
+ * diagnostics only; they never affect auth, session selection, capture,
+ * caching or the response.
  */
+
+import { AGENT_BROWSER_PREVIEW_INTENTS } from "@/lib/utils/agent-browser-command";
 
 export const PREVIEW_DIAGNOSTIC_VERSION_PARAM = "preview_diag_v";
 export const PREVIEW_ACTIVATION_PARAM = "preview_activation";
@@ -24,6 +27,18 @@ export const PREVIEW_TEXT_SOURCE_PARAM = "preview_text_source";
  * read those positions are unaffected.
  */
 export const PREVIEW_CLIENT_CONTEXT_KEY = "preview_client_context";
+/**
+ * Optional add-on `1.<intent>`: the closed shape of the selected live command
+ * (`AgentBrowserPreviewIntent`), sent only beside the browserRequested bit and
+ * a `command` source at the live edge. Older servers ignore it.
+ */
+export const PREVIEW_TERMINAL_INTENT_PARAM = "preview_terminal_intent";
+/**
+ * Separate String log attribute `[1,"<intent>"]`, appended after the client
+ * context only when that context carried a live `command` source. It never
+ * changes the `preview_client_context` value.
+ */
+export const PREVIEW_TERMINAL_INTENT_KEY = "preview_terminal_intent";
 
 /**
  * The selected terminal's producer tag (`SidebarTerminal.commandSource`) for
@@ -51,6 +66,18 @@ const TEXT_SOURCE_ADD_ONS = new Map<string, string>(
 );
 const MAX_TEXT_SOURCE_LENGTH = Math.max(
   ...[...TEXT_SOURCE_ADD_ONS.keys()].map((value) => value.length),
+);
+/** The only text-source add-on that admits a terminal intent. */
+const LIVE_COMMAND_TEXT_SOURCE = "1.command.1";
+
+/** Closed 5-value domain: canonical query value → canonical attribute value. */
+const TERMINAL_INTENTS = new Map<string, string>(
+  AGENT_BROWSER_PREVIEW_INTENTS.map(
+    (intent) => [`1.${intent}`, `[1,"${intent}"]`] as const,
+  ),
+);
+const MAX_TERMINAL_INTENT_LENGTH = Math.max(
+  ...[...TERMINAL_INTENTS.keys()].map((value) => value.length),
 );
 
 const UNKNOWN_READER = "unknown";
@@ -132,6 +159,8 @@ export const PREVIEW_DEFER_WAIT_PARAM = "deferWait";
  * `deferWait=1` is added only beside `fresh=1`. The text-source add-on is sent
  * only beside an encodable mask with the browserRequested bit; an unrecognized
  * source is reported as `unavailable`, and a non-boolean selection omits it.
+ * The terminal intent is added only beside a `command` source at the live
+ * edge, and only for a value in its closed domain.
  */
 export function previewCaptureUrl(
   endpoint: string,
@@ -139,7 +168,7 @@ export function previewCaptureUrl(
   activationMask: number,
   loadedBuildCommit: unknown,
   deferWait = false,
-  textSource?: { source: unknown; liveSelection: unknown },
+  textSource?: { source: unknown; liveSelection: unknown; intent?: unknown },
 ): string {
   const query = new URLSearchParams();
   if (fresh) query.set("fresh", "1");
@@ -158,7 +187,16 @@ export function previewCaptureUrl(
       )
         ? (textSource?.source as PreviewTextSource)
         : "unavailable";
-      query.set(PREVIEW_TEXT_SOURCE_PARAM, `1.${source}.${live ? 1 : 0}`);
+      const addOn = `1.${source}.${live ? 1 : 0}`;
+      query.set(PREVIEW_TEXT_SOURCE_PARAM, addOn);
+      const intent = textSource?.intent;
+      if (
+        addOn === LIVE_COMMAND_TEXT_SOURCE &&
+        typeof intent === "string" &&
+        intent.length + 2 <= MAX_TERMINAL_INTENT_LENGTH &&
+        TERMINAL_INTENTS.has(`1.${intent}`)
+      )
+        query.set(PREVIEW_TERMINAL_INTENT_PARAM, `1.${intent}`);
     }
   }
   const search = query.toString();
@@ -181,15 +219,57 @@ function single(
     : undefined;
 }
 
-/** Exact canonical add-on element, or nothing; it never affects the base. */
-function textSourceAddOn(params: URLSearchParams): string | undefined {
+/** Exact canonical value from a closed domain, or nothing; never throws. */
+function closedValue(
+  params: URLSearchParams,
+  name: string,
+  domain: ReadonlyMap<string, string>,
+  maxLength: number,
+): { value: string; element: string } | undefined {
   try {
-    const value = single(
-      params,
-      PREVIEW_TEXT_SOURCE_PARAM,
-      MAX_TEXT_SOURCE_LENGTH,
-    );
-    return value === undefined ? undefined : TEXT_SOURCE_ADD_ONS.get(value);
+    const value = single(params, name, maxLength);
+    if (value === undefined) return undefined;
+    const element = domain.get(value);
+    return element === undefined ? undefined : { value, element };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The canonical tuple plus whether its add-on validated as a live `command`
+ * source beside the browserRequested bit, the only basis for an intent.
+ */
+function decodePreviewClientContext(
+  params: URLSearchParams,
+): { tuple: string; liveCommand: boolean } | undefined {
+  try {
+    const version = single(params, PREVIEW_DIAGNOSTIC_VERSION_PARAM, 1);
+    const activation = single(params, PREVIEW_ACTIVATION_PARAM, 3);
+    const reader = single(params, PREVIEW_READER_PARAM, 40);
+    if (version !== "1" || activation === undefined || reader === undefined)
+      return undefined;
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(activation)) return undefined;
+    const mask = Number(activation);
+    if (!isActivationMask(mask)) return undefined;
+    const normalizedReader = normalizeReader(reader);
+    if (normalizedReader === undefined) return undefined;
+    const base = `1,${mask},"${normalizedReader}"`;
+    const addOn =
+      (mask & 1) === 1
+        ? closedValue(
+            params,
+            PREVIEW_TEXT_SOURCE_PARAM,
+            TEXT_SOURCE_ADD_ONS,
+            MAX_TEXT_SOURCE_LENGTH,
+          )
+        : undefined;
+    return addOn === undefined
+      ? { tuple: `[${base}]`, liveCommand: false }
+      : {
+          tuple: `[${base},${addOn.element}]`,
+          liveCommand: addOn.value === LIVE_COMMAND_TEXT_SOURCE,
+        };
   } catch {
     return undefined;
   }
@@ -205,46 +285,51 @@ function textSourceAddOn(params: URLSearchParams): string | undefined {
 export function parsePreviewClientContext(
   params: URLSearchParams,
 ): string | undefined {
-  try {
-    const version = single(params, PREVIEW_DIAGNOSTIC_VERSION_PARAM, 1);
-    const activation = single(params, PREVIEW_ACTIVATION_PARAM, 3);
-    const reader = single(params, PREVIEW_READER_PARAM, 40);
-    if (version !== "1" || activation === undefined || reader === undefined)
-      return undefined;
-    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(activation)) return undefined;
-    const mask = Number(activation);
-    if (!isActivationMask(mask)) return undefined;
-    const normalizedReader = normalizeReader(reader);
-    if (normalizedReader === undefined) return undefined;
-    const base = `1,${mask},"${normalizedReader}"`;
-    const addOn = (mask & 1) === 1 ? textSourceAddOn(params) : undefined;
-    return addOn === undefined ? `[${base}]` : `[${base},${addOn}]`;
-  } catch {
-    return undefined;
-  }
+  return decodePreviewClientContext(params)?.tuple;
 }
 
 /**
  * Return the existing diagnostic fields, appending the validated tuple last
- * only when the baseline leaves conservative logger headroom. Otherwise (or on
- * any failure) return the original object unchanged; never throws.
+ * only when the baseline leaves conservative logger headroom. The terminal
+ * intent follows it only when the tuple's add-on is a live `command` source,
+ * the intent is one canonical closed value, and the tuple's own budget still
+ * holds afterwards, so the largest record never grows. Otherwise (or on any
+ * failure) return the original object or the tuple-only result; never throws.
  */
 export function withPreviewClientContext<T extends Record<string, unknown>>(
   fields: T,
   params: URLSearchParams,
 ): T {
   try {
-    const context = parsePreviewClientContext(params);
+    const context = decodePreviewClientContext(params);
+    const has = (key: string) =>
+      Object.prototype.hasOwnProperty.call(fields, key);
+    const count = Object.keys(fields).length;
     if (
       context === undefined ||
-      Object.prototype.hasOwnProperty.call(
-        fields,
-        PREVIEW_CLIENT_CONTEXT_KEY,
-      ) ||
-      Object.keys(fields).length > MAX_BASELINE_FIELDS
+      has(PREVIEW_CLIENT_CONTEXT_KEY) ||
+      count > MAX_BASELINE_FIELDS
     )
       return fields;
-    return { ...fields, [PREVIEW_CLIENT_CONTEXT_KEY]: context };
+    const withContext = {
+      ...fields,
+      [PREVIEW_CLIENT_CONTEXT_KEY]: context.tuple,
+    };
+    if (
+      !context.liveCommand ||
+      has(PREVIEW_TERMINAL_INTENT_KEY) ||
+      count + 1 > MAX_BASELINE_FIELDS
+    )
+      return withContext;
+    const intent = closedValue(
+      params,
+      PREVIEW_TERMINAL_INTENT_PARAM,
+      TERMINAL_INTENTS,
+      MAX_TERMINAL_INTENT_LENGTH,
+    );
+    return intent === undefined
+      ? withContext
+      : { ...withContext, [PREVIEW_TERMINAL_INTENT_KEY]: intent.element };
   } catch {
     return fields;
   }
