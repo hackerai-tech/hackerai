@@ -1819,7 +1819,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
-      /getNextProviderDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+      /getNextProviderDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: failedRetryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
     );
     expect(taskSrc).toMatch(
       /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
