@@ -3,7 +3,9 @@ import { test } from "node:test";
 import {
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
+  stat,
   writeFile,
   rm,
   symlink,
@@ -23,6 +25,7 @@ import {
   record,
   main,
 } from "./qa.mjs";
+import { TargetVerificationError } from "./verify-targets.mjs";
 
 const config = () => ({
   environment: "local",
@@ -64,6 +67,125 @@ async function waitFor(file, predicate) {
     await delay(30);
   }
   throw new Error("Timed out waiting for test child");
+}
+// Git hooks export GIT_* variables that would redirect fixture commands.
+function withoutGitEnv(t) {
+  const saved = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.startsWith("GIT_")),
+  );
+  for (const name of Object.keys(saved)) delete process.env[name];
+  t.after(() => Object.assign(process.env, saved));
+}
+function commitFixture(root, files = []) {
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  if (files.length) execFileSync("git", ["add", ...files], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=QA Fixture",
+      "-c",
+      "user.email=qa@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "fixture",
+    ],
+    { cwd: root },
+  );
+}
+async function listen(t, handler = (_, res) => res.end("local-worktree")) {
+  const server = createServer(handler);
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => server.close(done)));
+  return server.address().port;
+}
+async function closedPort() {
+  const server = createServer();
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address();
+  await new Promise((done) => server.close(done));
+  return port;
+}
+const missing = (path) => assert.rejects(stat(path), { code: "ENOENT" });
+
+/**
+ * A clean committed checkout with a pinned executable, a completed frontend
+ * build ID, loopback listeners and an injected target verifier.
+ */
+async function nativeFixture(t) {
+  withoutGitEnv(t);
+  const root = await temp(t);
+  let frontendStatus = 200;
+  const port = await listen(t, (_request, response) => {
+    response.writeHead(frontendStatus);
+    response.end();
+  });
+  const c = config();
+  c.frontend = c.backend.url = `http://127.0.0.1:${port}`;
+  c.relay = `ws://127.0.0.1:${port}`;
+  c.reuse = {
+    frontend: "c".repeat(64),
+    backend: "d".repeat(64),
+    relay: "e".repeat(64),
+    profile: "qa-synthetic",
+  };
+  const app = "#!/bin/sh\nexit 0\n";
+  c.app.executable = ".artifacts/qa-app";
+  c.app.sha256 = createHash("sha256").update(app).digest("hex");
+  await mkdir(join(root, ".artifacts"));
+  await writeFile(join(root, c.app.executable), app, { mode: 0o700 });
+  await mkdir(join(root, ".next"));
+  await writeFile(join(root, ".next/BUILD_ID"), "build-1");
+  await mkdir(join(root, "scripts"));
+  await writeFile(
+    join(root, "scripts/verify-local-dependencies.mjs"),
+    await readFile("scripts/verify-local-dependencies.mjs"),
+  );
+  await writeFile(join(root, "package.json"), "{}");
+  await writeFile(join(root, ".gitignore"), ".artifacts/\n.next/\n");
+  commitFixture(root, [".gitignore", "package.json", "scripts"]);
+  const file = join(root, ".artifacts/config.json");
+  const out = [];
+  t.mock.method(console, "log", (line) => out.push(String(line)));
+  const fx = {
+    root,
+    config: c,
+    file,
+    receipts: join(root, ".artifacts/desktop-qa/.receipts"),
+    verifyCalls: 0,
+    verifyError: undefined,
+    setFrontendStatus: (status) => {
+      frontendStatus = status;
+    },
+    save: (value = c) => writeFile(file, JSON.stringify(value)),
+    async run(...args) {
+      out.length = 0;
+      const code = await main(args, root, {
+        verify: async () => {
+          fx.verifyCalls++;
+          if (fx.verifyError) throw fx.verifyError;
+          return {};
+        },
+      });
+      const text = out.join("\n");
+      return {
+        code,
+        text,
+        fingerprint: text.match(/^fingerprint: ([a-f0-9]{64})$/m)?.[1],
+      };
+    },
+    preflight: (name = "chat-sandbox") =>
+      fx.run("preflight", "native", file, name),
+    recordResult: (outcome, fingerprint, name = "chat-sandbox") =>
+      fx.run("record-result", file, name, outcome, fingerprint),
+  };
+  await fx.save();
+  return fx;
 }
 
 test("rejects Production, mixed local targets, credentials and unknown fields", () => {
@@ -435,11 +557,7 @@ test("a synchronous spawn failure restores the callers signal listeners", async 
 });
 
 test("start verifies targets but never passes control-plane tokens to its child", async (t) => {
-  const gitEnvironment = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name.startsWith("GIT_")),
-  );
-  for (const name of Object.keys(gitEnvironment)) delete process.env[name];
-  t.after(() => Object.assign(process.env, gitEnvironment));
+  withoutGitEnv(t);
   const root = await temp(t);
   const c = config();
   const server = createServer((req, res) => res.end("local-worktree"));
@@ -467,25 +585,7 @@ test("start verifies targets but never passes control-plane tokens to its child"
     await readFile("scripts/verify-local-dependencies.mjs"),
   );
   await writeFile(join(root, "package.json"), "{}");
-  execFileSync("git", ["init", "-q"], { cwd: root });
-  execFileSync(
-    "git",
-    [
-      "-c",
-      "user.name=QA Fixture",
-      "-c",
-      "user.email=qa@example.invalid",
-      "-c",
-      "commit.gpgsign=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "commit",
-      "--allow-empty",
-      "-qm",
-      "fixture",
-    ],
-    { cwd: root },
-  );
+  commitFixture(root);
   await writeFile(join(root, "config.json"), JSON.stringify(c));
   const originalFetch = globalThis.fetch;
   const verifiedPaths = [];
@@ -528,4 +628,294 @@ test("start verifies targets but never passes control-plane tokens to its child"
     convex: false,
     trigger: false,
   });
+});
+
+test("preflight web and windows-vm give guidance without touching files, network or verification", async (t) => {
+  const root = await temp(t);
+  const fetched = [];
+  t.mock.method(globalThis, "fetch", (url) => {
+    fetched.push(String(url));
+    return Promise.reject(new Error("unexpected network access"));
+  });
+  const out = [];
+  t.mock.method(console, "log", (line) => out.push(String(line)));
+  let verified = 0;
+  const verify = async () => {
+    verified++;
+  };
+  assert.equal(await main(["preflight", "web"], root, { verify }), 0);
+  assert.match(out.join("\n"), /Vercel Preview/);
+  assert.match(out.join("\n"), /never fall back to Production/);
+  out.length = 0;
+  assert.equal(await main(["preflight", "windows-vm"], root, { verify }), 0);
+  const windows = out.join("\n");
+  assert.match(windows, /running VM is not proof/);
+  assert.match(windows, /never launches, pauses or signs in/);
+  assert.match(windows, /inside the guest.*preflight native/);
+  assert.deepEqual(await readdir(root), []);
+  assert.deepEqual(fetched, []);
+  assert.equal(verified, 0);
+});
+
+test("native preflight stops at a local blocker before any target verification", async (t) => {
+  const fx = await nativeFixture(t);
+  const blockers = [
+    [
+      async () => writeFile(join(fx.root, fx.config.app.executable), "changed"),
+      /hash changed/,
+    ],
+    [
+      async () =>
+        fx.save({
+          ...fx.config,
+          frontend: `http://127.0.0.1:${await closedPort()}`,
+        }),
+      /Local frontend is not ready/,
+    ],
+    [
+      async () =>
+        fx.save({
+          ...fx.config,
+          relay: `ws://127.0.0.1:${await closedPort()}`,
+        }),
+      /Loopback relay is not listening/,
+    ],
+  ];
+  for (const [inject, reason] of blockers) {
+    await fx.save();
+    await writeFile(
+      join(fx.root, fx.config.app.executable),
+      "#!/bin/sh\nexit 0\n",
+    );
+    await inject();
+    const result = await fx.preflight();
+    assert.equal(result.code, 2);
+    assert.match(result.text, /^preflight native chat-sandbox: BLOCKED$/m);
+    assert.match(result.text, reason);
+    assert.match(result.text, /no provider control plane was contacted/);
+    assert.equal(result.fingerprint, undefined);
+  }
+  assert.equal(fx.verifyCalls, 0);
+  await missing(join(fx.root, ".artifacts/desktop-qa"));
+});
+
+test("an operator PASS is reused only for the same case and exact identity", async (t) => {
+  const fx = await nativeFixture(t);
+  const first = await fx.preflight();
+  assert.equal(first.code, 0);
+  assert.match(first.text, /: READY$/m);
+  assert.match(first.text, /prior result: none for this case/);
+  assert.match(first.text, /window\/lock.*\n.*account.*\n.*transport/);
+  assert.ok(first.fingerprint);
+  assert.equal((await fx.recordResult("pass", first.fingerprint)).code, 0);
+  const receipt = join(fx.receipts, "chat-sandbox.json");
+  assert.equal((await stat(receipt)).mode & 0o777, 0o600);
+  assert.deepEqual(
+    Object.keys(JSON.parse(await readFile(receipt, "utf8"))).sort(),
+    ["case", "fingerprint", "outcome", "recordedAt", "source", "version"],
+  );
+  const again = await fx.preflight();
+  assert.equal(again.fingerprint, first.fingerprint);
+  assert.match(
+    again.text,
+    /prior result: PASS recorded .* for this exact identity/,
+  );
+
+  fx.setFrontendStatus(503);
+  const offline = await fx.preflight();
+  assert.equal(offline.code, 2);
+  assert.match(
+    offline.text,
+    /historical PASS: .*live readiness remains unverified/,
+  );
+  assert.equal(offline.fingerprint, undefined);
+  fx.setFrontendStatus(200);
+
+  // Another case has its own identity and never inherits this PASS.
+  const other = await fx.preflight("findings-download");
+  assert.notEqual(other.fingerprint, first.fingerprint);
+  assert.match(other.text, /prior result: none for this case/);
+  await assert.rejects(
+    fx.recordResult("pass", first.fingerprint, "findings-download"),
+    /does not match/,
+  );
+  await missing(join(fx.receipts, "findings-download.json"));
+  // Recording recomputes locally; only the three preflights verified targets.
+  assert.equal(fx.verifyCalls, 3);
+});
+
+test("a target verification failure blocks and hides a matching PASS", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  await fx.recordResult("pass", fingerprint);
+  fx.verifyError = new TargetVerificationError(
+    "Trigger worker version mismatch",
+  );
+  const result = await fx.preflight();
+  assert.equal(result.code, 2);
+  assert.match(result.text, /: BLOCKED$/m);
+  assert.match(result.text, /worker version mismatch/);
+  assert.doesNotMatch(result.text, /^(prior result|fingerprint):/m);
+  fx.verifyError = new Error("synthetic-secret");
+  const unexpected = await fx.preflight();
+  assert.equal(unexpected.code, 2);
+  assert.match(unexpected.text, /reason: Target verification failed$/m);
+  assert.doesNotMatch(unexpected.text, /synthetic-secret/);
+});
+
+test("the latest FAIL or BLOCKED for a case invalidates its earlier PASS", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  for (const outcome of ["fail", "blocked"]) {
+    await fx.recordResult("pass", fingerprint);
+    assert.match((await fx.preflight()).text, /prior result: PASS/);
+    await fx.recordResult(outcome, fingerprint);
+    assert.match(
+      (await fx.preflight()).text,
+      new RegExp(
+        `latest ${outcome.toUpperCase()} for this case; fresh run required`,
+      ),
+    );
+  }
+});
+
+test("identity drift requires a fresh run and refuses the stale fingerprint", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  await fx.recordResult("pass", fingerprint);
+  // Field order in the config file does not change the normalized identity.
+  const reordered = Object.fromEntries(Object.entries(fx.config).reverse());
+  await fx.save(reordered);
+  assert.equal((await fx.preflight()).fingerprint, fingerprint);
+
+  const drifts = [
+    () => writeFile(join(fx.root, ".next/BUILD_ID"), "build-2"),
+    () =>
+      fx.save({
+        ...fx.config,
+        reuse: { ...fx.config.reuse, backend: "f".repeat(64) },
+      }),
+    () =>
+      fx.save({
+        ...fx.config,
+        worker: { ...fx.config.worker, version: "next" },
+      }),
+  ];
+  for (const drift of drifts) {
+    await fx.save();
+    await writeFile(join(fx.root, ".next/BUILD_ID"), "build-1");
+    await drift();
+    const result = await fx.preflight();
+    assert.equal(result.code, 0);
+    assert.notEqual(result.fingerprint, fingerprint);
+    assert.match(
+      result.text,
+      /PASS for a different identity; fresh run required/,
+    );
+    await assert.rejects(
+      fx.recordResult("pass", fingerprint),
+      /does not match/,
+    );
+  }
+  await fx.save();
+  await writeFile(join(fx.root, ".next/BUILD_ID"), "build-1");
+  assert.match((await fx.preflight()).text, /PASS recorded .* exact identity/);
+});
+
+test("dirty, unidentified or unbuilt checkouts never offer or record reuse", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  execFileSync("git", ["config", "status.showUntrackedFiles", "no"], {
+    cwd: fx.root,
+  });
+  const cases = [
+    [
+      () => writeFile(join(fx.root, "notes.txt"), "uncommitted"),
+      () => rm(join(fx.root, "notes.txt")),
+      /source checkout has uncommitted changes/,
+    ],
+    [
+      () => fx.save({ ...fx.config, reuse: undefined }),
+      () => fx.save(),
+      /config has no reuse identity/,
+    ],
+    [
+      () => rm(join(fx.root, ".next/BUILD_ID")),
+      () => writeFile(join(fx.root, ".next/BUILD_ID"), "build-1"),
+      /\.next\/BUILD_ID missing/,
+    ],
+  ];
+  for (const [change, restore, reason] of cases) {
+    await change();
+    const result = await fx.preflight();
+    assert.equal(result.code, 0);
+    assert.match(result.text, /: READY$/m);
+    assert.equal(result.fingerprint, undefined);
+    assert.match(result.text, reason);
+    await assert.rejects(fx.recordResult("pass", fingerprint), reason);
+    await restore();
+  }
+  await missing(fx.receipts);
+});
+
+test("receipts stay inside the worktree and never follow symlinks", async (t) => {
+  const fx = await nativeFixture(t);
+  const { fingerprint } = await fx.preflight();
+  const outside = await temp(t);
+  const forged = JSON.stringify({
+    version: 1,
+    source: "operator-observed",
+    case: "chat-sandbox",
+    outcome: "pass",
+    fingerprint,
+    recordedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await writeFile(join(outside, "chat-sandbox.json"), forged);
+  await mkdir(join(fx.root, ".artifacts/desktop-qa"));
+  await symlink(outside, fx.receipts);
+  assert.match((await fx.preflight()).text, /unreadable receipt/);
+  await assert.rejects(fx.recordResult("fail", fingerprint), /aliases/);
+  assert.equal(
+    await readFile(join(outside, "chat-sandbox.json"), "utf8"),
+    forged,
+  );
+
+  // A symlinked receipt file is unreadable, and recording replaces the link
+  // instead of writing through it.
+  await rm(fx.receipts);
+  await mkdir(fx.receipts);
+  await symlink(
+    join(outside, "chat-sandbox.json"),
+    join(fx.receipts, "chat-sandbox.json"),
+  );
+  assert.match((await fx.preflight()).text, /unreadable receipt/);
+  await fx.recordResult("fail", fingerprint);
+  assert.equal(
+    await readFile(join(outside, "chat-sandbox.json"), "utf8"),
+    forged,
+  );
+  assert.match((await fx.preflight()).text, /latest FAIL/);
+  assert.deepEqual(await readdir(fx.receipts), ["chat-sandbox.json"]);
+});
+
+test("reuse config accepts only SHA-256 revisions and a synthetic profile slug", () => {
+  const reuse = {
+    frontend: "c".repeat(64),
+    backend: "d".repeat(64),
+    relay: "e".repeat(64),
+    profile: "qa-synthetic",
+  };
+  assert.deepEqual(validateConfig({ ...config(), reuse }).reuse, reuse);
+  assert.equal(validateConfig(config()).reuse, undefined);
+  for (const change of [
+    { profile: "qa@example.com" },
+    { profile: "sk-live-synthetic" },
+    { profile: "QA Profile" },
+    { frontend: "abc123" },
+    { relay: "E".repeat(64) },
+    { extra: "x" },
+  ])
+    assert.throws(() =>
+      validateConfig({ ...config(), reuse: { ...reuse, ...change } }),
+    );
 });
