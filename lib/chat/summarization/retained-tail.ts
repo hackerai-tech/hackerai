@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 import type { Id } from "@/convex/_generated/dataModel";
 import { safeCountTokens, truncateContent } from "@/lib/token-utils";
+import { CONTEXT_USAGE_PART_TYPE } from "@/lib/chat/context-pressure";
 
 export const RETAINED_TAIL_STRATEGY = "token_budgeted_tail_v1" as const;
 export const RETAINED_TAIL_MIN_TOKENS = 2_000;
@@ -62,6 +63,7 @@ const RETAINED_TAIL_OMITTED_PART_TYPES = new Set([
   "step-start",
   "reasoning",
   "redacted-reasoning",
+  CONTEXT_USAGE_PART_TYPE,
   "data-summarization",
 ]);
 

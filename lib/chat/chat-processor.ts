@@ -25,6 +25,7 @@ import {
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import { CONTEXT_USAGE_PART_TYPE } from "@/lib/chat/context-pressure";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -639,6 +640,7 @@ function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
 const UI_ONLY_PART_TYPES = new Set([
   "data-agent-auto-review",
   "data-agent-auto-review-lifecycle",
+  CONTEXT_USAGE_PART_TYPE,
   "data-summarization",
   "data-shared-finding",
 ]);

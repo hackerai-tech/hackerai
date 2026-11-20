@@ -85,6 +85,12 @@ import {
   getProviderStatusCode,
 } from "@/lib/utils/error-utils";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+import {
+  CONTEXT_USAGE_PART_TYPE,
+  isContextUsagePart,
+  type ContextPressureSnapshot,
+} from "@/lib/chat/context-pressure";
+import { AGENT_LONG_HEARTBEAT_PART_TYPE } from "@/lib/chat/agent-long-heartbeat";
 
 /**
  * Check if messages contain file attachments
@@ -509,7 +515,9 @@ export async function runSummarizationStep(options: {
 
 /**
  * Tracks summarization state and handles inserting the summarization badge
- * into message parts at the correct position during save.
+ * into message parts at the correct position during save. It also carries the
+ * current provider attempt's display-only context snapshot to the response
+ * being saved.
  */
 export class SummarizationTracker {
   hasSummarized = false;
@@ -517,9 +525,33 @@ export class SummarizationTracker {
     part: UIMessagePart<any, any>;
     atStep: number;
   }> = [];
+  private contextPressure:
+    { id: string; data: ContextPressureSnapshot } | undefined;
+
+  /**
+   * @param onCompactionRecorded Called synchronously with this tracker's
+   * running count after each accepted compaction. Rejected summaries, which
+   * only reach `recordSummarizationUsage`, never call it.
+   */
+  constructor(
+    private readonly onCompactionRecorded?: (completedCount: number) => void,
+  ) {}
 
   get summarizationCount(): number {
     return this.records.length;
+  }
+
+  /** Each valid measurement replaces the last; only the latest is saved. */
+  recordContextPressure(snapshot: ContextPressureSnapshot, id: string): void {
+    this.contextPressure = { id, data: { ...snapshot } };
+  }
+
+  /**
+   * A new provider attempt saves a new response. It must not inherit the
+   * previous attempt's snapshot, which belongs to that response.
+   */
+  clearContextPressure(): void {
+    this.contextPressure = undefined;
   }
 
   /**
@@ -542,6 +574,11 @@ export class SummarizationTracker {
     });
 
     this.recordSummarizationUsage(usage, usageTracker);
+    try {
+      this.onCompactionRecorded?.(this.records.length);
+    } catch {
+      // Display-only reporting must never change generation or billing.
+    }
   }
 
   /** Account for generated-summary usage, whether accepted or rejected. */
@@ -556,13 +593,46 @@ export class SummarizationTracker {
 
   /**
    * Insert summarization parts into an assistant message at the correct
-   * position (before the step-start for the step where summarization happened).
-   * Returns the original message unchanged if no summarization occurred.
+   * position (before the step-start for the step where summarization happened)
+   * and replace any streamed context snapshot with this attempt's latest one.
+   * Returns the original message unchanged when neither applies.
    */
   processMessageForSave<T extends { role: string; parts: any[] }>(
     message: T,
   ): T {
-    if (message.role !== "assistant" || this.records.length === 0) {
+    if (message.role !== "assistant") return message;
+    const response = withoutContextUsageParts(message);
+    const saved = this.withSummarizationParts(response);
+    // A diagnostics snapshot never makes a response without its own content
+    // eligible for persistence.
+    return response.parts?.some(
+      (part) => part?.type !== AGENT_LONG_HEARTBEAT_PART_TYPE,
+    )
+      ? this.withContextPressure(saved)
+      : saved;
+  }
+
+  /** Appends exactly one tracked snapshot. */
+  private withContextPressure<T extends { role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (!this.contextPressure) return message;
+    return {
+      ...message,
+      parts: [
+        ...message.parts,
+        {
+          type: CONTEXT_USAGE_PART_TYPE,
+          ...this.contextPressure,
+        },
+      ],
+    };
+  }
+
+  private withSummarizationParts<T extends { role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (this.records.length === 0) {
       return message;
     }
     const parts = [...message.parts];
@@ -585,6 +655,85 @@ export class SummarizationTracker {
     }
     return { ...message, parts };
   }
+}
+
+/** Streamed snapshots are replaced by the tracker's value for this response. */
+const withoutContextUsageParts = <T extends { parts: any[] }>(message: T): T =>
+  message.parts?.some(isContextUsagePart)
+    ? {
+        ...message,
+        parts: message.parts.filter((part) => !isContextUsagePart(part)),
+      }
+    : message;
+
+export type AgentCompactionTallyOutcome =
+  "recorded" | "unchanged" | "stale" | "not_found" | "deleting";
+
+/**
+ * Persists one Agent run's completed-compaction count as absolute snapshots.
+ * Sends run one at a time and carry the latest count, so queued reports
+ * coalesce. `flush` resends the latest unconfirmed snapshot once, for example
+ * when the run's first report raced its chat association, and returns the
+ * queue so the caller can wait for it. Each send is bounded by `send` itself.
+ */
+export function createAgentCompactionReporter({
+  send,
+  registerBackgroundWork,
+  signal,
+  onError,
+}: {
+  send: (completedCount: number) => Promise<AgentCompactionTallyOutcome>;
+  registerBackgroundWork: (work: Promise<void>) => void;
+  signal: AbortSignal;
+  onError: (error: unknown) => void;
+}) {
+  let latest: number | undefined;
+  let confirmed = -1;
+  let closed = false;
+  let retryScheduled = false;
+  let queue: Promise<void> = Promise.resolve();
+
+  const deliver = async () => {
+    if (closed || latest === undefined || latest <= confirmed) return;
+    const completedCount = latest;
+    try {
+      const outcome = await send(completedCount);
+      if (outcome === "recorded" || outcome === "unchanged") {
+        confirmed = Math.max(confirmed, completedCount);
+      } else if (outcome === "not_found" || outcome === "deleting") {
+        closed = true;
+      }
+    } catch (error) {
+      try {
+        onError(error);
+      } catch {
+        // Display-only reporting must never fail the run, even while logging.
+      }
+    }
+  };
+  const enqueue = () => {
+    queue = queue.then(deliver);
+    registerBackgroundWork(queue);
+  };
+
+  return {
+    report(completedCount: number) {
+      // A compaction that finishes after the run was stopped is not counted.
+      if (signal.aborted) return;
+      latest = Math.max(latest ?? 0, completedCount);
+      enqueue();
+    },
+    flush(): Promise<void> {
+      // A later flush, such as final cleanup after the stream's own flush,
+      // waits for the retry already queued instead of resolving early.
+      if (retryScheduled) return queue;
+      if (closed || latest === undefined || latest <= confirmed)
+        return Promise.resolve();
+      retryScheduled = true;
+      enqueue();
+      return queue;
+    },
+  };
 }
 
 /**

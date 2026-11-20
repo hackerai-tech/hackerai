@@ -129,6 +129,7 @@ async function finalize(
     triggerSignal: run.trigger.signal,
     state,
     deductAccumulatedUsage,
+    runCompactionReporter: { flush: jest.fn() },
     drainBackgroundRunWork: jest.fn(async () => undefined),
     terminalEmptyResponse: false,
     isTrustedBrowserHandoffReadFailure: () => false,

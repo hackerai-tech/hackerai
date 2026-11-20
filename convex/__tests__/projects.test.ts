@@ -279,7 +279,7 @@ describe("projects", () => {
     expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
   });
 
-  it("paginates project tasks without exposing private prediction content", async () => {
+  it("paginates project tasks without exposing private chat state", async () => {
     const page = {
       page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
       isDone: true,
@@ -290,6 +290,11 @@ describe("projects", () => {
       page: page.page.map((chat) => ({
         ...chat,
         objective_checkpoint: "private checkpoint",
+        agent_compaction_tally: {
+          total: 2,
+          runId: "finished-run",
+          runCount: 1,
+        },
         next_actions: {
           consumed: false,
           batch: { suggestions: ["Private suggestion"] },

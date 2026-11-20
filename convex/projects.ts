@@ -375,6 +375,7 @@ export const getProjectThreads = query({
           {
             objective_checkpoint: _privateObjectiveCheckpoint,
             next_actions: _privateNextActions,
+            agent_compaction_tally: _privateAgentCompactionTally,
             active_agent_user_wait: privateUserWait,
             ...chat
           },

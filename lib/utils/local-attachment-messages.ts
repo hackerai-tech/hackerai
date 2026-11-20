@@ -1,3 +1,5 @@
+import { CONTEXT_USAGE_PART_TYPE } from "@/lib/chat/context-pressure";
+
 type MessageWithParts = {
   role?: unknown;
   parts?: unknown[];
@@ -18,6 +20,7 @@ const getPartFields = (part: unknown) =>
 const UI_ONLY_PART_TYPES = new Set([
   "data-agent-auto-review",
   "data-agent-auto-review-lifecycle",
+  CONTEXT_USAGE_PART_TYPE,
   "data-summarization",
 ]);
 

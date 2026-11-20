@@ -342,6 +342,16 @@ export default defineSchema({
     last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    // Private. Completed top-level Agent compactions since tracking began;
+    // absent means never tracked, not zero. `runId`/`runCount` hold the
+    // latest run's absolute snapshot so repeated reports apply only a delta.
+    agent_compaction_tally: v.optional(
+      v.object({
+        total: v.number(),
+        runId: v.string(),
+        runCount: v.number(),
+      }),
+    ),
     // Legacy checkpoint data remains readable until existing rows are migrated.
     objective_checkpoint: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),

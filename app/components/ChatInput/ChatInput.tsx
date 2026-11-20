@@ -54,6 +54,7 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
+import type { ContextMeterData } from "../ChatContextDetails";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import { AgentInputNotificationPrompt } from "../AgentInputNotificationPrompt";
 import {
@@ -116,6 +117,8 @@ interface ChatInputProps {
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
   chatId?: string;
+  /** Existing Agent chat context for the opt-in composer meter. */
+  contextMeter?: ContextMeterData;
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
   placeholder?: string;
@@ -319,6 +322,7 @@ const ChatInputContent = ({
   isNewChat = false,
   clearDraftOnSubmit = true,
   chatId,
+  contextMeter,
   rateLimitWarning,
   onDismissRateLimitWarning,
   placeholder,
@@ -1822,6 +1826,12 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
+              contextMeter={
+                // A composer mid-transition must not show another chat's data.
+                contextMeter && contextMeter.chatId === chatId
+                  ? contextMeter
+                  : undefined
+              }
               confirmEnvironmentChange={!isNewChat && hasMessages}
               replyActionLabel={
                 isWaitingForReply
