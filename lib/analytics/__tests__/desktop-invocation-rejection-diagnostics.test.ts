@@ -3936,9 +3936,13 @@ describe("stream fence origin", () => {
             { ...treeGroups, ...visible },
             {
               getOwnPropertyDescriptor(target, key) {
+                const descriptor = Reflect.getOwnPropertyDescriptor(
+                  target,
+                  key,
+                );
                 if (key === "desktop_stream_fence_darwin_stop_group_probe")
                   change?.(target);
-                return Reflect.getOwnPropertyDescriptor(target, key);
+                return descriptor;
               },
             },
           );
@@ -3953,6 +3957,14 @@ describe("stream fence origin", () => {
           },
           (target: Record<string, unknown>) => {
             target.desktop_stream_fence_darwin_stop_version = 2;
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_darwin_stop_source =
+              "document_invalidation";
+          },
+          (target: Record<string, unknown>) => {
+            target.desktop_stream_fence_darwin_stop_group_probe =
+              "probe_denied";
           },
           (target: Record<string, unknown>) => {
             target.desktop_stream_fence_windows_taskkill_version = 1;

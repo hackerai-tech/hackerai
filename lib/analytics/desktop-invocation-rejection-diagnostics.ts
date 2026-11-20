@@ -1435,8 +1435,8 @@ function lacksOwnProperties(source: object, keys: readonly string[]): boolean {
 /** `cleaned` with the Darwin stop group read from the same property bag,
  * only beside its validated `owner_stop_requested` origin and
  * `tree_unconfirmed` cleanup pairs and without any taskkill group property.
- * An invalid group, or one whose read changed those pairs or added a taskkill
- * group property, drops alone. A getter never runs; a throw keeps `cleaned`. */
+ * An invalid group, changes to the observed fields, or a new taskkill group
+ * property drops only the Darwin receipt. Getters never run. */
 function readDarwinStop(
   source: object,
   rejection: DesktopInvocationRejectionDiagnostic | null,
@@ -1453,13 +1453,14 @@ function readDarwinStop(
   try {
     if (!lacksOwnProperties(source, STREAM_FENCE_WINDOWS_ONLY_PROPERTIES))
       return cleaned;
-    const [version, stopSource, groupProbe] = ownDataValuesOrUndefined(
+    const darwinValues = ownDataValuesOrUndefined(
       source,
       STREAM_FENCE_DARWIN_STOP_PROPERTIES,
     );
+    const [version, stopSource, groupProbe] = darwinValues;
     if (version !== 1) return cleaned;
     // Reading the group can change earlier properties on a proxy. Keep the
-    // validated pairs unless they, the group version and the absence of
+    // validated pairs unless they, the Darwin group and the absence of
     // every Windows-only property all still hold.
     const fenceKeys = [
       ...STREAM_FENCE_PROPERTIES,
@@ -1467,11 +1468,13 @@ function readDarwinStop(
     ] as const;
     const rechecked = ownDataValuesOrUndefined(source, [
       ...fenceKeys,
-      STREAM_FENCE_DARWIN_STOP_PROPERTIES[0],
+      ...STREAM_FENCE_DARWIN_STOP_PROPERTIES,
     ]);
     if (
       !fenceKeys.every((key, index) => rechecked[index] === cleaned[key]) ||
-      rechecked.at(-1) !== version ||
+      darwinValues.some(
+        (value, index) => rechecked[fenceKeys.length + index] !== value,
+      ) ||
       !lacksOwnProperties(source, STREAM_FENCE_WINDOWS_ONLY_PROPERTIES)
     )
       return cleaned;
