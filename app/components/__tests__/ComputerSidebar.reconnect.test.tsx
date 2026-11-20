@@ -743,15 +743,25 @@ describe("ComputerSidebar reconnect behavior", () => {
     };
 
     it.each([
-      ["brief-only exec", { action: "exec", brief: BRIEF }, "1.brief.1"],
+      ["brief-only exec", { action: "exec", brief: BRIEF }, "1.brief.1", null],
       [
         "real open",
         { action: "exec", command: OPEN, brief: "Open the site" },
         "1.command.1",
+        "1.open_only",
+      ],
+      [
+        "version-then-open",
+        {
+          action: "exec",
+          command: "agent-browser --version && agent-browser open about:blank",
+        },
+        "1.command.1",
+        "1.info_with_open",
       ],
     ])(
       "sends the %s selection's producer tag beside the unchanged mask",
-      async (_name, input, expected) => {
+      async (_name, input, expected, intent) => {
         const messages = messagesWith(shellPart("browser-tool", input));
         const { view } = renderSelected(messages, "browser-tool");
         await act(async () => {});
@@ -761,6 +771,9 @@ describe("ComputerSidebar reconnect behavior", () => {
         expect(fetchPreview).toHaveBeenCalledTimes(1);
         expect(sentQuery(0).get("preview_activation")).toBe("1");
         expect(sentQuery(0).get("preview_text_source")).toBe(expected);
+        expect(sentQuery(0).getAll("preview_terminal_intent")).toEqual(
+          intent === null ? [] : [intent],
+        );
         // Only the closed tag travels: no text or tool identifiers.
         expect(
           decodeURIComponent(String(fetchPreview.mock.calls[0][0])),
@@ -801,6 +814,43 @@ describe("ComputerSidebar reconnect behavior", () => {
       view.unmount();
     });
 
+    it("drops the intent once a live command selection becomes history, without restarting the poll", async () => {
+      const open = shellPart("browser-tool", {
+        action: "exec",
+        command: "agent-browser --headed open https://example.org",
+      });
+      const { view, rerender } = renderSelected(
+        messagesWith(open),
+        "browser-tool",
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      expect(sentQuery(0).get("preview_text_source")).toBe("1.command.1");
+      expect(sentQuery(0).get("preview_terminal_intent")).toBe("1.option_only");
+
+      rerender(
+        messagesWith(
+          open,
+          shellPart("later-tool", { action: "exec", command: "pwd" }),
+        ),
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      // The failure backoff timing is unchanged by the selection change.
+      await act(async () => {
+        jest.advanceTimersByTime(999);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(2);
+      expect(sentQuery(1).get("preview_activation")).toBe("1");
+      expect(sentQuery(1).get("preview_text_source")).toBe("1.command.0");
+      expect(sentQuery(1).has("preview_terminal_intent")).toBe(false);
+      view.unmount();
+    });
+
     it.each(["agent-browser --version", "agent-browser open --help"])(
       "keeps standalone informational %s hidden and untagged",
       async (command) => {
@@ -821,6 +871,7 @@ describe("ComputerSidebar reconnect behavior", () => {
         expect(fetchPreview).toHaveBeenCalledTimes(1);
         expect(sentQuery(0).get("preview_activation")).toBe("8");
         expect(sentQuery(0).has("preview_text_source")).toBe(false);
+        expect(sentQuery(0).has("preview_terminal_intent")).toBe(false);
         waiting.view.unmount();
       },
     );
@@ -848,6 +899,7 @@ describe("ComputerSidebar reconnect behavior", () => {
       await act(async () => {});
       expect(fetchPreview).toHaveBeenCalledTimes(1);
       expect(sentQuery(0).get("preview_text_source")).toBe("1.unavailable.1");
+      expect(sentQuery(0).has("preview_terminal_intent")).toBe(false);
       view.unmount();
     });
   });

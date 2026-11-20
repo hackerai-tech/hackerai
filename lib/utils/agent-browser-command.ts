@@ -304,14 +304,61 @@ export function detectAgentBrowserUsage(
 }
 
 /**
- * A standalone version or help check does not request a Browser Preview.
- * Other recognized browser invocations retain their existing behavior.
+ * Closed, content-free shape of a command that requests a Browser Preview,
+ * counted over the same comment-stripped invocations as the predicate:
+ * - `info_with_open` / `info_with_operation`: at least one informational-only
+ *   invocation (see `informationalOnly`) beside one or more operational
+ *   invocations, with / without a plain OPEN among the operational ones;
+ * - `multiple_with_open` / `multiple_operations`: two or more operational
+ *   invocations, none informational, with / without a plain OPEN;
+ * - otherwise exactly one operational invocation, by its first argument:
+ *   `open_only` for exactly `open`, `option_only` for a leading `-` option
+ *   (e.g. `--headed open …`), `other_only` for any other action or none.
+ * A plain OPEN is an operational invocation whose first argument is exactly
+ * `open`; option prefixes are not resolved and execution is not inferred.
  */
-export function requestsAgentBrowserPreview(command: string): boolean {
-  return splitShellCommands(command, { stripComments: true }).some(
-    (shellCommand) => {
-      const invocation = parseAgentBrowserInvocation(shellCommand);
-      return !!invocation && !invocation.informationalOnly;
-    },
-  );
+export const AGENT_BROWSER_PREVIEW_INTENTS = [
+  "open_only",
+  "option_only",
+  "other_only",
+  "multiple_operations",
+  "multiple_with_open",
+  "info_with_operation",
+  "info_with_open",
+] as const;
+export type AgentBrowserPreviewIntent =
+  (typeof AGENT_BROWSER_PREVIEW_INTENTS)[number];
+
+/**
+ * One parse for both the Browser Preview predicate and its diagnostic shape:
+ * `null` exactly when the command does not request a preview, i.e. it has no
+ * recognized invocation or only standalone version/help checks. Any other
+ * recognized invocation keeps requesting it.
+ */
+export function agentBrowserPreviewIntent(
+  command: string,
+): AgentBrowserPreviewIntent | null {
+  let informational = 0;
+  let operational = 0;
+  let firstAction: string | undefined;
+  let plainOpen = false;
+  for (const shellCommand of splitShellCommands(command, {
+    stripComments: true,
+  })) {
+    const invocation = parseAgentBrowserInvocation(shellCommand);
+    if (!invocation) continue;
+    if (invocation.informationalOnly) {
+      informational++;
+      continue;
+    }
+    if (operational++ === 0) firstAction = invocation.action;
+    plainOpen ||= invocation.action === "open";
+  }
+  if (operational === 0) return null;
+  if (informational > 0)
+    return plainOpen ? "info_with_open" : "info_with_operation";
+  if (operational > 1)
+    return plainOpen ? "multiple_with_open" : "multiple_operations";
+  if (firstAction === "open") return "open_only";
+  return firstAction?.startsWith("-") ? "option_only" : "other_only";
 }

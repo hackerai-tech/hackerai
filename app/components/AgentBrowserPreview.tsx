@@ -27,6 +27,7 @@ import {
   previewCaptureUrl,
 } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
 import type { SidebarTerminalCommandSource } from "@/types/chat";
+import type { AgentBrowserPreviewIntent } from "@/lib/utils/agent-browser-command";
 import {
   readBrowserRelay,
   sendBrowserRelayInput,
@@ -114,6 +115,7 @@ export function AgentBrowserPreview({
   liveSelection,
   browserRequested = false,
   browserRequestSource,
+  browserRequestIntent,
   takeoverRequest,
   onTakeoverRequestConsumed,
   runActive = false,
@@ -128,6 +130,8 @@ export function AgentBrowserPreview({
   browserRequested?: boolean;
   /** Diagnostic-only producer tag of the text that set browserRequested. */
   browserRequestSource?: SidebarTerminalCommandSource;
+  /** Diagnostic-only closed shape of the same text's browser invocations. */
+  browserRequestIntent?: AgentBrowserPreviewIntent | null;
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
@@ -299,13 +303,19 @@ export function AgentBrowserPreview({
   }, [activationMask]);
   // Sent only beside the browserRequested bit (an absent tag is reported as
   // unavailable); read at dispatch like the mask so it never restarts polling.
+  // The intent travels only for a live command source.
   const textSourceRef = useRef({
     source: browserRequestSource,
     liveSelection,
+    intent: browserRequestIntent,
   });
   useLayoutEffect(() => {
-    textSourceRef.current = { source: browserRequestSource, liveSelection };
-  }, [browserRequestSource, liveSelection]);
+    textSourceRef.current = {
+      source: browserRequestSource,
+      liveSelection,
+      intent: browserRequestIntent,
+    };
+  }, [browserRequestSource, liveSelection, browserRequestIntent]);
   // Read at dispatch like the mask, so a state change never restarts polling.
   const sessionStateRef = useRef(session?.state);
   useLayoutEffect(() => {
