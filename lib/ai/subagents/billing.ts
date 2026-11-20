@@ -8,7 +8,10 @@ import {
   getUnsettledUsagePoints,
   getUsageSettlementInitialDeduction,
 } from "@/lib/rate-limit";
-import { createQaSpendCapError } from "@/lib/rate-limit/qa-spending-policy";
+import {
+  createQaSpendCapError,
+  createQaSpendPoolWindowChangedError,
+} from "@/lib/rate-limit/qa-spending-policy";
 import type {
   ExtraUsageConfig,
   RateLimitInfo,
@@ -107,6 +110,7 @@ export const createSubagentQaUsageSettlement = (
     return null;
   }
   const state = createUsageSettlementState(input.rateLimitInfo);
+  const resetTimestamp = input.rateLimitInfo.resetTime.getTime();
   let sequence = 0;
   let stopped = false;
   // Step completion and the next request fence must never price the same
@@ -132,6 +136,7 @@ export const createSubagentQaUsageSettlement = (
         input.usageSettlementId,
         sequence,
         pool,
+        resetTimestamp,
       )
       .catch(() => ({
         includedPointsDeducted: 0,
@@ -176,7 +181,14 @@ export const createSubagentQaUsageSettlement = (
           stopped = true;
           throw error;
         }
-        if (current.qaSpendPool === pool) return;
+        if (current.qaSpendPool === pool) {
+          if (current.resetTime.getTime() === resetTimestamp) return;
+          stopped = true;
+          throw createQaSpendPoolWindowChangedError(
+            { environment: pool },
+            input.subscription,
+          );
+        }
         stopped = true;
       }
       throw createQaSpendCapError(

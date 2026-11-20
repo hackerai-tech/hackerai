@@ -16,16 +16,22 @@ local interval = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
 local debit = tonumber(ARGV[4])
 local allowPartial = ARGV[5] == "1"
+local expectedReset = tonumber(ARGV[6])
 local allocation = tonumber(redis.call("HGET", key, "cycleAllocation")) or tierMax
 allocation = math.max(0, math.min(tierMax, allocation))
 local tokens = tonumber(redis.call("HGET", key, "tokens"))
 local refilledAt = tonumber(redis.call("HGET", key, "refilledAt")) or now
 local periodEnd = tonumber(redis.call("HGET", key, "billingPeriodEndMs"))
 local held = redis.call("HGET", key, "billingTransitionType") == "payment_failed"
+local initialized = tokens ~= nil
 if not tokens then tokens = allocation end
 tokens = math.max(0, math.min(allocation, tokens))
 
 local reset = periodEnd or (refilledAt + interval)
+-- An active QA request may only spend from its admission window.
+if expectedReset and (not initialized or now >= expectedReset or reset ~= expectedReset) then
+  return {0, tokens, reset, allocation, 0, 1}
+end
 if not held then
   if periodEnd then
     if now >= periodEnd then tokens = 0 end
@@ -71,23 +77,35 @@ export async function limitPaidBucket(
   debit: number = 0,
   nowMs: number = Date.now(),
   allowPartial: boolean = false,
+  expectedResetTimestamp?: number,
 ) {
   if (!Number.isFinite(debit) || debit < 0) {
     throw new Error("Invalid paid usage debit");
   }
-  const [success, remaining, reset, limit, deducted] = await redis.eval<
-    [number, number, number, number, number],
-    [number, number, number, number, number?]
-  >(
-    PAID_BUCKET_LIMIT_SCRIPT,
-    [storageKey],
-    [tierMax, THIRTY_DAYS_MS, nowMs, Math.ceil(debit), allowPartial ? 1 : 0],
-  );
+  const [success, remaining, reset, limit, deducted, windowChanged] =
+    await redis.eval<
+      number[],
+      [number, number, number, number, number?, number?]
+    >(
+      PAID_BUCKET_LIMIT_SCRIPT,
+      [storageKey],
+      [
+        tierMax,
+        THIRTY_DAYS_MS,
+        nowMs,
+        Math.ceil(debit),
+        allowPartial ? 1 : 0,
+        ...(expectedResetTimestamp === undefined
+          ? []
+          : [expectedResetTimestamp]),
+      ],
+    );
   return {
     success: success === 1,
     remaining,
     reset,
     limit,
     ...(allowPartial && { deducted: deducted ?? 0 }),
+    ...(windowChanged === 1 && { windowChanged: true }),
   };
 }

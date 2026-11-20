@@ -43,6 +43,7 @@ import { isUserRateLimitKey } from "./key-cleanup";
 import {
   createQaSpendCapError,
   createQaSpendPoolUnavailableError,
+  createQaSpendPoolWindowChangedError,
   resolveQaSpendPool,
   type QaSpendPool,
   type QaSpendPoolEnvironment,
@@ -373,6 +374,7 @@ type MonthlyLimiter = {
       reset: number;
       success?: boolean;
       deducted?: number;
+      windowChanged?: boolean;
     }>;
   };
   key: string;
@@ -427,12 +429,11 @@ const deductAdditionalUsagePoints = async ({
     };
   };
 
-  const available = extraUsageConfig?.chargeAllUsage
-    ? 0
-    : Math.max(
-        0,
-        (await monthly.limiter.limit(monthly.key, { rate: 0 })).remaining,
-      );
+  const balance = extraUsageConfig?.chargeAllUsage
+    ? undefined
+    : await monthly.limiter.limit(monthly.key, { rate: 0 });
+  if (balance?.windowChanged) return buildDeltaResult(0, 0, "deduction_failed");
+  const available = Math.max(0, balance?.remaining ?? 0);
   const fromBucket = Math.min(normalizedAdditionalCost, available);
   let includedDeducted = 0;
 
@@ -442,6 +443,9 @@ const deductAdditionalUsagePoints = async ({
         rate: fromBucket,
         allowPartial: true,
       });
+      if (bucketResult.windowChanged) {
+        return buildDeltaResult(0, 0, "deduction_failed");
+      }
       // A concurrent request may have spent part of the peeked balance. Consume
       // what remains atomically before charging the uncovered cost to Extra Usage.
       includedDeducted =
@@ -1022,6 +1026,7 @@ const createMonthlyRateLimiter = (
   redis: RedisClient,
   storageKey: string,
   monthlyLimit: number,
+  expectedResetTimestamp?: number,
 ) => {
   return {
     monthlyLimit,
@@ -1038,6 +1043,9 @@ const createMonthlyRateLimiter = (
             options?.rate ?? 1,
             Date.now(),
             options?.allowPartial ?? false,
+            ...(expectedResetTimestamp === undefined
+              ? []
+              : [expectedResetTimestamp]),
           ),
       },
       key: storageKey,
@@ -1087,8 +1095,17 @@ const resolveUsageLedger = (
   return pool ? { kind: "qa", pool } : { kind: "customer" };
 };
 
-const createQaRateLimiter = (redis: RedisClient, pool: QaSpendPool) =>
-  createMonthlyRateLimiter(redis, pool.storageKey, pool.capPoints);
+const createQaRateLimiter = (
+  redis: RedisClient,
+  pool: QaSpendPool,
+  expectedResetTimestamp?: number,
+) =>
+  createMonthlyRateLimiter(
+    redis,
+    pool.storageKey,
+    pool.capPoints,
+    expectedResetTimestamp,
+  );
 
 /**
  * QA admission and post-wait capacity checks. Never reads the customer bucket
@@ -1100,13 +1117,21 @@ const checkQaSpendPoolLimit = async (
   pool: QaSpendPool,
   subscription: SubscriptionTier,
   estimatedCost: number,
+  expectedResetTimestamp?: number,
 ): Promise<RateLimitInfo> => {
   if (!redis) throw createQaSpendPoolUnavailableError(pool, subscription);
   try {
-    const { monthly } = createQaRateLimiter(redis, pool);
+    const { monthly } = createQaRateLimiter(
+      redis,
+      pool,
+      expectedResetTimestamp,
+    );
     const result = await monthly.limiter.limit(monthly.key, {
       rate: estimatedCost,
     });
+    if (result.windowChanged) {
+      throw createQaSpendPoolWindowChangedError(pool, subscription);
+    }
     if (!result.success || (estimatedCost <= 0 && result.remaining <= 0)) {
       throw createQaSpendCapError(pool, subscription, result.reset);
     }
@@ -1134,6 +1159,7 @@ export const createQaProviderCapacityCheck = (
   userId: string,
   subscription: SubscriptionTier,
   admittedPool: RateLimitInfo["qaSpendPool"],
+  expectedResetTimestamp: number,
 ): (() => Promise<void>) | undefined => {
   if (!admittedPool) return;
   return async () => {
@@ -1149,6 +1175,7 @@ export const createQaProviderCapacityCheck = (
       pool,
       subscription,
       0,
+      expectedResetTimestamp,
     );
   };
 };
@@ -1548,6 +1575,7 @@ export const deductUsageDelta = async (
   usageSettlementId?: string,
   settlementSequence?: number,
   expectedQaSpendPool?: QaSpendPoolEnvironment | null,
+  expectedQaResetTimestamp?: number,
 ): Promise<UsageDeductionResult> => {
   const uncoveredFailure = (): UsageDeductionResult => ({
     ...emptyUsageDeductionResult(),
@@ -1573,7 +1601,7 @@ export const deductUsageDelta = async (
   try {
     const { monthly, monthlyLimit } =
       ledger.kind === "qa"
-        ? createQaRateLimiter(redis, ledger.pool)
+        ? createQaRateLimiter(redis, ledger.pool, expectedQaResetTimestamp)
         : createRateLimiter(redis, userId, subscription);
     if (monthlyLimit === 0) return emptyUsageDeductionResult();
 
@@ -1755,7 +1783,7 @@ export const deductUsage = async (
     }
     const { monthly } =
       ledger.kind === "qa"
-        ? createQaRateLimiter(redis, ledger.pool)
+        ? createQaRateLimiter(redis, ledger.pool, expectedQaResetTimestamp)
         : createRateLimiter(redis, userId, subscription);
 
     const initialCoveredPoints =

@@ -199,7 +199,12 @@ describe("createSubagentQaUsageSettlement", () => {
     ]);
     for (const [index, call] of deductUsageDelta.mock.calls.entries()) {
       // Same settlement identity, increasing step sequence, admission pool.
-      expect(call.slice(5)).toEqual(["settlement-child", index + 1, "preview"]);
+      expect(call.slice(5)).toEqual([
+        "settlement-child",
+        index + 1,
+        "preview",
+        resetTime.getTime(),
+      ]);
     }
     expect(checkRateLimitCapacity).toHaveBeenCalledTimes(2);
     expect(poolRemaining).toBe(5_000 - 2 * CENT_POINTS);
@@ -218,6 +223,19 @@ describe("createSubagentQaUsageSettlement", () => {
 
     expect(deductUsageDelta).toHaveBeenCalledTimes(1);
     expect(poolRemaining).toBe(5_000 - CENT_POINTS);
+  });
+
+  it("stops a child whose admission window has rolled over", async () => {
+    const settlement = create()!;
+    checkRateLimitCapacity.mockResolvedValueOnce({
+      ...qaAdmission,
+      resetTime: new Date(resetTime.getTime() + 30 * 24 * 60 * 60 * 1_000),
+    });
+    await expect(settlement.fence(0)).rejects.toMatchObject({
+      cause: expect.stringContaining("pool has reset"),
+    });
+    expect(deductUsageDelta).not.toHaveBeenCalled();
+    expect(settlement.stopped).toBe(true);
   });
 
   it("stops before the next request when the pool cannot cover observed cost", async () => {

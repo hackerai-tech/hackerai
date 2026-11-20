@@ -23,6 +23,8 @@ const isAttemptTerminal = (chunk: UIMessageChunk) =>
  * - `release()` when there is no recovery (success, declined or exhausted):
  *   everything is published unchanged. Stream end releases anything still
  *   unsettled, so a terminal chunk is never dropped without a scheduled retry.
+ * - `release(errorText)` replaces the failed provider's error when recovery
+ *   discovered a more specific terminal error. Other chunks keep their order.
  *
  * Settling is one-shot. Create one deferral per attempt; never share it.
  *
@@ -37,15 +39,32 @@ export function createProviderErrorDeferral(
   let held: UIMessageChunk[] | undefined;
   let publish: ((chunk: UIMessageChunk) => void) | undefined;
   let filterCreated = false;
+  let replacementErrorText: string | undefined;
+  let replacementPublished = false;
 
-  const settle = (next: "released" | "discarded") => {
+  const publishReplacement = () => {
+    if (replacementErrorText === undefined || replacementPublished) return;
+    replacementPublished = true;
+    publish?.({ type: "error", errorText: replacementErrorText });
+  };
+
+  const forward = (chunk: UIMessageChunk) => {
+    if (replacementErrorText !== undefined && isAttemptTerminal(chunk)) {
+      publishReplacement();
+      if (chunk.type === "error") return;
+    }
+    publish?.(chunk);
+  };
+
+  const settle = (next: "released" | "discarded", errorText?: string) => {
     if (settlement !== "pending") return;
     settlement = next;
+    replacementErrorText = errorText;
     const chunks = held ?? [];
     held = undefined;
     for (const chunk of chunks) {
       if (next === "discarded" && isAttemptTerminal(chunk)) continue;
-      publish?.(chunk);
+      forward(chunk);
     }
   };
 
@@ -78,14 +97,15 @@ export function createProviderErrorDeferral(
             held = [chunk];
           else if (settlement === "discarded" && isAttemptTerminal(chunk))
             return;
-          else controller.enqueue(chunk);
+          else forward(chunk);
         },
         flush() {
           settle("released");
+          publishReplacement();
         },
       });
     },
-    release: () => settle("released"),
+    release: (errorText?: string) => settle("released", errorText),
     discard: () => settle("discarded"),
   };
 }

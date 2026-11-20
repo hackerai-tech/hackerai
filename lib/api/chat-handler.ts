@@ -99,7 +99,7 @@ import {
   getMaxTokensForSubscription,
   safeCountTokens,
 } from "@/lib/token-utils";
-import { ChatSDKError } from "@/lib/errors";
+import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
@@ -890,6 +890,7 @@ export const createChatHandler = () => {
         userId,
         subscription,
         rateLimitInfo.qaSpendPool,
+        rateLimitInfo.resetTime.getTime(),
       );
 
       chatLogger.setRateLimit(
@@ -1756,6 +1757,9 @@ export const createChatHandler = () => {
                     usageTracker.usageSettlementId,
                     usageSettlementSequence,
                     rateLimitInfo.qaSpendPool ?? null,
+                    ...(rateLimitInfo.qaSpendPool
+                      ? [rateLimitInfo.resetTime.getTime()]
+                      : []),
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -3020,12 +3024,27 @@ export const createChatHandler = () => {
 
                     // No recovery (success, declined or Stop): publish the
                     // held terminal chunks before any trailing writes.
-                    primaryProviderErrors.release();
+                    const visionQaError =
+                      !isAborted &&
+                      !userStopSignal.signal.aborted &&
+                      isQaSpendPoolError(visionSummaryRecoveryFailure)
+                        ? visionSummaryRecoveryFailure
+                        : undefined;
+                    if (visionQaError) {
+                      state.providerError = visionQaError;
+                      state.streamFinishReason = "error";
+                    }
+                    primaryProviderErrors.release(
+                      visionQaError
+                        ? serializeChatSDKErrorForStream(visionQaError)
+                        : undefined,
+                    );
 
                     // A failed local safety read is the terminal error; a
                     // stale "stop" must not replace it with a provider empty answer.
                     if (
                       terminalEmptyResponse &&
+                      !visionQaError &&
                       !isAborted &&
                       !userStopSignal.signal.aborted &&
                       !isTrustedBrowserHandoffReadFailure(state.providerError)

@@ -2671,6 +2671,7 @@ describe("routine QA spending pool", () => {
   let touchedKeys: string[];
   let redisAvailable: boolean;
   let loseNextDebitResponse: boolean;
+  let poolResetTimestamp: number;
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
   const mockDeductFromTeamBalance = jest.fn();
@@ -2685,9 +2686,22 @@ describe("routine QA spending pool", () => {
     debit = 0,
     _nowMs?: number,
     allowPartial = false,
+    expectedResetTimestamp?: number,
   ) => {
     touchedKeys.push(key);
     const bucket = store.get(key) ?? { tokens: tierMax, refunds: new Set() };
+    if (
+      expectedResetTimestamp !== undefined &&
+      expectedResetTimestamp !== poolResetTimestamp
+    ) {
+      return {
+        success: false,
+        windowChanged: true,
+        remaining: bucket.tokens,
+        reset: poolResetTimestamp,
+        limit: tierMax,
+      };
+    }
     bucket.tokens = Math.max(0, Math.min(tierMax, bucket.tokens));
     const points = Math.ceil(debit);
     const success = points <= bucket.tokens;
@@ -2704,7 +2718,7 @@ describe("routine QA spending pool", () => {
     return {
       success,
       remaining: bucket.tokens,
-      reset: RESET,
+      reset: poolResetTimestamp,
       limit: tierMax,
       ...(allowPartial && { deducted }),
     };
@@ -2724,7 +2738,7 @@ describe("routine QA spending pool", () => {
         if (bucket.refunds.has(String(refundField))) return [0, bucket.tokens];
         if (
           qaEnd !== undefined &&
-          (qaEnd !== RESET || Number(now) >= Number(qaEnd))
+          (qaEnd !== poolResetTimestamp || Number(now) >= Number(qaEnd))
         ) {
           return [-1, bucket.tokens];
         }
@@ -2809,6 +2823,7 @@ describe("routine QA spending pool", () => {
     touchedKeys = [];
     redisAvailable = true;
     loseNextDebitResponse = false;
+    poolResetTimestamp = RESET;
     setPreviewEnv();
     // The customer's own included allowance is already exhausted.
     store.set(customerKey(QA_USER), { tokens: 0, refunds: new Set() });
@@ -3063,6 +3078,7 @@ describe("routine QA spending pool", () => {
       QA_USER,
       "pro",
       admission.qaSpendPool,
+      admission.resetTime.getTime(),
     )!;
     await check();
     expect(store.get(PREVIEW_POOL)!.tokens).toBe(admission.remaining);
@@ -3077,6 +3093,76 @@ describe("routine QA spending pool", () => {
       metadata: { capReason: "billing_unavailable", qaSpendPool: "preview" },
     });
     expect(store.has(DEV_POOL)).toBe(false);
+    expectNoWalletActivity();
+  });
+
+  it("rejects capacity checks and debits from a previous QA window", async () => {
+    const {
+      checkTokenBucketLimit,
+      createQaProviderCapacityCheck,
+      deductUsageDelta,
+      deductUsage,
+    } = loadModule();
+    const admission = await checkTokenBucketLimit(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+    );
+    const previousReset = admission.resetTime.getTime();
+    poolResetTimestamp += 30 * 24 * 60 * 60 * 1000;
+    store.set(PREVIEW_POOL, { tokens: CAP_POINTS - 200, refunds: new Set() });
+    const check = createQaProviderCapacityCheck(
+      QA_USER,
+      "pro",
+      "preview",
+      previousReset,
+    )!;
+    await expect(check()).rejects.toMatchObject({
+      cause: expect.stringContaining("pool has reset"),
+    });
+    const delta = await deductUsageDelta(
+      QA_USER,
+      "pro",
+      100,
+      undefined,
+      undefined,
+      "old-window",
+      1,
+      "preview",
+      previousReset,
+    );
+    expect(delta).toMatchObject({
+      includedPointsDeducted: 0,
+      uncoveredPoints: 100,
+    });
+    const final = await deductUsage(
+      QA_USER,
+      "pro",
+      ESTIMATED_INPUT_TOKENS,
+      0,
+      0,
+      undefined,
+      0.1,
+      undefined,
+      0,
+      undefined,
+      admission,
+      undefined,
+      "old-window",
+      "preview",
+      previousReset,
+    );
+    expect(final).toMatchObject({
+      includedPointsDeducted: ESTIMATED_POINTS,
+      uncoveredPoints: 650,
+    });
+    expect(store.get(PREVIEW_POOL)!.tokens).toBe(CAP_POINTS - 200);
+    await createQaProviderCapacityCheck(
+      QA_USER,
+      "pro",
+      "preview",
+      poolResetTimestamp,
+    )!();
     expectNoWalletActivity();
   });
 

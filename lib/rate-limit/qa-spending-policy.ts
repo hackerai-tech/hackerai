@@ -248,3 +248,13 @@ export const createQaSpendPoolUnavailableError = (
     "The shared QA spending pool is unavailable. Try again or ask the QA owner to check its configuration.",
     qaSpendCapMetadata(pool, subscription, undefined, "billing_unavailable"),
   );
+
+export const createQaSpendPoolWindowChangedError = (
+  pool: Pick<QaSpendPool, "environment">,
+  subscription: SubscriptionTier,
+): ChatSDKError =>
+  new ChatSDKError(
+    "rate_limit:chat",
+    "The QA spending pool has reset. Start a new request to use the new budget.",
+    qaSpendCapMetadata(pool, subscription),
+  );

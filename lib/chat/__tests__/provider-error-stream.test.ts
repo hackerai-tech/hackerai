@@ -347,6 +347,22 @@ describe("attempt terminal deferral", () => {
     expect(released.output).toEqual([...failed, ...trailing]);
   });
 
+  it("publishes one replacement error while preserving ordinary finish chunks", async () => {
+    const late: UIMessageChunk = { type: "error", errorText: "late failure" };
+    const { output } = await settle(
+      failed,
+      (deferral) => deferral.release("QA spending cap reached"),
+      [late],
+    );
+    expect(output).toEqual(
+      failed.map((chunk) =>
+        chunk.type === "error"
+          ? { type: "error", errorText: "QA spending cap reached" }
+          : chunk,
+      ),
+    );
+  });
+
   it("refuses to share one deferral across attempt streams", () => {
     const deferral = createProviderErrorDeferral();
     deferral.filter();

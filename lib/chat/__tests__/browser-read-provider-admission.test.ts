@@ -1122,6 +1122,7 @@ const synthesize = (
     userStopSignal: running,
     isAborted: aborted,
     retryAborted: aborted,
+    visionQaError: undefined,
     finishContinuationAttempted,
     lastAssistantMessageParts,
     messages,

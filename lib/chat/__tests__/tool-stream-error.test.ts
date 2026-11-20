@@ -3,6 +3,7 @@ import { InvalidToolInputError, NoSuchToolError, streamText, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { z } from "zod";
 import { formatToolStreamError } from "../tool-stream-error";
+import { createQaSpendCapError } from "@/lib/rate-limit/qa-spending-policy";
 
 const originalWritableStream = globalThis.WritableStream;
 beforeAll(() => {
@@ -19,6 +20,11 @@ afterAll(() => {
 });
 
 describe("formatToolStreamError", () => {
+  it("preserves the typed QA spend-cap error from a provider admission check", () => {
+    const error = createQaSpendCapError({ environment: "preview" }, "pro");
+    expect(formatToolStreamError(error)).toContain("qa_spend_cap");
+    expect(formatToolStreamError(error)).toContain("shared QA spending pool");
+  });
   it("streams an actionable error for the misspelled terminal tool without executing it", async () => {
     const execute = jest.fn();
     const model = new MockLanguageModelV3({
