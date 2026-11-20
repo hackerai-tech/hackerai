@@ -2242,14 +2242,221 @@ async fn check_update(
     check_timeout: Duration,
     download_timeout: Duration,
 ) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
-    let updater = builder.timeout(check_timeout).build()?;
+    // Ask HTTP caches to revalidate the manifest so each check sees the latest
+    // release. The returned download copies builder headers; keep the
+    // binary request unchanged.
+    let updater = builder
+        .header("cache-control", "no-cache")?
+        .timeout(check_timeout)
+        .build()?;
     let mut update = updater.check().await?;
     if let Some(update) = update.as_mut() {
+        update.headers.remove("cache-control");
         // The updater does not propagate the check timeout to the returned download.
         // Bound HTTP activity without timing out user approval or native installation.
         update.timeout = Some(download_timeout);
     }
     Ok(update)
+}
+
+/// Native prompts in the update sequence. Tests script the answers.
+trait UpdatePrompts {
+    /// "Update Available": true downloads the feed's latest release.
+    fn offer(&mut self, version: &str) -> bool;
+    /// "Ready to install": final consent for the verified download of `version`.
+    fn approve(&mut self, version: &str) -> bool;
+    /// "Update not started": the refusal never reached the installer.
+    fn retry(&mut self, message: &str) -> bool;
+    fn stop(&mut self, outcome: UpdateStop);
+}
+
+#[derive(Debug)]
+enum UpdateStop {
+    CheckFailed(String),
+    NoLongerOffered,
+    DownloadFailed,
+    NotPrepared,
+    InstallFailed(String),
+}
+
+/// A release is the same only if the feed still offers these exact signed bytes.
+fn same_release(a: &tauri_plugin_updater::Update, b: &tauri_plugin_updater::Update) -> bool {
+    a.version == b.version && a.download_url == b.download_url && a.signature == b.signature
+}
+
+/// Owns the download/approve/install sequence. A newer release can be
+/// published while any prompt is open, so every Download and Install now
+/// rechecks the feed. Approval applies only to the release it named.
+struct UpdateFlow<'a, B> {
+    /// Fresh trusted builder per check, keeping configured target and endpoints.
+    updater: B,
+    check_timeout: Duration,
+    download_timeout: Duration,
+    gate: &'a update_safety::UpdateGate,
+    directory: Option<&'a Path>,
+    current_version: &'a str,
+}
+
+impl<B: Fn() -> tauri_plugin_updater::UpdaterBuilder> UpdateFlow<'_, B> {
+    async fn check(&self) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
+        check_update((self.updater)(), self.check_timeout, self.download_timeout).await
+    }
+
+    async fn run(
+        &self,
+        offered: &str,
+        prompts: &mut impl UpdatePrompts,
+        mut install: impl FnMut(&tauri_plugin_updater::Update, Vec<u8>) -> Result<(), String>,
+    ) {
+        if !prompts.offer(offered) {
+            return;
+        }
+        // The approved release and its verified bytes, awaiting a recheck.
+        let mut ready: Option<(tauri_plugin_updater::Update, Vec<u8>)> = None;
+        loop {
+            // Never fall back to a previously captured release.
+            let latest = match self.check().await {
+                Ok(Some(update)) => update,
+                Ok(None) => return prompts.stop(UpdateStop::NoLongerOffered),
+                Err(error) => {
+                    log::warn!("Desktop update recheck failed: {error}");
+                    return prompts.stop(UpdateStop::CheckFailed(error.to_string()));
+                }
+            };
+            if let Some((approved, bytes)) = ready.take() {
+                if same_release(&approved, &latest) {
+                    drop(latest);
+                    let Some(directory) = self.directory else {
+                        return prompts.stop(UpdateStop::NotPrepared);
+                    };
+                    let mut download = Some(bytes);
+                    let result = update_safety::install_after_approval(
+                        self.gate,
+                        directory,
+                        self.current_version,
+                        &approved.version,
+                        true,
+                        || {
+                            let bytes = download
+                                .take()
+                                .expect("verified download available before installation");
+                            install(&approved, bytes)
+                        },
+                    );
+                    match (result, download) {
+                        (Ok(()), _) => return,
+                        // A busy gate or receipt failure never handed bytes to
+                        // the installer. Keep them for a retry that rechecks.
+                        (Err(message), Some(bytes)) => {
+                            if !prompts.retry(&message) {
+                                return;
+                            }
+                            ready = Some((approved, bytes));
+                            continue;
+                        }
+                        (Err(message), None) => {
+                            return prompts.stop(UpdateStop::InstallFailed(message))
+                        }
+                    }
+                }
+                log::info!(
+                    "Desktop update changed from {} to {} before installation",
+                    approved.version,
+                    latest.version
+                );
+                // Release the stale download before fetching its replacement.
+            }
+            let bytes = match latest.download(|_, _| {}, || {}).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    log::warn!("Desktop update download or signature verification failed: {error}");
+                    return prompts.stop(UpdateStop::DownloadFailed);
+                }
+            };
+            // Windows exits inside install(), so this is the final consent
+            // on every platform. Never put restart approval after install.
+            if !prompts.approve(&latest.version) {
+                return;
+            }
+            ready = Some((latest, bytes));
+        }
+    }
+}
+
+struct NativeUpdatePrompts<'a>(&'a tauri::AppHandle);
+
+impl UpdatePrompts for NativeUpdatePrompts<'_> {
+    fn offer(&mut self, version: &str) -> bool {
+        use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+        update_dialog(self.0, format!(
+                "Version {} is available. Download the update? You will be asked before anything is installed.",
+                version
+            ))
+            .title("Update Available")
+            .kind(MessageDialogKind::Info)
+            .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
+            .blocking_show()
+    }
+
+    fn approve(&mut self, version: &str) -> bool {
+        use tauri_plugin_dialog::MessageDialogButtons;
+        update_dialog(self.0, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
+            .title("Ready to install")
+            .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
+            .blocking_show()
+    }
+
+    fn retry(&mut self, message: &str) -> bool {
+        use tauri_plugin_dialog::MessageDialogButtons;
+        update_dialog(
+            self.0,
+            format!(
+                "{}\n\nChoose Install now to try again. Desktop will close.",
+                message
+            ),
+        )
+        .title("Update not started")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install now".into(),
+            "Later".into(),
+        ))
+        .blocking_show()
+    }
+
+    fn stop(&mut self, outcome: UpdateStop) {
+        use tauri_plugin_dialog::MessageDialogKind;
+        const UNCHANGED: &str =
+            "Your current app has not been changed. Choose Help > Check for Updates to try again.";
+        let (title, kind, message) = match outcome {
+            UpdateStop::CheckFailed(error) => (
+                "Update Error",
+                MessageDialogKind::Error,
+                format!("Failed to check for updates: {error}\n\n{UNCHANGED}"),
+            ),
+            UpdateStop::NoLongerOffered => (
+                "No Updates",
+                MessageDialogKind::Info,
+                format!("The update is no longer available. {UNCHANGED}"),
+            ),
+            UpdateStop::DownloadFailed => (
+                "Update download failed",
+                MessageDialogKind::Error,
+                format!("The update could not be downloaded or verified. {UNCHANGED}"),
+            ),
+            UpdateStop::NotPrepared => (
+                "Update not started",
+                MessageDialogKind::Error,
+                "The update could not be prepared. No installation was started.".to_string(),
+            ),
+            UpdateStop::InstallFailed(message) => {
+                ("Update did not finish", MessageDialogKind::Error, message)
+            }
+        };
+        update_dialog(self.0, message)
+            .title(title)
+            .kind(kind)
+            .blocking_show();
+    }
 }
 
 // Attach updater prompts to the app window. Parentless macOS alerts use a
@@ -2271,113 +2478,30 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     let Some(_check) = update_safety::CheckGuard::acquire() else {
         return;
     };
-    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_dialog::MessageDialogKind;
 
-    match check_update(
-        app.updater_builder(),
-        UPDATE_CHECK_TIMEOUT,
-        UPDATE_DOWNLOAD_TIMEOUT,
-    )
-    .await
-    {
+    let directory = app.path().app_data_dir().ok();
+    let current_version = app.package_info().version.to_string();
+    let flow = UpdateFlow {
+        updater: || app.updater_builder(),
+        check_timeout: UPDATE_CHECK_TIMEOUT,
+        download_timeout: UPDATE_DOWNLOAD_TIMEOUT,
+        gate: &update_safety::UPDATE_GATE,
+        directory: directory.as_deref(),
+        current_version: &current_version,
+    };
+    match flow.check().await {
         Ok(Some(update)) => {
-            let version = update.version.clone();
-            log::info!("Update available: {}", version);
-
-            let should_update = update_dialog(&app, format!(
-                    "Version {} is available. Download the update? You will be asked before anything is installed.",
-                    version
-                ))
-                .title("Update Available")
-                .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
-                .blocking_show();
-
-            if should_update {
-                let bytes = match update.download(|_, _| {}, || {}).await {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        log::warn!(
-                            "Desktop update download or signature verification failed: {error}"
-                        );
-                        update_dialog(&app, "The update could not be downloaded or verified. Your current app has not been changed. Choose Help > Check for Updates to try again.")
-                            .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
-                        return;
-                    }
-                };
-                // Windows exits inside install(), so this is the final consent
-                // on every platform. Never put restart approval after install.
-                let approved = update_dialog(&app, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
-                    .title("Ready to install")
-                    .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
-                    .blocking_show();
-                if !approved {
-                    return;
-                }
-                let directory = match app.path().app_data_dir() {
-                    Ok(directory) => directory,
-                    Err(_) => {
-                        update_dialog(
-                            &app,
-                            "The update could not be prepared. No installation was started.",
-                        )
-                        .title("Update not started")
-                        .kind(MessageDialogKind::Error)
-                        .blocking_show();
-                        return;
-                    }
-                };
-                let mut download = Some(bytes);
-                loop {
-                    let result = update_safety::install_after_approval(
-                        &update_safety::UPDATE_GATE,
-                        &directory,
-                        &app.package_info().version.to_string(),
-                        &version,
-                        approved,
-                        || {
-                            let bytes = download
-                                .take()
-                                .expect("verified download available before installation");
-                            update.install(bytes).map_err(|error| {
-                                log::error!("Desktop update installation failed: {error}");
-                                "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
-                            })?;
-                            app.restart();
-                        },
-                    );
-                    match result {
-                        Err(message) if download.is_some() => {
-                            // A busy gate or receipt failure never handed bytes to
-                            // the installer. Keep the verified download for retry.
-                            let retry = update_dialog(
-                                &app,
-                                format!(
-                                    "{}\n\nChoose Install now to try again. Desktop will close.",
-                                    message
-                                ),
-                            )
-                            .title("Update not started")
-                            .buttons(MessageDialogButtons::OkCancelCustom(
-                                "Install now".into(),
-                                "Later".into(),
-                            ))
-                            .blocking_show();
-                            if !retry {
-                                return;
-                            }
-                        }
-                        Err(message) => {
-                            update_dialog(&app, message)
-                                .title("Update did not finish")
-                                .kind(MessageDialogKind::Error)
-                                .blocking_show();
-                            return;
-                        }
-                        Ok(()) => return,
-                    }
-                }
-            }
+            log::info!("Update available: {}", update.version);
+            let offered = update.version;
+            flow.run(&offered, &mut NativeUpdatePrompts(&app), |update, bytes| {
+                update.install(bytes).map_err(|error| {
+                    log::error!("Desktop update installation failed: {error}");
+                    "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
+                })?;
+                app.restart();
+            })
+            .await;
         }
         Ok(None) => {
             if silent {
