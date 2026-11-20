@@ -2139,16 +2139,33 @@ describe("stream fence origin", () => {
         expect(read(root, {})).toEqual({ ...pairs, ...timeoutTaskkillGroups });
       });
 
-      it("drops a codeless group when the final cleanup read changes the origin", () => {
+      it("drops a codeless group when the final check's cleanup or origin read changes the other", () => {
         const outputError = {
           desktop_stream_fence_windows_taskkill_version: 1,
           desktop_stream_fence_windows_taskkill_outcome: "output_error",
         };
         const pairs = { ...timeoutGroup, ...cleanupGroup };
-        // [case, origin a cleanup trap writes once the group was read, kept]
-        for (const [name, written, kept] of [
-          ["changed", "owner_stop_requested", pairs],
-          ["stable", "owner_timeout", { ...pairs, ...outputError }],
+        // [case, pair whose read writes, what it writes, kept], each trap
+        // armed only once the group was read.
+        for (const [name, trigger, written, kept] of [
+          [
+            "stable",
+            { ...timeoutGroup, ...cleanupGroup },
+            pairs,
+            { ...pairs, ...outputError },
+          ],
+          [
+            "cleanup read changes the origin",
+            cleanupGroup,
+            { desktop_stream_fence_origin: "owner_stop_requested" },
+            pairs,
+          ],
+          [
+            "origin read changes the cleanup",
+            timeoutGroup,
+            { desktop_stream_fence_cleanup_failure: "leader_wait_failed" },
+            pairs,
+          ],
         ] as const) {
           let armed = false;
           const source = new Proxy<Record<string, unknown>>(
@@ -2157,12 +2174,8 @@ describe("stream fence origin", () => {
               getOwnPropertyDescriptor(target, key) {
                 if (key === "desktop_stream_fence_windows_taskkill_outcome")
                   armed = true;
-                else if (
-                  armed &&
-                  typeof key === "string" &&
-                  key in cleanupGroup
-                )
-                  target.desktop_stream_fence_origin = written;
+                else if (armed && typeof key === "string" && key in trigger)
+                  Object.assign(target, written);
                 return Reflect.getOwnPropertyDescriptor(target, key);
               },
             },

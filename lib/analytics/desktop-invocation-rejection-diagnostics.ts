@@ -1237,14 +1237,17 @@ function timeoutPairsUnchanged(
 ): boolean {
   if (fence.desktop_stream_fence_origin !== STREAM_FENCE_TIMEOUT_ORIGIN)
     return true;
-  // Reading the cleanup can change the origin on a proxy, so the origin pair
-  // is read last.
-  const keys = [
-    ...STREAM_FENCE_CLEANUP_PROPERTIES,
-    ...STREAM_FENCE_PROPERTIES,
-  ] as const;
-  const values = ownDataValuesOrUndefined(source, keys);
-  return keys.every((key, index) => values[index] === fence[key]);
+  // On a proxy, reading either pair can change the other: the cleanup pair is
+  // read on both sides of the origin pair.
+  const unchanged = (keys: readonly (keyof DesktopStreamFenceDiagnostic)[]) => {
+    const values = ownDataValuesOrUndefined(source, keys);
+    return keys.every((key, index) => values[index] === fence[key]);
+  };
+  return (
+    unchanged(STREAM_FENCE_CLEANUP_PROPERTIES) &&
+    unchanged(STREAM_FENCE_PROPERTIES) &&
+    unchanged(STREAM_FENCE_CLEANUP_PROPERTIES)
+  );
 }
 
 /** Read the complete fence group from any property bag's own data properties,
