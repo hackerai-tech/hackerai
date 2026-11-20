@@ -310,6 +310,27 @@ function wrapperProcess(identity) {
       error?.code === 'EACCES' || error?.code === 'EPERM' ? 5 : 6;
   } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
+/** After a queue sample beside a STARTED plain OPEN, reread each bounded receipt once.
+ * True only when both still show that same selected STARTED invocation (action, timestamp,
+ * the wrapper's PID/start identity, the sticky plain flag) and its exact incarnation is
+ * still visible. The wrapper records completion before its process exits, so liveness
+ * alone cannot show the OPEN was still running. These are consistent observations before
+ * and after the sample, not an always-unique timestamp or a cause. Any doubt is false.
+ */
+function openStillStarted(before, sessionKey) {
+  try {
+    const latest = readReceipt('wrapper-receipt.json');
+    const sticky = readReceipt('open-receipt.json');
+    const identity = latest?.process;
+    return validReceipt(latest) && latest.action === 'open' && latest.phase === 'started' &&
+      latest.session_key === sessionKey && latest.at === before.at &&
+      Array.isArray(identity) && Array.isArray(before.process) && identity.length === 3 &&
+      before.process.length === 3 && identity.every((value, index) => value === before.process[index]) &&
+      validReceipt(sticky) && sticky.action === 'open' && sticky.phase === 'started' &&
+      sticky.session_key === sessionKey && sticky.at === before.at && sticky.o1 === 0 &&
+      wrapperProcess(identity) === 3;
+  } catch { return false; }
+}
 /** Return finite observations only; session keys and private paths stay local. */
 function wrapperReceipt() {
   try {
@@ -402,6 +423,13 @@ function wrapperReceipt() {
         const queue = listenerQueue();
         if (queue) result.q1 = queue;
       }
+    } else if (queueSnapshot && receipt.action === 'open' && receipt.phase === 'started' &&
+        receipt.session_key === sessionKey && result.w1 === 3 && open?.session_key === sessionKey &&
+        open.phase === 'started' && open.at === receipt.at && open.o1 === 0) {
+      // The selected plain OPEN observed STARTED before and after the sample, never a
+      // cause or navigation. q1 is dropped first at the cap, so the fields scoping it remain.
+      const queue = listenerQueue();
+      if (queue && openStillStarted(receipt, sessionKey)) result.q1 = queue;
     }
     return result;
   } catch { return {}; }
@@ -484,7 +512,8 @@ function ownedStreamPort(root, sockets, address) {
   } catch {}
   return 0;
 }
-/** Wire tuple q1 [1, pending, held], each saturated at 15: rows on the selected
+/** Wire tuple q1 [1, pending, held], each saturated at 15, beside the selected session's
+ * completed successful OPEN or its same still-running plain OPEN wrapper: rows on the selected
  * path besides its listener, sampled once after the original deadline, before this
  * helper closes its own connection, so the counts may include it. Pending: an unaccepted
  * stream connection (flags 0, state 02, no inode). Held: an accepted connection
