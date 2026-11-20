@@ -154,6 +154,33 @@ export const BROWSER_DAEMON_SCREENSHOT_REFUSALS = [
   "other_or_unavailable",
 ] as const;
 
+/**
+ * Opt-in status progress on stderr: only a stream_status request carrying the
+ * internal observe_progress flag writes fixed frames "hp1:<letter>\n", each at
+ * most once and in this order: e entered the helper, c initialized its socket
+ * path with its own 6s deadline armed, w reached the local write-attempt
+ * boundary (not daemon receipt), then the helper-selected disposition (not
+ * actual exit delivery) immediately before its unchanged stdout and exit:
+ * s exit0, d its own deadline (exit3), o any other exit. These are the only
+ * complete sequences the helper can write, keyed by their letters. Frames are
+ * dropped under backpressure, so a missing frame was not delivered, not
+ * proven absent.
+ */
+export const BROWSER_DAEMON_PROGRESS_FRAMES = /^(?:hp1:[ecwsdo]\n){0,4}$/;
+export const BROWSER_DAEMON_PROGRESS_SEQUENCES = {
+  "": "none_delivered",
+  e: "entered",
+  ec: "connecting",
+  ecw: "write_attempted",
+  es: "entered_success",
+  eo: "entered_other",
+  ecd: "connecting_deadline",
+  eco: "connecting_other",
+  ecws: "write_success",
+  ecwd: "write_deadline",
+  ecwo: "write_other",
+} as const;
+
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
 const net = require('node:net');
@@ -175,6 +202,34 @@ let statusSocketMissing = false;
 let selectedSocketInfo;
 // Only a connected status/screenshot request at its original deadline.
 let queueSnapshot = false;
+// Only the internal opted-in status request writes progress frames: constant
+// bytes, never caller data. A write to fd 2 blocks on a full Linux pipe, so
+// frames go only to this helper's own O_NONBLOCK open of that same stderr FIFO;
+// fd 2 and its shared flags stay untouched. A TTY, regular file or socket gets
+// no frames, and a full pipe (EAGAIN), absent reader or any failure drops the
+// frame. Never flushed or awaited, so the helper's schedule is unchanged.
+let progressFd;
+try {
+  const opted = JSON.parse(payload);
+  if (opted?.observe_progress === true && opted.action === 'stream_status' &&
+      process.platform === 'linux' && typeof fs.constants?.O_WRONLY === 'number' &&
+      typeof fs.constants.O_NONBLOCK === 'number') {
+    const target = fs.fstatSync(2);
+    if (target.isFIFO()) {
+      // A nonblocking FIFO open never waits for a reader (ENXIO instead).
+      const fd = fs.openSync('/proc/self/fd/2', fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+      const own = fs.fstatSync(fd);
+      if (own.isFIFO() && own.dev === target.dev && own.ino === target.ino) progressFd = fd;
+      else fs.closeSync(fd);
+    }
+  }
+} catch {}
+function mark(letter) {
+  if (progressFd === undefined) return;
+  // Six bytes, under PIPE_BUF: a nonblocking pipe write is whole or EAGAIN, never partial.
+  try { fs.writeSync(progressFd, 'hp1:' + letter + '\n'); } catch {}
+}
+mark('e');
 /** Read only a bounded owned private file; never follow links or block on pipes. */
 function readReceipt(filename) {
   let fd;
@@ -641,6 +696,9 @@ function finish(code, value) {
     if (value?.os1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.os1;
     if (value?.w1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.w1;
   }
+  // Helper-selected disposition, not actual exit delivery; exit3 is only this
+  // helper's own deadline.
+  mark(code === 0 ? 's' : code === 3 ? 'd' : 'o');
   if (value !== undefined) {
     if (code === 0) process.stdout.write(JSON.stringify(value));
     else { try { process.stdout.write(JSON.stringify(value)); } catch {} }
@@ -674,8 +732,8 @@ try {
   if ([root, sockets, info].some(item => item.uid !== process.getuid())) throw new Error();
   precondition = 'request_invalid';
   // The internal opt-ins never reach the daemon.
-  const { owned_port: ownedPort, defer_wait: deferWait, recognize_closed: _closed, ...request } =
-    JSON.parse(payload);
+  const { owned_port: ownedPort, defer_wait: deferWait, recognize_closed: _closed,
+    observe_progress: _progress, ...request } = JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
   // Upstream runs WAIT under its daemon state lock, so a queued fresh status or
@@ -703,8 +761,12 @@ try {
     }, 6000);
     socket = net.createConnection(address);
     socket.setEncoding('utf8');
+    // The socket path is initialized with the 6s deadline already armed.
+    mark('c');
     socket.on('connect', () => {
       deadlinePhase = 'awaiting_response';
+      // Local write-attempt boundary, not daemon receipt.
+      mark('w');
       socket.write(JSON.stringify({ ...request, id }) + '\n');
     });
     socket.on('data', chunk => {
@@ -776,10 +838,22 @@ type BrowserDaemonRequest =
   // the helper strips it and falls back to this same daemon request otherwise.
   // recognize_closed (either status form) only lets an absent socket with a
   // verified close answer; the helper strips it before any daemon traffic.
-  | { action: "stream_status"; owned_port?: true; recognize_closed?: true }
+  // observe_progress (either status form) only adds stderr progress frames;
+  // the helper strips it before any daemon traffic.
+  | {
+      action: "stream_status";
+      owned_port?: true;
+      recognize_closed?: true;
+      observe_progress?: true;
+    }
   // defer_wait lets a fresh passive preview yield to a verified active WAIT;
   // the helper strips it and sends this same strict request otherwise.
-  | { action: "stream_status"; defer_wait: true; recognize_closed?: true }
+  | {
+      action: "stream_status";
+      defer_wait: true;
+      recognize_closed?: true;
+      observe_progress?: true;
+    }
   // defer_wait has the same meaning for a fresh passive preview's screenshot.
   | {
       action: "screenshot";

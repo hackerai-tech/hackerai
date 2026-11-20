@@ -39,6 +39,8 @@ import {
   BROWSER_DAEMON_VERSION_FILE_STATUSES,
   BROWSER_DAEMON_WAIT_DEFERRED,
   BROWSER_DAEMON_SESSION_CLOSED,
+  BROWSER_DAEMON_PROGRESS_FRAMES,
+  BROWSER_DAEMON_PROGRESS_SEQUENCES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -464,7 +466,16 @@ type StatusCommandRejection = {
   error: unknown;
   phase: "start" | "wait";
   startAckMs?: number;
+  progress?: StatusWaitProgress;
 };
+
+type StatusProgressLabel =
+  | (typeof BROWSER_DAEMON_PROGRESS_SEQUENCES)[keyof typeof BROWSER_DAEMON_PROGRESS_SEQUENCES]
+  | "unrecognized"
+  | "unreadable";
+type StatusElapsedLabel =
+  "lt1s" | "lt3s" | "lt6s" | "lt7s" | "gte7s" | "unmeasured";
+type StatusWaitProgress = `${StatusProgressLabel}:${StatusElapsedLabel}`;
 
 const monotonicNow = () => {
   try {
@@ -475,6 +486,57 @@ const monotonicNow = () => {
 };
 
 /**
+ * The opted-in helper's delivered progress before this handle's wait rejected,
+ * plus coarse total elapsed from before the start request to that rejection
+ * (not acknowledgement, daemon or exit time). Only an exact complete frame
+ * sequence counts; output is never retained, and nothing proves undelivered
+ * frames were not written. Never throws.
+ */
+function statusWaitProgress(
+  readStderr: () => unknown,
+  startedAt: number | undefined,
+  rejectedAt: number | undefined,
+): StatusWaitProgress {
+  let label: StatusProgressLabel = "unreadable";
+  try {
+    const stderr = readStderr();
+    if (typeof stderr === "string") {
+      label = "unrecognized";
+      // At most four six-character frames; never match against longer output.
+      if (stderr.length <= 24 && BROWSER_DAEMON_PROGRESS_FRAMES.test(stderr)) {
+        let letters = "";
+        for (let index = 4; index < stderr.length; index += 6)
+          letters += stderr[index];
+        if (Object.hasOwn(BROWSER_DAEMON_PROGRESS_SEQUENCES, letters))
+          label =
+            BROWSER_DAEMON_PROGRESS_SEQUENCES[
+              letters as keyof typeof BROWSER_DAEMON_PROGRESS_SEQUENCES
+            ];
+      }
+    }
+  } catch {
+    label = "unreadable";
+  }
+  const elapsed =
+    typeof startedAt === "number" && typeof rejectedAt === "number"
+      ? rejectedAt - startedAt
+      : Number.NaN;
+  return `${label}:${
+    !Number.isFinite(elapsed) || elapsed < 0
+      ? "unmeasured"
+      : elapsed < 1_000
+        ? "lt1s"
+        : elapsed < 3_000
+          ? "lt3s"
+          : elapsed < 6_000
+            ? "lt6s"
+            : elapsed < 7_000
+              ? "lt7s"
+              : "gte7s"
+  }`;
+}
+
+/**
  * Only a non-fresh preview passes ownedListener: the helper may then return a
  * port its daemon provably listens on without waiting behind serialized daemon
  * work, and otherwise sends this same status request. Only a fresh passive
@@ -483,6 +545,9 @@ const monotonicNow = () => {
  * Independently, only the Browser Preview GET passes recognizeClosed: an absent
  * owned socket with the wrapper's verified close of the still-current selection
  * then rejects with the existing closed state instead of the missing-socket exit.
+ * Only that GET also passes observeProgress with onRejected: the helper then
+ * writes fixed stderr progress frames, read only after this handle's wait
+ * rejects without an exit.
  */
 export async function getPrivateStreamPort(
   sandbox: Sandbox,
@@ -492,10 +557,13 @@ export async function getPrivateStreamPort(
   onRejected?: (rejection: StatusCommandRejection) => void,
   deferDuringWait = false,
   recognizeClosed = false,
+  observeProgress = false,
 ) {
-  const closed: { recognize_closed?: true } = recognizeClosed
-    ? { recognize_closed: true }
-    : {};
+  const observed = observeProgress && onRejected !== undefined;
+  const closed: { recognize_closed?: true; observe_progress?: true } = {
+    ...(recognizeClosed && { recognize_closed: true }),
+    ...(observed && { observe_progress: true }),
+  };
   const command = browserDaemonCommand(
     session.directory,
     browserSessionName,
@@ -533,6 +601,18 @@ export async function getPrivateStreamPort(
     try {
       result = await handle.wait();
     } catch (error) {
+      let progress: StatusWaitProgress | undefined;
+      try {
+        // A delivered exit is authoritative; only an SDK-only rejection.
+        if (observed && !(error instanceof CommandExitError))
+          progress = statusWaitProgress(
+            () => handle.stderr,
+            startedAt,
+            monotonicNow(),
+          );
+      } catch {
+        /* Optional progress cannot replace the SDK rejection. */
+      }
       report({
         error,
         phase: "wait",
@@ -540,6 +620,7 @@ export async function getPrivateStreamPort(
           typeof acknowledgedAt === "number" && {
             startAckMs: acknowledgedAt - startedAt,
           }),
+        ...(progress !== undefined && { progress }),
       });
       throw error;
     }
@@ -884,6 +965,13 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_sdk_command_diagnostic_version?: 1;
   capture_sdk_command_phase?: "start" | "wait";
   capture_sdk_start_ack_latency?: "lt1s" | "lt3s" | "lt6s" | "gte6s";
+  // Opted-in GET wait rejection only: "<helper progress>:<total elapsed>". The
+  // exact helper frame sequence delivered to this handle: entry, socket path,
+  // local write-attempt boundary (not daemon receipt) and helper-selected
+  // disposition (not actual exit delivery). Frames can be dropped, so
+  // none_delivered or unrecognized/unreadable output never proves the helper
+  // did not run. Elapsed is from before the start request, not acknowledgement.
+  capture_sdk_wait_progress_v1?: StatusWaitProgress;
   // Fresh_read only: the SDK read call or converting its result, with the SDK
   // projection only for sdk_read. Absent means unmeasured (other stages, older
   // builds, or a cleanup exception that replaced the failure), never none.
@@ -970,6 +1058,8 @@ function statusSdkPhaseContext({
  * original strict capture runs unchanged. Only that GET
  * also opts into recognizeClosed when it looks up its own port: a verified close
  * of the absent selected socket then rejects with the existing closed state.
+ * With onFailure, only that GET opts into observeStatusProgress for its own
+ * port lookup, adding one bounded progress field to an SDK wait rejection.
  */
 export async function captureBrowserFrame(
   sandbox: Sandbox,
@@ -978,7 +1068,11 @@ export async function captureBrowserFrame(
   requireFresh = false,
   streamPort?: number,
   onFailure?: (context: BrowserCaptureFailureContext) => void,
-  options?: { deferDuringWait?: boolean; recognizeClosed?: boolean },
+  options?: {
+    deferDuringWait?: boolean;
+    recognizeClosed?: boolean;
+    observeStatusProgress?: boolean;
+  },
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
@@ -1003,6 +1097,7 @@ export async function captureBrowserFrame(
           }),
         deferDuringWait,
         options?.recognizeClosed === true,
+        options?.observeStatusProgress === true,
       ));
     stage = "frame_bridge";
     const result = await sandbox.commands.run(
@@ -1660,6 +1755,10 @@ export async function captureBrowserFrame(
         /* Optional transport metadata cannot replace the original rejection. */
       }
       let sdkPhase: ReturnType<typeof statusSdkPhaseContext> = {};
+      let sdkProgress: Pick<
+        BrowserCaptureFailureContext,
+        "capture_sdk_wait_progress_v1"
+      > = {};
       try {
         // Only this exact SDK rejection; an exit already proves a returned handle.
         if (
@@ -1667,8 +1766,13 @@ export async function captureBrowserFrame(
           statusRejection &&
           statusRejection.error === error &&
           !(error instanceof CommandExitError)
-        )
+        ) {
           sdkPhase = statusSdkPhaseContext(statusRejection);
+          if (statusRejection.progress !== undefined)
+            sdkProgress = {
+              capture_sdk_wait_progress_v1: statusRejection.progress,
+            };
+        }
       } catch {
         /* An unreadable phase omits the group and keeps the original rejection. */
       }
@@ -1688,6 +1792,7 @@ export async function captureBrowserFrame(
           ...decodeDiagnostic,
           ...bridgeDiagnostic,
           ...sdkPhase,
+          ...sdkProgress,
           ...freshRead,
         });
       } catch {

@@ -4,6 +4,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   BROWSER_DAEMON_PROGRAM,
+  BROWSER_DAEMON_PROGRESS_FRAMES,
+  BROWSER_DAEMON_PROGRESS_SEQUENCES,
   BROWSER_DAEMON_SESSION_CLOSED,
   BROWSER_DAEMON_WAIT_DEFERRED,
 } from "../daemon-program";
@@ -110,6 +112,12 @@ function daemon(
     chargedBytes?: number;
     // Monotonic nanoseconds for each process.hrtime.bigint() read.
     clock?: () => bigint;
+    // What descriptor 2 is (default a pipe), whether the helper's own
+    // nonblocking reopen of it fails, and whether every write to that reopened
+    // descriptor fails (EAGAIN is a full pipe).
+    stderrKind?: "fifo" | "tty" | "file";
+    stderrOpenError?: string;
+    stderrWriteError?: string;
   } = {},
 ) {
   const socketPath = path.join(
@@ -132,6 +140,22 @@ function daemon(
     output.mockImplementation(() => {
       throw new Error("PRIVATE broken output");
     });
+  // Descriptor 2 and the helper's own reopened description of the same pipe.
+  const stderrStat = () => ({
+    dev: 13,
+    ino: 4400,
+    isFIFO: () => (options.stderrKind ?? "fifo") === "fifo",
+  });
+  const delivered: string[] = [];
+  const stderr = jest.fn((fd: number, text: string) => {
+    // Recorded before throwing, so a write to shared fd 2 is still visible.
+    if (fd !== 30) throw new Error("Unexpected descriptor write");
+    if (options.stderrWriteError)
+      throw Object.assign(new Error("PRIVATE stderr"), {
+        code: options.stderrWriteError,
+      });
+    delivered.push(text);
+  });
   const fileReceipt = (open: boolean, close = false) => {
     if (close) return options.closeReceipt;
     const key = open ? "openReceipt" : "receipt";
@@ -235,6 +259,13 @@ function daemon(
   };
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
+    if (file === "/proc/self/fd/2") {
+      if (options.stderrOpenError)
+        throw Object.assign(new Error("PRIVATE reopen"), {
+          code: options.stderrOpenError,
+        });
+      return 30;
+    }
     if (file === "/proc/net/unix" || file === "/proc/net/tcp") {
       const text = file.endsWith("unix") ? owned.unix : owned.tcp;
       if (owned.tableError || text === undefined)
@@ -371,25 +402,32 @@ function daemon(
       if (name === "node:net") return { createConnection: connect };
       if (name === "node:fs")
         return {
-          constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
+          constants: {
+            O_RDONLY: 0,
+            O_WRONLY: 1,
+            O_NOFOLLOW: 256,
+            O_NONBLOCK: 2048,
+          },
           openSync: openReceipt,
           fstatSync: (fd: number) =>
-            fd === 15 || fd === 16
-              ? { isFile: () => true }
-              : fd === 14
-                ? streamStat()
-                : fd === 13
-                  ? versionStat()
-                  : fd === 12
-                    ? {
-                        uid: options.wrapperStatOwner ?? 1000,
-                        isFile: () => !options.wrapperStatFifo,
-                      }
-                    : fd === 11
-                      ? cliStat()
-                      : fd === 10
-                        ? pidStat()
-                        : receiptStat(fd === 8, fd === 9),
+            fd === 2 || fd === 30
+              ? stderrStat()
+              : fd === 15 || fd === 16
+                ? { isFile: () => true }
+                : fd === 14
+                  ? streamStat()
+                  : fd === 13
+                    ? versionStat()
+                    : fd === 12
+                      ? {
+                          uid: options.wrapperStatOwner ?? 1000,
+                          isFile: () => !options.wrapperStatFifo,
+                        }
+                      : fd === 11
+                        ? cliStat()
+                        : fd === 10
+                          ? pidStat()
+                          : receiptStat(fd === 8, fd === 9),
           statfsSync: (file: string) => {
             if (file !== "/proc") throw new Error("Unexpected filesystem");
             if (options.procUnavailable)
@@ -421,6 +459,7 @@ function daemon(
             };
           },
           readSync: readReceipt,
+          writeSync: stderr,
           closeSync: closeReceipt,
           lstatSync: lstat,
           opendirSync: openDescriptors,
@@ -463,6 +502,9 @@ function daemon(
     connect,
     exit,
     output,
+    // Frames the stderr pipe accepted, in order, and every write attempt.
+    stderr: () => delivered.join(""),
+    stderrWrites: stderr,
     reply,
     readReceipt,
     closeReceipt,
@@ -3592,4 +3634,159 @@ it("strips the opt-in before an existing daemon sees the request", () => {
   expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
   // A live socket never consults the close proof.
   expect(d.opened).toEqual([]);
+});
+
+describe("opt-in status progress frames", () => {
+  const frames = (letters: string) =>
+    [...letters].map((letter) => `hp1:${letter}\n`).join("");
+  const reply = {
+    id: "hackerai-preview",
+    success: true,
+    data: { connected: true, port: 9223 },
+  };
+  type Act = (d: ReturnType<typeof daemon>) => void;
+  const connected: Act = (d) => d.socket.emit("connect");
+  const status = { action: "stream_status" };
+
+  const replied: Act = (d) => {
+    connected(d);
+    d.reply(reply);
+  };
+  const expired: Act = (d) => {
+    connected(d);
+    d.timeout();
+  };
+
+  it.each<[string, DaemonOptions, Record<string, unknown>, Act, string]>([
+    // The socket path is initialized, with no disposition yet.
+    ["is still connecting", {}, status, () => {}, "ec"],
+    ["relays a daemon reply", {}, status, replied, "ecws"],
+    ["reaches its own deadline after the write", {}, status, expired, "ecwd"],
+    [
+      "reaches its own deadline while connecting",
+      {},
+      status,
+      (d) => d.timeout(),
+      "ecd",
+    ],
+    [
+      "refuses a mismatched reply",
+      {},
+      status,
+      (d) => {
+        connected(d);
+        d.reply({ ...reply, id: "PRIVATE" });
+      },
+      "ecwo",
+    ],
+    // Neither path initializes a socket.
+    [
+      "finds the selected socket missing",
+      missingSocket,
+      status,
+      () => {},
+      "eo",
+    ],
+    [
+      "answers from the owned listeners",
+      { pidFile: "314159", owned: ownedState },
+      ownedRequest,
+      () => {},
+      "es",
+    ],
+  ])(
+    "writes only constant ordered frames when the helper %s, with unchanged stdout, exit and daemon traffic",
+    (_case, options, request, act, letters) => {
+      const opted = daemon({
+        ...options,
+        request: { ...request, observe_progress: true },
+      });
+      act(opted);
+      const plain = daemon({ ...options, request });
+      act(plain);
+
+      expect(opted.stderr()).toBe(frames(letters));
+      // Only the helper's own nonblocking open of the stderr pipe, never a
+      // (blocking) write to shared descriptor 2.
+      expect(
+        opted.openReceipt.mock.calls.filter(([file]) =>
+          file.startsWith("/proc/self/"),
+        ),
+      ).toEqual([["/proc/self/fd/2", 1 | 2048]]);
+      expect(opted.stderrWrites.mock.calls.map(([fd]) => fd)).toEqual(
+        [...letters].map(() => 30),
+      );
+      // The consumer accepts exactly this producer sequence.
+      expect(BROWSER_DAEMON_PROGRESS_FRAMES.test(opted.stderr())).toBe(true);
+      expect(Object.keys(BROWSER_DAEMON_PROGRESS_SEQUENCES)).toContain(letters);
+      // The opt-in is stripped: identical daemon traffic, stdout and exit.
+      expect(plain.openReceipt).not.toHaveBeenCalledWith(
+        "/proc/self/fd/2",
+        expect.anything(),
+      );
+      expect(plain.stderrWrites).not.toHaveBeenCalled();
+      expect(opted.connect.mock.calls).toEqual(plain.connect.mock.calls);
+      expect(opted.socket.write.mock.calls).toEqual(
+        plain.socket.write.mock.calls,
+      );
+      expect(opted.output.mock.calls).toEqual(plain.output.mock.calls);
+      expect(opted.exit.mock.calls).toEqual(plain.exit.mock.calls);
+      for (const [text] of opted.socket.write.mock.calls)
+        expect(text).not.toContain("observe_progress");
+    },
+  );
+
+  it.each<Record<string, unknown>>([
+    status,
+    { ...status, observe_progress: "true" },
+    {
+      action: "screenshot",
+      path: directory + "/preview.jpg",
+      format: "jpeg",
+      quality: 65,
+      observe_progress: true,
+    },
+  ])("never touches stderr without the exact status opt-in: %j", (request) => {
+    const d = daemon({ request });
+    replied(d);
+    expect(d.openReceipt).not.toHaveBeenCalledWith(
+      "/proc/self/fd/2",
+      expect.anything(),
+    );
+    expect(d.stderrWrites).not.toHaveBeenCalled();
+    const { observe_progress: _flag, ...forwarded } = request;
+    expect(d.socket.write.mock.calls).toEqual([
+      [JSON.stringify({ ...forwarded, id: "hackerai-preview" }) + "\n"],
+    ]);
+  });
+
+  it.each<[string, DaemonOptions, number]>([
+    // Each six-byte write is whole or EAGAIN; the frame is dropped, not retried.
+    ["the stderr pipe is full", { stderrWriteError: "EAGAIN" }, 4],
+    // A nonblocking FIFO open without a reader fails instead of waiting.
+    ["the stderr pipe has no reader", { stderrOpenError: "ENXIO" }, 0],
+    // Never a synchronous TTY or regular-file write.
+    ["stderr is a terminal", { stderrKind: "tty" }, 0],
+    ["stderr is a regular file", { stderrKind: "file" }, 0],
+  ])(
+    "delivers no frames and keeps stdout, exit and the daemon request when %s",
+    (_case, options, attempts) => {
+      for (const act of [replied, expired]) {
+        const opted = daemon({
+          ...options,
+          request: { ...status, observe_progress: true },
+        });
+        act(opted);
+        const plain = daemon({ request: status });
+        act(plain);
+        expect(opted.stderr()).toBe("");
+        expect(opted.stderrWrites).toHaveBeenCalledTimes(attempts);
+        expect(opted.socket.write.mock.calls).toEqual(
+          plain.socket.write.mock.calls,
+        );
+        expect(opted.output.mock.calls).toEqual(plain.output.mock.calls);
+        expect(opted.exit.mock.calls).toEqual(plain.exit.mock.calls);
+      }
+    },
+  );
 });
