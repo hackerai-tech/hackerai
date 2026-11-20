@@ -781,6 +781,87 @@ describe("web request correlation at Agent dispatch", () => {
     }
   });
 
+  describe("Desktop local-copy setup deadline", () => {
+    const {
+      AttachmentCommandCleanupError,
+      AttachmentLocalCopySetupDeadlineError,
+    } =
+      require("@/lib/ai/tools/utils/attachment-command") as typeof import("@/lib/ai/tools/utils/attachment-command");
+    const files = require("@/lib/utils/sandbox-file-utils");
+    const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+    const entry = Date.parse("2026-11-20T06:00:00.000Z");
+    const messages = [{ id: "message-1", role: "user", parts: [] }];
+    beforeEach(() => {
+      jest.useFakeTimers({ now: entry });
+      files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+      files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+        messages,
+        sandboxFiles: [{}, {}],
+      });
+      files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+      mockSandboxContext.mockResolvedValue(undefined);
+      mockSandboxClose.mockResolvedValue(undefined);
+      fallback.getSandboxWithFallbackGuard.mockResolvedValue({
+        sandbox: { close: mockSandboxClose },
+      });
+    });
+    afterEach(() => {
+      files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+      jest.useRealTimers();
+    });
+
+    it.each(["/api/agent", "/api/agent-long"] as const)(
+      "ends %s admission with reconnect guidance before persistence or dispatch",
+      async (endpoint) => {
+        jest.spyOn(console, "warn").mockImplementation(() => {});
+        files.uploadSandboxFiles.mockImplementation(
+          async (_files: unknown, getSandbox: () => Promise<unknown>) => {
+            await getSandbox();
+            // Earlier admission work spends part of the same budget.
+            await jest.advanceTimersByTimeAsync(30_000);
+            throw new AttachmentLocalCopySetupDeadlineError();
+          },
+        );
+        const response = await start(endpoint, "full_access", requestId, {
+          sandboxPreference: "desktop",
+        });
+        expect(response.status).toBe(400);
+        const body: any = await response.json();
+        expect(body.code).toBe("bad_request:api");
+        expect(body.cause).toMatch(/Reconnect this computer/);
+        // No automatic retry and no instruction to delete or reattach files.
+        expect(body.cause).not.toMatch(/automatic|delet|reattach|moved/i);
+        // One absolute budget from handler entry, not from upload start.
+        expect(files.uploadSandboxFiles).toHaveBeenCalledTimes(1);
+        expect(files.uploadSandboxFiles.mock.calls[0][2]).toMatchObject({
+          localCopySetupDeadlineAt: entry + 45_000,
+        });
+        expect(mockSandboxClose).toHaveBeenCalledTimes(1);
+        expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("keeps unconfirmed setup cancellation on its existing failure path", async () => {
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      files.uploadSandboxFiles.mockRejectedValue(
+        new AttachmentCommandCleanupError(new Error("cancel not acknowledged")),
+      );
+      const response = await start("/api/agent", "full_access", requestId, {
+        sandboxPreference: "desktop",
+      });
+      expect(response.status).toBe(500);
+      expect(((await response.json()) as any).cause).not.toMatch(
+        /Reconnect this computer/,
+      );
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      log.mockRestore();
+    });
+  });
+
   it.each(["save_chat", "reset_stream", "save_user_message"])(
     "attributes a blocked initial persistence operation to %s without admitting the run early",
     async (step) => {

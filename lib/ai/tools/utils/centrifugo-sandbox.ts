@@ -38,6 +38,7 @@ import {
   type IsolatedOperationPhase,
 } from "@/lib/centrifugo/dispatch-operation";
 import {
+  AttachmentLocalCopySetupDeadlineError,
   runAttachmentCommand,
   throwIfAttachmentAborted,
 } from "./attachment-command";
@@ -3232,22 +3233,56 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     copyLocal: async (
       sourceRawPath: string,
       destRawPath: string,
-      options?: { signal?: AbortSignal },
+      options?: {
+        signal?: AbortSignal;
+        /** Absolute epoch ms bounding only read-only shell/path setup. */
+        setupDeadlineAt?: number;
+      },
     ): Promise<void> => {
       options?.signal?.throwIfAborted();
-      // Each role attributes only the setup commands it actually issues.
-      const sourceCtx = await this.shellContext(
-        sourceRawPath,
-        options?.signal,
-        undefined,
-        "source",
-      );
-      const destCtx = await this.shellContext(
-        destRawPath,
-        options?.signal,
-        undefined,
-        "destination",
-      );
+      const deadlineAt = options?.setupDeadlineAt;
+      let setupSignal = options?.signal;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      if (deadlineAt !== undefined) {
+        const expired = new AbortController();
+        const expire = () =>
+          expired.abort(new AttachmentLocalCopySetupDeadlineError());
+        const remainingMs = deadlineAt - Date.now();
+        if (remainingMs > 0) deadlineTimer = setTimeout(expire, remainingMs);
+        else expire();
+        // A caller's Stop that is already pending keeps its own reason.
+        setupSignal = options?.signal
+          ? AbortSignal.any([options.signal, expired.signal])
+          : expired.signal;
+      }
+      // The deadline bounds only these read-only shell/path probes. Each
+      // role attributes only the setup commands it actually issues.
+      const [sourceCtx, destCtx] = await (async () => {
+        try {
+          const source = await this.shellContext(
+            sourceRawPath,
+            setupSignal,
+            undefined,
+            "source",
+          );
+          const destination = await this.shellContext(
+            destRawPath,
+            setupSignal,
+            undefined,
+            "destination",
+          );
+          // Never start the write once the setup budget is spent.
+          setupSignal?.throwIfAborted();
+          return [source, destination] as const;
+        } finally {
+          clearTimeout(deadlineTimer);
+        }
+      })();
+      // A resolved probe can resume before an overdue timer callback.
+      options?.signal?.throwIfAborted();
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+        throw new AttachmentLocalCopySetupDeadlineError();
+      }
       const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
