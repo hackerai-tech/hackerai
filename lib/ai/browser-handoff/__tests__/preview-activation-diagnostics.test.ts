@@ -410,10 +410,22 @@ const OTHER_STAGE_CAPTURE_KEYS = [
   "capture_screenshot_refusal_version",
   "capture_screenshot_refusal",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
+// Only a stream_status exit-2 missing-socket failure carries these keys, so they
+// never coexist with the exit-3 deadline or exit-5 response groups.
+const MISSING_SOCKET_CAPTURE_KEYS = [
+  "capture_open_socket_directory_v1",
+] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
+const EXIT_3_OR_5_CAPTURE_KEYS: ReadonlyArray<string> = [
+  "capture_deadline_diagnostic_version",
+  "capture_deadline_phase",
+  "capture_response_diagnostic_version",
+  "capture_response_validation",
+] satisfies ReadonlyArray<(typeof COMMAND_EXIT_CAPTURE_KEYS)[number]>;
 // A new capture field must be classified here, so the max fixture stays current.
 type UnclassifiedCaptureKey = Exclude<
   keyof BrowserCaptureFailureContext,
   | (typeof COMMAND_EXIT_CAPTURE_KEYS)[number]
+  | (typeof MISSING_SOCKET_CAPTURE_KEYS)[number]
   | (typeof OTHER_STAGE_CAPTURE_KEYS)[number]
   | keyof BrowserBridgeFailureContext
 >;
@@ -564,6 +576,36 @@ describe("actual phLogger to OTLP export", () => {
     expect(
       attributes.find(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY)?.value,
     ).toEqual({ stringValue: `[1,71,"${READER}"]` });
+    expectBaselineSurvives(attributes, fields);
+  });
+
+  it("fits the tuple beside the largest missing-socket context with its directory field", async () => {
+    const fields = routeFields({
+      ...captureWith(
+        COMMAND_EXIT_CAPTURE_KEYS.filter(
+          (key) => !EXIT_3_OR_5_CAPTURE_KEYS.includes(key),
+        ),
+      ),
+      capture_open_socket_directory_v1: "different_directory",
+    });
+    expect(Object.keys(fields)).toHaveLength(67);
+    const legacy = await exported(fields, `${ENDPOINT}?fresh=1`);
+    const attributes = await exported(
+      fields,
+      previewCaptureUrl(ENDPOINT, true, 71, READER),
+    );
+    expect(
+      attributes.find(({ key }) => key === "capture_open_socket_directory_v1")
+        ?.value,
+    ).toEqual({ stringValue: "different_directory" });
+    expect(
+      attributes.find(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY)?.value,
+    ).toEqual({ stringValue: `[1,71,"${READER}"]` });
+    expect(
+      withoutTimestamp(
+        attributes.filter(({ key }) => key !== PREVIEW_CLIENT_CONTEXT_KEY),
+      ),
+    ).toEqual(withoutTimestamp(legacy));
     expectBaselineSurvives(attributes, fields);
   });
 

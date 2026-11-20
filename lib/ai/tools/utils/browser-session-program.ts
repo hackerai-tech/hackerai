@@ -379,6 +379,19 @@ def record_wrapper(phase, status=None, executed=False):
             informational = (1 if '--help' in tokens or '-h' in tokens else 0) + (2 if '--version' in tokens or '-V' in tokens else 0)
             if len(json.dumps(dict(opened, o1=informational))) <= 512:
                 opened = dict(opened, o1=informational)
+            # Only beside a plain successful OPEN whose selected socket was missing
+            # at return: this wrapped CLI's own AGENT_BROWSER_SOCKET_DIR declaration,
+            # 0 exactly this root's managed directory, 1 unset or empty, 2 any other
+            # value. Never the value, nor where the CLI or daemon actually routed.
+            # Appended last and omitted rather than displacing any field at the cap.
+            if opened.get('os1') == 2 and opened.get('o1') == 0:
+                try:
+                    declared_dir = os.environ.get('AGENT_BROWSER_SOCKET_DIR')
+                    directory_code = 0 if declared_dir == str(root / 'sockets') else 1 if not declared_dir else 2
+                    if len(json.dumps(dict(opened, sd1=directory_code))) <= 512:
+                        opened = dict(opened, sd1=directory_code)
+                except Exception:
+                    pass
             write_receipt('open-receipt.json', opened)
         elif action == 'close':
             write_receipt('close-receipt.json', value)
