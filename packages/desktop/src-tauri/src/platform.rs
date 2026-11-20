@@ -302,7 +302,9 @@ pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) ->
         // files after the caller releases update admission. The same single
         // taskkill call `cancel_process_tree` makes, keeping its closed result.
         let stopped = match child.id() {
-            Some(pid) => cancel_process_tree_observed(pid).await,
+            Some(pid) => cancel_process_tree_observed(pid)
+                .await
+                .map_err(|failure| failure.and_then(TreeStopFailure::taskkill)),
             None => Ok(()),
         };
         let _ = child.kill().await;
@@ -360,10 +362,68 @@ pub(crate) enum TaskkillFailure {
 pub(crate) const TASKKILL_NOT_FOUND_EXIT: std::num::NonZeroI32 =
     std::num::NonZeroI32::new(128).unwrap();
 
+/// How the Unix tree stop's final existing `kill(-pgid, 0)` probe kept the
+/// group unconfirmed: a closed class of that one call's result, never its
+/// errno, the PID or any process it names. Only `ESRCH` confirms the group
+/// is gone, so this never says which members, if any, survived.
+// Only the Unix path and tests construct a class.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GroupProbe {
+    /// The probe succeeded: the group still had a member it could signal.
+    GroupVisible,
+    /// It failed with `EPERM`: a member existed that it could not signal.
+    ProbeDenied,
+    /// It failed with any other error but `ESRCH`.
+    ProbeFailed,
+}
+
+/// The existing probe's unchanged predicate as a class: None (absent) only
+/// for `ESRCH`, so `is_some()` is exactly the prior "still running".
+#[cfg(unix)]
+fn group_probe_class(result: libc::c_int, errno: Option<i32>) -> Option<GroupProbe> {
+    if result == 0 {
+        return Some(GroupProbe::GroupVisible);
+    }
+    match errno {
+        Some(libc::ESRCH) => None,
+        Some(libc::EPERM) => Some(GroupProbe::ProbeDenied),
+        _ => Some(GroupProbe::ProbeFailed),
+    }
+}
+
+/// Why a tree stop was unconfirmed: Windows' one taskkill call's closed
+/// failure, or the Unix final group probe's closed class. Each platform
+/// reports only its own; any other path reports neither.
+// Each platform constructs only its own variant outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TreeStopFailure {
+    Taskkill(TaskkillFailure),
+    GroupProbe(GroupProbe),
+}
+
+impl TreeStopFailure {
+    pub(crate) fn taskkill(self) -> Option<TaskkillFailure> {
+        match self {
+            Self::Taskkill(failure) => Some(failure),
+            Self::GroupProbe(_) => None,
+        }
+    }
+
+    pub(crate) fn group_probe(self) -> Option<GroupProbe> {
+        match self {
+            Self::GroupProbe(probe) => Some(probe),
+            Self::Taskkill(_) => None,
+        }
+    }
+}
+
 /// `cancel_process_tree`, which delegates here: Ok only when confirmed stopped.
-/// An unconfirmed outcome carries the closed failure only from the Windows
-/// taskkill path; every other path reports None.
-pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TaskkillFailure>> {
+/// An unconfirmed outcome carries the Windows taskkill path's closed failure,
+/// or the Unix path's final group probe class; any other path reports None.
+pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TreeStopFailure>> {
     #[cfg(unix)]
     let stopped = {
         terminate_process_group(pid, libc::SIGTERM);
@@ -380,10 +440,10 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        if process_group_is_running(pid) {
-            Err(None)
-        } else {
-            Ok(())
+        // The same final probe and predicate, keeping its closed class.
+        match process_group_probe(pid) {
+            Some(probe) => Err(Some(TreeStopFailure::GroupProbe(probe))),
+            None => Ok(()),
         }
     };
 
@@ -396,7 +456,7 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
             .output()
             .await,
     )
-    .map_err(Some);
+    .map_err(|failure| Some(TreeStopFailure::Taskkill(failure)));
 
     #[cfg(not(any(unix, windows)))]
     let stopped = Err(None);
@@ -452,12 +512,19 @@ fn reports_requested_pid_not_found(pid: u32, stdout: &[u8], stderr: &[u8]) -> bo
 
 #[cfg(unix)]
 fn process_group_is_running(pid: u32) -> bool {
+    process_group_probe(pid).is_some()
+}
+
+/// One `kill(-pgid, 0)` and its class; None only when the group is gone.
+#[cfg(unix)]
+fn process_group_probe(pid: u32) -> Option<GroupProbe> {
     let pid = pid as libc::pid_t;
     let result = unsafe { libc::kill(-pid, 0) };
-    if result == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    // errno is read only after a failed call, immediately, as before.
+    let errno = (result != 0)
+        .then(|| std::io::Error::last_os_error().raw_os_error())
+        .flatten();
+    group_probe_class(result, errno)
 }
 
 #[cfg(test)]
@@ -701,6 +768,57 @@ mod tests {
                 );
                 assert!(!killed.confirmed(), "{leader:?} {failure:?}");
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_probe_class_keeps_the_prior_predicate_and_names_only_its_closed_class() {
+        use GroupProbe::*;
+        for (result, errno, expected) in [
+            // Only ESRCH confirms the group is gone, as before.
+            (-1, Some(libc::ESRCH), None),
+            (0, None, Some(GroupVisible)),
+            // A success never reads errno, whatever it holds.
+            (0, Some(libc::ESRCH), Some(GroupVisible)),
+            (-1, Some(libc::EPERM), Some(ProbeDenied)),
+            (-1, Some(libc::EINVAL), Some(ProbeFailed)),
+            // Not an error kill(2) returns: never classified as denied.
+            (-1, Some(libc::EACCES), Some(ProbeFailed)),
+            (-1, None, Some(ProbeFailed)),
+        ] {
+            let class = group_probe_class(result, errno);
+            assert_eq!(class, expected, "{result} {errno:?}");
+            // `is_some()` is exactly the prior `process_group_is_running`.
+            assert_eq!(
+                class.is_some(),
+                result == 0 || errno != Some(libc::ESRCH),
+                "{result} {errno:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_stop_failure_projects_only_its_own_platform_detail() {
+        let probe = TreeStopFailure::GroupProbe(GroupProbe::ProbeDenied);
+        assert_eq!(
+            (probe.taskkill(), probe.group_probe()),
+            (None, Some(GroupProbe::ProbeDenied))
+        );
+        let taskkill = TreeStopFailure::Taskkill(TaskkillFailure::OutputError);
+        assert_eq!(
+            (taskkill.taskkill(), taskkill.group_probe()),
+            (Some(TaskkillFailure::OutputError), None)
+        );
+        for (probe, wire) in [
+            (GroupProbe::GroupVisible, "group_visible"),
+            (GroupProbe::ProbeDenied, "probe_denied"),
+            (GroupProbe::ProbeFailed, "probe_failed"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(probe).unwrap(),
+                serde_json::json!(wire)
+            );
         }
     }
 

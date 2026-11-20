@@ -1470,6 +1470,10 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // the first stop request source beside a report of taskkill's not-found
     // exit code, `requested_pid_not_found` or `unclassified`.
     include_stream_fence_stop_request_source: Option<serde_json::Value>,
+    // Only literal `true`, beside the origin and cleanup opt-ins, adds on
+    // macOS a stop request's first source and its tree-only leg's final
+    // group probe class.
+    include_stream_fence_darwin_stop: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1547,6 +1551,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             include_stream_fence_stop_request_source: CommandArg::from_command(item(
                 "includeStreamFenceStopRequestSource",
             ))?,
+            include_stream_fence_darwin_stop: CommandArg::from_command(item(
+                "includeStreamFenceDarwinStop",
+            ))?,
         })
     }
 }
@@ -1606,6 +1613,9 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// taskkill's not-found exit code, `requested_pid_not_found` or
 /// `unclassified`, is joined by the same stop request's first source; a
 /// timeout never records one.
+/// Separately, with the origin, cleanup and Darwin stop opt-ins, on macOS a
+/// stop request's `tree_unconfirmed` leg from the Unix tree stop is joined by
+/// its first source and final group probe class, as one closed v1 receipt.
 /// Separately, with the origin and owner phase opt-ins, a
 /// `cancel_wait_timeout` origin's recorded owner phase is added as that
 /// origin's sibling.
@@ -1619,6 +1629,7 @@ fn authorized_stream_rejection(
     include_stream_fence_windows_taskkill_root_report: bool,
     include_stream_fence_cancel_wait_owner_phase: bool,
     include_stream_fence_stop_request_source: bool,
+    include_stream_fence_darwin_stop: bool,
 ) -> tauri::ipc::InvokeError {
     let fence_rejection =
         include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
@@ -1658,6 +1669,14 @@ fn authorized_stream_rejection(
             {
                 rejection["streamFenceStopRequestSource"] = serde_json::json!(source);
             }
+        }
+        // Recorded only on macOS, beside its own stop request's
+        // `tree_unconfirmed` leg and never beside a taskkill failure.
+        if let Some(darwin_stop) = receipts
+            .darwin_stop
+            .filter(|_| include_stream_fence_darwin_stop)
+        {
+            rejection["streamFenceDarwinStop"] = serde_json::json!(darwin_stop);
         }
     }
     // The fence records an owner phase only with its own cancellation wait
@@ -1705,6 +1724,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_windows_taskkill_root_report,
         include_stream_fence_cancel_wait_owner_phase,
         include_stream_fence_stop_request_source,
+        include_stream_fence_darwin_stop,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1815,6 +1835,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_cancel_wait_owner_phase == Some(serde_json::Value::Bool(true));
     let include_stream_fence_stop_request_source =
         include_stream_fence_stop_request_source == Some(serde_json::Value::Bool(true));
+    let include_stream_fence_darwin_stop =
+        include_stream_fence_darwin_stop == Some(serde_json::Value::Bool(true));
     execute_stream_command(
         &state,
         admission,
@@ -1838,6 +1860,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             include_stream_fence_windows_taskkill_root_report,
             include_stream_fence_cancel_wait_owner_phase,
             include_stream_fence_stop_request_source,
+            include_stream_fence_darwin_stop,
         )
     })
 }
@@ -3037,6 +3060,7 @@ mod tests {
                                 body["includeStreamFenceWindowsTaskkillRootReport"] = value.clone();
                                 body["includeStreamFenceCancelWaitOwnerPhase"] = value.clone();
                                 body["includeStreamFenceStopRequestSource"] = value.clone();
+                                body["includeStreamFenceDarwinStop"] = value.clone();
                                 body["includeResponseReadTimingConnector"] = value.clone();
                             }
                         }
@@ -3699,6 +3723,33 @@ mod tests {
         state
     }
 
+    /// As `fenced_stream_state`, with `tree` as the stop's tree stop failure,
+    /// as `terminate_owned` records it.
+    #[cfg(unix)]
+    async fn probed_stream_state(
+        failure: stream_lifecycle::CleanupFailure,
+        tree: Option<platform::TreeStopFailure>,
+        source: stream_lifecycle::StopRequestSource,
+    ) -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state
+            .launch(state.admit(), "released", &mut cmd)
+            .await
+            .unwrap()
+        {
+            stream_lifecycle::Launch::Started(owned) => {
+                owned.release_stop_after(failure, tree, source).await
+            }
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
     /// A stream lifecycle with its own update gate, first fenced by a
     /// cancellation wait that timed out before its owner started `run`. The
     /// owner is then released without an outcome, which never replaces it.
@@ -3785,13 +3836,14 @@ mod tests {
             taskkill,
         };
         let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
-        // [origin, cleanup, taskkill, root report, owner phase, stop source]
-        let all = [true; 6];
-        let without_source = [true, true, true, true, true, false];
-        let v1_only = [true, true, true, false, true, true];
-        let no_taskkill = [true, true, false, true, true, true];
-        let origin_only = [true, false, true, true, true, true];
-        let none = [false, true, true, true, true, true];
+        // [origin, cleanup, taskkill, root report, owner phase, stop source,
+        // Darwin stop]
+        let all = [true; 7];
+        let without_source = [true, true, true, true, true, false, true];
+        let v1_only = [true, true, true, false, true, true, true];
+        let no_taskkill = [true, true, false, true, true, true, true];
+        let origin_only = [true, false, true, true, true, true, true];
+        let none = [false, true, true, true, true, true, true];
         let fences = [
             (
                 killed(
@@ -3835,7 +3887,7 @@ mod tests {
         for (reported, cases) in fences {
             let state = timeout_fenced_stream_state(reported).await;
             for (opt_ins, expected) in cases {
-                let [origin, cleanup, taskkill, root_report, phase, source] = opt_ins;
+                let [origin, cleanup, taskkill, root_report, phase, source, darwin] = opt_ins;
                 assert_eq!(
                     authorized_stream_rejection(
                         &state,
@@ -3846,6 +3898,7 @@ mod tests {
                         root_report,
                         phase,
                         source,
+                        darwin,
                     )
                     .0,
                     *expected,
@@ -3868,6 +3921,7 @@ mod tests {
                 authorized_stream_rejection(
                     &state,
                     stream_lifecycle::STOP_UNCONFIRMED.into(),
+                    true,
                     true,
                     true,
                     true,
@@ -4171,6 +4225,145 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn authorized_stream_command_darwin_stop_fence_carries_its_source_and_probe_only_when_opted_in()
+    {
+        use crate::platform::{GroupProbe, TaskkillFailure, TreeStopFailure};
+        use crate::stream_lifecycle::{CleanupFailure, StopRequestSource};
+        use serde_json::{json, Value};
+        use std::sync::atomic::Ordering;
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+
+        let scratch = unique_test_dir("fence-darwin-stop-ipc");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
+        let stopped = json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "owner_stop_requested" },
+        });
+        let with_cleanup = |failure: &str| {
+            let mut rejection = stopped.clone();
+            rejection["streamFenceCleanup"] = json!({ "version": 1, "failure": failure });
+            rejection
+        };
+        let tree_cleanup = with_cleanup("tree_unconfirmed");
+        let mut darwin_stop = tree_cleanup.clone();
+        darwin_stop["streamFenceDarwinStop"] = json!({
+            "version": 1,
+            "source": "cancel_ipc",
+            "groupProbe": "probe_denied",
+        });
+        // Only macOS reports it; every other Unix keeps the prior shape.
+        let probed = if cfg!(target_os = "macos") {
+            &darwin_stop
+        } else {
+            &tree_cleanup
+        };
+        let combined = with_cleanup("tree_and_leader_wait_timed_out");
+        let mut taskkill = tree_cleanup.clone();
+        taskkill["streamFenceWindowsTaskkill"] = json!({ "version": 1, "outcome": "output_error" });
+        let yes = || Some(json!(true));
+        let denied = Some(TreeStopFailure::GroupProbe(GroupProbe::ProbeDenied));
+        // [origin, cleanup] literal `true` opt-ins, Darwin stop opt-in, expected.
+        type Case<'a> = ([bool; 2], Option<Value>, &'a Value);
+        let fences: Vec<(CleanupFailure, Option<TreeStopFailure>, Vec<Case>)> = vec![
+            (
+                CleanupFailure::TreeUnconfirmed,
+                denied,
+                vec![
+                    ([true, true], yes(), probed),
+                    // An older frontend, or any value but literal `true`,
+                    // keeps exactly the cleanup receipt.
+                    ([true, true], None, &tree_cleanup),
+                    ([true, true], Some(json!(false)), &tree_cleanup),
+                    ([true, true], Some(json!("true")), &tree_cleanup),
+                    ([true, true], Some(json!(1)), &tree_cleanup),
+                    ([true, true], Some(json!({ "value": true })), &tree_cleanup),
+                    ([true, true], Some(Value::Null), &tree_cleanup),
+                    // It rides only the cleanup receipt and its origin.
+                    ([true, false], yes(), &stopped),
+                    ([false, true], yes(), &exact),
+                ],
+            ),
+            // A combined leg never records its probe.
+            (
+                CleanupFailure::TreeAndLeaderWaitTimedOut,
+                denied,
+                vec![([true, true], yes(), &combined)],
+            ),
+            // Windows' taskkill failure keeps its own receipt, never this one.
+            (
+                CleanupFailure::TreeUnconfirmed,
+                Some(TreeStopFailure::Taskkill(TaskkillFailure::OutputError)),
+                vec![([true, true], yes(), &taskkill)],
+            ),
+        ];
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        let mut next_authorization = 0xda_0000u32;
+        for (failure, tree, cases) in fences {
+            let state = tauri::async_runtime::block_on(probed_stream_state(
+                failure,
+                tree,
+                StopRequestSource::CancelIpc,
+            ));
+            let count = cases.len();
+            let (port, approvals) = approve_authorizations(count);
+            let app = mock_builder()
+                .manage(state)
+                .invoke_handler(with_authorized_stream_dispatch(|_| false))
+                .build(app_context())
+                .unwrap();
+            let page =
+                tauri::WebviewUrl::External(format!("http://localhost:{port}/").parse().unwrap());
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
+                .build()
+                .unwrap();
+            for ([origin, cleanup], darwin_opt_in, expected) in cases {
+                next_authorization += 1;
+                let authorization = format!("{next_authorization:064x}");
+                let label = format!("{failure:?} {tree:?} {origin} {cleanup} {darwin_opt_in:?}");
+                // A Darwin frontend also sends both Windows taskkill opt-ins.
+                let mut body = json!({
+                    "authorizationId": authorization,
+                    "message": { "type": "command", "commandId": authorization, "command": command },
+                    "onEvent": "__CHANNEL__:1",
+                    "includeStreamFenceWindowsTaskkill": true,
+                    "includeStreamFenceWindowsTaskkillRootReport": true,
+                });
+                if origin {
+                    body["includeStreamFenceOrigin"] = json!(true);
+                }
+                if cleanup {
+                    body["includeStreamFenceCleanup"] = json!(true);
+                }
+                if let Some(value) = darwin_opt_in {
+                    body["includeStreamFenceDarwinStop"] = value;
+                }
+                let response = get_ipc_response(
+                    &window,
+                    tauri::webview::InvokeRequest {
+                        cmd: AUTHORIZED_STREAM_COMMAND.into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: "https://hackerai.co/".parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::Json(body),
+                        headers: Default::default(),
+                        invoke_key: INVOKE_KEY.to_string(),
+                    },
+                )
+                .map(|_| ());
+                // Redeemed once, then fenced with the exact original message.
+                assert_eq!(response, Err(expected.clone()), "{label}");
+            }
+            assert_eq!(approvals.load(Ordering::SeqCst), count);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "a fenced command ran");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
     type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     #[cfg(unix)]
@@ -4226,6 +4419,7 @@ mod tests {
                             opted_in,
                             opted_in,
                             opted_in,
+                            opted_in,
                         )
                         .0
                     })
@@ -4250,6 +4444,7 @@ mod tests {
             authorized_stream_rejection(
                 &open,
                 stream_lifecycle::STOP_UNCONFIRMED.into(),
+                true,
                 true,
                 true,
                 true,

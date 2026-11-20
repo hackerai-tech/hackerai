@@ -100,7 +100,8 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
    * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
    * failure is reported only for `owner_stop_requested` on an acknowledged
    * terminal. Beside its `cancel_ipc` stop request source, a runless
-   * command's renderer cancel attempt pair rides the same carrier. */
+   * command's renderer cancel attempt pair rides the same carrier. A Darwin
+   * stop's source and final group probe ride it only beside `tree_unconfirmed`. */
   streamFence?: DesktopStreamFenceDiagnostic &
     Partial<DesktopStreamFenceRendererCancelDiagnostic>;
 };
@@ -394,7 +395,9 @@ export class DesktopAckTelemetry {
       // The acknowledged terminal admits cleanup for a stop or owner timeout.
       // A tree-only failure can add its Windows taskkill result. Only an
       // explicit stop can add its first request source, beside a not-found
-      // report. A cancellation-wait timeout may instead add the owner phase.
+      // report, or, exclusively without any Windows property, Darwin's stop
+      // source and final group probe beside its tree-only failure. A
+      // cancellation-wait timeout may instead add the owner phase.
       const streamFence = readDesktopStreamFenceDiagnostic(
         result.streamFence,
         invocationRejection,

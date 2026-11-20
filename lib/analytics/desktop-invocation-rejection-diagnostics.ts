@@ -615,6 +615,39 @@ const STREAM_FENCE_STOP_REQUEST_SOURCES = [
 export type DesktopStreamFenceStopRequestSource =
   (typeof STREAM_FENCE_STOP_REQUEST_SOURCES)[number];
 
+/** A closed class of how the final existing `kill(-pgid, 0)` probe of a
+ * Darwin Desktop `owner_stop_requested` stop's `tree_unconfirmed` cleanup kept
+ * the process group unconfirmed: it saw a member, was denied (`EPERM`), or
+ * failed otherwise. Only `ESRCH` confirms the group is gone, so it never names
+ * an errno, a PID, a process, or which members survived. */
+const STREAM_FENCE_DARWIN_GROUP_PROBES = [
+  "group_visible",
+  "probe_denied",
+  "probe_failed",
+] as const;
+
+export type DesktopStreamFenceDarwinGroupProbe =
+  (typeof STREAM_FENCE_DARWIN_GROUP_PROBES)[number];
+
+/** Only an explicit stop's `tree_unconfirmed` cleanup can carry the Darwin
+ * stop's first source and final group probe; never an owner timeout's, a
+ * combined leg's or one beside any Windows taskkill receipt. */
+function carriesDarwinStop(
+  origin: DesktopStreamFenceOrigin | null,
+  cleanupFailure: DesktopStreamFenceCleanupFailure | null | undefined,
+): boolean {
+  return (
+    origin === STREAM_FENCE_STOP_ORIGIN &&
+    cleanupFailure === STREAM_FENCE_TASKKILL_FAILURE
+  );
+}
+
+/** The Darwin stop's first source and final group probe class. */
+export interface NativeStreamFenceDarwinStop {
+  readonly source: DesktopStreamFenceStopRequestSource;
+  readonly groupProbe: DesktopStreamFenceDarwinGroupProbe;
+}
+
 /** Only this origin can carry its matched owner's phase. */
 const STREAM_FENCE_OWNER_PHASE_ORIGIN = "cancel_wait_timeout";
 
@@ -708,6 +741,12 @@ const STREAM_FENCE_CLEANUP_KEY = "streamFenceCleanup";
 const STREAM_FENCE_TASKKILL_KEY = "streamFenceWindowsTaskkill";
 const STREAM_FENCE_OWNER_PHASE_KEY = "streamFenceCancelWaitOwnerPhase";
 const STREAM_FENCE_STOP_REQUEST_SOURCE_KEY = "streamFenceStopRequestSource";
+const STREAM_FENCE_DARWIN_STOP_KEY = "streamFenceDarwinStop";
+const STREAM_FENCE_DARWIN_STOP_KEYS = [
+  "version",
+  "source",
+  "groupProbe",
+] as const;
 const STREAM_FENCE_ORIGIN_KEYS = ["version", "origin"] as const;
 const STREAM_FENCE_OWNER_PHASE_KEYS = ["version", "phase"] as const;
 const STREAM_FENCE_STOP_REQUEST_SOURCE_KEYS = ["version", "source"] as const;
@@ -741,6 +780,26 @@ export interface NativeStreamFenceRejection {
    * receipt of the not-found exit code, either root report, for the closed
    * v1 `streamFenceStopRequestSource` sibling. */
   readonly stopRequestSource?: DesktopStreamFenceStopRequestSource;
+  /** Present only beside an `owner_stop_requested` origin's
+   * `tree_unconfirmed` cleanup failure without any taskkill sibling, for the
+   * closed v1 `streamFenceDarwinStop` sibling. */
+  readonly darwinStop?: NativeStreamFenceDarwinStop;
+}
+
+/** The closed v1 Darwin stop in `receipt`, exactly `{ version: 1, source,
+ * groupProbe }` with a listed source and probe class, or null. Never throws. */
+function parseStreamFenceDarwinStop(
+  receipt: unknown,
+): NativeStreamFenceDarwinStop | null {
+  const values = readClosedOwnData(receipt, STREAM_FENCE_DARWIN_STOP_KEYS);
+  if (values?.[0] !== 1) return null;
+  const source = STREAM_FENCE_STOP_REQUEST_SOURCES.find(
+    (known) => known === values[1],
+  );
+  const groupProbe = STREAM_FENCE_DARWIN_GROUP_PROBES.find(
+    (known) => known === values[2],
+  );
+  return source && groupProbe ? Object.freeze({ source, groupProbe }) : null;
 }
 
 /** The closed v1 stop request source in `receipt`, or null. Never throws. */
@@ -860,8 +919,12 @@ function nativeTimeoutTreePairsUnchanged(error: object): boolean {
  * `{ version: 1, source }` with a listed source, is read only beside an
  * `owner_stop_requested` origin's parsed v2 taskkill receipt of the not-found
  * exit code; a malformed one, or one beside anything else, including every
- * `owner_timeout`, keeps every other parsed receipt. Never throws; a getter
- * never runs. */
+ * `owner_timeout`, keeps every other parsed receipt. Likewise a
+ * `streamFenceDarwinStop` sibling, `{ version: 1, source, groupProbe }` with
+ * a listed source and probe class, is read only beside an
+ * `owner_stop_requested` origin's `tree_unconfirmed` cleanup failure and no
+ * taskkill sibling; a malformed one, or one beside anything else, keeps every
+ * other parsed receipt. Never throws; a getter never runs. */
 export function parseNativeStreamFenceRejection(
   error: unknown,
 ): NativeStreamFenceRejection | null {
@@ -869,6 +932,8 @@ export function parseNativeStreamFenceRejection(
   const sibling = own?.includes(STREAM_FENCE_CLEANUP_KEY) === true;
   const taskkillSibling =
     sibling && own?.includes(STREAM_FENCE_TASKKILL_KEY) === true;
+  const darwinSibling =
+    sibling && own?.includes(STREAM_FENCE_DARWIN_STOP_KEY) === true;
   const phaseSibling = own?.includes(STREAM_FENCE_OWNER_PHASE_KEY) === true;
   const sourceSibling =
     own?.includes(STREAM_FENCE_STOP_REQUEST_SOURCE_KEY) === true;
@@ -878,6 +943,7 @@ export function parseNativeStreamFenceRejection(
       STREAM_FENCE_REJECTION_KEYS.length +
         (sibling ? 1 : 0) +
         (taskkillSibling ? 1 : 0) +
+        (darwinSibling ? 1 : 0) +
         (phaseSibling ? 1 : 0) +
         (sourceSibling ? 1 : 0) ||
     !STREAM_FENCE_REJECTION_KEYS.every((key) => own.includes(key))
@@ -951,6 +1017,17 @@ export function parseNativeStreamFenceRejection(
           ])?.[0],
         )
       : null;
+  // Platform-exclusive: never beside any taskkill sibling, valid or not.
+  const darwinStop =
+    darwinSibling &&
+    !taskkillSibling &&
+    carriesDarwinStop(origin, cleanupFailure)
+      ? parseStreamFenceDarwinStop(
+          readOwnDataValues(error as object, [
+            STREAM_FENCE_DARWIN_STOP_KEY,
+          ])?.[0],
+        )
+      : null;
   return Object.freeze({
     message: STOP_UNCONFIRMED_MESSAGE,
     origin,
@@ -958,6 +1035,7 @@ export function parseNativeStreamFenceRejection(
     ...(windowsTaskkill && { windowsTaskkill }),
     ...(cancelWaitOwnerPhase && { cancelWaitOwnerPhase }),
     ...(stopRequestSource && { stopRequestSource }),
+    ...(darwinStop && { darwinStop }),
   });
 }
 
@@ -996,6 +1074,20 @@ interface NoStreamFenceWindowsTaskkillGroup {
   readonly desktop_stream_fence_stop_request_source?: never;
 }
 
+/** Darwin Desktop's explicit stop: its first source and its tree-only
+ * cleanup's final group probe class, one versioned group. */
+interface DesktopStreamFenceDarwinStopGroup {
+  readonly desktop_stream_fence_darwin_stop_version: 1;
+  readonly desktop_stream_fence_darwin_stop_source: DesktopStreamFenceStopRequestSource;
+  readonly desktop_stream_fence_darwin_stop_group_probe: DesktopStreamFenceDarwinGroupProbe;
+}
+
+interface NoStreamFenceDarwinStopGroup {
+  readonly desktop_stream_fence_darwin_stop_version?: never;
+  readonly desktop_stream_fence_darwin_stop_source?: never;
+  readonly desktop_stream_fence_darwin_stop_group_probe?: never;
+}
+
 interface DesktopStreamFenceOwnerPhaseGroup {
   readonly desktop_stream_fence_cancel_wait_owner_phase_version: 1;
   readonly desktop_stream_fence_cancel_wait_owner_phase: DesktopStreamFenceCancelWaitOwnerPhase;
@@ -1010,20 +1102,27 @@ interface NoStreamFenceOwnerPhaseGroup {
  * `owner_timeout` the complete cleanup pair, only beside either origin's
  * `tree_unconfirmed` failure the complete Windows taskkill group, with the
  * stop request source pair only beside an `owner_stop_requested` origin's
- * root report of the not-found code, and only beside `cancel_wait_timeout` the
- * complete owner phase pair. */
+ * root report of the not-found code, or, exclusively, only beside an
+ * `owner_stop_requested` origin's `tree_unconfirmed` failure the complete
+ * Darwin stop group, and only beside `cancel_wait_timeout` the complete owner
+ * phase pair. */
 export type DesktopStreamFenceDiagnostic = DesktopStreamFenceOriginGroup &
   (
     | (DesktopStreamFenceCleanupGroup &
         (
-          | DesktopStreamFenceWindowsTaskkillGroup
-          | NoStreamFenceWindowsTaskkillGroup
+          | (DesktopStreamFenceWindowsTaskkillGroup &
+              NoStreamFenceDarwinStopGroup)
+          | (NoStreamFenceWindowsTaskkillGroup &
+              (
+                DesktopStreamFenceDarwinStopGroup | NoStreamFenceDarwinStopGroup
+              ))
         ) &
         NoStreamFenceOwnerPhaseGroup)
     | ({
         readonly desktop_stream_fence_cleanup_version?: never;
         readonly desktop_stream_fence_cleanup_failure?: never;
       } & NoStreamFenceWindowsTaskkillGroup &
+        NoStreamFenceDarwinStopGroup &
         (DesktopStreamFenceOwnerPhaseGroup | NoStreamFenceOwnerPhaseGroup))
   );
 
@@ -1054,6 +1153,12 @@ const STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES = [
   "desktop_stream_fence_stop_request_source_version",
   "desktop_stream_fence_stop_request_source",
 ] as const satisfies readonly (keyof DesktopStreamFenceWindowsTaskkillGroup)[];
+
+const STREAM_FENCE_DARWIN_STOP_PROPERTIES = [
+  "desktop_stream_fence_darwin_stop_version",
+  "desktop_stream_fence_darwin_stop_source",
+  "desktop_stream_fence_darwin_stop_group_probe",
+] as const satisfies readonly (keyof DesktopStreamFenceDarwinStopGroup)[];
 
 const STREAM_FENCE_OWNER_PHASE_PROPERTIES = [
   "desktop_stream_fence_cancel_wait_owner_phase_version",
@@ -1094,9 +1199,39 @@ export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
   STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
   ...STREAM_FENCE_TASKKILL_ROOT_REPORT_PROPERTIES,
   ...STREAM_FENCE_STOP_REQUEST_SOURCE_PROPERTIES,
+  ...STREAM_FENCE_DARWIN_STOP_PROPERTIES,
   ...STREAM_FENCE_OWNER_PHASE_PROPERTIES,
   ...STREAM_FENCE_RENDERER_CANCEL_PROPERTIES,
 ]);
+
+/** The Windows taskkill group's own properties. Any one present, valid or not,
+ * keeps the Darwin stop group from being read beside it. Its refinements are
+ * never read here: none is ever kept without that group. */
+const STREAM_FENCE_WINDOWS_ONLY_PROPERTIES = [
+  ...STREAM_FENCE_TASKKILL_PROPERTIES,
+  STREAM_FENCE_TASKKILL_EXIT_CODE_PROPERTY,
+] as const;
+
+/** The complete Darwin stop group for a listed source and probe class, or
+ * null. */
+function darwinStopGroup(
+  stopSource: unknown,
+  groupProbe: unknown,
+): DesktopStreamFenceDarwinStopGroup | null {
+  const source = STREAM_FENCE_STOP_REQUEST_SOURCES.find(
+    (value) => value === stopSource,
+  );
+  const probe = STREAM_FENCE_DARWIN_GROUP_PROBES.find(
+    (value) => value === groupProbe,
+  );
+  return source && probe
+    ? {
+        desktop_stream_fence_darwin_stop_version: 1,
+        desktop_stream_fence_darwin_stop_source: source,
+        desktop_stream_fence_darwin_stop_group_probe: probe,
+      }
+    : null;
+}
 
 /** A taskkill outcome, code and root report, each still to be validated. */
 interface UncheckedWindowsTaskkill {
@@ -1161,7 +1296,10 @@ function refinesStopUnconfirmed(
  * code adds a valid root report's pair; an invalid one drops alone. Only an
  * `owner_stop_requested` origin's report beside the not-found code, of either
  * class, adds a listed stop request source's pair; an invalid one, or any
- * beside `owner_timeout`, drops alone. Only a `cancel_wait_timeout`
+ * beside `owner_timeout`, drops alone. Only an `owner_stop_requested`
+ * origin's `tree_unconfirmed` failure without any taskkill argument adds the
+ * complete Darwin stop group, for a listed source and probe class; anything
+ * else drops alone. Only a `cancel_wait_timeout`
  * origin adds the complete owner phase pair, for a listed phase; any other
  * value leaves the origin pair alone. */
 export function desktopStreamFenceDiagnostic(
@@ -1172,6 +1310,10 @@ export function desktopStreamFenceDiagnostic(
   windowsTaskkill: UncheckedWindowsTaskkill | null = null,
   cancelWaitOwnerPhase: unknown = null,
   stopRequestSource: unknown = null,
+  darwinStop: {
+    readonly source: unknown;
+    readonly groupProbe: unknown;
+  } | null = null,
 ): DesktopStreamFenceDiagnostic | null {
   if (!refinesStopUnconfirmed(rejection, unknown)) return null;
   const known = STREAM_FENCE_ORIGINS.find((value) => value === origin);
@@ -1216,6 +1358,11 @@ export function desktopStreamFenceDiagnostic(
           (value) => value === stopRequestSource,
         )
       : undefined;
+  // Platform-exclusive: never beside a taskkill argument, valid or not.
+  const darwin =
+    !windowsTaskkill && darwinStop && carriesDarwinStop(known, failure)
+      ? darwinStopGroup(darwinStop.source, darwinStop.groupProbe)
+      : null;
   const pair = {
     desktop_stream_fence_version: 1,
     desktop_stream_fence_origin: known,
@@ -1226,6 +1373,7 @@ export function desktopStreamFenceDiagnostic(
     desktop_stream_fence_cleanup_version: 1,
     desktop_stream_fence_cleanup_failure: failure,
   } as const;
+  if (darwin) return Object.freeze({ ...cleanup, ...darwin });
   return Object.freeze(
     taskkill
       ? {
@@ -1276,6 +1424,74 @@ function timeoutPairsUnchanged(
   );
 }
 
+/** Whether `source` has none of `keys` as an own property of any kind. A
+ * getter never runs; a throw propagates. */
+function lacksOwnProperties(source: object, keys: readonly string[]): boolean {
+  return keys.every(
+    (key) => Object.getOwnPropertyDescriptor(source, key) === undefined,
+  );
+}
+
+/** `cleaned` with the Darwin stop group read from the same property bag,
+ * only beside its validated `owner_stop_requested` origin and
+ * `tree_unconfirmed` cleanup pairs and without any taskkill group property.
+ * An invalid group, or one whose read changed those pairs or added a taskkill
+ * group property, drops alone. A getter never runs; a throw keeps `cleaned`. */
+function readDarwinStop(
+  source: object,
+  rejection: DesktopInvocationRejectionDiagnostic | null,
+  unknown: DesktopInvocationUnknownDiagnostic | null,
+  cleaned: DesktopStreamFenceDiagnostic,
+): DesktopStreamFenceDiagnostic {
+  if (
+    !carriesDarwinStop(
+      cleaned.desktop_stream_fence_origin,
+      cleaned.desktop_stream_fence_cleanup_failure,
+    )
+  )
+    return cleaned;
+  try {
+    if (!lacksOwnProperties(source, STREAM_FENCE_WINDOWS_ONLY_PROPERTIES))
+      return cleaned;
+    const [version, stopSource, groupProbe] = ownDataValuesOrUndefined(
+      source,
+      STREAM_FENCE_DARWIN_STOP_PROPERTIES,
+    );
+    if (version !== 1) return cleaned;
+    // Reading the group can change earlier properties on a proxy. Keep the
+    // validated pairs unless they, the group version and the absence of
+    // every Windows-only property all still hold.
+    const fenceKeys = [
+      ...STREAM_FENCE_PROPERTIES,
+      ...STREAM_FENCE_CLEANUP_PROPERTIES,
+    ] as const;
+    const rechecked = ownDataValuesOrUndefined(source, [
+      ...fenceKeys,
+      STREAM_FENCE_DARWIN_STOP_PROPERTIES[0],
+    ]);
+    if (
+      !fenceKeys.every((key, index) => rechecked[index] === cleaned[key]) ||
+      rechecked.at(-1) !== version ||
+      !lacksOwnProperties(source, STREAM_FENCE_WINDOWS_ONLY_PROPERTIES)
+    )
+      return cleaned;
+    return (
+      desktopStreamFenceDiagnostic(
+        rejection,
+        unknown,
+        cleaned.desktop_stream_fence_origin,
+        cleaned.desktop_stream_fence_cleanup_failure,
+        null,
+        null,
+        null,
+        { source: stopSource, groupProbe },
+      ) ?? cleaned
+    );
+  } catch {
+    return cleaned;
+  }
+}
+
 /** Read the complete fence group from any property bag's own data properties,
  * joined to already validated authorized `unknown` and
  * `lifecycle_stop_unconfirmed` groups, or nothing at all. No property is read
@@ -1291,7 +1507,10 @@ function timeoutPairsUnchanged(
  * drops alone. The stop request source pair is read only beside an
  * `owner_stop_requested` origin's validated root report of the not-found code
  * from the same snapshot, and an invalid one drops alone; it is never read
- * beside `owner_timeout`. The owner phase pair is read only beside a validated
+ * beside `owner_timeout`. The Darwin stop group is read only beside a
+ * validated `owner_stop_requested` origin's `tree_unconfirmed` cleanup pair
+ * without any taskkill group property, and an invalid one drops alone; it is
+ * never read beside `owner_timeout`. The owner phase pair is read only beside a validated
  * `cancel_wait_timeout` origin on an acknowledged terminal, and an invalid one
  * drops alone. A getter never runs; a throwing proxy reads as nothing. */
 export function readDesktopStreamFenceDiagnostic(
@@ -1397,7 +1616,9 @@ export function readDesktopStreamFenceDiagnostic(
       source,
       STREAM_FENCE_TASKKILL_PROPERTIES,
     );
-    if (version !== 1) return cleaned;
+    // Without a taskkill group, only Darwin's own stop group can follow.
+    if (version !== 1)
+      return readDarwinStop(source, rejection, unknown, cleaned);
     // An absent code is no code; a present one must be a valid data value.
     const code = Object.getOwnPropertyDescriptor(
       source,
