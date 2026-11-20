@@ -1382,7 +1382,10 @@ export const createAgentTriggerPost = ({
         regionalSubscriptionCountry,
         messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
-        baseTodos: Array.isArray(todos) ? todos : [],
+        // Trigger's sessions.start() caps the entire inline body at 32 KiB.
+        // The Agent worker loads todos from Convex, so the session doesn't need
+        // the client's duplicate list. Keep the field's array shape.
+        baseTodos: approvalSessionId || !Array.isArray(todos) ? [] : todos,
         sandboxPreference,
         agentPermissionMode: permissionSnapshot.mode,
         approvalSessionId,
