@@ -566,6 +566,21 @@ describe("ComputerSidebar reconnect behavior", () => {
     ["agent-browser --version PRIVATE_ARG", true],
     ["agent-browser --headed -V", true],
     ["agent-browser", true],
+    // Exact help forms print usage without starting a browser.
+    ["agent-browser --help", false],
+    ["agent-browser -h", false],
+    ["agent-browser open --help", false],
+    ["npx agent-browser open -h # show open usage", false],
+    // Help beside real work, or in any other shape, stays conservative.
+    ["agent-browser --help && agent-browser open about:blank", true],
+    ["agent-browser open -h about:blank", true],
+    ["agent-browser open about:blank --help", true],
+    ["agent-browser open -- --help", true],
+    ['agent-browser open --help "# literal argument"', true],
+    ["agent-browser -h open", true],
+    ["agent-browser --help --version", true],
+    ["agent-browser snapshot --help", true],
+    ["agent-browser OPEN --help", true],
   ])(
     "matches browser invocation rather than mentions: %s",
     (command, expected) => {
@@ -786,29 +801,29 @@ describe("ComputerSidebar reconnect behavior", () => {
       view.unmount();
     });
 
-    it("keeps a standalone version check hidden and untagged", async () => {
-      const messages = messagesWith(
-        shellPart("version-tool", {
-          action: "exec",
-          command: "agent-browser --version",
-        }),
-      );
-      const { view } = renderSelected(messages, "version-tool");
-      await act(async () => {});
-      expect(fetchPreview).not.toHaveBeenCalled();
-      expect(
-        screen.queryByRole("region", { name: "Agent browser preview" }),
-      ).not.toBeInTheDocument();
-      view.unmount();
+    it.each(["agent-browser --version", "agent-browser open --help"])(
+      "keeps standalone informational %s hidden and untagged",
+      async (command) => {
+        const messages = messagesWith(
+          shellPart("version-tool", { action: "exec", command }),
+        );
+        const { view } = renderSelected(messages, "version-tool");
+        await act(async () => {});
+        expect(fetchPreview).not.toHaveBeenCalled();
+        expect(
+          screen.queryByRole("region", { name: "Agent browser preview" }),
+        ).not.toBeInTheDocument();
+        view.unmount();
 
-      // A handoff state still shows it, but without the browserRequested bit.
-      const waiting = renderSelected(messages, "version-tool", "waiting");
-      await act(async () => {});
-      expect(fetchPreview).toHaveBeenCalledTimes(1);
-      expect(sentQuery(0).get("preview_activation")).toBe("8");
-      expect(sentQuery(0).has("preview_text_source")).toBe(false);
-      waiting.view.unmount();
-    });
+        // A handoff state still shows it, but without the browserRequested bit.
+        const waiting = renderSelected(messages, "version-tool", "waiting");
+        await act(async () => {});
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        expect(sentQuery(0).get("preview_activation")).toBe("8");
+        expect(sentQuery(0).has("preview_text_source")).toBe(false);
+        waiting.view.unmount();
+      },
+    );
 
     it("reports unavailable for a selection its producer did not tag", async () => {
       mockUseQuery.mockReturnValue({
