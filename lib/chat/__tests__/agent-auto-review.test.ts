@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import { createQaSpendCapError } from "@/lib/rate-limit/qa-spending-policy";
 
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import {
@@ -706,6 +707,22 @@ describe("Agent Auto review", () => {
       failureClass: "parse_error",
       source: "failure",
     });
+  });
+
+  it("surfaces an exhausted QA pool before automatic review starts", async () => {
+    const exhausted = createQaSpendCapError({ environment: "preview" }, "pro");
+    const runModel = jest.fn();
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest("git status"),
+        authorizationContext,
+        checkProviderCapacity: async () => {
+          throw exhausted;
+        },
+        runModel,
+      }),
+    ).rejects.toBe(exhausted);
+    expect(runModel).not.toHaveBeenCalled();
   });
 
   it("fails closed on provider errors and timeouts", async () => {

@@ -3728,12 +3728,16 @@ export const agentLongTask = task({
                   })();
                   // Goal storage/verifier outages must never skip settlement of
                   // the work already performed by the normal Agent run.
-                  await goalJudgePromise.catch(() => {
-                    goalJudgment = {
-                      verdict: "blocked",
-                      reason:
-                        "Completion verification is unavailable. Resume to retry.",
-                    };
+                  await goalJudgePromise.catch((error) => {
+                    let reason =
+                      "Completion verification is unavailable. Resume to retry.";
+                    if (isQaSpendPoolError(error)) {
+                      reason =
+                        typeof error.cause === "string"
+                          ? error.cause
+                          : error.message;
+                    }
+                    goalJudgment = { verdict: "blocked", reason };
                   });
                 }
                 // Title generation starts in parallel with the main run. Wait

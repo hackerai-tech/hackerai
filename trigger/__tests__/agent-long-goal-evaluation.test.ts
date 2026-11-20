@@ -2,6 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { isTrustedBrowserHandoffReadFailure } from "@/lib/ai/browser-handoff/read-error";
+import {
+  createQaSpendCapError,
+  isQaSpendPoolError,
+} from "@/lib/rate-limit/qa-spending-policy";
 
 // Exercise the actual end-of-turn settlement guard without starting a worker.
 const source = ts.createSourceFile(
@@ -53,6 +57,7 @@ function setup({
     chatId: "chat",
     userId: "user",
     judgeGoalCompletion: judge,
+    isQaSpendPoolError,
     checkQaProviderCapacity: undefined,
     goalFinalMessages: [
       {
@@ -97,6 +102,17 @@ it.each(["stop", "tool-calls"])(
     });
   },
 );
+it("keeps the QA pool reason when goal verification cannot start", async () => {
+  const run = setup();
+  const exhausted = createQaSpendCapError({ environment: "preview" }, "pro");
+  run.judge.mockRejectedValueOnce(exhausted);
+  await expect(run.settle()).resolves.toEqual({
+    verdict: "blocked",
+    reason: exhausted.cause,
+  });
+  await run.settle();
+  expect(run.judge).toHaveBeenCalledTimes(1);
+});
 it.each([
   { goal: false },
   { stopped: true },

@@ -23,6 +23,7 @@ jest.mock("@/lib/rate-limit", () => ({
   calculateRawModelUsageCostDollars: () => 0.006,
 }));
 import { generateText, NoObjectGeneratedError } from "ai";
+import { createQaSpendCapError } from "@/lib/rate-limit/qa-spending-policy";
 import { resolveGoalOutcome } from "../contracts";
 import {
   buildGoalCompletionEvidence,
@@ -954,6 +955,15 @@ describe("independent goal completion check", () => {
     );
     warning.mockRestore();
   });
+  it("preserves a QA capacity rejection from the verifier", async () => {
+    const exhausted = createQaSpendCapError({ environment: "preview" }, "pro");
+    generate.mockRejectedValueOnce(exhausted);
+    await expect(
+      judgeGoalCompletion(goal, messages, "r1", jest.fn()),
+    ).rejects.toBe(exhausted);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a supplied answer when oversized assistant history cannot fit", async () => {
     generate.mockResolvedValue({
       output: { verdict: "needs_input", reason: "Waiting", evidence: [] },

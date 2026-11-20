@@ -5,6 +5,7 @@ import { z } from "zod";
 import { myProvider } from "@/lib/ai/providers";
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { isQaSpendPoolError } from "@/lib/rate-limit/qa-spending-policy";
 import {
   getAgentAutoReviewInspectionKind,
   isAgentAutoReviewFilesystemDeletionCommand,
@@ -666,7 +667,8 @@ export async function reviewAgentToolAction({
       latencyMs: Date.now() - startedAt,
       ...(result.costDollars ? { modelCostDollars: result.costDollars } : {}),
     };
-  } catch {
+  } catch (error) {
+    if (isQaSpendPoolError(error)) throw error;
     return failureDecision({
       failureClass: timedOut ? "timeout" : "provider_error",
       latencyMs: Date.now() - startedAt,

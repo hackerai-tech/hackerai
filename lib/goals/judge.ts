@@ -25,6 +25,7 @@ import {
 } from "./contracts";
 import { myProvider } from "@/lib/ai/providers";
 import { withProviderCapacityCheck } from "@/lib/ai/provider-capacity-guard";
+import { isQaSpendPoolError } from "@/lib/rate-limit/qa-spending-policy";
 import {
   AGENT_AUTO_REVIEW_MODEL,
   AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
@@ -630,7 +631,8 @@ export async function judgeGoalCompletion(
           : {}),
       };
     }
-  } catch {
+  } catch (error) {
+    if (isQaSpendPoolError(error)) throw error;
     if (stage === "evidence")
       console.warn("Goal completion verification failed", {
         run_id: runId,
