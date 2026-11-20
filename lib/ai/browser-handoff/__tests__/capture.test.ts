@@ -4005,6 +4005,102 @@ it("parses the wrapper result beside every existing field in a packet at the unc
   });
 });
 
+/** A connected status deadline after the selected session's successful OPEN. */
+const queuePacket = (override: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    deadline: [1, "awaiting_response"],
+    ...completedSelectedWrapper,
+    ...successfulSelectedOpen,
+    q1: [1, 2, 3],
+    private: "PRIVATE",
+    ...override,
+  });
+const queueGroup = (context: Record<string, unknown>) => ({
+  version: context.capture_daemon_socket_queue_version,
+  pending: context.capture_daemon_socket_pending_count,
+  held: context.capture_daemon_socket_held_count,
+});
+
+it.each<[string, number, number[] | null, Record<string, unknown>]>([
+  ["distinct counts", 3, [2, 3], {}],
+  ["zero counts", 3, [0, 0], { q1: [1, 0, 0] }],
+  ["saturated counts", 3, [15, 15], { q1: [1, 15, 15] }],
+  ["no tuple", 3, null, { q1: undefined }], // Older helper, unverified or dropped.
+  ["another version", 3, null, { q1: [2, 2, 3] }],
+  ["a short tuple", 3, null, { q1: [1, 2] }],
+  ["a long tuple", 3, null, { q1: [1, 2, 3, 0] }],
+  ["a count over 15", 3, null, { q1: [1, 16, 3] }],
+  ["a negative count", 3, null, { q1: [1, 2, -1] }],
+  ["a fractional count", 3, null, { q1: [1, 1.5, 3] }],
+  ["a string count", 3, null, { q1: [1, "2", 3] }],
+  ["an array-like tuple", 3, null, { q1: { 0: 1, 1: 2, 2: 3, length: 3 } }],
+  ["a connecting deadline", 3, null, { deadline: [1, "connecting"] }],
+  ["a daemon close", 6, null, {}],
+  ["another session's OPEN", 3, null, { open_session_matches: false }],
+  ["a failed OPEN", 3, null, { open_exit: 1 }],
+])(
+  "projects the listener queue only from a strict tuple at the connected deadline: %s",
+  async (_case, exitCode, counts, override) => {
+    const context = await observeDaemonFailure(exitCode, queuePacket(override));
+    expect(context).toMatchObject({
+      capture_stage: "stream_status",
+      capture_command_exit_code: exitCode,
+      capture_wrapper_phase: "completed",
+    });
+    expect(queueGroup(context)).toEqual(
+      counts ? { version: 1, pending: counts[0], held: counts[1] } : {},
+    );
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it("projects the queue at a fresh screenshot deadline and keeps its rejection and cleanup", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 3,
+    stderr: "PRIVATE",
+    stdout: queuePacket({ q1: [1, 0, 1] }),
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+    ),
+  ).rejects.toBe(error);
+  // No added request or retry; the screenshot file is still removed.
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  const context = observe.mock.calls[0][0];
+  expect(context.capture_stage).toBe("fresh_screenshot");
+  expect(queueGroup(context)).toEqual({ version: 1, pending: 0, held: 1 });
+});
+
+it.each([544, 545])(
+  "keeps the unchanged parser cap for a %s-byte packet carrying the queue",
+  async (bytes) => {
+    const packet = queuePacket();
+    const context = await observeDaemonFailure(
+      3,
+      packet + " ".repeat(bytes - packet.length),
+    );
+    expect(queueGroup(context)).toEqual(
+      bytes === 544 ? { version: 1, pending: 2, held: 3 } : {},
+    );
+  },
+);
+
 describe("fresh screenshot read phase", () => {
   const failure = (stage: string, kind: string, group = {}) => [
     [

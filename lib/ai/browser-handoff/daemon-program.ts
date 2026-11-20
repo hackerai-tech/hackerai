@@ -171,6 +171,10 @@ let socketsInfo;
 let deadlinePhase = 'connecting';
 // Only a stream_status request whose selected socket lstat found no entry.
 let statusSocketMissing = false;
+// The selected socket's lstat at start, for listener-queue drift checks.
+let selectedSocketInfo;
+// Only a connected status/screenshot request at its original deadline.
+let queueSnapshot = false;
 /** Read only a bounded owned private file; never follow links or block on pipes. */
 function readReceipt(filename) {
   let fd;
@@ -394,6 +398,10 @@ function wrapperReceipt() {
           Number.isInteger(open.sd1) && open.sd1 >= 0 && open.sd1 <= 2) result.sd1 = open.sd1;
       const declared = daemonVersionFile();
       if (declared) result.dv = declared;
+      if (queueSnapshot) {
+        const queue = listenerQueue();
+        if (queue) result.q1 = queue;
+      }
     }
     return result;
   } catch { return {}; }
@@ -476,6 +484,65 @@ function ownedStreamPort(root, sockets, address) {
   } catch {}
   return 0;
 }
+/** Wire tuple q1 [1, pending, held], each saturated at 15: rows on the selected
+ * path besides its listener, sampled once after the original deadline, before this
+ * helper closes its own connection, so the counts may include it. Pending: an unaccepted
+ * stream connection (flags 0, state 02, no inode). Held: an accepted connection
+ * (flags 0, state 03) whose exact inode the selected daemon PID holds; a client
+ * may already have closed it. Visible sockets only, not request acceptance, the
+ * lock holder, Chromium state or a cause. Requires the same daemon PID to hold the
+ * one selected listener; a bound, other-state, unowned, truncated, slow or drifting
+ * view returns undefined. Paths, PIDs, inodes and rows stay local.
+ */
+function listenerQueue() {
+  try {
+    const started = process.hrtime.bigint();
+    const late = () => process.hrtime.bigint() - started > 200000000n;
+    if (process.platform !== 'linux' || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
+        typeof fs.constants.O_NONBLOCK !== 'number' || typeof fs.statfsSync !== 'function' ||
+        [rootInfo, socketsInfo].some(item => !item?.isDirectory() || item.uid !== process.getuid() ||
+          (item.mode & 0o077) !== 0) ||
+        !selectedSocketInfo?.isSocket() || selectedSocketInfo.uid !== process.getuid() ||
+        fs.statfsSync('/proc').type !== 0x9fa0) return;
+    const address = path.join(directory, 'sockets', name + '.sock');
+    const pidPath = path.join(directory, 'sockets', name + '.pid');
+    const pid = ownedInteger(pidPath, 4194304);
+    if (!pid || fs.statSync('/proc/' + pid).uid !== process.getuid()) return;
+    const rows = procTable('/proc/net/unix');
+    if (!rows || late()) return;
+    let listener;
+    let pending = 0;
+    const held = new Set();
+    for (const row of rows) {
+      // The path follows the inode and may contain spaces; only the exact selected path.
+      const match = /^[0-9a-fA-F]+: [0-9A-F]{8} [0-9A-F]{8} ([0-9A-F]{8}) ([0-9A-F]{4}) ([0-9A-F]{2}) +(0|[1-9][0-9]{0,19}) (.*)$/.exec(row);
+      if (match?.[5] !== address) continue;
+      const [, flags, type, state, inode] = match;
+      if (type !== '0001') return;
+      if (flags === '00010000' && state === '01' && inode !== '0' && listener === undefined) listener = inode;
+      else if (flags === '00000000' && state === '02' && inode === '0') pending++;
+      else if (flags === '00000000' && state === '03' && inode !== '0' && !held.has(inode)) held.add(inode);
+      else return;
+    }
+    if (listener === undefined) return;
+    const wanted = new Set([listener, ...held].map(inode => 'socket:[' + inode + ']'));
+    let fds;
+    try {
+      fds = fs.opendirSync('/proc/' + pid + '/fd');
+      for (let count = 0, entry; wanted.size > 0 && count < 256 && (entry = fds.readSync()); count++) {
+        if (!/^[0-9]+$/.test(entry.name) || late()) return;
+        wanted.delete(fs.readlinkSync('/proc/' + pid + '/fd/' + entry.name));
+      }
+    } finally { if (fds) { try { fds.closeSync(); } catch {} } }
+    if (wanted.size > 0) return;
+    // A replaced socket or PID sidecar, or another process owner, is visible drift.
+    const current = fs.lstatSync(address);
+    if (!current.isSocket() || current.uid !== process.getuid() || current.dev !== selectedSocketInfo.dev ||
+        current.ino !== selectedSocketInfo.ino || ownedInteger(pidPath, 4194304) !== pid ||
+        fs.statSync('/proc/' + pid).uid !== process.getuid() || late()) return;
+    return [1, Math.min(pending, 15), Math.min(held.size, 15)];
+  } catch {}
+}
 /** Only the selected session's still-STARTED WAIT whose exact wrapper incarnation
  * is visible and not a zombie; any missing, other or uncertain observation is false.
  * Proves no daemon progress, health or freshness.
@@ -524,14 +591,17 @@ function finish(code, value) {
   if (done) return;
   done = true;
   clearTimeout(timer);
+  // Only the eligible deadline reads receipts before its own connection closes.
+  const early = queueSnapshot ? wrapperReceipt() : undefined;
   if (socket) socket.destroy();
   if (code !== 0) {
-    const receipt = wrapperReceipt();
+    const receipt = early ?? wrapperReceipt();
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
     const cli = cliAtPrepare();
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.q1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.q1;
     if (value?.sd1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.sd1;
     if (value?.s1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.s1;
     if (value?.l1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.l1;
@@ -564,6 +634,7 @@ try {
   const address = path.join(directory, 'sockets', name + '.sock');
   precondition = 'socket_stat';
   const info = fs.lstatSync(address);
+  selectedSocketInfo = info;
   precondition = 'root_type';
   if (!root.isDirectory()) throw new Error();
   precondition = 'sockets_type';
@@ -594,7 +665,12 @@ try {
   else if (port) finish(0, { id, success: true, data: { port } });
   else {
     let buffer = '';
-    timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
+    timer = setTimeout(() => {
+      // One observation of the connected listener queue; no further daemon traffic.
+      queueSnapshot = deadlinePhase === 'awaiting_response' &&
+        ['stream_status', 'screenshot'].includes(request.action);
+      finish(3, { deadline: [1, deadlinePhase] });
+    }, 6000);
     socket = net.createConnection(address);
     socket.setEncoding('utf8');
     socket.on('connect', () => {

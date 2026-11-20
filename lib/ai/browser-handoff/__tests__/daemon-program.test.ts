@@ -22,6 +22,7 @@ function expectPacketBudgets(text: string) {
     l1: _wrapperResult,
     s1: _screenshotRefusal,
     sd1: _socketDirectory,
+    q1: _listenerQueue,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -43,6 +44,8 @@ type OwnedState = {
   fds?: Record<string, string>;
   fdError?: string;
   linkError?: string;
+  // Replaces the selected socket or the PID sidecar once the descriptor walk starts.
+  walkDrift?: "socket" | "pid";
 };
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
@@ -102,6 +105,8 @@ function daemon(
     versionReadError?: boolean;
     // Charges extra bytes to every packet measurement to simulate a tighter cap.
     chargedBytes?: number;
+    // Monotonic nanoseconds for each process.hrtime.bigint() read.
+    clock?: () => bigint;
   } = {},
 ) {
   const socketPath = path.join(
@@ -186,6 +191,7 @@ function daemon(
   });
   // procfs tables report size 0 and return at most a page per read.
   const tables = new Map<number, { text: Buffer; at: number }>();
+  let walked = false;
   const readReceipt = jest.fn(
     (fd: number, bytes: Buffer, offset = 0, length = bytes.length) => {
       const table = tables.get(fd);
@@ -213,7 +219,9 @@ function daemon(
           : fd === 11
             ? JSON.stringify(options.cliReceipt)
             : fd === 10
-              ? options.pidFile!
+              ? walked && owned.walkDrift === "pid"
+                ? "314160"
+                : options.pidFile!
               : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
     );
@@ -310,6 +318,9 @@ function daemon(
       });
     return {
       uid: file === options.unownedPath ? 0 : 1000,
+      dev: 64769,
+      ino:
+        file === socketPath && walked && owned.walkDrift === "socket" ? 78 : 77,
       mode:
         file.endsWith("/sockets") && options.socketsMode !== undefined
           ? options.socketsMode
@@ -338,6 +349,7 @@ function daemon(
     const descriptor = /^\/proc\/314159\/fd\/([0-9]+)$/.exec(file)?.[1];
     if (descriptor === undefined || owned.fds?.[descriptor] === undefined)
       throw new Error("Unexpected descriptor path");
+    walked = true;
     if (owned.linkError)
       throw Object.assign(new Error("PRIVATE link"), {
         code: owned.linkError,
@@ -420,6 +432,7 @@ function daemon(
       ],
       getuid: () => 1000,
       platform: "linux",
+      hrtime: { bigint: options.clock ?? (() => BigInt(0)) },
       stdout: { write: output },
       exit,
     },
@@ -2844,6 +2857,228 @@ it("drops the screenshot refusal class first, before the wrapper result or any e
   expect(declared).not.toHaveProperty("s1");
   expect(declared).toMatchObject({ r1: [1, 3], o1: 3, l1: [1, 3, 5] });
   expect(complete).not.toMatch(/PRIVATE|Failed|error/);
+});
+
+/** A selected-path /proc/net/unix row: flags, type, state, then a %5lu inode. */
+const queueRow = (
+  state: string,
+  inode: number,
+  { flags = "00000000", type = "0001", address = selectedSocket } = {},
+) =>
+  `0000000000000000: 00000002 00000000 ${flags} ${type} ${state} ${String(inode).padStart(5)} ${address}`;
+// Calibrated on Linux: an unaccepted connection has state 02 and no inode; an
+// accepted one has state 03 and the daemon's descriptor, even after its client closed.
+const pendingRow = queueRow("02", 0);
+const heldRow = (inode: number) => queueRow("03", inode);
+/** The selected listener 4242 among other sockets, including an exact-path-only neighbour. */
+const queueTable = (...rows: string[]) =>
+  unixTable(
+    unixRow(4100),
+    unixRow(4242, selectedSocket),
+    queueRow("02", 0, { address: selectedSocket + ".old" }),
+    unixRow(4300, directory + "/sockets/other session.sock"),
+    ...rows,
+  );
+/** The daemon's descriptors: its selected listener 4242 plus these accepted inodes. */
+const queueFds = (...inodes: number[]) =>
+  Object.fromEntries(
+    [4242, ...inodes].map((inode, index) => [
+      String(index + 3),
+      `socket:[${inode}]`,
+    ]),
+  );
+/** After the selected session's successful OPEN; one pending and one held by default. */
+const queueDaemon = (options: DaemonOptions = {}, owned: OwnedState = {}) =>
+  daemon({
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    receipt: { ...receipt, action: "other", open_receipt_support: 1 },
+    openReceipt: successfulOpen,
+    ...options,
+    owned: {
+      unix: queueTable(pendingRow, heldRow(4243)),
+      fds: queueFds(4243),
+      ...owned,
+    },
+  });
+/** Connect, then reach the unchanged original deadline once with no follow-up request. */
+const atDeadline = (d: ReturnType<typeof daemon>) => {
+  d.socket.emit("connect");
+  d.timeout();
+  expect(d.exit.mock.calls).toEqual([[3]]);
+  expect(d.connect).toHaveBeenCalledTimes(1);
+  expect(d.socket.write).toHaveBeenCalledTimes(1);
+  return d.output.mock.calls[0][0] as string;
+};
+const status = { action: "stream_status" };
+const twoPending = [pendingRow, pendingRow];
+const waitRows = [heldRow(4243), heldRow(4244)];
+const fifteen = Array.from({ length: 15 }, (_, index) => 5000 + index);
+const saturated = [...Array(16).fill(pendingRow), ...fifteen.map(heldRow)];
+
+it.each<[string, Record<string, unknown>, string[], number[], number[]]>([
+  // The two calibrated regimes: a stopped daemon and a serialized WAIT.
+  ["a stopped daemon's status", status, twoPending, [], [1, 2, 0]],
+  [
+    "a stopped daemon's screenshot",
+    screenshotRequest,
+    twoPending,
+    [],
+    [1, 2, 0],
+  ],
+  ["a serialized WAIT", status, waitRows, [4243, 4244], [1, 0, 2]],
+  [
+    "16 pending and 15 held, saturated",
+    status,
+    saturated,
+    fifteen,
+    [1, 15, 15],
+  ],
+])(
+  "reports visible connections for %s beside the selected daemon's own listener",
+  (_case, request, rows, held, expected) => {
+    const owned = { unix: queueTable(...rows), fds: queueFds(...held) };
+    const d = queueDaemon({ request }, owned);
+    const text = atDeadline(d);
+    const { q1, ...existing } = JSON.parse(text);
+    expect(q1).toEqual(expected);
+    // Every other field is the same deadline packet without a sample.
+    expect(existing).toEqual(
+      JSON.parse(atDeadline(queueDaemon({ request }, { unix: undefined }))),
+    );
+    expect(existing.deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toMatch(
+      /PRIVATE|314159|424[0-9]|50[0-9]{2}|\/proc|\/dev\/shm|default|socket:/,
+    );
+    // Sampled before the helper closes its connection, from one fixed table
+    // and the recorded PID's descriptors; never a process scan.
+    expect(d.readLink.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      d.socket.destroy.mock.invocationCallOrder[0],
+    );
+    expect(
+      d.openReceipt.mock.calls.filter(([file]) => file.startsWith("/proc/")),
+    ).toEqual([["/proc/net/unix", 256 | 2048]]);
+    expect(d.openDescriptors.mock.calls).toEqual([["/proc/314159/fd"]]);
+  },
+);
+
+const viewport = { action: "viewport", width: 390, height: 844 };
+const success = '{"id":"hackerai-preview","success":true}';
+it.each<[string, Record<string, unknown>, string[], number]>([
+  ["a viewport request", viewport, ["connect"], 3],
+  ["the connecting deadline", status, [], 3],
+  ["a partial-response deadline", status, ["connect", '{"PRIVATE":'], 3],
+  ["a daemon close", status, ["connect", "close"], 6],
+  ["a refused response", status, ["connect", "null\n"], 5],
+  ["a success", status, ["connect", success + "\n"], 0],
+])(
+  "neither samples nor reports the queue for %s",
+  (_case, request, events, code) => {
+    const d = queueDaemon({ request });
+    for (const event of events)
+      if (event === "connect" || event === "close") d.socket.emit(event);
+      else d.socket.emit("data", event);
+    // A later deadline callback cannot replace an earlier outcome.
+    d.timeout();
+    expect(d.exit.mock.calls).toEqual([[code]]);
+    const text = d.output.mock.calls[0][0];
+    expect(text).not.toMatch(/q1|PRIVATE/);
+    if (code === 0) expect(text).toBe(success);
+    expect(d.openDescriptors).not.toHaveBeenCalled();
+    expect(d.openReceipt.mock.calls.flat()).not.toContain("/proc/net/unix");
+  },
+);
+
+/** Each read advances 150 ms, so the 200 ms budget lapses during the walk. */
+const slowClock = () => {
+  let now = 0;
+  return () => BigInt((now += 150) * 1_000_000);
+};
+/** A table holding the selected listener plus one other selected-path row. */
+const withRow = (row: string, inode?: number): OwnedState => ({
+  unix: queueTable(row),
+  fds: inode ? queueFds(inode) : queueFds(),
+});
+const datagram = queueRow("03", 4248, { type: "0002" });
+const pastCap = descriptors(256, "socket:[4242]", "socket:[4243]");
+
+it.each<[string, DaemonOptions, OwnedState]>([
+  ["the PID sidecar is missing", { pidFile: undefined }, {}],
+  ["another user runs the PID", { processVisibility: "other_uid" }, {}],
+  ["/proc is not procfs", { procfsType: 0x01021994 }, {}],
+  ["the OPEN failed", { openReceipt: { ...successfulOpen, exit: 1 } }, {}],
+  ["another process holds the listener", {}, { fds: { "7": "socket:[4243]" } }],
+  ["another process holds a connection", {}, { fds: queueFds() }],
+  ["no listener has the path", {}, { unix: unixTable(pendingRow) }],
+  ["two listeners", {}, withRow(unixRow(4245, selectedSocket), 4245)],
+  ["a bound non-listener", {}, withRow(queueRow("01", 4246), 4246)],
+  ["a disconnecting connection", {}, withRow(queueRow("04", 0))],
+  ["an unaccepted row has an inode", {}, withRow(queueRow("02", 4247), 4247)],
+  ["a datagram socket", {}, withRow(datagram, 4248)],
+  ["the Unix table exceeds its bound", {}, { unix: queueTable(...unixFiller) }],
+  ["the listener lies past the descriptor cap", {}, { fds: pastCap }],
+  ["the socket is replaced mid-walk", {}, { walkDrift: "socket" }],
+  ["the PID sidecar changes mid-walk", {}, { walkDrift: "pid" }],
+  ["the sample outlasts its time budget", { clock: slowClock() }, {}],
+])(
+  "omits the queue and keeps the unchanged deadline failure when %s",
+  (_case, options, owned) => {
+    const text = atDeadline(queueDaemon(options, owned));
+    expect(JSON.parse(text).deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toMatch(/"q1"|PRIVATE|31415|31416|424[0-9]|socket:/);
+  },
+);
+
+/** Near-cap deadline context with or without a sample; a recorded close makes it maximal. */
+const nearCap = (queue: boolean, close = false, chargedBytes?: number) => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
+  return atDeadline(
+    queueDaemon(
+      {
+        chargedBytes,
+        cliReceipt: [1, 1, 999999999],
+        wrapperStat: procStat(),
+        versionFile: "999.999.999",
+        receipt: {
+          ...longest,
+          action: "other",
+          phase: "started",
+          exit: null,
+          process: startedWrapper.process,
+          open_receipt_support: 1,
+          close_receipt_support: close ? 1 : undefined,
+          history: [1, true, true],
+          k1: 6,
+        },
+        openReceipt: {
+          ...longest,
+          action: "open",
+          exit: 0,
+          idle_env_version: 1,
+          idle_env: "unparsed",
+          os1: 4,
+        },
+        closeReceipt: { ...longest, action: "close", close_all: false },
+      },
+      queue ? {} : { unix: undefined },
+    ),
+  );
+};
+
+it("drops the queue tuple first and never displaces an existing field at the unchanged cap", () => {
+  const complete = nearCap(true);
+  expectPacketBudgets(complete);
+  const { q1, ...existing } = JSON.parse(complete);
+  expect(q1).toEqual([1, 1, 1]);
+  expect(existing).toEqual(JSON.parse(nearCap(false)));
+  // One byte over the cap drops only q1.
+  const over = nearCap(true, false, 545 - Buffer.byteLength(complete));
+  expect(JSON.parse(over)).toEqual(existing);
+  // A maximal packet has no room: identical to the same packet without a sample.
+  const maximal = nearCap(true, true);
+  expectPacketBudgets(maximal);
+  expect(JSON.parse(maximal)).toEqual(JSON.parse(nearCap(false, true)));
+  expect(complete + maximal).not.toMatch(/PRIVATE|314159|271828|424[0-9]/);
 });
 
 /** One filesystem entry; hard links share the same object and so its identity. */

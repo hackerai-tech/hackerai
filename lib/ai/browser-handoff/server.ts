@@ -861,6 +861,15 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_daemon_version_file_major?: number;
   capture_daemon_version_file_minor?: number;
   capture_daemon_version_file_patch?: number;
+  // Exit3 awaiting_response beside that matching OPEN only: selected-path stream
+  // connections visible beside the selected daemon's own listener at the deadline,
+  // sampled before the helper closes its own connection, so they may include it;
+  // each saturated at 15. Pending were not yet accepted;
+  // held are accepted connections that daemon PID holds. Not request acceptance,
+  // the lock holder, Chromium state or a cause. Absent is unmeasured.
+  capture_daemon_socket_queue_version?: 1;
+  capture_daemon_socket_pending_count?: number;
+  capture_daemon_socket_held_count?: number;
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -1182,6 +1191,9 @@ export async function captureBrowserFrame(
         | "capture_daemon_version_file_major"
         | "capture_daemon_version_file_minor"
         | "capture_daemon_version_file_patch"
+        | "capture_daemon_socket_queue_version"
+        | "capture_daemon_socket_pending_count"
+        | "capture_daemon_socket_held_count"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -1522,6 +1534,26 @@ export async function captureBrowserFrame(
                   precondition.capture_daemon_version_file_patch =
                     daemonVersion[2] % 1000;
                 }
+              }
+              const queue = parsed?.q1;
+              if (
+                code === 3 &&
+                precondition.capture_deadline_phase === "awaiting_response" &&
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(queue) &&
+                queue.length === 3 &&
+                queue[0] === 1 &&
+                [queue[1], queue[2]].every(
+                  (count) =>
+                    Number.isInteger(count) && count >= 0 && count <= 15,
+                )
+              ) {
+                precondition.capture_daemon_socket_queue_version = 1;
+                precondition.capture_daemon_socket_pending_count = queue[1];
+                precondition.capture_daemon_socket_held_count = queue[2];
               }
               const openIdle = parsed?.open_idle;
               if (
