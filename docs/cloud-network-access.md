@@ -200,7 +200,7 @@ Missing or invalid values fail the run with a generic configuration error
 before any sandbox is created. To test it on a Preview worker, enable it there
 with that environment's values and run the task manually from the dashboard.
 
-A run fails, and triggers the environment's Trigger alert for failed runs, when:
+A run fails and is visible to the environment's Trigger error alerts when:
 
 - the observed IP differs from the expected IP (immediately);
 - the probe gets no valid answer in two consecutive five-minute windows,
@@ -209,8 +209,8 @@ A run fails, and triggers the environment's Trigger alert for failed runs, when:
 - configuration is missing or the unavailable streak cannot be recorded.
 
 A single unavailable probe completes with an `unavailable` result and a
-warning log, and a healthy probe resets the streak. Each failed run alerts
-while the condition lasts, so the run list always shows current health. Logs
+warning log, and a healthy probe resets the streak. The run list records
+each failure while the condition lasts. Logs
 and errors name only the region, outcome and failed stage, never responses,
 IP addresses, credentials or provider errors.
 

@@ -162,7 +162,7 @@ function resolveProbeSetup(region: E2BCluster, budgets: ProbeBudgets) {
     // A hostname list is also enforced on the proxy; the probe must be on it.
     if (
       egress.destinations !== "*" &&
-      !egress.destinations.includes(EGRESS_PROBE_HOST)
+      !egress.destinations.some((host) => host === EGRESS_PROBE_HOST)
     )
       throw new Error();
     const expectedIp = process.env[monitor.expectedIpEnv] ?? "";
