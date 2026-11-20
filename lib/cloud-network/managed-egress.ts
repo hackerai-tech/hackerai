@@ -3,18 +3,23 @@ import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { e2bNetwork, type NetworkPolicy } from "./policy";
 
 /**
- * Server-managed E2B egress pilot for exact internal accounts. Configuration is
- * read from server-only environment variables and never stored in, or returned
- * with, the user's saved network settings.
+ * Server-managed E2B egress, enabled for every account or for exact pilot
+ * accounts. Configuration is read from server-only environment variables and
+ * never stored in, or returned with, the user's saved network settings.
  */
 type EgressProxy = { address: string; username: string; password: string };
-/** The pilot's validated configuration for both E2B clusters. */
+/**
+ * `"*"` is general egress: the saved policy maps exactly as without a proxy.
+ * A list is the pilot's operator hostname allowlist.
+ */
+type Destinations = "*" | string[];
+/** Validated configuration for both E2B clusters. */
 export type ManagedEgressConfig = {
   proxies: Record<E2BCluster, EgressProxy>;
-  destinations: string[];
+  destinations: Destinations;
 };
 /** The egress for one workspace, selected by the cluster that hosts it. */
-export type ManagedEgress = { proxy: EgressProxy; destinations: string[] };
+export type ManagedEgress = { proxy: EgressProxy; destinations: Destinations };
 type ProxyReadback = { address: string; username?: string } | undefined;
 
 /** Each E2B cluster tunnels only through its own region's proxy. */
@@ -80,29 +85,51 @@ const proxySchema = z
   })
   .strict();
 
-function enrolledUsers(env: NodeJS.ProcessEnv) {
+/**
+ * E2B_MANAGED_EGRESS_ENABLED=true enrolls every account. Unset, empty or
+ * "false" keeps the exact pilot list. Any other value throws: a mistyped
+ * global toggle must not silently route everyone through direct egress.
+ */
+function isEnrolled(userId: string, env: NodeJS.ProcessEnv) {
+  const enabled = env.E2B_MANAGED_EGRESS_ENABLED;
+  if (enabled === "true") return true;
+  if (enabled && enabled !== "false") throw new ManagedEgressUnavailableError();
   return new Set(
     (env.E2B_MANAGED_EGRESS_USERS ?? "")
       .split(",")
       .map((id) => id.trim())
       .filter(Boolean),
-  );
+  ).has(userId);
 }
 
 const proxyHost = ({ address }: EgressProxy) =>
   address.slice(0, address.lastIndexOf(":"));
 
+function parseDestinations(value = ""): Destinations {
+  const destinations = value.split(",").map((entry) => entry.trim());
+  // "*" is valid only alone; mixed with hostnames it is ambiguous.
+  if (destinations.length === 1 && destinations[0] === "*") return "*";
+  // An unset or empty list yields [""], which is rejected like any other
+  // non-canonical entry.
+  if (
+    destinations.length > MAX_DESTINATIONS ||
+    !destinations.every(isCanonicalDnsName)
+  )
+    throw new Error("Invalid destinations");
+  return [...new Set(destinations)].sort();
+}
+
 /**
- * Returns null for every account not listed exactly in E2B_MANAGED_EGRESS_USERS,
- * without reading the proxy configuration. An enrolled account needs both
- * regional proxies, on distinct hosts, whichever region it uses: missing or
+ * Returns null, without reading the proxy configuration, for every account
+ * that is not enrolled. An enrolled account needs both regional proxies, on
+ * distinct hosts, and valid destinations whichever region it uses: missing or
  * malformed configuration throws, so it never falls back to direct egress.
  */
 export function resolveManagedEgress(
   userId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): ManagedEgressConfig | null {
-  if (!enrolledUsers(env).has(userId)) return null;
+  if (!isEnrolled(userId, env)) return null;
   try {
     const proxies = {
       us: proxySchema.parse(JSON.parse(env[PROXY_ENV.us] ?? "")),
@@ -111,17 +138,10 @@ export function resolveManagedEgress(
     // One host cannot provide two regional source IPs.
     if (proxyHost(proxies.us) === proxyHost(proxies.eu))
       throw new Error("Regional proxies share a host");
-    const destinations = (env.E2B_MANAGED_EGRESS_DESTINATIONS ?? "")
-      .split(",")
-      .map((entry) => entry.trim());
-    // An unset or empty list yields [""], which is rejected like any other
-    // non-canonical entry.
-    if (
-      destinations.length > MAX_DESTINATIONS ||
-      !destinations.every(isCanonicalDnsName)
-    )
-      throw new Error("Invalid destinations");
-    return { proxies, destinations: [...new Set(destinations)].sort() };
+    return {
+      proxies,
+      destinations: parseDestinations(env.E2B_MANAGED_EGRESS_DESTINATIONS),
+    };
   } catch {
     throw new ManagedEgressUnavailableError();
   }
@@ -152,20 +172,25 @@ function covers(entry: string, destination: string) {
 
 /**
  * The single desired E2B network for create, Settings saves and acquisition.
- * Non-enrolled accounts keep the existing mapping exactly. Enrolled accounts
- * are deny-all plus operator destinations narrowed by the saved policy; saved
- * IPs/CIDRs never grant anything, and offline stays deny-all. The proxy is
- * always present so E2B's full-replacement update never drops tunneling.
+ * Non-enrolled accounts keep the existing mapping exactly. General egress
+ * ("*") keeps that same mapping and only adds the proxy. With an operator
+ * list, the network is deny-all plus listed destinations narrowed by the saved
+ * policy; saved IPs/CIDRs never grant anything. Offline stays deny-all in both
+ * modes. The proxy is always present so E2B's full-replacement update never
+ * drops tunneling.
  */
 export function desiredE2BNetwork(
   policy: NetworkPolicy,
   egress: ManagedEgress | null,
 ) {
   if (!egress) return e2bNetwork(policy);
+  const { destinations } = egress;
+  if (destinations === "*")
+    return { ...e2bNetwork(policy), egressProxy: { ...egress.proxy } };
   const allowOut =
     policy.mode === "offline"
       ? []
-      : egress.destinations.filter(
+      : destinations.filter(
           (destination) =>
             policy.mode === "unrestricted" ||
             policy.allow.some((entry) => covers(entry, destination)),
