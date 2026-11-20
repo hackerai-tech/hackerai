@@ -91,7 +91,8 @@ Before creating agents:
 Complex findings warrant specialized subagents:
 - Discovery agent finds potential vulnerability
 - Validation agent confirms exploitability
-- Reporting agent documents with reproduction steps AND supplies the fix inline (the report tool carries the patch via `code_locations`/`fix_pr_body`) — do not add a separate fix agent that re-derives the same patch
+- Reporting agent files the validated finding with reproduction steps and no patch
+- With source and an accepted report ID, delegate the patch as a scoped task. Only an independently approved diff may be attached to that report; otherwise leave the remediation in prose.
 
 **Resource Efficiency**
 
