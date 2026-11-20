@@ -724,12 +724,10 @@ export function createAgentCompactionReporter({
       enqueue();
     },
     flush(): Promise<void> {
-      if (
-        retryScheduled ||
-        closed ||
-        latest === undefined ||
-        latest <= confirmed
-      )
+      // A later flush, such as final cleanup after the stream's own flush,
+      // waits for the retry already queued instead of resolving early.
+      if (retryScheduled) return queue;
+      if (closed || latest === undefined || latest <= confirmed)
         return Promise.resolve();
       retryScheduled = true;
       enqueue();

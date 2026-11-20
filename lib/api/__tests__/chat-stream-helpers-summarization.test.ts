@@ -388,6 +388,41 @@ describe("createAgentCompactionReporter", () => {
     expect(sent).toEqual([1, 1]);
   });
 
+  it("makes a repeated flush wait for the retry already in flight", async () => {
+    const sent: number[] = [];
+    let finishRetry!: (outcome: AgentCompactionTallyOutcome) => void;
+    const outcomes: Promise<AgentCompactionTallyOutcome>[] = [
+      Promise.resolve("stale"),
+      new Promise((resolve) => (finishRetry = resolve)),
+    ];
+    const reporter = createAgentCompactionReporter({
+      send: async (count) => {
+        sent.push(count);
+        return outcomes.shift() ?? "recorded";
+      },
+      registerBackgroundWork: () => {},
+      signal: new AbortController().signal,
+      onError: jest.fn(),
+    });
+
+    reporter.report(2); // races the run's chat association
+    const streamFlush = reporter.flush(); // the stream does not await this
+    const cleanupFlush = reporter.flush(); // final cleanup does
+    let cleanupSettled = false;
+    void cleanupFlush.then(() => (cleanupSettled = true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(cleanupFlush).toBe(streamFlush);
+    expect(sent).toEqual([2, 2]); // one retry, now in flight
+    expect(cleanupSettled).toBe(false);
+
+    finishRetry("recorded");
+    await Promise.all([streamFlush, cleanupFlush]);
+    expect(cleanupSettled).toBe(true);
+    await reporter.flush(); // confirmed
+    expect(sent).toEqual([2, 2]);
+  });
+
   it("does not retry again in cleanup if the stream already retried", async () => {
     const { reporter, sent, settled } = setup(["stale", "stale"]);
 
