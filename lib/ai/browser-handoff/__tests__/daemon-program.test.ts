@@ -47,6 +47,8 @@ type OwnedState = {
   // Replaces the selected socket or the PID sidecar, or ends the started wrapper,
   // once the descriptor walk starts.
   walkDrift?: "socket" | "pid" | "wrapper";
+  // Receipt contents once the descriptor walk starts; an undefined value is missing.
+  afterWalk?: { receipt?: unknown; openReceipt?: unknown };
 };
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
@@ -130,8 +132,12 @@ function daemon(
     output.mockImplementation(() => {
       throw new Error("PRIVATE broken output");
     });
-  const fileReceipt = (open: boolean, close = false) =>
-    close ? options.closeReceipt : open ? options.openReceipt : options.receipt;
+  const fileReceipt = (open: boolean, close = false) => {
+    if (close) return options.closeReceipt;
+    const key = open ? "openReceipt" : "receipt";
+    const after = options.owned?.afterWalk;
+    return walked && after && key in after ? after[key] : options[key];
+  };
   const receiptStat = (open: boolean, close = false) => ({
     uid:
       (close
@@ -3147,16 +3153,23 @@ it.each([status, screenshotRequest])(
     expect(text).not.toMatch(
       /PRIVATE|314159|271828|123456|424[0-9]|\/proc|\/dev\/shm|default|socket:/,
     );
-    // The exact incarnation is checked again after the sample, before the close.
-    const stats = d.openReceipt.mock.invocationCallOrder.filter(
-      (_order, index) =>
-        d.openReceipt.mock.calls[index][0] === "/proc/271828/stat",
-    );
-    expect(stats).toHaveLength(2);
-    expect(stats[1]).toBeGreaterThan(
-      d.readLink.mock.invocationCallOrder.at(-1)!,
-    );
-    expect(stats[1]).toBeLessThan(d.socket.destroy.mock.invocationCallOrder[0]);
+    // Both receipts are reread exactly once and the exact incarnation checked again
+    // after the sample, before the close.
+    const walkEnd = d.readLink.mock.invocationCallOrder.at(-1)!;
+    const close = d.socket.destroy.mock.invocationCallOrder[0];
+    for (const file of [
+      "/proc/271828/stat",
+      directory + "/wrapper-receipt.json",
+      directory + "/open-receipt.json",
+    ]) {
+      const opens = d.openReceipt.mock.invocationCallOrder.filter(
+        (_order, index) => d.openReceipt.mock.calls[index][0] === file,
+      );
+      expect(opens).toHaveLength(2);
+      expect(opens[0]).toBeLessThan(walkEnd);
+      expect(opens[1]).toBeGreaterThan(walkEnd);
+      expect(opens[1]).toBeLessThan(close);
+    }
   },
 );
 
@@ -3217,6 +3230,77 @@ it.each<[string, DaemonOptions, OwnedState]>([
     // Only a fully scoped OPEN is sampled at all.
     if (!("walkDrift" in owned) && !("fds" in owned))
       expect(d.openDescriptors).not.toHaveBeenCalled();
+  },
+);
+
+// The wrapper records completion before its process exits, so its exact
+// incarnation stays live (the default procStat) while the receipts change.
+const completedOpening = {
+  ...opening,
+  phase: "completed",
+  exit: 0,
+  at: opening.at + 1,
+  lr: [1, 0, 1],
+};
+it.each<[string, NonNullable<OwnedState["afterWalk"]>]>([
+  [
+    "the OPEN completes during the sample",
+    {
+      receipt: { ...completedOpening, k1: 3 },
+      openReceipt: { ...completedOpening, o1: 0, os1: 1 },
+    },
+  ],
+  [
+    "only the latest wrapper completes",
+    { receipt: { ...completedOpening, k1: 3 } },
+  ],
+  [
+    "only the sticky OPEN completes",
+    { openReceipt: { ...completedOpening, o1: 0, os1: 1 } },
+  ],
+  [
+    "a later OPEN replaces both records",
+    {
+      receipt: { ...openingWrapper, at: opening.at + 1 },
+      openReceipt: { ...openingRecord, at: opening.at + 1 },
+    },
+  ],
+  [
+    "another incarnation replaces the wrapper at the same timestamp",
+    { receipt: { ...openingWrapper, process: [1, 271828, "123457"] } },
+  ],
+  [
+    "the wrapper identity is dropped",
+    { receipt: { ...openingWrapper, process: undefined } },
+  ],
+  [
+    "another command replaces the wrapper",
+    { receipt: { ...openingWrapper, action: "other", k1: 6 } },
+  ],
+  [
+    "the sticky OPEN loses its plain flag",
+    { openReceipt: { ...openingRecord, o1: undefined } },
+  ],
+  ["the wrapper receipt becomes unreadable", { receipt: undefined }],
+  ["the sticky OPEN becomes unreadable", { openReceipt: undefined }],
+  ["the wrapper receipt becomes invalid", { receipt: "PRIVATE" }],
+])(
+  "omits only the queue and keeps the original deadline context when %s",
+  (_case, afterWalk) => {
+    const d = openingDaemon({}, { afterWalk });
+    const text = atDeadline(d);
+    expect(JSON.parse(text)).toEqual(
+      JSON.parse(atDeadline(openingDaemon({}, { unix: undefined }))),
+    );
+    expect(JSON.parse(text)).toMatchObject({
+      deadline: [1, "awaiting_response"],
+      wrapper_phase: "started",
+      open_phase: "started",
+      w1: 3,
+    });
+    expect(text).not.toMatch(/"q1"|PRIVATE|31415|271828|424[0-9]|socket:/);
+    // The sample ran; only the reread refused it.
+    expect(d.openDescriptors).toHaveBeenCalledTimes(1);
   },
 );
 
