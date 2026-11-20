@@ -226,7 +226,7 @@ process.exit(Number(process.env.FAKE_CLI_EXIT || 0));
     // An exact close of the owned selected socket links the proof to that selection.
     assert.equal(run(["close"]).status, 0);
     assert.equal(proven(), true);
-    assert.deepEqual(temporaries(), []);
+    assert.equal(temporaries().length, 0);
     const closed = helper(optIn);
     assert.equal(closed.status, 0, closed.stderr);
     assert.equal(closed.stdout, BROWSER_DAEMON_SESSION_CLOSED);
@@ -281,7 +281,7 @@ process.exit(Number(process.env.FAKE_CLI_EXIT || 0));
     listen("default");
     assert.equal(run(["close"]).status, 0);
     assert.equal(lstatSync(proof).isDirectory(), true);
-    assert.deepEqual(temporaries(), []);
+    assert.equal(temporaries().length, 0);
     assert.equal(helper(optIn).status, 2);
     rmSync(proof, { recursive: true });
 
