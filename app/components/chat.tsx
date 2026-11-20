@@ -99,6 +99,7 @@ import {
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
+import { fetchAgentPartialSaveWithDiagnostic } from "@/lib/analytics/agent-partial-save-diagnostics";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
 import {
   CONTEXT_USAGE_PART_TYPE,
@@ -2027,11 +2028,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         chatId,
         saveKey,
         async () => {
-          return fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: requestBody,
-          });
+          return fetchAgentPartialSaveWithDiagnostic(
+            AGENT_PARTIAL_SAVE_ENDPOINT,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: requestBody,
+            },
+          );
         },
       );
     },

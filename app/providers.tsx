@@ -45,7 +45,7 @@ import {
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import { sanitizeFileActionAuthDiagnosticEvent } from "@/lib/analytics/file-auth-diagnostics";
-import { sanitizeAgentStartHttp413DiagnosticEvent } from "@/lib/analytics/agent-start-privacy";
+import { sanitizeAgentHttp413DiagnosticEvent } from "@/lib/analytics/agent-start-privacy";
 import { sanitizeDesktopOperationReadinessEvent } from "@/lib/analytics/desktop-operation-readiness";
 import {
   captureXReferralVisit,
@@ -101,11 +101,11 @@ export function PostHogProvider({
   const pathname = usePathname();
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
-  // Latest committed owner for the server action, file action, Agent start,
-  // Desktop operation readiness, navigator and React boundary diagnostics. A
-  // previously installed before_send can run after a commit that withdraws
-  // consent, signs out, switches account or enters a private page, but before
-  // the passive effect below resets analytics identity.
+  // Latest committed owner for the server action, file action, Agent HTTP 413
+  // (start and partial save), Desktop operation readiness, navigator and React
+  // boundary diagnostics. A previously installed before_send can run after a
+  // commit that withdraws consent, signs out, switches account or enters a
+  // private page, but before the passive effect below resets analytics identity.
   const serverActionDiagnosticOwner = useRef<string | null>(null);
 
   useLayoutEffect(() => {
@@ -255,7 +255,7 @@ export function PostHogProvider({
               token: posthogKey,
             });
             const sanitizedEvent = sanitizeDesktopOperationReadinessEvent(
-              sanitizeAgentStartHttp413DiagnosticEvent(
+              sanitizeAgentHttp413DiagnosticEvent(
                 sanitizeFileActionAuthDiagnosticEvent(
                   sanitizeServerActionClientContextEvent(
                     sanitizeContextFeedbackEvent(
