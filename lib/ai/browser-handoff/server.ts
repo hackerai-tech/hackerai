@@ -963,9 +963,10 @@ function statusSdkPhaseContext({
  * The optional failure observer receives only bounded context; observer failures
  * cannot replace the original rejection or change capture, cleanup, or retry behavior.
  * Only the passive preview GET opts into deferDuringWait for a fresh capture that
- * looks up its own port; it may then reject with BrowserPreviewRefreshDeferred,
- * which is not a capture failure and reaches no observer. Without verified WAIT
- * and listener proof the original strict capture runs unchanged. Only that GET
+ * looks up its own port; its status or later screenshot may then reject with
+ * BrowserPreviewRefreshDeferred, which is not a capture failure, returns no
+ * frame and reaches no observer. Without verified WAIT and listener proof the
+ * original strict capture runs unchanged. Only that GET
  * also opts into recognizeClosed when it looks up its own port: a verified close
  * of the absent selected socket then rejects with the existing closed state.
  */
@@ -1063,6 +1064,9 @@ export async function captureBrowserFrame(
       // screenshot proves freshness without assigning a new age to that cache.
       const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
       capturedAt = Date.now();
+      // A WAIT can start after status answered; the same opt-in lets the
+      // screenshot yield to it, and the helper otherwise sends it unchanged.
+      let screenshotDeferred = false;
       try {
         stage = "fresh_screenshot";
         const screenshot = await sandbox.commands.run(
@@ -1071,6 +1075,7 @@ export async function captureBrowserFrame(
             path,
             format: "jpeg",
             quality: 65,
+            ...(deferDuringWait && { defer_wait: true as const }),
           }),
           {
             ...buildSandboxCommandOptions(sandbox),
@@ -1079,6 +1084,15 @@ export async function captureBrowserFrame(
         );
         if (screenshot.exitCode !== 0)
           throw new BrowserPreviewUnavailable("disconnected");
+        // Only the requested helper-only literal; never a parsed daemon reply field.
+        if (
+          deferDuringWait &&
+          screenshot.stdout === BROWSER_DAEMON_WAIT_DEFERRED
+        ) {
+          // The helper sent no screenshot, so no file can exist to remove.
+          screenshotDeferred = true;
+          throw new BrowserPreviewRefreshDeferred();
+        }
         stage = "fresh_stat";
         const info = await sandbox.files.getInfo(path, {
           user: "root",
@@ -1106,14 +1120,16 @@ export async function captureBrowserFrame(
         imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
       } finally {
         // The private memory-backed run directory is also erased at run cleanup.
-        try {
-          await sandbox.files
-            .remove(path, { user: "root", requestTimeoutMs: 4_000 })
-            .catch(() => undefined);
-        } catch (error) {
-          // This cleanup exception replaces any read failure; never attribute it.
-          freshReadPhase = undefined;
-          throw error;
+        if (!screenshotDeferred) {
+          try {
+            await sandbox.files
+              .remove(path, { user: "root", requestTimeoutMs: 4_000 })
+              .catch(() => undefined);
+          } catch (error) {
+            // This cleanup exception replaces any read failure; never attribute it.
+            freshReadPhase = undefined;
+            throw error;
+          }
         }
       }
     }
@@ -1128,7 +1144,7 @@ export async function captureBrowserFrame(
     // An explicit deferral outcome, never a failure: no diagnostics or relabeling.
     if (
       deferDuringWait &&
-      stage === "stream_status" &&
+      (stage === "stream_status" || stage === "fresh_screenshot") &&
       error instanceof BrowserPreviewRefreshDeferred
     )
       throw error;
