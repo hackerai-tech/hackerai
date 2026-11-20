@@ -62,6 +62,10 @@ import {
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
 import { getLocalCopyFailureContext } from "../local-copy-failure-context";
+import {
+  AttachmentCommandCleanupError,
+  AttachmentLocalCopySetupDeadlineError,
+} from "../attachment-command";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 import {
@@ -3403,6 +3407,216 @@ describe("CentrifugoSandbox", () => {
         ),
       ).rejects.toMatchObject({ name: "AbortError" });
       expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("local copy setup deadline", () => {
+    const windowsSandbox = () =>
+      createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x64",
+          release: "10.0.22631",
+          hostname: "WIN-DEV",
+        },
+      } as any);
+    const outcome = (promise: Promise<unknown>) => {
+      const state: { settled: boolean; value?: unknown; error?: unknown } = {
+        settled: false,
+      };
+      promise.then(
+        (value) => Object.assign(state, { settled: true, value }),
+        (error) => Object.assign(state, { settled: true, error }),
+      );
+      return state;
+    };
+    const files = [
+      {
+        kind: "localPath" as const,
+        path: "/tmp/PRIVATE_A.pdf",
+        localPath: "/tmp/hackerai-upload/A.pdf",
+      },
+      {
+        kind: "localPath" as const,
+        path: "/tmp/PRIVATE_B.pdf",
+        localPath: "/tmp/hackerai-upload/B.pdf",
+      },
+    ];
+
+    it("ends every copy's shell setup at one absolute deadline, across a setup retry, without writing or falling back", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const sandbox = windowsSandbox();
+        const entry = Date.now();
+        // Each first shell probe hits the 30s-class transient timeout at 40s
+        // and is retried; the retry must not get a fresh budget.
+        const run = jest.spyOn(sandbox.commands, "run").mockImplementation(
+          (_command, options) =>
+            new Promise((resolve, reject) => {
+              if (Date.now() < entry + 40_000)
+                setTimeout(
+                  () => reject(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE)),
+                  entry + 40_000 - Date.now(),
+                );
+              else
+                options?.signal?.addEventListener(
+                  "abort",
+                  () => resolve({ stdout: "", stderr: "", exitCode: 130 }),
+                  { once: true },
+                );
+            }),
+        );
+        const result = outcome(
+          uploadSandboxFiles(files, async () => sandbox, {
+            localCopySetupDeadlineAt: entry + 45_000,
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(44_999);
+        expect(result.settled).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(result.error).toBeInstanceOf(
+          AttachmentLocalCopySetupDeadlineError,
+        );
+        expect(JSON.stringify(result.error)).not.toMatch(/PRIVATE|tmp/);
+        const commands = run.mock.calls.map(([command]) => command);
+        expect(commands).toEqual(Array(4).fill("echo $BASH_VERSION"));
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    });
+
+    it("does not start the write when the budget is already spent", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      const run = jest.spyOn(sandbox.commands, "run");
+      await expect(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          setupDeadlineAt: Date.now(),
+        }),
+      ).rejects.toBeInstanceOf(AttachmentLocalCopySetupDeadlineError);
+      expect(run).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("does not write when a shell reply resumes before the overdue timer callback", async () => {
+      const sandbox = windowsSandbox();
+      const setupDeadlineAt = Date.now() + 45_000;
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 })
+        .mockImplementationOnce(async () => {
+          jest.setSystemTime(setupDeadlineAt);
+          return { stdout: "$BASH_VERSION", stderr: "", exitCode: 0 };
+        });
+
+      await expect(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          setupDeadlineAt,
+        }),
+      ).rejects.toBeInstanceOf(AttachmentLocalCopySetupDeadlineError);
+
+      expect(run.mock.calls.map(([command]) => command)).toEqual([
+        "echo $BASH_VERSION",
+      ]);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each([false, true])(
+      "lets a write that started before the deadline finish (caller signal=%s)",
+      async (withCallerSignal) => {
+        const sandbox = createDesktopSandbox(undefined, "linux");
+        const controller = new AbortController();
+        let finishWrite!: () => void;
+        let writeSignal: AbortSignal | undefined;
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation((_command, options) => {
+            writeSignal = options?.signal;
+            return new Promise((resolve) => {
+              finishWrite = () =>
+                resolve({ stdout: "", stderr: "", exitCode: 0 });
+            });
+          });
+        const result = outcome(
+          uploadSandboxFiles([files[0]], async () => sandbox, {
+            localCopySetupDeadlineAt: Date.now() + 1_000,
+            ...(withCallerSignal && { signal: controller.signal }),
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(run.mock.calls[0][0]).toContain("cp -f");
+        // The write keeps only the caller's own signal.
+        expect(writeSignal).toBe(
+          withCallerSignal ? controller.signal : undefined,
+        );
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(result.settled).toBe(false);
+        finishWrite();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(result.value).toMatchObject({ failedCount: 0 });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("keeps a caller Stop during setup authoritative over the deadline", async () => {
+      const sandbox = windowsSandbox();
+      const controller = new AbortController();
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(
+          (_command, options) =>
+            new Promise((resolve) =>
+              options?.signal?.addEventListener(
+                "abort",
+                () => resolve({ stdout: "", stderr: "", exitCode: 130 }),
+                { once: true },
+              ),
+            ),
+        );
+      const result = outcome(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          signal: controller.signal,
+          setupDeadlineAt: Date.now() + 45_000,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(1_000);
+      controller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(result.error).toBe(controller.signal.reason);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("reports unconfirmed setup cancellation at the deadline as a cleanup failure", async () => {
+      const sandbox = windowsSandbox();
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(
+          (_command, options) =>
+            new Promise((_resolve, reject) =>
+              options?.signal?.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new Error(
+                      "Local command cancellation was not acknowledged.",
+                    ),
+                  ),
+                { once: true },
+              ),
+            ),
+        );
+      const result = outcome(
+        uploadSandboxFiles([files[0]], async () => sandbox, {
+          localCopySetupDeadlineAt: Date.now() + 45_000,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(45_000);
+      expect(result.error).toBeInstanceOf(AttachmentCommandCleanupError);
+      expect(jest.getTimerCount()).toBe(0);
     });
   });
 
