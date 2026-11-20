@@ -597,6 +597,7 @@ describe("managed egress pilot", () => {
   const UNAVAILABLE = "Managed network egress is unavailable for this account.";
   function configure(overrides: Partial<Record<PilotEnv, string | undefined>>) {
     const values: Record<PilotEnv, string | undefined> = {
+      E2B_MANAGED_EGRESS_ENABLED: undefined,
       E2B_MANAGED_EGRESS_USERS: "qa-other, owner",
       E2B_MANAGED_EGRESS_US_PROXY: JSON.stringify(PROXY),
       E2B_MANAGED_EGRESS_EU_PROXY: JSON.stringify(EU_PROXY),
