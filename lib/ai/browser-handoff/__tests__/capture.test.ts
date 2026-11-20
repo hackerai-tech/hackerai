@@ -4173,6 +4173,65 @@ it.each<[string, number, number[] | null, Record<string, unknown>]>([
   },
 );
 
+/** The selected OPEN still STARTED at the deadline, with its exact wrapper visible. */
+const runningOpenPacket = (override: Record<string, unknown> = {}) =>
+  queuePacket({
+    ...startedSelectedWrapper,
+    open_phase: "started",
+    open_exit: "none",
+    w1: 3,
+    ...override,
+  });
+
+it.each<[string, number, number[] | null, Record<string, unknown>]>([
+  ["its exact wrapper incarnation visible", 3, [2, 3], {}],
+  ["no tuple", 3, null, { q1: undefined }],
+  ["a malformed tuple", 3, null, { q1: [1, 16, 3] }],
+  ["unmeasured wrapper visibility", 3, null, { w1: undefined }],
+  ["a changed wrapper incarnation", 3, null, { w1: 2 }],
+  ["a zombie wrapper", 3, null, { w1: 4 }],
+  ["a latest wrapper of another command", 3, null, { wrapper_action: "other" }],
+  [
+    "a completed latest wrapper",
+    3,
+    null,
+    { wrapper_phase: "completed", wrapper_exit: 0 },
+  ],
+  ["another session's wrapper", 3, null, { wrapper_session_matches: false }],
+  ["another session's OPEN", 3, null, { open_session_matches: false }],
+  ["a started OPEN with an exit", 3, null, { open_exit: 0 }],
+  ["a connecting deadline", 3, null, { deadline: [1, "connecting"] }],
+  ["a daemon close", 6, null, {}],
+])(
+  "projects the queue beside a still-running selected OPEN only when scoped: %s",
+  async (_case, exitCode, counts, override) => {
+    const context = await observeDaemonFailure(
+      exitCode,
+      runningOpenPacket(override),
+    );
+    expect(queueGroup(context)).toEqual(
+      counts ? { version: 1, pending: counts[0], held: counts[1] } : {},
+    );
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+    if (!counts) return;
+    // The same existing context, plus only the queue group.
+    const {
+      capture_daemon_socket_queue_version: _version,
+      capture_daemon_socket_pending_count: _pending,
+      capture_daemon_socket_held_count: _held,
+      ...rest
+    } = context;
+    expect(rest).toEqual(
+      await observeDaemonFailure(3, runningOpenPacket({ q1: undefined })),
+    );
+    expect(rest).toMatchObject({
+      capture_open_phase: "started",
+      capture_wrapper_action: "open",
+      capture_wrapper_process_visibility: "same_incarnation_visible",
+    });
+  },
+);
+
 it("projects the queue at a fresh screenshot deadline and keeps its rejection and cleanup", async () => {
   const sandbox = fixture();
   const run = sandbox.commands.run.getMockImplementation()!;

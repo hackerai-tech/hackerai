@@ -861,7 +861,8 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_daemon_version_file_major?: number;
   capture_daemon_version_file_minor?: number;
   capture_daemon_version_file_patch?: number;
-  // Exit3 awaiting_response beside that matching OPEN only: selected-path stream
+  // Exit3 awaiting_response beside that matching successful OPEN, or beside the same
+  // selected plain OPEN whose exact wrapper is still started and visible: selected-path stream
   // connections visible beside the selected daemon's own listener at the deadline,
   // sampled before the helper closes its own connection, so they may include it;
   // each saturated at 15. Pending were not yet accepted;
@@ -1556,9 +1557,17 @@ export async function captureBrowserFrame(
                 code === 3 &&
                 precondition.capture_deadline_phase === "awaiting_response" &&
                 precondition.capture_open_receipt_status === "recorded" &&
-                precondition.capture_open_phase === "completed" &&
-                precondition.capture_open_exit_code === 0 &&
                 precondition.capture_open_session_matches === true &&
+                ((precondition.capture_open_phase === "completed" &&
+                  precondition.capture_open_exit_code === 0) ||
+                  // The helper also matches this OPEN to the latest wrapper's
+                  // exact record and requires a plain OPEN; neither is exported.
+                  (precondition.capture_open_phase === "started" &&
+                    precondition.capture_wrapper_action === "open" &&
+                    precondition.capture_wrapper_phase === "started" &&
+                    precondition.capture_wrapper_session_matches === true &&
+                    precondition.capture_wrapper_process_visibility ===
+                      "same_incarnation_visible")) &&
                 Array.isArray(queue) &&
                 queue.length === 3 &&
                 queue[0] === 1 &&

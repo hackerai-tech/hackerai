@@ -402,6 +402,15 @@ function wrapperReceipt() {
         const queue = listenerQueue();
         if (queue) result.q1 = queue;
       }
+    } else if (queueSnapshot && receipt.action === 'open' && receipt.phase === 'started' &&
+        receipt.session_key === sessionKey && result.w1 === 3 && open?.session_key === sessionKey &&
+        open.phase === 'started' && open.at === receipt.at && open.o1 === 0) {
+      // The same plain OPEN still in progress at the deadline: the latest wrapper and the
+      // sticky record are one STARTED invocation (same timestamp), and its exact wrapper
+      // incarnation stays visible across the sample. Proves no navigation or cause. q1 is
+      // dropped first at the cap, so the wrapper fields that scope it always remain.
+      const queue = listenerQueue();
+      if (queue && wrapperProcess(receipt.process) === 3) result.q1 = queue;
     }
     return result;
   } catch { return {}; }
@@ -484,7 +493,8 @@ function ownedStreamPort(root, sockets, address) {
   } catch {}
   return 0;
 }
-/** Wire tuple q1 [1, pending, held], each saturated at 15: rows on the selected
+/** Wire tuple q1 [1, pending, held], each saturated at 15, beside the selected session's
+ * completed successful OPEN or its same still-running plain OPEN wrapper: rows on the selected
  * path besides its listener, sampled once after the original deadline, before this
  * helper closes its own connection, so the counts may include it. Pending: an unaccepted
  * stream connection (flags 0, state 02, no inode). Held: an accepted connection

@@ -44,8 +44,9 @@ type OwnedState = {
   fds?: Record<string, string>;
   fdError?: string;
   linkError?: string;
-  // Replaces the selected socket or the PID sidecar once the descriptor walk starts.
-  walkDrift?: "socket" | "pid";
+  // Replaces the selected socket or the PID sidecar, or ends the started wrapper,
+  // once the descriptor walk starts.
+  walkDrift?: "socket" | "pid" | "wrapper";
 };
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
@@ -246,9 +247,9 @@ function daemon(
     if (file.startsWith("/proc/")) {
       if (file !== "/proc/271828/stat")
         throw new Error("Unexpected process path");
-      if (options.wrapperStatError)
+      if (options.wrapperStatError || (walked && owned.walkDrift === "wrapper"))
         throw Object.assign(new Error("PRIVATE process"), {
-          code: options.wrapperStatError,
+          code: options.wrapperStatError ?? "ENOENT",
         });
       return 12;
     }
@@ -3100,6 +3101,145 @@ it("drops the queue tuple first and never displaces an existing field at the unc
   expectPacketBudgets(maximal);
   expect(JSON.parse(maximal)).toEqual(JSON.parse(nearCap(false, true)));
   expect(complete + maximal).not.toMatch(/PRIVATE|314159|271828|424[0-9]/);
+});
+
+// One plain OPEN invocation still running: the wrapper writes both STARTED records
+// from the same value, so they share a timestamp; only the latest carries identity.
+const opening = {
+  ...receipt,
+  action: "open",
+  phase: "started",
+  exit: null,
+  open_receipt_support: 1,
+};
+const openingWrapper = { ...opening, process: startedWrapper.process, k1: 3 };
+const openingRecord = { ...opening, o1: 0 };
+const openingDaemon = (options: DaemonOptions = {}, owned: OwnedState = {}) =>
+  queueDaemon(
+    {
+      receipt: openingWrapper,
+      openReceipt: openingRecord,
+      wrapperStat: procStat(),
+      ...options,
+    },
+    owned,
+  );
+
+it.each([status, screenshotRequest])(
+  "reports the queue beside the selected plain OPEN still running at the deadline (%j)",
+  (request) => {
+    const d = openingDaemon({ request });
+    const text = atDeadline(d);
+    const { q1, ...existing } = JSON.parse(text);
+    expect(q1).toEqual([1, 1, 1]);
+    // The same deadline packet without a sample; no completed-OPEN context is added.
+    expect(existing).toEqual(
+      JSON.parse(atDeadline(openingDaemon({ request }, { unix: undefined }))),
+    );
+    expect(existing).toMatchObject({
+      wrapper_action: "open",
+      wrapper_phase: "started",
+      open_phase: "started",
+      w1: 3,
+    });
+    for (const field of ["p1", "os1", "o1", "sd1", "dv"])
+      expect(existing).not.toHaveProperty(field);
+    expect(text).not.toMatch(
+      /PRIVATE|314159|271828|123456|424[0-9]|\/proc|\/dev\/shm|default|socket:/,
+    );
+    // The exact incarnation is checked again after the sample, before the close.
+    const stats = d.openReceipt.mock.invocationCallOrder.filter(
+      (_order, index) =>
+        d.openReceipt.mock.calls[index][0] === "/proc/271828/stat",
+    );
+    expect(stats).toHaveLength(2);
+    expect(stats[1]).toBeGreaterThan(
+      d.readLink.mock.invocationCallOrder.at(-1)!,
+    );
+    expect(stats[1]).toBeLessThan(d.socket.destroy.mock.invocationCallOrder[0]);
+  },
+);
+
+it.each<[string, DaemonOptions, OwnedState]>([
+  ["the OPEN declared help", { openReceipt: { ...openingRecord, o1: 1 } }, {}],
+  [
+    "the OPEN declared version",
+    { openReceipt: { ...openingRecord, o1: 2 } },
+    {},
+  ],
+  ["the OPEN's plain declaration is unrecorded", { openReceipt: opening }, {}],
+  [
+    "the sticky OPEN is an earlier STARTED record",
+    { openReceipt: { ...openingRecord, at: opening.at - 1 } },
+    {},
+  ],
+  [
+    "the sticky OPEN is another session's",
+    { openReceipt: { ...openingRecord, session_key: "f".repeat(64) } },
+    {},
+  ],
+  [
+    "the latest wrapper is another session's",
+    { receipt: { ...openingWrapper, session_key: "f".repeat(64) } },
+    {},
+  ],
+  [
+    "the latest wrapper is another command",
+    { receipt: { ...openingWrapper, action: "other", k1: 0 } },
+    {},
+  ],
+  [
+    "the latest wrapper has no recorded identity",
+    { receipt: { ...openingWrapper, process: undefined } },
+    {},
+  ],
+  [
+    "the sticky OPEN is unsupported",
+    { receipt: { ...openingWrapper, open_receipt_support: undefined } },
+    {},
+  ],
+  ["the wrapper is gone", { wrapperStatError: "ENOENT" }, {}],
+  [
+    "the wrapper PID was reused",
+    { wrapperStat: procStat({ ticks: "123457" }) },
+    {},
+  ],
+  ["the wrapper is a zombie", { wrapperStat: procStat({ state: "Z" }) }, {}],
+  ["the wrapper exits during the sample", {}, { walkDrift: "wrapper" }],
+  ["another process holds a connection", {}, { fds: queueFds() }],
+])(
+  "omits the queue beside a still-running OPEN when %s",
+  (_case, options, owned) => {
+    const d = openingDaemon(options, owned);
+    const text = atDeadline(d);
+    expect(JSON.parse(text).deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toMatch(/"q1"|PRIVATE|31415|271828|424[0-9]|socket:/);
+    // Only a fully scoped OPEN is sampled at all.
+    if (!("walkDrift" in owned) && !("fds" in owned))
+      expect(d.openDescriptors).not.toHaveBeenCalled();
+  },
+);
+
+it("never samples beside a still-running OPEN outside the connected deadline", () => {
+  const d = openingDaemon();
+  d.socket.emit("connect");
+  d.socket.emit("close");
+  d.timeout();
+  expect(d.exit.mock.calls).toEqual([[6]]);
+  expect(d.output.mock.calls[0][0]).not.toMatch(/q1|PRIVATE/);
+  expect(d.openDescriptors).not.toHaveBeenCalled();
+  expect(d.openReceipt.mock.calls.flat()).not.toContain("/proc/net/unix");
+});
+
+it("drops the running-OPEN queue first, keeping the wrapper fields that scope it", () => {
+  const complete = atDeadline(openingDaemon());
+  const { q1, ...existing } = JSON.parse(complete);
+  expect(q1).toEqual([1, 1, 1]);
+  const over = atDeadline(
+    openingDaemon({ chargedBytes: 545 - Buffer.byteLength(complete) }),
+  );
+  expect(JSON.parse(over)).toEqual(existing);
+  expect(existing).toMatchObject({ w1: 3, wrapper_action: "open" });
 });
 
 /** One filesystem entry; hard links share the same object and so its identity. */
