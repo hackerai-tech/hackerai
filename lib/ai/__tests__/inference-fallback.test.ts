@@ -1,6 +1,13 @@
-import { withInferenceFallback } from "../inference-fallback";
-import type { LanguageModelMiddleware } from "ai";
+import {
+  shouldDeferInferenceRejectionToSizeRecovery,
+  withInferenceFallback,
+} from "../inference-fallback";
+import { APICallError, type LanguageModelMiddleware } from "ai";
 import { createAbliterationVisionPreprocessor } from "@/lib/chat/abliteration-vision";
+import {
+  withProviderRequestSizeRecovery,
+  type ProviderRequestSizeRecoveryState,
+} from "@/lib/chat/provider-request-size-recovery";
 
 jest.mock("server-only", () => ({}));
 jest.mock("@/lib/chat/auxiliary-vision", () => ({
@@ -37,7 +44,7 @@ function model(id: string, parts: Part[]) {
     modelId: id,
     supportedUrls: {},
     doGenerate: jest.fn(),
-    doStream: jest.fn(async () => ({
+    doStream: jest.fn(async (_params?: Options["params"]) => ({
       stream: new ReadableStream<Part>({
         start(controller) {
           for (const part of parts) controller.enqueue(part);
@@ -244,6 +251,136 @@ it("does not fall back after user cancellation", async () => {
   expect(s.primary.doStream).not.toHaveBeenCalled();
   expect(s.fallback.doStream).not.toHaveBeenCalled();
 });
+describe("Agent size recovery composed with the Inference fallback", () => {
+  const history = "earlier synthetic tool output ".repeat(200);
+  const prompt: Options["params"]["prompt"] = [
+    { role: "system", content: "Synthetic system prompt." },
+    { role: "user", content: [{ type: "text", text: history }] },
+  ];
+  const apiError = (statusCode: number, code: string) =>
+    new APICallError({
+      message: "This model's maximum context length is 1040000 tokens.",
+      url: "https://inference.test/v1/chat/completions",
+      requestBodyValues: {},
+      statusCode,
+      responseBody: JSON.stringify({
+        error: {
+          message: "This model's maximum context length is 1040000 tokens.",
+          type: "invalid_request_error",
+          code,
+        },
+      }),
+    });
+  const overflow = () => apiError(400, "context_length_exceeded");
+  const label = (params?: Options["params"]) =>
+    JSON.stringify(params?.prompt).includes(history) ? "original" : "compacted";
+
+  function compose(agent: boolean) {
+    const s = setup();
+    const events: string[] = [];
+    s.primary.doStream.mockImplementation(async (params) => {
+      events.push(`inference:${label(params)}`);
+      throw overflow();
+    });
+    const fallbackStream = s.fallback.doStream.getMockImplementation()!;
+    s.fallback.doStream.mockImplementation(async (params) => {
+      events.push(`fallback:${label(params)}`);
+      return fallbackStream();
+    });
+    const state: ProviderRequestSizeRecoveryState = { attempted: false };
+    const compact = jest.fn(async (): Promise<string | undefined> => {
+      events.push("compact");
+      return "Synthetic summary.";
+    });
+    const inner = withInferenceFallback(s.primary, s.fallback, {
+      abortSignal: s.controller.signal,
+      onDiscardedUsage: s.onDiscardedUsage,
+      prepareFallbackPrompt: async (p) => p,
+      ...(agent && {
+        deferPreStreamRejection: (error: unknown) =>
+          shouldDeferInferenceRejectionToSizeRecovery(error, state),
+      }),
+    });
+    const model = (
+      agent
+        ? withProviderRequestSizeRecovery(inner, {
+            state,
+            abortSignal: s.controller.signal,
+            compact,
+            commit: jest.fn(),
+          })
+        : inner
+    ) as Model;
+    return { ...s, events, compact, run: () => model.doStream({ prompt }) };
+  }
+
+  it("compacts before the fallback and recovers on Inference", async () => {
+    const c = compose(true);
+    c.primary.doStream.mockImplementationOnce(async (params) => {
+      c.events.push(`inference:${label(params)}`);
+      throw overflow();
+    });
+    c.primary.doStream.mockImplementationOnce(async (params) => {
+      c.events.push(`inference:${label(params)}`);
+      return model("deepseek", text).doStream();
+    });
+    expect(await collect(await c.run())).toEqual(text);
+    expect(c.events).toEqual([
+      "inference:original",
+      "compact",
+      "inference:compacted",
+    ]);
+  });
+
+  it("gives a rejected compacted request the fallback, never the oversized prompt", async () => {
+    const c = compose(true);
+    expect(await collect(await c.run())).toEqual(text);
+    expect(c.events).toEqual([
+      "inference:original",
+      "compact",
+      "inference:compacted",
+      "fallback:compacted",
+    ]);
+  });
+
+  it("does not resend the unchanged prompt when compaction has no result", async () => {
+    const c = compose(true);
+    c.compact.mockResolvedValueOnce(undefined);
+    await expect(c.run()).rejects.toMatchObject({ statusCode: 400 });
+    expect(c.events).toEqual(["inference:original"]);
+  });
+
+  it("does not replay output published by the compacted retry", async () => {
+    const c = compose(true);
+    const published: Part[] = [
+      { type: "text-delta", id: "t", delta: "published" },
+      { type: "error", error: new Error("disconnected") },
+    ];
+    c.primary.doStream.mockImplementationOnce(async () => {
+      throw overflow();
+    });
+    c.primary.doStream.mockImplementationOnce(async () =>
+      model("deepseek", published).doStream(),
+    );
+    expect(await collect(await c.run())).toEqual(published);
+    expect(c.compact).toHaveBeenCalledTimes(1);
+    expect(c.fallback.doStream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Ask context overflow", false, overflow],
+    ["Agent unrelated 429", true, () => apiError(429, "rate_limit_exceeded")],
+  ])("keeps the immediate fallback for %s", async (_name, agent, failure) => {
+    const c = compose(agent);
+    c.primary.doStream.mockImplementation(async () => {
+      throw failure();
+    });
+    expect(await collect(await c.run())).toEqual(text);
+    expect(c.compact).not.toHaveBeenCalled();
+    expect(c.events).toEqual(["fallback:original"]);
+  });
+});
+
 it("lets a failed Abliteration leg reach the existing outer baseline recovery", async () => {
   const s = setup([{ type: "error", error: new Error("primary") }]);
   const error = new Error("fallback");

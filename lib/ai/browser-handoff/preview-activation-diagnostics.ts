@@ -79,18 +79,28 @@ function normalizeReader(value: unknown): string | undefined {
 }
 
 /**
+ * Functional, not diagnostic: a fresh passive Agent-state preview may accept a
+ * 202 deferral while the selected session runs a verified WAIT. The server
+ * re-checks state and run independently; older servers ignore the key.
+ */
+export const PREVIEW_DEFER_WAIT_PARAM = "deferWait";
+
+/**
  * Build the capture GET URL. `fresh=1` keeps its existing name and value so
  * older servers read it unchanged; they ignore the additional optional keys.
  * The reader is the caller's loaded public build commit, or `unknown`.
+ * `deferWait=1` is added only beside `fresh=1`.
  */
 export function previewCaptureUrl(
   endpoint: string,
   fresh: boolean,
   activationMask: number,
   loadedBuildCommit: unknown,
+  deferWait = false,
 ): string {
   const query = new URLSearchParams();
   if (fresh) query.set("fresh", "1");
+  if (fresh && deferWait === true) query.set(PREVIEW_DEFER_WAIT_PARAM, "1");
   if (isActivationMask(activationMask)) {
     query.set(PREVIEW_DIAGNOSTIC_VERSION_PARAM, "1");
     query.set(PREVIEW_ACTIVATION_PARAM, `${activationMask}`);

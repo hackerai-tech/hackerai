@@ -3,7 +3,10 @@ import {
   INFERENCE_MAX_IMAGES_PER_REQUEST,
   isInferenceCyberModel,
 } from "@/lib/ai/inference";
-import { withInferenceFallback } from "@/lib/ai/inference-fallback";
+import {
+  shouldDeferInferenceRejectionToSizeRecovery,
+  withInferenceFallback,
+} from "@/lib/ai/inference-fallback";
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
@@ -1189,6 +1192,14 @@ export async function createAgentStream(
       ) {
         recoveryModel = withInferenceFallback(recoveryModel, fallback, {
           abortSignal,
+          // Ask has no size recovery and keeps the immediate fallback.
+          ...(ctx.mode === "agent" && {
+            deferPreStreamRejection: (error: unknown) =>
+              shouldDeferInferenceRejectionToSizeRecovery(
+                error,
+                state.requestSizeRecovery,
+              ),
+          }),
           prepareFallbackPrompt: (prompt) =>
             preprocessAbliterationImages(prompt),
           onDiscardedUsage: (usage) => {

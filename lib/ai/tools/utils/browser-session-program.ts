@@ -119,7 +119,24 @@ if skip_next or not name or len(name) > 80 or any(c in name for c in '/\\x00\\r\
 if verify.exists() and active.read_text().strip() != name:
     raise RuntimeError('Snapshot the current browser before changing sessions')
 sys.argv = [sys.argv[0], '--session', name, *args]
-active.write_text(name)
+def publish_active(value):
+    """Required: the same plain selection, published as a new private regular inode
+    on every invocation under this lock before the real CLI can run. A close proof
+    links to exactly this inode, so any later publication supersedes that proof."""
+    temporary = root / ('.active-session-' + os.urandom(12).hex())
+    fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(value)
+            output.flush()
+            info = os.fstat(output.fileno())
+        os.replace(str(temporary), str(active))
+    except BaseException:
+        try: os.unlink(str(temporary))
+        except OSError: pass
+        raise
+    return (info.st_dev, info.st_ino)
+active_identity = publish_active(name)
 def write_receipt(filename, value):
     temporary = None
     created = False
@@ -187,9 +204,9 @@ def own_process_identity():
         return None
 
 def open_socket_at_return():
-    """Private code for the selected socket when a wrapped OPEN returned 0.
-    Only lstat: never connect, read, signal or retry. Presence at this return is not
-    daemon health, idle state or a cause of a later capture failure."""
+    """Private code for the selected socket when a wrapped OPEN returned 0, or before
+    an exact CLOSE runs. Only lstat: never connect, read, signal or retry. Presence
+    is not daemon health, idle state or a cause of a later capture failure."""
     # 0 unavailable, 1 owned socket, 2 missing in a valid scope,
     # 3 invalid scope/type/owner, 4 unreadable or other filesystem error.
     try:
@@ -211,6 +228,40 @@ def open_socket_at_return():
         return 1 if S.S_ISSOCK(entry.st_mode) and entry.st_uid == os.getuid() else 3
     except Exception:
         return 0
+
+def close_target():
+    """True only for an exact unprefixed close or close --all, in this root's own
+    socket directory, config and default namespace, while the selected original
+    socket is owned. Closing nothing or another namespace never earns a proof."""
+    try:
+        if sys.argv[3:] not in (['close'], ['close', '--all']) or 'AGENT_BROWSER_NAMESPACE' in os.environ:
+            return False
+        if any(os.environ.get(key) != str(root / leaf)
+               for key, leaf in (('AGENT_BROWSER_SOCKET_DIR', 'sockets'), ('AGENT_BROWSER_CONFIG', 'config.json'))):
+            return False
+        return open_socket_at_return() == 1
+    except Exception:
+        return False
+
+def publish_closed():
+    """Optional private proof, under this lock after that exact close returned 0: a link
+    to this invocation's own still-current selection inode, atomically replacing any
+    older proof. Readers also require the socket to be absent. Failure never changes
+    the CLI result; a later invocation's required publication supersedes it."""
+    temporary = None
+    try:
+        temporary = root / ('.closed-session-' + os.urandom(12).hex())
+        os.link(str(active), str(temporary), follow_symlinks=False)
+        try:
+            info = os.lstat(str(temporary))
+            if (__import__('stat').S_ISREG(info.st_mode) and info.st_uid == os.getuid() and
+                    not info.st_mode & 0o077 and (info.st_dev, info.st_ino) == active_identity):
+                os.replace(str(temporary), str(root / 'closed-session'))
+        finally:
+            try: os.unlink(str(temporary))
+            except OSError: pass
+    except Exception:
+        pass
 
 def own_result(status, executed):
     """Private [1, result, elapsed bucket] of this wrapper's own return, timed only
@@ -328,6 +379,19 @@ def record_wrapper(phase, status=None, executed=False):
             informational = (1 if '--help' in tokens or '-h' in tokens else 0) + (2 if '--version' in tokens or '-V' in tokens else 0)
             if len(json.dumps(dict(opened, o1=informational))) <= 512:
                 opened = dict(opened, o1=informational)
+            # Only beside a plain successful OPEN whose selected socket was missing
+            # at return: this wrapped CLI's own AGENT_BROWSER_SOCKET_DIR declaration,
+            # 0 exactly this root's managed directory, 1 unset or empty, 2 any other
+            # value. Never the value, nor where the CLI or daemon actually routed.
+            # Appended last and omitted rather than displacing any field at the cap.
+            if opened.get('os1') == 2 and opened.get('o1') == 0:
+                try:
+                    declared_dir = os.environ.get('AGENT_BROWSER_SOCKET_DIR')
+                    directory_code = 0 if declared_dir == str(root / 'sockets') else 1 if not declared_dir else 2
+                    if len(json.dumps(dict(opened, sd1=directory_code))) <= 512:
+                        opened = dict(opened, sd1=directory_code)
+                except Exception:
+                    pass
             write_receipt('open-receipt.json', opened)
         elif action == 'close':
             write_receipt('close-receipt.json', value)
@@ -367,10 +431,13 @@ if verify.exists():
         verify.unlink(missing_ok=True)
     record_wrapper('completed', result.returncode, True)
     sys.exit(result.returncode)
+closing = close_target()  # Snapshot before the close can remove the socket.
 result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
 if result.returncode == 0:
     environment_path.write_text(environment_digest)
     environment_path.chmod(0o600)
+    if closing:
+        publish_closed()
 record_wrapper('completed', result.returncode, True)
 sys.exit(result.returncode)
 ''' % (str(root), real, real)

@@ -5,13 +5,17 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
-import { withPreviewClientContext } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
+import {
+  PREVIEW_DEFER_WAIT_PARAM,
+  withPreviewClientContext,
+} from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
   normalizeBrowserInput,
   normalizeBrowserInputBatch,
 } from "@/lib/ai/browser-handoff/input";
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   type BrowserCaptureFailureContext,
   type BrowserInputFailureContext,
@@ -380,23 +384,47 @@ export const GET = withServiceQueryRecovery(async function GET(
       resolved.session.controlledSessionName !== browserSessionName
     )
       return json({ state: "stale" }, 409);
+    const query = request.nextUrl.searchParams;
+    const fresh = query.get("fresh") === "1";
+    const deferWait = query.getAll(PREVIEW_DEFER_WAIT_PARAM);
+    const allowDeferral =
+      fresh &&
+      deferWait.length === 1 &&
+      deferWait[0] === "1" &&
+      resolved.session.state === "agent" &&
+      resolved.session.runActive === true;
     stage = "capture_frame";
-    const frame = await captureBrowserFrame(
-      sandbox,
-      resolved.session,
-      browserSessionName,
-      request.nextUrl.searchParams.get("fresh") === "1",
-      undefined,
-      (context) => {
-        captureContext = context;
-      },
-    );
+    let frame: Awaited<ReturnType<typeof captureBrowserFrame>> | undefined;
+    try {
+      frame = await captureBrowserFrame(
+        sandbox,
+        resolved.session,
+        browserSessionName,
+        fresh,
+        undefined,
+        (context) => {
+          captureContext = context;
+        },
+        {
+          recognizeClosed: true,
+          ...(allowDeferral && { deferDuringWait: true }),
+        },
+      );
+    } catch (error) {
+      if (!allowDeferral || !(error instanceof BrowserPreviewRefreshDeferred))
+        throw error;
+    }
     stage = "verify_active_session";
     if (
       (await getActiveBrowserSessionName(sandbox, resolved.session)) !==
       browserSessionName
     )
       return json({ state: "stale" }, 409);
+    if (frame === undefined)
+      return json(
+        { state: resolved.session.state, refreshDeferred: true },
+        202,
+      );
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
     return unavailableGet(

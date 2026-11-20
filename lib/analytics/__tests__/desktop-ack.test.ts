@@ -4359,8 +4359,138 @@ describe("invocation rejection message class", () => {
           return { target, proxy, reads };
         };
 
+        describe("owner timeout", () => {
+          const timeoutOrigin = {
+            ...stopOrigin,
+            desktop_stream_fence_origin: "owner_timeout",
+          } as const;
+          // Every explicit-stop-only group a carrier could spoof beside it.
+          const stopOnly = {
+            desktop_stream_fence_windows_taskkill_version: 1,
+            desktop_stream_fence_windows_taskkill_outcome: "nonzero_exit",
+            desktop_stream_fence_windows_taskkill_exit_code: 128,
+            desktop_stream_fence_windows_taskkill_root_report_version: 1,
+            desktop_stream_fence_windows_taskkill_root_report:
+              "requested_pid_not_found",
+            desktop_stream_fence_stop_request_source_version: 1,
+            desktop_stream_fence_stop_request_source: "cancel_ipc",
+          } as const;
+
+          it.each(failures)(
+            "keeps the unsampled %s pair beside its timeout origin through capture and before_send",
+            (failure) => {
+              jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+              const expected = {
+                ...timeoutOrigin,
+                desktop_stream_fence_cleanup_version: 1,
+                desktop_stream_fence_cleanup_failure: failure,
+              };
+              const final = settle({
+                ...fenced,
+                // Spoofed stop-only groups and private extras never survive.
+                streamFence: {
+                  ...expected,
+                  ...stopOnly,
+                  pid: 4242,
+                  message: "PRIVATE",
+                },
+              });
+              expect(final?.properties).toMatchObject({
+                ...rejectedKind,
+                ...authorizedUnknown,
+                ...unknown,
+                ...expected,
+                telemetry_sampled: false,
+                telemetry_sample_rate: 1,
+              });
+              expect(fenceKeys(final!.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const enriched = sanitize({
+                ...final!.properties,
+                ...stopOnly,
+                pid: 4242,
+              });
+              expect(fenceKeys(enriched)).toEqual(Object.keys(expected));
+              expect(enriched).toMatchObject(expected);
+              expect(enriched).not.toHaveProperty("pid");
+              expect(JSON.stringify([final, enriched])).not.toContain(
+                "PRIVATE",
+              );
+            },
+          );
+
+          it("keeps exactly the timeout origin from an older native app or for an invalid pair", () => {
+            for (const carried of [
+              {},
+              { ...cleanup, desktop_stream_fence_cleanup_version: 2 },
+              { ...cleanup, desktop_stream_fence_cleanup_failure: "PRIVATE" },
+              { desktop_stream_fence_cleanup_version: 1 },
+            ]) {
+              const final = settle({
+                ...fenced,
+                streamFence: { ...timeoutOrigin, ...carried },
+              });
+              expect(fenceKeys(final!.properties)).toEqual(
+                Object.keys(timeoutOrigin),
+              );
+              expect(
+                sanitize({ ...coarse, ...timeoutOrigin, ...carried }),
+              ).toEqual({ ...coarse, ...timeoutOrigin });
+            }
+          });
+
+          it.each<[string, unknown]>([
+            ["an unacknowledged terminal", false],
+            ["a missing acknowledgement", undefined],
+          ])(
+            "never reads or keeps its pair on %s",
+            (_case, terminalAcknowledged) => {
+              const carrier = counted({ ...timeoutOrigin });
+              const final = settle({
+                ...fenced,
+                outcome: "incomplete",
+                reason: "deadline_exceeded",
+                terminalAcknowledged,
+                streamFence: carrier.proxy,
+              });
+              expect(fenceKeys(final!.properties)).toEqual(
+                Object.keys(timeoutOrigin),
+              );
+              const event = counted({
+                ...coarse,
+                terminalAcknowledged,
+                ...timeoutOrigin,
+              });
+              expect(
+                fenceKeys(
+                  sanitizeDesktopAckEvent({
+                    event: "desktop_ack_command_settled",
+                    properties: event.target,
+                  }).properties,
+                ),
+              ).toEqual(Object.keys(timeoutOrigin));
+              expect(carrier.reads.count + event.reads.count).toBe(0);
+            },
+          );
+
+          it("keeps an explicit stop's taskkill and source groups unchanged", () => {
+            const stopped = {
+              ...stopOrigin,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+              ...stopOnly,
+            } as const;
+            const final = settle({ ...fenced, streamFence: stopped });
+            expect(fenceKeys(final!.properties)).toEqual(Object.keys(stopped));
+            expect(sanitize({ ...coarse, ...stopped })).toEqual({
+              ...coarse,
+              ...stopped,
+            });
+          });
+        });
+
         it.each([
-          "owner_timeout",
           "owner_process_error",
           "owner_delivery_failed",
           "owner_outcome_missing",

@@ -49,6 +49,19 @@ type BrowserInput =
 const FRAME_STALE_MS = 10_000;
 const FRAME_REFRESH_MS = 4_000;
 
+/** Only the negotiated frameless 202 deferral; anything else stays a real failure. */
+function isRefreshDeferral(response: Response, data: unknown) {
+  return (
+    response.status === 202 &&
+    typeof data === "object" &&
+    data !== null &&
+    !Array.isArray(data) &&
+    (data as Record<string, unknown>).refreshDeferred === true &&
+    (data as Record<string, unknown>).state === "agent" &&
+    !Object.prototype.hasOwnProperty.call(data, "frame")
+  );
+}
+
 class BrowserRequestError extends Error {
   constructor(
     message: string,
@@ -150,6 +163,10 @@ export function AgentBrowserPreview({
   );
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
+  // The latest passive refresh yielded to the Agent's active browser WAIT. It
+  // never renews the frame's age or enables input; it only replaces the
+  // disconnected wording while the server still reports that wait.
+  const [refreshDeferred, setRefreshDeferred] = useState(false);
   const previewHealthRef = useRef({ previewState, frameSeenAt });
   useLayoutEffect(() => {
     previewHealthRef.current = { previewState, frameSeenAt };
@@ -276,6 +293,11 @@ export function AgentBrowserPreview({
   useLayoutEffect(() => {
     activationMaskRef.current = activationMask;
   }, [activationMask]);
+  // Read at dispatch like the mask, so a state change never restarts polling.
+  const sessionStateRef = useRef(session?.state);
+  useLayoutEffect(() => {
+    sessionStateRef.current = session?.state;
+  }, [session?.state]);
 
   useLayoutEffect(() => {
     onVisibilityChange?.(showPreview);
@@ -301,6 +323,7 @@ export function AgentBrowserPreview({
     lastFreshFrameAt.current = 0;
     frameEpoch.current++;
     setPreviewState("loading");
+    setRefreshDeferred(false);
     setExitOpen(false);
     let savedRequestId: string | null = null;
     try {
@@ -398,6 +421,13 @@ export function AgentBrowserPreview({
       }
       const epoch = frameEpoch.current;
       let captureFailed = false;
+      // Only a passive refresh while the Agent drives the browser may yield to
+      // its active WAIT; the server re-checks the state and run itself.
+      const deferWait =
+        fresh &&
+        !relayActive &&
+        !grantRef.current &&
+        sessionStateRef.current === "agent";
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
@@ -407,6 +437,7 @@ export function AgentBrowserPreview({
             fresh,
             activationMaskRef.current,
             process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT,
+            deferWait,
           ),
           {
             cache: "no-store",
@@ -418,7 +449,12 @@ export function AgentBrowserPreview({
         // A stream/viewport response arriving during capture is newer than
         // this request. Its image and connection state must win.
         if (stopped || frameEpoch.current !== epoch) return;
-        if (!response.ok || !data.frame) {
+        // No new image: a deferral keeps the current frame, its age and input
+        // rules, and retries the strict screenshot at the normal cadence.
+        const deferred = deferWait && isRefreshDeferral(response, data);
+        setRefreshDeferred(deferred);
+        if (deferred) return;
+        if (!response.ok || response.status === 202 || !data.frame) {
           captureFailed = true;
           const transient =
             response.status >= 500 ||
@@ -435,6 +471,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped && frameEpoch.current === epoch) {
           captureFailed = true;
+          setRefreshDeferred(false);
           if (!relayActive) setPreviewState("disconnected");
         }
       } finally {
@@ -1222,6 +1259,8 @@ export function AgentBrowserPreview({
 
   if (!showPreview) return null;
 
+  // Wording only: frameStale, its age and every input rule stay unchanged.
+  const waitDeferred = refreshDeferred && !human && effectiveState === "agent";
   const statusLabel = !session
     ? session === undefined
       ? "Checking browser…"
@@ -1235,9 +1274,11 @@ export function AgentBrowserPreview({
         : effectiveState === "resuming"
           ? "Resuming Agent…"
           : frameStale
-            ? previewState === "loading"
-              ? "Connecting browser…"
-              : "Preview unavailable"
+            ? waitDeferred
+              ? "Agent is waiting…"
+              : previewState === "loading"
+                ? "Connecting browser…"
+                : "Preview unavailable"
             : effectiveState === "recovery"
               ? "Paused for handoff"
               : effectiveState === "human"
@@ -1510,13 +1551,15 @@ export function AgentBrowserPreview({
         )}
         {session && frameStale && !takingControl && (
           <div className="absolute inset-0 flex min-h-24 items-center justify-center bg-background/80 px-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
-            {previewState === "loading"
-              ? "Waiting for Agent browser…"
-              : previewState === "closed"
-                ? "Browser session closed"
-                : previewState === "stale"
-                  ? "Browser changed. Waiting for a current frame…"
-                  : "Browser preview disconnected. Input is paused."}
+            {waitDeferred
+              ? "The Agent is waiting on this page. The preview refreshes when it continues."
+              : previewState === "loading"
+                ? "Waiting for Agent browser…"
+                : previewState === "closed"
+                  ? "Browser session closed"
+                  : previewState === "stale"
+                    ? "Browser changed. Waiting for a current frame…"
+                    : "Browser preview disconnected. Input is paused."}
           </div>
         )}
       </div>
