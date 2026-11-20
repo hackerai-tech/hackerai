@@ -41,11 +41,13 @@ import {
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
+  readDesktopStreamFenceRendererCancelDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
   type DesktopStreamFenceDiagnostic,
+  type DesktopStreamFenceRendererCancelDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -97,8 +99,10 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** The native stream fence's first origin; only joined to a valid
    * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
    * failure is reported only for `owner_stop_requested` on an acknowledged
-   * terminal. */
-  streamFence?: DesktopStreamFenceDiagnostic;
+   * terminal. Beside its `cancel_ipc` stop request source, a runless
+   * command's renderer cancel attempt pair rides the same carrier. */
+  streamFence?: DesktopStreamFenceDiagnostic &
+    Partial<DesktopStreamFenceRendererCancelDiagnostic>;
 };
 
 const emptyCounts = () => ({
@@ -397,6 +401,14 @@ export class DesktopAckTelemetry {
         invocationUnknown,
         result.terminalAcknowledged === true,
       );
+      // Only beside that validated `cancel_ipc` source of a command without
+      // any run ID representation, valid or not.
+      const streamFenceRendererCancel =
+        readDesktopStreamFenceRendererCancelDiagnostic(
+          result.streamFence,
+          streamFence,
+          context.triggerRunId === undefined,
+        );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -445,6 +457,7 @@ export class DesktopAckTelemetry {
           ...invocationSpawnHint,
           ...invocationUnknown,
           ...streamFence,
+          ...streamFenceRendererCancel,
         },
         dedupeKey,
       );

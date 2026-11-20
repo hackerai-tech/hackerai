@@ -72,6 +72,7 @@ import {
   desktopInvocationSpawnHintDiagnostic,
   desktopInvocationUnknownDiagnostic,
   desktopStreamFenceDiagnostic,
+  desktopStreamFenceRendererCancelDiagnostic,
   parseNativeStreamFenceRejection,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
@@ -582,6 +583,15 @@ type NativeAuthStateReaders = Pick<
   | "readNativeAuthProviderState"
   | "readNativeAuthTokenDecision"
 >;
+
+/** One runless Windows acknowledged invocation's renderer
+ * `cancel_stream_command` IPC attempts, by caller, until its first terminal. */
+interface RendererCancelAttempts {
+  readonly router: OperationChannelRouter<Subscription>;
+  open: boolean;
+  relay_command_cancel: boolean;
+  output_overflow: boolean;
+}
 
 export class DesktopSandboxBridge {
   private environmentId?: string;
@@ -1237,14 +1247,26 @@ export class DesktopSandboxBridge {
       userId,
       connectionId,
       (operation) => {
+        // The invocation this overflow belongs to, before any await.
+        const owner =
+          operation.kind === "command"
+            ? this.rendererCancelAttempts.get(operation.id)
+            : undefined;
         void import("@tauri-apps/api/core")
           .then(({ invoke }) => {
             if (operation.kind === "pty")
               return invoke("execute_pty_kill", { sessionId: operation.id });
-            if (operation.kind === "command")
+            if (operation.kind === "command") {
+              this.markRendererCancelAttempt(
+                operation.id,
+                owner,
+                "output_overflow",
+                operationRouter,
+              );
               return invoke("cancel_stream_command", {
                 commandId: operation.id,
               });
+            }
           })
           .catch(() => {
             console.error(
@@ -1508,6 +1530,29 @@ export class DesktopSandboxBridge {
   }
 
   private acknowledgedOutputs = new Map<string, AcknowledgedCommandOutput>();
+  /** Each entry is set and removed only by its own invocation. */
+  private rendererCancelAttempts = new Map<string, RendererCancelAttempts>();
+
+  /** Record a renderer cancel IPC attempt, just before its call, only for the
+   * `owner` its caller captured before any await: still open, still this
+   * command's entry and active, and started by this live router. A stale
+   * owner is never redirected to a replacement invocation. */
+  private markRendererCancelAttempt(
+    commandId: string,
+    owner: RendererCancelAttempts | undefined,
+    caller: "relay_command_cancel" | "output_overflow",
+    router: OperationChannelRouter<Subscription> | null,
+  ): void {
+    if (
+      owner?.open &&
+      this.rendererCancelAttempts.get(commandId) === owner &&
+      this.activeCommands.has(commandId) &&
+      owner.router === router &&
+      this.operationRouter === router &&
+      !this.isStoppingOrStopped
+    )
+      owner[caller] = true;
+  }
 
   private async handleAcknowledgedCommand(
     command: CommandMessage,
@@ -1550,6 +1595,20 @@ export class DesktopSandboxBridge {
     // reports them.
     const streamFenceWindowsOffered =
       streamFenceOffered && this.nativePlatform === "windows";
+    // Only that Windows offer's `cancel_ipc` source of a runless command can
+    // report which renderer cancel IPC callers were attempted before this
+    // invocation's first terminal; the first terminal closes it. Runless is
+    // an absent run ID: any other representation never reports.
+    const runless = command.triggerRunId === undefined;
+    const cancelAttempts: RendererCancelAttempts | null =
+      streamFenceWindowsOffered && runless
+        ? {
+            router,
+            open: true,
+            relay_command_cancel: false,
+            output_overflow: false,
+          }
+        : null;
     const receiptFenced = () =>
       this.isStoppingOrStopped ||
       this.operationRouter !== router ||
@@ -1592,6 +1651,7 @@ export class DesktopSandboxBridge {
     const latchTerminal = (errorKind: DesktopTerminalErrorKind | null) => {
       if (terminalLatched) return false;
       terminalLatched = true;
+      if (cancelAttempts) cancelAttempts.open = false;
       if (!errorKind || receiptFenced()) return false;
       terminalErrorKind = errorKind;
       return true;
@@ -1629,6 +1689,7 @@ export class DesktopSandboxBridge {
         responseReadOpen = false;
         responseReadTimingOpen = false;
         terminalLatched = true;
+        if (cancelAttempts) cancelAttempts.open = false;
         const streamFence =
           terminalErrorKind === "invocation_rejected"
             ? desktopStreamFenceDiagnostic(
@@ -1641,6 +1702,19 @@ export class DesktopSandboxBridge {
                 streamFenceStopRequestSource,
               )
             : null;
+        const rendererCancel =
+          cancelAttempts &&
+          desktopStreamFenceRendererCancelDiagnostic(
+            streamFence,
+            runless,
+            cancelAttempts.relay_command_cancel
+              ? cancelAttempts.output_overflow
+                ? "both"
+                : "relay_command_cancel"
+              : cancelAttempts.output_overflow
+                ? "output_overflow"
+                : "unobserved",
+          );
         onSettled(
           {
             ...settlement,
@@ -1654,7 +1728,9 @@ export class DesktopSandboxBridge {
                 ...(invocationAdmission && { invocationAdmission }),
                 ...(invocationSpawnHint && { invocationSpawnHint }),
                 ...(invocationUnknown && { invocationUnknown }),
-                ...(streamFence && { streamFence }),
+                ...(streamFence && {
+                  streamFence: { ...streamFence, ...rendererCancel },
+                }),
               }),
             ...(invocationRejected &&
               sendReceipt && {
@@ -1712,6 +1788,8 @@ export class DesktopSandboxBridge {
       },
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
+    if (cancelAttempts)
+      this.rendererCancelAttempts.set(command.commandId, cancelAttempts);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
     this.activeCommands.add(command.commandId);
     let diagnosticChannel: object | undefined;
@@ -2065,6 +2143,8 @@ export class DesktopSandboxBridge {
         }
       }
       this.acknowledgedOutputs.delete(command.commandId);
+      if (this.rendererCancelAttempts.get(command.commandId) === cancelAttempts)
+        this.rendererCancelAttempts.delete(command.commandId);
       this.commandDeliveryDeadlines.delete(command.commandId);
       this.activeCommands.delete(command.commandId);
       // Retain only the lightweight route after cancellation: a lost cancel
@@ -2986,9 +3066,19 @@ export class DesktopSandboxBridge {
     // Cancellation is idempotent: if the command already left the active set,
     // there is no process left to terminate.
     let canceled = !this.activeCommands.has(command.commandId);
+    // The router that delivered this control, and the invocation it targets,
+    // before any await.
+    const router = this.operationRouter;
+    const owner = this.rendererCancelAttempts.get(command.commandId);
     if (this.activeCommands.has(command.commandId)) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+        this.markRendererCancelAttempt(
+          command.commandId,
+          owner,
+          "relay_command_cancel",
+          router,
+        );
         canceled = await invoke<boolean>("cancel_stream_command", {
           commandId: command.commandId,
         });

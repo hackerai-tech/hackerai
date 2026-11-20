@@ -12318,6 +12318,11 @@ describe("native authorization send receipt", () => {
             ...notFoundGroup,
             desktop_stream_fence_windows_taskkill_root_report: "unclassified",
           };
+          // Which renderer cancel IPC attempts preceded the first terminal.
+          const attemptPair = (attempt: string) => ({
+            desktop_stream_fence_renderer_cancel_attempt_version: 1,
+            desktop_stream_fence_renderer_cancel_attempt: attempt,
+          });
 
           it.each(
             ["cancel_ipc", "document_invalidation", "application_exit"].flatMap(
@@ -12362,6 +12367,8 @@ describe("native authorization send receipt", () => {
                 ...(group as Record<string, unknown>),
                 desktop_stream_fence_stop_request_source_version: 1,
                 desktop_stream_fence_stop_request_source: source,
+                // This runless command had no renderer cancel attempt.
+                ...(source === "cancel_ipc" && attemptPair("unobserved")),
               };
               expect(finals()).toHaveLength(1);
               const final = finals()[0];
@@ -12581,6 +12588,237 @@ describe("native authorization send receipt", () => {
               reason: "stopped",
             });
             expect(fenceKeys(finals()[0].properties)).toEqual([]);
+          });
+
+          describe("renderer cancel attempts before the first terminal", () => {
+            const sourcePair = {
+              desktop_stream_fence_stop_request_source_version: 1,
+              desktop_stream_fence_stop_request_source: "cancel_ipc",
+            };
+            type Route = { on: jest.Mock; publish: jest.Mock };
+            type Internals = { activeCommands: Set<string> };
+            // The command's operation route, as the relay delivers to it.
+            const route = () =>
+              mockClient.newSubscription.mock.results.at(-1)!.value as Route;
+            const deliver = (data: Record<string, unknown>) => {
+              const [, publication] = route().on.mock.calls.find(
+                ([event]) => event === "publication",
+              )!;
+              publication({
+                data: {
+                  commandId: "auth-send",
+                  targetConnectionId: "conn-123",
+                  ...data,
+                },
+              });
+            };
+            let cancels: string[];
+            let stopAfter: number;
+            let rejectNative: (error: unknown) => void;
+            let base: typeof mockInvokeHandler;
+            const pendingNative = () =>
+              new Promise<never>((_, reject) => {
+                rejectNative = reject;
+              });
+            beforeEach(() => {
+              cancels = [];
+              stopAfter = 1;
+              rejectNative = () => {};
+              base = mockInvokeHandler;
+              // Native reports its cancel IPC as the first stop source only
+              // after that IPC; it never confirms the stop.
+              mockInvokeHandler = async (cmd, args) => {
+                if (cmd !== "cancel_stream_command") return base(cmd, args);
+                cancels.push(args?.commandId as string);
+                if (cancels.length === stopAfter)
+                  rejectNative(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  );
+                return false;
+              };
+            });
+            afterEach(() => {
+              mockInvokeHandler = base;
+            });
+            /** The final's fence groups, then as before_send enriches them. */
+            const expectAttempt = (attempt: string | null) => {
+              const expected = {
+                ...notFoundGroup,
+                ...sourcePair,
+                ...(attempt && attemptPair(attempt)),
+              };
+              expect(finals()).toHaveLength(1);
+              const properties = finals()[0].properties;
+              expect(properties).toMatchObject({
+                outcome: "acknowledged",
+                terminalAcknowledged: true,
+                ...expected,
+              });
+              expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+              const enriched = sanitized({
+                ...properties,
+                $current_url: "PRIVATE",
+                command: "PRIVATE COMMAND",
+                pid: 4242,
+              });
+              expect(enriched.properties).toMatchObject(expected);
+              expect(fenceKeys(enriched.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain("4242");
+              expect(serialized).not.toContain(stopUnconfirmed);
+              expect(serialized).not.toContain("streamFence");
+            };
+
+            it("reports a received relay command_cancel invoked before the terminal", async () => {
+              const { replies } = await run(pendingNative, {
+                nativeOs: "windows",
+                beforeAck: async () => {
+                  deliver({ type: "command_cancel" });
+                  await jest.advanceTimersByTimeAsync(0);
+                },
+              });
+              expect(cancels).toEqual(["auth-send"]);
+              // The cancel result and the exact single terminal are unchanged.
+              expect(replies[0].publish).toHaveBeenCalledWith(
+                expect.objectContaining({
+                  type: "command_cancel_result",
+                  commandId: "auth-send",
+                  canceled: false,
+                }),
+              );
+              expect(sequencedFrames(replies[0])).toEqual([
+                expect.objectContaining({
+                  type: "error",
+                  message: stopUnconfirmed,
+                  sequence: 0,
+                }),
+              ]);
+              expectAttempt("relay_command_cancel");
+            });
+
+            it.each<[string, number, boolean]>([
+              ["output_overflow", 1, false],
+              ["both", 2, true],
+            ])(
+              "reports %s from the router's overflow cleanup",
+              async (attempt, stops, relay) => {
+                stopAfter = stops;
+                let output!: MockChannel;
+                await run(
+                  (call) => {
+                    output = call.onEvent as MockChannel;
+                    return pendingNative();
+                  },
+                  {
+                    nativeOs: "windows",
+                    beforeAck: async () => {
+                      // A slow relay keeps the failed route until its
+                      // failure notice settles, so this harness can still
+                      // acknowledge the terminal sequence on it.
+                      route().publish.mockImplementation(
+                        (frame: { type?: string; sequence?: number }) =>
+                          frame.type === "error" && frame.sequence === undefined
+                            ? new Promise(() => {})
+                            : Promise.resolve(),
+                      );
+                      // One native read over the relay queue's byte budget.
+                      output.onmessage!({
+                        type: "stdout",
+                        data: "x".repeat(4 * 1024 * 1024 + 1),
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                      if (relay) {
+                        deliver({ type: "command_cancel" });
+                        await jest.advanceTimersByTimeAsync(0);
+                      }
+                      // The terminal follows the overflowed stdout frame.
+                      deliver({ type: "command_output_ack", sequence: 1 });
+                      await jest.advanceTimersByTimeAsync(0);
+                    },
+                  },
+                );
+                expect(cancels).toEqual(
+                  relay ? ["auth-send", "auth-send"] : ["auth-send"],
+                );
+                expectAttempt(attempt);
+              },
+            );
+
+            it("never reports a cancel invoked after the first terminal", async () => {
+              await run(
+                () =>
+                  Promise.reject(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  ),
+                {
+                  nativeOs: "windows",
+                  beforeAck: async (bridge) => {
+                    // A relay cancel that passed the active check before the
+                    // terminal, but whose IPC call follows it.
+                    const internals = bridge as unknown as Internals;
+                    internals.activeCommands.add("auth-send");
+                    deliver({ type: "command_cancel" });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                },
+              );
+              expect(cancels).toEqual(["auth-send"]);
+              expectAttempt("unobserved");
+            });
+
+            it("never redirects a cancel captured for one invocation to its replacement", async () => {
+              let replacement: Record<string, unknown> | undefined;
+              await run(pendingNative, {
+                nativeOs: "windows",
+                beforeAck: async (bridge) => {
+                  const internals = bridge as unknown as Internals & {
+                    operationRouter: unknown;
+                    rendererCancelAttempts: Map<string, unknown>;
+                  };
+                  // The handler captures its owner synchronously; the same
+                  // command ID then names another open entry of the same
+                  // router before the IPC module loads.
+                  deliver({ type: "command_cancel" });
+                  replacement = {
+                    router: internals.operationRouter,
+                    open: true,
+                    relay_command_cancel: false,
+                    output_overflow: false,
+                  };
+                  internals.rendererCancelAttempts.set(
+                    "auth-send",
+                    replacement,
+                  );
+                  await jest.advanceTimersByTimeAsync(0);
+                },
+              });
+              // The product cancel still runs unchanged.
+              expect(cancels).toEqual(["auth-send"]);
+              expect(replacement).toMatchObject({
+                relay_command_cancel: false,
+                output_overflow: false,
+              });
+              expectAttempt("unobserved");
+            });
+
+            it.each(["run-1", "", null])(
+              "never reports attempts beside a %p Trigger run ID",
+              async (triggerRunId) => {
+                await run(pendingNative, {
+                  nativeOs: "windows",
+                  command: { chatId: "chat-1", triggerRunId },
+                  beforeAck: async () => {
+                    deliver({ type: "command_cancel" });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                });
+                expect(cancels).toEqual(["auth-send"]);
+                expectAttempt(null);
+              },
+            );
           });
         });
       });
