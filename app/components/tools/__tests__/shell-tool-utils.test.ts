@@ -4,8 +4,11 @@ import {
   getTerminalFailureAction,
   isToolInputValidationError,
   stripAgentOnlyTerminalGuidance,
+  type ShellToolInput,
   type ShellToolOutput,
 } from "../shell-tool-utils";
+import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import type { SidebarTerminal } from "@/types";
 
 describe("terminal shell tool display helpers", () => {
   const completedCommand = (shellOutput: ShellToolOutput) =>
@@ -259,4 +262,151 @@ describe("terminal shell tool display helpers", () => {
 
     expect(stripAgentOnlyTerminalGuidance(commandOutput)).toBe(commandOutput);
   });
+});
+
+describe("terminal display text source", () => {
+  const BRIEF = "agent-browser open the sign-in page";
+  const OPEN = "agent-browser open https://example.org";
+  type Part = {
+    type: string;
+    toolCallId: string;
+    state: string;
+    input: Record<string, unknown>;
+    output?: unknown;
+  };
+  const message = (part: Part) => ({
+    id: "assistant",
+    role: "assistant",
+    parts: [part],
+  });
+
+  /** Text and tag from the live producer and the tool-handler producer. */
+  const produced = (part: Part) => {
+    const pick = (item?: SidebarTerminal | null) =>
+      item ? { command: item.command, source: item.commandSource } : null;
+    const live = extractAllSidebarContent(
+      [message(part)] as Parameters<typeof extractAllSidebarContent>[0],
+      true,
+    ).find((item) => "toolCallId" in item) as SidebarTerminal | undefined;
+    const isShellTool = part.type === "tool-shell";
+    const handler =
+      part.type === "tool-interact_terminal_session"
+        ? undefined
+        : computeShellTerminalBlock({
+            isShellTool,
+            shellInput: isShellTool
+              ? (part.input as ShellToolInput)
+              : undefined,
+            shellOutput: undefined,
+            isExecuting: false,
+            hasResult: true,
+            toolCallId: part.toolCallId,
+            legacyCommand: isShellTool
+              ? undefined
+              : (part.input.command as string | undefined),
+          }).sidebarContent;
+    return { live: pick(live), handler: pick(handler) };
+  };
+  const tagged = (command: string, source?: string) => ({ command, source });
+  const shell = (input: Record<string, unknown>): Part => ({
+    type: "tool-shell",
+    toolCallId: "call",
+    state: "output-available",
+    input,
+    output: { output: "" },
+  });
+  const legacy = (type: string, input: Record<string, unknown>): Part => ({
+    type: `tool-${type}`,
+    toolCallId: "call",
+    state: "output-available",
+    input,
+    output: { result: { output: "" } },
+  });
+
+  it.each([
+    [
+      "brief-only exec",
+      shell({ action: "exec", brief: BRIEF }),
+      tagged(BRIEF, "brief"),
+      tagged(BRIEF, "brief"),
+    ],
+    [
+      "real open with a brief",
+      shell({ action: "exec", command: OPEN, brief: "Open the site" }),
+      tagged(OPEN, "command"),
+      tagged(OPEN, "command"),
+    ],
+    [
+      // The live producer shows the command; the handler shows the brief.
+      "interactive view with both fields",
+      shell({ action: "view", session: "s1", command: OPEN, brief: BRIEF }),
+      tagged(OPEN, "command"),
+      tagged(BRIEF, "interactive_brief"),
+    ],
+    [
+      // Equal text still records the field each producer chose.
+      "interactive view whose brief equals its command",
+      shell({ action: "view", session: "s1", command: OPEN, brief: OPEN }),
+      tagged(OPEN, "command"),
+      tagged(OPEN, "interactive_brief"),
+    ],
+    [
+      "interactive brief-only send",
+      shell({ action: "send", session: "s1", input: "q\n", brief: BRIEF }),
+      tagged(BRIEF, "interactive_brief"),
+      tagged(BRIEF, "interactive_brief"),
+    ],
+    [
+      "interactive label",
+      shell({ action: "kill", session: "s1" }),
+      null,
+      tagged("kill"),
+    ],
+    [
+      "legacy open",
+      legacy("run_terminal_cmd", { command: OPEN }),
+      tagged(OPEN, "command"),
+      tagged(OPEN, "command"),
+    ],
+    [
+      "legacy empty-command brief",
+      legacy("run_terminal_cmd", { command: "", brief: BRIEF }),
+      tagged(BRIEF, "brief"),
+      null,
+    ],
+    [
+      "legacy interactive brief",
+      legacy("interact_terminal_session", {
+        action: "send",
+        session: "s1",
+        input: "q\n",
+        brief: BRIEF,
+      }),
+      tagged(BRIEF, "interactive_brief"),
+      null,
+    ],
+    [
+      // Formatted keystrokes read like a command but are not one.
+      "legacy formatted send input",
+      legacy("interact_terminal_session", {
+        action: "send",
+        session: "s1",
+        input: `${OPEN}\n`,
+      }),
+      tagged(OPEN),
+      null,
+    ],
+  ] as Array<
+    [
+      string,
+      Part,
+      ReturnType<typeof tagged> | null,
+      ReturnType<typeof tagged> | null,
+    ]
+  >)(
+    "tags the %s at the producer that chose it",
+    (_name, part, live, handler) => {
+      expect(produced(part)).toEqual({ live, handler });
+    },
+  );
 });

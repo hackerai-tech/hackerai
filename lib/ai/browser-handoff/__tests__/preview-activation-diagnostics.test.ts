@@ -4,6 +4,8 @@ import {
   PREVIEW_CLIENT_CONTEXT_KEY,
   PREVIEW_DIAGNOSTIC_VERSION_PARAM,
   PREVIEW_READER_PARAM,
+  PREVIEW_TEXT_SOURCE_PARAM,
+  PREVIEW_TEXT_SOURCES,
   parsePreviewClientContext,
   previewActivationMask,
   previewCaptureUrl,
@@ -288,6 +290,104 @@ describe("capture URL", () => {
       );
     },
   );
+});
+
+describe("text-source add-on", () => {
+  const params = (url: string) =>
+    new URL(url, "https://app.example").searchParams;
+  const addOn = (value: string): Array<[string, string]> => [
+    [PREVIEW_TEXT_SOURCE_PARAM, value],
+  ];
+  it("round-trips each closed value and keeps the v1 prefix legacy readers parse", () => {
+    for (const source of PREVIEW_TEXT_SOURCES)
+      for (const liveSelection of [true, false]) {
+        const url = previewCaptureUrl(ENDPOINT, true, 71, READER, false, {
+          source,
+          liveSelection,
+        });
+        expect(JSON.parse(parsePreviewClientContext(params(url))!)).toEqual([
+          1,
+          71,
+          READER,
+          [1, source, liveSelection],
+        ]);
+      }
+    // Older servers read these keys unchanged and ignore the add-on.
+    const url = params(
+      previewCaptureUrl(ENDPOINT, false, 9, READER, false, {
+        source: "brief",
+        liveSelection: false,
+      }),
+    );
+    expect(
+      [
+        PREVIEW_DIAGNOSTIC_VERSION_PARAM,
+        PREVIEW_ACTIVATION_PARAM,
+        PREVIEW_READER_PARAM,
+      ].map((name) => url.getAll(name)),
+    ).toEqual([["1"], ["9"], [READER]]);
+  });
+
+  it("is sent only beside the browserRequested bit and a boolean selection", () => {
+    const sent = (mask: number, source: unknown, liveSelection: unknown) =>
+      params(
+        previewCaptureUrl(ENDPOINT, true, mask, READER, false, {
+          source,
+          liveSelection,
+        }),
+      ).get(PREVIEW_TEXT_SOURCE_PARAM);
+    expect(sent(8, "command", true)).toBeNull();
+    expect(sent(1, "command", undefined)).toBeNull();
+    expect(sent(1, undefined, true)).toBe("1.unavailable.1");
+    expect(sent(1, "PRIVATE_COMMAND", false)).toBe("1.unavailable.0");
+    expect(
+      params(previewCaptureUrl(ENDPOINT, true, 1, READER)).has(
+        PREVIEW_TEXT_SOURCE_PARAM,
+      ),
+    ).toBe(false);
+  });
+
+  it("drops a forged add-on beside a mask without the browserRequested bit", () => {
+    expect(
+      parsePreviewClientContext(query([...group("8"), ...addOn("1.brief.1")])),
+    ).toBe(`[1,8,"${READER}"]`);
+  });
+
+  it("never rescues an invalid base", () => {
+    expect(
+      parsePreviewClientContext(query([...group("24"), ...addOn("1.brief.1")])),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["duplicate identical", [...addOn("1.brief.1"), ...addOn("1.brief.1")]],
+    ["conflicting duplicate", [...addOn("1.brief.1"), ...addOn("1.command.1")]],
+    ["future version", addOn("2.brief.1")],
+    ["noncanonical selection", addOn("1.brief.true")],
+    ["whitespace", addOn("1.brief.1 ")],
+    ["prototype key", addOn("__proto__")],
+    ["forged content", addOn("1.PRIVATE_COMMAND.1")],
+    ["oversized", addOn(`1.brief.${"1".repeat(10_000)}`)],
+  ] as Array<[string, Array<[string, string]>]>)(
+    "preserves the original v1 base for a %s add-on",
+    (_name, entries) => {
+      const tuple = parsePreviewClientContext(query([...group(), ...entries]));
+      expect(tuple).toBe(`[1,39,"${READER}"]`);
+      for (const canary of CANARIES) expect(tuple).not.toContain(canary);
+    },
+  );
+
+  it("preserves the base if only the add-on cannot be read", () => {
+    const real = query(group("1"));
+    const hostile = {
+      getAll: (name: string) => {
+        if (name === PREVIEW_TEXT_SOURCE_PARAM)
+          throw new Error("PRIVATE_COOKIE");
+        return real.getAll(name);
+      },
+    } as unknown as URLSearchParams;
+    expect(parsePreviewClientContext(hostile)).toBe(`[1,1,"${READER}"]`);
+  });
 });
 
 describe("bounded field append", () => {
@@ -679,6 +779,65 @@ describe("actual phLogger to OTLP export", () => {
       expect(withoutTimestamp(attributes)).toEqual(withoutTimestamp(legacy));
     },
   );
+
+  it("carries the text source inside the same attribute beside the largest missing-socket context", async () => {
+    const fields = routeFields({
+      ...captureWith(
+        COMMAND_EXIT_CAPTURE_KEYS.filter(
+          (key) => !EXIT_3_OR_5_CAPTURE_KEYS.includes(key),
+        ),
+      ),
+      capture_open_socket_directory_v1: "different_directory",
+    });
+    const legacy = await exported(fields, `${ENDPOINT}?fresh=1`);
+    const attributes = await exported(
+      fields,
+      `${previewCaptureUrl(ENDPOINT, true, 1, READER, false, {
+        source: "interactive_brief",
+        liveSelection: false,
+      })}&cmd=PRIVATE_COMMAND&note=PRIVATE_NOTE`,
+    );
+    expect(
+      attributes.filter(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY),
+    ).toEqual([
+      {
+        key: PREVIEW_CLIENT_CONTEXT_KEY,
+        value: {
+          stringValue: `[1,1,"${READER}",[1,"interactive_brief",false]]`,
+        },
+      },
+    ]);
+    expect(attributes).toHaveLength(legacy.length + 1);
+    expect(
+      withoutTimestamp(
+        attributes.filter(({ key }) => key !== PREVIEW_CLIENT_CONTEXT_KEY),
+      ),
+    ).toEqual(withoutTimestamp(legacy));
+    expectBaselineSurvives(attributes, fields);
+  });
+
+  it("omits the tuple and its add-on together at exhausted headroom", async () => {
+    const deadlineFieldCount = Object.keys(
+      routeFields(captureWith(DEADLINE_CAPTURE_KEYS)),
+    ).length;
+    const fields = routeFields(
+      captureWith([
+        ...DEADLINE_CAPTURE_KEYS,
+        ...OTHER_STAGE_CAPTURE_KEYS.slice(0, 71 - deadlineFieldCount),
+      ]),
+    );
+    expect(Object.keys(fields)).toHaveLength(71);
+    const legacy = await exported(fields, `${ENDPOINT}?fresh=1`);
+    const attributes = await exported(
+      fields,
+      previewCaptureUrl(ENDPOINT, true, 1, READER, false, {
+        source: "brief",
+        liveSelection: true,
+      }),
+    );
+    expect(JSON.stringify(attributes)).not.toContain("brief");
+    expect(withoutTimestamp(attributes)).toEqual(withoutTimestamp(legacy));
+  });
 
   it("keeps unrelated private values out while a valid group is delivered", async () => {
     const fields = routeFields(

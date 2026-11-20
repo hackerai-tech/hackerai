@@ -1,4 +1,9 @@
-import { SidebarContent, SidebarFile, WebSearchResult } from "@/types/chat";
+import {
+  SidebarContent,
+  SidebarFile,
+  SidebarTerminal,
+  WebSearchResult,
+} from "@/types/chat";
 import {
   buildNotesSidebarContent,
   NOTES_TOOL_NAMES,
@@ -10,6 +15,7 @@ import {
   getShellExitCode,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
+  type ShellToolInput,
 } from "@/app/components/tools/shell-tool-utils";
 import {
   createFindingFailureContent,
@@ -43,6 +49,24 @@ const STREAMS_DURING_INPUT = new Set<string>([
   "tool-file_edit",
   "tool-file_write",
 ]);
+
+/**
+ * Live terminal text: the command, then the brief, then the caller's label.
+ * The source records which field was chosen; a label carries none.
+ */
+const terminalCommandText = (
+  input: Pick<ShellToolInput, "command" | "brief">,
+  interactive: boolean,
+  label: string,
+): Pick<SidebarTerminal, "command" | "commandSource"> =>
+  input.command
+    ? { command: input.command, commandSource: "command" }
+    : input.brief
+      ? {
+          command: input.brief,
+          commandSource: interactive ? "interactive_brief" : "brief",
+        }
+      : { command: label };
 
 const getWebSearchQuery = (input: unknown): string => {
   if (!input || typeof input !== "object") return "";
@@ -204,11 +228,13 @@ export function extractSidebarContentFromMessage(
             ? sendInput.map((t) => formatSendInput(t)).join(" ")
             : formatSendInput(sendInput)
           : "";
-      const command =
-        part.input.command ||
-        part.input.brief ||
-        sendDisplay ||
-        (action === "wait" ? "" : action);
+      // Text and its diagnostic source are chosen together; formatted send
+      // input and action labels carry no source.
+      const { command, commandSource } = terminalCommandText(
+        part.input,
+        isInteractiveShellAction(action),
+        sendDisplay || (action === "wait" ? "" : action),
+      );
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";
@@ -263,6 +289,7 @@ export function extractSidebarContentFromMessage(
         : undefined;
       contentList.push({
         command,
+        ...(commandSource && { commandSource }),
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
@@ -283,7 +310,11 @@ export function extractSidebarContentFromMessage(
 
     // Shell tool (new interactive PTY-based shell)
     if (part.type === "tool-shell" && part.input) {
-      const command = part.input.command || part.input.brief || "";
+      const { command, commandSource } = terminalCommandText(
+        part.input,
+        isInteractiveShellAction(part.input.action),
+        "",
+      );
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
         errorText: part.errorText,
@@ -320,6 +351,7 @@ export function extractSidebarContentFromMessage(
 
       contentList.push({
         command,
+        ...(commandSource && { commandSource }),
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,

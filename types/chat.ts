@@ -276,10 +276,19 @@ export interface SidebarFile {
   previewError?: string;
 }
 
+/** Which tool input field a producer chose as `SidebarTerminal.command`. */
+export type SidebarTerminalCommandSource =
+  "command" | "brief" | "interactive_brief";
+
 export interface SidebarTerminal {
   /** One explicit user click; discarded when the sidebar selection closes. */
   browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
+  /**
+   * Diagnostic provenance set by the producer that chose `command`; absent
+   * for labels, formatted send input or older producers. Never affects UI.
+   */
+  commandSource?: SidebarTerminalCommandSource;
   output: string;
   isExecuting: boolean;
   /** Structured process exit code, available after command completion. */

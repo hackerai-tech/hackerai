@@ -779,6 +779,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 browserRequested={requestsAgentBrowserPreview(
                   resolvedTerminal?.command ?? "",
                 )}
+                browserRequestSource={resolvedTerminal?.commandSource}
                 runActive={status === "streaming" || status === "submitted"}
                 onJumpToLive={handleJumpToLive}
               />
