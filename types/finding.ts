@@ -29,6 +29,8 @@ export interface FindingSummary {
   created_at: number;
   project_id?: string;
   evidence_status?: import("@/lib/findings/evidence-status").FindingEvidenceStatus;
+  /** Saved closure or latest material correction; absent when none was recorded. */
+  disposition?: import("@/lib/findings/disposition").FindingDisposition;
 }
 
 export interface FindingDetailRecord extends FindingSummary {

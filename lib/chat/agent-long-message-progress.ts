@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@/types";
+import { isContextUsagePart } from "@/lib/chat/context-pressure";
 
 const getAgentLongPartProgressFingerprint = (part: unknown): string => {
   if (typeof part !== "object" || part === null) return String(part);
@@ -40,7 +41,8 @@ const getAgentLongPartProgressFingerprint = (part: unknown): string => {
  * transcript or a potentially large tool result on every streamed part. Agent
  * progress is append-oriented, so the latest message id, part count, and a
  * shallow latest-part signature are sufficient to reset the completion
- * poller's quiet timer.
+ * poller's quiet timer. A context-usage snapshot is display diagnostics that
+ * replaces itself, so it is neither counted nor treated as the latest part.
  */
 export const getAgentLongMessageProgressFingerprint = (
   messages: ChatMessage[],
@@ -48,10 +50,15 @@ export const getAgentLongMessageProgressFingerprint = (
   const latestMessage = messages.at(-1);
   if (!latestMessage) return "";
 
-  const parts = latestMessage.parts ?? [];
-  const latestPart = parts.at(-1);
+  let partCount = 0;
+  let latestPart: ChatMessage["parts"][number] | undefined;
+  for (const part of latestMessage.parts ?? []) {
+    if (isContextUsagePart(part)) continue;
+    partCount += 1;
+    latestPart = part;
+  }
 
-  return `${latestMessage.id}:${latestMessage.role}:${parts.length}:${
+  return `${latestMessage.id}:${latestMessage.role}:${partCount}:${
     latestPart === undefined
       ? "empty"
       : getAgentLongPartProgressFingerprint(latestPart)

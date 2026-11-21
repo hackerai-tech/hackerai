@@ -26,6 +26,8 @@ import {
   previewActivationMask,
   previewCaptureUrl,
 } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
+import type { SidebarTerminalCommandSource } from "@/types/chat";
+import type { AgentBrowserPreviewIntent } from "@/lib/utils/agent-browser-command";
 import {
   readBrowserRelay,
   sendBrowserRelayInput,
@@ -48,6 +50,32 @@ type BrowserInput =
 
 const FRAME_STALE_MS = 10_000;
 const FRAME_REFRESH_MS = 4_000;
+
+/**
+ * Only a negotiated frameless 202 deferral: the unchanged WAIT body (no reason
+ * key) when WAIT was requested, or reason "open" when OPEN was requested.
+ * Anything else stays a real failure.
+ */
+function refreshDeferralReason(
+  response: Response,
+  data: unknown,
+): "wait" | "open" | null {
+  if (
+    response.status !== 202 ||
+    typeof data !== "object" ||
+    data === null ||
+    Array.isArray(data) ||
+    (data as Record<string, unknown>).refreshDeferred !== true ||
+    (data as Record<string, unknown>).state !== "agent" ||
+    Object.prototype.hasOwnProperty.call(data, "frame")
+  )
+    return null;
+  if (!Object.prototype.hasOwnProperty.call(data, "refreshDeferredReason"))
+    return "wait";
+  return (data as Record<string, unknown>).refreshDeferredReason === "open"
+    ? "open"
+    : null;
+}
 
 class BrowserRequestError extends Error {
   constructor(
@@ -99,6 +127,8 @@ export function AgentBrowserPreview({
   agentId,
   liveSelection,
   browserRequested = false,
+  browserRequestSource,
+  browserRequestIntent,
   takeoverRequest,
   onTakeoverRequestConsumed,
   runActive = false,
@@ -111,6 +141,10 @@ export function AgentBrowserPreview({
   agentId: string;
   liveSelection: boolean;
   browserRequested?: boolean;
+  /** Diagnostic-only producer tag of the text that set browserRequested. */
+  browserRequestSource?: SidebarTerminalCommandSource;
+  /** Diagnostic-only closed shape of the same text's browser invocations. */
+  browserRequestIntent?: AgentBrowserPreviewIntent | null;
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
@@ -150,6 +184,13 @@ export function AgentBrowserPreview({
   );
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
+  // The latest passive refresh yielded to the Agent's active browser WAIT, or
+  // its status lookup was queued behind the Agent's still-running OPEN. It
+  // never renews the frame's age or enables input; it only replaces the
+  // disconnected wording while the server still reports that kind.
+  const [refreshDeferred, setRefreshDeferred] = useState<
+    "wait" | "open" | null
+  >(null);
   const previewHealthRef = useRef({ previewState, frameSeenAt });
   useLayoutEffect(() => {
     previewHealthRef.current = { previewState, frameSeenAt };
@@ -276,6 +317,26 @@ export function AgentBrowserPreview({
   useLayoutEffect(() => {
     activationMaskRef.current = activationMask;
   }, [activationMask]);
+  // Sent only beside the browserRequested bit (an absent tag is reported as
+  // unavailable); read at dispatch like the mask so it never restarts polling.
+  // The intent travels only for a live command source.
+  const textSourceRef = useRef({
+    source: browserRequestSource,
+    liveSelection,
+    intent: browserRequestIntent,
+  });
+  useLayoutEffect(() => {
+    textSourceRef.current = {
+      source: browserRequestSource,
+      liveSelection,
+      intent: browserRequestIntent,
+    };
+  }, [browserRequestSource, liveSelection, browserRequestIntent]);
+  // Read at dispatch like the mask, so a state change never restarts polling.
+  const sessionStateRef = useRef(session?.state);
+  useLayoutEffect(() => {
+    sessionStateRef.current = session?.state;
+  }, [session?.state]);
 
   useLayoutEffect(() => {
     onVisibilityChange?.(showPreview);
@@ -301,6 +362,7 @@ export function AgentBrowserPreview({
     lastFreshFrameAt.current = 0;
     frameEpoch.current++;
     setPreviewState("loading");
+    setRefreshDeferred(null);
     setExitOpen(false);
     let savedRequestId: string | null = null;
     try {
@@ -372,8 +434,26 @@ export function AgentBrowserPreview({
     [endpoint],
   );
 
+  const effectiveState =
+    session &&
+    (((session.state === "human" || session.state === "claiming") &&
+      (session.grantExpiresAt ?? 0) <= now) ||
+      (session.state === "resuming" && session.updatedAt + 30_000 <= now))
+      ? "recovery"
+      : session?.state;
+  // A pending TAKE has its own capture. Suspend passive reads during the
+  // transition, with the last frame retaining its original age.
+  const previewPollingSuspended =
+    takingControl || (!grant && effectiveState === "claiming");
+
   useEffect(() => {
-    if (!showPreview || !endpoint || !activeSessionId) return;
+    if (
+      !showPreview ||
+      !endpoint ||
+      !activeSessionId ||
+      previewPollingSuspended
+    )
+      return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -398,6 +478,13 @@ export function AgentBrowserPreview({
       }
       const epoch = frameEpoch.current;
       let captureFailed = false;
+      // Only a passive refresh while the Agent drives the browser may yield to
+      // its active WAIT or OPEN; the server re-checks the state and run itself.
+      const canDeferRefresh =
+        fresh &&
+        !relayActive &&
+        !grantRef.current &&
+        sessionStateRef.current === "agent";
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
@@ -407,6 +494,9 @@ export function AgentBrowserPreview({
             fresh,
             activationMaskRef.current,
             process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT,
+            canDeferRefresh,
+            textSourceRef.current,
+            canDeferRefresh,
           ),
           {
             cache: "no-store",
@@ -418,7 +508,14 @@ export function AgentBrowserPreview({
         // A stream/viewport response arriving during capture is newer than
         // this request. Its image and connection state must win.
         if (stopped || frameEpoch.current !== epoch) return;
-        if (!response.ok || !data.frame) {
+        // No new image: a deferral keeps the current frame, its age and input
+        // rules, and retries the strict screenshot at the normal cadence.
+        const deferred = canDeferRefresh
+          ? refreshDeferralReason(response, data)
+          : null;
+        setRefreshDeferred(deferred);
+        if (deferred) return;
+        if (!response.ok || response.status === 202 || !data.frame) {
           captureFailed = true;
           const transient =
             response.status >= 500 ||
@@ -435,6 +532,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped && frameEpoch.current === epoch) {
           captureFailed = true;
+          setRefreshDeferred(null);
           if (!relayActive) setPreviewState("disconnected");
         }
       } finally {
@@ -460,6 +558,7 @@ export function AgentBrowserPreview({
     showPreview,
     endpoint,
     activeSessionId,
+    previewPollingSuspended,
     grant,
     relayUrl,
     relayReconnect,
@@ -657,13 +756,6 @@ export function AgentBrowserPreview({
     previewState !== "ready" ||
     now - frameSeenAt > FRAME_STALE_MS;
   const human = !!grant && !!session;
-  const effectiveState =
-    session &&
-    (((session.state === "human" || session.state === "claiming") &&
-      (session.grantExpiresAt ?? 0) <= now) ||
-      (session.state === "resuming" && session.updatedAt + 30_000 <= now))
-      ? "recovery"
-      : session?.state;
   // Tool history does not change this live, owner-scoped browser session.
   const canTake =
     !frameStale &&
@@ -1222,6 +1314,12 @@ export function AgentBrowserPreview({
 
   if (!showPreview) return null;
 
+  // Wording only: frameStale, its age and every input rule stay unchanged. Only
+  // a real WAIT is described as waiting; an OPEN uses the existing loading words.
+  const deferredKind =
+    !human && effectiveState === "agent" ? refreshDeferred : null;
+  const waitDeferred = deferredKind === "wait";
+  const showLoading = deferredKind === "open" || previewState === "loading";
   const statusLabel = !session
     ? session === undefined
       ? "Checking browser…"
@@ -1235,9 +1333,11 @@ export function AgentBrowserPreview({
         : effectiveState === "resuming"
           ? "Resuming Agent…"
           : frameStale
-            ? previewState === "loading"
-              ? "Connecting browser…"
-              : "Preview unavailable"
+            ? waitDeferred
+              ? "Agent is waiting…"
+              : showLoading
+                ? "Connecting browser…"
+                : "Preview unavailable"
             : effectiveState === "recovery"
               ? "Paused for handoff"
               : effectiveState === "human"
@@ -1510,13 +1610,15 @@ export function AgentBrowserPreview({
         )}
         {session && frameStale && !takingControl && (
           <div className="absolute inset-0 flex min-h-24 items-center justify-center bg-background/80 px-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
-            {previewState === "loading"
-              ? "Waiting for Agent browser…"
-              : previewState === "closed"
-                ? "Browser session closed"
-                : previewState === "stale"
-                  ? "Browser changed. Waiting for a current frame…"
-                  : "Browser preview disconnected. Input is paused."}
+            {waitDeferred
+              ? "The Agent is waiting on this page. The preview refreshes when it continues."
+              : showLoading
+                ? "Waiting for Agent browser…"
+                : previewState === "closed"
+                  ? "Browser session closed"
+                  : previewState === "stale"
+                    ? "Browser changed. Waiting for a current frame…"
+                    : "Browser preview disconnected. Input is paused."}
           </div>
         )}
       </div>

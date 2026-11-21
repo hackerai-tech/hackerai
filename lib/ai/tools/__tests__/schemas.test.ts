@@ -313,6 +313,14 @@ describe("agent tool schema descriptions", () => {
       "a detached PID is not a reusable terminal session",
     );
     expect(fullAccessDescription).toContain("append ` | cat` to the command");
+    expect(fullAccessDescription).toContain(
+      "Use separate calls for critical install, database configuration, and service startup steps",
+    );
+    expect(fullAccessDescription).toContain(
+      "check `result.status` and `result.exitCode`, then verify the actual postcondition",
+    );
+    expect(fullAccessDescription).toContain("can mask an earlier failure");
+    expect(fullAccessDescription).not.toContain("npm install && npm start");
 
     const approvalGatedTool = createRunTerminalCmdToolSchema({
       approvalGated: true,
@@ -340,6 +348,24 @@ describe("agent tool schema descriptions", () => {
     expect(approvalGatedDescription).not.toContain(
       "append ` | cat` to the command",
     );
+    expect(approvalGatedDescription).not.toContain(
+      "can mask an earlier failure",
+    );
+    for (const description of [
+      fullAccessDescription,
+      approvalGatedDescription,
+    ]) {
+      expect(description).toContain(
+        "start it with `is_background` false and a short initial `timeout`",
+      );
+      expect(description).toContain("check readiness in a separate call");
+      expect(description).toContain(
+        "Do not use `nohup` or a shell `&` when you need a reusable session",
+      );
+      expect(description).toContain(
+        "a detached PID is not a reusable terminal session",
+      );
+    }
     expect(getInputShape(approvalGatedTool)).toHaveProperty("justification");
     expect(getInputShape(approvalGatedTool)).toHaveProperty("prefix_rule");
     expect(getInputShape(approvalGatedTool).justification).toHaveProperty(

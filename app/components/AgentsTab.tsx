@@ -13,6 +13,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
+import { AgentInputNotificationSetting } from "@/app/components/AgentInputNotificationSetting";
 
 const AgentsTab = () => {
   const {
@@ -72,6 +73,8 @@ const AgentsTab = () => {
           </div>
         </div>
       </div>
+
+      <AgentInputNotificationSetting />
 
       {subscription !== "free" && <CloudNetworkSettings />}
 

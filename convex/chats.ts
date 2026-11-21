@@ -602,6 +602,8 @@ export const getChatByIdFromClient = query({
         activeAgentApprovalRequestValidator,
       ),
       active_agent_user_wait: v.optional(clientAgentUserWaitValidator),
+      // Absent when this chat's Agent compactions were never tracked.
+      agent_compaction_count: v.optional(v.number()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       project_id: v.optional(v.id("projects")),
@@ -638,11 +640,15 @@ export const getChatByIdFromClient = query({
         objective_checkpoint: _privateObjectiveCheckpoint,
         active_agent_user_wait: activeUserWait,
         next_actions: _privateNextActions,
+        agent_compaction_tally: compactionTally,
 
         ...chatPublic
       } = chat;
       const clientChat = {
         ...chatPublic,
+        ...(compactionTally
+          ? { agent_compaction_count: compactionTally.total }
+          : {}),
         ...(activeUserWait
           ? {
               active_agent_user_wait: {
@@ -763,6 +769,7 @@ export const getChatById = query({
         codex_thread_id: _legacy,
         objective_checkpoint: _privateObjectiveCheckpoint,
         next_actions: _privateNextActions,
+        agent_compaction_tally: _privateCompactionTally,
         ...chatPublic
       } = chat;
       return chatPublic;
@@ -1260,6 +1267,7 @@ export const getUserChats = query({
           {
             objective_checkpoint: _privateObjectiveCheckpoint,
             next_actions: _privateNextActions,
+            agent_compaction_tally: _privateCompactionTally,
             active_agent_user_wait: privateUserWait,
             ...chat
           },
@@ -1972,6 +1980,59 @@ export const setActiveTriggerRun = mutation({
   },
 });
 
+/**
+ * Records an Agent run's absolute count of completed compactions. Only the
+ * chat's active run may write. A repeated or older snapshot of that run is a
+ * no-op, and a new run adds only its own count, so delivery order and retries
+ * cannot double count. Does not touch `update_time`.
+ */
+export const recordAgentCompactionTally = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    runId: v.string(),
+    completedCount: v.number(),
+  },
+  returns: v.union(
+    v.literal("recorded"),
+    v.literal("unchanged"),
+    v.literal("stale"),
+    v.literal("not_found"),
+    v.literal("deleting"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (!Number.isSafeInteger(args.completedCount) || args.completedCount < 0)
+      throw new Error("Invalid completed compaction count");
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) return "not_found" as const;
+    await assertUserCanAccessChatHistory(ctx, chat.user_id);
+    if (
+      chat.deletion_started_at !== undefined ||
+      (await isUserDeletionFenced(ctx.db, chat.user_id))
+    )
+      return "deleting" as const;
+    if (chat.active_trigger_run_id !== args.runId) return "stale" as const;
+
+    const tally = chat.agent_compaction_tally;
+    const sameRun = tally?.runId === args.runId;
+    const delta = args.completedCount - (sameRun ? tally.runCount : 0);
+    if (delta < 0) return "stale" as const;
+    if (delta === 0 && sameRun) return "unchanged" as const;
+    await ctx.db.patch(chat._id, {
+      agent_compaction_tally: {
+        total: (tally?.total ?? 0) + delta,
+        runId: args.runId,
+        runCount: args.completedCount,
+      },
+    });
+    return "recorded" as const;
+  },
+});
+
 /** Only the current Trigger run may expose a reply wait in this chat. */
 export const setActiveAgentUserWait = mutation({
   args: {
@@ -2295,6 +2356,71 @@ export const getActiveTriggerRunsForUser = query({
       ),
       hasMore: chats.length > limit,
     };
+  },
+});
+
+/**
+ * Stable IDs for saved waits only. Notifications are generic, so this never
+ * exposes wait tokens, questions, approval targets, titles, or user IDs.
+ */
+function pendingAgentInputRequestIds(chat: Doc<"chats">): string[] {
+  const runId = chat.active_trigger_run_id;
+  if (
+    !runId ||
+    chat.canceled_at !== undefined ||
+    chat.deletion_started_at !== undefined
+  ) {
+    return [];
+  }
+  const requestIds: string[] = [];
+  const wait = chat.active_agent_user_wait;
+  // A submitting wait already has a reply; a different run's wait is stale.
+  if (wait?.status === "waiting" && wait.runId === runId) {
+    requestIds.push(JSON.stringify(["question", runId, wait.toolCallId]));
+  }
+  // Child-agent approvals keep their own sourceRunId but surface on this run.
+  const approvalId = chat.active_agent_approval_request?.approvalId;
+  if (chat.active_agent_approval_pending === true && approvalId) {
+    requestIds.push(JSON.stringify(["approval", runId, approvalId]));
+  }
+  return requestIds;
+}
+
+export const getPendingAgentInputNotifications = query({
+  args: {},
+  returns: v.array(v.object({ chatId: v.string(), requestId: v.string() })),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    try {
+      await assertUserCanAccessChatHistory(ctx, identity.subject);
+    } catch (error) {
+      if (
+        getConvexErrorCode(getConvexErrorData(error)) ===
+        CHAT_ACCESS_SUSPENDED_CODE
+      ) {
+        return [];
+      }
+      throw error;
+    }
+    if (await isUserDeletionFenced(ctx.db, identity.subject)) return [];
+
+    // Includes project chats: this index is keyed only by owner and run.
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", identity.subject).gt("active_trigger_run_id", ""),
+      )
+      .take(MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN);
+
+    return chats.flatMap((chat) =>
+      chat.user_id === identity.subject
+        ? pendingAgentInputRequestIds(chat).map((requestId) => ({
+            chatId: chat.id,
+            requestId,
+          }))
+        : [],
+    );
   },
 });
 

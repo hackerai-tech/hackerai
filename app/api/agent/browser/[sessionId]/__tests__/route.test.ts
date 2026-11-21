@@ -1,6 +1,7 @@
 import { after, type NextRequest } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   getActiveBrowserSessionName,
 } from "@/lib/ai/browser-handoff/server";
@@ -112,6 +113,12 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserPauseFailureContext: () => ({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "gate_busy",
+    pause_command_exit_code: 1,
+    pause_http_status: "none",
+  }),
   browserRelayStopFailureContext: (error: unknown) => mockStopContext(error),
   browserRelayRenewFailureContext: (error: unknown) => mockRenewContext(error),
   browserSandboxIdentityFailureContext: () => undefined,
@@ -126,6 +133,11 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   BrowserPreviewUnavailable: class extends Error {
     constructor(public state: string) {
       super(state);
+    }
+  },
+  BrowserPreviewRefreshDeferred: class extends Error {
+    constructor(public readonly reason: "wait" | "open" = "wait") {
+      super("Browser preview refresh deferred");
     }
   },
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
@@ -176,9 +188,11 @@ const jsonBody = (value: unknown) =>
     },
   });
 
+const previewRequestId = "iad1::qa123-1794060000000-abcdef123456";
+
 const preview = (
   fresh: boolean,
-  requestId = "iad1::qa123-1794060000000-abcdef123456",
+  requestId = previewRequestId,
   diagnosticQuery = "",
 ) =>
   get(
@@ -208,7 +222,181 @@ it.each([false, true])(
       fresh,
       undefined,
       expect.any(Function),
+      { recognizeClosed: true, observeStatusProgress: true },
     );
+  },
+);
+
+it("defers only a negotiated refresh on the active Agent browser", async () => {
+  mockFailure = "";
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred());
+
+  const response = await preview(true, undefined, "deferWait=1");
+
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({
+    state: "agent",
+    refreshDeferred: true,
+  });
+  expect(mockCapture.mock.calls[0].at(-1)).toEqual({
+    deferDuringWait: true,
+    recognizeClosed: true,
+    observeStatusProgress: true,
+  });
+  expect(getActiveBrowserSessionName).toHaveBeenCalledTimes(2);
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_refresh_deferral",
+    expect.objectContaining({
+      diagnostic_version: 1,
+      reason: "wait",
+      request_id: previewRequestId,
+    }),
+  );
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
+it("identifies a negotiated OPEN deferral without changing WAIT responses", async () => {
+  mockFailure = "";
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred("open"));
+
+  const response = await preview(true, undefined, "deferWait=1&deferOpen=1");
+
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({
+    state: "agent",
+    refreshDeferred: true,
+    refreshDeferredReason: "open",
+  });
+  expect(mockCapture.mock.calls[0].at(-1)).toEqual({
+    deferDuringWait: true,
+    deferDuringOpen: true,
+    recognizeClosed: true,
+    observeStatusProgress: true,
+  });
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_refresh_deferral",
+    expect.objectContaining({
+      diagnostic_version: 1,
+      reason: "open",
+      request_id: previewRequestId,
+    }),
+  );
+});
+
+it("keeps OPEN deferred when the diagnostic logger throws", async () => {
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred("open"));
+  jest.mocked(phLogger.info).mockImplementationOnce(() => {
+    throw new Error("Diagnostic logger unavailable");
+  });
+
+  const response = await preview(true, undefined, "deferOpen=1");
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({
+    state: "agent",
+    refreshDeferred: true,
+    refreshDeferredReason: "open",
+  });
+});
+
+it("keeps WAIT deferred without logging an unjoinable request ID", async () => {
+  mockState = "agent";
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred());
+  const response = await preview(true, "PRIVATE_REQUEST", "deferWait=1");
+  expect(response.status).toBe(202);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["wait", "deferWait=1"],
+  ["open", "deferOpen=1"],
+] as const)(
+  "does not acknowledge a %s deferral after the browser changes",
+  async (reason, query) => {
+    mockFailure = "";
+    mockState = "agent";
+    mockCapture.mockRejectedValueOnce(
+      new BrowserPreviewRefreshDeferred(reason),
+    );
+    jest
+      .mocked(getActiveBrowserSessionName)
+      .mockResolvedValueOnce("default")
+      .mockResolvedValueOnce("another-browser");
+
+    const response = await preview(true, undefined, query);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ state: "stale" });
+    expect(phLogger.info).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["wait", "deferOpen=1", "open"],
+  ["open", "deferWait=1", "wait"],
+  ["open", "deferOpen=1&deferOpen=1", "neither"],
+] as const)(
+  "keeps %s unavailable without its own valid negotiation (%s)",
+  async (reason, query, gate) => {
+    mockFailure = "";
+    mockState = "agent";
+    mockCapture.mockRejectedValueOnce(
+      new BrowserPreviewRefreshDeferred(reason),
+    );
+
+    const response = await preview(true, undefined, query);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({ capture_negotiated_deferrals_v1: gate }),
+    );
+  },
+);
+
+it("records only the closed negotiation result on an opted-in capture failure", async () => {
+  mockState = "agent";
+  const response = await preview(
+    true,
+    undefined,
+    "deferOpen=1&deferWait=1&target=PRIVATE_QUERY",
+  );
+  expect(response.status).toBe(503);
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).toMatchObject({
+    failure_stage: "capture_frame",
+    capture_negotiated_deferrals_v1: "both",
+  });
+  expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+});
+
+it.each([
+  ["agent", false, true, "deferWait=1"],
+  ["agent", true, false, "deferWait=1"],
+  ["agent", true, true, ""],
+  ["agent", true, true, "deferWait=1&deferWait=1"],
+  ["human", true, true, "deferWait=1"],
+  ["waiting", true, true, "deferWait=1"],
+  ["agent", false, true, "deferOpen=1"],
+  ["agent", true, false, "deferOpen=1"],
+  ["human", true, true, "deferOpen=1"],
+] as const)(
+  "keeps the existing capture path for %s, active=%s, fresh=%s, query=%s",
+  async (state, runActive, fresh, query) => {
+    mockFailure = "";
+    mockState = state;
+    mockRunActive = runActive;
+    const response = await preview(fresh, undefined, query);
+    expect(response.status).toBe(200);
+    expect(mockCapture.mock.calls[0].at(-1)).toEqual({
+      recognizeClosed: true,
+      observeStatusProgress: true,
+    });
+    expect(await response.json()).toMatchObject({ frame: { image: "fresh" } });
   },
 );
 
@@ -248,10 +436,16 @@ it.each([
         preview_state: state,
         browser_session_id: mockSessionId,
         fresh_requested: true,
-        request_id: "iad1::qa123-1794060000000-abcdef123456",
+        request_id: previewRequestId,
       }),
     );
     const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    if (failure === "capture")
+      expect(fields).toHaveProperty(
+        "capture_negotiated_deferrals_v1",
+        "neither",
+      );
+    else expect(fields).not.toHaveProperty("capture_negotiated_deferrals_v1");
     if (failure === "read-active")
       expect(fields).toMatchObject({
         active_session_read_diagnostic_version: 1,
@@ -536,6 +730,34 @@ const take = () =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+it("records the bounded pause result and aborts the same TAKE", async () => {
+  mockState = "agent";
+  mockPause.mockRejectedValueOnce(new Error("PRIVATE pause failure"));
+  const result = await take();
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+  expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
+    "beginTakeoverForBackend",
+    "abortTakeoverForBackend",
+  ]);
+  expect(mockPause).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay).not.toHaveBeenCalled();
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      action: "take",
+      failure_stage: "pause_browser",
+      pause_diagnostic_version: 1,
+      pause_error_kind: "gate_busy",
+      pause_command_exit_code: 1,
+    }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+});
 
 const heartbeat = () =>
   post(
@@ -891,12 +1113,59 @@ it("resizes the granted browser under the existing input lease", async () => {
     "default",
     390,
     844,
+    expect.any(Function),
   );
+  expect(phLogger.info).not.toHaveBeenCalled();
   expect(mockMutation).toHaveBeenCalledWith(
     "finishInputForBackend",
     expect.anything(),
   );
 });
+it.each(["resize_command", "capture_frame"] as const)(
+  "reports a viewport 503 from %s and releases the input lease",
+  async (phase) => {
+    mockFailure = "";
+    const diagnostic = {
+      viewport_diagnostic_version: 1,
+      viewport_failure_phase: phase,
+      viewport_error_kind: "command_exit",
+      viewport_command_exit_code: phase === "resize_command" ? 3 : 6,
+      ...(phase === "resize_command" && {
+        viewport_deadline_phase: "awaiting_response",
+      }),
+    };
+    mockResize.mockImplementationOnce(async (...args) => {
+      const observe = args[5];
+      if (typeof observe === "function") observe(diagnostic);
+      throw new Error("PRIVATE_VIEWPORT_ERROR");
+    });
+
+    const result = await resize(390, 844);
+    expect(result.status).toBe(503);
+    expect(await result.json()).toEqual({ state: "disconnected" });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action: "viewport",
+        failure_stage: "resize_viewport",
+        ...diagnostic,
+      }),
+    );
+    if (phase === "capture_frame")
+      expect(jest.mocked(phLogger.info).mock.calls[0][1]).not.toHaveProperty(
+        "viewport_deadline_phase",
+      );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+      "PRIVATE_VIEWPORT_ERROR",
+    );
+    expect(mockResize).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledWith(
+      "finishInputForBackend",
+      expect.anything(),
+    );
+  },
+);
 it.each([
   [239, 844],
   [390, 2561],

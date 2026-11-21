@@ -12,6 +12,7 @@ export function DisconnectedComputerNotice({
   onReconnect,
   reconnecting,
   reconnectInstructions,
+  confirmEnvironmentChange = false,
 }: {
   isNewChat: boolean;
   sandboxPreference: string;
@@ -19,27 +20,34 @@ export function DisconnectedComputerNotice({
   onReconnect: () => void;
   reconnecting: boolean;
   reconnectInstructions?: string;
+  confirmEnvironmentChange?: boolean;
 }) {
   const [showInstructions, setShowInstructions] = useState(false);
   return (
     <div
       role="status"
-      className="computer-reconnection-warning mb-2 rounded-lg border border-amber-500/25 px-3 py-2 text-sm text-foreground"
+      className="computer-reconnection-warning mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
     >
-      <p className="font-medium">Your computer is disconnected.</p>
-      <p>
-        {isNewChat
-          ? "Reconnect or choose another environment to start."
-          : "Reconnect it to continue this task."}
-      </p>
-      {!sandboxPreference.startsWith("desktop") &&
-        sandboxPreference !== "e2b" && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Select the runner whose connection ID matches the one printed in
-            your terminal. Older saved runner selections need to be reselected.
-          </p>
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">Your selected computer is disconnected.</p>
+        <p className="text-muted-foreground">
+          {isNewChat
+            ? "Reconnect or choose another environment to start."
+            : "Reconnect before sending more commands, or choose another environment."}
+        </p>
+        {!sandboxPreference.startsWith("desktop") &&
+          sandboxPreference !== "e2b" && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Select the runner whose connection ID matches the one printed in
+              your terminal. Older saved runner selections need to be
+              reselected.
+            </p>
+          )}
+        {showInstructions && reconnectInstructions && (
+          <p className="mt-1">{reconnectInstructions}</p>
         )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <Button
           type="button"
           size="sm"
@@ -56,11 +64,10 @@ export function DisconnectedComputerNotice({
           value={sandboxPreference}
           onChange={onSelect}
           triggerLabel="Choose another environment"
+          confirmEnvironmentChange={confirmEnvironmentChange}
+          menuAlign="end"
         />
       </div>
-      {showInstructions && reconnectInstructions && (
-        <p className="mt-2">{reconnectInstructions}</p>
-      )}
     </div>
   );
 }

@@ -63,12 +63,16 @@ const {
   deleteAllChatsForUser,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
+  getPendingAgentInputNotifications,
   setActiveAgentApprovalPending,
   setActiveAgentUserWait,
   claimAgentUserWaitReply,
   setActiveTriggerRun,
   replaceActiveTriggerRun,
   updateChat,
+  recordAgentCompactionTally,
+  getChatByIdFromClient,
+  getChatById,
 } = require("../chats") as typeof import("../chats");
 
 const makeCtx = (
@@ -1393,6 +1397,135 @@ it("admits the replacement after worker cleanup clears the observed session", as
   );
 });
 
+describe("Agent compaction tally", () => {
+  const makeChat = (fields: Record<string, unknown> = {}): any => ({
+    _id: "chat-doc",
+    id: "chat-1",
+    user_id: "user-1",
+    active_trigger_run_id: "run-1",
+    update_time: 100,
+    ...fields,
+  });
+  /** Applies each patch to `chat`, as Convex would within one transaction. */
+  const recordOn = (
+    chat: any,
+    runId: string,
+    completedCount: number,
+    deletionFenced = false,
+  ) => {
+    const { ctx, patch } = makeCtx(chat, deletionFenced);
+    patch.mockImplementation(async (_id: unknown, fields: any) => {
+      Object.assign(chat, fields);
+    });
+    return recordAgentCompactionTally.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat-1",
+      runId,
+      completedCount,
+    });
+  };
+
+  it("starts at zero for the active run without touching update_time", async () => {
+    const chat = makeChat();
+    const { ctx, patch } = makeCtx(chat);
+    await expect(
+      recordAgentCompactionTally.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        runId: "run-1",
+        completedCount: 0,
+      }),
+    ).resolves.toBe("recorded");
+    expect(patch).toHaveBeenCalledWith("chat-doc", {
+      agent_compaction_tally: { total: 0, runId: "run-1", runCount: 0 },
+    });
+  });
+
+  it("adds each run's count once despite repeated, older or late snapshots", async () => {
+    const chat = makeChat();
+    expect(await recordOn(chat, "run-1", 0)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 1)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 2)).toBe("recorded");
+    expect(await recordOn(chat, "run-1", 2)).toBe("unchanged");
+    expect(await recordOn(chat, "run-1", 1)).toBe("stale");
+    expect(chat.agent_compaction_tally.total).toBe(2);
+
+    chat.active_trigger_run_id = "run-2";
+    expect(await recordOn(chat, "run-1", 3)).toBe("stale");
+    expect(await recordOn(chat, "run-2", 0)).toBe("recorded");
+    expect(await recordOn(chat, "run-2", 1)).toBe("recorded");
+    expect(chat.agent_compaction_tally).toEqual({
+      total: 3,
+      runId: "run-2",
+      runCount: 1,
+    });
+    expect(chat.update_time).toBe(100);
+  });
+
+  it.each([
+    ["an inactive run", makeChat({ active_trigger_run_id: "run-2" }), false],
+    ["a detached chat", makeChat({ active_trigger_run_id: undefined }), false],
+    ["a deleting chat", makeChat({ deletion_started_at: 1 }), false],
+    ["a deleting account", makeChat(), true],
+  ])("does not write for %s", async (_label, chat, deletionFenced) => {
+    const { ctx, patch } = makeCtx(chat, deletionFenced);
+    await expect(
+      recordAgentCompactionTally.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        runId: "run-1",
+        completedCount: 1,
+      }),
+    ).resolves.toMatch(/^(stale|deleting)$/);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, Number.NaN])(
+    "rejects an invalid count %p",
+    async (completedCount) => {
+      const { ctx, patch } = makeCtx(makeChat());
+      await expect(
+        recordAgentCompactionTally.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          runId: "run-1",
+          completedCount,
+        }),
+      ).rejects.toThrow("Invalid completed compaction count");
+      expect(patch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("exposes only the count to the owner and keeps the tally private", async () => {
+    const tally = { total: 3, runId: "run-1", runCount: 1 };
+    const ownerRead = async (chat: any) => {
+      const { ctx } = makeCtx(chat);
+      ctx.auth = {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-1" }),
+      };
+      return getChatByIdFromClient.handler(ctx, { id: "chat-1" });
+    };
+
+    const tracked = await ownerRead(
+      makeChat({ agent_compaction_tally: tally }),
+    );
+    expect(tracked).toHaveProperty("agent_compaction_count", 3);
+    expect(tracked).not.toHaveProperty("agent_compaction_tally");
+
+    const untracked = await ownerRead(makeChat());
+    expect(untracked).not.toHaveProperty("agent_compaction_count");
+
+    const { ctx } = makeCtx(makeChat({ agent_compaction_tally: tally }));
+    const backend = await getChatById.handler(ctx, {
+      serviceKey: "key",
+      id: "chat-1",
+    });
+    expect(backend).not.toHaveProperty("agent_compaction_tally");
+  });
+});
+
 describe("Goal clock during durable user waits", () => {
   it("freezes until the matching wait releases, including duplicate acquisition and reply claim", async () => {
     const chat: any = {
@@ -1512,4 +1645,188 @@ it("keeps Goal time frozen when approval ends during browser takeover", async ()
   } finally {
     now.mockRestore();
   }
+});
+
+describe("getPendingAgentInputNotifications", () => {
+  const makeReaderCtx = (
+    chats: Record<string, unknown>[],
+    { subject = "user-1", fenced = false } = {},
+  ) => {
+    const indexCalls: Array<{ name: string; eq: unknown[]; gt: unknown[] }> =
+      [];
+    const take = jest.fn<any>().mockResolvedValue(chats);
+    const query = jest.fn((table: string) => ({
+      withIndex: (
+        name: string,
+        build?: (q: Record<string, jest.Mock>) => unknown,
+      ) => {
+        const call = { name, eq: [] as unknown[], gt: [] as unknown[] };
+        const q: Record<string, jest.Mock> = {};
+        q.eq = jest.fn((...args: unknown[]) => (call.eq.push(args), q));
+        q.gt = jest.fn((...args: unknown[]) => (call.gt.push(args), q));
+        build?.(q);
+        indexCalls.push(call);
+        return table === "user_deletion_fences"
+          ? { first: async () => (fenced ? { _id: "fence" } : null) }
+          : { take };
+      },
+    }));
+    const ctx = {
+      auth: {
+        getUserIdentity: async () => (subject ? { subject } : null),
+      },
+      db: { query },
+    } as any;
+    return { ctx, take, indexCalls };
+  };
+
+  const waitingChat = {
+    id: "chat-question",
+    user_id: "user-1",
+    title: "Private engagement title",
+    active_trigger_run_id: "run-1",
+    active_agent_user_wait: {
+      runId: "run-1",
+      toolCallId: "tool-1",
+      tokenId: "secret-wait-token",
+      status: "waiting",
+      questions: [{ question: "Private target question" }],
+    },
+  };
+
+  it("returns only stable chat and request IDs for saved questions and approvals", async () => {
+    const { ctx, take, indexCalls } = makeReaderCtx([
+      waitingChat,
+      {
+        id: "chat-approval",
+        user_id: "user-1",
+        // Project chats share the owner/run index and must be included.
+        project_id: "project-1",
+        active_trigger_run_id: "run-2",
+        active_agent_approval_pending: true,
+        active_agent_approval_request: {
+          approvalId: "approval-1",
+          toolCallId: "tool-2",
+          sourceRunId: "child-run",
+          target: "rm -rf /private/target",
+        },
+      },
+    ]);
+
+    const result = await getPendingAgentInputNotifications.handler(ctx, {});
+
+    expect(result).toEqual([
+      {
+        chatId: "chat-question",
+        requestId: JSON.stringify(["question", "run-1", "tool-1"]),
+      },
+      {
+        chatId: "chat-approval",
+        requestId: JSON.stringify(["approval", "run-2", "approval-1"]),
+      },
+    ]);
+    const serialized = JSON.stringify(result);
+    for (const secret of [
+      "secret-wait-token",
+      "Private target question",
+      "Private engagement title",
+      "rm -rf",
+      "user-1",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(indexCalls).toContainEqual({
+      name: "by_user_and_active_trigger_run",
+      eq: [["user_id", "user-1"]],
+      gt: [["active_trigger_run_id", ""]],
+    });
+    expect(take).toHaveBeenCalledWith(100);
+  });
+
+  it("gives distinct waits in one chat their own request IDs", async () => {
+    const { ctx } = makeReaderCtx([
+      {
+        ...waitingChat,
+        active_agent_approval_pending: true,
+        active_agent_approval_request: {
+          approvalId: "approval-2",
+          toolCallId: "tool-3",
+        },
+      },
+    ]);
+
+    const ids = (await getPendingAgentInputNotifications.handler(ctx, {})).map(
+      (row: { requestId: string }) => row.requestId,
+    );
+
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it.each([
+    [
+      "a reply is being submitted",
+      {
+        active_agent_user_wait: {
+          ...waitingChat.active_agent_user_wait,
+          status: "submitting",
+        },
+      },
+    ],
+    [
+      "the wait belongs to another run",
+      {
+        active_agent_user_wait: {
+          ...waitingChat.active_agent_user_wait,
+          runId: "old-run",
+        },
+      },
+    ],
+    ["the chat was canceled", { canceled_at: 1 }],
+    ["the chat is being deleted", { deletion_started_at: 1 }],
+    [
+      "an approval has no persisted ID",
+      {
+        active_agent_user_wait: undefined,
+        active_agent_approval_pending: true,
+        active_agent_approval_request: undefined,
+      },
+    ],
+  ])("omits a wait when %s", async (_case, fields) => {
+    const { ctx } = makeReaderCtx([{ ...waitingChat, ...fields }]);
+
+    await expect(
+      getPendingAgentInputNotifications.handler(ctx, {}),
+    ).resolves.toEqual([]);
+  });
+
+  it("returns nothing for signed-out, suspended, or deleting accounts", async () => {
+    const {
+      assertUserCanAccessChatHistory,
+    } = require("../lib/suspensionGuards");
+    const { ConvexError } = require("convex/values");
+
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat], { subject: "" }).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+
+    assertUserCanAccessChatHistory.mockRejectedValueOnce(
+      new ConvexError({ code: "CHAT_ACCESS_SUSPENDED" }),
+    );
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat]).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+
+    await expect(
+      getPendingAgentInputNotifications.handler(
+        makeReaderCtx([waitingChat], { fenced: true }).ctx,
+        {},
+      ),
+    ).resolves.toEqual([]);
+  });
 });

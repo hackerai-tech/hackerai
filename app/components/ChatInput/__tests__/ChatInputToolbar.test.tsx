@@ -310,4 +310,38 @@ describe("ChatInputToolbar", () => {
       "true",
     );
   });
+
+  it("shows one opted-in context meter just before the model selector in Agent composers", () => {
+    mockAuthUser({ id: "user_123" });
+    const contextMeter = {
+      chatId: "chat-1",
+      snapshot: { usedTokens: 124_000, compactionThresholdTokens: 200_000 },
+      completedCompactions: 2,
+    };
+    const meter = () => screen.queryByTestId("context-details-trigger");
+    const agentProps = {
+      ...defaultProps,
+      chatMode: "agent" as const,
+      contextMeter,
+    };
+
+    const { rerender } = render(<ChatInputToolbar {...agentProps} />);
+    expect(screen.getAllByTestId("context-details-trigger")).toHaveLength(1);
+    expect(meter()!.nextElementSibling).toBe(
+      screen.getByTestId("model-selector"),
+    );
+    expect(meter()).toHaveAccessibleName(
+      "Context: 62% of compaction threshold, 124k / 200k tokens",
+    );
+
+    for (const props of [
+      { ...agentProps, chatMode: "ask" as const },
+      { ...agentProps, isReplyingToAgent: true },
+      { ...agentProps, contextMeter: undefined },
+    ]) {
+      rerender(<ChatInputToolbar {...props} />);
+      expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+      expect(meter()).not.toBeInTheDocument();
+    }
+  });
 });

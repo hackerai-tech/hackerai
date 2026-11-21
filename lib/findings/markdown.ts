@@ -1,4 +1,6 @@
 import { findingEvidenceLabel } from "./evidence-status";
+import { findingStatusLabel, getFindingDisposition } from "./disposition";
+import { FINDING_CLOSURE_REASON_LABELS } from "./lifecycle";
 import type { FindingDetailRecord } from "@/types/finding";
 
 // Keep embedded fences in PoCs and patches from closing the report's code block.
@@ -13,6 +15,8 @@ const codeBlock = (code: string) => {
 
 /** Export the saved finding without another model call or sandbox execution. */
 export function renderFindingMarkdown(finding: FindingDetailRecord): string {
+  // Derived from the record itself so every export of the same saved state agrees.
+  const disposition = getFindingDisposition(finding);
   const sections: Array<[string, string | undefined]> = [
     [
       "Evidence basis",
@@ -33,9 +37,9 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
   const lines = [
     `# ${finding.title.replace(/[\r\n]+/g, " ")}`,
     "",
-    `Severity: ${finding.severity} (${finding.cvss_score})`,
+    `${finding.status === "closed" ? "Reported severity" : "Severity"}: ${finding.severity} (${finding.cvss_score})`,
     `CVSS: ${finding.cvss_vector}`,
-    `Status: ${finding.status}`,
+    `Status: ${findingStatusLabel(finding, disposition)} (${finding.status})`,
     `Assessment confidence: ${finding.confidence ?? "Not recorded"}`,
     `Target: ${finding.target}`,
     ...(finding.endpoint ? [`Endpoint: ${finding.endpoint}`] : []),
@@ -46,6 +50,20 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
     `Created: ${new Date(finding.created_at).toISOString()}`,
     `Updated: ${new Date(finding.updated_at).toISOString()}`,
   ];
+  if (finding.status === "closed") {
+    lines.push(
+      "",
+      "## Closure",
+      "",
+      `Reason: ${finding.closure_reason ? FINDING_CLOSURE_REASON_LABELS[finding.closure_reason] : "unspecified"}`,
+    );
+    if (finding.closure_context)
+      lines.push("", codeBlock(finding.closure_context));
+    if (finding.closed_at)
+      lines.push("", `Closed: ${new Date(finding.closed_at).toISOString()}`);
+  } else if (disposition?.kind === "corrected") {
+    lines.push("", "## Latest correction", "", codeBlock(disposition.reason));
+  }
   for (const [title, value] of sections) {
     if (value) lines.push("", `## ${title}`, "", value);
   }
@@ -88,17 +106,6 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
         codeBlock(location.fix_after),
       );
     }
-  }
-  if (finding.status === "closed") {
-    lines.push(
-      "",
-      "## Closure",
-      "",
-      `Reason: ${finding.closure_reason ?? "unspecified"}`,
-    );
-    if (finding.closure_context) lines.push("", finding.closure_context);
-    if (finding.closed_at)
-      lines.push("", `Closed: ${new Date(finding.closed_at).toISOString()}`);
   }
   if (finding.correction_history?.length) {
     lines.push(

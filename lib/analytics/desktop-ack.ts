@@ -41,11 +41,13 @@ import {
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
+  readDesktopStreamFenceRendererCancelDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
   type DesktopStreamFenceDiagnostic,
+  type DesktopStreamFenceRendererCancelDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -97,8 +99,11 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** The native stream fence's first origin; only joined to a valid
    * authorized `lifecycle_stop_unconfirmed` unknown class. Its cleanup
    * failure is reported only for `owner_stop_requested` on an acknowledged
-   * terminal. */
-  streamFence?: DesktopStreamFenceDiagnostic;
+   * terminal. Beside its `cancel_ipc` stop request source, a runless
+   * command's renderer cancel attempt pair rides the same carrier. A Darwin
+   * stop's source and final group probe ride it only beside `tree_unconfirmed`. */
+  streamFence?: DesktopStreamFenceDiagnostic &
+    Partial<DesktopStreamFenceRendererCancelDiagnostic>;
 };
 
 const emptyCounts = () => ({
@@ -387,19 +392,26 @@ export class DesktopAckTelemetry {
         result.invocationUnknown,
         invocationRejection,
       );
-      // Its cleanup pair joins only an `owner_stop_requested` origin on an
-      // acknowledged terminal, its taskkill group only that pair's
-      // `tree_unconfirmed` failure, its root report pair only that group's
-      // code, and its stop request source pair only that report beside the
-      // not-found code, of either class; its owner phase pair joins only a
-      // `cancel_wait_timeout` origin on an acknowledged terminal; otherwise
-      // the prior pairs alone, as before.
+      // The acknowledged terminal admits cleanup for a stop or owner timeout.
+      // A tree-only failure can add its Windows taskkill result. Only an
+      // explicit stop can add its first request source, beside a not-found
+      // report, or, exclusively without any Windows property, Darwin's stop
+      // source and final group probe beside its tree-only failure. A
+      // cancellation-wait timeout may instead add the owner phase.
       const streamFence = readDesktopStreamFenceDiagnostic(
         result.streamFence,
         invocationRejection,
         invocationUnknown,
         result.terminalAcknowledged === true,
       );
+      // Only beside that validated `cancel_ipc` source of a command without
+      // any run ID representation, valid or not.
+      const streamFenceRendererCancel =
+        readDesktopStreamFenceRendererCancelDiagnostic(
+          result.streamFence,
+          streamFence,
+          context.triggerRunId === undefined,
+        );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -448,6 +460,7 @@ export class DesktopAckTelemetry {
           ...invocationSpawnHint,
           ...invocationUnknown,
           ...streamFence,
+          ...streamFenceRendererCancel,
         },
         dedupeKey,
       );

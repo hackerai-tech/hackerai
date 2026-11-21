@@ -561,7 +561,7 @@ describe("ChatInput - Integration Tests", () => {
         mockSandboxState = { ...mockSandboxState, desktopBridgeStatus };
         rerender(ui());
         expect(
-          screen.queryByText("Your computer is disconnected."),
+          screen.queryByText("Your selected computer is disconnected."),
         ).not.toBeInTheDocument();
         expect(
           screen.getByRole("button", { name: "Send message" }),
@@ -578,7 +578,7 @@ describe("ChatInput - Integration Tests", () => {
       };
       rerender(ui());
       expect(
-        screen.queryByText("Your computer is disconnected."),
+        screen.queryByText("Your selected computer is disconnected."),
       ).not.toBeInTheDocument();
       expect(toast.info).not.toHaveBeenCalled();
       expect(
@@ -600,13 +600,13 @@ describe("ChatInput - Integration Tests", () => {
       const { rerender } = render(ui());
       await screen.findByRole("textbox");
       expect(
-        screen.queryByText("Your computer is disconnected."),
+        screen.queryByText("Your selected computer is disconnected."),
       ).not.toBeInTheDocument();
 
       mockSandboxState = { ...mockSandboxState, desktopBridgeStatus: "failed" };
       rerender(ui());
       expect(
-        screen.getByText("Your computer is disconnected."),
+        screen.getByText("Your selected computer is disconnected."),
       ).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
       expect(retryDesktopBridge).toHaveBeenCalledTimes(1);
@@ -1118,7 +1118,7 @@ describe("ChatInput - Integration Tests", () => {
           </TestWrapper>,
         );
         expect(
-          screen.queryByText("Your computer is disconnected."),
+          screen.queryByText("Your selected computer is disconnected."),
         ).not.toBeInTheDocument();
         expect(
           screen.queryByRole("button", { name: "Reconnect" }),
@@ -1257,7 +1257,7 @@ describe("ChatInput - Integration Tests", () => {
           `agent:${sandboxPreference}`,
         );
         expect(
-          screen.getByText("Your computer is disconnected."),
+          screen.getByText("Your selected computer is disconnected."),
         ).toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
         if (sandboxPreference === "desktop") {
@@ -1292,7 +1292,7 @@ describe("ChatInput - Integration Tests", () => {
         );
         await waitFor(() =>
           expect(
-            screen.queryByText("Your computer is disconnected."),
+            screen.queryByText("Your selected computer is disconnected."),
           ).not.toBeInTheDocument(),
         );
         fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
@@ -1330,7 +1330,7 @@ describe("ChatInput - Integration Tests", () => {
           await screen.findByText(
             isNewChat
               ? "Reconnect or choose another environment to start."
-              : "Reconnect it to continue this task.",
+              : "Reconnect before sending more commands, or choose another environment.",
           ),
         ).toBeInTheDocument();
         expect(screen.getByRole("status")).toHaveClass(

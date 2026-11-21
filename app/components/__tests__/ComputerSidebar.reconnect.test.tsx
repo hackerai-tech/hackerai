@@ -11,6 +11,7 @@ import {
 } from "@jest/globals";
 import type { SidebarContent } from "@/types/chat";
 import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
+import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 
 const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
@@ -567,6 +568,21 @@ describe("ComputerSidebar reconnect behavior", () => {
     ["agent-browser --version PRIVATE_ARG", true],
     ["agent-browser --headed -V", true],
     ["agent-browser", true],
+    // Exact help forms print usage without starting a browser.
+    ["agent-browser --help", false],
+    ["agent-browser -h", false],
+    ["agent-browser open --help", false],
+    ["npx agent-browser open -h # show open usage", false],
+    // Help beside real work, or in any other shape, stays conservative.
+    ["agent-browser --help && agent-browser open about:blank", true],
+    ["agent-browser open -h about:blank", true],
+    ["agent-browser open about:blank --help", true],
+    ["agent-browser open -- --help", true],
+    ['agent-browser open --help "# literal argument"', true],
+    ["agent-browser -h open", true],
+    ["agent-browser --help --version", true],
+    ["agent-browser snapshot --help", true],
+    ["agent-browser OPEN --help", true],
   ])(
     "matches browser invocation rather than mentions: %s",
     (command, expected) => {
@@ -660,6 +676,250 @@ describe("ComputerSidebar reconnect behavior", () => {
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  describe("capture text-source diagnostic", () => {
+    const BRIEF = "agent-browser open the sign-in page";
+    const OPEN = "agent-browser open https://example.org";
+    const shellPart = (toolCallId: string, input: Record<string, unknown>) => ({
+      type: "tool-shell",
+      toolCallId,
+      state: "output-available",
+      input,
+      output: { output: "" },
+    });
+    const messagesWith = (...parts: ReturnType<typeof shellPart>[]) => [
+      { id: "assistant-browser", role: "assistant", parts },
+    ];
+    /** The sidebar item the real live producer selects for this tool. */
+    const produced = (messages: unknown[], toolCallId: string) =>
+      extractAllSidebarContent(messages as never, true).find(
+        (item) => "toolCallId" in item && item.toolCallId === toolCallId,
+      ) as SidebarContent;
+
+    let originalFetch: typeof global.fetch;
+    let fetchPreview: jest.Mock<(url: unknown) => Promise<Response>>;
+    beforeEach(() => {
+      originalFetch = global.fetch;
+      fetchPreview = jest.fn(
+        async (_url: unknown) =>
+          ({
+            ok: false,
+            status: 503,
+            json: async () => ({ state: "disconnected" }),
+          }) as Response,
+      );
+      global.fetch = fetchPreview as unknown as typeof global.fetch;
+    });
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+    const sentQuery = (call: number) =>
+      new URL(String(fetchPreview.mock.calls[call][0]), "https://app.example")
+        .searchParams;
+    const renderSelected = (
+      messages: unknown[],
+      toolCallId: string,
+      state = "agent",
+    ) => {
+      mockUseQuery.mockReturnValue({
+        sessionId: "session-a",
+        state,
+        runActive: true,
+      });
+      const props = {
+        sidebarOpen: true,
+        closeSidebar: mockCloseSidebar,
+        browserChatId: "chat",
+        status: "streaming" as const,
+        sidebarContent: produced(messages, toolCallId),
+      };
+      const view = render(
+        <ComputerSidebarBase {...props} messages={messages} />,
+      );
+      return {
+        view,
+        rerender: (next: unknown[]) =>
+          view.rerender(<ComputerSidebarBase {...props} messages={next} />),
+      };
+    };
+
+    it.each([
+      [
+        "brief-only exec",
+        { action: "exec", brief: BRIEF },
+        "1.brief.1",
+        null,
+        null,
+      ],
+      [
+        "real open",
+        { action: "exec", command: OPEN, brief: "Open the site" },
+        "1.command.1",
+        "1.open_only",
+        null,
+      ],
+      [
+        "version-then-open",
+        {
+          action: "exec",
+          command: "agent-browser --version && agent-browser open about:blank",
+        },
+        "1.command.1",
+        "1.info_with_open",
+        null,
+      ],
+      [
+        "bare invocation",
+        { action: "exec", command: "agent-browser" },
+        "1.command.1",
+        "1.other_only",
+        "1.bare",
+      ],
+    ])(
+      "sends the %s selection's producer tag beside the unchanged mask",
+      async (_name, input, expected, intent, otherKind) => {
+        const messages = messagesWith(shellPart("browser-tool", input));
+        const { view } = renderSelected(messages, "browser-tool");
+        await act(async () => {});
+        expect(
+          screen.getByRole("region", { name: "Agent browser preview" }),
+        ).toBeVisible();
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        expect(sentQuery(0).get("preview_activation")).toBe("1");
+        expect(sentQuery(0).get("preview_text_source")).toBe(expected);
+        expect(sentQuery(0).getAll("preview_terminal_intent")).toEqual(
+          intent === null ? [] : [intent],
+        );
+        expect(sentQuery(0).get("preview_terminal_other_kind")).toBe(otherKind);
+        // Only the closed tag travels: no text or tool identifiers.
+        expect(
+          decodeURIComponent(String(fetchPreview.mock.calls[0][0])),
+        ).not.toMatch(/sign-in|example\.org|Open the site|browser-tool/);
+        view.unmount();
+      },
+    );
+
+    it("reads a historical selection at the next dispatch without restarting the poll", async () => {
+      const brief = shellPart("browser-tool", { action: "exec", brief: BRIEF });
+      const { view, rerender } = renderSelected(
+        messagesWith(brief),
+        "browser-tool",
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      expect(sentQuery(0).get("preview_text_source")).toBe("1.brief.1");
+
+      // A later tool leaves this selection behind the live edge.
+      rerender(
+        messagesWith(
+          brief,
+          shellPart("later-tool", { action: "exec", command: "pwd" }),
+        ),
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(999);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(2);
+      expect(sentQuery(1).get("preview_activation")).toBe("1");
+      expect(sentQuery(1).get("preview_text_source")).toBe("1.brief.0");
+      view.unmount();
+    });
+
+    it("drops the intent once a live command selection becomes history, without restarting the poll", async () => {
+      const open = shellPart("browser-tool", {
+        action: "exec",
+        command: "agent-browser --headed open https://example.org",
+      });
+      const { view, rerender } = renderSelected(
+        messagesWith(open),
+        "browser-tool",
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      expect(sentQuery(0).get("preview_text_source")).toBe("1.command.1");
+      expect(sentQuery(0).get("preview_terminal_intent")).toBe("1.option_only");
+
+      rerender(
+        messagesWith(
+          open,
+          shellPart("later-tool", { action: "exec", command: "pwd" }),
+        ),
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      // The failure backoff timing is unchanged by the selection change.
+      await act(async () => {
+        jest.advanceTimersByTime(999);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(fetchPreview).toHaveBeenCalledTimes(2);
+      expect(sentQuery(1).get("preview_activation")).toBe("1");
+      expect(sentQuery(1).get("preview_text_source")).toBe("1.command.0");
+      expect(sentQuery(1).has("preview_terminal_intent")).toBe(false);
+      view.unmount();
+    });
+
+    it.each(["agent-browser --version", "agent-browser open --help"])(
+      "keeps standalone informational %s hidden and untagged",
+      async (command) => {
+        const messages = messagesWith(
+          shellPart("version-tool", { action: "exec", command }),
+        );
+        const { view } = renderSelected(messages, "version-tool");
+        await act(async () => {});
+        expect(fetchPreview).not.toHaveBeenCalled();
+        expect(
+          screen.queryByRole("region", { name: "Agent browser preview" }),
+        ).not.toBeInTheDocument();
+        view.unmount();
+
+        // A handoff state still shows it, but without the browserRequested bit.
+        const waiting = renderSelected(messages, "version-tool", "waiting");
+        await act(async () => {});
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        expect(sentQuery(0).get("preview_activation")).toBe("8");
+        expect(sentQuery(0).has("preview_text_source")).toBe(false);
+        expect(sentQuery(0).has("preview_terminal_intent")).toBe(false);
+        waiting.view.unmount();
+      },
+    );
+
+    it("reports unavailable for a selection its producer did not tag", async () => {
+      mockUseQuery.mockReturnValue({
+        sessionId: "session-a",
+        state: "agent",
+        runActive: true,
+      });
+      const view = render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          status="ready"
+          messages={[otherToolMessage]}
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: OPEN,
+            toolCallId: "persisted-browser",
+          }}
+        />,
+      );
+      await act(async () => {});
+      expect(fetchPreview).toHaveBeenCalledTimes(1);
+      expect(sentQuery(0).get("preview_text_source")).toBe("1.unavailable.1");
+      expect(sentQuery(0).has("preview_terminal_intent")).toBe(false);
+      view.unmount();
+    });
   });
 
   it("pins the expanded command while later tools arrive", () => {

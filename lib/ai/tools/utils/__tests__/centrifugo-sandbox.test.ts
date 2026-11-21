@@ -62,6 +62,10 @@ import {
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
 import { getLocalCopyFailureContext } from "../local-copy-failure-context";
+import {
+  AttachmentCommandCleanupError,
+  AttachmentLocalCopySetupDeadlineError,
+} from "../attachment-command";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 import {
@@ -3403,6 +3407,216 @@ describe("CentrifugoSandbox", () => {
         ),
       ).rejects.toMatchObject({ name: "AbortError" });
       expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("local copy setup deadline", () => {
+    const windowsSandbox = () =>
+      createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x64",
+          release: "10.0.22631",
+          hostname: "WIN-DEV",
+        },
+      } as any);
+    const outcome = (promise: Promise<unknown>) => {
+      const state: { settled: boolean; value?: unknown; error?: unknown } = {
+        settled: false,
+      };
+      promise.then(
+        (value) => Object.assign(state, { settled: true, value }),
+        (error) => Object.assign(state, { settled: true, error }),
+      );
+      return state;
+    };
+    const files = [
+      {
+        kind: "localPath" as const,
+        path: "/tmp/PRIVATE_A.pdf",
+        localPath: "/tmp/hackerai-upload/A.pdf",
+      },
+      {
+        kind: "localPath" as const,
+        path: "/tmp/PRIVATE_B.pdf",
+        localPath: "/tmp/hackerai-upload/B.pdf",
+      },
+    ];
+
+    it("ends every copy's shell setup at one absolute deadline, across a setup retry, without writing or falling back", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const sandbox = windowsSandbox();
+        const entry = Date.now();
+        // Each first shell probe hits the 30s-class transient timeout at 40s
+        // and is retried; the retry must not get a fresh budget.
+        const run = jest.spyOn(sandbox.commands, "run").mockImplementation(
+          (_command, options) =>
+            new Promise((resolve, reject) => {
+              if (Date.now() < entry + 40_000)
+                setTimeout(
+                  () => reject(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE)),
+                  entry + 40_000 - Date.now(),
+                );
+              else
+                options?.signal?.addEventListener(
+                  "abort",
+                  () => resolve({ stdout: "", stderr: "", exitCode: 130 }),
+                  { once: true },
+                );
+            }),
+        );
+        const result = outcome(
+          uploadSandboxFiles(files, async () => sandbox, {
+            localCopySetupDeadlineAt: entry + 45_000,
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(44_999);
+        expect(result.settled).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(result.error).toBeInstanceOf(
+          AttachmentLocalCopySetupDeadlineError,
+        );
+        expect(JSON.stringify(result.error)).not.toMatch(/PRIVATE|tmp/);
+        const commands = run.mock.calls.map(([command]) => command);
+        expect(commands).toEqual(Array(4).fill("echo $BASH_VERSION"));
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    });
+
+    it("does not start the write when the budget is already spent", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      const run = jest.spyOn(sandbox.commands, "run");
+      await expect(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          setupDeadlineAt: Date.now(),
+        }),
+      ).rejects.toBeInstanceOf(AttachmentLocalCopySetupDeadlineError);
+      expect(run).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("does not write when a shell reply resumes before the overdue timer callback", async () => {
+      const sandbox = windowsSandbox();
+      const setupDeadlineAt = Date.now() + 45_000;
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 })
+        .mockImplementationOnce(async () => {
+          jest.setSystemTime(setupDeadlineAt);
+          return { stdout: "$BASH_VERSION", stderr: "", exitCode: 0 };
+        });
+
+      await expect(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          setupDeadlineAt,
+        }),
+      ).rejects.toBeInstanceOf(AttachmentLocalCopySetupDeadlineError);
+
+      expect(run.mock.calls.map(([command]) => command)).toEqual([
+        "echo $BASH_VERSION",
+      ]);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each([false, true])(
+      "lets a write that started before the deadline finish (caller signal=%s)",
+      async (withCallerSignal) => {
+        const sandbox = createDesktopSandbox(undefined, "linux");
+        const controller = new AbortController();
+        let finishWrite!: () => void;
+        let writeSignal: AbortSignal | undefined;
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation((_command, options) => {
+            writeSignal = options?.signal;
+            return new Promise((resolve) => {
+              finishWrite = () =>
+                resolve({ stdout: "", stderr: "", exitCode: 0 });
+            });
+          });
+        const result = outcome(
+          uploadSandboxFiles([files[0]], async () => sandbox, {
+            localCopySetupDeadlineAt: Date.now() + 1_000,
+            ...(withCallerSignal && { signal: controller.signal }),
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(run.mock.calls[0][0]).toContain("cp -f");
+        // The write keeps only the caller's own signal.
+        expect(writeSignal).toBe(
+          withCallerSignal ? controller.signal : undefined,
+        );
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(result.settled).toBe(false);
+        finishWrite();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(result.value).toMatchObject({ failedCount: 0 });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("keeps a caller Stop during setup authoritative over the deadline", async () => {
+      const sandbox = windowsSandbox();
+      const controller = new AbortController();
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(
+          (_command, options) =>
+            new Promise((resolve) =>
+              options?.signal?.addEventListener(
+                "abort",
+                () => resolve({ stdout: "", stderr: "", exitCode: 130 }),
+                { once: true },
+              ),
+            ),
+        );
+      const result = outcome(
+        sandbox.files.copyLocal(files[0].path, files[0].localPath, {
+          signal: controller.signal,
+          setupDeadlineAt: Date.now() + 45_000,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(1_000);
+      controller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(result.error).toBe(controller.signal.reason);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("reports unconfirmed setup cancellation at the deadline as a cleanup failure", async () => {
+      const sandbox = windowsSandbox();
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(
+          (_command, options) =>
+            new Promise((_resolve, reject) =>
+              options?.signal?.addEventListener(
+                "abort",
+                () =>
+                  reject(
+                    new Error(
+                      "Local command cancellation was not acknowledged.",
+                    ),
+                  ),
+                { once: true },
+              ),
+            ),
+        );
+      const result = outcome(
+        uploadSandboxFiles([files[0]], async () => sandbox, {
+          localCopySetupDeadlineAt: Date.now() + 45_000,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(45_000);
+      expect(result.error).toBeInstanceOf(AttachmentCommandCleanupError);
+      expect(jest.getTimerCount()).toBe(0);
     });
   });
 
@@ -8706,6 +8920,175 @@ describe("CentrifugoSandbox", () => {
         expect((error as Error).message).not.toContain("X-Amz-Signature");
       },
     );
+
+    describe("curl progress marker", () => {
+      const bodyObserved =
+        "hackerai_curl_progress_v1 n=0.004000 c=0.031000 a=0.120000 h=200 b=21 r=0.000000\n";
+      const lookupOnly =
+        "hackerai_curl_progress_v1 n=0.004000 c=0.000000 a=0.000000 h=000 b=0 r=0.000000\n";
+      const progressKeys = [
+        "attachment_download_curl_progress_version",
+        "attachment_download_curl_progress_state",
+        "attachment_download_curl_progress_milestone",
+      ];
+      const failingRun =
+        (results: Array<{ stdout: string; exitCode: number }>) =>
+        async (cmd: string) => {
+          const mount = gitBashMountResult(cmd);
+          if (mount) return mount;
+          if (cmd.includes("target_dir_exists"))
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          const next = results.shift()!;
+          return {
+            ...next,
+            stderr: `curl: (${next.exitCode}) private detail https://private.example/object`,
+          };
+        };
+      const download = async (sandbox: CentrifugoSandbox) => {
+        const failure = sandbox.files
+          .downloadFromUrl(
+            "https://private.example/object?signature=secret",
+            "/tmp/hackerai-upload/private.png",
+          )
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(5_000);
+        return (await failure) as Error;
+      };
+
+      it("adds one static write-out to the Windows Bash GET and ignores it on success", async () => {
+        const { sandbox, runs } = createWindowsBashSandbox();
+        const run = (sandbox as any).commands.run as jest.Mock;
+        const original = run.getMockImplementation()!;
+        run.mockImplementation(async (cmd: string, opts?: unknown) => {
+          const result = await original(cmd, opts);
+          return cmd.includes("curl -fsSL")
+            ? { ...result, stdout: bodyObserved }
+            : result;
+        });
+        await expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/image.png",
+            "/tmp/hackerai-upload/image.png",
+          ),
+        ).resolves.toBeUndefined();
+        expect(runs).toEqual([
+          "mkdir -p '/c/temp/hackerai-upload' && curl -fsSL --ssl-no-revoke --retry 3 --retry-delay 1 --retry-all-errors --retry-connrefused " +
+            "-w 'hackerai_curl_progress_v1 n=%{time_namelookup} c=%{time_connect} a=%{time_appconnect} h=%{http_code} b=%{size_download} r=%{time_redirect}' " +
+            "-o '/c/temp/hackerai-upload/image.png' 'https://example.com/image.png'",
+        ]);
+      });
+
+      it("reads only the terminal exit28 result and keeps the existing error", async () => {
+        const { sandbox } = createWindowsBashSandbox();
+        // Earlier attempts reached further; only the selected result counts.
+        const run = jest.fn(
+          failingRun([
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: lookupOnly, exitCode: 28 },
+          ]),
+        );
+        (sandbox as any).commands.run = run;
+        const error = await download(sandbox);
+
+        expect(
+          run.mock.calls.filter(([cmd]) => cmd.includes("curl -fsSL")),
+        ).toHaveLength(3);
+        const context = getAttachmentDownloadFailureContext(error);
+        expect(context).toMatchObject({
+          attachment_download_exit_code: 28,
+          attachment_download_timeout_hint: "unclassified",
+          attachment_download_attempt: 3,
+          attachment_download_curl_progress_version: 1,
+          attachment_download_curl_progress_state: "observed",
+          attachment_download_curl_progress_milestone: "name_lookup",
+        });
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|signature|0\.00|hackerai_curl|200/,
+        );
+
+        // Same failure without marker output: identical error, no inference.
+        const baseline = createWindowsBashSandbox().sandbox;
+        (baseline as any).commands.run = jest.fn(
+          failingRun([
+            { stdout: "", exitCode: 28 },
+            { stdout: "", exitCode: 28 },
+            { stdout: "", exitCode: 28 },
+          ]),
+        );
+        const baselineError = await download(baseline);
+        expect(error.message).toBe(baselineError.message);
+        expect(error.message).not.toContain("hackerai_curl");
+        expect(
+          getAttachmentDownloadFailureContext(baselineError),
+        ).toMatchObject({
+          attachment_download_curl_progress_state: "absent",
+          attachment_download_curl_progress_milestone: null,
+        });
+      });
+
+      it("omits progress when the terminal result is not exit28", async () => {
+        const { sandbox } = createWindowsBashSandbox();
+        (sandbox as any).commands.run = jest.fn(
+          failingRun([
+            { stdout: bodyObserved, exitCode: 28 },
+            { stdout: bodyObserved, exitCode: 7 },
+            { stdout: bodyObserved, exitCode: 7 },
+          ]),
+        );
+        const context = getAttachmentDownloadFailureContext(
+          await download(sandbox),
+        );
+        expect(context).toMatchObject({ attachment_download_exit_code: 7 });
+        for (const key of progressKeys) expect(context).not.toHaveProperty(key);
+      });
+
+      it.each([
+        ["Windows cmd curl", "win32", "cmd", "curl"],
+        ["POSIX Bash curl", "linux", "bash", "curl"],
+        ["Windows Bash wget", "win32", "bash", "wget"],
+      ])(
+        "leaves %s commands and context unchanged",
+        async (_, platform, shell, client) => {
+          const sandbox = createSandbox({
+            osInfo: {
+              platform,
+              arch: "x86_64",
+              release: "1",
+              hostname: "HOST",
+            },
+          } as any);
+          (sandbox as any).shellKind = shell;
+          (sandbox as any).httpClient = client;
+          (sandbox as any).curlCaps = {
+            retryAllErrors: true,
+            retryConnrefused: true,
+            sslNoRevoke: true,
+          };
+          const run = jest.fn(
+            failingRun([
+              { stdout: bodyObserved, exitCode: 28 },
+              { stdout: bodyObserved, exitCode: 28 },
+              { stdout: bodyObserved, exitCode: 28 },
+            ]),
+          );
+          (sandbox as any).commands.run = run;
+          const context = getAttachmentDownloadFailureContext(
+            await download(sandbox),
+          );
+          expect(context).toMatchObject({ attachment_download_exit_code: 28 });
+          for (const key of progressKeys)
+            expect(context).not.toHaveProperty(key);
+          expect(
+            run.mock.calls.some(([cmd]) => cmd.includes("hackerai_curl")),
+          ).toBe(false);
+        },
+      );
+    });
 
     it.each([
       { client: "curl", exitCode: 26, desktop: true, platform: "windows" },

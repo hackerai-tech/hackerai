@@ -5,6 +5,7 @@ import {
   createFindingsReport,
   exportFindingsReport,
   renderFindingsHtml,
+  renderFindingsMarkdown,
   renderFindingsSarif,
   MAX_EXPORTED_FINDINGS,
 } from "../export";
@@ -129,6 +130,65 @@ describe("selected finding reports", () => {
     expect(
       sarif.runs[0].results[0].locations?.[0].physicalLocation.region,
     ).toMatchObject({ startLine: 4, endLine: 7 });
+  });
+  it("renders the current saved decision and evidence limits in a newly generated PDF", async () => {
+    const dismissed: FindingDetailRecord = {
+      ...finding,
+      status: "closed",
+      closure_reason: "false_positive",
+      closure_context: "Synthetic public help text, not sensitive data.",
+      closed_at: Date.UTC(2026, 10, 19, 15, 2),
+      evidence_status: undefined,
+      evidence_status_reason: undefined,
+    };
+    const generatedAt = new Date("2026-11-19T15:05:00Z");
+    const r = createFindingsReport([dismissed], undefined, generatedAt);
+    const markdown = (await exportFindingsReport(r, "markdown"))
+      .content as string;
+    expect(markdown).toContain("Generated: 2026-11-19T15:05:00.000Z");
+    expect(markdown).toContain("Status: Dismissed (closed)");
+    expect(markdown).toContain("Reason: False positive");
+    expect(markdown).toContain(dismissed.closure_context);
+    expect(markdown).toContain("no runtime reproduction is inferred");
+    expect(markdown).toContain("not complete assessment coverage");
+
+    const font = readFileSync("public/fonts/report/NotoSans-Regular.ttf");
+    const pdf = await PDFDocument.load(
+      (
+        await exportFindingsReport(
+          r,
+          "pdf",
+          font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength),
+        )
+      ).content as Uint8Array,
+    );
+    expect(pdf.getCreationDate()?.toISOString()).toBe(
+      generatedAt.toISOString(),
+    );
+
+    // A later material correction of an active report is labelled as such.
+    const corrected = renderFindingsMarkdown(
+      createFindingsReport([
+        {
+          ...finding,
+          correction_history: [
+            {
+              updated_at: 5,
+              message_id: "m-2",
+              reason: "Impact limited to one synthetic record.",
+              changed_fields: ["impact"],
+              previous_severity: "high",
+              severity: "high",
+              previous_cvss_score: 6.5,
+              cvss_score: 6.5,
+            },
+          ],
+        },
+      ]),
+    );
+    expect(corrected).toContain("Status: Corrected (active)");
+    expect(corrected).toContain("## Latest correction");
+    expect(corrected).toContain("Evidence basis\n\nInconclusive");
   });
   it("generates a real multi-page PDF with embedded font and exact original JSON attachment", async () => {
     const font = readFileSync("public/fonts/report/NotoSans-Regular.ttf");

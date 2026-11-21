@@ -12,6 +12,8 @@ import ToolBlock from "@/components/ui/tool-block";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { FindingCard } from "@/app/components/findings/FindingCard";
+import { FindingDecisionFooter } from "@/app/components/findings/FindingDecision";
+import { FindingPdfButton } from "@/app/components/findings/FindingExportMenu";
 import {
   ToolErrorHandler,
   ToolValidationErrorHandler,
@@ -69,7 +71,7 @@ export const SavedFindingCard = ({
       findingId: output.finding_id,
       title: finding?.title ?? output.title,
       target: finding?.target ?? output.target,
-      endpoint: finding?.endpoint ?? output.endpoint,
+      endpoint: finding ? finding.endpoint : output.endpoint,
       severity: finding?.severity ?? output.severity,
       cvssScore: finding?.cvss_score ?? output.cvss_score,
       isExecuting: false,
@@ -98,6 +100,9 @@ export const SavedFindingCard = ({
     handleOpenInSidebar();
   };
 
+  // Decision and export come only from the live authorized record. While it
+  // loads or is unavailable the card shows the transcript snapshot without
+  // guessing a disposition or offering a download.
   return (
     <div className="space-y-2">
       <FindingCard
@@ -106,6 +111,16 @@ export const SavedFindingCard = ({
         severity={content.severity}
         cvssScore={content.cvssScore}
         evidenceStatus={finding ? (finding.evidence_status ?? null) : undefined}
+        status={finding?.status}
+        disposition={finding?.disposition}
+        footer={
+          finding ? (
+            <FindingDecisionFooter
+              disposition={finding.disposition}
+              action={<FindingPdfButton findingId={finding.finding_id} />}
+            />
+          ) : undefined
+        }
         onClick={handleOpen}
       />
       {queryFailed && (
@@ -113,7 +128,7 @@ export const SavedFindingCard = ({
           Saved report temporarily unavailable. Open the report to retry.
         </p>
       )}
-      {(finding?.evidence_verification?.warning ?? output.warning) && (
+      {(finding ? finding.evidence_verification?.warning : output.warning) && (
         <p role="note" className="text-xs text-amber-600 dark:text-amber-400">
           Evidence verification incomplete. Open the report for details.
         </p>
@@ -147,7 +162,7 @@ export const FindingToolHandler = memo(function FindingToolHandler({
     return status === "streaming" ? (
       <ToolBlock
         icon={<ShieldAlert aria-hidden="true" />}
-        action="Saving confirmed finding"
+        action="Saving finding"
         target={target}
         isShimmer={true}
       />

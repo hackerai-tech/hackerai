@@ -16,6 +16,7 @@
       ]
     },
     "allow-desktop-command-bridge",
+    "allow-agent-input-notifications",
     "os:default",
     "process:default",
     "updater:default",

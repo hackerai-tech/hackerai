@@ -42,6 +42,23 @@ describe("getAgentLongMessageProgressFingerprint", () => {
     expect(after).not.toBe(before);
   });
 
+  it("ignores context measurements without hiding subsequent text progress", () => {
+    const text = { type: "text" as const, text: "working" };
+    const measurement = {
+      type: "data-context-usage" as const,
+      id: "context-usage-0",
+      data: { usedTokens: 240_000, compactionThresholdTokens: 480_000 },
+    };
+    const fingerprint = (...parts: ChatMessage["parts"]) =>
+      getAgentLongMessageProgressFingerprint([message("assistant-1", parts)]);
+
+    expect(fingerprint(text, measurement)).toBe(fingerprint(text));
+    expect(fingerprint(measurement, text)).toBe(fingerprint(text));
+    expect(
+      fingerprint(measurement, { ...text, text: "working longer" }),
+    ).not.toBe(fingerprint(text));
+  });
+
   it("does not serialize transcript parts", () => {
     const earlierPart = {
       type: "tool-shell",

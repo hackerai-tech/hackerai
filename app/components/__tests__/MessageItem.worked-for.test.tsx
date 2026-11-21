@@ -62,8 +62,17 @@ jest.mock("../BranchIndicator", () => ({
 }));
 
 jest.mock("../FinishReasonNotice", () => ({
-  FinishReasonNotice: ({ onContinue }: { onContinue?: () => void }) => (
-    <div data-testid="finish-reason-notice">
+  FinishReasonNotice: ({
+    onContinue,
+    lastSavedStep,
+  }: {
+    onContinue?: () => void;
+    lastSavedStep?: string;
+  }) => (
+    <div
+      data-testid="finish-reason-notice"
+      data-last-saved-step={lastSavedStep}
+    >
       {onContinue && <button onClick={() => onContinue()}>Resume</button>}
     </div>
   ),
@@ -141,6 +150,55 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("does not call an invisible step marker visible Agent progress", () => {
+    const { unmount } = renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [{ type: "step-start" }],
+      } as ChatMessage,
+    });
+    expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+      "data-last-saved-step",
+      "conversation",
+    );
+
+    unmount();
+    renderMessageItem({ mode: "agent" });
+    expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+      "data-last-saved-step",
+      "agent-progress",
+    );
+  });
+
+  it.each([false, true])(
+    "counts a file as visible progress only when it renders (whitespace text: %s)",
+    (withWhitespace) => {
+      const file = {
+        type: "file",
+        mediaType: "text/plain",
+        url: "/file",
+      } as const;
+      renderMessageItem({
+        mode: "agent",
+        message: {
+          ...assistantMessage,
+          parts: withWhitespace ? [file, { type: "text", text: " " }] : [file],
+        },
+      });
+
+      if (withWhitespace) {
+        expect(screen.queryByTestId("part-file")).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByTestId("part-file")).toBeInTheDocument();
+      }
+      expect(screen.getByTestId("finish-reason-notice")).toHaveAttribute(
+        "data-last-saved-step",
+        withWhitespace ? "conversation" : "agent-progress",
+      );
+    },
+  );
+
   it("shows a saved goal's completion time on its answer", () => {
     renderMessageItem({
       mode: "agent",
@@ -728,6 +786,66 @@ describe("MessageItem saved hunt results", () => {
     });
     expect(cards()).toHaveLength(1);
     expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+
+  describe("read report card", () => {
+    const readReport = {
+      type: "tool-get_report",
+      toolCallId: "read-1",
+      state: "output-available",
+      input: "saved report card",
+      output: {
+        success: true,
+        report: {
+          finding_id: "finding-1",
+          title: "Help panel exposure",
+          target: "demo.example.test",
+          severity: "medium",
+          cvss_score: 5.3,
+        },
+      },
+    };
+    const reportCards = () => screen.queryAllByTestId("part-tool-get_report");
+    const readAndAnswer = [
+      { type: "step-start" },
+      { type: "tool-shell", input: "ran command", state: "output-available" },
+      readReport,
+      { type: "text", text: "Use Download PDF on the card." },
+    ];
+
+    it.each(["inline", "timeline-shell"] as const)(
+      "shows a successful read once outside collapsed work (%s)",
+      (workPresentation) => {
+        renderMessageItem({
+          mode: "agent",
+          message: huntMessage(readAndAnswer),
+          workPresentation,
+        });
+        expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+        expect(reportCards()).toHaveLength(1);
+        expect(reportCards()[0]).toHaveAttribute("data-part-index", "2");
+        expect(
+          screen.getByText("Use Download PDF on the card."),
+        ).toBeInTheDocument();
+      },
+    );
+
+    it("keeps a failed read in the collapsed work", () => {
+      renderMessageItem({
+        mode: "agent",
+        message: huntMessage([
+          readAndAnswer[1],
+          {
+            ...readReport,
+            output: { success: false, error: "not_found", message: "x" },
+          },
+          readAndAnswer[3],
+        ]),
+      });
+      expect(reportCards()).toHaveLength(0);
+      fireEvent.click(screen.getByRole("button", { name: /worked for 2s/i }));
+      expect(reportCards()).toHaveLength(1);
+    });
   });
 });
 

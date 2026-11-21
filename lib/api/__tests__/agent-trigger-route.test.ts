@@ -437,6 +437,148 @@ describe("web request correlation at Agent dispatch", () => {
     },
   );
 
+  describe("Trigger sessions.start body limit", () => {
+    // Trigger's sessions.start route (api.v1.sessions.ts in the pinned v4.7.7,
+    // unchanged in v4.8.4) caps the JSON body at 32 KiB and returns this 413
+    // before creating a session or run. The SDK posts JSON.stringify(body)
+    // unchanged, so this fake measures that exact serialized envelope.
+    const TRIGGER_SESSIONS_START_MAX_BYTES = 32 * 1024;
+    const serializedBytes = (body: unknown) =>
+      Buffer.byteLength(JSON.stringify(body), "utf8");
+    const startSessionWithTriggerBodyLimit = async (body: unknown) => {
+      if (serializedBytes(body) > TRIGGER_SESSIONS_START_MAX_BYTES)
+        throw Object.assign(new Error("Request body too large"), {
+          name: "TriggerApiError",
+          status: 413,
+        });
+      return { runId: "run-approval", isCached: false };
+    };
+    // Synthetic stand-in for a long client task list (202 items, as observed).
+    const todos = Array.from({ length: 202 }, (_, index) => ({
+      id: `todo-${index}`,
+      content: `Synthetic task ${index}: ${"x".repeat(160)}`,
+      status: "pending",
+    }));
+
+    beforeEach(() => {
+      sessions.start.mockImplementation(startSessionWithTriggerBodyLimit);
+    });
+
+    it("starts an ask_approval session without the copied client task list", async () => {
+      const response = await start("/api/agent", "ask_approval", requestId, {
+        todos,
+      });
+
+      expect(response.status).toBe(200);
+      expect(sessions.start).toHaveBeenCalledTimes(1);
+      const envelope = sessions.start.mock.calls[0][0];
+      const basePayload = envelope.triggerConfig.basePayload;
+      // The fixture only proves the fix if copying the client list would
+      // still exceed Trigger's limit with every other field unchanged.
+      expect(
+        serializedBytes({
+          ...envelope,
+          triggerConfig: {
+            ...envelope.triggerConfig,
+            basePayload: { ...basePayload, baseTodos: todos },
+          },
+        }),
+      ).toBeGreaterThan(TRIGGER_SESSIONS_START_MAX_BYTES);
+      expect(serializedBytes(envelope)).toBeLessThanOrEqual(
+        TRIGGER_SESSIONS_START_MAX_BYTES,
+      );
+
+      // The worker hydrates todos from Convex; keep the field's array shape.
+      expect(basePayload.baseTodos).toEqual([]);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        runId: "run-approval",
+        approvalProtocolVersion: 2,
+        approvalSessionId: envelope.externalId,
+      });
+      expect(envelope).toMatchObject({
+        type: "agent-long-approval.v2",
+        taskIdentifier: "agent-long",
+        metadata: {
+          agentPermissionMode: "ask_approval",
+          approvalSessionId: envelope.externalId,
+        },
+        triggerConfig: {
+          basePayload: {
+            chatId: "chat-1",
+            userId: "user-1",
+            agentPermissionMode: "ask_approval",
+            approvalSessionId: envelope.externalId,
+            approvalProtocolVersion: 2,
+            messages: [],
+            localDesktopAttachmentsPrepared: false,
+          },
+        },
+      });
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledTimes(1);
+      expect(mockReplaceActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: "chat-1",
+          triggerRunId: "run-approval",
+          approvalSessionId: envelope.externalId,
+        }),
+        expect.anything(),
+      );
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    });
+
+    it("keeps the client task list in ordinary full_access payloads", async () => {
+      const response = await start("/api/agent", "full_access", requestId, {
+        todos,
+      });
+
+      expect(response.status).toBe(200);
+      expect(sessions.start).not.toHaveBeenCalled();
+      expect(mockTriggerTask.mock.calls[0][1]).toMatchObject({
+        agentPermissionMode: "full_access",
+        baseTodos: todos,
+      });
+    });
+
+    it("keeps prepared Desktop messages in ask_approval session payloads", async () => {
+      const {
+        hasLocalDesktopSourcePaths,
+        prepareLocalDesktopAttachmentsForTrigger,
+      } = require("@/lib/utils/sandbox-file-utils");
+      const preparedMessages = [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [
+            {
+              type: "text",
+              text: "<attachment>/home/user/upload</attachment>",
+            },
+          ],
+        },
+      ];
+      hasLocalDesktopSourcePaths.mockReturnValueOnce(true);
+      prepareLocalDesktopAttachmentsForTrigger.mockReturnValueOnce({
+        messages: preparedMessages,
+        sandboxFiles: [],
+      });
+
+      const response = await start("/api/agent", "ask_approval", requestId, {
+        sandboxPreference: "desktop",
+        todos,
+      });
+
+      expect(response.status).toBe(200);
+      expect(sessions.start.mock.calls[0][0].triggerConfig.basePayload).toEqual(
+        expect.objectContaining({
+          messages: preparedMessages,
+          localDesktopAttachmentsPrepared: true,
+          baseTodos: [],
+        }),
+      );
+    });
+  });
+
   it.each(dispatchPaths)(
     "routes %s %s to the existing workspace before dispatch",
     async (endpoint, mode) => {
@@ -779,6 +921,101 @@ describe("web request correlation at Agent dispatch", () => {
       warn.mockRestore();
       jest.useRealTimers();
     }
+  });
+
+  describe("Desktop local-copy setup deadline", () => {
+    const {
+      AttachmentCommandCleanupError,
+      AttachmentLocalCopySetupDeadlineError,
+    } =
+      require("@/lib/ai/tools/utils/attachment-command") as typeof import("@/lib/ai/tools/utils/attachment-command");
+    const files = require("@/lib/utils/sandbox-file-utils");
+    const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+    const entry = Date.parse("2026-11-20T06:00:00.000Z");
+    const messages = [{ id: "message-1", role: "user", parts: [] }];
+    beforeEach(() => {
+      jest.useFakeTimers({ now: entry });
+      files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+      files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+        messages,
+        sandboxFiles: [{}, {}],
+      });
+      files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+      mockSandboxContext.mockResolvedValue(undefined);
+      mockSandboxClose.mockResolvedValue(undefined);
+      fallback.getSandboxWithFallbackGuard.mockResolvedValue({
+        sandbox: { close: mockSandboxClose },
+      });
+    });
+    afterEach(() => {
+      files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+      jest.useRealTimers();
+    });
+
+    it.each(["/api/agent", "/api/agent-long"] as const)(
+      "ends %s admission with reconnect guidance before persistence or dispatch",
+      async (endpoint) => {
+        jest.spyOn(console, "warn").mockImplementation(() => {});
+        // Earlier admission work spends part of the same budget.
+        mockSandboxContext.mockImplementationOnce(
+          () => new Promise<void>((resolve) => setTimeout(resolve, 30_000)),
+        );
+        files.uploadSandboxFiles.mockImplementation(
+          async (
+            _files: unknown,
+            getSandbox: () => Promise<unknown>,
+            { localCopySetupDeadlineAt }: { localCopySetupDeadlineAt: number },
+          ) => {
+            await getSandbox();
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, localCopySetupDeadlineAt - Date.now()),
+            );
+            throw new AttachmentLocalCopySetupDeadlineError();
+          },
+        );
+        const pendingResponse = start(endpoint, "full_access", requestId, {
+          sandboxPreference: "desktop",
+        });
+        await jest.advanceTimersByTimeAsync(29_999);
+        expect(files.uploadSandboxFiles).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(1);
+        // One absolute budget from handler entry, not from upload start.
+        expect(files.uploadSandboxFiles).toHaveBeenCalledTimes(1);
+        expect(files.uploadSandboxFiles.mock.calls[0][2]).toMatchObject({
+          localCopySetupDeadlineAt: entry + 45_000,
+        });
+        await jest.advanceTimersByTimeAsync(15_000);
+        const response = await pendingResponse;
+        expect(response.status).toBe(400);
+        const body: any = await response.json();
+        expect(body.code).toBe("bad_request:api");
+        expect(body.cause).toMatch(/Reconnect this computer/);
+        // No automatic retry and no instruction to delete or reattach files.
+        expect(body.cause).not.toMatch(/automatic|delet|reattach|moved/i);
+        expect(mockSandboxClose).toHaveBeenCalledTimes(1);
+        expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("keeps unconfirmed setup cancellation on its existing failure path", async () => {
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      files.uploadSandboxFiles.mockRejectedValue(
+        new AttachmentCommandCleanupError(new Error("cancel not acknowledged")),
+      );
+      const response = await start("/api/agent", "full_access", requestId, {
+        sandboxPreference: "desktop",
+      });
+      expect(response.status).toBe(500);
+      expect(((await response.json()) as any).cause).not.toMatch(
+        /Reconnect this computer/,
+      );
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      log.mockRestore();
+    });
   });
 
   it.each(["save_chat", "reset_stream", "save_user_message"])(
@@ -2543,6 +2780,26 @@ describe("goal reservations on oversized dispatch", () => {
           status: 413,
         }),
       );
+      const oversizedText = "x".repeat(AGENT_TRIGGER_PAYLOAD_MAX_BYTES);
+      if (path === "ask_approval") {
+        // Approval sessions omit the client task list, so prepared Desktop
+        // messages (still sent inline) exceed the app's payload guard.
+        const {
+          hasLocalDesktopSourcePaths,
+          prepareLocalDesktopAttachmentsForTrigger,
+        } = require("@/lib/utils/sandbox-file-utils");
+        hasLocalDesktopSourcePaths.mockReturnValueOnce(true);
+        prepareLocalDesktopAttachmentsForTrigger.mockReturnValueOnce({
+          messages: [
+            {
+              id: "input",
+              role: "user",
+              parts: [{ type: "text", text: oversizedText }],
+            },
+          ],
+          sandboxFiles: [],
+        });
+      }
       const response = await createAgentTriggerPost({ endpoint: "/api/agent" })(
         {
           headers: new Headers(),
@@ -2565,16 +2822,13 @@ describe("goal reservations on oversized dispatch", () => {
             },
             agentPermissionMode:
               path === "ask_approval" ? "ask_approval" : "full_access",
+            ...(path === "ask_approval"
+              ? { sandboxPreference: "desktop" }
+              : {}),
             todos:
-              path === "trigger_api_413"
-                ? []
-                : [
-                    {
-                      id: "todo",
-                      content: "x".repeat(AGENT_TRIGGER_PAYLOAD_MAX_BYTES),
-                      status: "pending",
-                    },
-                  ],
+              path === "full_access"
+                ? [{ id: "todo", content: oversizedText, status: "pending" }]
+                : [],
           }),
         } as any,
       );

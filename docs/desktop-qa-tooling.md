@@ -94,6 +94,75 @@ boundary from hostnames or the word Preview and cannot bypass deployment protect
 from the launcher; an explicitly authorized Production UI task uses the installed
 app directly.
 
+## Preflight and result reuse
+
+Choose web or native based on the behavior you need to verify.
+
+```bash
+# Web-only work: prints the Vercel Preview route. Reads no files, starts nothing.
+corepack pnpm desktop:qa preflight web
+
+# Windows QA from a host: prints manual VM ownership/sign-in guidance only.
+# It never launches, pauses or signs in to a VM, and a running VM is not proof
+# of availability. Run preflight native inside the guest for guest-local checks;
+# start/serve remain macOS/Linux only.
+corepack pnpm desktop:qa preflight windows-vm
+
+# Native: one bounded case name per acceptance check.
+corepack pnpm desktop:qa preflight native .artifacts/desktop-qa/config.json chat-sandbox
+```
+
+`preflight native` starts with the executable hash and containment, the dependency
+guard, the loopback frontend HEAD probe and the loopback backend and relay
+listeners. The first local blocker stops it before any provider control-plane
+request. It then runs the same target verification as `verify`; a missing or
+mismatched target is BLOCKED. Exit status is `0` for READY, `2` for BLOCKED and
+`1` for invalid input or another command failure. It always lists the checks it
+cannot infer: QA window and lock state, the actual native account, and the
+worker run/Desktop transport. A TCP listener is not browser, WebView or relay auth.
+
+Add a `reuse` field to the launch record if you have verified build or
+deployment identities for all three services.
+
+```json
+{
+  "reuse": {
+    "frontend": "REPLACE_WITH_64_HEX_FRONTEND_REVISION_FINGERPRINT",
+    "backend": "REPLACE_WITH_64_HEX_BACKEND_REVISION_FINGERPRINT",
+    "relay": "REPLACE_WITH_64_HEX_RELAY_REVISION_FINGERPRINT",
+    "profile": "qa-synthetic"
+  }
+}
+```
+
+Use the existing SHA-256 for each artifact, or calculate it from the verified,
+non-secret build or deployment identifier. Refresh these values if the active
+build or deployment changes. Use a synthetic lowercase slug for `profile`.
+With `reuse`, a clean checkout and `.next/BUILD_ID`, a
+READY preflight prints a fingerprint over the normalized config, case, verified
+executable hash, checkout commit, host name, platform/arch/OS release, build-ID
+hash and those revisions. Otherwise it prints why reuse is unavailable.
+
+After running the case, use the fingerprint printed by preflight to record the
+result. If preflight did not print one, put the outcome in the QA handoff.
+
+```bash
+corepack pnpm desktop:qa record-result .artifacts/desktop-qa/config.json chat-sandbox pass <fingerprint>
+```
+
+`record-result` accepts `pass`, `fail` or `blocked`. It recomputes the identity
+locally, without provider requests, and refuses a mismatch. It atomically
+replaces one owner-only file per case under `.artifacts/desktop-qa/.receipts/`.
+A later READY preflight for the same case shows the prior PASS only when the
+fingerprint matches; the latest FAIL/BLOCKED, another case, or any identity
+change requires a fresh run. If a local service is offline, preflight can cite a
+matching historical pass while still reporting BLOCKED. If the checkout or
+frontend build changes during fingerprinting, it reports BLOCKED and asks
+you to rerun preflight. Before relying
+on a saved result for a current native session, confirm the QA window and
+signed-in account. Collect a new observation when the check requires fresh
+evidence.
+
 ## Launch, inspect and stop
 
 Install this worktree's dependencies with `corepack pnpm install --frozen-lockfile`.
@@ -158,6 +227,8 @@ Files stay under the worktree's ignored `.artifacts/desktop-qa/<session>/`:
 - `observations.jsonl`: bounded run ID, status and sandbox transport explicitly
   recorded by the operator after inspection. No automatic backend verification
   or application-content capture is implied.
+- `.receipts/<case>.json`: the latest operator-observed outcome and fingerprint
+  for one case, written by `record-result`.
 
 The local frontend check sends a bounded, unauthenticated HEAD request without
 following redirects or recording response bodies/headers. Backend and relay
@@ -190,8 +261,9 @@ local full run. Avoid overlapping tests with builds, and investigate contention
 instead of increasing test timeouts or retrying the full suite repeatedly.
 
 Run `corepack pnpm test:desktop-qa` for containment/hash checks, environment and
-credential rejection, bounded health probes, output privacy, process ownership
-and shutdown escalation. Tests use disposable local processes and listeners.
+credential rejection, bounded health probes, output privacy, process ownership,
+shutdown escalation, preflight ordering, and result reuse. Tests use disposable
+local processes and listeners.
 For manual native validation, launch a verified QA build, inspect the exact
 window with Computer Use, record the actual transport/run, stop the session and
 confirm the QA process exits while unrelated apps/services remain running.

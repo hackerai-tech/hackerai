@@ -17,21 +17,31 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
+import {
+  ChatContextDetails,
+  type ContextMeterData,
+} from "@/app/components/ChatContextDetails";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
+  /** This existing Agent chat's context; shown only when opted in. */
+  contextMeter?: ContextMeterData;
   attachmentsDisabled?: boolean;
   replyBack?: { onClick: () => void; disabled: boolean };
   goalControl?: React.ReactNode;
   goalMenu?: AttachmentButtonProps["goalMenu"];
   onAttachClick: AttachmentButtonProps["onAttachClick"];
+  /** Confirm before moving a chat that already has messages elsewhere. */
+  confirmEnvironmentChange?: boolean;
 }
 
 export function ChatInputToolbar({
+  contextMeter,
   goalControl,
   replyBack,
   goalMenu,
   onAttachClick,
   attachmentsDisabled = false,
+  confirmEnvironmentChange = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -48,6 +58,12 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const showContextMeter = Boolean(
+    contextMeter &&
+    user &&
+    isAgentMode(chatMode) &&
+    !submitStopProps.isReplyingToAgent,
+  );
   const showChatModeSelector = Boolean(
     user &&
     chatModeAccessResolved &&
@@ -120,6 +136,7 @@ export function ChatInputToolbar({
                   <SandboxSelector
                     value={sandboxPreference}
                     onChange={setSandboxPreference}
+                    confirmEnvironmentChange={confirmEnvironmentChange}
                     size="toolbar"
                   />
                 </div>
@@ -133,6 +150,14 @@ export function ChatInputToolbar({
         className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"
         data-testid="chat-input-primary-actions"
       >
+        {showContextMeter && contextMeter ? (
+          <ChatContextDetails
+            // A different chat never inherits an open popover or hint.
+            key={contextMeter.chatId}
+            snapshot={contextMeter.snapshot}
+            completedCompactions={contextMeter.completedCompactions}
+          />
+        ) : null}
         {user && !submitStopProps.isReplyingToAgent ? (
           <ModelSelector
             value={selectedModel}

@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-agent-input-notifications"
+description = "Allows the trusted HackerAI page to read notification permission and request generic Agent input alerts by chat ID."
+commands.allow = [
+  "agent_notification_permission",
+  "show_agent_input_notification",
+]

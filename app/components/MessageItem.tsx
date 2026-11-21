@@ -254,7 +254,7 @@ export const MessageItem = memo(function MessageItem({
     workPartIndexes,
     trailingTextParts,
     trailingTextOffset,
-    savedHuntResults,
+    savedResults,
   } = useMemo(() => splitWorkedForParts(message.parts), [message.parts]);
   const workProjection = useMemo(
     () =>
@@ -267,10 +267,10 @@ export const MessageItem = memo(function MessageItem({
     workPresentation === "timeline-shell" ? trailingTextParts : nonFileParts;
   const shouldRenderWorkedFor =
     message.metadata?.mode === "agent" && workPresentation === "inline";
-  // Saved hunt results are kept out of the work and shown once below the
-  // answer, so they stay visible when Worked for is collapsed. Other views
-  // render them in place with the rest of the message.
-  const showsSavedHuntResults =
+  // Saved hunt results and read reports are kept out of the work and shown
+  // once below the answer, so they stay visible when Worked for is collapsed.
+  // Other views render them in place with the rest of the message.
+  const showsSavedResults =
     shouldRenderWorkedFor || workPresentation === "timeline-shell";
 
   const shouldCollapseUserMessage =
@@ -337,6 +337,11 @@ export const MessageItem = memo(function MessageItem({
     if (isUser || !effectiveFileDetails) return [];
     return effectiveFileDetails.filter((f) => f.url || f.fileId || f.s3Key);
   }, [isUser, effectiveFileDetails]);
+  const showsFileParts = !isUser && hasFileContent && nonFileParts.length === 0;
+  const showsSavedFiles =
+    !isUser &&
+    savedFiles.length > 0 &&
+    !(status === "streaming" && isLastAssistantMessage);
 
   const renderAssistantPart = (
     part: ChatMessage["parts"][number],
@@ -373,10 +378,10 @@ export const MessageItem = memo(function MessageItem({
     </>
   );
 
-  const renderSavedHuntResults = () =>
-    showsSavedHuntResults && savedHuntResults.length > 0 ? (
-      <div key="saved-hunt-results" className="space-y-3">
-        {savedHuntResults.map(({ part, partIndex }) =>
+  const renderSavedResults = () =>
+    showsSavedResults && savedResults.length > 0 ? (
+      <div key="saved-results" className="space-y-3">
+        {savedResults.map(({ part, partIndex }) =>
           renderAssistantPart(part, partIndex),
         )}
       </div>
@@ -483,7 +488,7 @@ export const MessageItem = memo(function MessageItem({
 
             {/* Render text and other parts */}
             {(renderedNonFileParts.length > 0 ||
-              (showsSavedHuntResults && savedHuntResults.length > 0)) && (
+              (showsSavedResults && savedResults.length > 0)) && (
               <div
                 data-testid="message-content"
                 className={`${
@@ -550,7 +555,7 @@ export const MessageItem = memo(function MessageItem({
                         sharedFileDetails={effectiveFileDetails}
                       />
                     ))}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : shouldShowWorkingTimer ? (
                   <>
@@ -582,14 +587,14 @@ export const MessageItem = memo(function MessageItem({
                         )}
                       </div>
                     )}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : trailingTextParts.length === 0 ? (
                   // If a run stops before producing final text, keep the work
                   // visible inline instead of leaving only a collapsed header.
                   <>
                     {renderWorkParts()}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 ) : (
                   <>
@@ -619,14 +624,14 @@ export const MessageItem = memo(function MessageItem({
                         )}
                       </div>
                     )}
-                    {renderSavedHuntResults()}
+                    {renderSavedResults()}
                   </>
                 )}
               </div>
             )}
 
             {/* For assistant messages without the user-specific styling, render files mixed with content */}
-            {!isUser && fileParts.length > 0 && nonFileParts.length === 0 && (
+            {showsFileParts && (
               <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
                 {message.parts.map((part, partIndex) => (
                   <MessagePartHandler
@@ -645,68 +650,66 @@ export const MessageItem = memo(function MessageItem({
         )}
 
         {/* Saved files from tools (hidden only on the actively streaming message - previous messages always show files) */}
-        {!isUser &&
-          savedFiles.length > 0 &&
-          !(status === "streaming" && isLastAssistantMessage) && (
-            <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
-              {savedFiles.length > 2 ? (
-                <>
-                  {/* Show only last file when more than 2 */}
-                  <FilePartRenderer
-                    key={`${message.id}-saved-file-${savedFiles.length - 1}`}
-                    part={{
-                      url: savedFiles[savedFiles.length - 1].url ?? undefined,
-                      fileId: savedFiles[savedFiles.length - 1].fileId,
-                      s3Key: savedFiles[savedFiles.length - 1].s3Key,
-                      name: savedFiles[savedFiles.length - 1].name,
-                      filename: savedFiles[savedFiles.length - 1].name,
-                      mediaType: savedFiles[savedFiles.length - 1].mediaType,
-                      sizeBytes: savedFiles[savedFiles.length - 1].sizeBytes,
-                    }}
-                    partIndex={savedFiles.length - 1}
-                    messageId={message.id}
-                    totalFileParts={savedFiles.length}
+        {showsSavedFiles && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
+            {savedFiles.length > 2 ? (
+              <>
+                {/* Show only last file when more than 2 */}
+                <FilePartRenderer
+                  key={`${message.id}-saved-file-${savedFiles.length - 1}`}
+                  part={{
+                    url: savedFiles[savedFiles.length - 1].url ?? undefined,
+                    fileId: savedFiles[savedFiles.length - 1].fileId,
+                    s3Key: savedFiles[savedFiles.length - 1].s3Key,
+                    name: savedFiles[savedFiles.length - 1].name,
+                    filename: savedFiles[savedFiles.length - 1].name,
+                    mediaType: savedFiles[savedFiles.length - 1].mediaType,
+                    sizeBytes: savedFiles[savedFiles.length - 1].sizeBytes,
+                  }}
+                  partIndex={savedFiles.length - 1}
+                  messageId={message.id}
+                  totalFileParts={savedFiles.length}
+                />
+                {/* View all files button */}
+                <button
+                  onClick={() =>
+                    onShowAllFiles(message, effectiveFileDetails || [])
+                  }
+                  className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
+                  type="button"
+                  aria-label="View all files"
+                >
+                  <FileSearch
+                    className="w-4 h-4 text-muted-foreground"
+                    strokeWidth={2}
                   />
-                  {/* View all files button */}
-                  <button
-                    onClick={() =>
-                      onShowAllFiles(message, effectiveFileDetails || [])
-                    }
-                    className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
-                    type="button"
-                    aria-label="View all files"
-                  >
-                    <FileSearch
-                      className="w-4 h-4 text-muted-foreground"
-                      strokeWidth={2}
-                    />
-                    <span className="text-sm text-muted-foreground">
-                      View all files in this task
-                    </span>
-                  </button>
-                </>
-              ) : (
-                /* Show all files when 2 or less */
-                savedFiles.map((file, fileIndex) => (
-                  <FilePartRenderer
-                    key={`${message.id}-saved-file-${fileIndex}`}
-                    part={{
-                      url: file.url ?? undefined,
-                      fileId: file.fileId,
-                      s3Key: file.s3Key,
-                      name: file.name,
-                      filename: file.name,
-                      mediaType: file.mediaType,
-                      sizeBytes: file.sizeBytes,
-                    }}
-                    partIndex={fileIndex}
-                    messageId={message.id}
-                    totalFileParts={savedFiles.length}
-                  />
-                ))
-              )}
-            </div>
-          )}
+                  <span className="text-sm text-muted-foreground">
+                    View all files in this task
+                  </span>
+                </button>
+              </>
+            ) : (
+              /* Show all files when 2 or less */
+              savedFiles.map((file, fileIndex) => (
+                <FilePartRenderer
+                  key={`${message.id}-saved-file-${fileIndex}`}
+                  part={{
+                    url: file.url ?? undefined,
+                    fileId: file.fileId,
+                    s3Key: file.s3Key,
+                    name: file.name,
+                    filename: file.name,
+                    mediaType: file.mediaType,
+                    sizeBytes: file.sizeBytes,
+                  }}
+                  partIndex={fileIndex}
+                  messageId={message.id}
+                  totalFileParts={savedFiles.length}
+                />
+              ))
+            )}
+          </div>
+        )}
 
         {/* Inline summarization status - only shown when last assistant message has content */}
         {isLastAssistantMessage &&
@@ -726,6 +729,15 @@ export const MessageItem = memo(function MessageItem({
           status !== "streaming" && (
             <FinishReasonNotice
               finishReason={finishReason}
+              lastSavedStep={
+                messageText.trim() ||
+                showsFileParts ||
+                showsSavedFiles ||
+                workProjection.activities.length > 0 ||
+                message.parts.some((part) => part.type.startsWith("tool-"))
+                  ? "agent-progress"
+                  : "conversation"
+              }
               continueDisabledReason={continueDisabledReason}
               status={status}
               mode={mode}

@@ -80,6 +80,7 @@ import {
   assertLocalSandboxFallbackAllowed,
   getSandboxWithFallbackGuard,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
+import { AttachmentLocalCopySetupDeadlineError } from "@/lib/ai/tools/utils/attachment-command";
 import {
   getUploadBasePath,
   hasLocalDesktopSourcePaths,
@@ -125,6 +126,11 @@ const AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION: Record<SubscriptionTier, number> =
     ultra: 10,
     team: 5,
   };
+
+// Both Agent routes have a 60s maxDuration. Desktop local-copy shell/path
+// setup for one admission shares this budget from handler entry, leaving room
+// for an in-flight setup command's bounded Stop and the response.
+const DESKTOP_LOCAL_COPY_SETUP_BUDGET_MS = 45_000;
 
 // Trigger.dev rejects a single trigger payload above 3 MiB. tasks.trigger()
 // offloads large packets, but sessions.start() sends triggerConfig.basePayload
@@ -1199,6 +1205,8 @@ export const createAgentTriggerPost = ({
                 return sandbox;
               },
               {
+                localCopySetupDeadlineAt:
+                  routeStartedAt + DESKTOP_LOCAL_COPY_SETUP_BUDGET_MS,
                 logContext: {
                   service: "hackerai-web",
                   requestId:
@@ -1207,6 +1215,14 @@ export const createAgentTriggerPost = ({
                   chatId: chatId.slice(0, 128),
                 },
               },
+            );
+          } catch (error) {
+            // Unconfirmed cancellation and other failures keep their own path.
+            if (!(error instanceof AttachmentLocalCopySetupDeadlineError))
+              throw error;
+            throw new ChatSDKError(
+              "bad_request:api",
+              "Your computer took too long to prepare local attachments. Reconnect this computer, then send the message again.",
             );
           } finally {
             desktopAttachmentStep = "close_sandbox";
@@ -1382,7 +1398,10 @@ export const createAgentTriggerPost = ({
         regionalSubscriptionCountry,
         messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
-        baseTodos: Array.isArray(todos) ? todos : [],
+        // Trigger's sessions.start() caps the entire inline body at 32 KiB.
+        // The Agent worker loads todos from Convex, so the session doesn't need
+        // the client's duplicate list. Keep the field's array shape.
+        baseTodos: approvalSessionId || !Array.isArray(todos) ? [] : todos,
         sandboxPreference,
         agentPermissionMode: permissionSnapshot.mode,
         approvalSessionId,

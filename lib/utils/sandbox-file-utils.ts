@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  CURL_PROGRESS_WRITE_OUT,
   copyAttachmentDownloadFailureContext,
   recordAttachmentDownloadDnsFallback,
   recordAttachmentDownloadFailure,
@@ -31,6 +32,7 @@ import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
   AttachmentCommandCleanupError,
+  AttachmentLocalCopySetupDeadlineError,
   getAttachmentCommandFailureContext,
   copyAttachmentCommandFailureContext,
   type AttachmentCommandFailureContext,
@@ -104,6 +106,8 @@ type SandboxCommandResult = {
   error?: string;
   stderrFromErrorMessage?: true;
   exitCodeFromErrorMessage?: true;
+  /** The SDK supplied no stdout string; `stdout` is only a placeholder. */
+  stdoutUnreported?: true;
 };
 
 type LocalCopyFailureReason =
@@ -184,6 +188,10 @@ type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
 
 type UploadSandboxFilesOptions = {
   signal?: AbortSignal;
+  /** Absolute epoch ms shared by every local copy's read-only setup in this
+   * call, including fallbacks; never reset per file or attempt. A copy whose
+   * write already started is not interrupted. */
+  localCopySetupDeadlineAt?: number;
   retryAfterReconnectOnTransientFailure?: boolean | (() => boolean);
   logContext?: {
     service: "agent-long" | "chat-handler" | "hackerai-web";
@@ -255,15 +263,18 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
       ? (error as { stdout?: unknown; stderr?: unknown })
       : {};
   const message = error instanceof Error ? error.message : String(error);
+  const stdout = commandError.stdout;
   const stderr = commandError.stderr;
+  const hasReportedStdout = typeof stdout === "string";
   const hasReportedStderr = typeof stderr === "string" && stderr.length > 0;
 
   return copyAttachmentCommandFailureContext(error, {
-    stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
+    stdout: hasReportedStdout ? stdout : "",
     stderr: hasReportedStderr ? stderr : message,
     exitCode,
     error: message,
     ...(!hasReportedStderr && { stderrFromErrorMessage: true as const }),
+    ...(!hasReportedStdout && { stdoutUnreported: true as const }),
     ...(reportedExitCode === null && {
       exitCodeFromErrorMessage: true as const,
     }),
@@ -461,10 +472,14 @@ const runSandboxCommand = async (
         options,
       );
       signal?.throwIfAborted();
+      const stdout = result?.stdout;
       return {
-        stdout: result?.stdout ?? "",
+        stdout: stdout ?? "",
         stderr: result?.stderr ?? "",
         exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
+        ...(typeof stdout !== "string" && {
+          stdoutUnreported: true as const,
+        }),
       };
     } catch (error) {
       throwIfAttachmentAborted(signal, error);
@@ -947,7 +962,8 @@ type ObservedCurlFailure = Parameters<
 /**
  * A message-derived exit may preserve existing control flow without proving a
  * process result. Only a confirmed E2B command exit is evidence, and only SDK
- * stderr is evidence of what curl printed.
+ * stderr is evidence of what curl printed. Its own SDK stdout carries only the
+ * command's static progress marker, read by the diagnostic for exit 28 or 35.
  */
 const observedCloudCurlFailure = (
   sandbox: any,
@@ -976,6 +992,9 @@ const observedCloudCurlFailure = (
         exitCode: result.exitCode,
         // The legacy error keeps its fallback text; it is not SDK stderr.
         stderr: result.stderrFromErrorMessage ? "" : result.stderr,
+        ...(!result.stdoutUnreported && {
+          cloudCurlProgressStdout: result.stdout,
+        }),
       };
     }
   } catch {
@@ -1036,9 +1055,12 @@ const downloadFileToSandbox = async (
     const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
     const MAX_ATTEMPTS = 3;
 
+    // The body goes to -o, so stdout carries only each invocation's static
+    // progress marker, read only from its own observed failing result.
     const buildCurlCommand = (dnsPin?: string) =>
       `curl -fsSL --connect-timeout 10 --max-time 120 ` +
       `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
+      `-w ${shellQuote(CURL_PROGRESS_WRITE_OUT)} ` +
       (dnsPin ? `--resolve ${shellQuote(dnsPin)} ` : "") +
       `-o '${escapedLocalPath}' '${escapedUrl}'`;
     const curlCmd = buildCurlCommand();
@@ -1161,6 +1183,7 @@ const copyLocalFileToSandbox = async (
   sourcePath: string,
   localPath: string,
   signal?: AbortSignal,
+  setupDeadlineAt?: number,
 ): Promise<void> => {
   signal?.throwIfAborted();
   if (!sandbox.files?.copyLocal) {
@@ -1172,7 +1195,11 @@ const copyLocalFileToSandbox = async (
   await sandbox.files.copyLocal(
     sourcePath,
     localPath,
-    ...(signal ? [{ signal }] : []),
+    ...(setupDeadlineAt !== undefined
+      ? [{ ...(signal && { signal }), setupDeadlineAt }]
+      : signal
+        ? [{ signal }]
+        : []),
   );
   signal?.throwIfAborted();
 };
@@ -1254,12 +1281,19 @@ const stageSandboxFile = async (
   stagingAttempt: "initial" | "reconnect_retry",
 ): Promise<SandboxFilePathRewrite | null> => {
   const signal = options?.signal;
+  const setupDeadlineAt = options?.localCopySetupDeadlineAt;
   signal?.throwIfAborted();
   try {
     if (file.kind === "url") {
       await downloadFileToSandbox(sandbox, file.url, file.localPath, signal);
     } else {
-      await copyLocalFileToSandbox(sandbox, file.path, file.localPath, signal);
+      await copyLocalFileToSandbox(
+        sandbox,
+        file.path,
+        file.localPath,
+        signal,
+        setupDeadlineAt,
+      );
     }
     return null;
   } catch (error) {
@@ -1267,7 +1301,6 @@ const stageSandboxFile = async (
     if (!shouldTryUploadPathFallback(file.localPath, error)) {
       throw error;
     }
-
     const sandboxFields = getSandboxLogFields(sandbox);
     const diagnostics =
       sandboxFields.sandbox_provider === "e2b" && probeBudget.remaining-- > 0
@@ -1345,6 +1378,14 @@ const stageSandboxFile = async (
       isE2BSandbox(sandbox)
         ? reserveCloudUploadFallbackPath
         : resolveWritableUploadFallbackPath;
+    // Reserving a fallback writes a directory; never start it past the budget.
+    if (
+      file.kind === "localPath" &&
+      setupDeadlineAt !== undefined &&
+      Date.now() >= setupDeadlineAt
+    )
+      throw new AttachmentLocalCopySetupDeadlineError();
+
     let fallbackPath: string | null;
     try {
       fallbackPath = await reserveFallbackPath(
@@ -1382,6 +1423,7 @@ const stageSandboxFile = async (
           fallbackFile.path,
           fallbackFile.localPath,
           signal,
+          setupDeadlineAt,
         );
       }
     } catch (fallbackError) {
@@ -1651,6 +1693,14 @@ const uploadSandboxFilesOnce = async (
   );
   if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
   options?.signal?.throwIfAborted();
+  // The caller's budget ends this admission; it is not a per-file failure to
+  // report, fall back from or retry after reconnecting.
+  const setupDeadline = results.find(
+    (result) =>
+      result.status === "rejected" &&
+      result.reason instanceof AttachmentLocalCopySetupDeadlineError,
+  );
+  if (setupDeadline?.status === "rejected") throw setupDeadline.reason;
 
   const failedIndices = results
     .map((r, i) => (r.status === "rejected" ? i : -1))

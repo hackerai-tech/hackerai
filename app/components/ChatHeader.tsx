@@ -244,7 +244,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 </Button>
               )}
               <div className="flex flex-row items-center gap-[6px] min-w-0 text-foreground text-lg font-medium">
-                <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
+                <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2 min-w-0">
                   {isChatNotFound ? (
                     ""
                   ) : (
@@ -263,7 +263,10 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           </Tooltip>
                         </TooltipProvider>
                       )}
-                      {taskTitle || (isExistingChat ? " " : "New Task")}
+                      {/* A flex container cannot ellipsize bare text; this span can. */}
+                      <span className="min-w-0 truncate">
+                        {taskTitle || (isExistingChat ? " " : "New Task")}
+                      </span>
                     </>
                   )}
                 </span>

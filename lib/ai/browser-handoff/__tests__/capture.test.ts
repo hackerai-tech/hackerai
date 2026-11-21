@@ -1,12 +1,15 @@
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   browserSessionReadFailureContext,
+  browserPauseFailureContext,
   browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
   getPrivateStreamPort,
   renewBrowserRelay,
   resizeBrowserViewport,
+  setAgentBrowserPaused,
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
@@ -23,6 +26,9 @@ import {
   BROWSER_DAEMON_PROGRAM,
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   BROWSER_DAEMON_SCREENSHOT_REFUSALS,
+  BROWSER_DAEMON_WAIT_DEFERRED,
+  BROWSER_DAEMON_OPEN_DEFERRED,
+  BROWSER_DAEMON_SESSION_CLOSED,
   browserDaemonCommand,
 } from "../daemon-program";
 
@@ -1109,6 +1115,652 @@ it("keeps stream-port lookups for TAKE, input and relays on the daemon request",
   ]);
 });
 
+/** The fixture with one stream-status helper output for every status request. */
+function statusFixture(stdout: string) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"stream_status"')
+        ? { exitCode: 0, stdout }
+        : run(command),
+    ),
+  );
+  return sandbox;
+}
+
+it("returns a typed frameless deferral for an opted-in fresh capture during a verified WAIT", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    { deferDuringWait: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect(outcome).not.toBeInstanceOf(BrowserPreviewUnavailable);
+  // Not a capture failure: no diagnostics, bridge, screenshot or file access.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_wait: true },
+  ]);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["no WAIT proof (a port reply)", JSON.stringify({ data: { port: 1234 } })],
+  [
+    "a daemon reply carrying the deferral key",
+    JSON.stringify({
+      id: "hackerai-preview",
+      success: true,
+      wait_deferred: 1,
+      data: { port: 1234 },
+    }),
+  ],
+])(
+  "keeps the strict fresh capture after an opt-in with %s",
+  async (_case, stdout) => {
+    const sandbox = statusFixture(stdout);
+    const before = Date.now();
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      jest.fn(),
+      { deferDuringWait: true },
+    );
+    const requests = daemonRequests(sandbox.commands.run);
+    // The screenshot keeps the same opt-in; its helper declines without a WAIT.
+    expect(requests).toEqual([
+      { action: "stream_status", defer_wait: true },
+      {
+        action: "screenshot",
+        path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+        format: "jpeg",
+        quality: 65,
+        defer_wait: true,
+      },
+    ]);
+    expect(sandbox.commands.run.mock.calls[1][0]).toMatch(/ 1234 frame$/);
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(result.capturedAt).toBeGreaterThanOrEqual(before);
+  },
+);
+
+it("treats the deferral literal as an ordinary invalid status reply without the opt-in", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+  ).catch((error: unknown) => error);
+  // Old readers keep the exact strict failure and its diagnostics.
+  expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+  expect((outcome as BrowserPreviewUnavailable).state).toBe("loading");
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status" },
+  ]);
+  expect(observe.mock.calls).toEqual([
+    [
+      {
+        capture_stage: "stream_status",
+        capture_error_kind: "preview_unavailable",
+        capture_command_exit_code: "none",
+      },
+    ],
+  ]);
+});
+
+it("returns a typed OPEN deferral for an opted-in fresh status behind a verified running OPEN", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_OPEN_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    // The passive GET's existing status options ride beside the new opt-in.
+    {
+      deferDuringWait: true,
+      deferDuringOpen: true,
+      recognizeClosed: true,
+      observeStatusProgress: true,
+    },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect((outcome as BrowserPreviewRefreshDeferred).reason).toBe("open");
+  // Not a capture failure: no diagnostics, bridge, screenshot or file access.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    {
+      action: "stream_status",
+      defer_wait: true,
+      defer_open: true,
+      recognize_closed: true,
+      observe_progress: true,
+    },
+  ]);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it("keeps the existing WAIT deferral reason when both kinds are negotiated", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { deferDuringWait: true, deferDuringOpen: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect((outcome as BrowserPreviewRefreshDeferred).reason).toBe("wait");
+});
+
+it.each<[string, Record<string, boolean>, string, number]>([
+  ["only WAIT was negotiated", { deferDuringWait: true }, "", 0],
+  ["nothing was negotiated", {}, "", 0],
+  ["the status exited nonzero", { deferDuringOpen: true }, "", 3],
+  [
+    "a daemon reply carries the key",
+    { deferDuringOpen: true },
+    JSON.stringify({ id: "hackerai-preview", success: true, open_deferred: 1 }),
+    0,
+  ],
+])(
+  "keeps the strict status failure when %s",
+  async (_case, options, stdout, exitCode) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command: string) =>
+        command.includes('"action":"stream_status"')
+          ? { exitCode, stdout: stdout || BROWSER_DAEMON_OPEN_DEFERRED }
+          : run(command),
+      ),
+    );
+    const observe = jest.fn();
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      options,
+    ).catch((error: unknown) => error);
+    expect(outcome).not.toBeInstanceOf(BrowserPreviewRefreshDeferred);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    // Each keeps its original state and stream_status diagnostics.
+    expect((outcome as BrowserPreviewUnavailable).state).toBe(
+      exitCode === 0 ? "loading" : "closed",
+    );
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "stream_status",
+    });
+    expect(
+      daemonRequests(sandbox.commands.run).every(
+        (request) =>
+          "defer_open" in request === (options.deferDuringOpen === true),
+      ),
+    ).toBe(true);
+  },
+);
+
+it("never asks the fresh screenshot to defer for an OPEN or honors its literal there", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"screenshot"')
+        ? { exitCode: 0, stdout: BROWSER_DAEMON_OPEN_DEFERRED }
+        : run(command),
+    ),
+  );
+  const result = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { deferDuringOpen: true },
+  );
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_open: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+    },
+  ]);
+  expect(result.image).toBe(
+    `data:image/jpeg;base64,${fresh.toString("base64")}`,
+  );
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["a cached view", false, undefined],
+  ["a caller-supplied port", true, 1234],
+] as const)(
+  "never requests an OPEN deferral for %s",
+  async (_case, requireFresh, streamPort) => {
+    const sandbox = fixture();
+    await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      streamPort,
+      undefined,
+      { deferDuringOpen: true },
+    );
+    expect(
+      daemonRequests(sandbox.commands.run).some(
+        (request) => "defer_open" in request,
+      ),
+    ).toBe(false);
+  },
+);
+
+/** The fixture with one fresh-screenshot helper outcome after a successful status. */
+function screenshotFixture(outcome: () => Promise<unknown>) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"screenshot"') ? outcome() : run(command),
+    ),
+  );
+  return sandbox;
+}
+
+it("defers an opted-in fresh screenshot when a WAIT starts after status succeeded", async () => {
+  const sandbox = screenshotFixture(async () => ({
+    exitCode: 0,
+    stdout: BROWSER_DAEMON_WAIT_DEFERRED,
+  }));
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    { deferDuringWait: true, recognizeClosed: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  // Status answered, then the screenshot yielded: no failure context.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_wait: true, recognize_closed: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+      defer_wait: true,
+      recognize_closed: true,
+    },
+  ]);
+  // The helper sent no screenshot: no fresh data I/O or cleanup call.
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.read).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["an unnegotiated capture", false, BROWSER_DAEMON_WAIT_DEFERRED],
+  [
+    "a daemon reply carrying the deferral key",
+    true,
+    JSON.stringify({ id: "hackerai-preview", success: true, wait_deferred: 1 }),
+  ],
+])(
+  "continues the fresh screenshot for %s",
+  async (_case, deferDuringWait, stdout) => {
+    const sandbox = screenshotFixture(async () => ({ exitCode: 0, stdout }));
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      jest.fn(),
+      { deferDuringWait },
+    );
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(
+      daemonRequests(sandbox.commands.run).every(
+        (request) => "defer_wait" in request === deferDuringWait,
+      ),
+    ).toBe(true);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([
+  [
+    "a returned nonzero result",
+    async () => ({ exitCode: 3, stdout: BROWSER_DAEMON_WAIT_DEFERRED }),
+  ],
+  [
+    "an SDK exit rejection",
+    async () => {
+      throw new CommandExitError({
+        exitCode: 3,
+        stderr: "",
+        stdout: BROWSER_DAEMON_WAIT_DEFERRED,
+      });
+    },
+  ],
+])(
+  "keeps the strict screenshot failure and cleanup for the literal on %s",
+  async (_case, outcome) => {
+    const sandbox = screenshotFixture(outcome);
+    const observe = jest.fn();
+    const error = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { deferDuringWait: true },
+    ).catch((caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(BrowserPreviewRefreshDeferred);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "fresh_screenshot",
+    });
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([
+  ["a cached view", false, undefined],
+  ["a caller-supplied port", true, 1234],
+] as const)(
+  "never requests a deferral for %s",
+  async (_case, requireFresh, streamPort) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+    const run = sandbox.commands.run.getMockImplementation()!;
+    sandbox.commands.run.mockImplementation(async (command, options) =>
+      command.includes('"owned_port":true')
+        ? { exitCode: 0, stdout: JSON.stringify({ data: { port: 1234 } }) }
+        : run(command, options),
+    );
+    await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      streamPort,
+      undefined,
+      { deferDuringWait: true },
+    );
+    const requests = daemonRequests(sandbox.commands.run);
+    expect(requests.some((request) => "defer_wait" in request)).toBe(false);
+    expect(requests[0]).toEqual(
+      streamPort === undefined
+        ? { action: "stream_status", owned_port: true }
+        : expect.objectContaining({ action: "screenshot" }),
+    );
+  },
+);
+
+it.each([
+  ["a fresh view", true, {}, { action: "stream_status" }],
+  ["a cached view", false, {}, { action: "stream_status", owned_port: true }],
+  [
+    "a WAIT-deferring fresh view",
+    true,
+    { deferDuringWait: true },
+    { action: "stream_status", defer_wait: true },
+  ],
+] as const)(
+  "returns the existing closed state for a verified close on %s",
+  async (_case, requireFresh, extra, request) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      jest.fn(),
+      { ...extra, recognizeClosed: true },
+    ).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("closed");
+    // The opt-in rides beside each unchanged status form; nothing else runs.
+    expect(daemonRequests(sandbox.commands.run)).toEqual([
+      { ...request, recognize_closed: true },
+    ]);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  "treats the closed literal as an ordinary invalid status reply without the opt-in (fresh:%s)",
+  async (requireFresh) => {
+    const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      jest.fn(),
+      { deferDuringWait: true },
+    ).catch((error: unknown) => error);
+    // Older readers and every other caller keep the exact strict result.
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("loading");
+    expect(
+      daemonRequests(sandbox.commands.run).some(
+        (request) => "recognize_closed" in request,
+      ),
+    ).toBe(false);
+  },
+);
+
+it("keeps the normal capture when an opted-in status returns a port", async () => {
+  const sandbox = fixture();
+  const result = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { recognizeClosed: true },
+  );
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", recognize_closed: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+      recognize_closed: true,
+    },
+  ]);
+  expect(result.image).toBe(
+    `data:image/jpeg;base64,${fresh.toString("base64")}`,
+  );
+});
+
+it("never asks to recognize a close for a caller-supplied port", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_SESSION_CLOSED);
+  await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    1234,
+    undefined,
+    { recognizeClosed: true },
+  );
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+    },
+  ]);
+});
+
+it.each([
+  ["a fresh view", {}, {}],
+  [
+    "a WAIT-deferring fresh view",
+    { deferDuringWait: true },
+    { defer_wait: true },
+  ],
+] as const)(
+  "returns the existing closed state when the fresh screenshot finds a verified close on %s",
+  async (_case, extra, flags) => {
+    const sandbox = screenshotFixture(async () => ({
+      exitCode: 0,
+      stdout: BROWSER_DAEMON_SESSION_CLOSED,
+    }));
+    const observe = jest.fn();
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { ...extra, recognizeClosed: true },
+    ).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("closed");
+    const requests = daemonRequests(sandbox.commands.run);
+    // One status and one screenshot: no extra command or retry.
+    expect(requests).toEqual([
+      { action: "stream_status", ...flags, recognize_closed: true },
+      {
+        action: "screenshot",
+        path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+        format: "jpeg",
+        quality: 65,
+        ...flags,
+        recognize_closed: true,
+      },
+    ]);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    // No screenshot read, but the daemon may already have written the file.
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+    expect(sandbox.files.remove.mock.calls).toEqual([
+      [requests[1].path, expect.objectContaining({ user: "root" })],
+    ]);
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          capture_stage: "fresh_screenshot",
+          capture_error_kind: "preview_unavailable",
+          capture_command_exit_code: "none",
+        },
+      ],
+    ]);
+  },
+);
+
+it.each<[string, boolean, number | undefined, string]>([
+  ["without the opt-in", false, undefined, BROWSER_DAEMON_SESSION_CLOSED],
+  ["for a caller-supplied port", true, 1234, BROWSER_DAEMON_SESSION_CLOSED],
+  ["for a non-literal marker", true, undefined, '{"session_closed":true}'],
+  [
+    "for the literal with a trailing newline",
+    true,
+    undefined,
+    BROWSER_DAEMON_SESSION_CLOSED + "\n",
+  ],
+  [
+    "for a daemon reply carrying the marker",
+    true,
+    undefined,
+    JSON.stringify({
+      id: "hackerai-preview",
+      success: true,
+      session_closed: 1,
+    }),
+  ],
+])(
+  "continues the strict fresh screenshot %s",
+  async (_case, recognizeClosed, streamPort, stdout) => {
+    const sandbox = screenshotFixture(async () => ({ exitCode: 0, stdout }));
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      streamPort,
+      jest.fn(),
+      { recognizeClosed },
+    );
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(sandbox.files.read).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("keeps the strict screenshot failure for the closed literal on a nonzero exit", async () => {
+  const sandbox = screenshotFixture(async () => {
+    throw new CommandExitError({
+      exitCode: 6,
+      stderr: "",
+      stdout: BROWSER_DAEMON_SESSION_CLOSED,
+    });
+  });
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { recognizeClosed: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(CommandExitError);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+});
+
 it("keeps cached-frame age unknown for ordinary viewing", async () => {
   const sandbox = fixture();
   const result = await captureBrowserFrame(
@@ -1125,12 +1777,14 @@ it("keeps cached-frame age unknown for ordinary viewing", async () => {
 
 it("resizes only the bound browser session and returns a fresh frame", async () => {
   const sandbox = fixture();
+  const observe = jest.fn();
   const result = await resizeBrowserViewport(
     sandbox as unknown as Sandbox,
     location,
     "child-one",
     390,
     844,
+    observe,
   );
   expect(sandbox.commands.run).toHaveBeenCalledWith(
     expect.stringContaining(
@@ -1138,6 +1792,12 @@ it("resizes only the bound browser session and returns a fresh frame", async () 
     ),
     expect.objectContaining({ user: "root" }),
   );
+  // An observer keeps the foreground command and its 7s budget.
+  expect(sandbox.commands.run.mock.calls[0][1]).toEqual({
+    user: "root",
+    timeoutMs: 7_000,
+  });
+  expect(observe).not.toHaveBeenCalled();
   // A resize requires a fresh frame, so its port lookup never opts in.
   expect(daemonRequests(sandbox.commands.run)[1]).toEqual({
     action: "stream_status",
@@ -1163,6 +1823,239 @@ it("does not return a new image or coordinate space when resizing fails", async 
   ).rejects.toThrow("Browser preview disconnected");
   expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   expect(sandbox.files.read).not.toHaveBeenCalled();
+});
+
+describe("viewport failure context", () => {
+  const resize = (sandbox: ReturnType<typeof fixture>, observe: jest.Mock) =>
+    resizeBrowserViewport(
+      sandbox as unknown as Sandbox,
+      location,
+      "child-one",
+      390,
+      844,
+      observe,
+    ).catch((error: unknown) => error);
+
+  it.each([
+    [3, 3],
+    [300, "other"],
+  ])(
+    "reports a returned daemon exit %s as the resize command",
+    async (exitCode, reported) => {
+      const sandbox = fixture(0, exitCode);
+      const observe = jest.fn();
+      const outcome = await resize(sandbox, observe);
+      expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+      expect((outcome as Error).message).toBe("Browser preview disconnected");
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: reported,
+          },
+        ],
+      ]);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [
+      "an SDK nonzero exit",
+      () =>
+        new CommandExitError({ exitCode: 7, stderr: "PRIVATE", stdout: "" }),
+      "command_exit",
+      7,
+    ],
+    ["an SDK timeout", () => new TimeoutError("PRIVATE"), "timeout", "none"],
+  ])(
+    "reports %s from the resize command without its output",
+    async (_case, createError, kind, exitCode) => {
+      const sandbox = fixture();
+      const error = createError();
+      sandbox.commands.run.mockRejectedValueOnce(error);
+      const observe = jest.fn();
+      expect(await resize(sandbox, observe)).toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: kind,
+            viewport_command_exit_code: exitCode,
+          },
+        ],
+      ]);
+      expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+      expect(sandbox.files.read).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports a returned strict-frame failure after a successful resize", async () => {
+    const sandbox = fixture(1);
+    const observe = jest.fn();
+    const outcome = await resize(sandbox, observe);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as Error).message).toBe("Browser preview disconnected");
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          viewport_diagnostic_version: 1,
+          viewport_failure_phase: "capture_frame",
+          viewport_error_kind: "preview_unavailable",
+          viewport_command_exit_code: "none",
+        },
+      ],
+    ]);
+    // The viewport command succeeded and the strict capture still cleaned up.
+    expect(daemonRequests(sandbox.commands.run)[0]).toMatchObject({
+      action: "viewport",
+    });
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an SDK screenshot exit as the capture, not the resize", async () => {
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: "",
+    });
+    const sandbox = screenshotFixture(async () => {
+      throw error;
+    });
+    const observe = jest.fn();
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          viewport_diagnostic_version: 1,
+          viewport_failure_phase: "capture_frame",
+          viewport_error_kind: "command_exit",
+          viewport_command_exit_code: 2,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it("keeps the original rejection when the observer throws", async () => {
+    const sandbox = fixture();
+    const error = new TimeoutError("PRIVATE");
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observe = jest.fn(() => {
+      throw new Error("observer");
+    });
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  });
+
+  const packet = (phase: string) => JSON.stringify({ deadline: [1, phase] });
+
+  it.each([
+    ["returned", "connecting"],
+    ["returned", "awaiting_response"],
+    ["thrown", "partial_response"],
+  ] as const)(
+    "reports the %s resize deadline phase %s",
+    async (source, phase) => {
+      const sandbox = fixture();
+      const result = {
+        exitCode: 3,
+        stdout: packet(phase),
+        stderr: "PRIVATE_CANARY",
+      };
+      const error = new CommandExitError(result);
+      if (source === "returned")
+        sandbox.commands.run.mockResolvedValueOnce(result);
+      else sandbox.commands.run.mockRejectedValueOnce(error);
+      const observe = jest.fn();
+      const outcome = await resize(sandbox, observe);
+      if (source === "returned")
+        expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+      else expect(outcome).toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: 3,
+            viewport_deadline_phase: phase,
+          },
+        ],
+      ]);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [3, '{"deadline":[1,"connecting"]'],
+    [3, JSON.stringify({ deadline: [2, "connecting"] })],
+    [3, packet("unexpected")],
+    [
+      3,
+      JSON.stringify({ deadline: [1, "connecting"], padding: "é".repeat(280) }),
+    ],
+    [4, packet("connecting")],
+  ])(
+    "omits an invalid or ineligible packet at exit %s",
+    async (exitCode, stdout) => {
+      const sandbox = fixture();
+      sandbox.commands.run.mockResolvedValueOnce({
+        exitCode,
+        stdout,
+        stderr: "",
+      });
+      const observe = jest.fn();
+      await resize(sandbox, observe);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: exitCode,
+          },
+        ],
+      ]);
+    },
+  );
+
+  it("omits the deadline when stdout is an accessor", async () => {
+    const sandbox = fixture();
+    const stdout = jest.fn(() => packet("connecting"));
+    const result = { exitCode: 3, stdout: "", stderr: "" };
+    Object.defineProperty(result, "stdout", { get: stdout });
+    sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn();
+    await resize(sandbox, observe);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(observe.mock.calls[0][0]).not.toHaveProperty(
+      "viewport_deadline_phase",
+    );
+  });
+
+  it("keeps a capture deadline out of the resize phase field", async () => {
+    const error = new CommandExitError({
+      exitCode: 3,
+      stdout: packet("awaiting_response"),
+      stderr: "",
+    });
+    const sandbox = screenshotFixture(async () => {
+      throw error;
+    });
+    const observe = jest.fn();
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe.mock.calls[0][0]).toEqual({
+      viewport_diagnostic_version: 1,
+      viewport_failure_phase: "capture_frame",
+      viewport_error_kind: "command_exit",
+      viewport_command_exit_code: 3,
+    });
+  });
 });
 
 it("rejects unbounded viewport dimensions before executing a command", async () => {
@@ -1917,6 +2810,117 @@ it.each([
     expect(context).not.toHaveProperty("capture_open_info_flags");
   },
 );
+
+/** The status helper's missing-socket packet after a plain missing-socket OPEN. */
+const missingDirectoryPacket = (override: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    diagnostic_reason: "socket_stat",
+    diagnostic_error: "missing",
+    ...successfulSelectedOpen,
+    p1: [1, 0, 0],
+    os1: 2,
+    o1: 0,
+    sd1: 0,
+    private: "PRIVATE",
+    ...override,
+  });
+
+it.each([
+  [0, "managed_directory"],
+  [1, "unset_or_empty"],
+  [2, "different_directory"],
+])(
+  "projects the plain missing-socket OPEN's socket-directory code %j as one versioned field",
+  async (sd1, declaration) => {
+    const context = await observeDaemonFailure(
+      2,
+      missingDirectoryPacket({ sd1 }),
+    );
+    const { capture_open_socket_directory_v1: projected, ...existing } =
+      context;
+    expect(projected).toBe(declaration);
+    // Every existing field is unchanged beside the one new field.
+    expect(existing).toEqual(
+      await observeDaemonFailure(2, missingDirectoryPacket({ sd1: undefined })),
+    );
+    expect(existing).toMatchObject({
+      capture_stage: "stream_status",
+      capture_precondition_error: "missing",
+      capture_open_socket_return_status: "missing",
+      capture_open_info_flags: "none",
+      capture_daemon_pid_status: "missing",
+    });
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, Record<string, unknown>, number?]>([
+  ["an older writer", { sd1: undefined }],
+  ["an out-of-range code", { sd1: 3 }],
+  ["a negative code", { sd1: -1 }],
+  ["a fractional code", { sd1: 0.5 }],
+  ["a string code", { sd1: "0" }],
+  ["a tuple", { sd1: [1, 0] }],
+  ["a private value", { sd1: "PRIVATE" }],
+  ["an owned socket at return", { os1: 1 }],
+  ["an unmeasured socket at return", { os1: undefined }],
+  ["help tokens", { o1: 1 }],
+  ["unmeasured informational tokens", { o1: undefined }],
+  ["another session's OPEN", { open_session_matches: false }],
+  ["a failed OPEN", { open_exit: 1 }],
+  ["a STARTED OPEN", { open_phase: "started", open_exit: "none" }],
+  ["an unreadable status socket", { diagnostic_error: "permission" }],
+  ["a missing sockets directory", { diagnostic_reason: "sockets_stat" }],
+  ["a deadline exit", {}, 3],
+  ["a refused response", { r1: [1, 2] }, 5],
+])(
+  "omits the socket-directory field for %s",
+  async (_case, override, exitCode = 2) => {
+    const context = await observeDaemonFailure(
+      exitCode,
+      missingDirectoryPacket(override),
+    );
+    expect(context.capture_command_exit_code).toBe(exitCode);
+    expect(context).not.toHaveProperty("capture_open_socket_directory_v1");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it("omits the socket-directory field outside the stream_status stage", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 2,
+    stdout: missingDirectoryPacket(),
+    stderr: "PRIVATE",
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed).toHaveBeenCalledTimes(1);
+  const context = observed.mock.calls[0][0];
+  // The same packet's existing fields still project at this stage.
+  expect(context).toMatchObject({
+    capture_stage: "fresh_screenshot",
+    capture_open_socket_return_status: "missing",
+    capture_open_info_flags: "none",
+  });
+  expect(context).not.toHaveProperty("capture_open_socket_directory_v1");
+});
 
 it.each([
   [0, "wait"],
@@ -3652,6 +4656,397 @@ it("parses the wrapper result beside every existing field in a packet at the unc
   });
 });
 
+/** A connected status deadline after the selected session's successful OPEN. */
+const queuePacket = (override: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    deadline: [1, "awaiting_response"],
+    ...completedSelectedWrapper,
+    ...successfulSelectedOpen,
+    q1: [1, 2, 3],
+    private: "PRIVATE",
+    ...override,
+  });
+const queueGroup = (context: Record<string, unknown>) => ({
+  version: context.capture_daemon_socket_queue_version,
+  pending: context.capture_daemon_socket_pending_count,
+  held: context.capture_daemon_socket_held_count,
+});
+
+it.each<[string, number, number[] | null, Record<string, unknown>]>([
+  ["distinct counts", 3, [2, 3], {}],
+  ["zero counts", 3, [0, 0], { q1: [1, 0, 0] }],
+  ["saturated counts", 3, [15, 15], { q1: [1, 15, 15] }],
+  ["no tuple", 3, null, { q1: undefined }], // Older helper, unverified or dropped.
+  ["another version", 3, null, { q1: [2, 2, 3] }],
+  ["a short tuple", 3, null, { q1: [1, 2] }],
+  ["a long tuple", 3, null, { q1: [1, 2, 3, 0] }],
+  ["a count over 15", 3, null, { q1: [1, 16, 3] }],
+  ["a negative count", 3, null, { q1: [1, 2, -1] }],
+  ["a fractional count", 3, null, { q1: [1, 1.5, 3] }],
+  ["a string count", 3, null, { q1: [1, "2", 3] }],
+  ["an array-like tuple", 3, null, { q1: { 0: 1, 1: 2, 2: 3, length: 3 } }],
+  ["a connecting deadline", 3, null, { deadline: [1, "connecting"] }],
+  ["a daemon close", 6, null, {}],
+  ["another session's OPEN", 3, null, { open_session_matches: false }],
+  ["a failed OPEN", 3, null, { open_exit: 1 }],
+])(
+  "projects the listener queue only from a strict tuple at the connected deadline: %s",
+  async (_case, exitCode, counts, override) => {
+    const context = await observeDaemonFailure(exitCode, queuePacket(override));
+    expect(context).toMatchObject({
+      capture_stage: "stream_status",
+      capture_command_exit_code: exitCode,
+      capture_wrapper_phase: "completed",
+    });
+    expect(queueGroup(context)).toEqual(
+      counts ? { version: 1, pending: counts[0], held: counts[1] } : {},
+    );
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+/** The selected OPEN still STARTED at the deadline, with its exact wrapper visible. */
+const runningOpenPacket = (override: Record<string, unknown> = {}) =>
+  queuePacket({
+    ...startedSelectedWrapper,
+    open_phase: "started",
+    open_exit: "none",
+    w1: 3,
+    ...override,
+  });
+
+it.each<[string, number, number[] | null, Record<string, unknown>]>([
+  ["its exact wrapper incarnation visible", 3, [2, 3], {}],
+  ["no tuple", 3, null, { q1: undefined }],
+  ["a malformed tuple", 3, null, { q1: [1, 16, 3] }],
+  ["unmeasured wrapper visibility", 3, null, { w1: undefined }],
+  ["a changed wrapper incarnation", 3, null, { w1: 2 }],
+  ["a zombie wrapper", 3, null, { w1: 4 }],
+  ["a latest wrapper of another command", 3, null, { wrapper_action: "other" }],
+  [
+    "a completed latest wrapper",
+    3,
+    null,
+    { wrapper_phase: "completed", wrapper_exit: 0 },
+  ],
+  ["another session's wrapper", 3, null, { wrapper_session_matches: false }],
+  ["another session's OPEN", 3, null, { open_session_matches: false }],
+  ["a started OPEN with an exit", 3, null, { open_exit: 0 }],
+  ["a connecting deadline", 3, null, { deadline: [1, "connecting"] }],
+  ["a daemon close", 6, null, {}],
+])(
+  "projects the queue beside a still-running selected OPEN only when scoped: %s",
+  async (_case, exitCode, counts, override) => {
+    const context = await observeDaemonFailure(
+      exitCode,
+      runningOpenPacket(override),
+    );
+    expect(queueGroup(context)).toEqual(
+      counts ? { version: 1, pending: counts[0], held: counts[1] } : {},
+    );
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+    if (!counts) return;
+    // The same existing context, plus only the queue group.
+    const {
+      capture_daemon_socket_queue_version: _version,
+      capture_daemon_socket_pending_count: _pending,
+      capture_daemon_socket_held_count: _held,
+      ...rest
+    } = context;
+    expect(rest).toEqual(
+      await observeDaemonFailure(3, runningOpenPacket({ q1: undefined })),
+    );
+    expect(rest).toMatchObject({
+      capture_open_phase: "started",
+      capture_wrapper_action: "open",
+      capture_wrapper_process_visibility: "same_incarnation_visible",
+    });
+  },
+);
+
+it("projects the queue at a fresh screenshot deadline and keeps its rejection and cleanup", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 3,
+    stderr: "PRIVATE",
+    stdout: queuePacket({ q1: [1, 0, 1] }),
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+    ),
+  ).rejects.toBe(error);
+  // No added request or retry; the screenshot file is still removed.
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  const context = observe.mock.calls[0][0];
+  expect(context.capture_stage).toBe("fresh_screenshot");
+  expect(queueGroup(context)).toEqual({ version: 1, pending: 0, held: 1 });
+});
+
+/** The GET's fresh screenshot rejects with this packet; the same request, rejection and cleanup. */
+async function observeScreenshotFailure(packet: string) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 3,
+    stderr: "PRIVATE",
+    stdout: packet,
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { recognizeClosed: true },
+    ),
+  ).rejects.toBe(error);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledTimes(1);
+  return observe.mock.calls[0][0];
+}
+
+it.each<[number, string]>([
+  [1, "before_write"],
+  [2, "after_write"],
+])(
+  "adds only the closed write order %i beside a still-running OPEN's screenshot queue",
+  async (ot1, order) => {
+    const context = await observeScreenshotFailure(runningOpenPacket({ ot1 }));
+    const { capture_open_start_write_order_v1: projected, ...rest } = context;
+    expect(projected).toBe(order);
+    expect(rest).toEqual(await observeScreenshotFailure(runningOpenPacket()));
+    expect(rest).toMatchObject({
+      capture_stage: "fresh_screenshot",
+      capture_command_exit_code: 3,
+      capture_deadline_phase: "awaiting_response",
+      capture_open_phase: "started",
+      capture_daemon_socket_held_count: 3,
+    });
+  },
+);
+
+it.each<[string, () => Promise<Record<string, unknown>>]>([
+  ["no code", () => observeScreenshotFailure(runningOpenPacket())],
+  ...[0, 3, "1", 1.5, [1], null].map(
+    (ot1) =>
+      [
+        `the malformed code ${JSON.stringify(ot1)}`,
+        () => observeScreenshotFailure(runningOpenPacket({ ot1 })),
+      ] as [string, () => Promise<Record<string, unknown>>],
+  ),
+  [
+    "no verified queue",
+    () =>
+      observeScreenshotFailure(runningOpenPacket({ ot1: 1, q1: undefined })),
+  ],
+  [
+    "a completed OPEN's queue",
+    () => observeScreenshotFailure(queuePacket({ ot1: 1 })),
+  ],
+  [
+    "a status failure",
+    () => observeDaemonFailure(3, runningOpenPacket({ ot1: 1 })),
+  ],
+])("omits the write order for %s", async (_case, observe) => {
+  const context = await observe();
+  expect(context).not.toHaveProperty("capture_open_start_write_order_v1");
+  expect(context.capture_deadline_phase).toBe("awaiting_response");
+});
+
+// The passive GET's options, including its OPEN opt-in.
+const openGetOptions = {
+  deferDuringWait: true,
+  deferDuringOpen: true,
+  recognizeClosed: true,
+  observeStatusProgress: true,
+};
+/** That GET's fresh capture, whose status (or screenshot) helper rejects with this packet. */
+async function observeOpenGetFailure(
+  packet: string,
+  {
+    options = openGetOptions as Record<string, boolean>,
+    action = "stream_status",
+    exitCode = 3,
+  } = {},
+) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode,
+    stderr: "PRIVATE",
+    stdout: packet,
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes(`"action":"${action}"`)) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      options,
+    ),
+  ).rejects.toBe(error);
+  expect(observe).toHaveBeenCalledTimes(1);
+  return {
+    context: observe.mock.calls[0][0] as Record<string, unknown>,
+    requests: daemonRequests(sandbox.commands.run),
+  };
+}
+/** The narrow regime: one held beside one pending behind the still-running OPEN. */
+const oneHeldPacket = (override: Record<string, unknown> = {}) =>
+  runningOpenPacket({ q1: [1, 1, 1], ...override });
+
+it.each<[number, string]>([
+  [1, "present"],
+  [2, "absent"],
+])(
+  "adds only the pre-connect held label for code %i at the opted-in status deadline",
+  async (ph1, label) => {
+    const { context, requests } = await observeOpenGetFailure(
+      oneHeldPacket({ ph1 }),
+    );
+    const { capture_open_preconnect_held_v1: projected, ...rest } = context;
+    expect(projected).toBe(label);
+    // The same strict rejection and context as without the code.
+    expect(rest).toEqual(
+      (await observeOpenGetFailure(oneHeldPacket())).context,
+    );
+    expect(rest).toMatchObject({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 3,
+      capture_deadline_phase: "awaiting_response",
+      capture_open_phase: "started",
+      capture_daemon_socket_pending_count: 1,
+      capture_daemon_socket_held_count: 1,
+    });
+    // One unchanged opted-in status request; no bridge, screenshot or retry.
+    expect(requests).toEqual([
+      {
+        action: "stream_status",
+        defer_wait: true,
+        defer_open: true,
+        recognize_closed: true,
+        observe_progress: true,
+      },
+    ]);
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, () => Promise<{ context: Record<string, unknown> }>]>([
+  ["no code", () => observeOpenGetFailure(oneHeldPacket())],
+  ...[0, 3, "1", 1.5, [1], null, true].map(
+    (ph1) =>
+      [
+        `the malformed code ${JSON.stringify(ph1)}`,
+        () => observeOpenGetFailure(oneHeldPacket({ ph1 })),
+      ] as [string, () => Promise<{ context: Record<string, unknown> }>],
+  ),
+  ...[
+    [1, 0, 1],
+    [1, 1, 2],
+    [1, 1, 0],
+    [1, 16, 1],
+  ].map(
+    (q1) =>
+      [
+        `the queue ${JSON.stringify(q1)}`,
+        () => observeOpenGetFailure(oneHeldPacket({ q1, ph1: 1 })),
+      ] as [string, () => Promise<{ context: Record<string, unknown> }>],
+  ),
+  [
+    "no verified queue",
+    () => observeOpenGetFailure(oneHeldPacket({ q1: undefined, ph1: 1 })),
+  ],
+  [
+    "a completed OPEN's queue",
+    () => observeOpenGetFailure(queuePacket({ q1: [1, 1, 1], ph1: 1 })),
+  ],
+  [
+    "a connecting deadline",
+    () =>
+      observeOpenGetFailure(
+        oneHeldPacket({ deadline: [1, "connecting"], ph1: 1 }),
+      ),
+  ],
+  [
+    "a daemon close",
+    () => observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), { exitCode: 6 }),
+  ],
+  [
+    "a status without the OPEN opt-in",
+    () =>
+      observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), {
+        options: { ...openGetOptions, deferDuringOpen: false },
+      }),
+  ],
+  [
+    "the owned-port lookup",
+    async () => ({
+      context: await observeDaemonFailure(3, oneHeldPacket({ ph1: 1 })),
+    }),
+  ],
+  [
+    "the fresh screenshot",
+    () =>
+      observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), {
+        action: "screenshot",
+      }),
+  ],
+])("omits the pre-connect held label for %s", async (_case, observe) => {
+  const { context } = await observe();
+  expect(context).not.toHaveProperty("capture_open_preconnect_held_v1");
+  expect(JSON.stringify(context)).not.toContain("PRIVATE");
+});
+
+it.each([544, 545])(
+  "keeps the unchanged parser cap for a %s-byte packet carrying the queue",
+  async (bytes) => {
+    const packet = queuePacket();
+    const context = await observeDaemonFailure(
+      3,
+      packet + " ".repeat(bytes - packet.length),
+    );
+    expect(queueGroup(context)).toEqual(
+      bytes === 544 ? { version: 1, pending: 2, held: 3 } : {},
+    );
+  },
+);
+
 describe("fresh screenshot read phase", () => {
   const failure = (stage: string, kind: string, group = {}) => [
     [
@@ -3771,5 +5166,54 @@ describe("fresh screenshot read phase", () => {
       failure("fresh_validation", "preview_unavailable"),
     );
     expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+it.each([false, true])(
+  "projects a gate deadline from the exact failed pause command (SDK throws: %s)",
+  async (fromSdk) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 1,
+      stdout: "PRIVATE_OUTPUT",
+      stderr: "PRIVATE_TRACEBACK\nRuntimeError: Browser command is busy\n",
+    };
+    const error = new CommandExitError(result);
+    if (fromSdk) sandbox.commands.run.mockRejectedValueOnce(error);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const caught = await setAgentBrowserPaused(
+      sandbox as unknown as Sandbox,
+      location,
+      true,
+    ).catch((failure: unknown) => failure);
+    if (fromSdk) expect(caught).toBe(error);
+    else expect(caught).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect(browserPauseFailureContext(caught)).toEqual({
+      pause_diagnostic_version: 1,
+      pause_error_kind: "gate_busy",
+      pause_command_exit_code: 1,
+      pause_http_status: "none",
+    });
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("requires the fixed pause exception line and preserves the SDK timeout classification", () => {
+  const unrelated = new CommandExitError({
+    exitCode: 1,
+    stdout: "PRIVATE_OUTPUT",
+    stderr: "PRIVATE_TEXT RuntimeError: Browser command is busy\n",
+  });
+  expect(browserPauseFailureContext(unrelated)).toEqual({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "command_exit",
+    pause_command_exit_code: 1,
+    pause_http_status: "none",
+  });
+  expect(browserPauseFailureContext(new TimeoutError("PRIVATE SDK"))).toEqual({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "timeout",
+    pause_command_exit_code: "none",
+    pause_http_status: "none",
   });
 });

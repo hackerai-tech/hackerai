@@ -210,6 +210,53 @@ pub fn build_command(
     cmd
 }
 
+/// How a bounded wait for a command's leader ended: reaped, at its existing
+/// deadline, or with an error, never its detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeaderWait {
+    Reaped,
+    TimedOut,
+    Failed,
+}
+
+impl LeaderWait {
+    fn of<T, E, D>(waited: Result<Result<T, E>, D>) -> Self {
+        match waited {
+            Ok(Ok(_)) => Self::Reaped,
+            Ok(Err(_)) => Self::Failed,
+            Err(_) => Self::TimedOut,
+        }
+    }
+}
+
+/// The results of `graceful_kill`'s existing checks, never a PID, output or
+/// OS error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GracefulKill {
+    pub(crate) tree_stopped: bool,
+    pub(crate) leader: LeaderWait,
+    /// How the tree stop's own Windows taskkill failed, only when the tree was
+    /// unconfirmed on that path; None for every other outcome and platform.
+    pub(crate) taskkill: Option<TaskkillFailure>,
+}
+
+impl GracefulKill {
+    /// The tree stop's own result, as `cancel_process_tree_observed` reported
+    /// it, beside the bounded leader wait.
+    fn of(tree: Result<(), Option<TaskkillFailure>>, leader: LeaderWait) -> Self {
+        Self {
+            tree_stopped: tree.is_ok(),
+            leader,
+            taskkill: tree.err().flatten(),
+        }
+    }
+
+    /// `graceful_kill`'s unchanged rule: the tree stopped and the shell reaped.
+    pub(crate) fn confirmed(self) -> bool {
+        self.tree_stopped && self.leader == LeaderWait::Reaped
+    }
+}
+
 /// Gracefully kill a child process.
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
@@ -218,9 +265,16 @@ pub fn build_command(
 /// as `cancel_process_tree` defines it, was confirmed stopped and the shell
 /// reaped; anything else is unknown.
 pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
+    graceful_kill_observed(child).await.confirmed()
+}
+
+/// `graceful_kill`, which delegates here, reporting which of its checks were
+/// confirmed and, on Windows, its one taskkill call's closed failure. The
+/// signals, waits, commands and their order are unchanged.
+pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) -> GracefulKill {
     use std::time::Duration;
     #[cfg(unix)]
-    let stopped = {
+    let stopped: Result<(), Option<TaskkillFailure>> = {
         if let Some(pid) = child.id() {
             // Send SIGTERM first for graceful shutdown
             terminate_process_group(pid, libc::SIGTERM);
@@ -235,20 +289,23 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
             }
             // A reaped shell does not prove its descendants stopped. Verify
             // the group and escalate survivors before releasing update admission.
-            cancel_process_tree(pid).await
+            cancel_process_tree(pid).await.then_some(()).ok_or(None)
         } else {
             // Already reaped by this owner: no live PID remains to signal.
-            true
+            Ok(())
         }
     };
 
     #[cfg(not(unix))]
     let stopped = {
         // Killing only bash/cmd can leave its native descendants writing
-        // files after the caller releases update admission.
+        // files after the caller releases update admission. The same single
+        // taskkill call `cancel_process_tree` makes, keeping its closed result.
         let stopped = match child.id() {
-            Some(pid) => cancel_process_tree(pid).await,
-            None => true,
+            Some(pid) => cancel_process_tree_observed(pid)
+                .await
+                .map_err(|failure| failure.and_then(TreeStopFailure::taskkill)),
+            None => Ok(()),
         };
         let _ = child.kill().await;
         stopped
@@ -256,11 +313,8 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
 
     // Reap the process to avoid zombies, without waiting forever on a shell
     // that cannot be stopped.
-    let reaped = matches!(
-        tokio::time::timeout(Duration::from_secs(5), child.wait()).await,
-        Ok(Ok(_))
-    );
-    stopped && reaped
+    let leader = LeaderWait::of(tokio::time::timeout(Duration::from_secs(5), child.wait()).await);
+    GracefulKill::of(stopped, leader)
 }
 
 #[cfg(unix)]
@@ -282,6 +336,7 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 /// group (`setsid`, `setpgid`, daemonizing) are neither signaled nor counted.
 /// An unknown outcome fences updates even when a caller returns or aborts its
 /// output readers. Other work remains available for the rest of the session.
+#[cfg(any(unix, test))]
 pub async fn cancel_process_tree(pid: u32) -> bool {
     cancel_process_tree_observed(pid).await.is_ok()
 }
@@ -307,10 +362,68 @@ pub(crate) enum TaskkillFailure {
 pub(crate) const TASKKILL_NOT_FOUND_EXIT: std::num::NonZeroI32 =
     std::num::NonZeroI32::new(128).unwrap();
 
+/// How the Unix tree stop's final existing `kill(-pgid, 0)` probe kept the
+/// group unconfirmed: a closed class of that one call's result, never its
+/// errno, the PID or any process it names. Only `ESRCH` confirms the group
+/// is gone, so this never says which members, if any, survived.
+// Only the Unix path and tests construct a class.
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GroupProbe {
+    /// The probe succeeded: the group still had a member it could signal.
+    GroupVisible,
+    /// It failed with `EPERM`: a member existed that it could not signal.
+    ProbeDenied,
+    /// It failed with any other error but `ESRCH`.
+    ProbeFailed,
+}
+
+/// The existing probe's unchanged predicate as a class: None (absent) only
+/// for `ESRCH`, so `is_some()` is exactly the prior "still running".
+#[cfg(unix)]
+fn group_probe_class(result: libc::c_int, errno: Option<i32>) -> Option<GroupProbe> {
+    if result == 0 {
+        return Some(GroupProbe::GroupVisible);
+    }
+    match errno {
+        Some(libc::ESRCH) => None,
+        Some(libc::EPERM) => Some(GroupProbe::ProbeDenied),
+        _ => Some(GroupProbe::ProbeFailed),
+    }
+}
+
+/// Why a tree stop was unconfirmed: Windows' one taskkill call's closed
+/// failure, or the Unix final group probe's closed class. Each platform
+/// reports only its own; any other path reports neither.
+// Each platform constructs only its own variant outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TreeStopFailure {
+    Taskkill(TaskkillFailure),
+    GroupProbe(GroupProbe),
+}
+
+impl TreeStopFailure {
+    pub(crate) fn taskkill(self) -> Option<TaskkillFailure> {
+        match self {
+            Self::Taskkill(failure) => Some(failure),
+            Self::GroupProbe(_) => None,
+        }
+    }
+
+    pub(crate) fn group_probe(self) -> Option<GroupProbe> {
+        match self {
+            Self::GroupProbe(probe) => Some(probe),
+            Self::Taskkill(_) => None,
+        }
+    }
+}
+
 /// `cancel_process_tree`, which delegates here: Ok only when confirmed stopped.
-/// An unconfirmed outcome carries the closed failure only from the Windows
-/// taskkill path; every other path reports None.
-pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TaskkillFailure>> {
+/// An unconfirmed outcome carries the Windows taskkill path's closed failure,
+/// or the Unix path's final group probe class; any other path reports None.
+pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TreeStopFailure>> {
     #[cfg(unix)]
     let stopped = {
         terminate_process_group(pid, libc::SIGTERM);
@@ -327,10 +440,10 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        if process_group_is_running(pid) {
-            Err(None)
-        } else {
-            Ok(())
+        // The same final probe and predicate, keeping its closed class.
+        match process_group_probe(pid) {
+            Some(probe) => Err(Some(TreeStopFailure::GroupProbe(probe))),
+            None => Ok(()),
         }
     };
 
@@ -343,7 +456,7 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
             .output()
             .await,
     )
-    .map_err(Some);
+    .map_err(|failure| Some(TreeStopFailure::Taskkill(failure)));
 
     #[cfg(not(any(unix, windows)))]
     let stopped = Err(None);
@@ -399,12 +512,19 @@ fn reports_requested_pid_not_found(pid: u32, stdout: &[u8], stderr: &[u8]) -> bo
 
 #[cfg(unix)]
 fn process_group_is_running(pid: u32) -> bool {
+    process_group_probe(pid).is_some()
+}
+
+/// One `kill(-pgid, 0)` and its class; None only when the group is gone.
+#[cfg(unix)]
+fn process_group_probe(pid: u32) -> Option<GroupProbe> {
     let pid = pid as libc::pid_t;
     let result = unsafe { libc::kill(-pid, 0) };
-    if result == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    // errno is read only after a failed call, immediately, as before.
+    let errno = (result != 0)
+        .then(|| std::io::Error::last_os_error().raw_os_error())
+        .flatten();
+    group_probe_class(result, errno)
 }
 
 #[cfg(test)]
@@ -580,5 +700,143 @@ mod tests {
             taskkill_outcome(4243, Ok(output(exited(128), b"", REPORT))),
             unclassified
         );
+    }
+
+    #[test]
+    fn graceful_kill_keeps_its_confirmation_rule_over_each_reported_check() {
+        use LeaderWait::*;
+        // The bounded wait's own result, never its detail.
+        assert_eq!(LeaderWait::of::<_, (), ()>(Ok(Ok(()))), Reaped);
+        assert_eq!(LeaderWait::of::<(), _, ()>(Ok(Err(()))), Failed);
+        assert_eq!(LeaderWait::of::<(), (), _>(Err(())), TimedOut);
+        for tree_stopped in [true, false] {
+            for leader in [Reaped, TimedOut, Failed] {
+                // Exactly the prior `stopped && reaped`.
+                assert_eq!(
+                    GracefulKill {
+                        tree_stopped,
+                        leader,
+                        taskkill: None,
+                    }
+                    .confirmed(),
+                    tree_stopped && leader == Reaped,
+                    "{tree_stopped} {leader:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn graceful_kill_keeps_only_its_tree_stops_own_taskkill_failure() {
+        use LeaderWait::*;
+        let failures = [
+            TaskkillFailure::RequestedPidNotFound,
+            TaskkillFailure::NonzeroExit(NonZeroI32::new(128)),
+            TaskkillFailure::NonzeroExit(NonZeroI32::new(-1_073_741_510)),
+            TaskkillFailure::NonzeroExit(None),
+            TaskkillFailure::OutputError,
+        ];
+        for leader in [Reaped, TimedOut, Failed] {
+            // A confirmed tree stop has no failure to keep.
+            let stopped = GracefulKill::of(Ok(()), leader);
+            assert_eq!(
+                (stopped.tree_stopped, stopped.taskkill),
+                (true, None),
+                "{leader:?}"
+            );
+            assert_eq!(stopped.confirmed(), leader == Reaped, "{leader:?}");
+            // Unix, or another platform: unconfirmed without a taskkill result.
+            let other = GracefulKill::of(Err(None), leader);
+            assert_eq!(
+                (other.tree_stopped, other.taskkill),
+                (false, None),
+                "{leader:?}"
+            );
+            assert!(!other.confirmed(), "{leader:?}");
+            // Windows: exactly the one taskkill call's failure, which never
+            // changes the Boolean confirmation.
+            for failure in failures {
+                let killed = GracefulKill::of(Err(Some(failure)), leader);
+                assert_eq!(
+                    killed,
+                    GracefulKill {
+                        tree_stopped: false,
+                        leader,
+                        taskkill: Some(failure),
+                    },
+                    "{leader:?} {failure:?}"
+                );
+                assert!(!killed.confirmed(), "{leader:?} {failure:?}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn group_probe_class_keeps_the_prior_predicate_and_names_only_its_closed_class() {
+        use GroupProbe::*;
+        for (result, errno, expected) in [
+            // Only ESRCH confirms the group is gone, as before.
+            (-1, Some(libc::ESRCH), None),
+            (0, None, Some(GroupVisible)),
+            // A success never reads errno, whatever it holds.
+            (0, Some(libc::ESRCH), Some(GroupVisible)),
+            (-1, Some(libc::EPERM), Some(ProbeDenied)),
+            (-1, Some(libc::EINVAL), Some(ProbeFailed)),
+            // Not an error kill(2) returns: never classified as denied.
+            (-1, Some(libc::EACCES), Some(ProbeFailed)),
+            (-1, None, Some(ProbeFailed)),
+        ] {
+            let class = group_probe_class(result, errno);
+            assert_eq!(class, expected, "{result} {errno:?}");
+            // `is_some()` is exactly the prior `process_group_is_running`.
+            assert_eq!(
+                class.is_some(),
+                result == 0 || errno != Some(libc::ESRCH),
+                "{result} {errno:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_stop_failure_projects_only_its_own_platform_detail() {
+        let probe = TreeStopFailure::GroupProbe(GroupProbe::ProbeDenied);
+        assert_eq!(
+            (probe.taskkill(), probe.group_probe()),
+            (None, Some(GroupProbe::ProbeDenied))
+        );
+        let taskkill = TreeStopFailure::Taskkill(TaskkillFailure::OutputError);
+        assert_eq!(
+            (taskkill.taskkill(), taskkill.group_probe()),
+            (Some(TaskkillFailure::OutputError), None)
+        );
+        for (probe, wire) in [
+            (GroupProbe::GroupVisible, "group_visible"),
+            (GroupProbe::ProbeDenied, "probe_denied"),
+            (GroupProbe::ProbeFailed, "probe_failed"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(probe).unwrap(),
+                serde_json::json!(wire)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_kill_reports_a_stopped_and_reaped_command_and_an_already_reaped_one() {
+        let confirmed = GracefulKill {
+            tree_stopped: true,
+            leader: LeaderWait::Reaped,
+            taskkill: None,
+        };
+        let mut running = build_command("sleep 30", None, None).spawn().unwrap();
+        assert_eq!(graceful_kill_observed(&mut running).await, confirmed);
+        let mut finished = build_command("exit 0", None, None).spawn().unwrap();
+        finished.wait().await.unwrap();
+        assert_eq!(graceful_kill_observed(&mut finished).await, confirmed);
+        // The Boolean contract every other caller uses is unchanged.
+        let mut again = build_command("sleep 30", None, None).spawn().unwrap();
+        assert!(graceful_kill(&mut again).await);
     }
 }

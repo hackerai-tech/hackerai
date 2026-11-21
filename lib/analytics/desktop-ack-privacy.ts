@@ -33,7 +33,13 @@ import {
   readDesktopInvocationSpawnHintDiagnostic,
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
+  readDesktopStreamFenceRendererCancelDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
+import {
+  DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+  isDesktopStreamCancelOwner,
+  projectDesktopStreamCancelNonconfirmation,
+} from "./desktop-stream-cancel-diagnostic";
 
 const STOP_SOURCES = [
   "bridge_stop",
@@ -162,6 +168,113 @@ function enumerableOwnData(
   }
 }
 
+/** Whether `source` has no `triggerRunId` of any kind, own or inherited.
+ * Never runs a getter; a throwing proxy reads as having one. */
+function lacksTriggerRunId(source: object): boolean {
+  try {
+    return !("triggerRunId" in source);
+  } catch {
+    return false;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown) =>
+  typeof value === "string" && value.length === 36 && UUID.test(value);
+
+// PostHog delivery metadata the cancel nonconfirmation keeps, each only in its
+// expected format. Everything else the SDK adds is dropped.
+const STREAM_CANCEL_TRANSPORT: [string, (value: unknown) => boolean][] = [
+  ["$session_id", isUuid],
+  ["$window_id", isUuid],
+  [
+    "$lib",
+    (value) =>
+      typeof value === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(value),
+  ],
+  [
+    "$lib_version",
+    (value) =>
+      typeof value === "string" &&
+      /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?$/.test(value),
+  ],
+  ["$is_identified", (value) => typeof value === "boolean"],
+  ["$process_person_profile", (value) => typeof value === "boolean"],
+];
+
+export type DesktopStreamCancelExpectation = {
+  /** The current permitted, identified and committed analytics owner, or null. */
+  owner: string | null;
+  /** The configured PostHog project key the SDK attaches as `token`. */
+  token: string | undefined;
+};
+
+/**
+ * Apply in before_send after SDK enrichment. The cancel nonconfirmation is
+ * rebuilt from its four validated own data fields, safe delivery metadata and
+ * the loaded bundle's full commit only, and must belong to the current
+ * committed owner; anything unreadable or invalid drops it. Every other event
+ * is returned unchanged. `resolveExpected` runs only for the target event.
+ */
+export function sanitizeDesktopStreamCancelEvent<T extends object>(
+  event: T | null,
+  resolveExpected: () => DesktopStreamCancelExpectation,
+): T | null {
+  if (!event) return event;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(event, "event");
+    // An accessor or inherited name could serialize as the target; the
+    // readiness guard already drops those, so only absent names pass.
+    if (!descriptor || !("value" in descriptor))
+      return "event" in event ? null : event;
+    if (descriptor.value !== DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT)
+      return event;
+    const container = enumerableOwnData(event, "properties");
+    const properties: unknown = container?.value;
+    if (typeof properties !== "object" || properties === null) return null;
+    const { owner, token } = resolveExpected();
+    if (!isDesktopStreamCancelOwner(owner)) return null;
+    const read = (key: string) => enumerableOwnData(properties, key)?.value;
+    // A queued event must not be exported under a different current owner.
+    if (read("distinct_id") !== owner) return null;
+    const schema = projectDesktopStreamCancelNonconfirmation(read);
+    if (!schema) return null;
+
+    const transport: Record<string, unknown> = { distinct_id: owner };
+    if (typeof token === "string" && token !== "" && read("token") === token)
+      transport.token = token;
+    for (const [key, isValid] of STREAM_CANCEL_TRANSPORT) {
+      const value = read(key);
+      if (isValid(value)) transport[key] = value;
+    }
+    const buildCommit = read("hackerai_frontend_build_commit");
+    if (typeof buildCommit === "string" && /^[0-9a-f]{40}$/.test(buildCommit))
+      transport.hackerai_frontend_build_commit = buildCommit;
+
+    const uuid = enumerableOwnData(event, "uuid")?.value;
+    const timestamp = enumerableOwnData(event, "timestamp")?.value;
+    let timestampMs: number | undefined;
+    if (timestamp !== undefined) {
+      try {
+        // Accept only a real Date; ignore its own properties, toJSON or proxies.
+        timestampMs = Date.prototype.getTime.call(timestamp);
+      } catch {
+        timestampMs = undefined;
+      }
+    }
+    // Rebuilt, so top-level $set/$set_once profile enrichment never survives.
+    return {
+      ...(isUuid(uuid) && { uuid }),
+      event: DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+      properties: { ...transport, ...schema },
+      ...(timestampMs !== undefined &&
+        Number.isFinite(timestampMs) && { timestamp: new Date(timestampMs) }),
+    } as unknown as T;
+  } catch {
+    return null;
+  }
+}
+
 /** Strip SDK enrichment from command details and cross-command summaries. */
 export function sanitizeDesktopAckEvent<
   T extends {
@@ -274,15 +387,12 @@ export function sanitizeDesktopAckEvent<
     // The stream fence origin joins only validated authorized unknown and
     // `lifecycle_stop_unconfirmed` groups; no fence property is read without
     // them. It likewise survives only as the validated data copy and drops
-    // alone. Its cleanup pair is read only beside a validated
-    // `owner_stop_requested` origin on an acknowledged terminal, and an
-    // invalid one drops alone, leaving the origin pair. Its Windows taskkill
-    // group is read only beside a validated `tree_unconfirmed` cleanup pair,
-    // and an invalid one drops alone, leaving both pairs. Its stop request
-    // source pair is read only beside that group's validated root report of
-    // the not-found code, and an invalid one drops alone. Its
-    // owner phase pair is read only beside a validated `cancel_wait_timeout`
-    // origin on an acknowledged terminal, and an invalid one drops alone.
+    // alone. An acknowledged stop or owner timeout can carry cleanup.
+    // A tree-only failure can add its Windows taskkill result. Only an
+    // explicit stop with a validated not-found report can add its first
+    // request source; only an explicit stop's tree-only failure without any
+    // Windows property can add Darwin's stop source and final group probe.
+    // A cancellation-wait timeout can add its owner phase.
     // The acknowledgement that admits them is the same single snapshot that
     // is emitted: an inherited or accessor flag never admits them, is never
     // run and never survives the copy below.
@@ -335,6 +445,16 @@ export function sanitizeDesktopAckEvent<
                 isDesktopAckStopSource(value))),
         ),
     );
+    // The renderer cancel attempt pair joins only that validated `cancel_ipc`
+    // source of a final with no `triggerRunId` at all: neither emitted nor
+    // dropped by this copy, nor inherited. It likewise survives only as the
+    // validated data copy and drops alone.
+    const streamFenceRendererCancel =
+      readDesktopStreamFenceRendererCancelDiagnostic(
+        properties,
+        streamFence,
+        !("triggerRunId" in event.properties) && lacksTriggerRunId(properties),
+      );
     if (acknowledgement)
       event.properties.terminalAcknowledged = acknowledgement.value;
     // Copy the same validated send snapshot used by the joined receipts.
@@ -365,6 +485,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, invocationSpawnHint);
     if (invocationUnknown) Object.assign(event.properties, invocationUnknown);
     if (streamFence) Object.assign(event.properties, streamFence);
+    if (streamFenceRendererCancel)
+      Object.assign(event.properties, streamFenceRendererCancel);
   }
   delete event.$set;
   delete event.$set_once;

@@ -99,7 +99,14 @@ import {
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
+import { fetchAgentPartialSaveWithDiagnostic } from "@/lib/analytics/agent-partial-save-diagnostics";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
+import {
+  CONTEXT_USAGE_PART_TYPE,
+  selectLatestContextPressure,
+} from "@/lib/chat/context-pressure";
+import { useContextDetailsPreference } from "@/app/hooks/useContextDetailsPreference";
+import type { ContextMeterData } from "./ChatContextDetails";
 import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/agent-partial-save-snapshot";
 import { toast } from "sonner";
 import {
@@ -1387,6 +1394,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
         return;
       }
+      // A context snapshot replaces itself in its response's parts. It is
+      // display diagnostics, neither Agent progress nor shared stream data.
+      if (dataPart.type === CONTEXT_USAGE_PART_TYPE) return;
       agentLongHasVisibleProgressRef.current = true;
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
@@ -2028,11 +2038,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         chatId,
         saveKey,
         async () => {
-          return fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: requestBody,
-          });
+          return fetchAgentPartialSaveWithDiagnostic(
+            AGENT_PARTIAL_SAVE_ENDPOINT,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: requestBody,
+            },
+          );
         },
       );
     },
@@ -2944,6 +2957,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     });
   const canResolveApprovalPresentation =
     !isInitialExistingChatLoad && chatDataForCurrentChat !== undefined;
+  const [showContextUsage] = useContextDetailsPreference();
+  const latestContextPressure = useMemo(
+    () => (showContextUsage ? selectLatestContextPressure(messages) : null),
+    [messages, showContextUsage],
+  );
+  // Only this chat's loaded record and messages; never a chat in transition.
+  // No meter until this chat has a measured request.
+  const contextMeter: ContextMeterData | undefined =
+    latestContextPressure &&
+    isExistingChat &&
+    hasMessages &&
+    !isChatNotFound &&
+    chatDataForCurrentChat
+      ? {
+          chatId,
+          snapshot: latestContextPressure,
+          completedCompactions: chatDataForCurrentChat.agent_compaction_count,
+        }
+      : undefined;
 
   useEffect(() => {
     if (!isExistingChat || canResolveApprovalPresentation) {
@@ -3313,6 +3345,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     hasMessages={hasMessages}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    contextMeter={contextMeter}
                     sendDisabledReason={
                       pendingUserWait ? undefined : computerSendDisabledReason
                     }

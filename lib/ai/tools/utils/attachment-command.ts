@@ -83,12 +83,24 @@ export class AttachmentCommandCleanupError extends Error {
   }
 }
 
+/** A local copy's read-only setup outlived its caller's absolute deadline.
+ * Raised before the copy's write starts; carries no path, output or cause. */
+export class AttachmentLocalCopySetupDeadlineError extends Error {
+  constructor() {
+    super("Local attachment setup did not finish in time");
+    this.name = "AttachmentLocalCopySetupDeadlineError";
+  }
+}
+
 export function throwIfAttachmentAborted(
   signal?: AbortSignal,
   error?: unknown,
 ) {
   if (error instanceof AttachmentCommandCleanupError) throw error;
   signal?.throwIfAborted();
+  // Only an optional caller deadline creates this error: never retry, fall
+  // back or reconnect past it.
+  if (error instanceof AttachmentLocalCopySetupDeadlineError) throw error;
 }
 
 /** Run only this attachment's command; cancellation must not kill a shared sandbox.

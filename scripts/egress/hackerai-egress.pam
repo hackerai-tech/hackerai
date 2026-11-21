@@ -1,0 +1,21 @@
+# /etc/pam.d/hackerai-egress: the PAM service Dante uses for SOCKS5
+# username/password authentication (pam.servicename: hackerai-egress). It is
+# not a login service and no other program should reference it.
+#
+# Before installing, replace REGION with this proxy's region (us or eu) and
+# LEGACY with the region's existing shared proxy username. Until both are
+# replaced the module's arguments are invalid and every login fails,
+# including the shared one.
+#
+# The module decides every name on the first line. A valid attributed (hae-)
+# credential ends the stack with success; any other attributed name, any name
+# other than the configured shared username, and invalid configuration end it
+# with an error. Only that exact shared username is ignored and reaches
+# pam_unix, which keeps the existing shared regional login working; no other
+# host account can authenticate through this service.
+auth    [success=done ignore=ignore default=die] /usr/local/lib/hackerai-egress/pam_hackerai_egress.so region=REGION legacy=LEGACY key=/etc/hackerai-egress/attribution.key
+auth    [success=done default=die] pam_unix.so
+auth    requisite pam_deny.so
+account [success=done ignore=ignore default=die] /usr/local/lib/hackerai-egress/pam_hackerai_egress.so region=REGION legacy=LEGACY key=/etc/hackerai-egress/attribution.key
+account [success=done default=die] pam_unix.so
+account requisite pam_deny.so

@@ -11,6 +11,10 @@ import {
 } from "@/lib/analytics/paid-funnel";
 import { POSTHOG_SESSION_ID_HEADER } from "@/lib/analytics/request-context";
 import { withDesktopRuntimeIdentity } from "@/lib/analytics/desktop-runtime-identity";
+import {
+  DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+  DESKTOP_STREAM_CANCEL_NONCONFIRMATION_VERSION,
+} from "@/lib/analytics/desktop-stream-cancel-diagnostic";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
 
@@ -105,7 +109,10 @@ function captureWithPostHogClient(
         (event === "react_boundary_failure_context" &&
           properties.version === 1) ||
         (event === "file_action_auth_diagnostic" &&
-          properties.file_action_auth_diagnostic_version === 1)) &&
+          properties.file_action_auth_diagnostic_version === 1) ||
+        (event === DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT &&
+          properties.version ===
+            DESKTOP_STREAM_CANCEL_NONCONFIRMATION_VERSION)) &&
       buildCommit &&
       /^[a-f0-9]{40}$/i.test(buildCommit)
     ) {

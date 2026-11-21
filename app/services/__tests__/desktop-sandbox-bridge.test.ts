@@ -12318,6 +12318,11 @@ describe("native authorization send receipt", () => {
             ...notFoundGroup,
             desktop_stream_fence_windows_taskkill_root_report: "unclassified",
           };
+          // Which renderer cancel IPC attempts preceded the first terminal.
+          const attemptPair = (attempt: string) => ({
+            desktop_stream_fence_renderer_cancel_attempt_version: 1,
+            desktop_stream_fence_renderer_cancel_attempt: attempt,
+          });
 
           it.each(
             ["cancel_ipc", "document_invalidation", "application_exit"].flatMap(
@@ -12362,6 +12367,8 @@ describe("native authorization send receipt", () => {
                 ...(group as Record<string, unknown>),
                 desktop_stream_fence_stop_request_source_version: 1,
                 desktop_stream_fence_stop_request_source: source,
+                // This runless command had no renderer cancel attempt.
+                ...(source === "cancel_ipc" && attemptPair("unobserved")),
               };
               expect(finals()).toHaveLength(1);
               const final = finals()[0];
@@ -12582,6 +12589,656 @@ describe("native authorization send receipt", () => {
             });
             expect(fenceKeys(finals()[0].properties)).toEqual([]);
           });
+
+          describe("renderer cancel attempts before the first terminal", () => {
+            const sourcePair = {
+              desktop_stream_fence_stop_request_source_version: 1,
+              desktop_stream_fence_stop_request_source: "cancel_ipc",
+            };
+            type Route = { on: jest.Mock; publish: jest.Mock };
+            type Internals = { activeCommands: Set<string> };
+            // The command's operation route, as the relay delivers to it.
+            const route = () =>
+              mockClient.newSubscription.mock.results.at(-1)!.value as Route;
+            const deliver = (data: Record<string, unknown>) => {
+              const [, publication] = route().on.mock.calls.find(
+                ([event]) => event === "publication",
+              )!;
+              publication({
+                data: {
+                  commandId: "auth-send",
+                  targetConnectionId: "conn-123",
+                  ...data,
+                },
+              });
+            };
+            let cancels: string[];
+            let stopAfter: number;
+            let rejectNative: (error: unknown) => void;
+            let base: typeof mockInvokeHandler;
+            const pendingNative = () =>
+              new Promise<never>((_, reject) => {
+                rejectNative = reject;
+              });
+            beforeEach(() => {
+              cancels = [];
+              stopAfter = 1;
+              rejectNative = () => {};
+              base = mockInvokeHandler;
+              // Native reports its cancel IPC as the first stop source only
+              // after that IPC; it never confirms the stop.
+              mockInvokeHandler = async (cmd, args) => {
+                if (cmd !== "cancel_stream_command") return base(cmd, args);
+                cancels.push(args?.commandId as string);
+                if (cancels.length === stopAfter)
+                  rejectNative(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  );
+                return false;
+              };
+            });
+            afterEach(() => {
+              mockInvokeHandler = base;
+            });
+            /** The final's fence groups, then as before_send enriches them. */
+            const expectAttempt = (attempt: string | null) => {
+              const expected = {
+                ...notFoundGroup,
+                ...sourcePair,
+                ...(attempt && attemptPair(attempt)),
+              };
+              expect(finals()).toHaveLength(1);
+              const properties = finals()[0].properties;
+              expect(properties).toMatchObject({
+                outcome: "acknowledged",
+                terminalAcknowledged: true,
+                ...expected,
+              });
+              expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+              const enriched = sanitized({
+                ...properties,
+                $current_url: "PRIVATE",
+                command: "PRIVATE COMMAND",
+                pid: 4242,
+              });
+              expect(enriched.properties).toMatchObject(expected);
+              expect(fenceKeys(enriched.properties)).toEqual(
+                Object.keys(expected),
+              );
+              const serialized = JSON.stringify([captures(), enriched]);
+              expect(serialized).not.toContain("PRIVATE");
+              expect(serialized).not.toContain("4242");
+              expect(serialized).not.toContain(stopUnconfirmed);
+              expect(serialized).not.toContain("streamFence");
+            };
+
+            it("reports a received relay command_cancel invoked before the terminal", async () => {
+              const { replies } = await run(pendingNative, {
+                nativeOs: "windows",
+                beforeAck: async () => {
+                  deliver({ type: "command_cancel" });
+                  await jest.advanceTimersByTimeAsync(0);
+                },
+              });
+              expect(cancels).toEqual(["auth-send"]);
+              // The cancel result and the exact single terminal are unchanged.
+              expect(replies[0].publish).toHaveBeenCalledWith(
+                expect.objectContaining({
+                  type: "command_cancel_result",
+                  commandId: "auth-send",
+                  canceled: false,
+                }),
+              );
+              expect(sequencedFrames(replies[0])).toEqual([
+                expect.objectContaining({
+                  type: "error",
+                  message: stopUnconfirmed,
+                  sequence: 0,
+                }),
+              ]);
+              expectAttempt("relay_command_cancel");
+            });
+
+            it.each<[string, number, boolean]>([
+              ["output_overflow", 1, false],
+              ["both", 2, true],
+            ])(
+              "reports %s from the router's overflow cleanup",
+              async (attempt, stops, relay) => {
+                stopAfter = stops;
+                let output!: MockChannel;
+                await run(
+                  (call) => {
+                    output = call.onEvent as MockChannel;
+                    return pendingNative();
+                  },
+                  {
+                    nativeOs: "windows",
+                    beforeAck: async () => {
+                      // A slow relay keeps the failed route until its
+                      // failure notice settles, so this harness can still
+                      // acknowledge the terminal sequence on it.
+                      route().publish.mockImplementation(
+                        (frame: { type?: string; sequence?: number }) =>
+                          frame.type === "error" && frame.sequence === undefined
+                            ? new Promise(() => {})
+                            : Promise.resolve(),
+                      );
+                      // One native read over the relay queue's byte budget.
+                      output.onmessage!({
+                        type: "stdout",
+                        data: "x".repeat(4 * 1024 * 1024 + 1),
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                      if (relay) {
+                        deliver({ type: "command_cancel" });
+                        await jest.advanceTimersByTimeAsync(0);
+                      }
+                      // The terminal follows the overflowed stdout frame.
+                      deliver({ type: "command_output_ack", sequence: 1 });
+                      await jest.advanceTimersByTimeAsync(0);
+                    },
+                  },
+                );
+                expect(cancels).toEqual(
+                  relay ? ["auth-send", "auth-send"] : ["auth-send"],
+                );
+                expectAttempt(attempt);
+              },
+            );
+
+            it("never reports a cancel invoked after the first terminal", async () => {
+              await run(
+                () =>
+                  Promise.reject(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  ),
+                {
+                  nativeOs: "windows",
+                  beforeAck: async (bridge) => {
+                    // A relay cancel that passed the active check before the
+                    // terminal, but whose IPC call follows it.
+                    const internals = bridge as unknown as Internals;
+                    internals.activeCommands.add("auth-send");
+                    deliver({ type: "command_cancel" });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                },
+              );
+              expect(cancels).toEqual(["auth-send"]);
+              expectAttempt("unobserved");
+            });
+
+            it("never redirects a cancel captured for one invocation to its replacement", async () => {
+              let replacement: Record<string, unknown> | undefined;
+              await run(pendingNative, {
+                nativeOs: "windows",
+                beforeAck: async (bridge) => {
+                  const internals = bridge as unknown as Internals & {
+                    operationRouter: unknown;
+                    rendererCancelAttempts: Map<string, unknown>;
+                  };
+                  // The handler captures its owner synchronously; the same
+                  // command ID then names another open entry of the same
+                  // router before the IPC module loads.
+                  deliver({ type: "command_cancel" });
+                  replacement = {
+                    router: internals.operationRouter,
+                    open: true,
+                    relay_command_cancel: false,
+                    output_overflow: false,
+                  };
+                  internals.rendererCancelAttempts.set(
+                    "auth-send",
+                    replacement,
+                  );
+                  await jest.advanceTimersByTimeAsync(0);
+                },
+              });
+              // The product cancel still runs unchanged.
+              expect(cancels).toEqual(["auth-send"]);
+              expect(replacement).toMatchObject({
+                relay_command_cancel: false,
+                output_overflow: false,
+              });
+              expectAttempt("unobserved");
+            });
+
+            it.each(["run-1", "", null])(
+              "never reports attempts beside a %p Trigger run ID",
+              async (triggerRunId) => {
+                await run(pendingNative, {
+                  nativeOs: "windows",
+                  command: { chatId: "chat-1", triggerRunId },
+                  beforeAck: async () => {
+                    deliver({ type: "command_cancel" });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                });
+                expect(cancels).toEqual(["auth-send"]);
+                expectAttempt(null);
+              },
+            );
+
+            describe("original command cancel nonconfirmation", () => {
+              const uuid = "0193a5b2-7c41-7a10-8f00-333333333333";
+              const nonconfirmations = () =>
+                jest
+                  .mocked(captureAuthenticatedEvent)
+                  .mock.calls.filter(
+                    ([event]) =>
+                      event === "desktop_stream_cancel_nonconfirmation",
+                  )
+                  .map(([, properties]) => properties);
+              const cancelResults = (reply: { publish: jest.Mock }) =>
+                reply.publish.mock.calls
+                  .map(([frame]) => frame)
+                  .filter((frame) => frame.type === "command_cancel_result");
+              beforeEach(() => {
+                jest
+                  .mocked(getPermittedAnalyticsUserId)
+                  .mockReturnValue("user-456");
+                jest
+                  .mocked(getIdentifiedAnalyticsUserId)
+                  .mockReturnValue("user-456");
+              });
+
+              /** Overflow cleanup, then two relay cancels, all unconfirmed. */
+              const overflowThenRelayTwice = async (
+                commandId: string,
+                nativeOs?: string,
+                afterRegistration?: () => void,
+              ) => {
+                stopAfter = 3;
+                let output!: MockChannel;
+                await run(
+                  (call) => {
+                    output = call.onEvent as MockChannel;
+                    return pendingNative();
+                  },
+                  {
+                    nativeOs,
+                    commandIds: [commandId],
+                    beforeAck: async () => {
+                      afterRegistration?.();
+                      route().publish.mockImplementation(
+                        (frame: { type?: string; sequence?: number }) =>
+                          frame.type === "error" && frame.sequence === undefined
+                            ? new Promise(() => {})
+                            : Promise.resolve(),
+                      );
+                      output.onmessage!({
+                        type: "stdout",
+                        data: "x".repeat(4 * 1024 * 1024 + 1),
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                      for (let i = 0; i < 2; i++) {
+                        deliver({ type: "command_cancel", commandId });
+                        await jest.advanceTimersByTimeAsync(0);
+                      }
+                      deliver({
+                        type: "command_output_ack",
+                        commandId,
+                        sequence: 1,
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                    },
+                  },
+                );
+              };
+
+              it("reports each caller once for the original Windows command", async () => {
+                await overflowThenRelayTwice(uuid, "windows");
+                // No extra native invocation.
+                expect(cancels).toEqual([uuid, uuid, uuid]);
+                expect(nonconfirmations()).toEqual([
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "output_overflow",
+                    outcome: "returned_false",
+                  },
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "relay_command_cancel",
+                    outcome: "returned_false",
+                  },
+                ]);
+              });
+
+              it.each<[string, string | undefined, string]>([
+                ["a macOS command", undefined, uuid],
+                ["a non-UUID Windows command", "windows", "auth-send"],
+              ])("never reports %s", async (_, nativeOs, commandId) => {
+                await overflowThenRelayTwice(commandId, nativeOs);
+                expect(cancels).toEqual([commandId, commandId, commandId]);
+                expect(nonconfirmations()).toEqual([]);
+              });
+
+              it("never reports for an owner identified only after the command started", async () => {
+                jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+                // Identified before the cancels; registration captured none.
+                await overflowThenRelayTwice(uuid, "windows", () =>
+                  jest
+                    .mocked(getIdentifiedAnalyticsUserId)
+                    .mockReturnValue("user-456"),
+                );
+                expect(cancels).toHaveLength(3);
+                expect(nonconfirmations()).toEqual([]);
+              });
+
+              it("reports a rejected relay cancel without its error and publishes false", async () => {
+                mockInvokeHandler = async (cmd, args) => {
+                  if (cmd !== "cancel_stream_command") return base(cmd, args);
+                  cancels.push(args?.commandId as string);
+                  rejectNative(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  );
+                  throw new Error("PRIVATE C:\\Users\\me pid 4242");
+                };
+                const { replies } = await run(pendingNative, {
+                  nativeOs: "windows",
+                  commandIds: [uuid],
+                  beforeAck: async () => {
+                    deliver({ type: "command_cancel", commandId: uuid });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                });
+                expect(cancels).toEqual([uuid]);
+                expect(cancelResults(replies[0])).toEqual([
+                  expect.objectContaining({ commandId: uuid, canceled: false }),
+                ]);
+                expect(nonconfirmations()).toEqual([
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "relay_command_cancel",
+                    outcome: "invoke_rejected",
+                  },
+                ]);
+                const serialized = JSON.stringify(nonconfirmations());
+                expect(serialized).not.toContain("PRIVATE");
+                expect(serialized).not.toContain("4242");
+              });
+            });
+          });
+        });
+      });
+
+      describe("Darwin stop source and final group probe", () => {
+        const tree = { version: 1, failure: "tree_unconfirmed" };
+        const treeGroup = {
+          ...stopGroup,
+          desktop_stream_fence_cleanup_version: 1,
+          desktop_stream_fence_cleanup_failure: "tree_unconfirmed",
+        };
+        // The opted-in shape: the tree_unconfirmed sibling beside the closed
+        // Darwin stop receipt, as Tauri delivers the command's JSON error.
+        const withDarwin = (
+          streamFenceDarwinStop: unknown,
+          cleanup: unknown = tree,
+        ) => ({ ...withCleanup(cleanup), streamFenceDarwinStop });
+        const visible = {
+          version: 1,
+          source: "cancel_ipc",
+          groupProbe: "group_visible",
+        };
+        const sanitized = (properties: Record<string, unknown>) =>
+          sanitizeDesktopAckEvent({
+            ...finals()[0],
+            properties: { ...properties },
+          });
+
+        it.each([
+          ["cancel_ipc", "group_visible"],
+          ["document_invalidation", "probe_denied"],
+          ["application_exit", "probe_failed"],
+        ])(
+          "offers Darwin Desktop the opt-in and joins the %s source and %s probe to its tree_unconfirmed stop",
+          async (source, groupProbe) => {
+            const cwd = "/Users/PRIVATE-CWD/project";
+            const { calls, replies } = await run(
+              () =>
+                Promise.reject(withDarwin({ version: 1, source, groupProbe })),
+              { version: "0.0.94", command: { cwd } },
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+              cmd: "execute_authorized_stream_command",
+              includeStreamFenceOrigin: true,
+              includeStreamFenceCleanup: true,
+              includeStreamFenceWindowsTaskkill: true,
+              includeStreamFenceWindowsTaskkillRootReport: true,
+              includeStreamFenceDarwinStop: true,
+            });
+            // Windows' own opt-ins are never offered to Darwin.
+            expect(calls[0]).not.toHaveProperty(
+              "includeStreamFenceStopRequestSource",
+            );
+            expect(calls[0]).not.toHaveProperty(
+              "includeStreamFenceCancelWaitOwnerPhase",
+            );
+            expect(Object.keys(calls[0].message as object)).not.toContain(
+              "includeStreamFenceDarwinStop",
+            );
+            // The product error is the exact original string, as one terminal.
+            expect(sequencedFrames(replies[0])).toEqual([
+              {
+                type: "error",
+                message: stopUnconfirmed,
+                commandId: "auth-send",
+                sequence: 0,
+                outputProtocol: "ack-v1",
+              },
+            ]);
+            const expected = {
+              ...treeGroup,
+              desktop_stream_fence_darwin_stop_version: 1,
+              desktop_stream_fence_darwin_stop_source: source,
+              desktop_stream_fence_darwin_stop_group_probe: groupProbe,
+            };
+            expect(finals()).toHaveLength(1);
+            const final = finals()[0];
+            expect(final.properties).toMatchObject({
+              outcome: "acknowledged",
+              terminalAcknowledged: true,
+              telemetry_sample_rate: 1,
+              desktop_invocation_unknown_class: "lifecycle_stop_unconfirmed",
+              ...expected,
+            });
+            expect(fenceKeys(final.properties)).toEqual(Object.keys(expected));
+            const enriched = sanitizeDesktopAckEvent({
+              ...final,
+              properties: {
+                ...final.properties,
+                $current_url: "PRIVATE",
+                cwd,
+                command: "PRIVATE COMMAND",
+                pid: 4242,
+              },
+              $set: { email: "PRIVATE" },
+            });
+            expect(enriched.properties).toMatchObject(expected);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain("4242");
+            expect(serialized).not.toContain(authorizationId);
+            expect(serialized).not.toContain(stopUnconfirmed);
+            expect(serialized).not.toContain("streamFence");
+          },
+        );
+
+        it.each(["windows", "linux"])(
+          "never offers %s Desktop the opt-in or keeps a group it never requested",
+          async (nativeOs) => {
+            const { calls } = await run(
+              () => Promise.reject(withDarwin(visible)),
+              { nativeOs },
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toMatchObject({
+              includeStreamFenceOrigin: true,
+              includeStreamFenceCleanup: true,
+            });
+            expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+            expect(finals()).toHaveLength(1);
+            const properties = finals()[0].properties;
+            expect(properties).toMatchObject(treeGroup);
+            expect(fenceKeys(properties)).toEqual(Object.keys(treeGroup));
+            const enriched = sanitized(properties);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(treeGroup),
+            );
+            expect(JSON.stringify([captures(), enriched])).not.toContain(
+              "darwin_stop",
+            );
+          },
+        );
+
+        // [case, native rejection, expected fence groups]
+        it.each<[string, () => unknown, Record<string, unknown>]>([
+          [
+            "an older native app's tree_unconfirmed cleanup alone",
+            () => withCleanup(tree),
+            treeGroup,
+          ],
+          [
+            "an extra PID",
+            () => withDarwin({ ...visible, pid: 4242 }),
+            treeGroup,
+          ],
+          [
+            "an extra errno",
+            () => withDarwin({ ...visible, errno: 1 }),
+            treeGroup,
+          ],
+          [
+            "an unlisted probe",
+            () => withDarwin({ ...visible, groupProbe: "PRIVATE" }),
+            treeGroup,
+          ],
+          [
+            "a human action",
+            () => withDarwin({ ...visible, source: "user_clicked_stop" }),
+            treeGroup,
+          ],
+          [
+            "an unsupported version",
+            () => withDarwin({ ...visible, version: 2 }),
+            treeGroup,
+          ],
+          [
+            "a probe getter",
+            () =>
+              withDarwin(
+                Object.defineProperty(
+                  { version: 1, source: "cancel_ipc" },
+                  "groupProbe",
+                  { enumerable: true, get: fail },
+                ),
+              ),
+            treeGroup,
+          ],
+          [
+            "a receipt beside a combined leg",
+            () =>
+              withDarwin(visible, {
+                version: 1,
+                failure: "tree_and_leader_wait_timed_out",
+              }),
+            {
+              ...stopGroup,
+              desktop_stream_fence_cleanup_version: 1,
+              desktop_stream_fence_cleanup_failure:
+                "tree_and_leader_wait_timed_out",
+            },
+          ],
+          [
+            "a receipt beside a Windows taskkill receipt",
+            () => ({
+              ...withDarwin(visible),
+              streamFenceWindowsTaskkill: {
+                version: 1,
+                outcome: "output_error",
+              },
+            }),
+            {
+              ...treeGroup,
+              desktop_stream_fence_windows_taskkill_version: 1,
+              desktop_stream_fence_windows_taskkill_outcome: "output_error",
+            },
+          ],
+        ])(
+          "keeps the exact message and every earlier group for %s on Darwin",
+          async (_case, native, expected) => {
+            const { calls, replies } = await run(() =>
+              Promise.reject(native()),
+            );
+            expect(calls[0]).toMatchObject({
+              includeStreamFenceDarwinStop: true,
+            });
+            expect(sequencedFrames(replies[0])).toEqual([
+              expect.objectContaining({
+                type: "error",
+                message: stopUnconfirmed,
+                sequence: 0,
+              }),
+            ]);
+            expect(finals()).toHaveLength(1);
+            const properties = finals()[0].properties;
+            expect(properties).toMatchObject(expected);
+            expect(fenceKeys(properties)).toEqual(Object.keys(expected));
+            const enriched = sanitized(properties);
+            expect(fenceKeys(enriched.properties)).toEqual(
+              Object.keys(expected),
+            );
+            const serialized = JSON.stringify([captures(), enriched]);
+            expect(serialized).not.toContain("PRIVATE");
+            expect(serialized).not.toContain("streamFence");
+            expect(serialized).not.toContain("darwin_stop");
+          },
+        );
+
+        it("never offers or unwraps it through the compatibility command", async () => {
+          const { calls } = await run(async (call) => {
+            if (call.cmd === "execute_authorized_stream_command")
+              throw "Command execute_authorized_stream_command not found";
+            return Promise.reject(withDarwin(visible));
+          });
+          expect(calls[0]).toMatchObject({
+            includeStreamFenceDarwinStop: true,
+          });
+          expect(calls[1]).not.toHaveProperty("includeStreamFenceDarwinStop");
+          expect(fenceKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("never offers it to a published legacy native app", async () => {
+          const { calls } = await run(
+            () => Promise.reject(withDarwin(visible)),
+            { version: "0.0.72" },
+          );
+          expect(calls.map((call) => call.cmd)).toEqual([
+            "execute_stream_command",
+          ]);
+          expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+          expect(fenceKeys(finals()[0].properties)).toEqual([]);
+        });
+
+        it("never offers it without an identified analytics owner", async () => {
+          const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+          identity.mockReturnValue(null);
+          try {
+            const { calls } = await run(() => Promise.reject(stopUnconfirmed));
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).not.toHaveProperty("includeStreamFenceDarwinStop");
+            expect(finals()).toHaveLength(0);
+          } finally {
+            identity.mockReturnValue("user-456");
+          }
         });
       });
     });

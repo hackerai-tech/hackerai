@@ -1,17 +1,136 @@
 /**
  * Optional, versioned self-report a preview client attaches to its capture GET:
  * which committed `showPreview` conditions were true at dispatch and which
- * public bundle commit it loaded. These describe the client's polling decision,
- * not physical browser execution or visible pixels. The server treats them as
- * untrusted diagnostics only; they never affect auth, session selection,
- * capture, caching or the response.
+ * public bundle commit it loaded, plus, only beside browserRequested, which
+ * terminal input field produced the display text and whether the selection
+ * followed the live edge, and for a live command, its closed invocation shape
+ * (with a closed refinement of `other_only`). These describe the client's
+ * polling decision. The server treats them as untrusted
+ * diagnostics only; they never affect auth, session selection, capture,
+ * caching or the response.
  */
+
+import {
+  AGENT_BROWSER_OTHER_ONLY_KINDS,
+  AGENT_BROWSER_PREVIEW_INTENTS,
+} from "@/lib/utils/agent-browser-command";
 
 export const PREVIEW_DIAGNOSTIC_VERSION_PARAM = "preview_diag_v";
 export const PREVIEW_ACTIVATION_PARAM = "preview_activation";
 export const PREVIEW_READER_PARAM = "preview_reader";
-/** The single String log attribute holding the canonical `[1,mask,reader]` tuple. */
+/**
+ * Optional add-on, valid only beside the browserRequested bit: `1.<source>.<1|0>`.
+ * Older servers ignore it; a missing or invalid value keeps the v1 base.
+ */
+export const PREVIEW_TEXT_SOURCE_PARAM = "preview_text_source";
+/**
+ * The single String log attribute holding the canonical `[1,mask,reader]`
+ * tuple. A valid text-source add-on is appended as a fourth element,
+ * `[1,source,liveSelection]`; positions 0-2 never change, so v1 readers that
+ * read those positions are unaffected.
+ */
 export const PREVIEW_CLIENT_CONTEXT_KEY = "preview_client_context";
+/**
+ * Optional add-on `1.<intent>`: the closed base shape of the selected live
+ * command (`AgentBrowserPreviewBaseIntent`), sent only beside the
+ * browserRequested bit and a `command` source at the live edge. A refined
+ * `other_only.<kind>` still sends exactly `1.other_only` here. Older servers
+ * ignore it.
+ */
+export const PREVIEW_TERMINAL_INTENT_PARAM = "preview_terminal_intent";
+/**
+ * Separate String log attribute `[1,"<intent>"]`, appended after the client
+ * context only when that context carried a live `command` source. It never
+ * changes the `preview_client_context` value.
+ */
+export const PREVIEW_TERMINAL_INTENT_KEY = "preview_terminal_intent";
+/**
+ * Optional sibling add-on `1.<kind>` (`AgentBrowserOtherOnlyKind`), sent only
+ * beside `preview_terminal_intent=1.other_only`. Older servers ignore it; a
+ * missing or invalid value keeps the base intent alone.
+ */
+export const PREVIEW_TERMINAL_OTHER_KIND_PARAM = "preview_terminal_other_kind";
+/**
+ * Separate String log attribute `[1,"<kind>"]`, appended after the terminal
+ * intent only when that intent is `[1,"other_only"]`. It never changes the
+ * `preview_terminal_intent` value.
+ */
+export const PREVIEW_TERMINAL_OTHER_KIND_KEY = "preview_terminal_other_kind";
+
+/**
+ * The selected terminal's producer tag (`SidebarTerminal.commandSource`) for
+ * the text that set browserRequested: its command (shell or legacy), the brief
+ * an empty command fell back to, the brief an interactive action shows, or
+ * `unavailable` when the producer chose a label or set no tag. Provenance
+ * only, never the text itself.
+ */
+export const PREVIEW_TEXT_SOURCES = [
+  "command",
+  "brief",
+  "interactive_brief",
+  "unavailable",
+] as const;
+export type PreviewTextSource = (typeof PREVIEW_TEXT_SOURCES)[number];
+
+/** Closed 8-value domain: canonical query value → canonical tuple element. */
+const TEXT_SOURCE_ADD_ONS = new Map<string, string>(
+  PREVIEW_TEXT_SOURCES.flatMap((source) =>
+    [true, false].map(
+      (live) =>
+        [`1.${source}.${live ? 1 : 0}`, `[1,"${source}",${live}]`] as const,
+    ),
+  ),
+);
+const MAX_TEXT_SOURCE_LENGTH = Math.max(
+  ...[...TEXT_SOURCE_ADD_ONS.keys()].map((value) => value.length),
+);
+/** The only text-source add-on that admits a terminal intent. */
+const LIVE_COMMAND_TEXT_SOURCE = "1.command.1";
+
+/** Closed 7-value domain: canonical query value → canonical attribute value. */
+const TERMINAL_INTENTS = new Map<string, string>(
+  AGENT_BROWSER_PREVIEW_INTENTS.map(
+    (intent) => [`1.${intent}`, `[1,"${intent}"]`] as const,
+  ),
+);
+const MAX_TERMINAL_INTENT_LENGTH = Math.max(
+  ...[...TERMINAL_INTENTS.keys()].map((value) => value.length),
+);
+/** The only terminal intent that admits an other-only kind. */
+const OTHER_ONLY_TERMINAL_INTENT = "1.other_only";
+
+/** Closed 3-value domain: canonical query value → canonical attribute value. */
+const TERMINAL_OTHER_KINDS = new Map<string, string>(
+  AGENT_BROWSER_OTHER_ONLY_KINDS.map(
+    (kind) => [`1.${kind}`, `[1,"${kind}"]`] as const,
+  ),
+);
+const MAX_TERMINAL_OTHER_KIND_LENGTH = Math.max(
+  ...[...TERMINAL_OTHER_KINDS.keys()].map((value) => value.length),
+);
+
+/**
+ * Closed client domain: each base intent (including the legacy unrefined
+ * `other_only`) and each refined `other_only.<kind>` → its query values.
+ */
+const CLIENT_TERMINAL_INTENTS = new Map<
+  string,
+  { intent: string; otherKind?: string }
+>([
+  ...AGENT_BROWSER_PREVIEW_INTENTS.map(
+    (intent) => [intent, { intent: `1.${intent}` }] as const,
+  ),
+  ...AGENT_BROWSER_OTHER_ONLY_KINDS.map(
+    (kind) =>
+      [
+        `other_only.${kind}`,
+        { intent: OTHER_ONLY_TERMINAL_INTENT, otherKind: `1.${kind}` },
+      ] as const,
+  ),
+]);
+const MAX_CLIENT_TERMINAL_INTENT_LENGTH = Math.max(
+  ...[...CLIENT_TERMINAL_INTENTS.keys()].map((value) => value.length),
+);
 
 const UNKNOWN_READER = "unknown";
 // Leaves room for the logger's own prefix/common/correlation attributes under
@@ -79,18 +198,47 @@ function normalizeReader(value: unknown): string | undefined {
 }
 
 /**
+ * Functional, not diagnostic: a fresh passive Agent-state preview may accept a
+ * 202 deferral while the selected session runs a verified WAIT. The server
+ * re-checks state and run independently; older servers ignore the key.
+ */
+export const PREVIEW_DEFER_WAIT_PARAM = "deferWait";
+
+/**
+ * Functional, negotiated independently of deferWait: the same fresh passive
+ * Agent-state preview may accept a 202 deferral carrying
+ * `refreshDeferredReason: "open"` when its status lookup reached the deadline
+ * behind the selected session's verified still-running plain OPEN. Older
+ * servers ignore the key and older renderers never send it.
+ */
+export const PREVIEW_DEFER_OPEN_PARAM = "deferOpen";
+
+/**
  * Build the capture GET URL. `fresh=1` keeps its existing name and value so
  * older servers read it unchanged; they ignore the additional optional keys.
  * The reader is the caller's loaded public build commit, or `unknown`.
+ * `deferWait=1` and `deferOpen=1` are each added only beside `fresh=1`.
+ * The text-source add-on is sent only beside an encodable mask with the
+ * browserRequested bit. An unrecognized source is reported as `unavailable`,
+ * and a non-boolean selection omits the add-on.
+ * The terminal intent is added only beside a `command` source at the live
+ * edge, and only for a value in its closed domain. A refined
+ * `other_only.<kind>` sends the unchanged `1.other_only` intent followed by
+ * its `1.<kind>` sibling; every other intent sends no sibling.
  */
 export function previewCaptureUrl(
   endpoint: string,
   fresh: boolean,
   activationMask: number,
   loadedBuildCommit: unknown,
+  deferWait = false,
+  textSource?: { source: unknown; liveSelection: unknown; intent?: unknown },
+  deferOpen = false,
 ): string {
   const query = new URLSearchParams();
   if (fresh) query.set("fresh", "1");
+  if (fresh && deferWait === true) query.set(PREVIEW_DEFER_WAIT_PARAM, "1");
+  if (fresh && deferOpen === true) query.set(PREVIEW_DEFER_OPEN_PARAM, "1");
   if (isActivationMask(activationMask)) {
     query.set(PREVIEW_DIAGNOSTIC_VERSION_PARAM, "1");
     query.set(PREVIEW_ACTIVATION_PARAM, `${activationMask}`);
@@ -98,6 +246,28 @@ export function previewCaptureUrl(
       PREVIEW_READER_PARAM,
       normalizeReader(loadedBuildCommit) ?? UNKNOWN_READER,
     );
+    const live = textSource?.liveSelection;
+    if ((activationMask & 1) === 1 && typeof live === "boolean") {
+      const source = PREVIEW_TEXT_SOURCES.includes(
+        textSource?.source as PreviewTextSource,
+      )
+        ? (textSource?.source as PreviewTextSource)
+        : "unavailable";
+      const addOn = `1.${source}.${live ? 1 : 0}`;
+      query.set(PREVIEW_TEXT_SOURCE_PARAM, addOn);
+      const intent = textSource?.intent;
+      const terminal =
+        addOn === LIVE_COMMAND_TEXT_SOURCE &&
+        typeof intent === "string" &&
+        intent.length <= MAX_CLIENT_TERMINAL_INTENT_LENGTH
+          ? CLIENT_TERMINAL_INTENTS.get(intent)
+          : undefined;
+      if (terminal !== undefined) {
+        query.set(PREVIEW_TERMINAL_INTENT_PARAM, terminal.intent);
+        if (terminal.otherKind !== undefined)
+          query.set(PREVIEW_TERMINAL_OTHER_KIND_PARAM, terminal.otherKind);
+      }
+    }
   }
   const search = query.toString();
   return search ? `${endpoint}?${search}` : endpoint;
@@ -119,14 +289,30 @@ function single(
     : undefined;
 }
 
-/**
- * Strictly decode the optional group into its canonical tuple, or nothing.
- * Absent, partial, duplicated, future-version or noncanonical input drops the
- * whole group. Unrelated query keys are never read.
- */
-export function parsePreviewClientContext(
+/** Exact canonical value from a closed domain, or nothing; never throws. */
+function closedValue(
   params: URLSearchParams,
-): string | undefined {
+  name: string,
+  domain: ReadonlyMap<string, string>,
+  maxLength: number,
+): { value: string; element: string } | undefined {
+  try {
+    const value = single(params, name, maxLength);
+    if (value === undefined) return undefined;
+    const element = domain.get(value);
+    return element === undefined ? undefined : { value, element };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The canonical tuple plus whether its add-on validated as a live `command`
+ * source beside the browserRequested bit, the only basis for an intent.
+ */
+function decodePreviewClientContext(
+  params: URLSearchParams,
+): { tuple: string; liveCommand: boolean } | undefined {
   try {
     const version = single(params, PREVIEW_DIAGNOSTIC_VERSION_PARAM, 1);
     const activation = single(params, PREVIEW_ACTIVATION_PARAM, 3);
@@ -138,33 +324,103 @@ export function parsePreviewClientContext(
     if (!isActivationMask(mask)) return undefined;
     const normalizedReader = normalizeReader(reader);
     if (normalizedReader === undefined) return undefined;
-    return `[1,${mask},"${normalizedReader}"]`;
+    const base = `1,${mask},"${normalizedReader}"`;
+    const addOn =
+      (mask & 1) === 1
+        ? closedValue(
+            params,
+            PREVIEW_TEXT_SOURCE_PARAM,
+            TEXT_SOURCE_ADD_ONS,
+            MAX_TEXT_SOURCE_LENGTH,
+          )
+        : undefined;
+    return addOn === undefined
+      ? { tuple: `[${base}]`, liveCommand: false }
+      : {
+          tuple: `[${base},${addOn.element}]`,
+          liveCommand: addOn.value === LIVE_COMMAND_TEXT_SOURCE,
+        };
   } catch {
     return undefined;
   }
 }
 
 /**
+ * Strictly decode the optional group into its canonical tuple, or nothing.
+ * Absent, partial, duplicated, future-version or noncanonical input drops the
+ * whole group. The text-source add-on is read only when the decoded mask has
+ * the browserRequested bit; any problem with it drops only the add-on.
+ * Unrelated query keys are never read.
+ */
+export function parsePreviewClientContext(
+  params: URLSearchParams,
+): string | undefined {
+  return decodePreviewClientContext(params)?.tuple;
+}
+
+/**
  * Return the existing diagnostic fields, appending the validated tuple last
- * only when the baseline leaves conservative logger headroom. Otherwise (or on
- * any failure) return the original object unchanged; never throws.
+ * only when the baseline leaves conservative logger headroom. The terminal
+ * intent follows it only when the tuple's add-on is a live `command` source,
+ * the intent is one canonical closed value, and the tuple's own budget still
+ * holds afterwards, so the largest record never grows. The other-only kind
+ * follows the intent likewise, only when that intent is `other_only`, the kind
+ * is one canonical closed value, and the budget still holds after both, so it
+ * never takes the intent's slot. Otherwise (or on any failure) return the
+ * original object or the longest valid prefix of tuple, intent and kind;
+ * never throws.
  */
 export function withPreviewClientContext<T extends Record<string, unknown>>(
   fields: T,
   params: URLSearchParams,
 ): T {
   try {
-    const context = parsePreviewClientContext(params);
+    const context = decodePreviewClientContext(params);
+    const has = (key: string) =>
+      Object.prototype.hasOwnProperty.call(fields, key);
+    const count = Object.keys(fields).length;
     if (
       context === undefined ||
-      Object.prototype.hasOwnProperty.call(
-        fields,
-        PREVIEW_CLIENT_CONTEXT_KEY,
-      ) ||
-      Object.keys(fields).length > MAX_BASELINE_FIELDS
+      has(PREVIEW_CLIENT_CONTEXT_KEY) ||
+      count > MAX_BASELINE_FIELDS
     )
       return fields;
-    return { ...fields, [PREVIEW_CLIENT_CONTEXT_KEY]: context };
+    const withContext = {
+      ...fields,
+      [PREVIEW_CLIENT_CONTEXT_KEY]: context.tuple,
+    };
+    if (
+      !context.liveCommand ||
+      has(PREVIEW_TERMINAL_INTENT_KEY) ||
+      count + 1 > MAX_BASELINE_FIELDS
+    )
+      return withContext;
+    const intent = closedValue(
+      params,
+      PREVIEW_TERMINAL_INTENT_PARAM,
+      TERMINAL_INTENTS,
+      MAX_TERMINAL_INTENT_LENGTH,
+    );
+    if (intent === undefined) return withContext;
+    const withIntent = {
+      ...withContext,
+      [PREVIEW_TERMINAL_INTENT_KEY]: intent.element,
+    };
+    if (
+      intent.value !== OTHER_ONLY_TERMINAL_INTENT ||
+      has(PREVIEW_TERMINAL_OTHER_KIND_KEY) ||
+      count + 2 > MAX_BASELINE_FIELDS
+    )
+      return withIntent;
+    const otherKind = closedValue(
+      params,
+      PREVIEW_TERMINAL_OTHER_KIND_PARAM,
+      TERMINAL_OTHER_KINDS,
+      MAX_TERMINAL_OTHER_KIND_LENGTH,
+    );
+    return otherKind === undefined
+      ? withIntent
+      : { ...withIntent, [PREVIEW_TERMINAL_OTHER_KIND_KEY]: otherKind.element };
   } catch {
     return fields;
   }

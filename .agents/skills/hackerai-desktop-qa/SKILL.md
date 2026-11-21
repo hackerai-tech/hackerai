@@ -27,6 +27,23 @@ examples labeled **Demo**, with a fictional `.invalid` target and an explicit
 synthetic-evidence disclosure. Do not claim a real vulnerability was verified.
 Do not launch a QA build against Production as a fallback for blocked auth.
 
+## Daily entry point
+
+Pick the surface and case name yourself, then run the matching preflight from
+[the QA runner](../../../docs/desktop-qa-tooling.md#preflight-and-result-reuse):
+
+1. Web-only: `desktop:qa preflight web`, then test the verified Vercel Preview.
+2. Windows VM from a host: `desktop:qa preflight windows-vm` prints manual
+   ownership/sign-in checks; run `preflight native` inside the guest.
+3. Native: `desktop:qa preflight native <config.json> <case>`. Fix any BLOCKED
+   reason (exit 2) and rerun. Confirm the QA window and actual signed-in account
+   before relying on an earlier PASS for the current session. Skip the journey
+   only if the result matches that profile and the case needs no fresh evidence.
+   Otherwise, run the case and verify the actual Desktop transport. If preflight
+   prints a fingerprint, use `desktop:qa record-result` for the observed PASS,
+   FAIL or BLOCKED result. If no fingerprint is available, report the outcome
+   in the QA handoff.
+
 ## Prepare and inspect
 
 Use [the QA runner](../../../docs/desktop-qa-tooling.md) to check a pinned native

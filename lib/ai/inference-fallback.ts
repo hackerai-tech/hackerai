@@ -1,4 +1,6 @@
 import { wrapLanguageModel, type LanguageModelMiddleware } from "ai";
+import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
+import { classifyInferenceRejection } from "./inference-request-recovery";
 
 type StreamOptions = Parameters<
   NonNullable<LanguageModelMiddleware["wrapStream"]>
@@ -7,6 +9,20 @@ type Model = StreamOptions["model"];
 type Result = Awaited<ReturnType<Model["doStream"]>>;
 type Part = Result["stream"] extends ReadableStream<infer P> ? P : never;
 type Usage = Extract<Part, { type: "finish" }>["usage"];
+
+/**
+ * Agent's once-per-run size recovery compacts an exact Inference
+ * context-length rejection before the fallback sees the oversized prompt.
+ * After that recovery is consumed, the compacted retry keeps the fallback.
+ * The media check mirrors the outer recovery so it never declines a deferral.
+ */
+export const shouldDeferInferenceRejectionToSizeRecovery = (
+  error: unknown,
+  sizeRecovery: { attempted: boolean } | undefined,
+) =>
+  sizeRecovery?.attempted !== true &&
+  classifyInferenceRejection(error) === "context_length_exceeded" &&
+  classifyProviderOverflowError(error) === "context";
 
 /** A single pre-output fallback; never replay a published tool call or text. */
 export function withInferenceFallback(
@@ -18,6 +34,8 @@ export function withInferenceFallback(
     prepareFallbackPrompt: (
       prompt: StreamOptions["params"]["prompt"],
     ) => Promise<StreamOptions["params"]["prompt"]>;
+    /** Pre-stream rejections an outer recovery must see before the fallback. */
+    deferPreStreamRejection?: (error: unknown) => boolean;
   },
 ) {
   return wrapLanguageModel({
@@ -81,6 +99,7 @@ export function withInferenceFallback(
             }),
           };
         } catch (error) {
+          if (!reader && options.deferPreStreamRejection?.(error)) throw error;
           if (reader) {
             try {
               await reader.cancel();

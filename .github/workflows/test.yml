@@ -125,7 +125,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.integrations == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -159,6 +159,13 @@ jobs:
           assert "DS-0002" in findings, findings
           print("Verified scanner detects root-user fixture without network access")
           PYTHON
+
+      - name: Verify egress attribution with distro Dante and PAM
+        timeout-minutes: 8
+        # Only scripts/egress is the build context; the test run has no network.
+        run: |
+          docker build --file scripts/egress/tests/Dockerfile --tag hackerai-egress-attribution-test scripts/egress
+          docker run --rm --network none hackerai-egress-attribution-test
 
       - name: Verify build compiler isolation and failure gate
         run: node --test scripts/build.test.mjs

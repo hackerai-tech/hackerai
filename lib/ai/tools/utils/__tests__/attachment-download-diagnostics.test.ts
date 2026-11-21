@@ -274,6 +274,188 @@ it("bounds timeout wording scans and retains it through existing boundary and co
   ).toBe(28);
 });
 
+const progress = (
+  n: string,
+  c: string,
+  a: string,
+  h: string,
+  b: string,
+  r: string,
+) => `hackerai_curl_progress_v1 n=${n} c=${c} a=${a} h=${h} b=${b} r=${r}`;
+const zero = "0.000000";
+const lookupOnly = progress("0.004211", zero, zero, "000", "0", zero);
+const afterTls = ["0.004211", "0.031002", "0.129800"] as const;
+const progressFields = (curlProgressStdout?: string, overrides = {}) =>
+  getAttachmentDownloadFailureContext(
+    recordAttachmentDownloadFailure(new Error("private original"), {
+      ...input,
+      exitCode: 28,
+      stderr: "curl: (28) private detail",
+      curlProgressStdout,
+      ...overrides,
+    }),
+  );
+
+it.each([
+  [progress(zero, zero, zero, "000", "0", zero), "none_positive"],
+  // Measured stall before any TLS/HTTP bytes: no status, so no response.
+  [`${progress("0.000037", zero, zero, "000", "0", zero)}\n`, "name_lookup"],
+  [progress("0.004211", "0.031002", zero, "000", "0", zero), "connect"],
+  // Measured stall after TLS, before headers.
+  [`${progress(...afterTls, "000", "0", zero)}\r\n`, "tls_handshake"],
+  [progress(...afterTls, "200", "0", zero), "response_status_observed"],
+  // Measured stalled body: a status and positive downloaded bytes.
+  [progress(...afterTls, "200", "21", zero), "response_body_observed"],
+  // Plain HTTP never reports a TLS time; the status still proves a response.
+  [
+    progress("0.004211", "0.031002", zero, "206", "4096", zero),
+    "response_body_observed",
+  ],
+  // Redirect time accumulates across hops, so other values stay ambiguous.
+  [progress(...afterTls, "302", "0", "0.700000"), "redirected_or_ambiguous"],
+  [progress(...afterTls, "200", "21", "0.700000"), "redirected_or_ambiguous"],
+  [
+    progress(zero, zero, zero, "000", "0", "0.000001"),
+    "redirected_or_ambiguous",
+  ],
+])("keeps only the furthest completed curl stage: %j", (stdout, milestone) => {
+  const fields = progressFields(stdout);
+  expect(fields).toMatchObject({
+    attachment_download_timeout_hint: "unclassified",
+    attachment_download_curl_progress_version: 1,
+    attachment_download_curl_progress_state: "observed",
+    attachment_download_curl_progress_milestone: milestone,
+    // The marker's status is never projected as a reported HTTP status.
+    attachment_download_reported_http_status: null,
+  });
+  expect(JSON.stringify(fields)).not.toMatch(
+    /\d\.\d|hackerai_curl|private|200|206|302|4096/,
+  );
+});
+
+it.each([
+  ["", "absent"],
+  [`${lookupOnly}\n${lookupOnly}\n`, "unrecognized"],
+  [`${lookupOnly}\nprivate https://private.example/object\n`, "unrecognized"],
+  [`private body bytes\n${lookupOnly}\n`, "unrecognized"],
+  [` ${lookupOnly}`, "unrecognized"],
+  [lookupOnly.slice(0, -4), "unrecognized"],
+  [lookupOnly.replace("0.004211", "0,004211"), "unrecognized"],
+  [lookupOnly.replace("0.004211", "-0.004211"), "unrecognized"],
+  [lookupOnly.replace(" r=0.000000", ""), "unrecognized"],
+  [lookupOnly.replace("_v1", "_v2"), "unrecognized"],
+  // Body bytes without any HTTP status are contradictory, never a response.
+  [progress(...afterTls, "000", "21", zero), "unrecognized"],
+  [progress(...afterTls, "099", "0", zero), "unrecognized"],
+  [progress(...afterTls, "600", "0", zero), "unrecognized"],
+  [progress(...afterTls, "20", "0", zero), "unrecognized"],
+  [progress(...afterTls, "200", "21.000000", zero), "unrecognized"],
+  [progress(...afterTls, "200", "-1", zero), "unrecognized"],
+  [progress(...afterTls, "200", "1".repeat(16), zero), "unrecognized"],
+  // The superseded marker shape is never read.
+  [
+    `hackerai_curl_progress_v1 n=${afterTls[0]} c=${afterTls[1]} a=${afterTls[2]} t=0.253703 r=${zero}`,
+    "unrecognized",
+  ],
+  [lookupOnly + " ".repeat(300), "unrecognized"],
+  ["private".repeat(100_000), "unrecognized"],
+])(
+  "never interprets missing, malformed or extra private stdout: %#",
+  (stdout, state) => {
+    const fields = progressFields(stdout);
+    expect(fields).toMatchObject({
+      attachment_download_curl_progress_version: 1,
+      attachment_download_curl_progress_state: state,
+      attachment_download_curl_progress_milestone: null,
+      attachment_download_timeout_hint: "unclassified",
+    });
+    expect(JSON.stringify(fields)).not.toMatch(/\d\.\d|hackerai_curl|private/);
+  },
+);
+
+it.each([
+  ["not supplied by the caller", undefined, {}],
+  ["a non-28 exit", lookupOnly, { exitCode: 7 }],
+  // Windows Bash stays exit28-only; the cloud's exit35 scope is separate.
+  ["a Windows exit 35", lookupOnly, { exitCode: 35 }],
+  ["successful exit", lookupOnly, { exitCode: 0 }],
+  ["Windows cmd", lookupOnly, { shell: "cmd" }],
+  ["POSIX Bash", lookupOnly, { platform: "posix" }],
+  ["unknown platform", lookupOnly, { platform: "unknown" }],
+  ["wget", lookupOnly, { httpClient: "wget" }],
+  ["PowerShell", lookupOnly, { httpClient: "powershell" }],
+] as const)("omits curl progress for %s", (_, stdout, overrides) => {
+  const fields = progressFields(stdout, overrides);
+  expect(fields).toBeDefined();
+  expect(Object.keys(fields!).some((key) => key.includes("progress"))).toBe(
+    false,
+  );
+});
+
+// The generic E2B shape: platform stays unknown, shell bash, client curl.
+const cloudProgressFields = (
+  exitCode: number,
+  cloudCurlProgressStdout?: string,
+  overrides = {},
+) =>
+  getAttachmentDownloadFailureContext(
+    recordAttachmentDownloadFailure(new Error("private original"), {
+      ...input,
+      platform: "unknown",
+      exitCode,
+      stderr: `curl: (${exitCode}) private detail`,
+      cloudCurlProgressStdout,
+      ...overrides,
+    }),
+  );
+
+it.each([28, 35])(
+  "reads a cloud curl exit%i marker only through the shared strict parser",
+  (exitCode) => {
+    const cases = [
+      [progress(...afterTls, "000", "0", zero), "observed", "tls_handshake"],
+      ["", "absent", null],
+      [
+        `${lookupOnly}\nprivate https://private.example/x`,
+        "unrecognized",
+        null,
+      ],
+    ] as const;
+    for (const [stdout, state, milestone] of cases) {
+      const fields = cloudProgressFields(exitCode, stdout);
+      expect(fields).toMatchObject({
+        attachment_download_exit_code: exitCode,
+        attachment_download_curl_progress_version: 1,
+        attachment_download_curl_progress_state: state,
+        attachment_download_curl_progress_milestone: milestone,
+      });
+      expect(JSON.stringify(fields)).not.toMatch(
+        /\d\.\d|hackerai_curl|private/,
+      );
+    }
+  },
+);
+
+it.each([
+  ["not supplied by the caller", 28, undefined, {}],
+  ["another curl exit", 7, lookupOnly, {}],
+  ["successful exit", 0, lookupOnly, {}],
+  // The cloud input never applies to a local transport's platform or client.
+  ["a Windows platform", 28, lookupOnly, { platform: "windows" }],
+  ["a POSIX platform", 35, lookupOnly, { platform: "posix" }],
+  ["cmd", 28, lookupOnly, { shell: "cmd" }],
+  ["wget", 35, lookupOnly, { httpClient: "wget" }],
+] as const)(
+  "omits cloud curl progress for %s",
+  (_, exitCode, stdout, overrides) => {
+    const fields = cloudProgressFields(exitCode, stdout, overrides);
+    expect(fields).toBeDefined();
+    expect(Object.keys(fields!).some((key) => key.includes("progress"))).toBe(
+      false,
+    );
+  },
+);
+
 const curl1Protocol =
   'curl: (1) Protocol "privateproto" not supported or disabled in libcurl';
 

@@ -537,6 +537,7 @@ describe("proxy", () => {
   it.each([
     "/api/internal/user-research",
     "/api/internal/influencers/partners",
+    "/api/internal/egress-telemetry",
   ])(
     "bypasses AuthKit for independently authenticated gateway %s",
     async (pathname) => {
@@ -557,31 +558,33 @@ describe("proxy", () => {
     },
   );
 
-  it("does not bypass AuthKit for sibling internal API paths", async () => {
-    mockAuthkit.mockResolvedValue({
-      session: { user: null },
-      headers: new Headers(),
-      authorizationUrl: "https://auth.hackerai.co/login",
-    });
-    const { default: proxy } = await import("../proxy");
+  it.each([
+    "/api/internal/user-research/status",
+    "/api/internal/egress-telemetry/batches",
+    "/api/internal/egress-telemetry-read",
+  ])(
+    "does not bypass AuthKit for sibling internal API path %s",
+    async (pathname) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: null },
+        headers: new Headers(),
+        authorizationUrl: "https://auth.hackerai.co/login",
+      });
+      const { default: proxy } = await import("../proxy");
 
-    await proxy(
-      createRequest({
-        pathname: "/api/internal/user-research/status",
-        method: "POST",
-      }),
-    );
+      await proxy(createRequest({ pathname, method: "POST" }));
 
-    expect(mockAuthkit).toHaveBeenCalledTimes(1);
-    expect(mockNextResponseJson).toHaveBeenCalledWith(
-      {
-        code: "unauthorized:auth",
-        message: "You need to sign in before continuing.",
-        cause: "Session expired or invalid",
-      },
-      expect.objectContaining({ status: 401 }),
-    );
-  });
+      expect(mockAuthkit).toHaveBeenCalledTimes(1);
+      expect(mockNextResponseJson).toHaveBeenCalledWith(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        expect.objectContaining({ status: 401 }),
+      );
+    },
+  );
 
   it.each(["/robots.txt", "/sitemap.xml"])(
     "bypasses AuthKit for the public SEO route %s",
@@ -1517,6 +1520,121 @@ describe("proxy", () => {
         expect(mockNextResponseNext).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe("public page auth context provenance", () => {
+    const requestId = "iad1::fra1::abc12-1794282623256-a92d4497977c";
+    const canary = "private-canary-marker";
+
+    async function runPublicPage({
+      pathname = "/",
+      method = "GET",
+      hasSession = false,
+      incomingContext = true,
+      sdkContext = false,
+      vercelId = requestId,
+    }: {
+      pathname?: string;
+      method?: string;
+      hasSession?: boolean;
+      incomingContext?: boolean;
+      sdkContext?: boolean;
+      vercelId?: string;
+    } = {}) {
+      mockAuthkit.mockResolvedValue({
+        session: { user: hasSession ? { id: "user" } : null },
+        headers: new Headers({
+          "x-workos-middleware": "true",
+          ...(sdkContext ? { "x-workos-session": "sdk-present" } : {}),
+        }),
+      });
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: `${pathname}?utm=${canary}`,
+          method,
+          hasSession,
+          userAgent: `Mozilla/5.0 ${canary}`,
+          headers: {
+            "x-vercel-id": vercelId,
+            "x-unrelated-metadata": canary,
+            ...(incomingContext ? { "x-workos-session": "present" } : {}),
+          },
+          cookieValues: { unrelated: canary },
+        }),
+      );
+      expect(response).toBe(mockNextResponseNext.mock.results[0]?.value);
+      return mockNextResponseNext.mock.calls[0]?.[0] as {
+        request: { headers: Headers };
+      };
+    }
+
+    it.each([
+      ["/", false],
+      ["/download", true],
+      ["/signup", false],
+    ])(
+      "records only bounded join fields for %s (session cookie=%s)",
+      async (pathname, hasSession) => {
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        const oldBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+        process.env.VERCEL_GIT_COMMIT_SHA = "B".repeat(40);
+        try {
+          const init = await runPublicPage({ pathname, hasSession });
+          // Pass-through request headers are unchanged by the receipt.
+          expect(init.request.headers.get("x-workos-session")).toBe("present");
+          expect(warning).toHaveBeenCalledTimes(1);
+          const encoded = warning.mock.calls[0][0] as string;
+          expect(encoded).not.toContain(canary);
+          expect(JSON.parse(encoded)).toEqual({
+            event: "public_page_auth_context_provenance",
+            diagnostic_version: 1,
+            boundary: "proxy",
+            reason: "context_without_sdk_projection",
+            pathname,
+            request_method: "GET",
+            had_session_cookie: hasSession,
+            vercel_request_id: requestId,
+            web_build_commit: "b".repeat(40),
+          });
+        } finally {
+          warning.mockRestore();
+          if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+          else process.env.VERCEL_GIT_COMMIT_SHA = oldBuild;
+        }
+      },
+    );
+
+    it.each<[string, Parameters<typeof runPublicPage>[0]]>([
+      ["SDK projected the context", { sdkContext: true }],
+      ["no incoming context header", { incomingContext: false }],
+      ["unjoinable request ID", { vercelId: `bad-${canary}` }],
+      ["HEAD request", { method: "HEAD" }],
+      ["other public path", { pathname: "/pricing" }],
+    ])("does not record when %s", async (_label, options) => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await runPublicPage(options);
+        expect(warning).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("preserves the pass-through response when logging throws", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      try {
+        const init = await runPublicPage({ pathname: "/signup" });
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(init.request.headers.get("x-workos-middleware")).toBe("true");
+      } finally {
+        warning.mockRestore();
+      }
+    });
   });
 
   it("treats thrown ended-session refresh errors as unauthenticated home requests", async () => {

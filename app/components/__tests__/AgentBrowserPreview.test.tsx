@@ -1463,6 +1463,395 @@ it("refreshes repeatedly cached passive frames with an authoritative screenshot"
   );
 });
 
+describe("refresh deferral during an Agent browser WAIT", () => {
+  const deferral = { state: "agent", refreshDeferred: true };
+  const deferWaitRequested = (url: unknown) =>
+    captureUrl(url).searchParams.getAll("deferWait").join(",") === "1";
+  const freshGets = () =>
+    (global.fetch as jest.Mock).mock.calls.filter(
+      ([url, options]) => !options?.body && isFreshCapture(url),
+    );
+  const takeButton = () =>
+    screen.getByRole("button", { name: "Take control of Agent browser" });
+  const viewport = () => screen.getByAltText("Current Agent browser viewport");
+
+  it("keeps the verified frame and its age while deferred, then resumes strict screenshots", async () => {
+    let waiting = true;
+    const updated = { ...frame, image: "data:image/png;base64,updated" };
+    global.fetch = jest.fn(async (url) =>
+      !isFreshCapture(url)
+        ? response({ frame })
+        : waiting && deferWaitRequested(url)
+          ? response(deferral, true, 202)
+          : response({ frame: updated }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    // The first refresh opts in beside the unchanged fresh=1 and is deferred.
+    expect(freshGets()).toHaveLength(1);
+    expect(captureUrl(freshGets()[0][0]).searchParams.getAll("fresh")).toEqual([
+      "1",
+    ]);
+    expect(deferWaitRequested(freshGets()[0][0])).toBe(true);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+
+    // Deferrals never renew the frame: it still goes stale on its original clock.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(7000);
+    });
+    expect(freshGets().length).toBeGreaterThan(3);
+    expect(viewport()).toHaveAttribute("src", frame.image);
+    expect(screen.getByText("Agent is waiting…")).toBeInTheDocument();
+    expect(
+      screen.getByText(/The Agent is waiting on this page/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Browser preview disconnected/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+    // Existing input rules: a stale frame cannot be taken over.
+    expect(takeButton()).toBeDisabled();
+    expect(actions).toEqual([]);
+
+    // The WAIT ends: the next strict screenshot restores the live view.
+    waiting = false;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(viewport()).toHaveAttribute("src", updated.image);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/The Agent is waiting on this page/),
+    ).not.toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+  });
+
+  it("keeps the verified frame behind a still-running OPEN without describing it as a WAIT", async () => {
+    let opening = true;
+    const updated = { ...frame, image: "data:image/png;base64,updated" };
+    const deferOpenRequested = (url: unknown) =>
+      captureUrl(url).searchParams.getAll("deferOpen").join(",") === "1";
+    global.fetch = jest.fn(async (url) =>
+      !isFreshCapture(url)
+        ? response({ frame })
+        : opening && deferOpenRequested(url)
+          ? response({ ...deferral, refreshDeferredReason: "open" }, true, 202)
+          : response({ frame: updated }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    // Both opt-ins are sent, each once, beside the unchanged fresh=1.
+    expect(freshGets()).toHaveLength(1);
+    const first = captureUrl(freshGets()[0][0]).searchParams;
+    expect(first.getAll("fresh")).toEqual(["1"]);
+    expect(first.getAll("deferWait")).toEqual(["1"]);
+    expect(first.getAll("deferOpen")).toEqual(["1"]);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+
+    // The OPEN deferral never renews the frame; it goes stale on its own clock
+    // with the existing waiting-for-browser words, never the WAIT wording.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(7000);
+    });
+    expect(freshGets().length).toBeGreaterThan(3);
+    expect(viewport()).toHaveAttribute("src", frame.image);
+    expect(screen.getByText("Connecting browser…")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for Agent browser…")).toBeInTheDocument();
+    expect(screen.queryByText("Agent is waiting…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/The Agent is waiting on this page/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Browser preview disconnected/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+    expect(takeButton()).toBeDisabled();
+    expect(actions).toEqual([]);
+
+    // The OPEN returns: the next strict screenshot at the normal cadence wins.
+    opening = false;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(viewport()).toHaveAttribute("src", updated.image);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for Agent browser…"),
+    ).not.toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+  });
+
+  it.each<[string, Response]>([
+    ["a 200 deferral", response(deferral)],
+    [
+      "a non-boolean flag",
+      response({ ...deferral, refreshDeferred: "true" }, true, 202),
+    ],
+    ["another state", response({ ...deferral, state: "waiting" }, true, 202)],
+    ["a frame field", response({ ...deferral, frame }, true, 202)],
+    ["an error status", response(deferral, false, 503)],
+    [
+      "an unknown deferral reason",
+      response({ ...deferral, refreshDeferredReason: "close" }, true, 202),
+    ],
+    [
+      "an explicit wait reason",
+      response({ ...deferral, refreshDeferredReason: "wait" }, true, 202),
+    ],
+    [
+      "a 200 open deferral",
+      response({ ...deferral, refreshDeferredReason: "open" }),
+    ],
+  ])("keeps %s a real refresh failure", async (_case, reply) => {
+    global.fetch = jest.fn(async (url) =>
+      isFreshCapture(url) ? reply : response({ frame }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    expect(freshGets()).toHaveLength(1);
+    expect(
+      screen.getByText(/Browser preview disconnected/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/The Agent is waiting on this page/),
+    ).not.toBeInTheDocument();
+    expect(takeButton()).toBeDisabled();
+    // Real failures keep their backoff instead of the normal cadence.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(999);
+    });
+    expect(freshGets()).toHaveLength(1);
+  });
+
+  it("does not opt in outside a passive Agent-state refresh or honor an unrequested deferral", async () => {
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    global.fetch = jest.fn(async (url) =>
+      isFreshCapture(url) ? response(deferral, true, 202) : response({ frame }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    const gets = (global.fetch as jest.Mock).mock.calls;
+    expect(gets.length).toBeGreaterThan(1);
+    expect(
+      gets.some(([url]) => captureUrl(url).searchParams.has("deferWait")),
+    ).toBe(false);
+    expect(
+      gets.some(([url]) => captureUrl(url).searchParams.has("deferOpen")),
+    ).toBe(false);
+    expect(
+      screen.getByText(/Browser preview disconnected/),
+    ).toBeInTheDocument();
+  });
+
+  it("never honors an unrequested OPEN deferral outside a passive Agent-state refresh", async () => {
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    global.fetch = jest.fn(async (url) =>
+      isFreshCapture(url)
+        ? response({ ...deferral, refreshDeferredReason: "open" }, true, 202)
+        : response({ frame }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    expect(
+      screen.getByText(/Browser preview disconnected/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for Agent browser…"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not opt in while this viewer holds a control grant", async () => {
+    await mount();
+    await takeControl();
+    const before = freshGets().length;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
+    });
+    const after = freshGets().slice(before);
+    expect(after.length).toBeGreaterThan(0);
+    expect(
+      after.some(
+        ([url]) =>
+          captureUrl(url).searchParams.has("deferWait") ||
+          captureUrl(url).searchParams.has("deferOpen"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("ordinary preview polling during a takeover", () => {
+  const gets = () =>
+    (global.fetch as jest.Mock).mock.calls.filter(
+      ([, options]) => !options?.body,
+    );
+  const viewport = () => screen.getByAltText("Current Agent browser viewport");
+  const rerenderPreview = (view: ReturnType<typeof render>) =>
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+
+  it.each<[string, Response]>([
+    ["rejected", response({ state: "closed" }, false)],
+    [
+      "completed",
+      response({ frame: { ...frame, image: "data:image/png;base64,late" } }),
+    ],
+  ])(
+    "stops GETs while this renderer takes control and resumes once the take is %s",
+    async (outcome, lateReply) => {
+      const pendingGets: Array<{
+        signal: AbortSignal;
+        resolve: (value: Response) => void;
+      }> = [];
+      let finishTake!: (value: Response) => void;
+      let getCount = 0;
+      global.fetch = jest.fn((_url, options) => {
+        if (options?.body) {
+          const body = JSON.parse(String(options.body));
+          actions.push(body);
+          return body.action === "take"
+            ? new Promise<Response>((resolve) => {
+                finishTake = resolve;
+              })
+            : Promise.resolve(response({ frame }));
+        }
+        // The first GET verifies a frame; later ones settle only when told to,
+        // like a suspended fetch that ignores its abort signal.
+        if (getCount++ === 0) return Promise.resolve(response({ frame }));
+        return new Promise<Response>((resolve) => {
+          pendingGets.push({ signal: options!.signal as AbortSignal, resolve });
+        });
+      });
+      await mount();
+      expect(viewport()).toHaveAttribute("src", frame.image);
+      // The next ordinary refresh is in flight when the user takes control.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1600);
+      });
+      expect(pendingGets).toHaveLength(1);
+      await takeControl();
+      expect(actions.map((body) => body.action)).toEqual(["take"]);
+      expect(pendingGets[0].signal.aborted).toBe(true);
+
+      // A late reply to the cancelled GET changes neither the frame nor its
+      // health, and schedules nothing while the take is still pending.
+      await act(async () => {
+        pendingGets[0].resolve(lateReply);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(6000);
+      });
+      expect(gets()).toHaveLength(2);
+      expect(viewport()).toHaveAttribute("src", frame.image);
+
+      if (outcome === "rejected") {
+        await act(async () => {
+          finishTake(response({ error: "Connection failed" }, false));
+        });
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "Connection failed",
+        );
+        // Polling resumes at once. Suspension never renewed the frame's age,
+        // so this is a strict screenshot, and the ignored failure left the
+        // still-recent frame usable.
+        expect(gets()).toHaveLength(3);
+        expect(isFreshCapture(gets()[2][0])).toBe(true);
+        expect(screen.getByText("Live preview")).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Take control of Agent browser" }),
+        ).toBeEnabled();
+        const updated = { ...frame, image: "data:image/png;base64,updated" };
+        await act(async () => {
+          pendingGets[1].resolve(response({ frame: updated }));
+        });
+        expect(viewport()).toHaveAttribute("src", updated.image);
+      } else {
+        const taken = { ...frame, image: "data:image/png;base64,taken" };
+        await act(async () => {
+          finishTake(response({ grant: "grant-a", frame: taken }));
+        });
+        expect(screen.getByRole("application", { hidden: true })).toBeVisible();
+        expect(viewport()).toHaveAttribute("src", taken.image);
+        // The granted watchdog starts at once, as after any new grant.
+        expect(gets()).toHaveLength(3);
+      }
+    },
+  );
+
+  it.each(["expires", "ends"])(
+    "pauses GETs while another window's claim is live and resumes when it %s",
+    async (end) => {
+      const view = await mount();
+      mockSession = {
+        sessionId: "session-a",
+        state: "claiming",
+        grantExpiresAt: Date.now() + 5000,
+      };
+      rerenderPreview(view);
+      await act(async () => {});
+      const before = gets().length;
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(4000);
+      });
+      expect(gets()).toHaveLength(before);
+      expect(screen.getByText("Pausing Agent…")).toBeInTheDocument();
+      expect(viewport()).toHaveAttribute("src", frame.image);
+      expect(actions).toEqual([]);
+
+      if (end === "ends") {
+        mockSession = { sessionId: "session-a", state: "agent" };
+        rerenderPreview(view);
+        await act(async () => {});
+        expect(gets()).toHaveLength(before + 1);
+        expect(screen.getByText("Live preview")).toBeInTheDocument();
+      } else {
+        // The committed expiry hands the session to the existing recovery
+        // polling without a Convex update.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(1000);
+        });
+        expect(gets()).toHaveLength(before + 1);
+        expect(screen.getByText("Paused for handoff")).toBeInTheDocument();
+      }
+    },
+  );
+
+  it("keeps a granted watchdog refreshing while the committed claim lags", async () => {
+    const view = await mount();
+    await takeControl();
+    mockSession = {
+      sessionId: "session-a",
+      state: "claiming",
+      grantExpiresAt: Date.now() + 30_000,
+    };
+    rerenderPreview(view);
+    await act(async () => {});
+    const before = gets().length;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    expect(gets().length).toBeGreaterThan(before);
+    expect(screen.getByRole("application", { hidden: true })).toBeVisible();
+  });
+});
+
 it("reconnects lost control in full screen and preserves the unsent exit note", async () => {
   await mount();
   await takeControl();
@@ -2766,7 +3155,9 @@ describe("capture GET activation diagnostics", () => {
       mockSession = {
         sessionId: "session-a",
         state,
-        grantExpiresAt: Date.now() + 30_000,
+        // A live claim pauses ordinary polling; an expired one still polls
+        // and reports its committed state.
+        grantExpiresAt: Date.now() + (state === "claiming" ? 0 : 30_000),
         updatedAt: Date.now(),
         controlledSessionName: "PRIVATE_SESSION_NAME",
       };

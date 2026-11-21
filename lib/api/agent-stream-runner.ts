@@ -3,7 +3,10 @@ import {
   INFERENCE_MAX_IMAGES_PER_REQUEST,
   isInferenceCyberModel,
 } from "@/lib/ai/inference";
-import { withInferenceFallback } from "@/lib/ai/inference-fallback";
+import {
+  shouldDeferInferenceRejectionToSizeRecovery,
+  withInferenceFallback,
+} from "@/lib/ai/inference-fallback";
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
@@ -124,6 +127,11 @@ import {
   isXaiSafetyError,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
+import {
+  CONTEXT_USAGE_PART_TYPE,
+  CONTEXT_USAGE_SNAPSHOT_ID_PREFIX,
+  toContextPressureSnapshot,
+} from "@/lib/chat/context-pressure";
 import {
   elapsedTimeExceeds,
   tokenExhaustedAfterSummarization,
@@ -784,6 +792,36 @@ const buildProviderRequestDiagnostics = (args: {
   };
 };
 
+/**
+ * Display-only Agent context pressure: the provider-reported input of this
+ * step and the compaction threshold active for it. A missing or malformed
+ * report keeps the previous valid snapshot. One stable part ID per response
+ * replaces the previous value live, and the tracker carries it to the save.
+ */
+const reportContextPressure = (
+  ctx: Pick<AgentStreamContext, "mode" | "writer" | "summarizationTracker">,
+  usedTokens: number | undefined,
+  compactionThresholdTokens: number,
+  partId: string,
+): void => {
+  if (ctx.mode !== "agent") return;
+  const snapshot = toContextPressureSnapshot(
+    usedTokens,
+    compactionThresholdTokens,
+  );
+  if (!snapshot) return;
+  try {
+    ctx.summarizationTracker.recordContextPressure(snapshot, partId);
+    ctx.writer.write({
+      type: CONTEXT_USAGE_PART_TYPE,
+      id: partId,
+      data: snapshot,
+    });
+  } catch {
+    // Display diagnostics must never disrupt generation.
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Immutable context — everything the runner needs besides mutable state.
 // ---------------------------------------------------------------------------
@@ -924,7 +962,17 @@ export async function createAgentStream(
   };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
+  // A replacement stream can inherit the previous response's SDK parts.
+  // Keep each attempt's snapshot from overwriting that recovery prefix.
+  const contextPressurePartId = `${CONTEXT_USAGE_SNAPSHOT_ID_PREFIX}-${generationStepOffset}`;
   state.configuredMaxSteps = configuredMaxSteps;
+  try {
+    // Callers save the previous attempt's response before starting this one;
+    // a replacement stream must measure its own response.
+    ctx.summarizationTracker.clearContextPressure();
+  } catch {
+    // Display diagnostics must never disrupt generation.
+  }
   const reportGuardrail = (
     observation: Omit<
       AgentGuardrailObservation,
@@ -1182,6 +1230,14 @@ export async function createAgentStream(
       ) {
         recoveryModel = withInferenceFallback(recoveryModel, fallback, {
           abortSignal,
+          // Ask has no size recovery and keeps the immediate fallback.
+          ...(ctx.mode === "agent" && {
+            deferPreStreamRejection: (error: unknown) =>
+              shouldDeferInferenceRejectionToSizeRecovery(
+                error,
+                state.requestSizeRecovery,
+              ),
+          }),
           prepareFallbackPrompt: (prompt) =>
             preprocessAbliterationImages(prompt),
           onDiscardedUsage: (usage) => {
@@ -3304,6 +3360,12 @@ export async function createAgentStream(
         }
       }
       compactionAttempts.confirm(reportedInputTokens, summarizationThreshold);
+      reportContextPressure(
+        ctx,
+        reportedInputTokens,
+        summarizationThreshold,
+        contextPressurePartId,
+      );
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({

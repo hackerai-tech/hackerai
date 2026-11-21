@@ -10,6 +10,7 @@ mod file_acl_tests;
 mod file_read_tests;
 mod file_save;
 mod lifecycle_diagnostics;
+mod notifications;
 mod platform;
 mod pty;
 mod stream_lifecycle;
@@ -1456,7 +1457,8 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // unconfirmed cleanup leg as a sibling of that origin.
     include_stream_fence_cleanup: Option<serde_json::Value>,
     // Only literal `true`, beside both opt-ins above, adds the Windows taskkill
-    // failure recorded with a stop request's `tree_unconfirmed` leg.
+    // failure recorded with a stop request's or an owner timeout's
+    // `tree_unconfirmed` leg.
     include_stream_fence_windows_taskkill: Option<serde_json::Value>,
     // Only literal `true`, beside all three opt-ins above, upgrades that
     // taskkill failure to its v2 receipt with the closed root report.
@@ -1468,6 +1470,10 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // the first stop request source beside a report of taskkill's not-found
     // exit code, `requested_pid_not_found` or `unclassified`.
     include_stream_fence_stop_request_source: Option<serde_json::Value>,
+    // Only literal `true`, beside the origin and cleanup opt-ins, adds on
+    // macOS a stop request's first source and its tree-only leg's final
+    // group probe class.
+    include_stream_fence_darwin_stop: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1545,6 +1551,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             include_stream_fence_stop_request_source: CommandArg::from_command(item(
                 "includeStreamFenceStopRequestSource",
             ))?,
+            include_stream_fence_darwin_stop: CommandArg::from_command(item(
+                "includeStreamFenceDarwinStop",
+            ))?,
         })
     }
 }
@@ -1596,12 +1605,17 @@ fn respond_authorized_stream_command<R: tauri::Runtime>(
 /// The exact original rejection, as a string. Only an opted-in invocation's
 /// exact fence rejection, with a recorded origin, is instead that same public
 /// message beside the fence's closed v1 origin. With both opt-ins, a stop
-/// request's recorded unconfirmed leg is added as that origin's sibling. With
-/// all three, the Windows taskkill failure recorded with a `tree_unconfirmed`
-/// leg is added as a further sibling, as its exact v1 receipt. With all four,
-/// that sibling is instead its v2 receipt when it has one. With all five, a
-/// v2 receipt of taskkill's not-found exit code, `requested_pid_not_found` or
-/// `unclassified`, is joined by the same stop request's first source.
+/// request's or an owner timeout's recorded unconfirmed leg is added as that
+/// origin's sibling. With all three, the Windows taskkill failure recorded
+/// with either origin's `tree_unconfirmed` leg is added as a further sibling,
+/// as its exact v1 receipt. With all four, that sibling is instead its v2
+/// receipt when it has one. With all five, a stop request's v2 receipt of
+/// taskkill's not-found exit code, `requested_pid_not_found` or
+/// `unclassified`, is joined by the same stop request's first source; a
+/// timeout never records one.
+/// Separately, with the origin, cleanup and Darwin stop opt-ins, on macOS a
+/// stop request's `tree_unconfirmed` leg from the Unix tree stop is joined by
+/// its first source and final group probe class, as one closed v1 receipt.
 /// Separately, with the origin and owner phase opt-ins, a
 /// `cancel_wait_timeout` origin's recorded owner phase is added as that
 /// origin's sibling.
@@ -1615,6 +1629,7 @@ fn authorized_stream_rejection(
     include_stream_fence_windows_taskkill_root_report: bool,
     include_stream_fence_cancel_wait_owner_phase: bool,
     include_stream_fence_stop_request_source: bool,
+    include_stream_fence_darwin_stop: bool,
 ) -> tauri::ipc::InvokeError {
     let fence_rejection =
         include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
@@ -1633,7 +1648,7 @@ fn authorized_stream_rejection(
     if let Some(cleanup) = receipts.cleanup.filter(|_| include_stream_fence_cleanup) {
         rejection["streamFenceCleanup"] = serde_json::json!(cleanup);
         // The fence records a taskkill failure only with its own stop
-        // request's `tree_unconfirmed` leg.
+        // request's or timeout's `tree_unconfirmed` leg.
         if let Some(taskkill) = receipts
             .windows_taskkill
             .filter(|_| include_stream_fence_windows_taskkill)
@@ -1645,14 +1660,23 @@ fn authorized_stream_rejection(
                 .filter(|_| include_stream_fence_windows_taskkill_root_report);
             rejection["streamFenceWindowsTaskkill"] =
                 serde_json::json!(root_report.unwrap_or(taskkill));
-            // The fence exposes a source only with its own report of the
-            // not-found exit code, which rides only that v2 receipt.
+            // The fence exposes a source only with its own stop request's
+            // report of the not-found exit code, which rides only that v2
+            // receipt.
             if let Some(source) = receipts
                 .stop_request_source
                 .filter(|_| root_report.is_some() && include_stream_fence_stop_request_source)
             {
                 rejection["streamFenceStopRequestSource"] = serde_json::json!(source);
             }
+        }
+        // Recorded only on macOS, beside its own stop request's
+        // `tree_unconfirmed` leg and never beside a taskkill failure.
+        if let Some(darwin_stop) = receipts
+            .darwin_stop
+            .filter(|_| include_stream_fence_darwin_stop)
+        {
+            rejection["streamFenceDarwinStop"] = serde_json::json!(darwin_stop);
         }
     }
     // The fence records an owner phase only with its own cancellation wait
@@ -1700,6 +1724,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_windows_taskkill_root_report,
         include_stream_fence_cancel_wait_owner_phase,
         include_stream_fence_stop_request_source,
+        include_stream_fence_darwin_stop,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1810,6 +1835,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_cancel_wait_owner_phase == Some(serde_json::Value::Bool(true));
     let include_stream_fence_stop_request_source =
         include_stream_fence_stop_request_source == Some(serde_json::Value::Bool(true));
+    let include_stream_fence_darwin_stop =
+        include_stream_fence_darwin_stop == Some(serde_json::Value::Bool(true));
     execute_stream_command(
         &state,
         admission,
@@ -1833,6 +1860,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             include_stream_fence_windows_taskkill_root_report,
             include_stream_fence_cancel_wait_owner_phase,
             include_stream_fence_stop_request_source,
+            include_stream_fence_darwin_stop,
         )
     })
 }
@@ -2237,14 +2265,221 @@ async fn check_update(
     check_timeout: Duration,
     download_timeout: Duration,
 ) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
-    let updater = builder.timeout(check_timeout).build()?;
+    // Ask HTTP caches to revalidate the manifest so each check sees the latest
+    // release. The returned download copies builder headers; keep the
+    // binary request unchanged.
+    let updater = builder
+        .header("cache-control", "no-cache")?
+        .timeout(check_timeout)
+        .build()?;
     let mut update = updater.check().await?;
     if let Some(update) = update.as_mut() {
+        update.headers.remove("cache-control");
         // The updater does not propagate the check timeout to the returned download.
         // Bound HTTP activity without timing out user approval or native installation.
         update.timeout = Some(download_timeout);
     }
     Ok(update)
+}
+
+/// Native prompts in the update sequence. Tests script the answers.
+trait UpdatePrompts {
+    /// "Update Available": true downloads the feed's latest release.
+    fn offer(&mut self, version: &str) -> bool;
+    /// "Ready to install": final consent for the verified download of `version`.
+    fn approve(&mut self, version: &str) -> bool;
+    /// "Update not started": the refusal never reached the installer.
+    fn retry(&mut self, message: &str) -> bool;
+    fn stop(&mut self, outcome: UpdateStop);
+}
+
+#[derive(Debug)]
+enum UpdateStop {
+    CheckFailed(String),
+    NoLongerOffered,
+    DownloadFailed,
+    NotPrepared,
+    InstallFailed(String),
+}
+
+/// A release is the same only if the feed still offers these exact signed bytes.
+fn same_release(a: &tauri_plugin_updater::Update, b: &tauri_plugin_updater::Update) -> bool {
+    a.version == b.version && a.download_url == b.download_url && a.signature == b.signature
+}
+
+/// Owns the download/approve/install sequence. A newer release can be
+/// published while any prompt is open, so every Download and Install now
+/// rechecks the feed. Approval applies only to the release it named.
+struct UpdateFlow<'a, B> {
+    /// Fresh trusted builder per check, keeping configured target and endpoints.
+    updater: B,
+    check_timeout: Duration,
+    download_timeout: Duration,
+    gate: &'a update_safety::UpdateGate,
+    directory: Option<&'a Path>,
+    current_version: &'a str,
+}
+
+impl<B: Fn() -> tauri_plugin_updater::UpdaterBuilder> UpdateFlow<'_, B> {
+    async fn check(&self) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
+        check_update((self.updater)(), self.check_timeout, self.download_timeout).await
+    }
+
+    async fn run(
+        &self,
+        offered: &str,
+        prompts: &mut impl UpdatePrompts,
+        mut install: impl FnMut(&tauri_plugin_updater::Update, Vec<u8>) -> Result<(), String>,
+    ) {
+        if !prompts.offer(offered) {
+            return;
+        }
+        // The approved release and its verified bytes, awaiting a recheck.
+        let mut ready: Option<(tauri_plugin_updater::Update, Vec<u8>)> = None;
+        loop {
+            // Never fall back to a previously captured release.
+            let latest = match self.check().await {
+                Ok(Some(update)) => update,
+                Ok(None) => return prompts.stop(UpdateStop::NoLongerOffered),
+                Err(error) => {
+                    log::warn!("Desktop update recheck failed: {error}");
+                    return prompts.stop(UpdateStop::CheckFailed(error.to_string()));
+                }
+            };
+            if let Some((approved, bytes)) = ready.take() {
+                if same_release(&approved, &latest) {
+                    drop(latest);
+                    let Some(directory) = self.directory else {
+                        return prompts.stop(UpdateStop::NotPrepared);
+                    };
+                    let mut download = Some(bytes);
+                    let result = update_safety::install_after_approval(
+                        self.gate,
+                        directory,
+                        self.current_version,
+                        &approved.version,
+                        true,
+                        || {
+                            let bytes = download
+                                .take()
+                                .expect("verified download available before installation");
+                            install(&approved, bytes)
+                        },
+                    );
+                    match (result, download) {
+                        (Ok(()), _) => return,
+                        // A busy gate or receipt failure never handed bytes to
+                        // the installer. Keep them for a retry that rechecks.
+                        (Err(message), Some(bytes)) => {
+                            if !prompts.retry(&message) {
+                                return;
+                            }
+                            ready = Some((approved, bytes));
+                            continue;
+                        }
+                        (Err(message), None) => {
+                            return prompts.stop(UpdateStop::InstallFailed(message))
+                        }
+                    }
+                }
+                log::info!(
+                    "Desktop update changed from {} to {} before installation",
+                    approved.version,
+                    latest.version
+                );
+                // Release the stale download before fetching its replacement.
+            }
+            let bytes = match latest.download(|_, _| {}, || {}).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    log::warn!("Desktop update download or signature verification failed: {error}");
+                    return prompts.stop(UpdateStop::DownloadFailed);
+                }
+            };
+            // Windows exits inside install(), so this is the final consent
+            // on every platform. Never put restart approval after install.
+            if !prompts.approve(&latest.version) {
+                return;
+            }
+            ready = Some((latest, bytes));
+        }
+    }
+}
+
+struct NativeUpdatePrompts<'a>(&'a tauri::AppHandle);
+
+impl UpdatePrompts for NativeUpdatePrompts<'_> {
+    fn offer(&mut self, version: &str) -> bool {
+        use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+        update_dialog(self.0, format!(
+                "Version {} is available. Download the update? You will be asked before anything is installed.",
+                version
+            ))
+            .title("Update Available")
+            .kind(MessageDialogKind::Info)
+            .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
+            .blocking_show()
+    }
+
+    fn approve(&mut self, version: &str) -> bool {
+        use tauri_plugin_dialog::MessageDialogButtons;
+        update_dialog(self.0, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
+            .title("Ready to install")
+            .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
+            .blocking_show()
+    }
+
+    fn retry(&mut self, message: &str) -> bool {
+        use tauri_plugin_dialog::MessageDialogButtons;
+        update_dialog(
+            self.0,
+            format!(
+                "{}\n\nChoose Install now to try again. Desktop will close.",
+                message
+            ),
+        )
+        .title("Update not started")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install now".into(),
+            "Later".into(),
+        ))
+        .blocking_show()
+    }
+
+    fn stop(&mut self, outcome: UpdateStop) {
+        use tauri_plugin_dialog::MessageDialogKind;
+        const UNCHANGED: &str =
+            "Your current app has not been changed. Choose Help > Check for Updates to try again.";
+        let (title, kind, message) = match outcome {
+            UpdateStop::CheckFailed(error) => (
+                "Update Error",
+                MessageDialogKind::Error,
+                format!("Failed to check for updates: {error}\n\n{UNCHANGED}"),
+            ),
+            UpdateStop::NoLongerOffered => (
+                "No Updates",
+                MessageDialogKind::Info,
+                format!("The update is no longer available. {UNCHANGED}"),
+            ),
+            UpdateStop::DownloadFailed => (
+                "Update download failed",
+                MessageDialogKind::Error,
+                format!("The update could not be downloaded or verified. {UNCHANGED}"),
+            ),
+            UpdateStop::NotPrepared => (
+                "Update not started",
+                MessageDialogKind::Error,
+                "The update could not be prepared. No installation was started.".to_string(),
+            ),
+            UpdateStop::InstallFailed(message) => {
+                ("Update did not finish", MessageDialogKind::Error, message)
+            }
+        };
+        update_dialog(self.0, message)
+            .title(title)
+            .kind(kind)
+            .blocking_show();
+    }
 }
 
 // Attach updater prompts to the app window. Parentless macOS alerts use a
@@ -2266,113 +2501,30 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     let Some(_check) = update_safety::CheckGuard::acquire() else {
         return;
     };
-    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_dialog::MessageDialogKind;
 
-    match check_update(
-        app.updater_builder(),
-        UPDATE_CHECK_TIMEOUT,
-        UPDATE_DOWNLOAD_TIMEOUT,
-    )
-    .await
-    {
+    let directory = app.path().app_data_dir().ok();
+    let current_version = app.package_info().version.to_string();
+    let flow = UpdateFlow {
+        updater: || app.updater_builder(),
+        check_timeout: UPDATE_CHECK_TIMEOUT,
+        download_timeout: UPDATE_DOWNLOAD_TIMEOUT,
+        gate: &update_safety::UPDATE_GATE,
+        directory: directory.as_deref(),
+        current_version: &current_version,
+    };
+    match flow.check().await {
         Ok(Some(update)) => {
-            let version = update.version.clone();
-            log::info!("Update available: {}", version);
-
-            let should_update = update_dialog(&app, format!(
-                    "Version {} is available. Download the update? You will be asked before anything is installed.",
-                    version
-                ))
-                .title("Update Available")
-                .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
-                .blocking_show();
-
-            if should_update {
-                let bytes = match update.download(|_, _| {}, || {}).await {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        log::warn!(
-                            "Desktop update download or signature verification failed: {error}"
-                        );
-                        update_dialog(&app, "The update could not be downloaded or verified. Your current app has not been changed. Choose Help > Check for Updates to try again.")
-                            .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
-                        return;
-                    }
-                };
-                // Windows exits inside install(), so this is the final consent
-                // on every platform. Never put restart approval after install.
-                let approved = update_dialog(&app, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
-                    .title("Ready to install")
-                    .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
-                    .blocking_show();
-                if !approved {
-                    return;
-                }
-                let directory = match app.path().app_data_dir() {
-                    Ok(directory) => directory,
-                    Err(_) => {
-                        update_dialog(
-                            &app,
-                            "The update could not be prepared. No installation was started.",
-                        )
-                        .title("Update not started")
-                        .kind(MessageDialogKind::Error)
-                        .blocking_show();
-                        return;
-                    }
-                };
-                let mut download = Some(bytes);
-                loop {
-                    let result = update_safety::install_after_approval(
-                        &update_safety::UPDATE_GATE,
-                        &directory,
-                        &app.package_info().version.to_string(),
-                        &version,
-                        approved,
-                        || {
-                            let bytes = download
-                                .take()
-                                .expect("verified download available before installation");
-                            update.install(bytes).map_err(|error| {
-                                log::error!("Desktop update installation failed: {error}");
-                                "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
-                            })?;
-                            app.restart();
-                        },
-                    );
-                    match result {
-                        Err(message) if download.is_some() => {
-                            // A busy gate or receipt failure never handed bytes to
-                            // the installer. Keep the verified download for retry.
-                            let retry = update_dialog(
-                                &app,
-                                format!(
-                                    "{}\n\nChoose Install now to try again. Desktop will close.",
-                                    message
-                                ),
-                            )
-                            .title("Update not started")
-                            .buttons(MessageDialogButtons::OkCancelCustom(
-                                "Install now".into(),
-                                "Later".into(),
-                            ))
-                            .blocking_show();
-                            if !retry {
-                                return;
-                            }
-                        }
-                        Err(message) => {
-                            update_dialog(&app, message)
-                                .title("Update did not finish")
-                                .kind(MessageDialogKind::Error)
-                                .blocking_show();
-                            return;
-                        }
-                        Ok(()) => return,
-                    }
-                }
-            }
+            log::info!("Update available: {}", update.version);
+            let offered = update.version;
+            flow.run(&offered, &mut NativeUpdatePrompts(&app), |update, bytes| {
+                update.install(bytes).map_err(|error| {
+                    log::error!("Desktop update installation failed: {error}");
+                    "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
+                })?;
+                app.restart();
+            })
+            .await;
         }
         Ok(None) => {
             if silent {
@@ -2908,6 +3060,7 @@ mod tests {
                                 body["includeStreamFenceWindowsTaskkillRootReport"] = value.clone();
                                 body["includeStreamFenceCancelWaitOwnerPhase"] = value.clone();
                                 body["includeStreamFenceStopRequestSource"] = value.clone();
+                                body["includeStreamFenceDarwinStop"] = value.clone();
                                 body["includeResponseReadTimingConnector"] = value.clone();
                             }
                         }
@@ -3570,6 +3723,33 @@ mod tests {
         state
     }
 
+    /// As `fenced_stream_state`, with `tree` as the stop's tree stop failure,
+    /// as `terminate_owned` records it.
+    #[cfg(unix)]
+    async fn probed_stream_state(
+        failure: stream_lifecycle::CleanupFailure,
+        tree: Option<platform::TreeStopFailure>,
+        source: stream_lifecycle::StopRequestSource,
+    ) -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state
+            .launch(state.admit(), "released", &mut cmd)
+            .await
+            .unwrap()
+        {
+            stream_lifecycle::Launch::Started(owned) => {
+                owned.release_stop_after(failure, tree, source).await
+            }
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
     /// A stream lifecycle with its own update gate, first fenced by a
     /// cancellation wait that timed out before its owner started `run`. The
     /// owner is then released without an outcome, which never replaces it.
@@ -3590,6 +3770,170 @@ mod tests {
         }
         assert!(gate.install().is_err(), "the fence also blocks updates");
         state
+    }
+
+    /// A stream lifecycle with its own update gate, fenced the way a real
+    /// owner's own timeout whose `graceful_kill` reported `killed` fences it.
+    #[cfg(unix)]
+    async fn timeout_fenced_stream_state(killed: platform::GracefulKill) -> StreamCommandState {
+        let gate: &'static update_safety::UpdateGate =
+            Box::leak(Box::new(update_safety::UpdateGate::default()));
+        let state =
+            StreamCommandState::new(stream_lifecycle::StreamLifecycle::with_update_gate(gate));
+        let mut cmd = platform::build_command("exit 0", None, None);
+        match state
+            .launch(state.admit(), "timed-out", &mut cmd)
+            .await
+            .unwrap()
+        {
+            stream_lifecycle::Launch::Started(owned) => owned.release_timeout(killed).await,
+            stream_lifecycle::Launch::Canceled => panic!("the owner must launch"),
+        }
+        assert!(gate.install().is_err(), "the fence also blocks updates");
+        state
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authorized_stream_rejection_adds_a_timeouts_own_taskkill_receipt_only_when_opted_in() {
+        use crate::platform::{GracefulKill, LeaderWait, TaskkillFailure};
+        use serde_json::{json, Value};
+        use std::num::NonZeroI32;
+
+        let timeout = json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "owner_timeout" },
+        });
+        let with_cleanup = |failure: &str| {
+            let mut rejection = timeout.clone();
+            rejection["streamFenceCleanup"] = json!({ "version": 1, "failure": failure });
+            rejection
+        };
+        let tree_cleanup = with_cleanup("tree_unconfirmed");
+        let with_receipt = |receipt: Value| {
+            let mut rejection = tree_cleanup.clone();
+            rejection["streamFenceWindowsTaskkill"] = receipt;
+            rejection
+        };
+        let not_found_v1 =
+            with_receipt(json!({ "version": 1, "outcome": "nonzero_exit", "exitCode": 128 }));
+        let not_found_v2 = with_receipt(json!({
+            "version": 2,
+            "outcome": "nonzero_exit",
+            "exitCode": 128,
+            "rootReport": "requested_pid_not_found",
+        }));
+        let unclassified_v2 = with_receipt(json!({
+            "version": 2,
+            "outcome": "nonzero_exit",
+            "exitCode": 128,
+            "rootReport": "unclassified",
+        }));
+        let output_error = with_receipt(json!({ "version": 1, "outcome": "output_error" }));
+        let killed = |tree_stopped, leader, taskkill| GracefulKill {
+            tree_stopped,
+            leader,
+            taskkill,
+        };
+        let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
+        // [origin, cleanup, taskkill, root report, owner phase, stop source,
+        // Darwin stop]
+        let all = [true; 7];
+        let without_source = [true, true, true, true, true, false, true];
+        let v1_only = [true, true, true, false, true, true, true];
+        let no_taskkill = [true, true, false, true, true, true, true];
+        let origin_only = [true, false, true, true, true, true, true];
+        let none = [false, true, true, true, true, true, true];
+        let fences = [
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::RequestedPidNotFound),
+                ),
+                vec![
+                    // Never a source, even with every opt-in.
+                    (all, &not_found_v2),
+                    (without_source, &not_found_v2),
+                    // Each earlier opt-in keeps its prior shape.
+                    (v1_only, &not_found_v1),
+                    (no_taskkill, &tree_cleanup),
+                    (origin_only, &timeout),
+                    (none, &exact),
+                ],
+            ),
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::NonzeroExit(NonZeroI32::new(128))),
+                ),
+                vec![(all, &unclassified_v2), (v1_only, &not_found_v1)],
+            ),
+            (
+                killed(
+                    false,
+                    LeaderWait::Reaped,
+                    Some(TaskkillFailure::OutputError),
+                ),
+                vec![(all, &output_error), (v1_only, &output_error)],
+            ),
+            // Unix, or a Windows tree stop without a result: the leg alone.
+            (
+                killed(false, LeaderWait::Reaped, None),
+                vec![(all, &tree_cleanup)],
+            ),
+        ];
+        for (reported, cases) in fences {
+            let state = timeout_fenced_stream_state(reported).await;
+            for (opt_ins, expected) in cases {
+                let [origin, cleanup, taskkill, root_report, phase, source, darwin] = opt_ins;
+                assert_eq!(
+                    authorized_stream_rejection(
+                        &state,
+                        stream_lifecycle::STOP_UNCONFIRMED.into(),
+                        origin,
+                        cleanup,
+                        taskkill,
+                        root_report,
+                        phase,
+                        source,
+                        darwin,
+                    )
+                    .0,
+                    *expected,
+                    "{reported:?} {opt_ins:?}"
+                );
+            }
+        }
+        // A combined leg never records its taskkill report.
+        for (leader, failure) in [
+            (LeaderWait::TimedOut, "tree_and_leader_wait_timed_out"),
+            (LeaderWait::Failed, "tree_and_leader_wait_failed"),
+        ] {
+            let state = timeout_fenced_stream_state(killed(
+                false,
+                leader,
+                Some(TaskkillFailure::RequestedPidNotFound),
+            ))
+            .await;
+            assert_eq!(
+                authorized_stream_rejection(
+                    &state,
+                    stream_lifecycle::STOP_UNCONFIRMED.into(),
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                    true,
+                )
+                .0,
+                with_cleanup(failure),
+                "{leader:?}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -3881,6 +4225,145 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn authorized_stream_command_darwin_stop_fence_carries_its_source_and_probe_only_when_opted_in()
+    {
+        use crate::platform::{GroupProbe, TaskkillFailure, TreeStopFailure};
+        use crate::stream_lifecycle::{CleanupFailure, StopRequestSource};
+        use serde_json::{json, Value};
+        use std::sync::atomic::Ordering;
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+
+        let scratch = unique_test_dir("fence-darwin-stop-ipc");
+        fs::create_dir_all(&scratch).unwrap();
+        let marker = scratch.join("runs");
+        let exact = json!(stream_lifecycle::STOP_UNCONFIRMED);
+        let stopped = json!({
+            "message": stream_lifecycle::STOP_UNCONFIRMED,
+            "streamFence": { "version": 1, "origin": "owner_stop_requested" },
+        });
+        let with_cleanup = |failure: &str| {
+            let mut rejection = stopped.clone();
+            rejection["streamFenceCleanup"] = json!({ "version": 1, "failure": failure });
+            rejection
+        };
+        let tree_cleanup = with_cleanup("tree_unconfirmed");
+        let mut darwin_stop = tree_cleanup.clone();
+        darwin_stop["streamFenceDarwinStop"] = json!({
+            "version": 1,
+            "source": "cancel_ipc",
+            "groupProbe": "probe_denied",
+        });
+        // Only macOS reports it; every other Unix keeps the prior shape.
+        let probed = if cfg!(target_os = "macos") {
+            &darwin_stop
+        } else {
+            &tree_cleanup
+        };
+        let combined = with_cleanup("tree_and_leader_wait_timed_out");
+        let mut taskkill = tree_cleanup.clone();
+        taskkill["streamFenceWindowsTaskkill"] = json!({ "version": 1, "outcome": "output_error" });
+        let yes = || Some(json!(true));
+        let denied = Some(TreeStopFailure::GroupProbe(GroupProbe::ProbeDenied));
+        // [origin, cleanup] literal `true` opt-ins, Darwin stop opt-in, expected.
+        type Case<'a> = ([bool; 2], Option<Value>, &'a Value);
+        let fences: Vec<(CleanupFailure, Option<TreeStopFailure>, Vec<Case>)> = vec![
+            (
+                CleanupFailure::TreeUnconfirmed,
+                denied,
+                vec![
+                    ([true, true], yes(), probed),
+                    // An older frontend, or any value but literal `true`,
+                    // keeps exactly the cleanup receipt.
+                    ([true, true], None, &tree_cleanup),
+                    ([true, true], Some(json!(false)), &tree_cleanup),
+                    ([true, true], Some(json!("true")), &tree_cleanup),
+                    ([true, true], Some(json!(1)), &tree_cleanup),
+                    ([true, true], Some(json!({ "value": true })), &tree_cleanup),
+                    ([true, true], Some(Value::Null), &tree_cleanup),
+                    // It rides only the cleanup receipt and its origin.
+                    ([true, false], yes(), &stopped),
+                    ([false, true], yes(), &exact),
+                ],
+            ),
+            // A combined leg never records its probe.
+            (
+                CleanupFailure::TreeAndLeaderWaitTimedOut,
+                denied,
+                vec![([true, true], yes(), &combined)],
+            ),
+            // Windows' taskkill failure keeps its own receipt, never this one.
+            (
+                CleanupFailure::TreeUnconfirmed,
+                Some(TreeStopFailure::Taskkill(TaskkillFailure::OutputError)),
+                vec![([true, true], yes(), &taskkill)],
+            ),
+        ];
+        let command = format!("printf 'ran\\n' >> '{}'", marker.display());
+        let mut next_authorization = 0xda_0000u32;
+        for (failure, tree, cases) in fences {
+            let state = tauri::async_runtime::block_on(probed_stream_state(
+                failure,
+                tree,
+                StopRequestSource::CancelIpc,
+            ));
+            let count = cases.len();
+            let (port, approvals) = approve_authorizations(count);
+            let app = mock_builder()
+                .manage(state)
+                .invoke_handler(with_authorized_stream_dispatch(|_| false))
+                .build(app_context())
+                .unwrap();
+            let page =
+                tauri::WebviewUrl::External(format!("http://localhost:{port}/").parse().unwrap());
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", page)
+                .build()
+                .unwrap();
+            for ([origin, cleanup], darwin_opt_in, expected) in cases {
+                next_authorization += 1;
+                let authorization = format!("{next_authorization:064x}");
+                let label = format!("{failure:?} {tree:?} {origin} {cleanup} {darwin_opt_in:?}");
+                // A Darwin frontend also sends both Windows taskkill opt-ins.
+                let mut body = json!({
+                    "authorizationId": authorization,
+                    "message": { "type": "command", "commandId": authorization, "command": command },
+                    "onEvent": "__CHANNEL__:1",
+                    "includeStreamFenceWindowsTaskkill": true,
+                    "includeStreamFenceWindowsTaskkillRootReport": true,
+                });
+                if origin {
+                    body["includeStreamFenceOrigin"] = json!(true);
+                }
+                if cleanup {
+                    body["includeStreamFenceCleanup"] = json!(true);
+                }
+                if let Some(value) = darwin_opt_in {
+                    body["includeStreamFenceDarwinStop"] = value;
+                }
+                let response = get_ipc_response(
+                    &window,
+                    tauri::webview::InvokeRequest {
+                        cmd: AUTHORIZED_STREAM_COMMAND.into(),
+                        callback: tauri::ipc::CallbackFn(0),
+                        error: tauri::ipc::CallbackFn(1),
+                        url: "https://hackerai.co/".parse().unwrap(),
+                        body: tauri::ipc::InvokeBody::Json(body),
+                        headers: Default::default(),
+                        invoke_key: INVOKE_KEY.to_string(),
+                    },
+                )
+                .map(|_| ());
+                // Redeemed once, then fenced with the exact original message.
+                assert_eq!(response, Err(expected.clone()), "{label}");
+            }
+            assert_eq!(approvals.load(Ordering::SeqCst), count);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "a fenced command ran");
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(unix)]
     type Recorded = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
     #[cfg(unix)]
@@ -3936,6 +4419,7 @@ mod tests {
                             opted_in,
                             opted_in,
                             opted_in,
+                            opted_in,
                         )
                         .0
                     })
@@ -3960,6 +4444,7 @@ mod tests {
             authorized_stream_rejection(
                 &open,
                 stream_lifecycle::STOP_UNCONFIRMED.into(),
+                true,
                 true,
                 true,
                 true,
@@ -4331,7 +4816,9 @@ pub fn run() {
             execute_authorized_pty_input,
             execute_authorized_pty_resize,
             execute_authorized_pty_kill,
-            execute_pty_kill
+            execute_pty_kill,
+            notifications::agent_notification_permission,
+            notifications::show_agent_input_notification
         ]))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
@@ -4384,6 +4871,7 @@ pub fn run() {
             ));
             #[cfg(target_os = "linux")]
             watch_linux_web_process(app);
+            notifications::init(app.handle());
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

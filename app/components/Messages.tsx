@@ -973,6 +973,7 @@ export const Messages = ({
         {showManualResumeWithoutAssistant && (
           <FinishReasonNotice
             finishReason={finishReason}
+            lastSavedStep="request"
             mode={mode}
             status={status}
             continueDisabledReason={continueDisabledReason}

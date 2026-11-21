@@ -1,7 +1,16 @@
 import {
+  CURL_PROGRESS_WRITE_OUT,
   recordAttachmentDownloadFailure,
   recordAttachmentDownloadBoundary,
 } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+// Passthrough: only the pinned-marker tests replace a worker-resolved address.
+jest.mock("../cloud-attachment-dns", () => {
+  const actual = jest.requireActual("../cloud-attachment-dns");
+  return {
+    ...actual,
+    resolveCloudAttachmentDnsPin: jest.fn(actual.resolveCloudAttachmentDnsPin),
+  };
+});
 jest.mock("../sandbox-upload-readiness", () => ({
   checkAttachmentReadiness: jest.fn(),
   sampleAttachmentFailureMetrics: jest.fn(async () => ({
@@ -17,6 +26,7 @@ import {
   CloudAcquisitionBudgetExhaustedError,
 } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import { phLogger } from "@/lib/posthog/server";
+import { resolveCloudAttachmentDnsPin } from "../cloud-attachment-dns";
 import {
   collectSandboxFiles,
   getSandboxUploadFailureMetadata,
@@ -2985,6 +2995,232 @@ it("retains curl1 wording from generic E2B result evidence without raw stderr", 
     error.mockRestore();
     event.mockRestore();
   }
+});
+
+describe("generic E2B curl progress marker", () => {
+  const marker = (connect: string, tls: string) =>
+    `hackerai_curl_progress_v1 n=0.004211 c=${connect} a=${tls} h=000 b=0 r=0.000000\n`;
+  const LOOKUP_ONLY = marker("0.000000", "0.000000");
+  const CONNECTED = marker("0.031002", "0.000000");
+  const AFTER_TLS = marker("0.031002", "0.129800");
+  const RESOLVING = "curl: (28) Resolving timed out after 10000 milliseconds";
+  const file = {
+    kind: "url",
+    url: "https://private.example/target?token=query-canary",
+    localPath: "/tmp/path-canary.png",
+  } as const;
+  /** One curl invocation's settled SDK result. `reported: false` is an exit
+   * known only from message text; `stdout` undefined means the SDK gave none. */
+  type Outcome = {
+    exitCode: number;
+    stderr: string;
+    stdout?: string;
+    reported?: false;
+  };
+
+  /** E2B-shaped workspace: each curl run gets its own handle and rejection. */
+  const e2bSandbox = (outcomes: Outcome[]) => {
+    let pid = 100;
+    const run = jest.fn(async (command: string) => {
+      const outcome = outcomes.shift();
+      if (!command.startsWith("curl ") || !outcome)
+        throw new Error("unexpected command");
+      const rejection = Object.assign(new Error(outcome.stderr), {
+        name: "CommandExitError",
+        ...(outcome.reported !== false && { exitCode: outcome.exitCode }),
+        ...(outcome.stdout !== undefined && { stdout: outcome.stdout }),
+        stderr: outcome.stderr,
+      });
+      return {
+        pid: ++pid,
+        exitCode: outcome.exitCode,
+        wait: () => Promise.reject(rejection),
+        disconnect: async () => {},
+      };
+    });
+    return {
+      sandboxId: "owned-fixture",
+      commands: { run, kill: jest.fn(async () => true) },
+    };
+  };
+
+  const stage = async (sandbox: ReturnType<typeof e2bSandbox>) => {
+    const result = await uploadSandboxFiles([file], async () => sandbox, {
+      signal: new AbortController().signal,
+      logContext: {
+        service: "agent-long",
+        requestId: "run-diag",
+        userId: "opaque-user",
+        chatId: "opaque-chat",
+      },
+    });
+    expect(result.failedCount).toBe(1);
+    const metadata = getSandboxUploadFailureMetadata(result)!;
+    const stagingEvent = jest
+      .mocked(phLogger.event)
+      .mock.calls.find(
+        ([name]) => name === "sandbox_attachment_staging_failed",
+      );
+    const progress = (fields: object | undefined) =>
+      Object.fromEntries(
+        Object.entries(fields ?? {}).filter(([key]) =>
+          key.includes("curl_progress"),
+        ),
+      );
+    // Raw marker, timing values, URL and destination never reach either consumer.
+    expect(
+      JSON.stringify([
+        Object.entries(metadata).filter(([key]) =>
+          key.startsWith("attachment_download_"),
+        ),
+        stagingEvent,
+      ]),
+    ).not.toMatch(/hackerai_curl|\d\.\d{6}|private\.example|canary/);
+    expect(progress(stagingEvent?.[1] as object)).toEqual(progress(metadata));
+    const curlCommands = sandbox.commands.run.mock.calls.map(([c]) => c);
+    for (const command of curlCommands) {
+      // One static write-out; the body still goes only to the destination.
+      expect(command.split(` -w '${CURL_PROGRESS_WRITE_OUT}' `)).toHaveLength(
+        2,
+      );
+      expect(command).toContain(` -o '${file.localPath}' `);
+    }
+    return { metadata, progress: progress(metadata), curlCommands };
+  };
+
+  // Restore only these spies: the module mock keeps its passthrough.
+  let spies: jest.SpyInstance[] = [];
+  beforeEach(() => {
+    spies = [
+      ...(["info", "warn", "error"] as const).map((level) =>
+        jest.spyOn(console, level).mockImplementation(() => {}),
+      ),
+      jest.spyOn(phLogger, "event").mockImplementation(() => {}),
+    ];
+  });
+  afterEach(() => spies.forEach((spy) => spy.mockRestore()));
+
+  it.each([
+    [
+      "an observed exit 28",
+      {
+        exitCode: 28,
+        stderr:
+          "curl: (28) Failed to connect to private.example port 443 after 10002 ms: Timeout was reached",
+        stdout: CONNECTED,
+      },
+      { state: "observed", milestone: "connect" },
+    ],
+    [
+      "an observed exit 35",
+      {
+        exitCode: 35,
+        stderr:
+          "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to private.example:443 ",
+        stdout: AFTER_TLS,
+      },
+      { state: "observed", milestone: "tls_handshake" },
+    ],
+    [
+      "an observed exit 35 with extra stdout",
+      {
+        exitCode: 35,
+        stderr: "curl: (35) private detail",
+        stdout: `private body canary\n${AFTER_TLS}`,
+      },
+      { state: "unrecognized", milestone: null },
+    ],
+    [
+      "an observed exit 35 without SDK stdout",
+      { exitCode: 35, stderr: "curl: (35) private detail" },
+      undefined,
+    ],
+    [
+      "another observed curl exit",
+      {
+        exitCode: 22,
+        stderr: "curl: (22) The requested URL returned error: 403",
+        stdout: CONNECTED,
+      },
+      undefined,
+    ],
+    [
+      "an exit known only from message text",
+      {
+        exitCode: 35,
+        stderr: "exit status 35 curl: (35) private detail",
+        stdout: AFTER_TLS,
+        reported: false,
+      },
+      undefined,
+    ],
+  ] as const)(
+    "reports curl progress for %s only from its own observed result",
+    async (_, outcome, expected) => {
+      const sandbox = e2bSandbox([{ ...outcome }]);
+      const { metadata, progress, curlCommands } = await stage(sandbox);
+
+      expect(curlCommands).toHaveLength(1);
+      expect(progress).toEqual(
+        expected
+          ? {
+              attachment_download_curl_progress_version: 1,
+              attachment_download_curl_progress_state: expected.state,
+              attachment_download_curl_progress_milestone: expected.milestone,
+            }
+          : {},
+      );
+      if ("reported" in outcome)
+        expect(metadata).not.toHaveProperty(
+          "attachment_download_diagnostic_version",
+        );
+      else
+        expect(metadata).toMatchObject({
+          attachment_download_route: "generic_command",
+          attachment_download_platform: "unknown",
+          attachment_download_exit_code: outcome.exitCode,
+        });
+    },
+  );
+
+  it.each([
+    [
+      "an observed pinned exit 35 replaces the original with its own marker",
+      { exitCode: 35, stderr: "curl: (35) private detail", stdout: AFTER_TLS },
+      { exitCode: 35, retryResult: "nonzero", milestone: "tls_handshake" },
+    ],
+    [
+      "an unobserved pinned result keeps the original marker",
+      {
+        exitCode: 35,
+        stderr: "exit status 35",
+        stdout: AFTER_TLS,
+        reported: false,
+      },
+      { exitCode: 28, retryResult: "unobserved", milestone: "name_lookup" },
+    ],
+  ] as const)("%s", async (_, pinned, expected) => {
+    jest
+      .mocked(resolveCloudAttachmentDnsPin)
+      .mockImplementationOnce(async (_sandbox, _url, _signal, onDecision) => {
+        onDecision?.("pin_available");
+        return "private.example:443:93.184.216.34";
+      });
+    const sandbox = e2bSandbox([
+      { exitCode: 28, stderr: RESOLVING, stdout: LOOKUP_ONLY },
+      { ...pinned },
+    ]);
+    const { metadata, curlCommands } = await stage(sandbox);
+
+    expect(curlCommands).toHaveLength(2);
+    expect(curlCommands[1]).toContain(" --resolve ");
+    expect(metadata).toMatchObject({
+      attachment_download_exit_code: expected.exitCode,
+      attachment_download_dns_fallback_retry_result: expected.retryResult,
+      attachment_download_curl_progress_state: "observed",
+      attachment_download_curl_progress_milestone: expected.milestone,
+    });
+  });
 });
 
 it.each([

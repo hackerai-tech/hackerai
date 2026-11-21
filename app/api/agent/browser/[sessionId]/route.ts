@@ -5,19 +5,26 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
-import { withPreviewClientContext } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
+import {
+  PREVIEW_DEFER_OPEN_PARAM,
+  PREVIEW_DEFER_WAIT_PARAM,
+  withPreviewClientContext,
+} from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
   normalizeBrowserInput,
   normalizeBrowserInputBatch,
 } from "@/lib/ai/browser-handoff/input";
 import {
+  BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   type BrowserCaptureFailureContext,
   type BrowserInputFailureContext,
+  type BrowserViewportFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserPauseFailureContext,
   browserRelayRenewFailureContext,
   browserRelayStopFailureContext,
   browserSessionReadFailureContext,
@@ -71,6 +78,42 @@ const unavailable = (error: unknown) => {
   return json({ state: "disconnected" }, 503);
 };
 
+type PreviewDeferralReason = "wait" | "open";
+type NegotiatedPreviewDeferrals = "neither" | PreviewDeferralReason | "both";
+
+// The OTLP logger caps records at 80 attributes, seven of them supplied by the logger.
+const MAX_BROWSER_PREVIEW_LOG_FIELDS = 72;
+const BROWSER_PREVIEW_REQUEST_ID =
+  /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/;
+
+function recordPreviewRefreshDeferral(
+  request: NextRequest,
+  reason: PreviewDeferralReason,
+) {
+  try {
+    const requestId = request.headers.get("x-vercel-id");
+    if (!requestId || !BROWSER_PREVIEW_REQUEST_ID.test(requestId)) return;
+    const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    phLogger.info("agent_browser_preview_refresh_deferral", {
+      diagnostic_version: 1,
+      reason,
+      request_id: requestId,
+      ...(build && /^[a-f0-9]{40}$/i.test(build)
+        ? { web_build_commit: build.toLowerCase() }
+        : {}),
+    });
+    after(async () => {
+      try {
+        await phLogger.flush();
+      } catch {
+        /* Optional delivery cannot alter the response. */
+      }
+    });
+  } catch {
+    /* Optional attribution must never change an accepted deferral. */
+  }
+}
+
 type PreviewGetStage =
   | "resolve_session"
   | "connect_sandbox"
@@ -86,6 +129,7 @@ const unavailableGet = (
   sessionId: string | undefined,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
   captureContext?: BrowserCaptureFailureContext,
+  negotiatedDeferrals?: NegotiatedPreviewDeferrals,
 ) => {
   const response = unavailable(error);
   if (response.status !== 503) return response;
@@ -119,10 +163,7 @@ const unavailableGet = (
         build && /^[a-f0-9]{40}$/i.test(build)
           ? build.toLowerCase()
           : "unknown",
-      ...(requestId &&
-      /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
-        requestId,
-      )
+      ...(requestId && BROWSER_PREVIEW_REQUEST_ID.test(requestId)
         ? { request_id: requestId }
         : {}),
       ...(sessionId && /^[a-f0-9]{32}$/.test(sessionId)
@@ -149,10 +190,18 @@ const unavailableGet = (
           : {}),
       }),
     };
-    phLogger.info(
-      "agent_browser_preview_get_unavailable",
-      withPreviewClientContext(fields, request.nextUrl.searchParams),
+    const logFields = withPreviewClientContext(
+      fields,
+      request.nextUrl.searchParams,
     );
+    phLogger.info("agent_browser_preview_get_unavailable", {
+      ...logFields,
+      ...(stage === "capture_frame" &&
+        negotiatedDeferrals !== undefined &&
+        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
+          capture_negotiated_deferrals_v1: negotiatedDeferrals,
+        }),
+    });
     after(async () => {
       try {
         await phLogger.flush();
@@ -199,6 +248,7 @@ const unavailablePost = (
     context?: BrowserCaptureFailureContext;
     frameAgeExceeded?: boolean;
     inputContext?: BrowserInputFailureContext;
+    viewportContext?: BrowserViewportFailureContext;
   },
 ) => {
   const response = recoveryResponse
@@ -285,8 +335,14 @@ const unavailablePost = (
           : "not_observed",
         ...failureDiagnostic?.inputContext,
       }),
+      ...(action === "viewport" &&
+        stage === "resize_viewport" &&
+        failureDiagnostic?.viewportContext),
       ...streamPortContext,
       ...relayStopContext,
+      ...(action === "take" &&
+        stage === "pause_browser" &&
+        browserPauseFailureContext(error)),
       ...(action === "heartbeat" && stage === "renew_relay"
         ? browserRelayRenewFailureContext(error)
         : {}),
@@ -358,6 +414,7 @@ export const GET = withServiceQueryRecovery(async function GET(
   let sessionId: string | undefined;
   let stage: PreviewGetStage = "resolve_session";
   let captureContext: BrowserCaptureFailureContext | undefined;
+  let negotiatedDeferrals: NegotiatedPreviewDeferrals | undefined;
   try {
     sessionId = (await params).sessionId;
     resolved = await resolveSession(request, sessionId);
@@ -380,23 +437,74 @@ export const GET = withServiceQueryRecovery(async function GET(
       resolved.session.controlledSessionName !== browserSessionName
     )
       return json({ state: "stale" }, 409);
+    const query = request.nextUrl.searchParams;
+    const fresh = query.get("fresh") === "1";
+    const passiveAgentRefresh =
+      fresh &&
+      resolved.session.state === "agent" &&
+      resolved.session.runActive === true;
+    const optedIn = (param: string) => {
+      const values = query.getAll(param);
+      return values.length === 1 && values[0] === "1";
+    };
+    const deferDuringWait =
+      passiveAgentRefresh && optedIn(PREVIEW_DEFER_WAIT_PARAM);
+    const deferDuringOpen =
+      passiveAgentRefresh && optedIn(PREVIEW_DEFER_OPEN_PARAM);
+    negotiatedDeferrals = deferDuringOpen
+      ? deferDuringWait
+        ? "both"
+        : "open"
+      : deferDuringWait
+        ? "wait"
+        : "neither";
     stage = "capture_frame";
-    const frame = await captureBrowserFrame(
-      sandbox,
-      resolved.session,
-      browserSessionName,
-      request.nextUrl.searchParams.get("fresh") === "1",
-      undefined,
-      (context) => {
-        captureContext = context;
-      },
-    );
+    let frame: Awaited<ReturnType<typeof captureBrowserFrame>> | undefined;
+    let deferralReason: PreviewDeferralReason | undefined;
+    try {
+      frame = await captureBrowserFrame(
+        sandbox,
+        resolved.session,
+        browserSessionName,
+        fresh,
+        undefined,
+        (context) => {
+          captureContext = context;
+        },
+        {
+          recognizeClosed: true,
+          observeStatusProgress: true,
+          ...(deferDuringWait && { deferDuringWait: true }),
+          ...(deferDuringOpen && { deferDuringOpen: true }),
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof BrowserPreviewRefreshDeferred)) throw error;
+      const allowed =
+        error.reason === "open"
+          ? deferDuringOpen
+          : error.reason === "wait" && deferDuringWait;
+      if (!allowed) throw error;
+      deferralReason = error.reason;
+    }
     stage = "verify_active_session";
     if (
       (await getActiveBrowserSessionName(sandbox, resolved.session)) !==
       browserSessionName
     )
       return json({ state: "stale" }, 409);
+    if (frame === undefined) {
+      const response = json(
+        {
+          state: resolved.session.state,
+          refreshDeferred: true,
+          ...(deferralReason === "open" && { refreshDeferredReason: "open" }),
+        },
+        202,
+      );
+      if (deferralReason) recordPreviewRefreshDeferral(request, deferralReason);
+      return response;
+    }
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
     return unavailableGet(
@@ -406,6 +514,7 @@ export const GET = withServiceQueryRecovery(async function GET(
       sessionId,
       resolved.session,
       captureContext,
+      negotiatedDeferrals,
     );
   }
 });
@@ -897,6 +1006,7 @@ export async function POST(
     );
     if (!valid) return json({ state: "recovery" }, 409);
     let inputContext: BrowserInputFailureContext | undefined;
+    let viewportContext: BrowserViewportFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -914,6 +1024,9 @@ export async function POST(
           session.controlledSessionName,
           body.width as number,
           body.height as number,
+          (context) => {
+            viewportContext = context;
+          },
         );
         return json({ frame });
       }
@@ -938,7 +1051,7 @@ export async function POST(
         body.action,
         session,
         false,
-        { inputContext },
+        { inputContext, viewportContext },
       );
     } finally {
       await convex

@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "8db295a5b3564be2b430bb3a9afdb4db7850fa24",
+  "sourceCommit": "a1ccf777d80e812edf23fc8b82bdc17def6143ac",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -19,10 +19,10 @@
       "filename": "fix_verification",
       "name": "fix_verification",
       "description": "How to verify a proposed code fix before shipping it — the ordered gates, what disqualifies a fix, and when to withhold the suggestion instead",
-      "contentBytes": 5812,
+      "contentBytes": 22504,
       "internal": true,
       "sourcePath": "analysis/fix_verification.md",
-      "sourceSha256": "0537302ced43a9a390aba6f5b704965e562409aeed19340062695268841dd264"
+      "sourceSha256": "e2cf7f16cfcb3607c160310a19bb5cfa249d16d92bf4e363dbeac3a745f44e40"
     },
     {
       "id": "analysis/severity_calibration",
@@ -96,10 +96,10 @@
       "filename": "root_agent",
       "name": "root-agent",
       "description": "Orchestration layer that coordinates specialized subagents for security assessments",
-      "contentBytes": 6626,
+      "contentBytes": 6679,
       "internal": true,
       "sourcePath": "coordination/root_agent.md",
-      "sourceSha256": "c483d320e2cc8fdbc3fc6204e46baf2c71f8ad5db6c5315707335e878e506206"
+      "sourceSha256": "1697843cb728476d6f62ac1c91899dce67ac2c113686c06f4f889e5ea9ea014a"
     },
     {
       "id": "coordination/source_aware_whitebox",

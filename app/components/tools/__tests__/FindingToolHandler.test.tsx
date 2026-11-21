@@ -1,7 +1,13 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { resetMockConvexQueries, setMockQueryResult } from "convex/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  resetMockConvexQueries,
+  setMockQueryResult,
+  useConvex as useConvexMock,
+} from "convex/react";
+
+const useConvex = useConvexMock as unknown as () => { query: jest.Mock };
 
 const mockOpenInSidebar = jest.fn();
 const mockHandleKeyDown = jest.fn();
@@ -21,6 +27,14 @@ jest.mock("@/app/hooks/useToolSidebar", () => ({
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: mockCapture,
+}));
+
+const mockDownload = jest.fn();
+jest.mock("@/lib/findings/export-client", () => ({
+  downloadFindingsReport: (...args: unknown[]) => mockDownload(...args),
+}));
+jest.mock("@/lib/findings/client-telemetry", () => ({
+  captureFindingEvent: jest.fn(),
 }));
 
 const { FindingToolHandler } =
@@ -66,7 +80,7 @@ describe("FindingToolHandler", () => {
         }}
       />,
     );
-    expect(screen.getByText("Saving confirmed finding")).toBeVisible();
+    expect(screen.getByText("Saving finding")).toBeVisible();
     expect(screen.getByText("Confirmed IDOR")).toBeVisible();
   });
 
@@ -230,6 +244,119 @@ describe("FindingToolHandler", () => {
     expect(
       screen.queryByRole("button", { name: /Open finding/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("saved decision on the exact linked card", () => {
+  const dismissedReason = "Synthetic public help text, not sensitive data.";
+  // The transcript recorded High; the current saved record is dismissed.
+  const liveDismissed = {
+    finding_id: "finding-1",
+    title: "Sensitive data shown in help text",
+    target: "demo.example.test",
+    endpoint: "/onboarding/overview",
+    severity: "medium",
+    cvss_score: 5.3,
+    status: "closed",
+    closure_reason: "false_positive",
+    closure_context: dismissedReason,
+    closed_at: Date.UTC(2026, 10, 19, 15, 2),
+    disposition: {
+      kind: "dismissed",
+      label: "Dismissed",
+      reason: dismissedReason,
+      decided_at: Date.UTC(2026, 10, 19, 15, 2),
+    },
+    updated_at: 3,
+  };
+
+  beforeEach(() => {
+    resetMockConvexQueries();
+    jest.clearAllMocks();
+  });
+
+  it("shows the current decision, exact reason and evidence label, keeping the tool input intact", () => {
+    setMockQueryResult(liveDismissed);
+    render(<FindingToolHandler status="ready" part={successPart} />);
+    expect(screen.getByText("Sensitive data shown in help text")).toBeVisible();
+    expect(screen.getByText("Dismissed")).toBeVisible();
+    expect(screen.getByText(dismissedReason)).toBeVisible();
+    expect(screen.getByText("Not recorded")).toBeVisible();
+    expect(screen.getByText("Reported Medium · 5.3")).toBeVisible();
+    // The snapshot severity is not replayed as current.
+    expect(screen.queryByText(/high · 7\.1/i)).not.toBeInTheDocument();
+    expect(successPart.output.title).toBe("Confirmed IDOR");
+  });
+
+  it("labels an active correction and keeps an inconclusive evidence basis distinct", () => {
+    setMockQueryResult({
+      ...liveDismissed,
+      status: "active",
+      severity: "low",
+      cvss_score: 3.1,
+      evidence_status: "inconclusive",
+      disposition: {
+        kind: "corrected",
+        label: "Corrected",
+        reason: "Error text is a code, not a stack trace.",
+        decided_at: 4,
+      },
+    });
+    render(<FindingToolHandler status="ready" part={successPart} />);
+    expect(screen.getAllByText("Corrected")[0]).toBeVisible();
+    expect(
+      screen.getByText("Error text is a code, not a stack trace."),
+    ).toBeVisible();
+    expect(screen.getByText("Inconclusive")).toBeVisible();
+    expect(screen.getByText(/low · 3\.1/i)).toBeVisible();
+  });
+
+  it.each([
+    ["loading", undefined],
+    ["unavailable", null],
+    ["failed", new Error("Function execution timed out")],
+  ])("never guesses a decision or offers export while %s", (_state, result) => {
+    setMockQueryResult(result);
+    render(<FindingToolHandler status="ready" part={successPart} />);
+    expect(screen.queryByText("Dismissed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Corrected")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Download PDF/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("downloads a PDF of the freshly read record, not the rendered snapshot", async () => {
+    const fresh = {
+      ...liveDismissed,
+      closure_context: "Reason saved after this card rendered.",
+      updated_at: 9,
+    };
+    useConvex().query.mockResolvedValueOnce(fresh as never);
+    mockDownload.mockResolvedValueOnce({ outcome: "success" } as never);
+    setMockQueryResult(liveDismissed);
+    render(<FindingToolHandler status="ready" part={successPart} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Download PDF" }));
+    await waitFor(() =>
+      expect(mockDownload).toHaveBeenCalledWith([fresh], "pdf"),
+    );
+    expect(useConvex().query.mock.calls[0][1]).toEqual({
+      findingId: "finding-1",
+    });
+  });
+
+  it("exports nothing when the fresh read finds no authorized record", async () => {
+    useConvex().query.mockResolvedValueOnce(null as never);
+    setMockQueryResult(liveDismissed);
+    render(<FindingToolHandler status="ready" part={successPart} />);
+    fireEvent.click(screen.getByRole("button", { name: "Download PDF" }));
+    await waitFor(() => expect(useConvex().query).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Download PDF" }),
+      ).toBeEnabled(),
+    );
+    expect(mockDownload).not.toHaveBeenCalled();
   });
 });
 

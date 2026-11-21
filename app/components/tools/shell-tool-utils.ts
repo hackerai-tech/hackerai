@@ -9,7 +9,11 @@ import {
   getSafeToolErrorText,
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
-import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
+import type {
+  AgentAutoReviewLifecycleStatus,
+  SidebarTerminal,
+  SidebarTerminalCommandSource,
+} from "@/types";
 import {
   isUserStoppedToolError,
   LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT,
@@ -544,11 +548,24 @@ export function computeShellTerminalBlock(
   const shellPid = shellInput?.pid ?? shellOutput?.pid;
   const shellSession = shellInput?.session ?? shellOutput?.session;
 
+  // The sidebar text and the input field it came from are chosen together:
+  // an interactive brief wins over its command, then command, then brief.
+  // Labels (action names, failure text) carry no source.
+  let commandSource: SidebarTerminalCommandSource | undefined;
+  if (isInteractiveAction && shellInput?.brief) {
+    commandSource = "interactive_brief";
+  } else if (isShellTool ? shellInput?.command : legacyCommand) {
+    commandSource = "command";
+  } else if (isShellTool && shellInput?.brief) {
+    commandSource = "brief";
+  }
+
   const sidebarContent: SidebarTerminal | null =
     !displayCommand && !isInteractiveAction
       ? null
       : {
           command: isInteractiveAction ? displayTarget : displayCommand,
+          ...(commandSource && { commandSource }),
           output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
           executionPhase,

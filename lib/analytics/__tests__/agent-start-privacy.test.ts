@@ -1,8 +1,10 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import {
+  AGENT_PARTIAL_SAVE_BODY_BUCKETS,
+  AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT,
   AGENT_START_BODY_MAX_UTF8_BYTES,
   AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
-  sanitizeAgentStartHttp413DiagnosticEvent,
+  sanitizeAgentHttp413DiagnosticEvent,
 } from "../agent-start-privacy";
 
 const owner = "user_01ABC";
@@ -33,9 +35,12 @@ const diagnostic = {
   attempt_denominator_kind: "unmeasured",
 };
 // What the SDK, super properties and native capture can add after capture.
-const enriched = (properties: Record<string, unknown>) => ({
+const enriched = (
+  properties: Record<string, unknown>,
+  event: string = AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
+) => ({
   uuid: eventUuid,
-  event: AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
+  event,
   properties: {
     ...properties,
     $current_url: "https://hackerai.co/c/PRIVATE_CHAT",
@@ -54,9 +59,9 @@ const enriched = (properties: Record<string, unknown>) => ({
   $set_once: { $initial_referrer: "PRIVATE" },
 });
 const sanitize = (properties: Record<string, unknown>) =>
-  sanitizeAgentStartHttp413DiagnosticEvent(enriched(properties), expected);
+  sanitizeAgentHttp413DiagnosticEvent(enriched(properties), expected);
 
-describe("sanitizeAgentStartHttp413DiagnosticEvent", () => {
+describe("sanitizeAgentHttp413DiagnosticEvent for Agent start", () => {
   it("rebuilds the owner's event from validated fields only", () => {
     const sanitized = sanitize({ ...transport, ...diagnostic });
     expect(sanitized).toEqual({
@@ -153,12 +158,18 @@ describe("sanitizeAgentStartHttp413DiagnosticEvent", () => {
       { get: getter, enumerable: true },
     );
     expect(
-      sanitizeAgentStartHttp413DiagnosticEvent(
+      sanitizeAgentHttp413DiagnosticEvent(
         { event: AGENT_START_HTTP413_DIAGNOSTIC_EVENT, properties },
         expected,
       ),
     ).toBeNull();
     expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("drops a queued event captured for another distinct ID", () => {
+    expect(
+      sanitize({ ...transport, ...diagnostic, distinct_id: "user_other" }),
+    ).toBeNull();
   });
 
   it.each<[string, () => { owner: string | null; token: string }]>([
@@ -173,7 +184,7 @@ describe("sanitizeAgentStartHttp413DiagnosticEvent", () => {
     ],
   ])("drops the event for %s", (_name, resolve) => {
     expect(
-      sanitizeAgentStartHttp413DiagnosticEvent(
+      sanitizeAgentHttp413DiagnosticEvent(
         enriched({ ...transport, ...diagnostic }),
         resolve,
       ),
@@ -185,13 +196,13 @@ describe("sanitizeAgentStartHttp413DiagnosticEvent", () => {
       sanitize({ ...transport, ...diagnostic, token: "phc_other" })?.properties,
     ).not.toHaveProperty("token");
     expect(
-      sanitizeAgentStartHttp413DiagnosticEvent(
+      sanitizeAgentHttp413DiagnosticEvent(
         { event: AGENT_START_HTTP413_DIAGNOSTIC_EVENT, properties: [] },
         expected,
       ),
     ).toBeNull();
     expect(
-      sanitizeAgentStartHttp413DiagnosticEvent(
+      sanitizeAgentHttp413DiagnosticEvent(
         Object.defineProperty({}, "event", {
           get: () => AGENT_START_HTTP413_DIAGNOSTIC_EVENT,
         }),
@@ -206,15 +217,162 @@ describe("sanitizeAgentStartHttp413DiagnosticEvent", () => {
         },
       },
     );
-    expect(
-      sanitizeAgentStartHttp413DiagnosticEvent(hostile, expected),
-    ).toBeNull();
+    expect(sanitizeAgentHttp413DiagnosticEvent(hostile, expected)).toBeNull();
 
     const resolve = jest.fn(expected);
-    const other = { event: "$exception", properties: { body: "kept" } };
-    expect(sanitizeAgentStartHttp413DiagnosticEvent(other, resolve)).toBe(
-      other,
-    );
+    for (const name of ["$exception", "constructor", "__proto__"]) {
+      const other = { event: name, properties: { body: "kept" } };
+      expect(sanitizeAgentHttp413DiagnosticEvent(other, resolve)).toBe(other);
+    }
     expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe("sanitizeAgentHttp413DiagnosticEvent for Agent partial save", () => {
+  const partialSave = {
+    agent_partial_save_http413_diagnostic_version: 1,
+    http_status: 413,
+    request_body_utf8_bucket: "gt_4_lte_4_5_mib",
+    vercel_error_state: "known",
+    platform_request_id_state: "valid",
+    platform_request_id: requestId,
+    build_state: "measured",
+    hackerai_frontend_build_commit: BUILD,
+  };
+  const sanitizePartialSave = (
+    properties: Record<string, unknown>,
+    resolve: () => { owner: string | null; token: string } = expected,
+  ) =>
+    sanitizeAgentHttp413DiagnosticEvent(
+      enriched(properties, AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT),
+      resolve,
+    );
+
+  it("rebuilds the owner's event and drops SDK URLs and request content", () => {
+    const sanitized = sanitizePartialSave({
+      ...transport,
+      ...partialSave,
+      // Values a malformed capture might carry; none has a schema slot.
+      request_body_utf8_bytes: 4_500_000,
+      chat_id: "PRIVATE_CHAT",
+      trigger_run_id: "run_PRIVATE",
+      run_correlation_token: "PRIVATE_TOKEN",
+      message_id: "PRIVATE_MESSAGE",
+      response_body: "PRIVATE_RESPONSE",
+      headers: { "x-vercel-id": "PRIVATE" },
+      app_rejection_marker_state: "known",
+      attempt_denominator_kind: "unmeasured",
+    });
+    expect(sanitized).toEqual({
+      uuid: eventUuid,
+      event: AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT,
+      properties: { ...transport, ...partialSave },
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toMatch(/PRIVATE|4500000|https?:/);
+  });
+
+  it.each(AGENT_PARTIAL_SAVE_BODY_BUCKETS)("keeps the %s bucket", (bucket) => {
+    expect(
+      sanitizePartialSave({
+        ...transport,
+        ...partialSave,
+        request_body_utf8_bucket: bucket,
+      })?.properties,
+    ).toMatchObject({ request_body_utf8_bucket: bucket });
+  });
+
+  it("keeps absent headers and an unavailable build", () => {
+    expect(
+      sanitizePartialSave({
+        ...transport,
+        ...partialSave,
+        vercel_error_state: "absent",
+        platform_request_id_state: "absent",
+        platform_request_id: undefined,
+        build_state: "unavailable",
+        hackerai_frontend_build_commit: null,
+      })?.properties,
+    ).toEqual({
+      ...transport,
+      agent_partial_save_http413_diagnostic_version: 1,
+      http_status: 413,
+      request_body_utf8_bucket: "gt_4_lte_4_5_mib",
+      vercel_error_state: "absent",
+      platform_request_id_state: "absent",
+      build_state: "unavailable",
+    });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["another version", { agent_partial_save_http413_diagnostic_version: 2 }],
+    ["another status", { http_status: 400 }],
+    ["a missing bucket", { request_body_utf8_bucket: undefined }],
+    ["an exact size as the bucket", { request_body_utf8_bucket: 4_718_592 }],
+    ["an unknown bucket", { request_body_utf8_bucket: "gt_16_mib" }],
+    [
+      "the Vercel code copied as text",
+      { vercel_error_state: "FUNCTION_PAYLOAD_TOO_LARGE" },
+    ],
+    [
+      "a valid state with an invalid ID",
+      { platform_request_id: "https://PRIVATE.example/" },
+    ],
+    ["an ID beside a non-valid state", { platform_request_id_state: "absent" }],
+    [
+      "an uppercase build",
+      { hackerai_frontend_build_commit: BUILD.toUpperCase() },
+    ],
+    ["a commit beside an unavailable build", { build_state: "unavailable" }],
+  ])("drops %s", (_name, override) => {
+    expect(
+      sanitizePartialSave({ ...transport, ...partialSave, ...override }),
+    ).toBeNull();
+  });
+
+  it("never accepts one diagnostic's schema under the other's name", () => {
+    expect(sanitizePartialSave({ ...transport, ...diagnostic })).toBeNull();
+    expect(sanitize({ ...transport, ...partialSave })).toBeNull();
+  });
+
+  it.each<[string, () => { owner: string | null; token: string }]>([
+    ["no committed owner", () => ({ owner: null, token: "phc_test" })],
+    ["a different current owner", () => ({ owner: "user_other", token: "x" })],
+    [
+      "a failing owner read",
+      () => {
+        throw new Error("identity unavailable");
+      },
+    ],
+  ])("drops the event for %s", (_name, resolve) => {
+    expect(
+      sanitizePartialSave({ ...transport, ...partialSave }, resolve),
+    ).toBeNull();
+  });
+
+  it("drops a queued event captured for another distinct ID", () => {
+    expect(
+      sanitizePartialSave({
+        ...transport,
+        ...partialSave,
+        distinct_id: "user_other",
+      }),
+    ).toBeNull();
+  });
+
+  it("drops a schema field accessor without running it", () => {
+    const getter = jest.fn(() => "lte_4_mib");
+    const properties = Object.defineProperty(
+      { ...transport, ...partialSave },
+      "request_body_utf8_bucket",
+      { get: getter, enumerable: true },
+    );
+    expect(
+      sanitizeAgentHttp413DiagnosticEvent(
+        { event: AGENT_PARTIAL_SAVE_HTTP413_DIAGNOSTIC_EVENT, properties },
+        expected,
+      ),
+    ).toBeNull();
+    expect(getter).not.toHaveBeenCalled();
   });
 });

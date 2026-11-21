@@ -73,8 +73,8 @@ import { getNoteMetaSegments } from "./tools/notes-tool-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
 import {
+  agentBrowserPreviewIntent,
   detectAgentBrowserUsage,
-  requestsAgentBrowserPreview,
 } from "@/lib/utils/agent-browser-command";
 
 const ComputerWorkspace = dynamic(
@@ -666,6 +666,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   };
 
   const usesCloseAction = isFinding || isToolError;
+  // One parse decides browserRequested (null means not requested) and its
+  // diagnostic-only shape, from the same live-resolved terminal text. Parsed
+  // only under the same guard that mounts the preview.
+  const browserRequestIntent =
+    !isWorkspaceFiles && sidebarOpen && browserChatId
+      ? agentBrowserPreviewIntent(resolvedTerminal?.command ?? "")
+      : null;
 
   return (
     <div
@@ -844,9 +851,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     chatId={browserChatId}
                     agentId={browserAgentId}
                     liveSelection={showingLiveContent && isFollowingLive}
-                    browserRequested={requestsAgentBrowserPreview(
-                      resolvedTerminal?.command ?? "",
-                    )}
+                    browserRequested={browserRequestIntent !== null}
+                    browserRequestSource={resolvedTerminal?.commandSource}
+                    browserRequestIntent={browserRequestIntent}
                     runActive={status === "streaming" || status === "submitted"}
                     onJumpToLive={handleJumpToLive}
                   />

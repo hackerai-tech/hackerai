@@ -71,6 +71,7 @@ import {
   FINDING_CATEGORY_LABELS,
 } from "@/lib/findings/category";
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
+import { findingStatusLabel } from "@/lib/findings/disposition";
 import { downloadFile } from "@/lib/utils/file-download";
 import { cn } from "@/lib/utils";
 import type {
@@ -490,11 +491,9 @@ function FindingsPageContent() {
   const sheetFilterCount = [severity, status, category].filter(
     (value) => value !== "all",
   ).length;
-  const visibleSeverityCounts = findings.reduce<
-    Record<FindingSeverity, number>
-  >(
+  const activeSeverityCounts = findings.reduce<Record<FindingSeverity, number>>(
     (counts, finding) => {
-      counts[finding.severity] += 1;
+      if (finding.status === "active") counts[finding.severity] += 1;
       return counts;
     },
     { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
@@ -1032,27 +1031,35 @@ function FindingsPageContent() {
                     <span className="hidden @min-[36rem]:inline">
                       In loaded results
                     </span>
-                    {SEVERITIES.filter(
-                      (value) => visibleSeverityCounts[value] > 0,
-                    ).map((value) => (
-                      <span
-                        key={value}
-                        className="inline-flex items-center gap-1.5 tabular-nums text-foreground/90"
-                      >
-                        <span
-                          className={cn(
-                            "size-2 rounded-full",
-                            getFindingSeverityDotClasses(value),
-                          )}
-                          aria-hidden="true"
-                        />
-                        {visibleSeverityCounts[value]} {capitalize(value)}
-                      </span>
-                    ))}
-                    <span className="hidden border-l border-border pl-3 tabular-nums @min-[36rem]:inline">
+                    <span className="tabular-nums">
                       {visibleStatusCounts.active} active ·{" "}
                       {visibleStatusCounts.closed} closed
                     </span>
+                    {visibleStatusCounts.active > 0 && (
+                      <div
+                        role="group"
+                        aria-label="Active findings by severity"
+                        className="flex flex-wrap gap-x-3 gap-y-1 border-l border-border pl-3"
+                      >
+                        {SEVERITIES.filter(
+                          (value) => activeSeverityCounts[value] > 0,
+                        ).map((value) => (
+                          <span
+                            key={value}
+                            className="inline-flex items-center gap-1.5 tabular-nums text-foreground/90"
+                          >
+                            <span
+                              className={cn(
+                                "size-2 rounded-full",
+                                getFindingSeverityDotClasses(value),
+                              )}
+                              aria-hidden="true"
+                            />
+                            {activeSeverityCounts[value]} {capitalize(value)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : null}
 
@@ -1205,13 +1212,27 @@ function FindingsPageContent() {
                                   FINDING_ROW_COLUMNS,
                                 )}
                               >
-                                <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-2 text-[13px] font-medium leading-5 text-foreground">
+                                <div
+                                  className={cn(
+                                    "col-start-1 row-start-1 flex min-w-0 items-center gap-2 text-[13px] font-medium leading-5",
+                                    finding.status === "closed"
+                                      ? "text-muted-foreground"
+                                      : "text-foreground",
+                                  )}
+                                  title={
+                                    finding.status === "closed"
+                                      ? "Reported severity"
+                                      : undefined
+                                  }
+                                >
                                   <span
                                     className={cn(
                                       "size-2 shrink-0 rounded-full",
-                                      getFindingSeverityDotClasses(
-                                        finding.severity,
-                                      ),
+                                      finding.status === "closed"
+                                        ? "bg-muted-foreground/50"
+                                        : getFindingSeverityDotClasses(
+                                            finding.severity,
+                                          ),
                                     )}
                                     aria-hidden="true"
                                     data-testid={`finding-severity-dot-${finding.finding_id}`}
@@ -1252,6 +1273,14 @@ function FindingsPageContent() {
                                       {finding.target}
                                     </span>
                                   </div>
+                                  {finding.disposition?.reason && (
+                                    <p
+                                      className="mt-1 line-clamp-2 wrap-anywhere text-xs leading-5 text-muted-foreground"
+                                      title={finding.disposition.reason}
+                                    >
+                                      {finding.disposition.reason}
+                                    </p>
+                                  )}
                                 </div>
 
                                 {/* These wrappers only exist to regroup the
@@ -1269,15 +1298,17 @@ function FindingsPageContent() {
                                       <span
                                         className={cn(
                                           "size-2 rounded-full",
-                                          finding.status === "active"
+                                          finding.status === "active" &&
+                                            !finding.disposition
                                             ? "bg-emerald-500"
                                             : "bg-muted-foreground/50",
                                         )}
                                         aria-hidden="true"
                                       />
-                                      {finding.status === "active"
-                                        ? "Active"
-                                        : "Closed"}
+                                      {findingStatusLabel(
+                                        finding,
+                                        finding.disposition,
+                                      )}
                                     </span>
                                     <span
                                       className="hidden text-xs text-muted-foreground/50 @min-[36rem]:inline @min-[70rem]:hidden"
