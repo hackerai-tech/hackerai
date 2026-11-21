@@ -205,19 +205,44 @@ describe("request error diagnostic exports", () => {
       "action",
       "App Router",
       "/(chat)/c/[id]/page",
+      "POST",
     ],
-    ["/c/SYNTHETIC_CHAT_ID", "/c/[id]", "proxy", "Pages Router", "/proxy"],
-    ["/", "/", "render", "App Router", "/(chat)/page"],
+    [
+      "/c/SYNTHETIC_CHAT_ID",
+      "/c/[id]",
+      "proxy",
+      "Pages Router",
+      "/proxy",
+      "POST",
+    ],
+    ["/", "/", "render", "App Router", "/(chat)/page", "POST"],
     [
       "/api/agent/status",
       "/api/agent/status",
       "route",
       "App Router",
       "/api/agent/status/route",
+      "POST",
+    ],
+    [
+      "/desktop-login",
+      "/desktop-login",
+      "route",
+      "App Router",
+      "/desktop-login/route",
+      "GET",
+    ],
+    [
+      "/desktop-login",
+      "/desktop-login",
+      "proxy",
+      "Pages Router",
+      "/proxy",
+      "GET",
     ],
   ] as const)(
-    "exports core POST %s correlation as %s once without the chat identifier (%s)",
-    async (path, safePath, routeType, routerKind, routePath) => {
+    "exports %s correlation as %s once without request contents (%s)",
+    async (path, safePath, routeType, routerKind, routePath, method) => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       const error = Object.assign(new TypeError("core request failed"), {
         digest: "1234567890",
@@ -230,7 +255,7 @@ describe("request error diagnostic exports", () => {
         error,
         {
           path: `${path}?chatId=SYNTHETIC_CHAT_ID&code=SYNTHETIC_CODE#SYNTHETIC_FRAGMENT`,
-          method: "POST",
+          method,
           headers: {
             "x-vercel-id": "iad1::fixture-1794426146963-b68e429d9b2f",
             cookie: "SYNTHETIC_COOKIE",
@@ -249,7 +274,7 @@ describe("request error diagnostic exports", () => {
       expect(records[0].attributes).toEqual(
         expect.arrayContaining([
           { key: "path", value: { stringValue: safePath } },
-          { key: "method", value: { stringValue: "POST" } },
+          { key: "method", value: { stringValue: method } },
           { key: "route_type", value: { stringValue: routeType } },
           {
             key: "root_request_error_diagnostic_version",
@@ -278,7 +303,7 @@ describe("request error diagnostic exports", () => {
       expect(JSON.parse(receiptLine)).toMatchObject({
         event: "root_request_error_context",
         path: safePath,
-        method: "POST",
+        method,
         route_type: routeType,
         root_request_error_diagnostic_version: 1,
         root_error_kind: "TypeError",
