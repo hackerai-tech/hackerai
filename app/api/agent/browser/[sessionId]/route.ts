@@ -23,6 +23,7 @@ import {
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserPauseFailureContext,
   browserRelayRenewFailureContext,
   browserRelayStopFailureContext,
   browserSessionReadFailureContext,
@@ -334,6 +335,9 @@ const unavailablePost = (
       }),
       ...streamPortContext,
       ...relayStopContext,
+      ...(action === "take" &&
+        stage === "pause_browser" &&
+        browserPauseFailureContext(error)),
       ...(action === "heartbeat" && stage === "renew_relay"
         ? browserRelayRenewFailureContext(error)
         : {}),
