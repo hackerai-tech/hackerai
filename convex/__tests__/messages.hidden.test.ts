@@ -1820,3 +1820,133 @@ describe("isUserMessagePersisted", () => {
     await expect(check(null, null)).rejects.toThrow("Unauthorized");
   });
 });
+
+describe("getSavedFilesByChatId — workspace-independent saved downloads", () => {
+  const report = {
+    _id: "saved-report",
+    user_id: USER_ID,
+    name: "report.pdf",
+    media_type: "application/pdf",
+    size: 240,
+    content: "must not reach client",
+    s3_key: "private-key",
+  };
+  function context(owner = USER_ID) {
+    const paginate = jest
+      .fn<any>()
+      .mockImplementation(async ({ cursor }: { cursor: string | null }) =>
+        cursor === "older"
+          ? {
+              page: [
+                makeMessage({
+                  id: "older-message",
+                  role: "assistant",
+                  parts: [],
+                  file_ids: [report._id, report._id, "missing", "foreign"],
+                }),
+              ],
+              isDone: true,
+              continueCursor: "",
+            }
+          : {
+              page: [
+                makeMessage(),
+                makeMessage({
+                  role: "assistant",
+                  is_hidden: true,
+                  file_ids: ["hidden"],
+                }),
+              ],
+              isDone: false,
+              continueCursor: "older",
+            },
+      );
+    const get = jest
+      .fn<any>()
+      .mockImplementation(async (id: string) =>
+        id === report._id
+          ? report
+          : id === "foreign"
+            ? { ...report, _id: id, user_id: "other-user" }
+            : null,
+      );
+    const ctx: any = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+      },
+      db: {
+        query: jest.fn((table: string) =>
+          table === "chat_history_access"
+            ? {
+                withIndex: () => ({
+                  unique: async () => ({ chat_id: CHAT_ID, user_id: owner }),
+                }),
+              }
+            : { withIndex: () => ({ order: () => ({ paginate }) }) },
+        ),
+        get,
+      },
+    };
+    return { ctx, paginate, get };
+  }
+
+  it("retains the cursor across empty recent pages and finds old saved IDs even with no tool history", async () => {
+    const { getSavedFilesByChatId } = await import("../messages");
+    const { ctx, paginate, get } = context();
+    const recent = await getSavedFilesByChatId.handler(ctx, {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 100, cursor: null },
+    });
+    expect(recent).toEqual({
+      page: [],
+      isDone: false,
+      continueCursor: "older",
+    });
+    expect(get).not.toHaveBeenCalled();
+    const older = await getSavedFilesByChatId.handler(ctx, {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 14, cursor: recent.continueCursor },
+    });
+    expect(older.page).toEqual([
+      {
+        id: "older-message",
+        role: "assistant",
+        fileDetails: [
+          {
+            fileId: report._id,
+            name: "report.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: 240,
+          },
+        ],
+      },
+    ]);
+    expect(paginate).toHaveBeenNthCalledWith(1, {
+      numItems: 14,
+      cursor: null,
+      maximumBytesRead: 4 * 1024 * 1024,
+    });
+    expect(older.isDone).toBe(true);
+  });
+
+  it("does not read files for another chat owner or an unauthenticated caller", async () => {
+    const { getSavedFilesByChatId } = await import("../messages");
+    const { ctx, paginate, get } = context("other-user");
+    const args = {
+      chatId: CHAT_ID,
+      paginationOpts: { numItems: 14, cursor: null },
+    };
+    await expect(
+      getSavedFilesByChatId.handler(ctx, args),
+    ).rejects.toMatchObject({ data: { code: "CHAT_UNAUTHORIZED" } });
+    expect(paginate).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    ctx.auth.getUserIdentity.mockResolvedValue(null);
+    await expect(getSavedFilesByChatId.handler(ctx, args)).resolves.toEqual({
+      page: [],
+      isDone: true,
+      continueCursor: "",
+    });
+    expect(paginate).not.toHaveBeenCalled();
+  });
+});
