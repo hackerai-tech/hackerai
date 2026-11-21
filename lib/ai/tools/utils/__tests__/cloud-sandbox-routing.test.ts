@@ -485,6 +485,58 @@ describe("E2B cloud acquisition", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { pausedResume: true, outcome: "success" },
+    { pausedResume: false, outcome: "error" },
+    { pausedResume: undefined, outcome: "success" },
+  ] as const)(
+    "records the selected paused resume ($pausedResume) on a $outcome outcome",
+    async ({ pausedResume, outcome }) => {
+      const original = new Error("PRIVATE_CONNECT_DETAIL");
+      ensure.mockImplementationOnce(async (_owner, options) => {
+        if (pausedResume === undefined) options?.reportStage?.("create");
+        else
+          options?.reportStage?.("connect", {
+            resumingPausedWorkspace: pausedResume,
+          });
+        if (outcome === "error") throw original;
+        return { sandbox: { sandboxId: "new-e2b" } as Sandbox };
+      });
+
+      const result = ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+      });
+      if (outcome === "error") await expect(result).rejects.toBe(original);
+      else await result;
+
+      const outcomes = jest
+        .mocked(phLogger.event)
+        .mock.calls.filter(
+          ([name]) => name === "cloud_sandbox_acquisition_completed",
+        );
+      expect(outcomes).toEqual([
+        [
+          "cloud_sandbox_acquisition_completed",
+          expect.objectContaining({
+            outcome,
+            cloud_sandbox_acquisition_completed_event_version: 1,
+          }),
+        ],
+      ]);
+      if (pausedResume === undefined)
+        expect(outcomes[0][1]).not.toHaveProperty(
+          "e2b_connect_paused_resume_selected",
+        );
+      else
+        expect(outcomes[0][1]).toHaveProperty(
+          "e2b_connect_paused_resume_selected",
+          pausedResume,
+        );
+      expect(JSON.stringify(outcomes)).not.toContain("PRIVATE_CONNECT_DETAIL");
+    },
+  );
+
   it("captures abort facts before the failure callback can change the signal", async () => {
     const controller = new AbortController();
     const original = Object.freeze(new Error("PRIVATE_PROVIDER_DETAIL"));

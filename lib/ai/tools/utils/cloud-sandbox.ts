@@ -67,8 +67,16 @@ export async function ensureCloudSandboxConnection(options: {
   const startedAt = Date.now();
   const acquisitionId = randomUUID();
   let lastReportedStage: CloudAcquisitionStage = "unknown";
+  // Keep the selection as reported when the provider connect starts.
+  // Later verification reports do not describe that selected connect.
+  let connectPausedResumeSelected: boolean | undefined;
   const reportStage: ReportCloudAcquisitionStage = (...args) => {
     lastReportedStage = parseCloudAcquisitionStage(args[0]) ?? "unknown";
+    if (args[0] === "connect") {
+      const pausedResume = args[1]?.resumingPausedWorkspace;
+      if (typeof pausedResume === "boolean")
+        connectPausedResumeSelected = pausedResume;
+    }
     options.reportStage?.(...args);
   };
   let bootInfo: SandboxBootInfo | undefined;
@@ -114,6 +122,9 @@ export async function ensureCloudSandboxConnection(options: {
       image_version: bootInfo?.image_version,
       sandbox_create_attempts: bootInfo?.create_attempts,
       cloud_sandbox_acquisition_completed_event_version: 1,
+      ...(connectPausedResumeSelected !== undefined
+        ? { e2b_connect_paused_resume_selected: connectPausedResumeSelected }
+        : {}),
       ...workspaceGuardDiagnostics,
     };
     if (outcome === "error")
