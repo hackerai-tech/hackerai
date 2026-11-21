@@ -46,6 +46,14 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/sitemap.xml",
 ]);
 const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
+const PUBLIC_AUTH_CONTEXT_PROVENANCE_PATHS = new Set([
+  "/",
+  "/download",
+  "/signup",
+]);
+const VERCEL_REQUEST_ID_PATTERN =
+  /^(?:[a-z]{3}\d::){0,3}[a-z0-9]{3,16}-\d{13}-[a-f0-9]{8,64}$/;
+const WEB_BUILD_COMMIT_PATTERN = /^[a-f0-9]{40}$/i;
 const NEXT_ACTION_HEADER = "next-action";
 // Closed labels from the patched AuthKit refresh; anything else is "unavailable".
 const AUTH_REFRESH_STAGES = new Set<unknown>([
@@ -335,13 +343,10 @@ function recordProxyAuthkitFailure(
               : pathname.startsWith("/api/")
                 ? "api"
                 : "other_page",
-        ...(requestId &&
-        /^(?:[a-z]{3}\d::){0,3}[a-z0-9]{3,16}-\d{13}-[a-f0-9]{8,64}$/.test(
-          requestId,
-        )
+        ...(requestId && VERCEL_REQUEST_ID_PATTERN.test(requestId)
           ? { vercel_request_id: requestId }
           : {}),
-        ...(build && /^[a-f0-9]{40}$/i.test(build)
+        ...(build && WEB_BUILD_COMMIT_PATTERN.test(build)
           ? { web_build_commit: build.toLowerCase() }
           : {}),
         environment: ["production", "preview", "development"].includes(
@@ -354,6 +359,49 @@ function recordProxyAuthkitFailure(
     );
   } catch {
     // Telemetry must never replace the original error or participate in auth decisions.
+  }
+}
+
+/**
+ * Join a public render to its platform request when an incoming session-context
+ * header passes through without an AuthKit projection. Reads header presence only.
+ */
+function recordPublicPageAuthContextProvenance(
+  request: NextRequest,
+  pathname: string,
+  authkitHeaders: Headers,
+  hadSessionCookie: boolean,
+): void {
+  try {
+    if (
+      request.method !== "GET" ||
+      !PUBLIC_AUTH_CONTEXT_PROVENANCE_PATHS.has(pathname) ||
+      !request.headers.has(SESSION_HEADER) ||
+      authkitHeaders.has(SESSION_HEADER)
+    ) {
+      return;
+    }
+    const requestId = request.headers.get("x-vercel-id");
+    if (!requestId || !VERCEL_REQUEST_ID_PATTERN.test(requestId)) return;
+
+    const build = process.env.VERCEL_GIT_COMMIT_SHA;
+    console.warn(
+      JSON.stringify({
+        event: "public_page_auth_context_provenance",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        reason: "context_without_sdk_projection",
+        pathname,
+        request_method: "GET",
+        had_session_cookie: hadSessionCookie,
+        vercel_request_id: requestId,
+        ...(build && WEB_BUILD_COMMIT_PATTERN.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+      }),
+    );
+  } catch {
+    // Diagnostics must never change the pass-through response.
   }
 }
 
@@ -629,13 +677,20 @@ export default async function proxy(request: NextRequest) {
   });
 
   if (session.user || isUnauthenticatedPath(pathname)) {
-    return withAttributionCookies(
+    const response = withAttributionCookies(
       request,
       NextResponse.next({
         request: { headers: requestHeaders },
         headers: responseHeaders,
       }),
     );
+    recordPublicPageAuthContextProvenance(
+      request,
+      pathname,
+      headers,
+      hadSessionCookie,
+    );
+    return response;
   }
 
   // If rate-limited (not a real session expiry), don't redirect to login
