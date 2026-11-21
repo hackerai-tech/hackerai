@@ -149,7 +149,7 @@ jobs:
           "$HOME/.cargo/bin/cargo" --version
           "$HOME/.cargo/bin/rustc" --version
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: packages/desktop/src-tauri -> target
           key: desktop-pr-${{ matrix.target }}

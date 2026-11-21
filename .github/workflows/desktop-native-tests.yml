@@ -33,7 +33,7 @@ jobs:
         with:
           toolchain: stable
           cache: false
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: packages/desktop/src-tauri -> target
       - name: Install native dependencies
@@ -61,7 +61,7 @@ jobs:
         with:
           toolchain: stable
           cache: false
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           workspaces: packages/desktop/src-tauri -> target
       - name: Test Windows installer handoff, native activity fence and restart receipts
