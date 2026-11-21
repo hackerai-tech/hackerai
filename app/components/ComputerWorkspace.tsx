@@ -330,7 +330,7 @@ export function ComputerWorkspace({
             {visibleTabs.map((tab, index) => (
               <div
                 key={tab.id}
-                className={`flex max-w-48 shrink-0 items-center rounded-t-lg border border-b-0 ${active === tab.id ? "border-border bg-background" : "border-transparent text-muted-foreground hover:bg-muted/60"}`}
+                className={`flex max-w-[min(12rem,100%)] shrink-0 items-center rounded-t-lg border border-b-0 ${active === tab.id ? "border-border bg-background" : "border-transparent text-muted-foreground hover:bg-muted/60"}`}
               >
                 <button
                   role="tab"
@@ -392,14 +392,14 @@ export function ComputerWorkspace({
             <div
               role="group"
               aria-label="Scroll computer tabs"
-              className="mb-1 hidden shrink-0 sm:flex"
+              className="mb-1 flex shrink-0"
             >
               <button
                 aria-label="Scroll tabs left"
                 title="Scroll tabs left"
                 disabled={!tabScroll.left}
                 onClick={() => scrollTabs(-1)}
-                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+                className="rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -408,7 +408,7 @@ export function ComputerWorkspace({
                 title="Scroll tabs right"
                 disabled={!tabScroll.right}
                 onClick={() => scrollTabs(1)}
-                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+                className="rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronRight size={16} />
               </button>
