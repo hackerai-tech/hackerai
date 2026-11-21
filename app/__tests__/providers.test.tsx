@@ -1964,6 +1964,54 @@ describe("Desktop runtime identity", () => {
     }
   });
 
+  it("exports only the committed owner's closed stream cancel nonconfirmation", async () => {
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    try {
+      const { beforeSend, view } = await renderDesktop();
+      const retained = {
+        token: "phc_test",
+        distinct_id: "user-123",
+        $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+        $lib: "web",
+        version: 1,
+        command_id: "0193a5b2-7c41-7a10-8f00-222222222222",
+        caller: "relay_command_cancel",
+        outcome: "invoke_rejected",
+        hackerai_frontend_build_commit: "a".repeat(40),
+      };
+      const enriched = () => ({
+        event: "desktop_stream_cancel_nonconfirmation",
+        properties: {
+          ...retained,
+          $current_url: "https://hackerai.co/c/PRIVATE",
+          $referrer: "https://PRIVATE.example/",
+          chatId: "PRIVATE",
+          error: "PRIVATE",
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+        },
+        $set: { email: "PRIVATE" },
+      });
+      const sent = beforeSend(enriched());
+      // Measured runtime identity is applied last, as for every Desktop event.
+      expect(sent).toEqual({
+        event: "desktop_stream_cancel_nonconfirmation",
+        properties: { ...retained, ...identity },
+      });
+      expect(JSON.stringify(sent)).not.toMatch(/PRIVATE|0\.0\.99|windows/);
+      // A retained callback after consent withdrawal drops it.
+      view.rerender(
+        <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+      );
+      expect(beforeSend(enriched())).toBeNull();
+      view.unmount();
+    } finally {
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    }
+  });
+
   it("keeps identity through the strict ACK projections and preserves a valid send receipt", async () => {
     const { beforeSend } = await renderDesktop();
     const ack = {

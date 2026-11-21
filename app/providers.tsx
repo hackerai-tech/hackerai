@@ -37,7 +37,10 @@ import {
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
 import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
-import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import {
+  sanitizeDesktopAckEvent,
+  sanitizeDesktopStreamCancelEvent,
+} from "@/lib/analytics/desktop-ack-privacy";
 import {
   applyDesktopRuntimeIdentity,
   startDesktopRuntimeIdentityLookup,
@@ -102,10 +105,11 @@ export function PostHogProvider({
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
   // Latest committed owner for the server action, file action, Agent HTTP 413
-  // (start and partial save), Desktop operation readiness, navigator and React
-  // boundary diagnostics. A previously installed before_send can run after a
-  // commit that withdraws consent, signs out, switches account or enters a
-  // private page, but before the passive effect below resets analytics identity.
+  // (start and partial save), Desktop operation readiness, Desktop stream
+  // cancel nonconfirmation, navigator and React boundary diagnostics. A previously
+  // installed before_send can run after a commit that withdraws consent, signs
+  // out, switches account or enters a private page, but before the passive
+  // effect below resets analytics identity.
   const serverActionDiagnosticOwner = useRef<string | null>(null);
 
   useLayoutEffect(() => {
@@ -254,20 +258,23 @@ export function PostHogProvider({
               owner: committedDiagnosticOwner(),
               token: posthogKey,
             });
-            const sanitizedEvent = sanitizeDesktopOperationReadinessEvent(
-              sanitizeAgentHttp413DiagnosticEvent(
-                sanitizeFileActionAuthDiagnosticEvent(
-                  sanitizeServerActionClientContextEvent(
-                    sanitizeContextFeedbackEvent(
-                      sanitizeChatPerformanceEvent(
-                        sanitizeDesktopAckEvent(
-                          sanitizeAgentCancellationEvent(
-                            sanitizeDiffViewEvent(
-                              sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeDesktopStreamCancelEvent(
+              sanitizeDesktopOperationReadinessEvent(
+                sanitizeAgentHttp413DiagnosticEvent(
+                  sanitizeFileActionAuthDiagnosticEvent(
+                    sanitizeServerActionClientContextEvent(
+                      sanitizeContextFeedbackEvent(
+                        sanitizeChatPerformanceEvent(
+                          sanitizeDesktopAckEvent(
+                            sanitizeAgentCancellationEvent(
+                              sanitizeDiffViewEvent(
+                                sanitizeFrontendExceptionUrlProperties(event),
+                              ),
                             ),
                           ),
                         ),
                       ),
+                      committedDiagnosticExpectation,
                     ),
                     committedDiagnosticExpectation,
                   ),

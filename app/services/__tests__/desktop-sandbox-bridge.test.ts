@@ -12819,6 +12819,149 @@ describe("native authorization send receipt", () => {
                 expectAttempt(null);
               },
             );
+
+            describe("original command cancel nonconfirmation", () => {
+              const uuid = "0193a5b2-7c41-7a10-8f00-333333333333";
+              const nonconfirmations = () =>
+                jest
+                  .mocked(captureAuthenticatedEvent)
+                  .mock.calls.filter(
+                    ([event]) =>
+                      event === "desktop_stream_cancel_nonconfirmation",
+                  )
+                  .map(([, properties]) => properties);
+              const cancelResults = (reply: { publish: jest.Mock }) =>
+                reply.publish.mock.calls
+                  .map(([frame]) => frame)
+                  .filter((frame) => frame.type === "command_cancel_result");
+              beforeEach(() => {
+                jest
+                  .mocked(getPermittedAnalyticsUserId)
+                  .mockReturnValue("user-456");
+                jest
+                  .mocked(getIdentifiedAnalyticsUserId)
+                  .mockReturnValue("user-456");
+              });
+
+              /** Overflow cleanup, then two relay cancels, all unconfirmed. */
+              const overflowThenRelayTwice = async (
+                commandId: string,
+                nativeOs?: string,
+                afterRegistration?: () => void,
+              ) => {
+                stopAfter = 3;
+                let output!: MockChannel;
+                await run(
+                  (call) => {
+                    output = call.onEvent as MockChannel;
+                    return pendingNative();
+                  },
+                  {
+                    nativeOs,
+                    commandIds: [commandId],
+                    beforeAck: async () => {
+                      afterRegistration?.();
+                      route().publish.mockImplementation(
+                        (frame: { type?: string; sequence?: number }) =>
+                          frame.type === "error" && frame.sequence === undefined
+                            ? new Promise(() => {})
+                            : Promise.resolve(),
+                      );
+                      output.onmessage!({
+                        type: "stdout",
+                        data: "x".repeat(4 * 1024 * 1024 + 1),
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                      for (let i = 0; i < 2; i++) {
+                        deliver({ type: "command_cancel", commandId });
+                        await jest.advanceTimersByTimeAsync(0);
+                      }
+                      deliver({
+                        type: "command_output_ack",
+                        commandId,
+                        sequence: 1,
+                      });
+                      await jest.advanceTimersByTimeAsync(0);
+                    },
+                  },
+                );
+              };
+
+              it("reports each caller once for the original Windows command", async () => {
+                await overflowThenRelayTwice(uuid, "windows");
+                // No extra native invocation.
+                expect(cancels).toEqual([uuid, uuid, uuid]);
+                expect(nonconfirmations()).toEqual([
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "output_overflow",
+                    outcome: "returned_false",
+                  },
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "relay_command_cancel",
+                    outcome: "returned_false",
+                  },
+                ]);
+              });
+
+              it.each<[string, string | undefined, string]>([
+                ["a macOS command", undefined, uuid],
+                ["a non-UUID Windows command", "windows", "auth-send"],
+              ])("never reports %s", async (_, nativeOs, commandId) => {
+                await overflowThenRelayTwice(commandId, nativeOs);
+                expect(cancels).toEqual([commandId, commandId, commandId]);
+                expect(nonconfirmations()).toEqual([]);
+              });
+
+              it("never reports for an owner identified only after the command started", async () => {
+                jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+                // Identified before the cancels; registration captured none.
+                await overflowThenRelayTwice(uuid, "windows", () =>
+                  jest
+                    .mocked(getIdentifiedAnalyticsUserId)
+                    .mockReturnValue("user-456"),
+                );
+                expect(cancels).toHaveLength(3);
+                expect(nonconfirmations()).toEqual([]);
+              });
+
+              it("reports a rejected relay cancel without its error and publishes false", async () => {
+                mockInvokeHandler = async (cmd, args) => {
+                  if (cmd !== "cancel_stream_command") return base(cmd, args);
+                  cancels.push(args?.commandId as string);
+                  rejectNative(
+                    withSource({ version: 1, source: "cancel_ipc" }),
+                  );
+                  throw new Error("PRIVATE C:\\Users\\me pid 4242");
+                };
+                const { replies } = await run(pendingNative, {
+                  nativeOs: "windows",
+                  commandIds: [uuid],
+                  beforeAck: async () => {
+                    deliver({ type: "command_cancel", commandId: uuid });
+                    await jest.advanceTimersByTimeAsync(0);
+                  },
+                });
+                expect(cancels).toEqual([uuid]);
+                expect(cancelResults(replies[0])).toEqual([
+                  expect.objectContaining({ commandId: uuid, canceled: false }),
+                ]);
+                expect(nonconfirmations()).toEqual([
+                  {
+                    version: 1,
+                    command_id: uuid,
+                    caller: "relay_command_cancel",
+                    outcome: "invoke_rejected",
+                  },
+                ]);
+                const serialized = JSON.stringify(nonconfirmations());
+                expect(serialized).not.toContain("PRIVATE");
+                expect(serialized).not.toContain("4242");
+              });
+            });
           });
         });
       });
