@@ -171,3 +171,52 @@ an existing direct workspace migrates in place with its files intact. With the
 proxy unavailable, the request should fail without reaching the endpoint over
 E2B's shared IP. Record transfer volume and peak concurrent connections before
 deciding proxy capacity.
+
+### Egress health monitor
+
+The `egress-health-us` and `egress-health-eu` Trigger tasks check each region's
+proxy every five minutes, scheduled in Production only. Each run creates one
+short-lived disposable sandbox on that region's E2B cluster and current
+template, with no account metadata, a network policy that allows only
+`convex.haiusercontent.com` behind deny-all, and the region's managed proxy. It
+makes one HTTPS request, without redirects or retries, to that host's
+`/cdn-cgi/trace`, compares the reported `ip` with the expected static IP, and
+then deletes the sandbox. The sandbox's own timeout removes it if deletion
+fails or the run is interrupted. Customer sandboxes and settings are not used
+or changed.
+
+The monitor is off until the Agent worker sets
+`E2B_EGRESS_MONITOR_ENABLED=true`, and needs:
+
+- general managed egress (`E2B_MANAGED_EGRESS_ENABLED=true`) with both
+  regional proxies; a hostname list must include the probe host;
+- the region's E2B credentials used for customer sandboxes;
+- `E2B_EGRESS_MONITOR_US_IP` and `E2B_EGRESS_MONITOR_EU_IP`: each region's
+  expected static public IPv4 address, set independently of the proxy
+  configuration;
+- the worker's existing Redis connection.
+
+Missing or invalid values fail the run with a generic configuration error
+before any sandbox is created. To test it on a Preview worker, enable it there
+with that environment's values and run the task manually from the dashboard.
+
+A run fails and is visible to the environment's Trigger error alerts when:
+
+- the observed IP differs from the expected IP (immediately);
+- the probe gets no valid answer in two consecutive five-minute windows,
+  counted per region, with duplicate runs in one window counted once;
+- the probe sandbox cannot be deleted;
+- configuration is missing or the unavailable streak cannot be recorded.
+
+A single unavailable probe completes with an `unavailable` result and a
+warning log, and a healthy probe resets the streak. The run list records
+each failure while the condition lasts. Logs
+and errors name only the region, outcome and failed stage, never responses,
+IP addresses, credentials or provider errors.
+
+When the monitor reports a region unavailable or a wrong IP, repair or replace
+that region's proxy host in the same region and reattach the existing static
+IP, keeping the same proxy address, username and password (see Rollback).
+A different proxy address or username strands existing workspaces, and a
+different public IP breaks destinations that allowlist the current one, so do
+not change the expected IP to silence the alert.
