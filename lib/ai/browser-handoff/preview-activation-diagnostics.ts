@@ -153,12 +153,22 @@ function normalizeReader(value: unknown): string | undefined {
 export const PREVIEW_DEFER_WAIT_PARAM = "deferWait";
 
 /**
+ * Functional, negotiated independently of deferWait: the same fresh passive
+ * Agent-state preview may accept a 202 deferral carrying
+ * `refreshDeferredReason: "open"` when its status lookup reached the deadline
+ * behind the selected session's verified still-running plain OPEN. Older
+ * servers ignore the key and older renderers never send it.
+ */
+export const PREVIEW_DEFER_OPEN_PARAM = "deferOpen";
+
+/**
  * Build the capture GET URL. `fresh=1` keeps its existing name and value so
  * older servers read it unchanged; they ignore the additional optional keys.
  * The reader is the caller's loaded public build commit, or `unknown`.
- * `deferWait=1` is added only beside `fresh=1`. The text-source add-on is sent
- * only beside an encodable mask with the browserRequested bit; an unrecognized
- * source is reported as `unavailable`, and a non-boolean selection omits it.
+ * `deferWait=1` and `deferOpen=1` are each added only beside `fresh=1`.
+ * The text-source add-on is sent only beside an encodable mask with the
+ * browserRequested bit. An unrecognized source is reported as `unavailable`,
+ * and a non-boolean selection omits the add-on.
  * The terminal intent is added only beside a `command` source at the live
  * edge, and only for a value in its closed domain.
  */
@@ -169,10 +179,12 @@ export function previewCaptureUrl(
   loadedBuildCommit: unknown,
   deferWait = false,
   textSource?: { source: unknown; liveSelection: unknown; intent?: unknown },
+  deferOpen = false,
 ): string {
   const query = new URLSearchParams();
   if (fresh) query.set("fresh", "1");
   if (fresh && deferWait === true) query.set(PREVIEW_DEFER_WAIT_PARAM, "1");
+  if (fresh && deferOpen === true) query.set(PREVIEW_DEFER_OPEN_PARAM, "1");
   if (isActivationMask(activationMask)) {
     query.set(PREVIEW_DIAGNOSTIC_VERSION_PARAM, "1");
     query.set(PREVIEW_ACTIVATION_PARAM, `${activationMask}`);

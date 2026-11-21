@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
+  BROWSER_DAEMON_OPEN_DEFERRED,
   BROWSER_DAEMON_PROGRAM,
   BROWSER_DAEMON_PROGRESS_FRAMES,
   BROWSER_DAEMON_PROGRESS_SEQUENCES,
@@ -3366,6 +3367,218 @@ it("drops the running-OPEN queue first, keeping the wrapper fields that scope it
   );
   expect(JSON.parse(over)).toEqual(existing);
   expect(existing).toMatchObject({ w1: 3, wrapper_action: "open" });
+});
+
+// The reproduced production regime: a fresh status queued behind a second plain
+// OPEN, with the daemon holding another accepted connection besides this helper's.
+const openStatus = { action: "stream_status", defer_open: true };
+const heldBeyondHelper: OwnedState = {
+  unix: queueTable(heldRow(4243), heldRow(4244)),
+  fds: queueFds(4243, 4244),
+};
+/** Reach the unchanged connected deadline once; exit, wire and stdout. */
+const openDeadline = (
+  request: Record<string, unknown>,
+  options: DaemonOptions = {},
+  owned: OwnedState = {},
+) => {
+  const d = openingDaemon(
+    { ...options, request },
+    { ...heldBeyondHelper, ...owned },
+  );
+  d.socket.emit("connect");
+  d.timeout();
+  return {
+    d,
+    exit: d.exit.mock.calls,
+    wire: d.socket.write.mock.calls,
+    output: d.output.mock.calls.map(([text]) => text),
+  };
+};
+const plainStatusWire = [
+  [JSON.stringify({ action: "stream_status", id: "hackerai-preview" }) + "\n"],
+];
+
+it.each<Record<string, unknown>>([
+  openStatus,
+  { ...openStatus, defer_wait: true, recognize_closed: true },
+])(
+  "reports only the helper OPEN literal at the unchanged deadline behind a still-running plain OPEN: %j",
+  (request) => {
+    const { d, exit, wire, output } = openDeadline(request);
+    expect(exit).toEqual([[0]]);
+    expect(output).toEqual([BROWSER_DAEMON_OPEN_DEFERRED]);
+    // One unchanged strict request without the internal flags, no retry.
+    expect(d.connect).toHaveBeenCalledTimes(1);
+    expect(wire).toEqual(plainStatusWire);
+    // The existing single sample and receipt reread decide it before the close.
+    expect(d.openDescriptors).toHaveBeenCalledTimes(1);
+    expect(d.readLink.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      d.socket.destroy.mock.invocationCallOrder[0],
+    );
+    // Without the opt-in, the same observation keeps its strict exit3 packet.
+    const strict = openDeadline({ action: "stream_status" });
+    expect(strict.exit).toEqual([[3]]);
+    expect(JSON.parse(strict.output[0])).toMatchObject({
+      deadline: [1, "awaiting_response"],
+      q1: [1, 0, 2],
+    });
+  },
+);
+
+const completedPlainOpen = {
+  ...opening,
+  phase: "completed",
+  exit: 0,
+  lr: [1, 0, 1],
+};
+it.each<[string, Record<string, unknown>, DaemonOptions, OwnedState]>([
+  [
+    "only this helper's own connection is held",
+    openStatus,
+    {},
+    { unix: queueTable(pendingRow, heldRow(4243)), fds: queueFds(4243) },
+  ],
+  [
+    "no connection is accepted",
+    openStatus,
+    {},
+    { unix: queueTable(pendingRow, pendingRow), fds: queueFds() },
+  ],
+  [
+    "another process holds a connection",
+    openStatus,
+    {},
+    { fds: queueFds(4243) },
+  ],
+  [
+    "the OPEN completed successfully",
+    openStatus,
+    {
+      receipt: { ...completedPlainOpen, k1: 3 },
+      openReceipt: { ...completedPlainOpen, o1: 0, os1: 1 },
+    },
+    {},
+  ],
+  [
+    "the OPEN failed",
+    openStatus,
+    {
+      receipt: { ...completedPlainOpen, exit: 1, lr: [1, 1, 1], k1: 3 },
+      openReceipt: { ...completedPlainOpen, exit: 1, o1: 0 },
+    },
+    {},
+  ],
+  [
+    "a newer different wrapper is latest",
+    openStatus,
+    { receipt: { ...openingWrapper, action: "other", k1: 6 } },
+    {},
+  ],
+  [
+    "the OPEN belongs to another session",
+    openStatus,
+    {
+      receipt: { ...openingWrapper, session_key: "f".repeat(64) },
+      openReceipt: { ...openingRecord, session_key: "f".repeat(64) },
+    },
+    {},
+  ],
+  [
+    "the OPEN declared help",
+    openStatus,
+    { openReceipt: { ...openingRecord, o1: 1 } },
+    {},
+  ],
+  ["the OPEN wrapper is gone", openStatus, { wrapperStatError: "ENOENT" }, {}],
+  [
+    "the OPEN completes during the sample",
+    openStatus,
+    {},
+    {
+      afterWalk: {
+        receipt: { ...completedPlainOpen, at: opening.at + 1, k1: 3 },
+        openReceipt: { ...completedPlainOpen, at: opening.at + 1, o1: 0 },
+      },
+    },
+  ],
+  ["the opt-in is a string", { ...openStatus, defer_open: "true" }, {}, {}],
+  [
+    "the status uses the owned-port shortcut",
+    { ...openStatus, owned_port: true },
+    {},
+    {},
+  ],
+  [
+    "the request is a fresh screenshot",
+    { ...screenshotRequest, defer_open: true },
+    {},
+    {},
+  ],
+])(
+  "keeps the original strict deadline packet when %s",
+  (_case, request, options, owned) => {
+    const opted = openDeadline(request, options, owned);
+    const {
+      defer_open: _open,
+      owned_port: _port,
+      ...unopted
+    } = request as Record<string, unknown>;
+    const strict = openDeadline(
+      request.owned_port === true ? { ...unopted, owned_port: true } : unopted,
+      options,
+      owned,
+    );
+    expect(opted.exit).toEqual([[3]]);
+    expect(opted.output).toEqual(strict.output);
+    expect(opted.wire).toEqual(strict.wire);
+    expect(opted.output.join("")).not.toContain("open_deferred");
+    expect(JSON.parse(opted.output[0]).deadline).toEqual([
+      1,
+      "awaiting_response",
+    ]);
+  },
+);
+
+it.each<[string, string[], string]>([
+  ["the connecting deadline", [], "connecting"],
+  [
+    "a partial-response deadline",
+    ["connect", '{"PRIVATE":'],
+    "partial_response",
+  ],
+])(
+  "keeps exit3 for %s even behind a still-running OPEN",
+  (_case, events, phase) => {
+    const d = openingDaemon({ request: openStatus }, heldBeyondHelper);
+    for (const event of events)
+      if (event === "connect") d.socket.emit(event);
+      else d.socket.emit("data", event);
+    d.timeout();
+    expect(d.exit.mock.calls).toEqual([[3]]);
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text).deadline).toEqual([1, phase]);
+    expect(text).not.toMatch(/open_deferred|q1|PRIVATE/);
+    expect(d.openDescriptors).not.toHaveBeenCalled();
+  },
+);
+
+it("relays a daemon reply that answers before the deadline unchanged", () => {
+  const d = openingDaemon({ request: openStatus }, heldBeyondHelper);
+  d.socket.emit("connect");
+  const response = {
+    id: "hackerai-preview",
+    success: true,
+    data: { connected: true, port: 9223 },
+    open_deferred: 1,
+  };
+  d.reply(response);
+  d.timeout();
+  expect(d.exit.mock.calls).toEqual([[0]]);
+  const text = d.output.mock.calls[0][0];
+  expect(text).not.toBe(BROWSER_DAEMON_OPEN_DEFERRED);
+  expect(JSON.parse(text)).toEqual(response);
+  expect(d.openDescriptors).not.toHaveBeenCalled();
 });
 
 /** One filesystem entry; hard links share the same object and so its identity. */

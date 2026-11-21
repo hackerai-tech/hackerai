@@ -161,7 +161,8 @@ export const BROWSER_DAEMON_SCREENSHOT_REFUSALS = [
  * path with its own 6s deadline armed, w reached the local write-attempt
  * boundary (not daemon receipt), then the helper-selected disposition (not
  * actual exit delivery) immediately before its unchanged stdout and exit:
- * s exit0, d its own deadline (exit3), o any other exit. These are the only
+ * s exit0 (including an open deferral at its deadline), d its own deadline
+ * (exit3), o any other exit. These are the only
  * complete sequences the helper can write, keyed by their letters. Frames are
  * dropped under backpressure, so a missing frame was not delivered, not
  * proven absent.
@@ -202,6 +203,8 @@ let statusSocketMissing = false;
 let selectedSocketInfo;
 // Only a connected status/screenshot request at its original deadline.
 let queueSnapshot = false;
+// Only an opted-in fresh stream_status (never a screenshot or owned-port lookup).
+let deferOpen = false;
 // Only the internal opted-in status request writes progress frames: constant
 // bytes, never caller data. A write to fd 2 blocks on a full Linux pipe, so
 // frames go only to this helper's own O_NONBLOCK open of that same stderr FIFO;
@@ -678,6 +681,14 @@ function finish(code, value) {
   // Only the eligible deadline reads receipts before its own connection closes.
   const early = queueSnapshot ? wrapperReceipt() : undefined;
   if (socket) socket.destroy();
+  // Helper-only literal at this same original deadline, never a wait extension:
+  // an opted-in status queued behind the selected session's still-running plain
+  // OPEN, with the daemon holding at least one accepted connection besides this
+  // helper's own. Any other deadline keeps its unchanged exit3 packet.
+  if (code === 3 && deferOpen && early?.open_phase === 'started' && early.q1?.[2] >= 2) {
+    code = 0;
+    value = { open_deferred: 1 };
+  }
   if (code !== 0) {
     const receipt = early ?? wrapperReceipt();
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
@@ -732,9 +743,12 @@ try {
   if ([root, sockets, info].some(item => item.uid !== process.getuid())) throw new Error();
   precondition = 'request_invalid';
   // The internal opt-ins never reach the daemon.
-  const { owned_port: ownedPort, defer_wait: deferWait, recognize_closed: _closed,
-    observe_progress: _progress, ...request } = JSON.parse(payload);
+  const { owned_port: ownedPort, defer_wait: deferWait, defer_open: deferOpenRequested,
+    recognize_closed: _closed, observe_progress: _progress, ...request } = JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
+  // A screenshot sent during an OPEN can still write its file later, so only status.
+  deferOpen = deferOpenRequested === true && ownedPort === undefined &&
+    request.action === 'stream_status';
   const id = 'hackerai-preview';
   // Upstream runs WAIT under its daemon state lock, so a queued fresh status or
   // screenshot request would reach the deadline; a WAIT can start after status
@@ -835,6 +849,15 @@ try {
 export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
 
 /**
+ * The helper's exact exit-0 output when a defer_open status request reached its
+ * unchanged original deadline awaiting a response while the selected session's
+ * plain OPEN was still STARTED (same live wrapper incarnation before and after
+ * the owned listener sample) and that daemon held at least two accepted
+ * connections. A daemon reply can never equal this literal.
+ */
+export const BROWSER_DAEMON_OPEN_DEFERRED = '{"open_deferred":1}';
+
+/**
  * The helper's exact exit-0 output when a recognize_closed status or screenshot
  * request found the selected owned socket absent after the wrapper's verified
  * close of that still-current selection; a screenshot also checks when its
@@ -857,10 +880,12 @@ type BrowserDaemonRequest =
       observe_progress?: true;
     }
   // defer_wait lets a fresh passive preview yield to a verified active WAIT;
-  // the helper strips it and sends this same strict request otherwise.
+  // defer_open lets its deadline report a verified still-running plain OPEN.
+  // The helper strips both and sends this same strict request otherwise.
   | {
       action: "stream_status";
-      defer_wait: true;
+      defer_wait?: true;
+      defer_open?: true;
       recognize_closed?: true;
       observe_progress?: true;
     }

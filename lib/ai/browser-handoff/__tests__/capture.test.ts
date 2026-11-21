@@ -25,6 +25,7 @@ import {
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   BROWSER_DAEMON_SCREENSHOT_REFUSALS,
   BROWSER_DAEMON_WAIT_DEFERRED,
+  BROWSER_DAEMON_OPEN_DEFERRED,
   BROWSER_DAEMON_SESSION_CLOSED,
   browserDaemonCommand,
 } from "../daemon-program";
@@ -1222,6 +1223,166 @@ it("treats the deferral literal as an ordinary invalid status reply without the 
     ],
   ]);
 });
+
+it("returns a typed OPEN deferral for an opted-in fresh status behind a verified running OPEN", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_OPEN_DEFERRED);
+  const observe = jest.fn();
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observe,
+    // The passive GET's existing status options ride beside the new opt-in.
+    {
+      deferDuringWait: true,
+      deferDuringOpen: true,
+      recognizeClosed: true,
+      observeStatusProgress: true,
+    },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect((outcome as BrowserPreviewRefreshDeferred).reason).toBe("open");
+  // Not a capture failure: no diagnostics, bridge, screenshot or file access.
+  expect(observe).not.toHaveBeenCalled();
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    {
+      action: "stream_status",
+      defer_wait: true,
+      defer_open: true,
+      recognize_closed: true,
+      observe_progress: true,
+    },
+  ]);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).not.toHaveBeenCalled();
+});
+
+it("keeps the existing WAIT deferral reason when both kinds are negotiated", async () => {
+  const sandbox = statusFixture(BROWSER_DAEMON_WAIT_DEFERRED);
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { deferDuringWait: true, deferDuringOpen: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(BrowserPreviewRefreshDeferred);
+  expect((outcome as BrowserPreviewRefreshDeferred).reason).toBe("wait");
+});
+
+it.each<[string, Record<string, boolean>, string, number]>([
+  ["only WAIT was negotiated", { deferDuringWait: true }, "", 0],
+  ["nothing was negotiated", {}, "", 0],
+  ["the status exited nonzero", { deferDuringOpen: true }, "", 3],
+  [
+    "a daemon reply carries the key",
+    { deferDuringOpen: true },
+    JSON.stringify({ id: "hackerai-preview", success: true, open_deferred: 1 }),
+    0,
+  ],
+])(
+  "keeps the strict status failure when %s",
+  async (_case, options, stdout, exitCode) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command: string) =>
+        command.includes('"action":"stream_status"')
+          ? { exitCode, stdout: stdout || BROWSER_DAEMON_OPEN_DEFERRED }
+          : run(command),
+      ),
+    );
+    const observe = jest.fn();
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      options,
+    ).catch((error: unknown) => error);
+    expect(outcome).not.toBeInstanceOf(BrowserPreviewRefreshDeferred);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    // Each keeps its original state and stream_status diagnostics.
+    expect((outcome as BrowserPreviewUnavailable).state).toBe(
+      exitCode === 0 ? "loading" : "closed",
+    );
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "stream_status",
+    });
+    expect(
+      daemonRequests(sandbox.commands.run).every(
+        (request) =>
+          "defer_open" in request === (options.deferDuringOpen === true),
+      ),
+    ).toBe(true);
+  },
+);
+
+it("never asks the fresh screenshot to defer for an OPEN or honors its literal there", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) =>
+      command.includes('"action":"screenshot"')
+        ? { exitCode: 0, stdout: BROWSER_DAEMON_OPEN_DEFERRED }
+        : run(command),
+    ),
+  );
+  const result = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { deferDuringOpen: true },
+  );
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status", defer_open: true },
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+    },
+  ]);
+  expect(result.image).toBe(
+    `data:image/jpeg;base64,${fresh.toString("base64")}`,
+  );
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["a cached view", false, undefined],
+  ["a caller-supplied port", true, 1234],
+] as const)(
+  "never requests an OPEN deferral for %s",
+  async (_case, requireFresh, streamPort) => {
+    const sandbox = fixture();
+    await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      streamPort,
+      undefined,
+      { deferDuringOpen: true },
+    );
+    expect(
+      daemonRequests(sandbox.commands.run).some(
+        (request) => "defer_open" in request,
+      ),
+    ).toBe(false);
+  },
+);
 
 /** The fixture with one fresh-screenshot helper outcome after a successful status. */
 function screenshotFixture(outcome: () => Promise<unknown>) {

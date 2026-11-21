@@ -51,17 +51,30 @@ type BrowserInput =
 const FRAME_STALE_MS = 10_000;
 const FRAME_REFRESH_MS = 4_000;
 
-/** Only the negotiated frameless 202 deferral; anything else stays a real failure. */
-function isRefreshDeferral(response: Response, data: unknown) {
-  return (
-    response.status === 202 &&
-    typeof data === "object" &&
-    data !== null &&
-    !Array.isArray(data) &&
-    (data as Record<string, unknown>).refreshDeferred === true &&
-    (data as Record<string, unknown>).state === "agent" &&
-    !Object.prototype.hasOwnProperty.call(data, "frame")
-  );
+/**
+ * Only a negotiated frameless 202 deferral: the unchanged WAIT body (no reason
+ * key) when WAIT was requested, or reason "open" when OPEN was requested.
+ * Anything else stays a real failure.
+ */
+function refreshDeferralReason(
+  response: Response,
+  data: unknown,
+): "wait" | "open" | null {
+  if (
+    response.status !== 202 ||
+    typeof data !== "object" ||
+    data === null ||
+    Array.isArray(data) ||
+    (data as Record<string, unknown>).refreshDeferred !== true ||
+    (data as Record<string, unknown>).state !== "agent" ||
+    Object.prototype.hasOwnProperty.call(data, "frame")
+  )
+    return null;
+  if (!Object.prototype.hasOwnProperty.call(data, "refreshDeferredReason"))
+    return "wait";
+  return (data as Record<string, unknown>).refreshDeferredReason === "open"
+    ? "open"
+    : null;
 }
 
 class BrowserRequestError extends Error {
@@ -171,10 +184,13 @@ export function AgentBrowserPreview({
   );
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
-  // The latest passive refresh yielded to the Agent's active browser WAIT. It
+  // The latest passive refresh yielded to the Agent's active browser WAIT, or
+  // its status lookup was queued behind the Agent's still-running OPEN. It
   // never renews the frame's age or enables input; it only replaces the
-  // disconnected wording while the server still reports that wait.
-  const [refreshDeferred, setRefreshDeferred] = useState(false);
+  // disconnected wording while the server still reports that kind.
+  const [refreshDeferred, setRefreshDeferred] = useState<
+    "wait" | "open" | null
+  >(null);
   const previewHealthRef = useRef({ previewState, frameSeenAt });
   useLayoutEffect(() => {
     previewHealthRef.current = { previewState, frameSeenAt };
@@ -346,7 +362,7 @@ export function AgentBrowserPreview({
     lastFreshFrameAt.current = 0;
     frameEpoch.current++;
     setPreviewState("loading");
-    setRefreshDeferred(false);
+    setRefreshDeferred(null);
     setExitOpen(false);
     let savedRequestId: string | null = null;
     try {
@@ -445,8 +461,8 @@ export function AgentBrowserPreview({
       const epoch = frameEpoch.current;
       let captureFailed = false;
       // Only a passive refresh while the Agent drives the browser may yield to
-      // its active WAIT; the server re-checks the state and run itself.
-      const deferWait =
+      // its active WAIT or OPEN; the server re-checks the state and run itself.
+      const canDeferRefresh =
         fresh &&
         !relayActive &&
         !grantRef.current &&
@@ -460,8 +476,9 @@ export function AgentBrowserPreview({
             fresh,
             activationMaskRef.current,
             process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT,
-            deferWait,
+            canDeferRefresh,
             textSourceRef.current,
+            canDeferRefresh,
           ),
           {
             cache: "no-store",
@@ -475,7 +492,9 @@ export function AgentBrowserPreview({
         if (stopped || frameEpoch.current !== epoch) return;
         // No new image: a deferral keeps the current frame, its age and input
         // rules, and retries the strict screenshot at the normal cadence.
-        const deferred = deferWait && isRefreshDeferral(response, data);
+        const deferred = canDeferRefresh
+          ? refreshDeferralReason(response, data)
+          : null;
         setRefreshDeferred(deferred);
         if (deferred) return;
         if (!response.ok || response.status === 202 || !data.frame) {
@@ -495,7 +514,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped && frameEpoch.current === epoch) {
           captureFailed = true;
-          setRefreshDeferred(false);
+          setRefreshDeferred(null);
           if (!relayActive) setPreviewState("disconnected");
         }
       } finally {
@@ -1283,8 +1302,12 @@ export function AgentBrowserPreview({
 
   if (!showPreview) return null;
 
-  // Wording only: frameStale, its age and every input rule stay unchanged.
-  const waitDeferred = refreshDeferred && !human && effectiveState === "agent";
+  // Wording only: frameStale, its age and every input rule stay unchanged. Only
+  // a real WAIT is described as waiting; an OPEN uses the existing loading words.
+  const deferredKind =
+    !human && effectiveState === "agent" ? refreshDeferred : null;
+  const waitDeferred = deferredKind === "wait";
+  const showLoading = deferredKind === "open" || previewState === "loading";
   const statusLabel = !session
     ? session === undefined
       ? "Checking browser…"
@@ -1300,7 +1323,7 @@ export function AgentBrowserPreview({
           : frameStale
             ? waitDeferred
               ? "Agent is waiting…"
-              : previewState === "loading"
+              : showLoading
                 ? "Connecting browser…"
                 : "Preview unavailable"
             : effectiveState === "recovery"
@@ -1577,7 +1600,7 @@ export function AgentBrowserPreview({
           <div className="absolute inset-0 flex min-h-24 items-center justify-center bg-background/80 px-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
             {waitDeferred
               ? "The Agent is waiting on this page. The preview refreshes when it continues."
-              : previewState === "loading"
+              : showLoading
                 ? "Waiting for Agent browser…"
                 : previewState === "closed"
                   ? "Browser session closed"
