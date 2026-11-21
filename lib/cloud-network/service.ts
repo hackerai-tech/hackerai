@@ -25,6 +25,7 @@ import {
   type ManagedEgress,
   type ManagedEgressConfig,
 } from "./managed-egress";
+import { selectWorkspaceEgress } from "./egress-attribution";
 
 export class NetworkSettingsError extends Error {
   constructor(
@@ -91,11 +92,10 @@ function sameList(a: string[] | undefined, b: string[]) {
     JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...b].sort())
   );
 }
-async function matchesSandboxPolicy(
+type ProviderNetwork = Awaited<ReturnType<Sandbox["getInfo"]>>["network"];
+async function readOwnedNetwork(
   sandbox: Sandbox,
   userId: string,
-  policy: NetworkPolicy,
-  egress: ManagedEgress | null,
   signal: AbortSignal,
   report?: ReportCloudNetworkSuboperation,
 ) {
@@ -107,31 +107,67 @@ async function matchesSandboxPolicy(
   // Replacing egress must not clear an externally managed proxy or transform.
   if (Object.keys(info.network?.rules ?? {}).length)
     throw new Error("Externally managed network configuration");
-  const proxyMatches = hasDesiredEgressProxy(info.network?.egressProxy, egress);
+  return info.network;
+}
+function matchesNetwork(
+  actual: ProviderNetwork,
+  policy: NetworkPolicy,
+  egress: ManagedEgress | null,
+  replacesShared = false,
+) {
+  // The exact shared identity being attributed needs a write, not a rejection.
+  const proxyMatches =
+    !replacesShared && hasDesiredEgressProxy(actual?.egressProxy, egress);
   const network = desiredE2BNetwork(policy, egress);
   return (
     proxyMatches &&
-    sameList(info.network?.allowOut, network.allowOut) &&
-    sameList(info.network?.denyOut, network.denyOut)
+    sameList(actual?.allowOut, network.allowOut) &&
+    sameList(actual?.denyOut, network.denyOut)
   );
+}
+/**
+ * Reads the owner-verified network and the proxy identity this workspace
+ * should carry. Attribution is selected only after that ownership check.
+ */
+async function readSandboxPolicy(
+  sandbox: Sandbox,
+  userId: string,
+  regionEgress: ManagedEgress | null,
+  signal: AbortSignal,
+  report?: ReportCloudNetworkSuboperation,
+) {
+  const actual = await readOwnedNetwork(sandbox, userId, signal, report);
+  const selected = await selectWorkspaceEgress(
+    regionEgress,
+    actual?.egressProxy,
+    userId,
+    sandbox.sandboxId,
+  );
+  return { actual, ...selected };
 }
 async function applyToSandbox(
   sandbox: Sandbox,
   userId: string,
   policy: NetworkPolicy,
-  egress: ManagedEgress | null,
+  regionEgress: ManagedEgress | null,
   signal: AbortSignal,
   onWrite: () => void,
 ) {
-  if (await matchesSandboxPolicy(sandbox, userId, policy, egress, signal))
-    return;
+  const { actual, egress, replacesShared } = await readSandboxPolicy(
+    sandbox,
+    userId,
+    regionEgress,
+    signal,
+  );
+  if (matchesNetwork(actual, policy, egress, replacesShared)) return;
   onWrite();
   // E2B replaces the whole egress configuration, including the proxy.
   await sandbox.updateNetwork(desiredE2BNetwork(policy, egress), {
     signal,
     requestTimeoutMs: 15_000,
   });
-  if (!(await matchesSandboxPolicy(sandbox, userId, policy, egress, signal)))
+  const readback = await readOwnedNetwork(sandbox, userId, signal);
+  if (!matchesNetwork(readback, policy, egress))
     throw new Error("Network readback mismatch");
 }
 
@@ -302,14 +338,19 @@ export async function ensureCloudNetwork(
     const verificationSignal = signal
       ? AbortSignal.any([AbortSignal.timeout(15_000), signal])
       : AbortSignal.timeout(15_000);
+    const provider = await readSandboxPolicy(
+      sandbox,
+      userId,
+      egress,
+      verificationSignal,
+      report,
+    );
     if (
-      await matchesSandboxPolicy(
-        sandbox,
-        userId,
+      matchesNetwork(
+        provider.actual,
         settings.policy,
-        egress,
-        verificationSignal,
-        report,
+        provider.egress,
+        provider.replacesShared,
       )
     ) {
       report("settings_recheck");

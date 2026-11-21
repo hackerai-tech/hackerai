@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { e2bNetwork, type NetworkPolicy } from "./policy";
+import {
+  ATTRIBUTED_USERNAME_PREFIX,
+  parseEgressAttribution,
+  type EgressAttributionConfig,
+  type RegionAttribution,
+} from "./egress-attribution";
 
 /**
  * Server-managed E2B egress, enabled for every account or for exact pilot
@@ -17,9 +23,18 @@ type Destinations = "*" | string[];
 export type ManagedEgressConfig = {
   proxies: Record<E2BCluster, EgressProxy>;
   destinations: Destinations;
+  attribution: EgressAttributionConfig | null;
 };
-/** The egress for one workspace, selected by the cluster that hosts it. */
-export type ManagedEgress = { proxy: EgressProxy; destinations: Destinations };
+/**
+ * The egress for one workspace, selected by the cluster that hosts it. `proxy`
+ * is the region's shared identity; attribution may replace only its username
+ * and password once the workspace's owner is confirmed.
+ */
+export type ManagedEgress = {
+  proxy: EgressProxy;
+  destinations: Destinations;
+  attribution: RegionAttribution | null;
+};
 type ProxyReadback = { address: string; username?: string } | undefined;
 
 /** Each E2B cluster tunnels only through its own region's proxy. */
@@ -138,9 +153,19 @@ export function resolveManagedEgress(
     // One host cannot provide two regional source IPs.
     if (proxyHost(proxies.us) === proxyHost(proxies.eu))
       throw new Error("Regional proxies share a host");
+    const attribution = parseEgressAttribution(userId, env);
+    // The proxy rejects a reserved name outright, never as a shared login.
+    if (
+      attribution &&
+      [proxies.us, proxies.eu].some(({ username }) =>
+        username.startsWith(ATTRIBUTED_USERNAME_PREFIX),
+      )
+    )
+      throw new Error("Shared username uses the attributed prefix");
     return {
       proxies,
       destinations: parseDestinations(env.E2B_MANAGED_EGRESS_DESTINATIONS),
+      attribution,
     };
   } catch {
     throw new ManagedEgressUnavailableError();
@@ -160,7 +185,16 @@ export function managedEgressForCluster(
   if (!config) return null;
   if (!Object.hasOwn(config.proxies, cluster))
     throw new ManagedEgressUnavailableError();
-  return { proxy: config.proxies[cluster], destinations: config.destinations };
+  const { attribution } = config;
+  return {
+    proxy: config.proxies[cluster],
+    destinations: config.destinations,
+    attribution: attribution && {
+      region: cluster,
+      key: attribution.keys[cluster],
+      enrolled: attribution.enrolled,
+    },
+  };
 }
 
 /** A saved entry covers an operator destination only by exact host or wildcard subdomain. */

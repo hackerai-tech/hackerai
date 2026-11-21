@@ -11,6 +11,12 @@ import { normalizeNetworkPolicy, type NetworkPolicy } from "../policy";
 import { ConvexError } from "convex/values";
 import { ensureSandboxConnection } from "@/lib/ai/tools/utils/sandbox";
 import { startWorkspaceCreation } from "@/lib/ai/tools/utils/cloud-workspace-identity";
+import { createRedisClient } from "@/lib/rate-limit/redis";
+import {
+  managedEgressForCluster,
+  resolveManagedEgress,
+} from "../managed-egress";
+import fixture from "../../../scripts/egress/tests/credentials.json";
 
 jest.mock("@e2b/code-interpreter", () => {
   class E2BError extends Error {}
@@ -37,6 +43,7 @@ jest.mock("@e2b/code-interpreter", () => {
   };
 });
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
+jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 // The real Trigger region to E2B cluster routing, configured below with
 // synthetic values: only the US cluster unless a test enables EU.
 const EU_DOMAIN = "eu-e2b.example.test";
@@ -51,6 +58,12 @@ const CONFIGURED_ENV = [
   "E2B_MANAGED_EGRESS_US_PROXY",
   "E2B_MANAGED_EGRESS_EU_PROXY",
   "E2B_MANAGED_EGRESS_DESTINATIONS",
+  "E2B_EGRESS_ATTRIBUTION_ENABLED",
+  "E2B_EGRESS_ATTRIBUTION_USERS",
+  "E2B_EGRESS_ATTRIBUTION_US_KEY",
+  "E2B_EGRESS_ATTRIBUTION_EU_KEY",
+  "E2B_EGRESS_TELEMETRY_US_KEY",
+  "E2B_EGRESS_TELEMETRY_EU_KEY",
 ];
 beforeEach(() => {
   process.env = { ...originalEnv, E2B_API_KEY: "synthetic-us-key" };
@@ -616,12 +629,15 @@ describe("managed egress pilot", () => {
       .mockResolvedValue(null);
   }
   /** One running workspace per cluster; EU inventory is listed by its domain. */
-  function inventory(byCluster: { us?: string[]; eu?: string[] }) {
+  function inventory(
+    byCluster: { us?: string[]; eu?: string[] },
+    owner = "owner",
+  ) {
     (Sandbox.list as jest.Mock).mockImplementation(
       (options: { domain?: string }) => ({
         nextItems: async () =>
           (options.domain === EU_DOMAIN ? byCluster.eu : byCluster.us)?.map(
-            (sandboxId) => ({ sandboxId, metadata: { userID: "owner" } }),
+            (sandboxId) => ({ sandboxId, metadata: { userID: owner } }),
           ) ?? [],
         hasNext: false,
       }),
@@ -1224,5 +1240,334 @@ describe("managed egress pilot", () => {
       expect(Sandbox.create).not.toHaveBeenCalled();
       expect(Sandbox.kill).not.toHaveBeenCalled();
     });
+  });
+
+  describe("per-workspace attribution", () => {
+    // Shared vectors, also checked by the PAM module and Python fixture.
+    const [first, second, europe] = fixture.vectors;
+    const OWNER = first.userId;
+    const KEYS = {
+      E2B_EGRESS_ATTRIBUTION_US_KEY: fixture.attributionKeys.us,
+      E2B_EGRESS_ATTRIBUTION_EU_KEY: fixture.attributionKeys.eu,
+    };
+    const APPLIED = { allowOut: ["api.example.test"], denyOut: DENY_ALL };
+    const shared = { us: PROXY, eu: EU_PROXY };
+    const attributed = (vector: typeof first) => ({
+      address: shared[vector.region as "us" | "eu"].address,
+      username: vector.username,
+      password: vector.password,
+    });
+    const masked = ({
+      address,
+      username,
+    }: {
+      address: string;
+      username: string;
+    }) => ({
+      address,
+      username,
+    });
+    let store: Map<string, string>;
+    function registry() {
+      store = new Map();
+      const read = (key: string) => {
+        const value = store.get(key);
+        return value === undefined ? null : JSON.parse(value);
+      };
+      jest.mocked(createRedisClient).mockReturnValue({
+        set: jest.fn(
+          async (key: string, value: string, opts?: { nx?: boolean }) => {
+            if (opts?.nx && store.has(key)) return null;
+            store.set(key, value);
+            return "OK";
+          },
+        ),
+        get: jest.fn(async (key: string) => read(key)),
+        expire: jest.fn(async () => 1),
+      } as never);
+    }
+    function enroll(overrides: Record<string, string | undefined> = {}) {
+      enableEuCluster();
+      configure({ E2B_MANAGED_EGRESS_USERS: OWNER });
+      Object.assign(process.env, KEYS, {
+        E2B_EGRESS_ATTRIBUTION_USERS: OWNER,
+      });
+      for (const [name, value] of Object.entries(overrides))
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+    }
+    beforeEach(registry);
+
+    it.each([first, europe])(
+      "moves a $region workspace from the shared identity to its attributed identity after confirming ownership",
+      async (vector) => {
+        enroll();
+        const region = vector.region as "us" | "eu";
+        const sandbox = workspace(
+          OWNER,
+          { ...APPLIED, egressProxy: masked(shared[region]) },
+          vector.sandboxId,
+        );
+        inventory({ [region]: [sandbox.sandboxId] }, OWNER);
+        await ensureCloudNetwork(sandbox as any, OWNER, region);
+        // Same regional address; only the credential changes.
+        expect(sandbox.updateNetwork.mock.calls).toEqual([
+          [{ ...APPLIED, egressProxy: attributed(vector) }, expect.anything()],
+        ]);
+        expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+        expect(
+          JSON.parse(
+            store.get(
+              `egress-attribution:v1:${region}:workspace:${vector.workspace}`,
+            )!,
+          ),
+        ).toEqual({
+          userId: OWNER,
+          sandboxId: vector.sandboxId,
+          owner: vector.owner,
+        });
+        expect(sandbox.files.get("/home/user/keep.txt")).toBe("unchanged-file");
+        expect(Sandbox.create).not.toHaveBeenCalled();
+        expect(Sandbox.kill).not.toHaveBeenCalled();
+
+        // The next acquisition verifies the pinned identity without a write.
+        sandbox.updateNetwork.mockClear();
+        mutation.mockClear();
+        await ensureCloudNetwork(sandbox as any, OWNER, region);
+        expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+        expect(mutation).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not attribute before ownership is confirmed by the provider", async () => {
+      enroll();
+      const sandbox = workspace(
+        "someone-else",
+        { ...APPLIED, egressProxy: masked(PROXY) },
+        first.sandboxId,
+      );
+      await expect(
+        ensureCloudNetwork(sandbox as any, OWNER, "us"),
+      ).rejects.toThrow("Workspace ownership mismatch");
+      expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+      expect(store.size).toBe(0);
+    });
+
+    it("keeps an attributed workspace pinned, and rewrites its credential, after new enrollment is withdrawn", async () => {
+      enroll({ E2B_EGRESS_ATTRIBUTION_USERS: undefined });
+      const sandbox = workspace(
+        OWNER,
+        { ...APPLIED, egressProxy: masked(attributed(first)) },
+        first.sandboxId,
+      );
+      inventory({ us: [sandbox.sandboxId] }, OWNER);
+      connectable(sandbox);
+      // Not enrolled, a shared-identity workspace stays shared.
+      const legacy = workspace(
+        OWNER,
+        { ...APPLIED, egressProxy: masked(PROXY) },
+        second.sandboxId,
+      );
+      await ensureCloudNetwork(legacy as any, OWNER, "us");
+      expect(legacy.updateNetwork).not.toHaveBeenCalled();
+
+      const offline: NetworkPolicy = { mode: "offline", allow: [] };
+      beginWith(offline);
+      (Sandbox.connect as jest.Mock).mockResolvedValue(sandbox);
+      await saveNetworkSettings(OWNER, offline, 2);
+      // E2B's full replacement needs the attributed password, not the shared one.
+      expect(sandbox.updateNetwork.mock.calls).toEqual([
+        [
+          { allowOut: [], denyOut: DENY_ALL, egressProxy: attributed(first) },
+          expect.anything(),
+        ],
+      ]);
+      expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+    });
+
+    it.each<[string, Record<string, string | undefined>]>([
+      [
+        "keys are removed",
+        {
+          E2B_EGRESS_ATTRIBUTION_USERS: undefined,
+          E2B_EGRESS_ATTRIBUTION_US_KEY: undefined,
+          E2B_EGRESS_ATTRIBUTION_EU_KEY: undefined,
+        },
+      ],
+      // A rotated key cannot recognize identities signed with the old one.
+      [
+        "the regional key changes",
+        { E2B_EGRESS_ATTRIBUTION_US_KEY: "2a".repeat(32) },
+      ],
+    ])(
+      "fails an attributed workspace closed, without clearing it, when %s",
+      async (_label, overrides) => {
+        enroll(overrides);
+        const sandbox = workspace(
+          OWNER,
+          { ...APPLIED, egressProxy: masked(attributed(first)) },
+          first.sandboxId,
+        );
+        await expect(
+          ensureCloudNetwork(sandbox as any, OWNER, "us"),
+        ).rejects.toThrow("Externally managed network configuration");
+        expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["another workspace's attributed identity", masked(attributed(second))],
+      [
+        "the other region's attributed identity",
+        { address: PROXY.address, username: europe.username },
+      ],
+      [
+        "an attributed name on a different address",
+        { address: EU_PROXY.address, username: first.username },
+      ],
+      [
+        "a foreign credential on the shared address",
+        { address: PROXY.address, username: "other" },
+      ],
+    ])("rejects %s instead of replacing it", async (_label, egressProxy) => {
+      enroll();
+      const sandbox = workspace(
+        OWNER,
+        { ...APPLIED, egressProxy },
+        first.sandboxId,
+      );
+      await expect(
+        ensureCloudNetwork(sandbox as any, OWNER, "us"),
+      ).rejects.toThrow("Externally managed network configuration");
+      expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+      expect(store.size).toBe(0);
+    });
+
+    it("keeps the shared identity while the registry is unavailable and migrates once it returns", async () => {
+      enroll();
+      jest.mocked(createRedisClient).mockReturnValue(null);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const sandbox = workspace(
+          OWNER,
+          { ...APPLIED, egressProxy: masked(PROXY) },
+          first.sandboxId,
+        );
+        inventory({ us: [sandbox.sandboxId] }, OWNER);
+        await ensureCloudNetwork(sandbox as any, OWNER, "us");
+        expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+        expect(mutation).not.toHaveBeenCalled();
+        expect(warn.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+          {
+            event: "egress_attribution_registry_unavailable",
+            region: "us",
+            outcome: "kept_shared",
+          },
+        ]);
+
+        registry();
+        await ensureCloudNetwork(sandbox as any, OWNER, "us");
+        expect(sandbox.updateNetwork.mock.calls).toEqual([
+          [{ ...APPLIED, egressProxy: attributed(first) }, expect.anything()],
+        ]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("fails closed on a registry conflict without writing the workspace", async () => {
+      enroll();
+      store.set(
+        `egress-attribution:v1:us:owner:${first.owner}`,
+        JSON.stringify({ userId: "user_other" }),
+      );
+      const sandbox = workspace(
+        OWNER,
+        { ...APPLIED, egressProxy: masked(PROXY) },
+        first.sandboxId,
+      );
+      await expect(
+        ensureCloudNetwork(sandbox as any, OWNER, "us"),
+      ).rejects.toThrow("Egress attribution identity conflict");
+      expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+    });
+
+    it("creates with the shared identity, which the first acquisition then attributes, and keeps the health probe shared", async () => {
+      // The monitor requires, and these toggles give, global enrollment.
+      enroll({
+        E2B_MANAGED_EGRESS_ENABLED: "true",
+        E2B_EGRESS_ATTRIBUTION_USERS: undefined,
+        E2B_EGRESS_ATTRIBUTION_ENABLED: "true",
+      });
+      // The sandbox ID is unknown until create returns.
+      const { sandbox } = await createInEmptyInventory("us-east-1");
+      expect(
+        (Sandbox.create as jest.Mock).mock.calls[0][1].network,
+      ).toStrictEqual({
+        ...APPLIED,
+        egressProxy: PROXY,
+      });
+      await ensureCloudNetwork(sandbox, "owner", "us");
+      const [[written]] = (sandbox as any).updateNetwork.mock.calls;
+      expect(written.egressProxy).toEqual({
+        address: PROXY.address,
+        username: expect.stringMatching(/^hae-v1-[0-9a-f]{32}-[0-9a-f]{32}$/),
+        password: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      // Global attribution never changes the monitor's shared credential.
+      for (const region of ["us", "eu"] as const)
+        expect(
+          managedEgressForCluster(
+            resolveManagedEgress("egress-health-monitor"),
+            region,
+          )?.proxy,
+        ).toEqual(shared[region]);
+    });
+
+    it.each<[string, Record<string, string | undefined>]>([
+      ["an invalid toggle", { E2B_EGRESS_ATTRIBUTION_ENABLED: "yes" }],
+      [
+        "enrollment without keys",
+        {
+          ...KEYS,
+          E2B_EGRESS_ATTRIBUTION_US_KEY: undefined,
+          E2B_EGRESS_ATTRIBUTION_EU_KEY: undefined,
+        },
+      ],
+      ["a single regional key", { E2B_EGRESS_ATTRIBUTION_EU_KEY: undefined }],
+      [
+        "one key for both regions",
+        { E2B_EGRESS_ATTRIBUTION_EU_KEY: fixture.attributionKeys.us },
+      ],
+      [
+        "an attribution key reused for telemetry",
+        { E2B_EGRESS_TELEMETRY_US_KEY: fixture.attributionKeys.eu },
+      ],
+      [
+        "a shared username in the reserved namespace",
+        {
+          E2B_MANAGED_EGRESS_US_PROXY: JSON.stringify({
+            ...PROXY,
+            username: "hae-shared",
+          }),
+        },
+      ],
+    ])(
+      "fails closed with a generic error before the writer lease on %s",
+      async (_label, overrides) => {
+        enroll(overrides);
+        await expect(
+          saveNetworkSettings(OWNER, policy, 1),
+        ).rejects.toMatchObject({ status: 503, message: UNAVAILABLE });
+        const sandbox = workspace(OWNER, undefined, first.sandboxId);
+        await expect(
+          ensureCloudNetwork(sandbox as any, OWNER, "us"),
+        ).rejects.toMatchObject({ message: UNAVAILABLE });
+        expect(sandbox.getInfo).not.toHaveBeenCalled();
+        expect(mutation).not.toHaveBeenCalled();
+        expect(query).not.toHaveBeenCalled();
+        expect(Sandbox.list).not.toHaveBeenCalled();
+      },
+    );
   });
 });

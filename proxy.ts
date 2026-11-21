@@ -42,6 +42,8 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/cron/influencer-analytics",
   "/api/internal/user-research",
   "/api/internal/influencers/partners",
+  // Signed collector uploads; the route verifies its own per-region HMAC.
+  "/api/internal/egress-telemetry",
   "/robots.txt",
   "/sitemap.xml",
 ]);
