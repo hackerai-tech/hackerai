@@ -3,14 +3,17 @@
  * which committed `showPreview` conditions were true at dispatch and which
  * public bundle commit it loaded, plus, only beside browserRequested, which
  * terminal input field produced the display text and whether the selection
- * followed the live edge, and for a live command, its closed invocation shape.
- * These describe the client's polling decision, not physical browser
- * execution or visible pixels. The server treats them as untrusted
+ * followed the live edge, and for a live command, its closed invocation shape
+ * (with a closed refinement of `other_only`). These describe the client's
+ * polling decision. The server treats them as untrusted
  * diagnostics only; they never affect auth, session selection, capture,
  * caching or the response.
  */
 
-import { AGENT_BROWSER_PREVIEW_INTENTS } from "@/lib/utils/agent-browser-command";
+import {
+  AGENT_BROWSER_OTHER_ONLY_KINDS,
+  AGENT_BROWSER_PREVIEW_INTENTS,
+} from "@/lib/utils/agent-browser-command";
 
 export const PREVIEW_DIAGNOSTIC_VERSION_PARAM = "preview_diag_v";
 export const PREVIEW_ACTIVATION_PARAM = "preview_activation";
@@ -28,9 +31,11 @@ export const PREVIEW_TEXT_SOURCE_PARAM = "preview_text_source";
  */
 export const PREVIEW_CLIENT_CONTEXT_KEY = "preview_client_context";
 /**
- * Optional add-on `1.<intent>`: the closed shape of the selected live command
- * (`AgentBrowserPreviewIntent`), sent only beside the browserRequested bit and
- * a `command` source at the live edge. Older servers ignore it.
+ * Optional add-on `1.<intent>`: the closed base shape of the selected live
+ * command (`AgentBrowserPreviewBaseIntent`), sent only beside the
+ * browserRequested bit and a `command` source at the live edge. A refined
+ * `other_only.<kind>` still sends exactly `1.other_only` here. Older servers
+ * ignore it.
  */
 export const PREVIEW_TERMINAL_INTENT_PARAM = "preview_terminal_intent";
 /**
@@ -39,6 +44,18 @@ export const PREVIEW_TERMINAL_INTENT_PARAM = "preview_terminal_intent";
  * changes the `preview_client_context` value.
  */
 export const PREVIEW_TERMINAL_INTENT_KEY = "preview_terminal_intent";
+/**
+ * Optional sibling add-on `1.<kind>` (`AgentBrowserOtherOnlyKind`), sent only
+ * beside `preview_terminal_intent=1.other_only`. Older servers ignore it; a
+ * missing or invalid value keeps the base intent alone.
+ */
+export const PREVIEW_TERMINAL_OTHER_KIND_PARAM = "preview_terminal_other_kind";
+/**
+ * Separate String log attribute `[1,"<kind>"]`, appended after the terminal
+ * intent only when that intent is `[1,"other_only"]`. It never changes the
+ * `preview_terminal_intent` value.
+ */
+export const PREVIEW_TERMINAL_OTHER_KIND_KEY = "preview_terminal_other_kind";
 
 /**
  * The selected terminal's producer tag (`SidebarTerminal.commandSource`) for
@@ -70,7 +87,7 @@ const MAX_TEXT_SOURCE_LENGTH = Math.max(
 /** The only text-source add-on that admits a terminal intent. */
 const LIVE_COMMAND_TEXT_SOURCE = "1.command.1";
 
-/** Closed 5-value domain: canonical query value → canonical attribute value. */
+/** Closed 7-value domain: canonical query value → canonical attribute value. */
 const TERMINAL_INTENTS = new Map<string, string>(
   AGENT_BROWSER_PREVIEW_INTENTS.map(
     (intent) => [`1.${intent}`, `[1,"${intent}"]`] as const,
@@ -78,6 +95,41 @@ const TERMINAL_INTENTS = new Map<string, string>(
 );
 const MAX_TERMINAL_INTENT_LENGTH = Math.max(
   ...[...TERMINAL_INTENTS.keys()].map((value) => value.length),
+);
+/** The only terminal intent that admits an other-only kind. */
+const OTHER_ONLY_TERMINAL_INTENT = "1.other_only";
+
+/** Closed 3-value domain: canonical query value → canonical attribute value. */
+const TERMINAL_OTHER_KINDS = new Map<string, string>(
+  AGENT_BROWSER_OTHER_ONLY_KINDS.map(
+    (kind) => [`1.${kind}`, `[1,"${kind}"]`] as const,
+  ),
+);
+const MAX_TERMINAL_OTHER_KIND_LENGTH = Math.max(
+  ...[...TERMINAL_OTHER_KINDS.keys()].map((value) => value.length),
+);
+
+/**
+ * Closed client domain: each base intent (including the legacy unrefined
+ * `other_only`) and each refined `other_only.<kind>` → its query values.
+ */
+const CLIENT_TERMINAL_INTENTS = new Map<
+  string,
+  { intent: string; otherKind?: string }
+>([
+  ...AGENT_BROWSER_PREVIEW_INTENTS.map(
+    (intent) => [intent, { intent: `1.${intent}` }] as const,
+  ),
+  ...AGENT_BROWSER_OTHER_ONLY_KINDS.map(
+    (kind) =>
+      [
+        `other_only.${kind}`,
+        { intent: OTHER_ONLY_TERMINAL_INTENT, otherKind: `1.${kind}` },
+      ] as const,
+  ),
+]);
+const MAX_CLIENT_TERMINAL_INTENT_LENGTH = Math.max(
+  ...[...CLIENT_TERMINAL_INTENTS.keys()].map((value) => value.length),
 );
 
 const UNKNOWN_READER = "unknown";
@@ -170,7 +222,9 @@ export const PREVIEW_DEFER_OPEN_PARAM = "deferOpen";
  * browserRequested bit. An unrecognized source is reported as `unavailable`,
  * and a non-boolean selection omits the add-on.
  * The terminal intent is added only beside a `command` source at the live
- * edge, and only for a value in its closed domain.
+ * edge, and only for a value in its closed domain. A refined
+ * `other_only.<kind>` sends the unchanged `1.other_only` intent followed by
+ * its `1.<kind>` sibling; every other intent sends no sibling.
  */
 export function previewCaptureUrl(
   endpoint: string,
@@ -202,13 +256,17 @@ export function previewCaptureUrl(
       const addOn = `1.${source}.${live ? 1 : 0}`;
       query.set(PREVIEW_TEXT_SOURCE_PARAM, addOn);
       const intent = textSource?.intent;
-      if (
+      const terminal =
         addOn === LIVE_COMMAND_TEXT_SOURCE &&
         typeof intent === "string" &&
-        intent.length + 2 <= MAX_TERMINAL_INTENT_LENGTH &&
-        TERMINAL_INTENTS.has(`1.${intent}`)
-      )
-        query.set(PREVIEW_TERMINAL_INTENT_PARAM, `1.${intent}`);
+        intent.length <= MAX_CLIENT_TERMINAL_INTENT_LENGTH
+          ? CLIENT_TERMINAL_INTENTS.get(intent)
+          : undefined;
+      if (terminal !== undefined) {
+        query.set(PREVIEW_TERMINAL_INTENT_PARAM, terminal.intent);
+        if (terminal.otherKind !== undefined)
+          query.set(PREVIEW_TERMINAL_OTHER_KIND_PARAM, terminal.otherKind);
+      }
     }
   }
   const search = query.toString();
@@ -305,8 +363,12 @@ export function parsePreviewClientContext(
  * only when the baseline leaves conservative logger headroom. The terminal
  * intent follows it only when the tuple's add-on is a live `command` source,
  * the intent is one canonical closed value, and the tuple's own budget still
- * holds afterwards, so the largest record never grows. Otherwise (or on any
- * failure) return the original object or the tuple-only result; never throws.
+ * holds afterwards, so the largest record never grows. The other-only kind
+ * follows the intent likewise, only when that intent is `other_only`, the kind
+ * is one canonical closed value, and the budget still holds after both, so it
+ * never takes the intent's slot. Otherwise (or on any failure) return the
+ * original object or the longest valid prefix of tuple, intent and kind;
+ * never throws.
  */
 export function withPreviewClientContext<T extends Record<string, unknown>>(
   fields: T,
@@ -339,9 +401,26 @@ export function withPreviewClientContext<T extends Record<string, unknown>>(
       TERMINAL_INTENTS,
       MAX_TERMINAL_INTENT_LENGTH,
     );
-    return intent === undefined
-      ? withContext
-      : { ...withContext, [PREVIEW_TERMINAL_INTENT_KEY]: intent.element };
+    if (intent === undefined) return withContext;
+    const withIntent = {
+      ...withContext,
+      [PREVIEW_TERMINAL_INTENT_KEY]: intent.element,
+    };
+    if (
+      intent.value !== OTHER_ONLY_TERMINAL_INTENT ||
+      has(PREVIEW_TERMINAL_OTHER_KIND_KEY) ||
+      count + 2 > MAX_BASELINE_FIELDS
+    )
+      return withIntent;
+    const otherKind = closedValue(
+      params,
+      PREVIEW_TERMINAL_OTHER_KIND_PARAM,
+      TERMINAL_OTHER_KINDS,
+      MAX_TERMINAL_OTHER_KIND_LENGTH,
+    );
+    return otherKind === undefined
+      ? withIntent
+      : { ...withIntent, [PREVIEW_TERMINAL_OTHER_KIND_KEY]: otherKind.element };
   } catch {
     return fields;
   }

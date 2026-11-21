@@ -743,12 +743,19 @@ describe("ComputerSidebar reconnect behavior", () => {
     };
 
     it.each([
-      ["brief-only exec", { action: "exec", brief: BRIEF }, "1.brief.1", null],
+      [
+        "brief-only exec",
+        { action: "exec", brief: BRIEF },
+        "1.brief.1",
+        null,
+        null,
+      ],
       [
         "real open",
         { action: "exec", command: OPEN, brief: "Open the site" },
         "1.command.1",
         "1.open_only",
+        null,
       ],
       [
         "version-then-open",
@@ -758,10 +765,18 @@ describe("ComputerSidebar reconnect behavior", () => {
         },
         "1.command.1",
         "1.info_with_open",
+        null,
+      ],
+      [
+        "bare invocation",
+        { action: "exec", command: "agent-browser" },
+        "1.command.1",
+        "1.other_only",
+        "1.bare",
       ],
     ])(
       "sends the %s selection's producer tag beside the unchanged mask",
-      async (_name, input, expected, intent) => {
+      async (_name, input, expected, intent, otherKind) => {
         const messages = messagesWith(shellPart("browser-tool", input));
         const { view } = renderSelected(messages, "browser-tool");
         await act(async () => {});
@@ -774,6 +789,7 @@ describe("ComputerSidebar reconnect behavior", () => {
         expect(sentQuery(0).getAll("preview_terminal_intent")).toEqual(
           intent === null ? [] : [intent],
         );
+        expect(sentQuery(0).get("preview_terminal_other_kind")).toBe(otherKind);
         // Only the closed tag travels: no text or tool identifiers.
         expect(
           decodeURIComponent(String(fetchPreview.mock.calls[0][0])),
