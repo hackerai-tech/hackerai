@@ -2,12 +2,14 @@ import {
   BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
   browserSessionReadFailureContext,
+  browserPauseFailureContext,
   browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
   getPrivateStreamPort,
   renewBrowserRelay,
   resizeBrowserViewport,
+  setAgentBrowserPaused,
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
@@ -4768,5 +4770,54 @@ describe("fresh screenshot read phase", () => {
       failure("fresh_validation", "preview_unavailable"),
     );
     expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+it.each([false, true])(
+  "projects a gate deadline from the exact failed pause command (SDK throws: %s)",
+  async (fromSdk) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 1,
+      stdout: "PRIVATE_OUTPUT",
+      stderr: "PRIVATE_TRACEBACK\nRuntimeError: Browser command is busy\n",
+    };
+    const error = new CommandExitError(result);
+    if (fromSdk) sandbox.commands.run.mockRejectedValueOnce(error);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const caught = await setAgentBrowserPaused(
+      sandbox as unknown as Sandbox,
+      location,
+      true,
+    ).catch((failure: unknown) => failure);
+    if (fromSdk) expect(caught).toBe(error);
+    else expect(caught).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect(browserPauseFailureContext(caught)).toEqual({
+      pause_diagnostic_version: 1,
+      pause_error_kind: "gate_busy",
+      pause_command_exit_code: 1,
+      pause_http_status: "none",
+    });
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("requires the fixed pause exception line and preserves the SDK timeout classification", () => {
+  const unrelated = new CommandExitError({
+    exitCode: 1,
+    stdout: "PRIVATE_OUTPUT",
+    stderr: "PRIVATE_TEXT RuntimeError: Browser command is busy\n",
+  });
+  expect(browserPauseFailureContext(unrelated)).toEqual({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "command_exit",
+    pause_command_exit_code: 1,
+    pause_http_status: "none",
+  });
+  expect(browserPauseFailureContext(new TimeoutError("PRIVATE SDK"))).toEqual({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "timeout",
+    pause_command_exit_code: "none",
+    pause_http_status: "none",
   });
 });

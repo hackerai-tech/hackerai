@@ -434,8 +434,26 @@ export function AgentBrowserPreview({
     [endpoint],
   );
 
+  const effectiveState =
+    session &&
+    (((session.state === "human" || session.state === "claiming") &&
+      (session.grantExpiresAt ?? 0) <= now) ||
+      (session.state === "resuming" && session.updatedAt + 30_000 <= now))
+      ? "recovery"
+      : session?.state;
+  // A pending TAKE has its own capture. Suspend passive reads during the
+  // transition, with the last frame retaining its original age.
+  const previewPollingSuspended =
+    takingControl || (!grant && effectiveState === "claiming");
+
   useEffect(() => {
-    if (!showPreview || !endpoint || !activeSessionId) return;
+    if (
+      !showPreview ||
+      !endpoint ||
+      !activeSessionId ||
+      previewPollingSuspended
+    )
+      return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -540,6 +558,7 @@ export function AgentBrowserPreview({
     showPreview,
     endpoint,
     activeSessionId,
+    previewPollingSuspended,
     grant,
     relayUrl,
     relayReconnect,
@@ -737,13 +756,6 @@ export function AgentBrowserPreview({
     previewState !== "ready" ||
     now - frameSeenAt > FRAME_STALE_MS;
   const human = !!grant && !!session;
-  const effectiveState =
-    session &&
-    (((session.state === "human" || session.state === "claiming") &&
-      (session.grantExpiresAt ?? 0) <= now) ||
-      (session.state === "resuming" && session.updatedAt + 30_000 <= now))
-      ? "recovery"
-      : session?.state;
   // Tool history does not change this live, owner-scoped browser session.
   const canTake =
     !frameStale &&

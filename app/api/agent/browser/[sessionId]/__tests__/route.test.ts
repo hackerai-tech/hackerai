@@ -113,6 +113,12 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserPauseFailureContext: () => ({
+    pause_diagnostic_version: 1,
+    pause_error_kind: "gate_busy",
+    pause_command_exit_code: 1,
+    pause_http_status: "none",
+  }),
   browserRelayStopFailureContext: (error: unknown) => mockStopContext(error),
   browserRelayRenewFailureContext: (error: unknown) => mockRenewContext(error),
   browserSandboxIdentityFailureContext: () => undefined,
@@ -724,6 +730,34 @@ const take = () =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+it("records the bounded pause result and aborts the same TAKE", async () => {
+  mockState = "agent";
+  mockPause.mockRejectedValueOnce(new Error("PRIVATE pause failure"));
+  const result = await take();
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+  expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
+    "beginTakeoverForBackend",
+    "abortTakeoverForBackend",
+  ]);
+  expect(mockPause).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay).not.toHaveBeenCalled();
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      action: "take",
+      failure_stage: "pause_browser",
+      pause_diagnostic_version: 1,
+      pause_error_kind: "gate_busy",
+      pause_command_exit_code: 1,
+    }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+});
 
 const heartbeat = () =>
   post(

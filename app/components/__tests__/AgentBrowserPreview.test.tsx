@@ -1691,6 +1691,167 @@ describe("refresh deferral during an Agent browser WAIT", () => {
   });
 });
 
+describe("ordinary preview polling during a takeover", () => {
+  const gets = () =>
+    (global.fetch as jest.Mock).mock.calls.filter(
+      ([, options]) => !options?.body,
+    );
+  const viewport = () => screen.getByAltText("Current Agent browser viewport");
+  const rerenderPreview = (view: ReturnType<typeof render>) =>
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+
+  it.each<[string, Response]>([
+    ["rejected", response({ state: "closed" }, false)],
+    [
+      "completed",
+      response({ frame: { ...frame, image: "data:image/png;base64,late" } }),
+    ],
+  ])(
+    "stops GETs while this renderer takes control and resumes once the take is %s",
+    async (outcome, lateReply) => {
+      const pendingGets: Array<{
+        signal: AbortSignal;
+        resolve: (value: Response) => void;
+      }> = [];
+      let finishTake!: (value: Response) => void;
+      let getCount = 0;
+      global.fetch = jest.fn((_url, options) => {
+        if (options?.body) {
+          const body = JSON.parse(String(options.body));
+          actions.push(body);
+          return body.action === "take"
+            ? new Promise<Response>((resolve) => {
+                finishTake = resolve;
+              })
+            : Promise.resolve(response({ frame }));
+        }
+        // The first GET verifies a frame; later ones settle only when told to,
+        // like a suspended fetch that ignores its abort signal.
+        if (getCount++ === 0) return Promise.resolve(response({ frame }));
+        return new Promise<Response>((resolve) => {
+          pendingGets.push({ signal: options!.signal as AbortSignal, resolve });
+        });
+      });
+      await mount();
+      expect(viewport()).toHaveAttribute("src", frame.image);
+      // The next ordinary refresh is in flight when the user takes control.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1600);
+      });
+      expect(pendingGets).toHaveLength(1);
+      await takeControl();
+      expect(actions.map((body) => body.action)).toEqual(["take"]);
+      expect(pendingGets[0].signal.aborted).toBe(true);
+
+      // A late reply to the cancelled GET changes neither the frame nor its
+      // health, and schedules nothing while the take is still pending.
+      await act(async () => {
+        pendingGets[0].resolve(lateReply);
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(6000);
+      });
+      expect(gets()).toHaveLength(2);
+      expect(viewport()).toHaveAttribute("src", frame.image);
+
+      if (outcome === "rejected") {
+        await act(async () => {
+          finishTake(response({ error: "Connection failed" }, false));
+        });
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "Connection failed",
+        );
+        // Polling resumes at once. Suspension never renewed the frame's age,
+        // so this is a strict screenshot, and the ignored failure left the
+        // still-recent frame usable.
+        expect(gets()).toHaveLength(3);
+        expect(isFreshCapture(gets()[2][0])).toBe(true);
+        expect(screen.getByText("Live preview")).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Take control of Agent browser" }),
+        ).toBeEnabled();
+        const updated = { ...frame, image: "data:image/png;base64,updated" };
+        await act(async () => {
+          pendingGets[1].resolve(response({ frame: updated }));
+        });
+        expect(viewport()).toHaveAttribute("src", updated.image);
+      } else {
+        const taken = { ...frame, image: "data:image/png;base64,taken" };
+        await act(async () => {
+          finishTake(response({ grant: "grant-a", frame: taken }));
+        });
+        expect(screen.getByRole("application", { hidden: true })).toBeVisible();
+        expect(viewport()).toHaveAttribute("src", taken.image);
+        // The granted watchdog starts at once, as after any new grant.
+        expect(gets()).toHaveLength(3);
+      }
+    },
+  );
+
+  it.each(["expires", "ends"])(
+    "pauses GETs while another window's claim is live and resumes when it %s",
+    async (end) => {
+      const view = await mount();
+      mockSession = {
+        sessionId: "session-a",
+        state: "claiming",
+        grantExpiresAt: Date.now() + 5000,
+      };
+      rerenderPreview(view);
+      await act(async () => {});
+      const before = gets().length;
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(4000);
+      });
+      expect(gets()).toHaveLength(before);
+      expect(screen.getByText("Pausing Agent…")).toBeInTheDocument();
+      expect(viewport()).toHaveAttribute("src", frame.image);
+      expect(actions).toEqual([]);
+
+      if (end === "ends") {
+        mockSession = { sessionId: "session-a", state: "agent" };
+        rerenderPreview(view);
+        await act(async () => {});
+        expect(gets()).toHaveLength(before + 1);
+        expect(screen.getByText("Live preview")).toBeInTheDocument();
+      } else {
+        // The committed expiry hands the session to the existing recovery
+        // polling without a Convex update.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(1000);
+        });
+        expect(gets()).toHaveLength(before + 1);
+        expect(screen.getByText("Paused for handoff")).toBeInTheDocument();
+      }
+    },
+  );
+
+  it("keeps a granted watchdog refreshing while the committed claim lags", async () => {
+    const view = await mount();
+    await takeControl();
+    mockSession = {
+      sessionId: "session-a",
+      state: "claiming",
+      grantExpiresAt: Date.now() + 30_000,
+    };
+    rerenderPreview(view);
+    await act(async () => {});
+    const before = gets().length;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    expect(gets().length).toBeGreaterThan(before);
+    expect(screen.getByRole("application", { hidden: true })).toBeVisible();
+  });
+});
+
 it("reconnects lost control in full screen and preserves the unsent exit note", async () => {
   await mount();
   await takeControl();
@@ -2994,7 +3155,9 @@ describe("capture GET activation diagnostics", () => {
       mockSession = {
         sessionId: "session-a",
         state,
-        grantExpiresAt: Date.now() + 30_000,
+        // A live claim pauses ordinary polling; an expired one still polls
+        // and reports its committed state.
+        grantExpiresAt: Date.now() + (state === "claiming" ? 0 : 30_000),
         updatedAt: Date.now(),
         controlledSessionName: "PRIVATE_SESSION_NAME",
       };

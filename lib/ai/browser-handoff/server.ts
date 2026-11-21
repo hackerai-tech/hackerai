@@ -254,7 +254,10 @@ function relayStopReceipt(
 }
 
 /** Read an own data property of a result; anything else throws to the caller. */
-function ownResultValue(result: unknown, key: "exitCode" | "stdout") {
+function ownResultValue(
+  result: unknown,
+  key: "exitCode" | "stdout" | "stderr",
+) {
   if (typeof result !== "object" || result === null)
     throw new TypeError("Unreadable command result");
   const descriptor = Object.getOwnPropertyDescriptor(result, key);
@@ -2000,6 +2003,75 @@ export async function sendBrowserInput(
   }
 }
 
+type BrowserPauseFailureContext = {
+  pause_diagnostic_version: 1;
+  pause_error_kind:
+    | "gate_busy"
+    | "transport"
+    | ReturnType<
+        typeof browserRelayRenewFailureContext
+      >["relay_renew_error_kind"];
+  pause_command_exit_code: number | "none" | "other";
+  pause_http_status: number | "none" | "other";
+};
+
+const returnedPauseFailures = new WeakMap<
+  BrowserPreviewUnavailable,
+  BrowserPauseFailureContext
+>();
+
+function pauseCommandOutcome(result: unknown): BrowserPauseFailureContext {
+  const exitCode = exitStatus(ownResultValue(result, "exitCode"));
+  const stderr = ownResultValue(result, "stderr");
+  // The pause program raises this fixed exception after its local lock deadline.
+  const gateBusy =
+    exitCode === 1 &&
+    typeof stderr === "string" &&
+    /(?:^|\n)RuntimeError: Browser command is busy\r?\n?$/.test(
+      stderr.slice(-96),
+    );
+  return {
+    pause_diagnostic_version: 1,
+    pause_error_kind: gateBusy ? "gate_busy" : "command_exit",
+    pause_command_exit_code: exitCode,
+    pause_http_status: "none",
+  };
+}
+
+/** Project the failed pause's bounded SDK or local program outcome. */
+export function browserPauseFailureContext(
+  error: unknown,
+): BrowserPauseFailureContext {
+  try {
+    if (error instanceof BrowserPreviewUnavailable) {
+      const returned = returnedPauseFailures.get(error);
+      if (returned) return returned;
+    }
+    if (error instanceof CommandExitError) {
+      return pauseCommandOutcome(
+        Object.getOwnPropertyDescriptor(error, "result")?.value,
+      );
+    }
+    const cloud = checkpointCloudErrorContext(error);
+    return {
+      pause_diagnostic_version: 1,
+      pause_error_kind:
+        cloud.cloud_type_error_signal === "fetch_failed"
+          ? "transport"
+          : browserRelayRenewFailureContext(error).relay_renew_error_kind,
+      pause_command_exit_code: "none",
+      pause_http_status: cloud.cloud_http_status,
+    };
+  } catch {
+    return {
+      pause_diagnostic_version: 1,
+      pause_error_kind: "unreadable",
+      pause_command_exit_code: "other",
+      pause_http_status: "none",
+    };
+  }
+}
+
 export async function setAgentBrowserPaused(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
@@ -2013,6 +2085,15 @@ export async function setAgentBrowserPaused(
     ),
     { ...buildSandboxCommandOptions(sandbox), timeoutMs: 10_000 },
   );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  if (result.exitCode !== 0) {
+    const error = new BrowserPreviewUnavailable("disconnected");
+    if (paused) {
+      try {
+        returnedPauseFailures.set(error, pauseCommandOutcome(result));
+      } catch {
+        // Optional attribution preserves the original failure.
+      }
+    }
+    throw error;
+  }
 }
