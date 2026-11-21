@@ -1113,12 +1113,52 @@ it("resizes the granted browser under the existing input lease", async () => {
     "default",
     390,
     844,
+    expect.any(Function),
   );
+  expect(phLogger.info).not.toHaveBeenCalled();
   expect(mockMutation).toHaveBeenCalledWith(
     "finishInputForBackend",
     expect.anything(),
   );
 });
+it.each(["resize_command", "capture_frame"] as const)(
+  "reports a viewport 503 from %s and releases the input lease",
+  async (phase) => {
+    mockFailure = "";
+    const diagnostic = {
+      viewport_diagnostic_version: 1,
+      viewport_failure_phase: phase,
+      viewport_error_kind: "command_exit",
+      viewport_command_exit_code: 6,
+    };
+    mockResize.mockImplementationOnce(async (...args) => {
+      const observe = args[5];
+      if (typeof observe === "function") observe(diagnostic);
+      throw new Error("PRIVATE_VIEWPORT_ERROR");
+    });
+
+    const result = await resize(390, 844);
+    expect(result.status).toBe(503);
+    expect(await result.json()).toEqual({ state: "disconnected" });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action: "viewport",
+        failure_stage: "resize_viewport",
+        ...diagnostic,
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+      "PRIVATE_VIEWPORT_ERROR",
+    );
+    expect(mockResize).toHaveBeenCalledTimes(1);
+    expect(mockMutation).toHaveBeenCalledWith(
+      "finishInputForBackend",
+      expect.anything(),
+    );
+  },
+);
 it.each([
   [239, 844],
   [390, 2561],

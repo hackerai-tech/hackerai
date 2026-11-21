@@ -1872,6 +1872,18 @@ export async function captureBrowserFrame(
   }
 }
 
+export type BrowserViewportFailureContext = {
+  viewport_diagnostic_version: 1;
+  // The viewport daemon command, or the strict fresh capture that follows it.
+  viewport_failure_phase: "resize_command" | "capture_frame";
+  viewport_error_kind:
+    | ReturnType<
+        typeof browserRelayRenewFailureContext
+      >["relay_renew_error_kind"]
+    | "preview_unavailable";
+  viewport_command_exit_code: number | "none" | "other";
+};
+
 /** Resize only the currently granted session; callers hold the input lease. */
 export async function resizeBrowserViewport(
   sandbox: Sandbox,
@@ -1879,6 +1891,7 @@ export async function resizeBrowserViewport(
   browserSessionName: string,
   width: number,
   height: number,
+  onFailure?: (context: BrowserViewportFailureContext) => void,
 ) {
   if (
     ![width, height].every(
@@ -1886,29 +1899,71 @@ export async function resizeBrowserViewport(
     )
   )
     throw new Error("Invalid browser viewport");
-  const result = await sandbox.commands.run(
-    browserDaemonCommand(session.directory, browserSessionName, {
-      action: "viewport",
-      width,
-      height,
-      deviceScaleFactor: 1,
-    }),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      timeoutMs: 7_000,
-    },
-  );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
-  const frame = await captureBrowserFrame(
-    sandbox,
-    session,
-    browserSessionName,
-    true,
-  );
-  // The fresh screenshot uses the new viewport, but the stream can replay
-  // metadata from before the resize. Keep input coordinates in the new space.
-  return { ...frame, width, height };
+  let phase: BrowserViewportFailureContext["viewport_failure_phase"] =
+    "resize_command";
+  let returnedExitCode: number | "other" | undefined;
+  try {
+    const result = await sandbox.commands.run(
+      browserDaemonCommand(session.directory, browserSessionName, {
+        action: "viewport",
+        width,
+        height,
+        deviceScaleFactor: 1,
+      }),
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        timeoutMs: 7_000,
+      },
+    );
+    const exitCode = result.exitCode;
+    if (exitCode !== 0) {
+      returnedExitCode = exitStatus(exitCode);
+      throw new BrowserPreviewUnavailable("disconnected");
+    }
+    phase = "capture_frame";
+    const frame = await captureBrowserFrame(
+      sandbox,
+      session,
+      browserSessionName,
+      true,
+    );
+    // The fresh screenshot uses the new viewport, but the stream can replay
+    // metadata from before the resize. Keep input coordinates in the new space.
+    return { ...frame, width, height };
+  } catch (error) {
+    if (onFailure) {
+      let kind: BrowserViewportFailureContext["viewport_error_kind"] =
+        "unreadable";
+      let exitCode: number | "none" | "other" = "other";
+      try {
+        if (returnedExitCode !== undefined) {
+          kind = "command_exit";
+          exitCode = returnedExitCode;
+        } else {
+          const command = browserRelayRenewFailureContext(error);
+          kind =
+            command.relay_renew_error_kind === "other_error" &&
+            error instanceof BrowserPreviewUnavailable
+              ? "preview_unavailable"
+              : command.relay_renew_error_kind;
+          exitCode = command.relay_renew_command_exit_code;
+        }
+      } catch {
+        // An unreadable result or value keeps the phase and original error.
+      }
+      try {
+        onFailure({
+          viewport_diagnostic_version: 1,
+          viewport_failure_phase: phase,
+          viewport_error_kind: kind,
+          viewport_command_exit_code: exitCode,
+        });
+      } catch {
+        // Observers cannot replace the original error or retry the resize.
+      }
+    }
+    throw error;
+  }
 }
 
 export type BrowserInputFailureContext = {
