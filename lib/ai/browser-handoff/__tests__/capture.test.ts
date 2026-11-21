@@ -1261,6 +1261,7 @@ it("defers an opted-in fresh screenshot when a WAIT starts after status succeede
       format: "jpeg",
       quality: 65,
       defer_wait: true,
+      recognize_closed: true,
     },
   ]);
   // The helper sent no screenshot: no fresh data I/O or cleanup call.
@@ -1447,6 +1448,7 @@ it("keeps the normal capture when an opted-in status returns a port", async () =
       path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
       format: "jpeg",
       quality: 65,
+      recognize_closed: true,
     },
   ]);
   expect(result.image).toBe(
@@ -1465,9 +1467,135 @@ it("never asks to recognize a close for a caller-supplied port", async () => {
     undefined,
     { recognizeClosed: true },
   );
-  expect(
-    daemonRequests(sandbox.commands.run).map((request) => request.action),
-  ).toEqual(["screenshot"]);
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    {
+      action: "screenshot",
+      path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+      format: "jpeg",
+      quality: 65,
+    },
+  ]);
+});
+
+it.each([
+  ["a fresh view", {}, {}],
+  [
+    "a WAIT-deferring fresh view",
+    { deferDuringWait: true },
+    { defer_wait: true },
+  ],
+] as const)(
+  "returns the existing closed state when the fresh screenshot finds a verified close on %s",
+  async (_case, extra, flags) => {
+    const sandbox = screenshotFixture(async () => ({
+      exitCode: 0,
+      stdout: BROWSER_DAEMON_SESSION_CLOSED,
+    }));
+    const observe = jest.fn();
+    const outcome = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { ...extra, recognizeClosed: true },
+    ).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as BrowserPreviewUnavailable).state).toBe("closed");
+    const requests = daemonRequests(sandbox.commands.run);
+    // One status and one screenshot: no extra command or retry.
+    expect(requests).toEqual([
+      { action: "stream_status", ...flags, recognize_closed: true },
+      {
+        action: "screenshot",
+        path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+        format: "jpeg",
+        quality: 65,
+        ...flags,
+        recognize_closed: true,
+      },
+    ]);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    // No screenshot read, but the daemon may already have written the file.
+    expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+    expect(sandbox.files.remove.mock.calls).toEqual([
+      [requests[1].path, expect.objectContaining({ user: "root" })],
+    ]);
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          capture_stage: "fresh_screenshot",
+          capture_error_kind: "preview_unavailable",
+          capture_command_exit_code: "none",
+        },
+      ],
+    ]);
+  },
+);
+
+it.each<[string, boolean, number | undefined, string]>([
+  ["without the opt-in", false, undefined, BROWSER_DAEMON_SESSION_CLOSED],
+  ["for a caller-supplied port", true, 1234, BROWSER_DAEMON_SESSION_CLOSED],
+  ["for a non-literal marker", true, undefined, '{"session_closed":true}'],
+  [
+    "for the literal with a trailing newline",
+    true,
+    undefined,
+    BROWSER_DAEMON_SESSION_CLOSED + "\n",
+  ],
+  [
+    "for a daemon reply carrying the marker",
+    true,
+    undefined,
+    JSON.stringify({
+      id: "hackerai-preview",
+      success: true,
+      session_closed: 1,
+    }),
+  ],
+])(
+  "continues the strict fresh screenshot %s",
+  async (_case, recognizeClosed, streamPort, stdout) => {
+    const sandbox = screenshotFixture(async () => ({ exitCode: 0, stdout }));
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      streamPort,
+      jest.fn(),
+      { recognizeClosed },
+    );
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${fresh.toString("base64")}`,
+    );
+    expect(sandbox.files.read).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("keeps the strict screenshot failure for the closed literal on a nonzero exit", async () => {
+  const sandbox = screenshotFixture(async () => {
+    throw new CommandExitError({
+      exitCode: 6,
+      stderr: "",
+      stdout: BROWSER_DAEMON_SESSION_CLOSED,
+    });
+  });
+  const outcome = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    jest.fn(),
+    { recognizeClosed: true },
+  ).catch((error: unknown) => error);
+  expect(outcome).toBeInstanceOf(CommandExitError);
+  expect(sandbox.files.getInfo).not.toHaveBeenCalled();
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
 });
 
 it("keeps cached-frame age unknown for ordinary viewing", async () => {

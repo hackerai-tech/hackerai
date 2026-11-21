@@ -1057,7 +1057,8 @@ function statusSdkPhaseContext({
  * frame and reaches no observer. Without verified WAIT and listener proof the
  * original strict capture runs unchanged. Only that GET
  * also opts into recognizeClosed when it looks up its own port: a verified close
- * of the absent selected socket then rejects with the existing closed state.
+ * of the absent selected socket, at status or during the fresh screenshot,
+ * then rejects with the existing closed state.
  * With onFailure, only that GET opts into observeStatusProgress for its own
  * port lookup, adding one bounded progress field to an SDK wait rejection.
  */
@@ -1083,6 +1084,10 @@ export async function captureBrowserFrame(
     requireFresh &&
     streamPort === undefined &&
     options?.deferDuringWait === true;
+  const screenshotRecognizesClosed =
+    requireFresh &&
+    streamPort === undefined &&
+    options?.recognizeClosed === true;
   try {
     const port =
       streamPort ??
@@ -1172,6 +1177,9 @@ export async function captureBrowserFrame(
             format: "jpeg",
             quality: 65,
             ...(deferDuringWait && { defer_wait: true as const }),
+            ...(screenshotRecognizesClosed && {
+              recognize_closed: true as const,
+            }),
           }),
           {
             ...buildSandboxCommandOptions(sandbox),
@@ -1180,6 +1188,13 @@ export async function captureBrowserFrame(
         );
         if (screenshot.exitCode !== 0)
           throw new BrowserPreviewUnavailable("disconnected");
+        // The selected session closed after status answered. The daemon may
+        // already have written the file, so the cleanup below still runs.
+        if (
+          screenshotRecognizesClosed &&
+          screenshot.stdout === BROWSER_DAEMON_SESSION_CLOSED
+        )
+          throw new BrowserPreviewUnavailable("closed");
         // Only the requested helper-only literal; never a parsed daemon reply field.
         if (
           deferDuringWait &&
