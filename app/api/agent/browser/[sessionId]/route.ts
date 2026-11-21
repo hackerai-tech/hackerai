@@ -521,6 +521,49 @@ export const GET = withServiceQueryRecovery(async function GET(
     }
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
+    const session = resolved.session;
+    if (
+      stage === "capture_frame" &&
+      session.state === "agent" &&
+      session.runActive === true &&
+      captureContext?.capture_stage === "fresh_read" &&
+      captureContext.capture_fresh_read_diagnostic_version === 1 &&
+      captureContext.capture_fresh_read_phase === "sdk_read" &&
+      captureContext.capture_fresh_read_error_kind === "file_not_found" &&
+      serviceKey &&
+      request.signal &&
+      !request.signal.aborted
+    ) {
+      // The owner can remove the frame and close the handoff during capture.
+      // Only the existing ownership-scoped query can confirm that close.
+      const signal = AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(1_500),
+      ]);
+      try {
+        const current = await getConvexClient(signal).query(
+          api.browserHandoffs.getForBackend,
+          {
+            serviceKey,
+            userId: resolved.userId,
+            sessionId: session.sessionId,
+            allowEnded: true,
+          },
+        );
+        if (
+          !signal.aborted &&
+          current?.state === "closed" &&
+          current.runActive === false &&
+          current.sessionId === session.sessionId &&
+          current.runId === session.runId &&
+          current.userId === resolved.userId
+        ) {
+          return json({ state: "closed" }, 410);
+        }
+      } catch {
+        // Retain the original capture failure if closure cannot be confirmed.
+      }
+    }
     return unavailableGet(
       error,
       stage,

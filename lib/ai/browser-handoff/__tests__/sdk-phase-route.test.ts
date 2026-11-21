@@ -6,7 +6,14 @@
  */
 import type { NextRequest } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
-import { CommandExitError, Sandbox, TimeoutError } from "@e2b/code-interpreter";
+import { getConvexClient } from "@/lib/db/convex-client";
+import {
+  CommandExitError,
+  FileNotFoundError,
+  NotFoundError,
+  Sandbox,
+  TimeoutError,
+} from "@e2b/code-interpreter";
 import {
   BrowserPreviewUnavailable,
   browserSandboxIdentityFailureContext,
@@ -26,33 +33,31 @@ jest.mock("@/convex/_generated/api", () => ({
   api: { browserHandoffs: new Proxy({}, { get: (_target, name) => name }) },
 }));
 jest.mock("@/lib/auth/get-user-id", () => ({ getUserID: async () => "owner" }));
-jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({
-    query: async () => ({
-      sessionId: "a".repeat(32),
-      runId: `run_${"a".repeat(26)}`,
-      userId: "owner",
-      sandboxId: "PRIVATE_SANDBOX_ID",
-      triggerRegion: null,
-      directory: "/dev/shm/hackerai-browser-0123456789abcdef01234567",
-      expiresAt: Number.MAX_SAFE_INTEGER,
-      // Accepted by GET and by every POST action that connects.
-      state: "recovery",
-      runActive: true,
-      controlledSessionName: "default",
-    }),
-    // Every claim, grant check, abort and finish succeeds.
-    mutation: async () => true,
-  }),
-}));
+jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
-jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
-  CommandExitError: class extends Error {},
-  TimeoutError: class extends Error {},
-}));
+jest.mock("@e2b/code-interpreter", () => {
+  // The pinned SDK assigns each name as an own data property.
+  class NotFoundError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "NotFoundError";
+    }
+  }
+  return {
+    Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
+    CommandExitError: class extends Error {},
+    TimeoutError: class extends Error {},
+    NotFoundError,
+    FileNotFoundError: class extends NotFoundError {
+      constructor(message: string) {
+        super(message);
+        this.name = "FileNotFoundError";
+      }
+    },
+  };
+});
 jest.mock("@/lib/ai/tools/utils/e2b-cluster", () => ({
   getE2BClusterRouting: () => ({
     createCluster: {
@@ -80,21 +85,46 @@ beforeAll(async () => {
     else process.env.CONVEX_SERVICE_ROLE_KEY = original;
   }
 });
-beforeEach(() => {
-  jest.clearAllMocks();
-  jest.spyOn(console, "warn").mockImplementation(() => undefined);
-});
-afterEach(() => jest.restoreAllMocks());
 
 const SESSION_ID = "a".repeat(32);
 const ORIGIN = "https://preview.example";
+const sessionRow = (overrides: Record<string, unknown> = {}) => ({
+  sessionId: SESSION_ID,
+  runId: `run_${"a".repeat(26)}`,
+  userId: "owner",
+  sandboxId: "PRIVATE_SANDBOX_ID",
+  triggerRegion: null,
+  directory: "/dev/shm/hackerai-browser-0123456789abcdef01234567",
+  expiresAt: Number.MAX_SAFE_INTEGER,
+  // Accepted by GET and by every POST action that connects.
+  state: "recovery",
+  runActive: true,
+  controlledSessionName: "default",
+  ...overrides,
+});
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  jest.mocked(getConvexClient).mockImplementation(
+    () =>
+      ({
+        query: async () => sessionRow(),
+        // Every claim, grant check, abort and finish succeeds.
+        mutation: async () => true,
+      }) as never,
+  );
+});
+afterEach(() => jest.restoreAllMocks());
+
 const routeContext = () => ({
   params: Promise.resolve({ sessionId: SESSION_ID }),
 });
-const getRequest = () =>
+const getRequest = (signal?: AbortSignal) =>
   ({
     headers: new Headers(),
     nextUrl: new URL(`${ORIGIN}/api/agent/browser/${SESSION_ID}`),
+    ...(signal && { signal }),
   }) as NextRequest;
 const postRequest = (body: unknown) =>
   ({
@@ -457,6 +487,67 @@ it.each(["start", "wait"] as const)(
   },
 );
 
+/**
+ * A fresh capture whose status, bridge and screenshot succeed. The private
+ * frame's stat, its bytes read and the cleanup are supplied by each test.
+ */
+const connectFreshRead = ({
+  stat = async () => ({ size: 6 }),
+  bytes,
+  remove = jest.fn(async () => undefined),
+}: {
+  stat?: () => Promise<unknown>;
+  bytes: () => unknown;
+  remove?: jest.Mock;
+}) => {
+  const frame = JSON.stringify({
+    data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64"),
+    width: 800,
+    height: 600,
+    capturedAt: 0,
+  });
+  const port = { exitCode: 0, stdout: JSON.stringify({ data: { port: 1 } }) };
+  // Stream status starts in the background; bridge and screenshot succeed.
+  const run = jest.fn(
+    async (_command: string, options?: { background?: boolean }) =>
+      options?.background
+        ? { pid: 1, wait: async () => port }
+        : { exitCode: 0, stdout: frame },
+  );
+  const read = jest.fn(async (_path: string, options?: { format?: string }) =>
+    options?.format === "bytes" ? bytes() : "default\n",
+  );
+  jest.mocked(Sandbox.getInfo).mockResolvedValue({
+    state: "running",
+    metadata: VALID,
+  } as never);
+  jest.mocked(Sandbox.connect).mockResolvedValue({
+    files: { read, getInfo: jest.fn(stat), remove },
+    commands: { run },
+  } as never);
+  return {
+    remove,
+    bytesReads: () =>
+      read.mock.calls.filter(([, options]) => options?.format === "bytes")
+        .length,
+    screenshots: () =>
+      run.mock.calls.filter(([command]) =>
+        command.includes('"action":"screenshot"'),
+      ).length,
+  };
+};
+const freshRequest = (signal?: AbortSignal) => {
+  const request = getRequest(signal);
+  request.nextUrl.searchParams.set("fresh", "1");
+  return request;
+};
+const freshReadFields = (fields: Record<string, unknown>) =>
+  Object.fromEntries(
+    Object.entries(fields).filter(([key]) =>
+      key.startsWith("capture_fresh_read_"),
+    ),
+  );
+
 it.each([
   [
     "sdk_read",
@@ -472,42 +563,20 @@ it.each([
 ] as const)(
   "forwards the fresh-read %s phase into the existing GET-unavailable event",
   async (phase, error, sdk) => {
-    const frame = JSON.stringify({
-      data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64"),
-      width: 800,
-      height: 600,
-      capturedAt: 0,
+    const { remove } = connectFreshRead({
+      bytes: () => {
+        if (phase === "sdk_read") throw error;
+        // An incompatible SDK result whose conversion rejects.
+        return {
+          PRIVATE_BYTES: "PRIVATE_CONTENT",
+          valueOf: () => {
+            throw error;
+          },
+        };
+      },
     });
-    const port = { exitCode: 0, stdout: JSON.stringify({ data: { port: 1 } }) };
-    // Stream status starts in the background; bridge and screenshot succeed.
-    const run = async (_command: string, options?: { background?: boolean }) =>
-      options?.background
-        ? { pid: 1, wait: async () => port }
-        : { exitCode: 0, stdout: frame };
-    const read = async (_path: string, options?: { format?: string }) => {
-      if (options?.format !== "bytes") return "default\n";
-      if (phase === "sdk_read") throw error;
-      // An incompatible SDK result whose conversion rejects.
-      return {
-        PRIVATE_BYTES: "PRIVATE_CONTENT",
-        valueOf: () => {
-          throw error;
-        },
-      };
-    };
-    const remove = jest.fn(async () => undefined);
-    jest.mocked(Sandbox.getInfo).mockResolvedValue({
-      state: "running",
-      metadata: VALID,
-    } as never);
-    jest.mocked(Sandbox.connect).mockResolvedValue({
-      files: { read, getInfo: async () => ({ size: 6 }), remove },
-      commands: { run },
-    } as never);
-    const request = getRequest();
-    request.nextUrl.searchParams.set("fresh", "1");
 
-    const response = await get(request, routeContext());
+    const response = await get(freshRequest(), routeContext());
 
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ state: "disconnected" });
@@ -521,13 +590,7 @@ it.each([
       capture_error_kind: "other_error",
       capture_command_exit_code: "none",
     });
-    expect(
-      Object.fromEntries(
-        Object.entries(fields).filter(([key]) =>
-          key.startsWith("capture_fresh_read_"),
-        ),
-      ),
-    ).toEqual({
+    expect(freshReadFields(fields)).toEqual({
       capture_fresh_read_diagnostic_version: 1,
       capture_fresh_read_phase: phase,
       ...sdk,
@@ -535,6 +598,176 @@ it.each([
     expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|\/dev\/shm/);
   },
 );
+
+describe("passive fresh-read FileNotFound close confirmation", () => {
+  const fileNotFound = () => new FileNotFoundError("PRIVATE preview.jpg");
+  const closedRow = (overrides = {}) =>
+    sessionRow({ state: "closed", runActive: false, ...overrides });
+
+  async function freshGet({
+    initial = { state: "agent", runActive: true },
+    reread = async (_signal?: AbortSignal) => closedRow() as unknown,
+    bytes = () => {
+      throw fileNotFound();
+    },
+    stat,
+    controller = new AbortController(),
+  }: {
+    initial?: Record<string, unknown>;
+    reread?: (signal?: AbortSignal) => Promise<unknown>;
+    bytes?: () => unknown;
+    stat?: () => Promise<unknown>;
+    controller?: AbortController;
+  } = {}) {
+    const confirm = jest.fn(
+      (
+        reference: unknown,
+        args: Record<string, unknown>,
+        signal?: AbortSignal,
+      ) => reread(signal),
+    );
+    jest.mocked(getConvexClient).mockImplementation(
+      (signal?: AbortSignal) =>
+        ({
+          query: async (reference: unknown, args: Record<string, unknown>) =>
+            args.allowEnded
+              ? confirm(reference, args, signal)
+              : sessionRow(initial),
+        }) as never,
+    );
+    const sandbox = connectFreshRead({ bytes, stat });
+    const response = await get(freshRequest(controller.signal), routeContext());
+    return { ...sandbox, response, confirm };
+  }
+
+  it("returns the existing 410 only when the same authorized browser is closed", async () => {
+    const { response, confirm, screenshots, bytesReads, remove } =
+      await freshGet();
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ state: "closed" });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      "getForBackend",
+      {
+        serviceKey: "test-only-service-key",
+        userId: "owner",
+        sessionId: SESSION_ID,
+        allowEnded: true,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(screenshots()).toBe(1);
+    expect(bytesReads()).toBe(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing or superseded row", async () => null],
+    ["an active row", async () => sessionRow({ state: "agent" })],
+    [
+      "an inactive row still open",
+      async () => sessionRow({ state: "agent", runActive: false }),
+    ],
+    ["another session", async () => closedRow({ sessionId: "b".repeat(32) })],
+    ["another run", async () => closedRow({ runId: `run_${"b".repeat(26)}` })],
+    ["another owner", async () => closedRow({ userId: "different-owner" })],
+    [
+      "an unavailable lookup",
+      async () => {
+        throw new Error("PRIVATE database failure");
+      },
+    ],
+  ] as const)(
+    "retains the 503 and its diagnostic after %s",
+    async (_case, reread) => {
+      const { response, confirm } = await freshGet({ reread });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ state: "disconnected" });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      const { event, fields } = loggedEvent();
+      expect(event).toBe("agent_browser_preview_get_unavailable");
+      expect(fields).toMatchObject({
+        capture_fresh_read_phase: "sdk_read",
+        capture_fresh_read_error_kind: "file_not_found",
+      });
+      expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|\/dev\/shm/);
+    },
+  );
+
+  it.each<[string, Parameters<typeof freshGet>[0]]>([
+    [
+      "a human-controlled session",
+      { initial: { state: "human", runActive: true } },
+    ],
+    ["an inactive run", { initial: { state: "agent", runActive: false } }],
+    [
+      "a generic not-found",
+      {
+        bytes: () => {
+          throw new NotFoundError("PRIVATE generic error");
+        },
+      },
+    ],
+    [
+      "a missing file at stat",
+      {
+        stat: async () => {
+          throw fileNotFound();
+        },
+      },
+    ],
+    [
+      "an SDK timeout",
+      {
+        bytes: () => {
+          throw new TimeoutError("PRIVATE deadline");
+        },
+      },
+    ],
+  ])(
+    "leaves %s on the original path without a reread",
+    async (_case, input) => {
+      const { response, confirm } = await freshGet(input);
+
+      expect(response.status).toBe(503);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(loggedEvent().event).toBe("agent_browser_preview_get_unavailable");
+    },
+  );
+
+  it("keeps the original 503 when the request aborts during confirmation", async () => {
+    const controller = new AbortController();
+    const { response, confirm } = await freshGet({
+      controller,
+      reread: async (signal) => {
+        controller.abort();
+        signal?.throwIfAborted();
+        return closedRow();
+      },
+    });
+
+    expect(response.status).toBe(503);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][2]?.aborted).toBe(true);
+  });
+
+  it("does not reread a closed row after the request has already aborted", async () => {
+    const controller = new AbortController();
+    const { response, confirm } = await freshGet({
+      controller,
+      bytes: () => {
+        controller.abort();
+        throw fileNotFound();
+      },
+    });
+
+    expect(response.status).toBe(503);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
 
 describe("GET status wait progress", () => {
   const frames = (letters: string) =>
