@@ -20,6 +20,7 @@ import {
   BrowserPreviewUnavailable,
   type BrowserCaptureFailureContext,
   type BrowserInputFailureContext,
+  type BrowserViewportFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
@@ -247,6 +248,7 @@ const unavailablePost = (
     context?: BrowserCaptureFailureContext;
     frameAgeExceeded?: boolean;
     inputContext?: BrowserInputFailureContext;
+    viewportContext?: BrowserViewportFailureContext;
   },
 ) => {
   const response = recoveryResponse
@@ -333,6 +335,9 @@ const unavailablePost = (
           : "not_observed",
         ...failureDiagnostic?.inputContext,
       }),
+      ...(action === "viewport" &&
+        stage === "resize_viewport" &&
+        failureDiagnostic?.viewportContext),
       ...streamPortContext,
       ...relayStopContext,
       ...(action === "take" &&
@@ -1001,6 +1006,7 @@ export async function POST(
     );
     if (!valid) return json({ state: "recovery" }, 409);
     let inputContext: BrowserInputFailureContext | undefined;
+    let viewportContext: BrowserViewportFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -1018,6 +1024,9 @@ export async function POST(
           session.controlledSessionName,
           body.width as number,
           body.height as number,
+          (context) => {
+            viewportContext = context;
+          },
         );
         return json({ frame });
       }
@@ -1042,7 +1051,7 @@ export async function POST(
         body.action,
         session,
         false,
-        { inputContext },
+        { inputContext, viewportContext },
       );
     } finally {
       await convex

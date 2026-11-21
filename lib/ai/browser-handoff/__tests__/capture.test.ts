@@ -1777,12 +1777,14 @@ it("keeps cached-frame age unknown for ordinary viewing", async () => {
 
 it("resizes only the bound browser session and returns a fresh frame", async () => {
   const sandbox = fixture();
+  const observe = jest.fn();
   const result = await resizeBrowserViewport(
     sandbox as unknown as Sandbox,
     location,
     "child-one",
     390,
     844,
+    observe,
   );
   expect(sandbox.commands.run).toHaveBeenCalledWith(
     expect.stringContaining(
@@ -1790,6 +1792,12 @@ it("resizes only the bound browser session and returns a fresh frame", async () 
     ),
     expect.objectContaining({ user: "root" }),
   );
+  // An observer keeps the foreground command and its 7s budget.
+  expect(sandbox.commands.run.mock.calls[0][1]).toEqual({
+    user: "root",
+    timeoutMs: 7_000,
+  });
+  expect(observe).not.toHaveBeenCalled();
   // A resize requires a fresh frame, so its port lookup never opts in.
   expect(daemonRequests(sandbox.commands.run)[1]).toEqual({
     action: "stream_status",
@@ -1815,6 +1823,134 @@ it("does not return a new image or coordinate space when resizing fails", async 
   ).rejects.toThrow("Browser preview disconnected");
   expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   expect(sandbox.files.read).not.toHaveBeenCalled();
+});
+
+describe("viewport failure context", () => {
+  const resize = (sandbox: ReturnType<typeof fixture>, observe: jest.Mock) =>
+    resizeBrowserViewport(
+      sandbox as unknown as Sandbox,
+      location,
+      "child-one",
+      390,
+      844,
+      observe,
+    ).catch((error: unknown) => error);
+
+  it.each([
+    [3, 3],
+    [300, "other"],
+  ])(
+    "reports a returned daemon exit %s as the resize command",
+    async (exitCode, reported) => {
+      const sandbox = fixture(0, exitCode);
+      const observe = jest.fn();
+      const outcome = await resize(sandbox, observe);
+      expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+      expect((outcome as Error).message).toBe("Browser preview disconnected");
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: reported,
+          },
+        ],
+      ]);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [
+      "an SDK nonzero exit",
+      () =>
+        new CommandExitError({ exitCode: 7, stderr: "PRIVATE", stdout: "" }),
+      "command_exit",
+      7,
+    ],
+    ["an SDK timeout", () => new TimeoutError("PRIVATE"), "timeout", "none"],
+  ])(
+    "reports %s from the resize command without its output",
+    async (_case, createError, kind, exitCode) => {
+      const sandbox = fixture();
+      const error = createError();
+      sandbox.commands.run.mockRejectedValueOnce(error);
+      const observe = jest.fn();
+      expect(await resize(sandbox, observe)).toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: kind,
+            viewport_command_exit_code: exitCode,
+          },
+        ],
+      ]);
+      expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+      expect(sandbox.files.read).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports a returned strict-frame failure after a successful resize", async () => {
+    const sandbox = fixture(1);
+    const observe = jest.fn();
+    const outcome = await resize(sandbox, observe);
+    expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect((outcome as Error).message).toBe("Browser preview disconnected");
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          viewport_diagnostic_version: 1,
+          viewport_failure_phase: "capture_frame",
+          viewport_error_kind: "preview_unavailable",
+          viewport_command_exit_code: "none",
+        },
+      ],
+    ]);
+    // The viewport command succeeded and the strict capture still cleaned up.
+    expect(daemonRequests(sandbox.commands.run)[0]).toMatchObject({
+      action: "viewport",
+    });
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an SDK screenshot exit as the capture, not the resize", async () => {
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: "",
+    });
+    const sandbox = screenshotFixture(async () => {
+      throw error;
+    });
+    const observe = jest.fn();
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe.mock.calls).toEqual([
+      [
+        {
+          viewport_diagnostic_version: 1,
+          viewport_failure_phase: "capture_frame",
+          viewport_error_kind: "command_exit",
+          viewport_command_exit_code: 2,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it("keeps the original rejection when the observer throws", async () => {
+    const sandbox = fixture();
+    const error = new TimeoutError("PRIVATE");
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observe = jest.fn(() => {
+      throw new Error("observer");
+    });
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  });
 });
 
 it("rejects unbounded viewport dimensions before executing a command", async () => {
