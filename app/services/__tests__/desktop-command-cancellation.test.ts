@@ -314,10 +314,24 @@ describe("cancel receipt races", () => {
       commandId,
       "output_overflow",
     )(invoke);
-    pending[0].resolve(false);
+    // Differing outcomes tell the two apart: only the replacement's false
+    // reports; the superseded original's rejection never does.
+    pending[0].reject(new Error("original transport"));
     pending[1].resolve(false);
-    await Promise.all([original, replacement]);
+    const settled = await Promise.allSettled([original, replacement]);
+    expect(settled).toEqual([
+      { status: "rejected", reason: new Error("original transport") },
+      { status: "fulfilled", value: false },
+    ]);
     await flush();
+    expect(events()).toEqual([
+      {
+        version: 1,
+        command_id: commandId,
+        caller: "output_overflow",
+        outcome: "returned_false",
+      },
+    ]);
     second();
     // After both settled, the same ID registers again with no leftover state.
     const third = registerDesktopCommand(commandId, chatId, runId, OWNER);
@@ -330,18 +344,49 @@ describe("cancel receipt races", () => {
       await expect(later).rejects.toThrow("transport");
       await flush();
       expect(events()).toEqual([
-        expect.objectContaining({
+        expect.objectContaining({ outcome: "returned_false" }),
+        {
+          version: 1,
           command_id: commandId,
-          outcome: "returned_false",
-        }),
-        expect.objectContaining({
-          command_id: commandId,
+          caller: "output_overflow",
           outcome: "invoke_rejected",
-        }),
+        },
       ]);
     } finally {
       third();
     }
+  });
+});
+
+describe("one-shot capture ingress", () => {
+  it.each([
+    ["https://us.i.posthog.com", "https://us.i.posthog.com/i/v0/e/"],
+    ["https://us.i.posthog.com/", "https://us.i.posthog.com/i/v0/e/"],
+    ["https://app.posthog.com", "https://us.i.posthog.com/i/v0/e/"],
+    ["https://eu.i.posthog.com", "https://eu.i.posthog.com/i/v0/e/"],
+  ])("keeps the configured %s region", (host, expected) => {
+    const { desktopStreamCancelCaptureUrl } = jest.requireActual<
+      typeof import("@/lib/analytics/desktop-stream-cancel-diagnostic")
+    >("@/lib/analytics/desktop-stream-cancel-diagnostic");
+    expect(desktopStreamCancelCaptureUrl(host)).toBe(expected);
+  });
+
+  it.each([
+    "http://us.i.posthog.com",
+    "https://user:pass@us.i.posthog.com",
+    "https://us.i.posthog.com:8443",
+    "https://us.i.posthog.com/ingest",
+    "https://us.i.posthog.com/?token=x",
+    "https://us.i.posthog.com/#x",
+    "https://us.i.posthog.com.example.com",
+    "https://hackerai.co",
+    "/ingest",
+    undefined,
+  ])("fails closed for %p", (host) => {
+    const { desktopStreamCancelCaptureUrl } = jest.requireActual<
+      typeof import("@/lib/analytics/desktop-stream-cancel-diagnostic")
+    >("@/lib/analytics/desktop-stream-cancel-diagnostic");
+    expect(desktopStreamCancelCaptureUrl(host)).toBeNull();
   });
 });
 

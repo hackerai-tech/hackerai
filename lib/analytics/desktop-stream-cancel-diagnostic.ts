@@ -3,8 +3,10 @@
  * original Windows Desktop command: it resolved strictly false (stop
  * unconfirmed, including a cancel wait timeout) or the IPC itself rejected.
  * Neither outcome describes any particular OS process. The single schema for
- * the capture and its before_send projection; dependency-free so both the
- * analytics client and the privacy guard can import it.
+ * the capture, its before_send projection and its one-shot delivery;
+ * dependency-free so the analytics client, privacy guard and provider can
+ * import it. The SDK's own delivery can batch and retry, including after
+ * consent changes, so this event bypasses it.
  */
 export const DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT =
   "desktop_stream_cancel_nonconfirmation";
@@ -39,6 +41,74 @@ export function isDesktopStreamCancelCommandId(
 
 export function isDesktopStreamCancelOwner(value: unknown): value is string {
   return typeof value === "string" && OPAQUE_ID.test(value);
+}
+
+/** Use the configured cloud region or the legacy US hostname the SDK maps. */
+export function desktopStreamCancelCaptureUrl(apiHost: unknown): string | null {
+  if (typeof apiHost !== "string") return null;
+  const origin = apiHost.trim().replace(/\/$/, "").toLowerCase();
+  switch (origin) {
+    case "https://app.posthog.com":
+    case "https://us.i.posthog.com":
+      return "https://us.i.posthog.com/i/v0/e/";
+    case "https://eu.i.posthog.com":
+      return "https://eu.i.posthog.com/i/v0/e/";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Start exactly one request for an already projected event, in the pinned
+ * SDK's uncompressed capture body, and never retry it: no cookies, redirects,
+ * keepalive or awaiting. The caller returns null to the SDK so it never queues
+ * or retries the event itself. The consent owner can abort pending delivery.
+ */
+export function sendDesktopStreamCancelOnce(
+  event: {
+    uuid?: unknown;
+    event: unknown;
+    properties?: Record<string, unknown>;
+    timestamp?: unknown;
+  },
+  url: string,
+  token: string,
+  signal: AbortSignal,
+): void {
+  if (signal.aborted) return;
+  try {
+    const body = JSON.stringify({
+      api_key: token,
+      batch: [
+        {
+          ...(event.uuid !== undefined && { uuid: event.uuid }),
+          event: event.event,
+          properties: { ...event.properties, token },
+          ...(event.timestamp instanceof Date &&
+            Number.isFinite(event.timestamp.getTime()) && {
+              timestamp: event.timestamp.toISOString(),
+            }),
+        },
+      ],
+      sent_at: new Date().toISOString(),
+    });
+    void Promise.resolve(
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        keepalive: false,
+        signal,
+      }),
+    ).catch(() => {});
+  } catch {
+    // No retry for failed dispatch.
+  }
 }
 
 /** Rebuild exactly the four fields; any missing or invalid one rejects all. */
