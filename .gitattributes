@@ -1,0 +1,5 @@
+# Keep the byte inputs to the Strix integrity check consistent across checkouts.
+third_party/strix-skills/LICENSE text eol=lf
+third_party/strix-skills/skills/**/*.md text eol=lf
+lib/ai/subagents/skills/strix-skill-catalog.generated.json text eol=lf
+lib/ai/subagents/skills/strix-skill-content.generated.json text eol=lf
