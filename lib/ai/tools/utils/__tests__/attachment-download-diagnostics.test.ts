@@ -373,10 +373,66 @@ it.each([
   },
 );
 
+// A curl write failure: the exit code names the local write phase, while the
+// marker shows only the last positive network boundary before it.
+const curl23Stderr =
+  "curl: (23) Failure writing output to destination, passed 16384 returned 4294967295";
+const bodyMarker = progress(...afterTls, "200", "16384", zero);
+
+it("keeps the last positive boundary for a final Windows Bash curl exit23", () => {
+  const original = Object.freeze(new Error("private original"));
+  expect(
+    recordAttachmentDownloadFailure(original, {
+      ...input,
+      exitCode: 23,
+      stderr: curl23Stderr,
+      directoryProbe: {
+        state: "returned",
+        output: "private df output",
+        truncated: false,
+      },
+      curlProgressStdout: `${bodyMarker}\r\n`,
+    }),
+  ).toBe(original);
+  const fields = getAttachmentDownloadFailureContext(original);
+  expect(fields).toMatchObject({
+    attachment_download_exit_code: 23,
+    attachment_download_stderr_signal: "other",
+    attachment_download_reported_http_status: null,
+    attachment_download_target_dir_exists: null,
+    attachment_download_target_dir_writable: null,
+    attachment_download_curl_progress_version: 1,
+    attachment_download_curl_progress_state: "observed",
+    attachment_download_curl_progress_milestone: "response_body_observed",
+  });
+  // Exit23 gains no timeout wording; the marker never becomes a status.
+  expect(fields).not.toHaveProperty("attachment_download_timeout_hint");
+  expect(Object.keys(original)).toEqual([]);
+  expect(JSON.stringify(fields)).not.toMatch(
+    /\d\.\d|hackerai_curl|private|200|16384|4294967295|destination/,
+  );
+  // The same strict parser: absent or repeated markers are never read.
+  for (const [stdout, state] of [
+    ["", "absent"],
+    [`${bodyMarker}\n${bodyMarker}\n`, "unrecognized"],
+  ] as const)
+    expect(
+      progressFields(stdout, { exitCode: 23, stderr: curl23Stderr }),
+    ).toMatchObject({
+      attachment_download_curl_progress_state: state,
+      attachment_download_curl_progress_milestone: null,
+    });
+});
+
 it.each([
   ["not supplied by the caller", undefined, {}],
   ["a non-28 exit", lookupOnly, { exitCode: 7 }],
-  // Windows Bash stays exit28-only; the cloud's exit35 scope is separate.
+  [
+    "a real Windows curl exit56 receive failure",
+    bodyMarker,
+    { exitCode: 56, stderr: "curl: (56) Recv failure: Connection was reset" },
+  ],
+  // Windows Bash stays exit28/23-only; the cloud's exit35 scope is separate.
   ["a Windows exit 35", lookupOnly, { exitCode: 35 }],
   ["successful exit", lookupOnly, { exitCode: 0 }],
   ["Windows cmd", lookupOnly, { shell: "cmd" }],
@@ -384,6 +440,27 @@ it.each([
   ["unknown platform", lookupOnly, { platform: "unknown" }],
   ["wget", lookupOnly, { httpClient: "wget" }],
   ["PowerShell", lookupOnly, { httpClient: "powershell" }],
+  // Exit23 is read only on the Windows Bash curl scope.
+  [
+    "Windows cmd exit23",
+    bodyMarker,
+    { exitCode: 23, stderr: curl23Stderr, shell: "cmd" },
+  ],
+  [
+    "POSIX Bash exit23",
+    bodyMarker,
+    { exitCode: 23, stderr: curl23Stderr, platform: "posix" },
+  ],
+  [
+    "unknown-platform exit23",
+    bodyMarker,
+    { exitCode: 23, stderr: curl23Stderr, platform: "unknown" },
+  ],
+  [
+    "wget exit23",
+    bodyMarker,
+    { exitCode: 23, stderr: curl23Stderr, httpClient: "wget" },
+  ],
 ] as const)("omits curl progress for %s", (_, stdout, overrides) => {
   const fields = progressFields(stdout, overrides);
   expect(fields).toBeDefined();
@@ -439,6 +516,8 @@ it.each([28, 35])(
 it.each([
   ["not supplied by the caller", 28, undefined, {}],
   ["another curl exit", 7, lookupOnly, {}],
+  // The Windows exit23 scope never extends to the cloud input.
+  ["a cloud curl exit23", 23, lookupOnly, {}],
   ["successful exit", 0, lookupOnly, {}],
   // The cloud input never applies to a local transport's platform or client.
   ["a Windows platform", 28, lookupOnly, { platform: "windows" }],
