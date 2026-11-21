@@ -22,8 +22,8 @@ import type { egressAbuseReviewTask } from "./egress-abuse-review";
 // connections, aggregated across that owner's workspaces in one region and
 // minute. It never blocks, suspends or rate-limits anyone.
 //
-// High volume is not a monitoring failure. It is logged as a warning and sent
-// to the operators' webhook, and the run succeeds. A run fails, reaching the
+// High volume is logged as a warning and sent to the operators' webhook when
+// configured, and the run succeeds. A run fails, reaching the
 // environment's Trigger error alerts, only when the monitor itself is broken:
 // configuration, state, heartbeat, collector loss, review dispatch or
 // notification delivery.
@@ -113,17 +113,22 @@ function notificationUrl(value: string | undefined) {
 
 /**
  * Unset, empty or "false" is off. Enabled requires an explicit positive
- * per-owner threshold and notification URL: there is no default to activate
- * by accident.
+ * per-owner threshold. The notification URL is optional.
  */
 function resolveConfig() {
   const enabled = process.env.E2B_EGRESS_BURST_ALERTS_ENABLED;
   if (!enabled || enabled === "false") return null;
   const threshold = egressBurstThreshold();
-  const url = notificationUrl(process.env.E2B_EGRESS_BURST_NOTIFICATION_URL);
+  const destination = process.env.E2B_EGRESS_BURST_NOTIFICATION_URL;
+  const url = notificationUrl(destination);
   const review = egressAbuseReviewGate();
   const redis = createRedisClient();
-  if (enabled !== "true" || threshold === null || !url || !redis)
+  if (
+    enabled !== "true" ||
+    threshold === null ||
+    (destination && !url) ||
+    !redis
+  )
     throw new EgressBurstAlertError([{ kind: "configuration" }]);
   if (review === "invalid")
     logger.warn("Invalid egress abuse review configuration");
@@ -168,6 +173,8 @@ function ownerBursts(
 // v2: v1 marked candidates logged, not notified.
 const notifiedKey = ({ region, minute, owner }: Candidate) =>
   `egress-burst:v2:${region}:${minute}:${owner}`;
+const warningKey = ({ region, minute, owner }: Candidate) =>
+  `egress-burst:warning:v1:${region}:${minute}:${owner}`;
 
 export type EgressBurstAlertResult = { status: "disabled" | "ok" };
 
@@ -276,23 +283,25 @@ export async function runEgressBurstAlerts(
 }
 
 /**
- * For candidates not yet notified, at most MAX_NOTIFIED per run: writes the
- * detailed warning, sends one webhook message for all of them, and marks each
- * notified only after the webhook accepts it. A failed read, warning or mark
+ * Writes up to MAX_NOTIFIED warnings, sends one message when a webhook is
+ * configured, and marks each candidate after the warning or webhook delivery.
+ * Separate keys let a newly configured webhook deliver previously logged
+ * warnings still in the evaluation window. A failed read, warning or mark
  * is a state failure and a failed delivery a notification failure; either
  * leaves the candidate for the next run, which may warn or send it again.
  */
 async function notifyNewCandidates(
   redis: NonNullable<ReturnType<typeof createRedisClient>>,
-  url: URL,
+  url: URL | null,
   candidates: Candidate[],
   threshold: number,
   failures: Failure[],
 ) {
   if (!candidates.length) return;
+  const markerKey = url ? notifiedKey : warningKey;
   let notified: unknown[];
   try {
-    notified = await redis.mget<unknown[]>(...candidates.map(notifiedKey));
+    notified = await redis.mget<unknown[]>(...candidates.map(markerKey));
   } catch {
     failures.push({ kind: "state" });
     return;
@@ -336,7 +345,7 @@ async function notifyNewCandidates(
   }
   if (pending.length > MAX_NOTIFIED)
     logger.warn(
-      `${NOTIFICATION_TITLE} notifications deferred to the next run`,
+      `${NOTIFICATION_TITLE} ${url ? "notifications" : "warnings"} deferred to the next run`,
       {
         pending: pending.length,
         notified: MAX_NOTIFIED,
@@ -344,13 +353,13 @@ async function notifyNewCandidates(
     );
   if (!warned.length) return;
 
-  if (!(await deliverNotification(url, warned, threshold))) {
+  if (url && !(await deliverNotification(url, warned, threshold))) {
     failures.push({ kind: "notification" });
     return;
   }
   for (const candidate of warned)
     try {
-      await redis.set(notifiedKey(candidate), "1", { ex: NOTIFIED_TTL_S });
+      await redis.set(markerKey(candidate), "1", { ex: NOTIFIED_TTL_S });
     } catch {
       failures.push({ kind: "state" });
     }

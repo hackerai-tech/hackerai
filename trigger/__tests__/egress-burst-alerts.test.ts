@@ -264,6 +264,28 @@ it("notifies unattributed overflow without failing", async () => {
   ]);
 });
 
+it.each([undefined, ""])(
+  "warns once with the webhook set to %p and can notify when one is configured",
+  async (destination) => {
+    if (destination === undefined)
+      delete process.env.E2B_EGRESS_BURST_NOTIFICATION_URL;
+    else process.env.E2B_EGRESS_BURST_NOTIFICATION_URL = destination;
+    await upload("us", MINUTE, [count(first, 9)]);
+
+    await ok(runEgressBurstAlerts(at()));
+    await ok(runEgressBurstAlerts(at()));
+    expect(volumeWarnings()).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+
+    process.env.E2B_EGRESS_BURST_NOTIFICATION_URL = WEBHOOK;
+    await ok(runEgressBurstAlerts(at()));
+    await ok(runEgressBurstAlerts(at()));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(logger.error).not.toHaveBeenCalled();
+  },
+);
+
 it("notifies a minute once while it stays in the window, and a new minute again", async () => {
   await upload("us", MINUTE, [count(first, 9)]);
   // Concurrent runs both succeed; at worst the notification is duplicated.
@@ -516,8 +538,6 @@ it.each<[string, Record<string, string | undefined>]>([
   ["no explicit threshold", { E2B_EGRESS_BURST_THRESHOLD: undefined }],
   ["a zero threshold", { E2B_EGRESS_BURST_THRESHOLD: "0" }],
   ["a fractional threshold", { E2B_EGRESS_BURST_THRESHOLD: "2.5" }],
-  ["no notification URL", { E2B_EGRESS_BURST_NOTIFICATION_URL: undefined }],
-  ["an empty notification URL", { E2B_EGRESS_BURST_NOTIFICATION_URL: "" }],
   [
     "a plain HTTP notification URL",
     { E2B_EGRESS_BURST_NOTIFICATION_URL: WEBHOOK.replace("https", "http") },

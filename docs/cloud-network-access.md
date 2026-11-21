@@ -307,19 +307,19 @@ The `egress-burst-alerts` Trigger task runs every minute, scheduled in
 Production only. It is off until the Agent worker sets
 `E2B_EGRESS_BURST_ALERTS_ENABLED=true`, `E2B_EGRESS_BURST_THRESHOLD`, the
 number of accepted attributed connections from one owner's workspaces in one
-region and minute that counts as high volume, and
-`E2B_EGRESS_BURST_NOTIFICATION_URL`, the operators' Slack-compatible incoming
-webhook. There is no default threshold; choose it from observed telemetry
-before enabling. Any other toggle value, a missing, zero or fractional
-threshold, or a missing notification URL, one that is not HTTPS, or one with
-embedded credentials or a fragment fails the run with a configuration error.
-The URL is not required while the monitor is off.
+region and minute that counts as high volume. There is no default threshold.
+Choose it from observed telemetry before enabling. Leave
+`E2B_EGRESS_BURST_NOTIFICATION_URL` unset or empty for warnings in Trigger
+only. Set it to an operators' private Slack-compatible webhook for delivery.
+When enabled, an invalid toggle, a missing, zero or fractional threshold, or
+a nonempty notification URL that is invalid, uses a protocol other than HTTPS,
+or has embedded credentials or a fragment fails the run.
 
 Each run reads the five most recent settled minutes for both regions, so a
 briefly late upload is still evaluated. High volume is when an owner's total
 across its workspaces, or the connections beyond the collector's identity
 bound, reach the threshold. It is not a monitoring failure: the run logs a
-`High connection volume` warning, sends one webhook message and succeeds. The
+`High connection volume` warning, sends a message if configured and succeeds. The
 warning adds the registered user ID and the sandbox IDs verified for that
 owner. The message is titled `High connection volume`, with one line per
 candidate giving the region, UTC minute, opaque owner reference or
@@ -333,13 +333,15 @@ alerts, only when the monitor itself is broken:
 - a region has uploaded nothing in those five minutes (missing heartbeat);
 - a collector reported dropped events or batches, which can hide high volume;
 - telemetry or the registry cannot be read, or a warning cannot be written or
-  recorded as notified;
+  recorded;
 - the webhook does not accept the message: a network error, a timeout after
   five seconds, a redirect, which is never followed, or any non-2xx response;
 - an abuse review cannot be queued or dispatched, or a queued review expired
   before dispatch.
 
-Notification is at least once and deduplicated per region, minute and owner.
+Warnings without a webhook are deduplicated per region, minute and owner
+independently of webhook delivery. Notification is at least once and uses
+the same dimensions for deduplication.
 Each run warns about and sends at most 20 candidates not yet notified, largest
 first, in a single delivery attempt; the next run handles the rest. Candidates
 are recorded as notified only after the webhook accepts them, so a failed
