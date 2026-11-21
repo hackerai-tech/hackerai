@@ -28,6 +28,7 @@ function expectPacketBudgets(text: string) {
     q1: _listenerQueue,
     ot1: _openWriteOrder,
     ph1: _preconnectHeld,
+    e1: _activeEval,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -3962,6 +3963,248 @@ it("drops the pre-connect code first at the unchanged cap, keeping the queue tha
   ).output[0];
   expect(JSON.parse(over)).toEqual(existing);
   expect(existing.q1).toEqual([1, 1, 1]);
+});
+
+// The reproduced production regime: after the selected session's successful OPEN, an
+// opted-in status reaches its deadline with none pending and three held while the
+// selected session's exact plain-eval wrapper is still STARTED and live.
+const activeEval = {
+  ...receipt,
+  action: "other",
+  phase: "started",
+  exit: null,
+  process: startedWrapper.process,
+  open_receipt_support: 1,
+  k1: 6,
+  e1: 1,
+};
+const threeHeld: OwnedState = {
+  unix: queueTable(heldRow(4243), heldRow(4244), heldRow(4245)),
+  fds: queueFds(4243, 4244, 4245),
+};
+/** That deadline, with these overrides; its unchanged exit3 packet and the daemon. */
+const evalDeadline = (
+  request: Record<string, unknown> = openStatus,
+  options: DaemonOptions = {},
+  owned: OwnedState = {},
+) => {
+  const d = queueDaemon(
+    { request, receipt: activeEval, wrapperStat: procStat(), ...options },
+    { ...threeHeld, ...owned },
+  );
+  return { d, text: atDeadline(d) };
+};
+const receiptOpens = (d: ReturnType<typeof daemon>) =>
+  d.openReceipt.mock.calls.filter(([file]) =>
+    file.endsWith("/wrapper-receipt.json"),
+  ).length;
+const wrapperStatOpens = (d: ReturnType<typeof daemon>) =>
+  d.openReceipt.mock.calls.filter(([file]) => file === "/proc/271828/stat")
+    .length;
+
+it("adds only the active plain-eval code at the opted-in status deadline after a successful OPEN", () => {
+  const { d, text } = evalDeadline();
+  const { e1, ...existing } = JSON.parse(text);
+  expect(e1).toBe(1);
+  // The same strict exit3 packet as an older writer's, and as a status without the opt-in.
+  const legacy = evalDeadline(openStatus, {
+    receipt: { ...activeEval, e1: undefined },
+  });
+  expect(existing).toEqual(JSON.parse(legacy.text));
+  expect(existing).toEqual(JSON.parse(evalDeadline(status).text));
+  expect(existing).toMatchObject({
+    deadline: [1, "awaiting_response"],
+    wrapper_action: "other",
+    wrapper_phase: "started",
+    wrapper_session_matches: true,
+    w1: 3,
+    k1: 6,
+    open_phase: "completed",
+    open_exit: 0,
+    q1: [1, 0, 3],
+  });
+  expect(text).not.toMatch(/open_deferred|"ph1"|"ot1"/);
+  expectPacketBudgets(text);
+  expect(text).not.toMatch(
+    /PRIVATE|314159|271828|123456|424[0-9]|\/proc|\/dev\/shm|default|socket:/,
+  );
+  // One unchanged strict request; exactly one more latest-receipt read and wrapper
+  // procfs read than the older writer, after the deadline sample and before the close.
+  expect(d.socket.write.mock.calls).toEqual(plainStatusWire);
+  expect(receiptOpens(d)).toBe(receiptOpens(legacy.d) + 1);
+  expect(wrapperStatOpens(d)).toBe(wrapperStatOpens(legacy.d) + 1);
+  const reread = d.openReceipt.mock.invocationCallOrder.filter(
+    (_, index) => d.openReceipt.mock.calls[index][0] === "/proc/271828/stat",
+  );
+  expect(d.readLink.mock.invocationCallOrder.at(-1)).toBeLessThan(
+    reread.at(-1)!,
+  );
+  expect(reread.at(-1)).toBeLessThan(
+    d.socket.destroy.mock.invocationCallOrder[0],
+  );
+});
+
+it.each<[string, Record<string, unknown>, DaemonOptions, OwnedState]>([
+  [
+    "an older writer",
+    openStatus,
+    { receipt: { ...activeEval, e1: undefined } },
+    {},
+  ],
+  ...[2, 0, "1", true, [1], null].map(
+    (e1) =>
+      [
+        `the malformed code ${JSON.stringify(e1)}`,
+        openStatus,
+        { receipt: { ...activeEval, e1 } },
+        {},
+      ] as [string, Record<string, unknown>, DaemonOptions, OwnedState],
+  ),
+  [
+    "another declared category",
+    openStatus,
+    { receipt: { ...activeEval, k1: 1 } },
+    {},
+  ],
+  [
+    "a completed eval wrapper",
+    openStatus,
+    { receipt: { ...activeEval, phase: "completed", exit: 0 } },
+    {},
+  ],
+  [
+    "another session's wrapper",
+    openStatus,
+    { receipt: { ...activeEval, session_key: "f".repeat(64) } },
+    {},
+  ],
+  ["the wrapper is not live", openStatus, { wrapperStatError: "ENOENT" }, {}],
+  [
+    "the wrapper completes during the sample",
+    openStatus,
+    {},
+    { afterWalk: { receipt: { ...activeEval, phase: "completed", exit: 0 } } },
+  ],
+  [
+    "a newer wrapper replaces it during the sample",
+    openStatus,
+    {},
+    { afterWalk: { receipt: { ...activeEval, at: activeEval.at + 1 } } },
+  ],
+  [
+    "another incarnation replaces it during the sample",
+    openStatus,
+    {},
+    {
+      afterWalk: {
+        receipt: { ...activeEval, process: [1, 271828, "123457"] },
+      },
+    },
+  ],
+  [
+    "another session's wrapper replaces it during the sample",
+    openStatus,
+    {},
+    {
+      afterWalk: {
+        receipt: { ...activeEval, session_key: "f".repeat(64) },
+      },
+    },
+  ],
+  [
+    "the reread drops the code",
+    openStatus,
+    {},
+    { afterWalk: { receipt: { ...activeEval, e1: undefined } } },
+  ],
+  [
+    "the wrapper exits during the sample",
+    openStatus,
+    {},
+    { walkDrift: "wrapper" },
+  ],
+  [
+    "a connection is pending",
+    openStatus,
+    {},
+    {
+      unix: queueTable(pendingRow, heldRow(4243), heldRow(4244)),
+      fds: queueFds(4243, 4244),
+    },
+  ],
+  [
+    "only one connection is held",
+    openStatus,
+    {},
+    { unix: queueTable(heldRow(4243)), fds: queueFds(4243) },
+  ],
+  ["no queue is verified", openStatus, {}, { unix: undefined }],
+  ["the status has no OPEN opt-in", status, {}, {}],
+  [
+    "the status uses the owned-port shortcut",
+    { ...openStatus, owned_port: true },
+    {},
+    {},
+  ],
+  [
+    "the request is a fresh screenshot",
+    { ...screenshotRequest, defer_open: true },
+    {},
+    {},
+  ],
+  [
+    "the OPEN failed",
+    openStatus,
+    { openReceipt: { ...successfulOpen, exit: 1 } },
+    {},
+  ],
+])(
+  "keeps the unchanged exit3 packet without the active-eval code when %s",
+  (_case, request, options, owned) => {
+    const { text } = evalDeadline(request, options, owned);
+    const packet = JSON.parse(text);
+    expect(packet).not.toHaveProperty("e1");
+    expect(packet.deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toMatch(/open_deferred|PRIVATE|31415|271828|424[0-9]/);
+  },
+);
+
+it.each<[string, string[], string]>([
+  ["the connecting deadline", [], "connecting"],
+  [
+    "a partial-response deadline",
+    ["connect", '{"PRIVATE":'],
+    "partial_response",
+  ],
+])(
+  "never samples or adds the active-eval code at %s",
+  (_case, events, phase) => {
+    const d = queueDaemon(
+      { request: openStatus, receipt: activeEval, wrapperStat: procStat() },
+      threeHeld,
+    );
+    for (const event of events)
+      if (event === "connect") d.socket.emit(event);
+      else d.socket.emit("data", event);
+    d.timeout();
+    expect(d.exit.mock.calls).toEqual([[3]]);
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text).deadline).toEqual([1, phase]);
+    expect(text).not.toMatch(/"e1"|"q1"|PRIVATE/);
+    expect(d.openDescriptors).not.toHaveBeenCalled();
+  },
+);
+
+it("drops the active-eval code first at the unchanged cap", () => {
+  const complete = evalDeadline().text;
+  const { e1, ...existing } = JSON.parse(complete);
+  expect(e1).toBe(1);
+  const over = evalDeadline(openStatus, {
+    chargedBytes: 545 - Buffer.byteLength(complete),
+  }).text;
+  expect(JSON.parse(over)).toEqual(existing);
+  // Every older optional field that scopes it survives.
+  expect(existing).toMatchObject({ q1: [1, 0, 3], w1: 3, k1: 6 });
 });
 
 /** One filesystem entry; hard links share the same object and so its identity. */

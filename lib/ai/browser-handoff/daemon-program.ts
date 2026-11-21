@@ -485,7 +485,27 @@ function wrapperReceipt() {
       if (declared) result.dv = declared;
       if (queueSnapshot) {
         const queue = listenerQueue();
-        if (queue) result.q1 = queueTuple(queue);
+        if (queue) {
+          result.q1 = queueTuple(queue);
+          // e1: an opted-in status's deadline with none pending and at least two held, beside
+          // the selected session's live STARTED other wrapper that declared a plain eval
+          // (k1 6). One reread after the sample must still show that same record and exact
+          // incarnation live; a completed, replaced or foreign receipt omits it. A declaration,
+          // not the daemon's active command, its progress or a cause; never the argument.
+          if (deferOpen && queue.pending === 0 && queue.held.size >= 2 && receipt.action === 'other' &&
+              receipt.phase === 'started' && receipt.session_key === sessionKey && result.w1 === 3 &&
+              receipt.k1 === 6 && receipt.e1 === 1) {
+            try {
+              const latest = readReceipt('wrapper-receipt.json');
+              const identity = latest?.process;
+              if (validReceipt(latest) && latest.action === 'other' && latest.phase === 'started' &&
+                  latest.session_key === sessionKey && latest.at === receipt.at && latest.k1 === 6 &&
+                  latest.e1 === 1 && Array.isArray(identity) && identity.length === 3 &&
+                  identity.every((value, index) => value === receipt.process[index]) &&
+                  wrapperProcess(identity) === 3) result.e1 = 1;
+            } catch {}
+          }
+        }
       }
     } else if (queueSnapshot && receipt.action === 'open' && receipt.phase === 'started' &&
         receipt.session_key === sessionKey && result.w1 === 3 && open?.session_key === sessionKey &&
@@ -745,6 +765,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.e1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.e1;
     if (value?.ph1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ph1;
     if (value?.ot1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ot1;
     if (value?.q1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.q1;

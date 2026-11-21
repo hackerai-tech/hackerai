@@ -5033,6 +5033,192 @@ it.each<[string, () => Promise<{ context: Record<string, unknown> }>]>([
   expect(JSON.stringify(context)).not.toContain("PRIVATE");
 });
 
+/** The reproduced regime: the selected session's live STARTED plain-eval wrapper
+ * after its successful OPEN, none pending and three held at the status deadline. */
+const activeEvalPacket = (override: Record<string, unknown> = {}) =>
+  queuePacket({
+    ...startedSelectedWrapper,
+    wrapper_action: "other",
+    w1: 3,
+    k1: 6,
+    q1: [1, 0, 3],
+    e1: 1,
+    ...override,
+  });
+
+it("adds only the active plain-eval label at the opted-in status deadline", async () => {
+  const { context, requests } = await observeOpenGetFailure(activeEvalPacket());
+  const { capture_active_other_command_v1: projected, ...rest } = context;
+  expect(projected).toBe("eval");
+  // The same strict rejection and context as an older helper's packet.
+  expect(rest).toEqual(
+    (await observeOpenGetFailure(activeEvalPacket({ e1: undefined }))).context,
+  );
+  expect(rest).toMatchObject({
+    capture_stage: "stream_status",
+    capture_error_kind: "command_exit",
+    capture_command_exit_code: 3,
+    capture_deadline_phase: "awaiting_response",
+    capture_wrapper_action: "other",
+    capture_wrapper_phase: "started",
+    capture_wrapper_session_matches: true,
+    capture_wrapper_process_visibility: "same_incarnation_visible",
+    capture_wrapper_command_class: "other",
+    capture_open_phase: "completed",
+    capture_open_exit_code: 0,
+    capture_daemon_socket_pending_count: 0,
+    capture_daemon_socket_held_count: 3,
+  });
+  expect(rest).not.toHaveProperty("capture_open_preconnect_held_v1");
+  // One unchanged opted-in status request; no bridge, screenshot or retry.
+  expect(requests).toEqual([
+    {
+      action: "stream_status",
+      defer_wait: true,
+      defer_open: true,
+      recognize_closed: true,
+      observe_progress: true,
+    },
+  ]);
+  expect(JSON.stringify(context)).not.toContain("PRIVATE");
+});
+
+it.each([0, 2, "1", 1.5, true, [1], null])(
+  "keeps every prior field and omits the active-eval label for the malformed code %j",
+  async (e1) => {
+    const { context } = await observeOpenGetFailure(activeEvalPacket({ e1 }));
+    expect(context).toEqual(
+      (await observeOpenGetFailure(activeEvalPacket({ e1: undefined })))
+        .context,
+    );
+    expect(context).not.toHaveProperty("capture_active_other_command_v1");
+  },
+);
+
+type ObservedOpenGet = () => Promise<{ context: Record<string, unknown> }>;
+it.each<[string, ObservedOpenGet]>([
+  [
+    "an older helper",
+    () => observeOpenGetFailure(activeEvalPacket({ e1: undefined })),
+  ],
+  ...[
+    [1, 1, 3],
+    [1, 0, 1],
+    [1, 0, 0],
+    [1, 16, 3],
+  ].map(
+    (q1) =>
+      [
+        `the queue ${JSON.stringify(q1)}`,
+        () => observeOpenGetFailure(activeEvalPacket({ q1 })),
+      ] as [string, ObservedOpenGet],
+  ),
+  [
+    "no verified queue",
+    () => observeOpenGetFailure(activeEvalPacket({ q1: undefined })),
+  ],
+  [
+    "a completed latest wrapper",
+    () =>
+      observeOpenGetFailure(
+        activeEvalPacket({ wrapper_phase: "completed", wrapper_exit: 0 }),
+      ),
+  ],
+  [
+    "another session's wrapper",
+    () =>
+      observeOpenGetFailure(
+        activeEvalPacket({ wrapper_session_matches: false }),
+      ),
+  ],
+  [
+    "a changed wrapper incarnation",
+    () => observeOpenGetFailure(activeEvalPacket({ w1: 2 })),
+  ],
+  [
+    "unmeasured wrapper visibility",
+    () => observeOpenGetFailure(activeEvalPacket({ w1: undefined })),
+  ],
+  [
+    "another declared category",
+    () => observeOpenGetFailure(activeEvalPacket({ k1: 1 })),
+  ],
+  [
+    "an unmeasured category",
+    () => observeOpenGetFailure(activeEvalPacket({ k1: undefined })),
+  ],
+  [
+    "a latest OPEN wrapper",
+    () => observeOpenGetFailure(activeEvalPacket({ wrapper_action: "open" })),
+  ],
+  [
+    "a still-running OPEN",
+    () =>
+      observeOpenGetFailure(
+        activeEvalPacket({ open_phase: "started", open_exit: "none" }),
+      ),
+  ],
+  [
+    "a failed OPEN",
+    () => observeOpenGetFailure(activeEvalPacket({ open_exit: 1 })),
+  ],
+  [
+    "another session's OPEN",
+    () =>
+      observeOpenGetFailure(activeEvalPacket({ open_session_matches: false })),
+  ],
+  [
+    "a connecting deadline",
+    () =>
+      observeOpenGetFailure(activeEvalPacket({ deadline: [1, "connecting"] })),
+  ],
+  [
+    "a daemon close",
+    () => observeOpenGetFailure(activeEvalPacket(), { exitCode: 6 }),
+  ],
+  [
+    "a status without the OPEN opt-in",
+    () =>
+      observeOpenGetFailure(activeEvalPacket(), {
+        options: { ...openGetOptions, deferDuringOpen: false },
+      }),
+  ],
+  [
+    "the owned-port lookup",
+    async () => ({
+      context: await observeDaemonFailure(3, activeEvalPacket()),
+    }),
+  ],
+  [
+    "the fresh screenshot",
+    () => observeOpenGetFailure(activeEvalPacket(), { action: "screenshot" }),
+  ],
+])("omits the active-eval label for %s", async (_case, observe) => {
+  const { context } = await observe();
+  expect(context).not.toHaveProperty("capture_active_other_command_v1");
+  expect(JSON.stringify(context)).not.toContain("PRIVATE");
+});
+
+it.each([544, 545])(
+  "keeps the unchanged parser cap for a %s-byte packet carrying the active-eval code",
+  async (bytes) => {
+    const packet = activeEvalPacket();
+    expect(packet.length).toBeLessThan(544);
+    const { context } = await observeOpenGetFailure(
+      packet + " ".repeat(bytes - packet.length),
+    );
+    if (bytes === 544)
+      expect(context.capture_active_other_command_v1).toBe("eval");
+    // Over the cap the whole packet stays unparsed, exactly as before.
+    else
+      expect(context).toEqual({
+        capture_stage: "stream_status",
+        capture_error_kind: "command_exit",
+        capture_command_exit_code: 3,
+      });
+  },
+);
+
 it.each([544, 545])(
   "keeps the unchanged parser cap for a %s-byte packet carrying the queue",
   async (bytes) => {

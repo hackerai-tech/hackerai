@@ -140,6 +140,10 @@ const unavailableGet = (
         : undefined;
     const requestId = request.headers.get("x-vercel-id");
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    const {
+      capture_active_other_command_v1: activeOtherCommand,
+      ...captureFields
+    } = captureContext ?? {};
     const fields = {
       diagnostic_version: 1,
       failure_stage: stage,
@@ -158,7 +162,7 @@ const unavailableGet = (
       ...((stage === "read_active_session" ||
         stage === "verify_active_session") &&
         browserSessionReadFailureContext(error)),
-      ...(stage === "capture_frame" && captureContext),
+      ...(stage === "capture_frame" && captureFields),
       web_build_commit:
         build && /^[a-f0-9]{40}$/i.test(build)
           ? build.toLowerCase()
@@ -190,16 +194,26 @@ const unavailableGet = (
           : {}),
       }),
     };
-    const logFields = withPreviewClientContext(
+    const clientFields = withPreviewClientContext(
       fields,
       request.nextUrl.searchParams,
     );
-    phLogger.info("agent_browser_preview_get_unavailable", {
-      ...logFields,
+    const logFields = {
+      ...clientFields,
       ...(stage === "capture_frame" &&
         negotiatedDeferrals !== undefined &&
-        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
+        Object.keys(clientFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
           capture_negotiated_deferrals_v1: negotiatedDeferrals,
+        }),
+    };
+    phLogger.info("agent_browser_preview_get_unavailable", {
+      ...logFields,
+      // Preserve baseline and negotiation fields when this optional diagnostic
+      // would exceed the logger's shared attribute budget.
+      ...(stage === "capture_frame" &&
+        activeOtherCommand === "eval" &&
+        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
+          capture_active_other_command_v1: activeOtherCommand,
         }),
     });
     after(async () => {
