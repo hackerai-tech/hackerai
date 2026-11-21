@@ -514,10 +514,10 @@ it("returns from a phone preview to the same Files view and reopens the retained
     key: "Enter",
   });
   fireEvent.click(await screen.findByRole("menuitem", { name: /report\.txt/ }));
-  expect(screen.getByText("desktop historical version")).toBeVisible();
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Back to Files" })).toHaveFocus(),
   );
+  expect(screen.getByText("desktop historical version")).toBeVisible();
 });
 
 it("clears a deleted Activity entry without dismissing the selected Files tab", () => {

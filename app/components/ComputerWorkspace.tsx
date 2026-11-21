@@ -104,7 +104,7 @@ export function ComputerWorkspace({
   const [tabScroll, setTabScroll] = useState({ left: false, right: false });
   const expandButton = useRef<HTMLButtonElement>(null);
   const backButton = useRef<HTMLButtonElement>(null);
-  const previewPicked = useRef(false);
+  const pickedPreviewId = useRef<string | null>(null);
   const [lastRequest, setLastRequest] = useState<number | null>(null);
   const [previousSelection, setPreviousSelection] = useState(selection);
   const ownedUrls = useRef(new Map<string, string>());
@@ -488,10 +488,12 @@ export function ComputerWorkspace({
                 className="w-64 max-w-[calc(100vw-2rem)]"
                 onEscapeKeyDown={(event) => event.stopPropagation()}
                 onCloseAutoFocus={(event) => {
-                  // The trigger unmounts with Files; focus moves to Back.
-                  if (!previewPicked.current) return;
-                  previewPicked.current = false;
+                  const id = pickedPreviewId.current;
+                  if (!id) return;
+                  pickedPreviewId.current = null;
+                  // Let the menu release focus before mounting the preview header.
                   event.preventDefault();
+                  setActive(id);
                 }}
               >
                 <DropdownMenuLabel>Open previews</DropdownMenuLabel>
@@ -501,8 +503,7 @@ export function ComputerWorkspace({
                     className="min-h-11"
                     title={tabTitle(tab)}
                     onSelect={() => {
-                      previewPicked.current = true;
-                      setActive(tab.id);
+                      pickedPreviewId.current = tab.id;
                     }}
                   >
                     <FileText size={16} aria-hidden />
