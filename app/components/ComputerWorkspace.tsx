@@ -10,9 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
+  Files,
   FolderOpen,
   Maximize2,
   Minimize2,
@@ -47,6 +49,20 @@ import {
 import { downloadFile } from "@/lib/utils/file-download";
 import { isTauriEnvironment } from "../hooks/useTauri";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+// Below Tailwind `sm`, previews replace the tab strip with back navigation.
+const PHONE_QUERY = "(width < 40rem)";
+const shortTime = (time: number) =>
+  new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 type FileTab = { id: string; name: string } & (
   | { kind: "captured"; capturedId: string }
@@ -81,11 +97,14 @@ export function ComputerWorkspace({
   const [activity, setActivity] = useState<SidebarContent | null>(null);
   const [expanded, setExpanded] = useState(false);
   const overlay = useComputerSidebarOverlay();
+  const phone = useMediaQuery(PHONE_QUERY);
   const fullscreen = expanded && !overlay;
   const frame = useRef<HTMLDivElement>(null);
   const tabStrip = useRef<HTMLDivElement>(null);
   const [tabScroll, setTabScroll] = useState({ left: false, right: false });
   const expandButton = useRef<HTMLButtonElement>(null);
+  const backButton = useRef<HTMLButtonElement>(null);
+  const previewPicked = useRef(false);
   const [lastRequest, setLastRequest] = useState<number | null>(null);
   const [previousSelection, setPreviousSelection] = useState(selection);
   const ownedUrls = useRef(new Map<string, string>());
@@ -192,15 +211,23 @@ export function ComputerWorkspace({
     }
   }
 
+  const activeFile = tabs.find((tab) => tab.id === active);
+  // Phone previews show one file with back navigation instead of the tab strip.
+  const phonePreview = phone && !!activeFile;
+
   useEffect(() => {
     if (!open) return;
+    if (phonePreview) {
+      backButton.current?.focus({ preventScroll: true });
+      return;
+    }
     const tab = document.getElementById(`${prefix}-tab-${active}`);
     tab?.parentElement?.scrollIntoView?.({
       block: "nearest",
       inline: "nearest",
     });
     tab?.focus({ preventScroll: true });
-  }, [active, open, prefix, overlay]);
+  }, [active, open, prefix, overlay, phonePreview]);
 
   useEffect(() => {
     if (!open || !fullscreen) return;
@@ -216,7 +243,7 @@ export function ComputerWorkspace({
 
   useEffect(() => {
     const strip = tabStrip.current;
-    if (!open || !strip) return;
+    if (!open || phone || !strip) return;
     const update = () => {
       const left = strip.scrollLeft > 1;
       const right =
@@ -248,7 +275,7 @@ export function ComputerWorkspace({
       observer?.disconnect();
       strip.removeEventListener("scroll", update);
     };
-  }, [open, tabs.length, active, prefix]);
+  }, [open, tabs.length, active, prefix, phone]);
 
   const scrollTabs = (direction: number) => {
     const strip = tabStrip.current;
@@ -265,6 +292,23 @@ export function ComputerWorkspace({
     { id: "files", name: "Files", icon: FolderOpen, closable: false },
     ...tabs.map((tab) => ({ ...tab, icon: FileText, closable: true })),
   ];
+  // Phones keep open previews in a menu on Files rather than in the strip.
+  const stripTabs = phone ? visibleTabs.slice(0, 2) : visibleTabs;
+  const tabTitle = (tab: FileTab) => {
+    if (tab.kind === "workspace")
+      return `${tab.loaded.file.path} · ${tab.loaded.source}`;
+    const capture = captures.find((file) => file.id === tab.capturedId);
+    return capture
+      ? `${capture.path} · Captured from ${capture.source}`
+      : tab.name;
+  };
+  const tabDetail = (tab: FileTab) => {
+    if (tab.kind === "workspace")
+      return `${tab.loaded.source} · Snapshot ${shortTime(tab.loaded.loadedAt)}`;
+    const capture = captures.find((file) => file.id === tab.capturedId);
+    if (!capture) return "Captured";
+    return `${capture.source} · Captured${capture.capturedAt ? ` ${shortTime(capture.capturedAt)}` : ""}`;
+  };
   const focusTab = (id: string) => {
     if (id === "files") setFilesVisited(true);
     setActive(id);
@@ -321,74 +365,86 @@ export function ComputerWorkspace({
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[22px] border border-border/40 bg-background max-sm:rounded-none max-sm:border-0">
         <div className="flex min-w-0 items-center gap-1 border-b bg-muted/20 px-2 pt-2">
-          <div
-            ref={tabStrip}
-            role="tablist"
-            aria-label="Computer tabs"
-            className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
-          >
-            {visibleTabs.map((tab, index) => (
-              <div
-                key={tab.id}
-                className={`flex max-w-[min(12rem,100%)] shrink-0 items-center rounded-t-lg border border-b-0 ${active === tab.id ? "border-border bg-background" : "border-transparent text-muted-foreground hover:bg-muted/60"}`}
+          {phonePreview && activeFile ? (
+            <>
+              <button
+                ref={backButton}
+                aria-label="Back to Files"
+                onClick={() => focusTab("files")}
+                className="mb-1 flex min-h-11 shrink-0 items-center gap-1 rounded-md pl-1 pr-2 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <button
-                  role="tab"
-                  id={`${prefix}-tab-${tab.id}`}
-                  aria-controls={`${prefix}-panel-${tab.id}`}
-                  aria-selected={active === tab.id}
-                  tabIndex={active === tab.id ? 0 : -1}
-                  title={
-                    "kind" in tab
-                      ? tab.kind === "workspace"
-                        ? `${tab.loaded.file.path} · ${tab.loaded.source}`
-                        : (() => {
-                            const capture = captures.find(
-                              (file) => file.id === tab.capturedId,
-                            );
-                            return capture
-                              ? `${capture.path} · Captured from ${capture.source}`
-                              : tab.name;
-                          })()
-                      : tab.name
-                  }
-                  onClick={() => focusTab(tab.id)}
-                  className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm max-sm:min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                  onKeyDown={(event) => {
-                    let next: number | undefined;
-                    if (event.key === "ArrowRight")
-                      next = (index + 1) % visibleTabs.length;
-                    if (event.key === "ArrowLeft")
-                      next =
-                        (index - 1 + visibleTabs.length) % visibleTabs.length;
-                    if (event.key === "Home") next = 0;
-                    if (event.key === "End") next = visibleTabs.length - 1;
-                    if (next !== undefined) {
-                      event.preventDefault();
-                      focusTab(visibleTabs[next].id);
-                    }
-                    if (event.key === "Delete" && tab.closable) {
-                      event.preventDefault();
-                      closeTab(tab.id);
-                    }
-                  }}
+                <ChevronLeft size={20} aria-hidden />
+                Files
+              </button>
+              <h2
+                id={`${prefix}-title`}
+                title={tabTitle(activeFile)}
+                className="mb-1 min-w-0 flex-1 truncate px-1 text-sm font-medium"
+              >
+                {activeFile.name}
+              </h2>
+            </>
+          ) : (
+            <div
+              ref={tabStrip}
+              role="tablist"
+              aria-label="Computer tabs"
+              className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
+            >
+              {stripTabs.map((tab, index) => (
+                <div
+                  key={tab.id}
+                  className={`flex max-w-[min(12rem,100%)] shrink-0 items-center rounded-t-lg border border-b-0 ${active === tab.id ? "border-border bg-background" : "border-transparent text-muted-foreground hover:bg-muted/60"}`}
                 >
-                  <tab.icon size={15} className="shrink-0" aria-hidden />
-                  <span className="truncate">{tab.name}</span>
-                </button>
-                {tab.closable && (
                   <button
-                    aria-label={`Close ${tab.name} tab`}
-                    onClick={() => closeTab(tab.id)}
-                    className="mr-1 rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                    role="tab"
+                    id={`${prefix}-tab-${tab.id}`}
+                    aria-controls={`${prefix}-panel-${tab.id}`}
+                    aria-selected={active === tab.id}
+                    tabIndex={active === tab.id ? 0 : -1}
+                    title={"kind" in tab ? tabTitle(tab) : tab.name}
+                    onClick={() => focusTab(tab.id)}
+                    className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm max-sm:min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    onKeyDown={(event) => {
+                      let next: number | undefined;
+                      if (event.key === "ArrowRight")
+                        next = (index + 1) % stripTabs.length;
+                      if (event.key === "ArrowLeft")
+                        next =
+                          (index - 1 + stripTabs.length) % stripTabs.length;
+                      if (event.key === "Home") next = 0;
+                      if (event.key === "End") next = stripTabs.length - 1;
+                      if (next !== undefined) {
+                        event.preventDefault();
+                        focusTab(stripTabs[next].id);
+                      }
+                      if (event.key === "Delete" && tab.closable) {
+                        event.preventDefault();
+                        closeTab(tab.id);
+                      }
+                    }}
                   >
-                    <X size={13} />
+                    <tab.icon
+                      size={15}
+                      className="shrink-0 max-sm:hidden"
+                      aria-hidden
+                    />
+                    <span className="truncate">{tab.name}</span>
                   </button>
-                )}
-              </div>
-            ))}
-          </div>
-          {(tabScroll.left || tabScroll.right) && (
+                  {tab.closable && (
+                    <button
+                      aria-label={`Close ${tab.name} tab`}
+                      onClick={() => closeTab(tab.id)}
+                      className="mr-1 rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {!phone && (tabScroll.left || tabScroll.right) && (
             <div
               role="group"
               aria-label="Scroll computer tabs"
@@ -399,7 +455,7 @@ export function ComputerWorkspace({
                 title="Scroll tabs left"
                 disabled={!tabScroll.left}
                 onClick={() => scrollTabs(-1)}
-                className="rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronLeft size={16} />
               </button>
@@ -408,11 +464,58 @@ export function ComputerWorkspace({
                 title="Scroll tabs right"
                 disabled={!tabScroll.right}
                 onClick={() => scrollTabs(1)}
-                className="rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <ChevronRight size={16} />
               </button>
             </div>
+          )}
+          {phone && active === "files" && tabs.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  aria-label={`Open previews (${tabs.length})`}
+                  className="mb-1 h-11 shrink-0 gap-1 px-2.5"
+                >
+                  <Files size={16} aria-hidden />
+                  <span aria-hidden>{tabs.length}</span>
+                  <ChevronDown size={14} aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="w-64 max-w-[calc(100vw-2rem)]"
+                onEscapeKeyDown={(event) => event.stopPropagation()}
+                onCloseAutoFocus={(event) => {
+                  // The trigger unmounts with Files; focus moves to Back.
+                  if (!previewPicked.current) return;
+                  previewPicked.current = false;
+                  event.preventDefault();
+                }}
+              >
+                <DropdownMenuLabel>Open previews</DropdownMenuLabel>
+                {tabs.map((tab) => (
+                  <DropdownMenuItem
+                    key={tab.id}
+                    className="min-h-11"
+                    title={tabTitle(tab)}
+                    onSelect={() => {
+                      previewPicked.current = true;
+                      setActive(tab.id);
+                    }}
+                  >
+                    <FileText size={16} aria-hidden />
+                    <span className="min-w-0">
+                      <span className="block truncate">{tab.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {tabDetail(tab)}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           {!overlay && (
             <button
@@ -469,9 +572,11 @@ export function ComputerWorkspace({
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              role="tabpanel"
+              role={phone ? "region" : "tabpanel"}
               id={`${prefix}-panel-${tab.id}`}
-              aria-labelledby={`${prefix}-tab-${tab.id}`}
+              aria-labelledby={
+                phone ? `${prefix}-title` : `${prefix}-tab-${tab.id}`
+              }
               hidden={active !== tab.id}
               className="h-full flex-col data-[active=true]:flex"
               data-active={active === tab.id}
@@ -485,6 +590,7 @@ export function ComputerWorkspace({
                     <CapturedFilePreview
                       file={file}
                       visible={open && active === tab.id}
+                      compact={phone}
                       onClose={() => closeTab(tab.id)}
                     />
                   ) : saved.loading ? (
@@ -506,6 +612,7 @@ export function ComputerWorkspace({
               ) : (
                 <LoadedFilePreview
                   loaded={tab.loaded}
+                  compact={phone}
                   onClose={() => closeTab(tab.id)}
                 />
               )}
@@ -519,9 +626,11 @@ export function ComputerWorkspace({
 
 function LoadedFilePreview({
   loaded,
+  compact,
   onClose,
 }: {
   loaded: LoadedWorkspaceFile;
+  compact: boolean;
   onClose: () => void;
 }) {
   const [error, setError] = useState("");
@@ -592,6 +701,7 @@ function LoadedFilePreview({
       <WorkspaceFilePreview
         file={loaded.file}
         busy={busy}
+        compact={compact}
         onClose={onClose}
         onDownload={() => void download()}
       />

@@ -89,15 +89,18 @@ type PreviewSettled = {
 /**
  * `visible` opts into Files preview telemetry; callers outside the Computer
  * Files tabs (Activity, standalone panels) omit it and report no previews.
+ * `compact` callers provide their own back navigation, so close actions hide.
  */
 export function CapturedFilePreview({
   file,
   onClose,
   visible,
+  compact = false,
 }: {
   file: CapturedFile;
   onClose: () => void;
   visible?: boolean;
+  compact?: boolean;
 }) {
   const getUrl = useAction(api.s3Actions.getFileUrlAction);
   const [preview, setPreview] = useState<WorkspacePreview | null>(null);
@@ -310,20 +313,24 @@ export function CapturedFilePreview({
           file={preview}
           onClose={onClose}
           busy={busy}
+          compact={compact}
           onDownload={() => void download()}
           partial={file.partial}
         />
       ) : (
         <div className="flex gap-2">
           <Button
+            className={compact ? "h-11" : undefined}
             disabled={busy || !file.saved?.fileId}
             onClick={() => void download()}
           >
             Download saved file
           </Button>
-          <Button variant="ghost" onClick={onClose}>
-            Back to files
-          </Button>
+          {!compact && (
+            <Button variant="ghost" onClick={onClose}>
+              Back to files
+            </Button>
+          )}
         </div>
       )}
     </div>

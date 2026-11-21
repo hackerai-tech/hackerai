@@ -22,18 +22,25 @@ export type WorkspacePreview = {
   url?: string;
 };
 
+/**
+ * `compact` is for phone layouts whose header already shows the file name and
+ * back navigation: it omits both, enlarges touch targets, and lets rendered
+ * documents fill the remaining height.
+ */
 export default function WorkspaceFilePreview({
   file,
   onClose,
   onDownload,
   busy,
   partial = false,
+  compact = false,
 }: {
   file: WorkspacePreview;
   onClose: () => void;
   onDownload: () => void;
   busy: boolean;
   partial?: boolean;
+  compact?: boolean;
 }) {
   const [source, setSource] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
@@ -80,17 +87,20 @@ export default function WorkspaceFilePreview({
       className="flex min-h-48 flex-1 flex-col overflow-hidden rounded-lg border bg-background"
     >
       <div className="flex flex-wrap items-center gap-1 border-b p-2">
-        <span
-          title={file.path}
-          className="min-w-0 flex-1 truncate text-sm font-medium"
-        >
-          {file.name}
-        </span>
+        {!compact && (
+          <span
+            title={file.path}
+            className="min-w-0 flex-1 truncate text-sm font-medium"
+          >
+            {file.name}
+          </span>
+        )}
         {(hasRendered || /\.json$/i.test(file.name)) && (
           <div className="flex gap-1">
             <Button
               size="sm"
               variant={!source ? "secondary" : "ghost"}
+              className={compact ? "h-11 px-4" : undefined}
               aria-pressed={!source}
               onClick={() => setSource(false)}
             >
@@ -99,6 +109,7 @@ export default function WorkspaceFilePreview({
             <Button
               size="sm"
               variant={source ? "secondary" : "ghost"}
+              className={compact ? "h-11 px-4" : undefined}
               aria-pressed={source}
               onClick={() => setSource(true)}
             >
@@ -106,35 +117,41 @@ export default function WorkspaceFilePreview({
             </Button>
           </div>
         )}
-        {file.text !== undefined && (
+        <div className="ml-auto flex gap-1">
+          {file.text !== undefined && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className={compact ? "size-11" : undefined}
+              aria-label="Copy file contents"
+              onClick={() => void copy()}
+            >
+              <Copy size={compact ? 16 : 14} />
+            </Button>
+          )}
           <Button
             size="icon"
             variant="ghost"
-            aria-label="Copy file contents"
-            onClick={() => void copy()}
+            className={compact ? "size-11" : undefined}
+            aria-label={
+              partial ? "Download captured excerpt" : "Download previewed file"
+            }
+            disabled={busy}
+            onClick={onDownload}
           >
-            <Copy size={14} />
+            <Download size={compact ? 16 : 14} />
           </Button>
-        )}
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={
-            partial ? "Download captured excerpt" : "Download previewed file"
-          }
-          disabled={busy}
-          onClick={onDownload}
-        >
-          <Download size={14} />
-        </Button>
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label="Close file preview"
-          onClick={onClose}
-        >
-          <X size={14} />
-        </Button>
+          {!compact && (
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label="Close file preview"
+              onClick={onClose}
+            >
+              <X size={14} />
+            </Button>
+          )}
+        </div>
       </div>
       <div className="border-b px-3 py-1.5 text-xs text-muted-foreground">
         <span className="sr-only">File path: </span>
@@ -150,7 +167,9 @@ export default function WorkspaceFilePreview({
           {copyStatus}
         </p>
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div
+        className={`min-h-0 flex-1 overflow-auto ${compact && document ? "flex flex-col" : ""}`}
+      >
         {file.url ? (
           <Image
             unoptimized
@@ -171,7 +190,7 @@ export default function WorkspaceFilePreview({
               sandbox=""
               referrerPolicy="no-referrer"
               srcDoc={document}
-              className="h-80 w-full border-0 bg-white"
+              className={`w-full border-0 bg-white ${compact ? "min-h-60 flex-1" : "h-80"}`}
             />
           </>
         ) : table ? (

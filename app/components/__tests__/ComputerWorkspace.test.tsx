@@ -16,6 +16,7 @@ const tracked = (event: string) =>
     .map(([call]) => call.properties);
 const mockGetUrl = jest.fn();
 let mockOverlay = false;
+let mockPhone = false;
 let mockNative = false;
 const mockSavedQuery = jest.fn();
 let mockSavedPage: { results: unknown[]; status: string; loadMore: () => void };
@@ -42,6 +43,9 @@ jest.mock("../../contexts/GlobalState", () => ({
 }));
 jest.mock("@/hooks/use-workspace-layout", () => ({
   useComputerSidebarOverlay: () => mockOverlay,
+}));
+jest.mock("@/hooks/use-media-query", () => ({
+  useMediaQuery: () => mockPhone,
 }));
 jest.mock("../AllFilesDialog", () => ({ AllFilesDialog: () => null }));
 jest.mock("../../hooks/useTauri", () => ({
@@ -91,6 +95,7 @@ const props = {
 
 beforeEach(() => {
   mockOverlay = false;
+  mockPhone = false;
   mockNative = false;
   mockGetUrl.mockReset();
   mockSavedQuery.mockClear();
@@ -465,7 +470,7 @@ it("lets users reach overflowed tabs and disables arrows at the corresponding ed
   expect(strip.scrollLeft).toBeLessThan(400);
 });
 
-it("uses direct tabs and a clear close action in the mobile overlay", async () => {
+it("uses direct tabs and a clear close action in the wider overlay", async () => {
   mockOverlay = true;
   const onClose = jest.fn();
   render(<ComputerWorkspace {...props} onClose={onClose} />);
@@ -479,6 +484,40 @@ it("uses direct tabs and a clear close action in the mobile overlay", async () =
   expect(await screen.findByText("desktop historical version")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Close Computer" }));
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("returns from a phone preview to the same Files view and reopens the retained preview", async () => {
+  mockOverlay = true;
+  mockPhone = true;
+  render(<ComputerWorkspace {...props} />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Search chat files" }), {
+    target: { value: "report" },
+  });
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  const back = screen.getByRole("button", { name: "Back to Files" });
+  expect(back).toHaveFocus();
+  fireEvent.click(back);
+  expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(
+    screen.getByRole("textbox", { name: "Search chat files" }),
+  ).toHaveValue("report");
+  expect(screen.getByText("desktop historical version")).not.toBeVisible();
+  fireEvent.keyDown(screen.getByRole("button", { name: /Open previews/ }), {
+    key: "Enter",
+  });
+  fireEvent.click(await screen.findByRole("menuitem", { name: /report\.txt/ }));
+  expect(screen.getByText("desktop historical version")).toBeVisible();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Back to Files" })).toHaveFocus(),
+  );
 });
 
 it("clears a deleted Activity entry without dismissing the selected Files tab", () => {
