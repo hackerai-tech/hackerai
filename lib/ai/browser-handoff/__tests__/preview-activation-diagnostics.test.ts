@@ -1074,6 +1074,11 @@ const STARTED_OPEN_CAPTURE_KEYS = [
   "capture_open_start_write_order_v1",
   "capture_open_preconnect_held_v1",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
+// This connected-deadline marker is exclusive to completed OPEN and is
+// appended by the route only after negotiation and client context.
+const COMPLETED_OPEN_OPTIONAL_KEYS = [
+  "capture_active_other_command_v1",
+] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
 const EXIT_3_OR_5_CAPTURE_KEYS: ReadonlyArray<string> = [
   "capture_deadline_diagnostic_version",
   "capture_deadline_phase",
@@ -1100,6 +1105,7 @@ type UnclassifiedCaptureKey = Exclude<
   | (typeof COMMAND_EXIT_CAPTURE_KEYS)[number]
   | (typeof MISSING_SOCKET_CAPTURE_KEYS)[number]
   | (typeof STARTED_OPEN_CAPTURE_KEYS)[number]
+  | (typeof COMPLETED_OPEN_OPTIONAL_KEYS)[number]
   | (typeof OTHER_STAGE_CAPTURE_KEYS)[number]
   | keyof BrowserBridgeFailureContext
 >;
@@ -1178,6 +1184,30 @@ describe("actual phLogger to OTLP export", () => {
     expect(records).toHaveLength(1);
     return records[0].attributes as Attribute[];
   };
+  it("exports the finite active EVAL marker through OTLP", async () => {
+    const fields = routeFields({
+      capture_stage: "stream_status",
+      capture_wrapper_command_class: "other",
+      capture_open_phase: "completed",
+      capture_deadline_phase: "awaiting_response",
+      capture_daemon_socket_pending_count: 0,
+      capture_daemon_socket_held_count: 3,
+    });
+    const attributes = await exported(
+      {
+        ...fields,
+        capture_negotiated_deferrals_v1: "open",
+        capture_active_other_command_v1: "eval",
+      },
+      `${ENDPOINT}?fresh=1`,
+    );
+    expect(attributes).toContainEqual({
+      key: "capture_active_other_command_v1",
+      value: { stringValue: "eval" },
+    });
+    expectBaselineSurvives(attributes, fields);
+  });
+
   const withoutTimestamp = (attributes: Attribute[]) =>
     attributes.map(({ key, value }) =>
       key === "timestamp" ? { key, value: "<time>" } : { key, value },

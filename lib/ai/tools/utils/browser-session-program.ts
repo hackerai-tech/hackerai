@@ -379,6 +379,13 @@ def record_wrapper(phase, status=None, executed=False):
         # Latest-command receipt only, appended last and omitted at the same cap.
         if result is not None and len(json.dumps(dict(latest, lr=result))) <= 512:
             latest = dict(latest, lr=result)
+        # e1: STARTED only, for the exact normalized plain eval with one script argument
+        # that is not option-shaped; any other prefix, option or argv shape is omitted.
+        # A declaration, never the argument, execution or a cause. Appended last and
+        # omitted rather than displacing any field at the same cap.
+        if (phase == 'started' and len(sys.argv) == 5 and sys.argv[1:4] == ['--session', name, 'eval'] and
+                sys.argv[4] and not sys.argv[4].startswith('-') and len(json.dumps(dict(latest, e1=1))) <= 512):
+            latest = dict(latest, e1=1)
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', latest)

@@ -374,6 +374,41 @@ it("records only the closed negotiation result on an opted-in capture failure", 
   expect(JSON.stringify(fields)).not.toContain("PRIVATE");
 });
 
+it.each([false, true])(
+  "gives the active EVAL diagnostic only spare log budget (full: %s)",
+  async (full) => {
+    mockState = "agent";
+    const captureFields = full
+      ? Object.fromEntries(
+          Array.from({ length: 60 }, (_, i) => ["field_" + i, i]),
+        )
+      : {};
+    mockCapture.mockImplementationOnce(async (...args) => {
+      const report = args.at(-2) as (context: Record<string, unknown>) => void;
+      report({ ...captureFields, capture_active_other_command_v1: "eval" });
+      throw new Error("PRIVATE capture failure");
+    });
+
+    const response = await preview(true, undefined, "deferOpen=1");
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(fields).toMatchObject({
+      ...captureFields,
+      capture_negotiated_deferrals_v1: "open",
+      request_id: previewRequestId,
+    });
+    if (full) {
+      expect(Object.keys(fields ?? {})).toHaveLength(72);
+      expect(fields).not.toHaveProperty("capture_active_other_command_v1");
+    } else {
+      expect(fields).toHaveProperty("capture_active_other_command_v1", "eval");
+    }
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
 it.each([
   ["agent", false, true, "deferWait=1"],
   ["agent", true, false, "deferWait=1"],

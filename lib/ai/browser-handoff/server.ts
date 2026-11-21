@@ -990,6 +990,12 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // request acceptance or a cause. Absent is unmeasured (older helper, any unverified
   // sample, other counts, budget or any other stage).
   capture_open_preconnect_held_v1?: "present" | "absent";
+  // Opted-in passive status only, beside that queue for the matching successful OPEN
+  // with none pending and at least two held: the selected session's live STARTED other
+  // wrapper (its exact incarnation, reread after the sample) declared a plain eval.
+  // A declaration, not the daemon's active command, its progress or a cause. Absent is
+  // unmeasured (older writer or helper, any other argv, count or stage, or budget).
+  capture_active_other_command_v1?: "eval";
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -1373,6 +1379,7 @@ export async function captureBrowserFrame(
         | "capture_daemon_socket_held_count"
         | "capture_open_start_write_order_v1"
         | "capture_open_preconnect_held_v1"
+        | "capture_active_other_command_v1"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -1757,6 +1764,23 @@ export async function captureBrowserFrame(
                 )
                   precondition.capture_open_preconnect_held_v1 =
                     preconnectHeld === 1 ? "present" : "absent";
+                // Only this request's own OPEN opt-in, at its status lookup, beside the
+                // completed OPEN branch above and the live STARTED other wrapper.
+                if (
+                  stage === "stream_status" &&
+                  deferDuringOpen &&
+                  precondition.capture_open_phase === "completed" &&
+                  precondition.capture_wrapper_action === "other" &&
+                  precondition.capture_wrapper_phase === "started" &&
+                  precondition.capture_wrapper_session_matches === true &&
+                  precondition.capture_wrapper_process_visibility ===
+                    "same_incarnation_visible" &&
+                  precondition.capture_wrapper_command_class === "other" &&
+                  queue[1] === 0 &&
+                  queue[2] >= 2 &&
+                  parsed?.e1 === 1
+                )
+                  precondition.capture_active_other_command_v1 = "eval";
               }
               const openIdle = parsed?.open_idle;
               if (

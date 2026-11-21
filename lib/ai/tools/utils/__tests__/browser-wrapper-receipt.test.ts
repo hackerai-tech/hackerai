@@ -66,11 +66,17 @@ runpy.run_path(script,run_name='__main__')
  * Run the generated wrapper with a clock whose millisecond timestamp has the
  * given digit count, to size receipts near the private reader cap.
  */
-const CLOCK_BOOTSTRAP = String.raw`import runpy,sys,time
-script,digits=sys.argv[1:3]
-sys.argv=[script,*sys.argv[3:]]
+const CLOCK_BOOTSTRAP = String.raw`import os,runpy,sys,time
+script,digits,disable_process=sys.argv[1:4]
+sys.argv=[script,*sys.argv[4:]]
 now=float(2*10**(int(digits)-4))
 time.time=lambda: now
+if disable_process=='1':
+    real_open=os.open
+    def without_process(path,*args,**kwargs):
+        if path=='/proc/self/stat': raise FileNotFoundError(path)
+        return real_open(path,*args,**kwargs)
+    os.open=without_process
 runpy.run_path(script,run_name='__main__')
 `;
 
@@ -196,7 +202,7 @@ if x['verify']:
 command=[sys.executable,str(script),*x['args']]
 if x.get('procStat') is not None: command=[sys.executable,'-c',x['bootstrap'],str(script),x['procStat'] or '','1' if x['procStatCloseFails'] else '',*x['args']]
 if x.get('lstatFault'): command=[sys.executable,'-c',x['lstatBootstrap'],str(script),x['lstatFault'],*x['args']]
-if x.get('atDigits'): command=[sys.executable,'-c',x['clockBootstrap'],str(script),str(x['atDigits']),*x['args']]
+if x.get('atDigits'): command=[sys.executable,'-c',x['clockBootstrap'],str(script),str(x['atDigits']),'1' if x.get('procStat') is False else '0',*x['args']]
 if x.get('monotonic'): command=[sys.executable,'-c',x['monotonicBootstrap'],str(script),x['monotonic'],*x['args']]
 result=subprocess.run(command,env=env,capture_output=True)
 if mode=='socket_removed':
@@ -879,6 +885,112 @@ it("adds the category beside a maximal private identity within the 512-byte read
   });
   expect(commandClass(result.started)).toBe("open");
   expect(result.started_bytes).toBeLessThanOrEqual(512);
+});
+
+it.each<[string[]]>([
+  [["eval", "PRIVATE_CODE"]],
+  [["--session", "PRIVATE_SESSION", "eval", "PRIVATE_CODE"]],
+  [["eval", "PRIVATE_CODE", "--session", "PRIVATE_SESSION"]],
+  [["eval", "PRIVATE --help -V CODE"]],
+])(
+  "declares a running plain eval only on its STARTED receipt for %j",
+  (args) => {
+    const result = exercise(root, 37, false, args);
+    expect(result.status).toBe(37);
+    expect([result.stdout, result.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    expect(
+      JSON.parse(readFileSync(path.join(root, "cli-argv.json"), "utf8")),
+    ).toEqual(normalizedArgv(args));
+    // Appended last, beside the unchanged generic category.
+    expect(result.started).toMatchObject({
+      phase: "started",
+      action: "other",
+      k1: 6,
+      e1: 1,
+    });
+    expect(Object.keys(result.started).at(-1)).toBe("e1");
+    // Never on the completed record, nor carried into the next STARTED receipt.
+    expect(result.finished).toMatchObject({ phase: "completed", exit: 37 });
+    expect(result.finished).not.toHaveProperty("e1");
+    const next = exercise(root, 0, false, snapshotArgs);
+    expect(next.started).not.toHaveProperty("e1");
+    expect(result.open).toBeNull();
+    expect(JSON.stringify([result, next])).not.toMatch(
+      /PRIVATE|CODE|"eval"|--help/,
+    );
+    expect(result.leftovers).toBe(0);
+  },
+);
+
+it.each<[string[]]>([
+  [["eval"]],
+  [["eval", ""]],
+  [["eval", "--help"]],
+  [["eval", "-h"]],
+  [["eval", "--version"]],
+  [["eval", "-b", "PRIVATE_CODE"]],
+  [["eval", "--stdin"]],
+  [["eval", "-PRIVATE_CODE"]],
+  [["eval", "PRIVATE_CODE", "PRIVATE_EXTRA"]],
+  [["eval", "PRIVATE_CODE", "--json"]],
+  [["--headed", "eval", "PRIVATE_CODE"]],
+  [["--session", "PRIVATE_SESSION", "--json", "eval", "PRIVATE_CODE"]],
+  [["PRIVATE_PREFIX", "eval", "PRIVATE_CODE"]],
+  [["EVAL", "PRIVATE_CODE"]],
+  [["evaluate", "PRIVATE_CODE"]],
+  [["wait", "12000"]],
+  [["--version"]],
+])("does not declare a plain eval for %j", (args) => {
+  const result = exercise(root, 0, false, args);
+  expect(result.status).toBe(0);
+  expect([result.stdout, result.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+  expect(
+    JSON.parse(readFileSync(path.join(root, "cli-argv.json"), "utf8")),
+  ).toEqual(normalizedArgv(args));
+  for (const receipt of [result.started, result.finished])
+    expect(receipt).not.toHaveProperty("e1");
+  expect(JSON.stringify(result)).not.toContain("PRIVATE");
+});
+
+it("omits the eval declaration before any existing field at the private 512-byte cap", () => {
+  const evalCall = (atDigits?: number) =>
+    exercise(
+      root,
+      0,
+      false,
+      ["eval", "PRIVATE_CODE"],
+      false,
+      undefined,
+      true,
+      false, // Keep the size independent of PID digits on Linux.
+      false,
+      { atDigits },
+    );
+  const withoutAt = ({ at: _at, ...rest }: Record<string, unknown>) => rest;
+  // Later STARTED receipts carry this same-session result; size against that shape.
+  evalCall();
+  const calibration = evalCall();
+  expect(calibration.started).toMatchObject({ k1: 6, lr: [1, 0, 0], e1: 1 });
+  // Python's default separators: `, "e1": 1`.
+  const declarationBytes = Buffer.byteLength(', "e1": 1');
+  const fits = 13 + 512 - calibration.started_bytes;
+  const exact = evalCall(fits);
+  expect(exact.status).toBe(0);
+  expect(exact.started_bytes).toBe(512); // Exactly at the cap, e1 still fits.
+  expect(exact.started.e1).toBe(1);
+  const over = evalCall(fits + 1);
+  expect(over.status).toBe(0);
+  expect([over.stdout, over.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+  expect(over.started_bytes).toBe(512 - declarationBytes + 1);
+  expect(over.started).not.toHaveProperty("e1");
+  // Every preexisting field, including the identity, k1 and lr, is retained unchanged.
+  const { e1: _e1, ...previous } = withoutAt(calibration.started);
+  // The private identity differs per process; only its presence is compared.
+  const { process: calibrationProcess, ...comparable } = previous;
+  const { process: overProcess, ...overRest } = withoutAt(over.started);
+  expect(overRest).toEqual(comparable);
+  expect(overProcess === undefined).toBe(calibrationProcess === undefined);
+  expect(over.leftovers).toBe(0);
 });
 
 /** One wrapped call with a controlled monotonic clock ("start,end" or "fail"). */
