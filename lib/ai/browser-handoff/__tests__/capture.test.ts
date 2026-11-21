@@ -1951,6 +1951,111 @@ describe("viewport failure context", () => {
     expect(observe).toHaveBeenCalledTimes(1);
     expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   });
+
+  const packet = (phase: string) => JSON.stringify({ deadline: [1, phase] });
+
+  it.each([
+    ["returned", "connecting"],
+    ["returned", "awaiting_response"],
+    ["thrown", "partial_response"],
+  ] as const)(
+    "reports the %s resize deadline phase %s",
+    async (source, phase) => {
+      const sandbox = fixture();
+      const result = {
+        exitCode: 3,
+        stdout: packet(phase),
+        stderr: "PRIVATE_CANARY",
+      };
+      const error = new CommandExitError(result);
+      if (source === "returned")
+        sandbox.commands.run.mockResolvedValueOnce(result);
+      else sandbox.commands.run.mockRejectedValueOnce(error);
+      const observe = jest.fn();
+      const outcome = await resize(sandbox, observe);
+      if (source === "returned")
+        expect(outcome).toBeInstanceOf(BrowserPreviewUnavailable);
+      else expect(outcome).toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: 3,
+            viewport_deadline_phase: phase,
+          },
+        ],
+      ]);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [3, '{"deadline":[1,"connecting"]'],
+    [3, JSON.stringify({ deadline: [2, "connecting"] })],
+    [3, packet("unexpected")],
+    [
+      3,
+      JSON.stringify({ deadline: [1, "connecting"], padding: "é".repeat(280) }),
+    ],
+    [4, packet("connecting")],
+  ])(
+    "omits an invalid or ineligible packet at exit %s",
+    async (exitCode, stdout) => {
+      const sandbox = fixture();
+      sandbox.commands.run.mockResolvedValueOnce({
+        exitCode,
+        stdout,
+        stderr: "",
+      });
+      const observe = jest.fn();
+      await resize(sandbox, observe);
+      expect(observe.mock.calls).toEqual([
+        [
+          {
+            viewport_diagnostic_version: 1,
+            viewport_failure_phase: "resize_command",
+            viewport_error_kind: "command_exit",
+            viewport_command_exit_code: exitCode,
+          },
+        ],
+      ]);
+    },
+  );
+
+  it("omits the deadline when stdout is an accessor", async () => {
+    const sandbox = fixture();
+    const stdout = jest.fn(() => packet("connecting"));
+    const result = { exitCode: 3, stdout: "", stderr: "" };
+    Object.defineProperty(result, "stdout", { get: stdout });
+    sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn();
+    await resize(sandbox, observe);
+    expect(stdout).not.toHaveBeenCalled();
+    expect(observe.mock.calls[0][0]).not.toHaveProperty(
+      "viewport_deadline_phase",
+    );
+  });
+
+  it("keeps a capture deadline out of the resize phase field", async () => {
+    const error = new CommandExitError({
+      exitCode: 3,
+      stdout: packet("awaiting_response"),
+      stderr: "",
+    });
+    const sandbox = screenshotFixture(async () => {
+      throw error;
+    });
+    const observe = jest.fn();
+    expect(await resize(sandbox, observe)).toBe(error);
+    expect(observe.mock.calls[0][0]).toEqual({
+      viewport_diagnostic_version: 1,
+      viewport_failure_phase: "capture_frame",
+      viewport_error_kind: "command_exit",
+      viewport_command_exit_code: 3,
+    });
+  });
 });
 
 it("rejects unbounded viewport dimensions before executing a command", async () => {

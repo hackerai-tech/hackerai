@@ -144,6 +144,18 @@ export function browserRelayRenewFailureContext(error: unknown) {
 }
 
 const returnedRelayStopExits = new WeakMap<object, number | "other">();
+/** The daemon helper's closed exit3 deadline tuple; any other shape is unmeasured. */
+const daemonDeadlinePhase = (parsed: unknown) => {
+  const deadline = (parsed as { deadline?: unknown } | null | undefined)
+    ?.deadline;
+  return Array.isArray(deadline) &&
+    deadline.length === 2 &&
+    deadline[0] === 1 &&
+    BROWSER_DAEMON_DEADLINE_PHASES.includes(deadline[1])
+    ? (deadline[1] as (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number])
+    : undefined;
+};
+
 const exitStatus = (value: unknown) =>
   typeof value === "number" &&
   Number.isInteger(value) &&
@@ -1419,16 +1431,11 @@ export async function captureBrowserFrame(
                   precondition.capture_cli_at_prepare_patch = cli[2] % 1000;
                 }
               }
-              const deadline = parsed?.deadline;
-              if (
-                code === 3 &&
-                Array.isArray(deadline) &&
-                deadline.length === 2 &&
-                deadline[0] === 1 &&
-                BROWSER_DAEMON_DEADLINE_PHASES.includes(deadline[1])
-              ) {
+              const deadline =
+                code === 3 ? daemonDeadlinePhase(parsed) : undefined;
+              if (deadline) {
                 precondition.capture_deadline_diagnostic_version = 1;
-                precondition.capture_deadline_phase = deadline[1];
+                precondition.capture_deadline_phase = deadline;
               }
               const validation = parsed?.r1;
               if (
@@ -1882,6 +1889,9 @@ export type BrowserViewportFailureContext = {
       >["relay_renew_error_kind"]
     | "preview_unavailable";
   viewport_command_exit_code: number | "none" | "other";
+  // Resize command exit3 only: the helper's own 6s deadline phase, not a cause.
+  // Absent means unmeasured (other exit, older writer or unreadable packet).
+  viewport_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
 };
 
 /** Resize only the currently granted session; callers hold the input lease. */
@@ -1902,6 +1912,7 @@ export async function resizeBrowserViewport(
   let phase: BrowserViewportFailureContext["viewport_failure_phase"] =
     "resize_command";
   let returnedExitCode: number | "other" | undefined;
+  let timeoutResult: unknown;
   try {
     const result = await sandbox.commands.run(
       browserDaemonCommand(session.directory, browserSessionName, {
@@ -1918,6 +1929,7 @@ export async function resizeBrowserViewport(
     const exitCode = result.exitCode;
     if (exitCode !== 0) {
       returnedExitCode = exitStatus(exitCode);
+      if (exitCode === 3) timeoutResult = result;
       throw new BrowserPreviewUnavailable("disconnected");
     }
     phase = "capture_frame";
@@ -1951,12 +1963,41 @@ export async function resizeBrowserViewport(
       } catch {
         // An unreadable result or value keeps the phase and original error.
       }
+      let deadline: Pick<
+        BrowserViewportFailureContext,
+        "viewport_deadline_phase"
+      > = {};
+      try {
+        if (phase === "resize_command" && exitCode === 3) {
+          // Returned or SDK-owned result data only; never output accessors.
+          const result =
+            timeoutResult ??
+            (error instanceof CommandExitError
+              ? Object.getOwnPropertyDescriptor(error, "result")?.value
+              : undefined);
+          const stdout =
+            result && typeof result === "object"
+              ? Object.getOwnPropertyDescriptor(result, "stdout")?.value
+              : undefined;
+          // The daemon emits packets no larger than 544 bytes.
+          const value =
+            typeof stdout === "string" &&
+            stdout.length <= 544 &&
+            Buffer.byteLength(stdout) <= 544
+              ? daemonDeadlinePhase(JSON.parse(stdout))
+              : undefined;
+          if (value) deadline = { viewport_deadline_phase: value };
+        }
+      } catch {
+        // A malformed packet omits only this optional field.
+      }
       try {
         onFailure({
           viewport_diagnostic_version: 1,
           viewport_failure_phase: phase,
           viewport_error_kind: kind,
           viewport_command_exit_code: exitCode,
+          ...deadline,
         });
       } catch {
         // Observers cannot replace the original error or retry the resize.
