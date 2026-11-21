@@ -636,9 +636,9 @@ function activeWait() {
   return wrapper.wrapper_phase === 'started' && wrapper.wrapper_session_matches === true &&
     wrapper.w1 === 3 && wrapper.k1 === 0;
 }
-/** Only an opted-in status request whose selected owned socket is absent: true when the
- * wrapper's private close proof links to the still-current selection inode for this exact
- * name. The proof stays pinned by its descriptor, so a replaced proof cannot alias a reused
+/** Only an opted-in status or screenshot request whose selected owned socket is absent: true
+ * when the wrapper's private close proof links to the still-current selection inode for this
+ * exact name. The proof stays pinned by its descriptor, so a replaced proof cannot alias a reused
  * inode; with it pinned the socket is absent again and the selection is unchanged, so no
  * later command has started. Never exports the name, path or inode; any doubt is false.
  */
@@ -646,8 +646,8 @@ function sessionClosed() {
   let fd;
   try {
     const opted = JSON.parse(payload);
-    if (opted?.recognize_closed !== true || opted.action !== 'stream_status' || !argumentsValid ||
-        typeof fs.constants?.O_NOFOLLOW !== 'number' || typeof fs.constants.O_NONBLOCK !== 'number' ||
+    if (opted?.recognize_closed !== true || !['stream_status', 'screenshot'].includes(opted.action) ||
+        !argumentsValid || typeof fs.constants?.O_NOFOLLOW !== 'number' || typeof fs.constants.O_NONBLOCK !== 'number' ||
         [rootInfo, socketsInfo].some(item => !item?.isDirectory() || item.uid !== process.getuid() ||
           (item.mode & 0o077) !== 0)) return false;
     const uid = BigInt(process.getuid());
@@ -793,8 +793,16 @@ try {
         finish(0, response);
       } catch { finish(5, { r1: [1, 0] }); }
     });
-    socket.on('error', () => finish(6));
-    socket.on('close', () => { if (!done) finish(6); });
+    // A connection ending without a final reply is never a close by itself. Only an
+    // opted-in screenshot (status exits already report closed) whose selected socket
+    // is now absent beside the same verified close proof answers the helper literal.
+    const dropped = () => {
+      if (done) return;
+      if (request.action === 'screenshot' && sessionClosed()) finish(0, { session_closed: 1 });
+      else finish(6);
+    };
+    socket.on('error', dropped);
+    socket.on('close', dropped);
   }
 } catch (error) {
   let code;
@@ -827,9 +835,11 @@ try {
 export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
 
 /**
- * The helper's exact exit-0 output when a recognize_closed status request found
- * the selected owned socket absent after the wrapper's verified close of that
- * still-current selection. A daemon reply can never equal this literal.
+ * The helper's exact exit-0 output when a recognize_closed status or screenshot
+ * request found the selected owned socket absent after the wrapper's verified
+ * close of that still-current selection; a screenshot also checks when its
+ * connection ends without a final reply. A daemon reply can never equal this
+ * literal.
  */
 export const BROWSER_DAEMON_SESSION_CLOSED = '{"session_closed":1}';
 
@@ -854,13 +864,15 @@ type BrowserDaemonRequest =
       recognize_closed?: true;
       observe_progress?: true;
     }
-  // defer_wait has the same meaning for a fresh passive preview's screenshot.
+  // defer_wait and recognize_closed have the same meanings for a fresh passive
+  // preview's screenshot; both are stripped before any daemon traffic.
   | {
       action: "screenshot";
       path: string;
       format: "jpeg";
       quality: 65;
       defer_wait?: true;
+      recognize_closed?: true;
     }
   | {
       action: "viewport";

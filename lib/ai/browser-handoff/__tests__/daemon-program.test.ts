@@ -3480,13 +3480,23 @@ function closedDaemon(
     setTimeout: () => 1,
     clearTimeout: jest.fn(),
   });
-  return { socket, connect, exit, output, opened, descriptors };
+  return { socket, connect, exit, output, opened, descriptors, files };
 }
+
+const closedScreenshot = {
+  action: "screenshot",
+  path: directory + "/preview.jpg",
+  format: "jpeg",
+  quality: 65,
+  recognize_closed: true,
+};
 
 it.each<Record<string, unknown>>([
   closedRequest,
   { ...closedRequest, owned_port: true },
   { ...closedRequest, defer_wait: true },
+  closedScreenshot,
+  { ...closedScreenshot, defer_wait: true },
 ])(
   "answers only the helper literal for a verified close of the absent selected socket: %j",
   (request) => {
@@ -3571,16 +3581,20 @@ it.each<[string, Parameters<typeof closedDaemon>[0]]>([
     { request: { ...closedRequest, recognize_closed: 1 } },
   ],
   [
-    "the request is not a status request",
+    "the request is neither status nor screenshot",
     {
       request: {
-        action: "screenshot",
-        path: directory + "/preview.jpg",
-        format: "jpeg",
-        quality: 65,
+        action: "viewport",
+        width: 390,
+        height: 844,
+        deviceScaleFactor: 1,
         recognize_closed: true,
       },
     },
+  ],
+  [
+    "the screenshot opt-in is a string",
+    { request: { ...closedScreenshot, recognize_closed: "true" } },
   ],
 ])(
   "keeps the unchanged missing-socket exit2 packet when %s",
@@ -3634,6 +3648,137 @@ it("strips the opt-in before an existing daemon sees the request", () => {
   expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
   // A live socket never consults the close proof.
   expect(d.opened).toEqual([]);
+});
+
+describe("a screenshot connection that ends without a final reply", () => {
+  const liveSocket = { [closedSocketPath]: { kind: "socket", ino: "30" } };
+  type Ending = (d: ReturnType<typeof closedDaemon>) => void;
+  const socketError = (code: string) =>
+    Object.assign(new Error("PRIVATE"), { code });
+  const errorBeforeConnect: Ending = (d) =>
+    d.socket.emit("error", socketError("ENOENT"));
+  const resetAfterWrite: Ending = (d) => {
+    d.socket.emit("connect");
+    d.socket.emit("error", socketError("ECONNRESET"));
+    d.socket.emit("close");
+  };
+  const closeAfterPartialReply: Ending = (d) => {
+    d.socket.emit("connect");
+    d.socket.emit("data", '{"id":"hackerai-preview"');
+    d.socket.emit("close");
+  };
+  const endings: [string, Ending][] = [
+    ["the listener disappears before connect", errorBeforeConnect],
+    ["the written request's connection resets", resetAfterWrite],
+    ["the connection closes after a partial reply", closeAfterPartialReply],
+  ];
+  /** Start with the selected socket present; it disappears before the ending. */
+  const run = (
+    ending: Ending,
+    options: Parameters<typeof closedDaemon>[0] & {
+      socketRemains?: boolean;
+    } = {},
+  ) => {
+    const d = closedDaemon({
+      request: closedScreenshot,
+      ...options,
+      files: { ...liveSocket, ...options.files },
+    });
+    expect(d.connect.mock.calls).toEqual([[closedSocketPath]]);
+    if (!options.socketRemains) d.files.delete(closedSocketPath);
+    ending(d);
+    return d;
+  };
+
+  it.each(endings)(
+    "answers the helper literal for a verified close when %s",
+    (_case, ending) => {
+      const d = run(ending);
+      expect(d.exit.mock.calls).toEqual([[0]]);
+      expect(d.output.mock.calls).toEqual([[BROWSER_DAEMON_SESSION_CLOSED]]);
+      expect(d.descriptors.size).toBe(0);
+      // The daemon never receives the internal opt-in.
+      for (const [line] of d.socket.write.mock.calls)
+        expect(JSON.parse(line)).toEqual({
+          action: "screenshot",
+          path: directory + "/preview.jpg",
+          format: "jpeg",
+          quality: 65,
+          id: "hackerai-preview",
+        });
+    },
+  );
+
+  it.each(
+    (
+      [
+        ["no proof exists", { files: { [proofPath]: undefined } }],
+        [
+          "a later command published a new selection inode",
+          {
+            files: {
+              [activePath]: { ...selection, ino: "1152921504606846978" },
+            },
+          },
+        ],
+        [
+          "the proof names another session",
+          { files: linked({ ...selection, content: "other" }) },
+        ],
+        ["the selected socket is still present", { socketRemains: true }],
+        [
+          "the screenshot did not opt in",
+          {
+            request: {
+              action: "screenshot",
+              path: directory + "/preview.jpg",
+              format: "jpeg",
+              quality: 65,
+            },
+          },
+        ],
+        // A status exit already reports closed; its diagnostics stay unchanged.
+        ["the request is an opted-in status", { request: closedRequest }],
+      ] as [string, Parameters<typeof run>[1]][]
+    ).flatMap(([name, options]) =>
+      endings.map(
+        ([ending, act]) => [`${name} and ${ending}`, act, options] as const,
+      ),
+    ),
+  )("keeps the unchanged exit6 when %s", (_case, ending, options) => {
+    const d = run(ending, options);
+    expect(d.exit.mock.calls).toEqual([[6]]);
+    expect(d.output.mock.calls.map(([text]) => text).join("")).not.toMatch(
+      /session_closed|PRIVATE|default|115292/,
+    );
+    expect(d.descriptors.size).toBe(0);
+  });
+
+  it("never reads the proof when the screenshot did not opt in", () => {
+    const d = run(resetAfterWrite, {
+      request: { ...closedScreenshot, recognize_closed: undefined },
+    });
+    expect(d.exit.mock.calls).toEqual([[6]]);
+    expect(d.opened).not.toContain(proofPath);
+  });
+
+  it("relays a final reply even when the connection then closes", () => {
+    const d = run((daemon) => {
+      daemon.socket.emit("connect");
+      daemon.socket.emit(
+        "data",
+        '{"id":"hackerai-preview","success":true,"data":{}}\n',
+      );
+      daemon.socket.emit("close");
+    });
+    expect(d.exit.mock.calls).toEqual([[0]]);
+    expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
+      id: "hackerai-preview",
+      success: true,
+      data: {},
+    });
+    expect(d.opened).not.toContain(proofPath);
+  });
 });
 
 describe("opt-in status progress frames", () => {
