@@ -75,7 +75,8 @@ const getServerActionErrorMetadata = (
 
 /**
  * Correlate selected page reads, share POSTs, core chat/Agent-status POSTs and
- * native Desktop authorization POST failures without request contents.
+ * Desktop login GETs, and native Desktop authorization POST failures without
+ * request contents.
  */
 function getRootRequestErrorMetadata(
   error: unknown,
@@ -91,6 +92,11 @@ function getRootRequestErrorMetadata(
   // Next reports proxy throws as Pages Router/proxy even for App Router targets.
   const isProxy =
     context.routerKind === "Pages Router" && context.routeType === "proxy";
+  const isDesktopLogin =
+    path === "/desktop-login" &&
+    request.method === "GET" &&
+    (isProxy ||
+      (context.routerKind === "App Router" && context.routeType === "route"));
   const isCorePost =
     request.method === "POST" &&
     (((path === "/" || path === "/c/[id]") &&
@@ -104,6 +110,7 @@ function getRootRequestErrorMetadata(
             context.routeType === "route"))));
   if (
     !isDesktopAuthorization &&
+    !isDesktopLogin &&
     !isCorePost &&
     (!["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
       (request.method !== "GET" &&
