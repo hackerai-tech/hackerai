@@ -26,6 +26,7 @@ function expectPacketBudgets(text: string) {
     s1: _screenshotRefusal,
     sd1: _socketDirectory,
     q1: _listenerQueue,
+    ot1: _openWriteOrder,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -113,6 +114,8 @@ function daemon(
     chargedBytes?: number;
     // Monotonic nanoseconds for each process.hrtime.bigint() read.
     clock?: () => bigint;
+    // Wall-clock milliseconds for each Date.now() read; the real clock otherwise.
+    now?: () => number;
     // What descriptor 2 is (default a pipe), whether the helper's own
     // nonblocking reopen of it fails, and whether every write to that reopened
     // descriptor fails (EAGAIN is a full pipe).
@@ -495,6 +498,7 @@ function daemon(
       return 1;
     },
     clearTimeout: jest.fn(),
+    ...(options.now && { Date: { now: options.now } }),
   });
   const reply = (value: unknown) =>
     socket.emit("data", JSON.stringify(value) + "\n");
@@ -3367,6 +3371,99 @@ it("drops the running-OPEN queue first, keeping the wrapper fields that scope it
   );
   expect(JSON.parse(over)).toEqual(existing);
   expect(existing).toMatchObject({ w1: 3, wrapper_action: "open" });
+});
+
+// The fresh GET's screenshot: the only request whose write attempt is timed.
+const freshScreenshot = { ...screenshotRequest, recognize_closed: true };
+const screenshotWire = [
+  [JSON.stringify({ ...screenshotRequest, id: "hackerai-preview" }) + "\n"],
+];
+/** The running-OPEN deadline with the write attempt this many ms after OPEN started. */
+const writeOrderDeadline = (
+  writeAfterOpen: number,
+  request: Record<string, unknown> = freshScreenshot,
+  options: DaemonOptions = {},
+  owned: OwnedState = {},
+) => {
+  const d = openingDaemon(
+    { request, now: () => opening.at + writeAfterOpen, ...options },
+    owned,
+  );
+  return { d, text: atDeadline(d) };
+};
+
+it.each<[string, number, number]>([
+  ["before", 1, 1],
+  ["after", -1, 2],
+])(
+  "reports only whether the still-running OPEN started %s the screenshot's write attempt",
+  (_case, writeAfterOpen, code) => {
+    const { d, text } = writeOrderDeadline(writeAfterOpen);
+    const { ot1, ...existing } = JSON.parse(text);
+    expect(ot1).toBe(code);
+    // The same strict exit3 packet, queue included, as an unopted screenshot.
+    expect(existing).toEqual(
+      JSON.parse(writeOrderDeadline(writeAfterOpen, screenshotRequest).text),
+    );
+    expect(existing).toMatchObject({
+      deadline: [1, "awaiting_response"],
+      q1: [1, 1, 1],
+      open_phase: "started",
+    });
+    // One unchanged request without the opt-in, then the helper's own close.
+    expect(d.socket.write.mock.calls).toEqual(screenshotWire);
+    expect(d.socket.destroy).toHaveBeenCalledTimes(1);
+    expectPacketBudgets(text);
+    for (const at of [opening.at, opening.at + writeAfterOpen])
+      expect(text).not.toContain(String(at));
+    expect(text).not.toMatch(/PRIVATE|271828|314159/);
+  },
+);
+
+it.each<[string, number, Record<string, unknown>, DaemonOptions, OwnedState]>([
+  ["the times tie", 0, freshScreenshot, {}, {}],
+  ["the screenshot did not opt in", 1, screenshotRequest, {}, {}],
+  ["the request is a status", 1, { ...status, recognize_closed: true }, {}, {}],
+  [
+    "the OPEN completed successfully",
+    1,
+    freshScreenshot,
+    {
+      receipt: { ...completedOpening, k1: 3 },
+      openReceipt: { ...completedOpening, o1: 0, os1: 1 },
+    },
+    {},
+  ],
+  [
+    "the OPEN completes during the sample",
+    1,
+    freshScreenshot,
+    {},
+    { afterWalk: { receipt: { ...completedOpening, k1: 3 } } },
+  ],
+])(
+  "omits the write order when %s",
+  (_case, writeAfterOpen, request, options, owned) => {
+    const { text } = writeOrderDeadline(
+      writeAfterOpen,
+      request,
+      options,
+      owned,
+    );
+    expect(JSON.parse(text).deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toContain('"ot1"');
+  },
+);
+
+it("drops the write order first, keeping the running-OPEN queue at the cap", () => {
+  const { text: complete } = writeOrderDeadline(1);
+  const { ot1, ...existing } = JSON.parse(complete);
+  expect(ot1).toBe(1);
+  const { text: over } = writeOrderDeadline(1, freshScreenshot, {
+    chargedBytes: 545 - Buffer.byteLength(complete),
+  });
+  expect(JSON.parse(over)).toEqual(existing);
+  expect(existing.q1).toEqual([1, 1, 1]);
 });
 
 // The reproduced production regime: a fresh status queued behind a second plain

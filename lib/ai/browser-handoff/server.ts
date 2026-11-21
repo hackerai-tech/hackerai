@@ -962,6 +962,12 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_daemon_socket_queue_version?: 1;
   capture_daemon_socket_pending_count?: number;
   capture_daemon_socket_held_count?: number;
+  // Fresh screenshot only, beside that queue for the still-started plain OPEN: whether
+  // that OPEN's wrapper STARTED record precedes or follows the screenshot helper's local
+  // write attempt on the same guest's millisecond clock. Not daemon receipt or order,
+  // file state or a cause; a sent screenshot can still write after cleanup. Absent is
+  // unmeasured (older helper, tie, budget or any other stage).
+  capture_open_start_write_order_v1?: "before_write" | "after_write";
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -1343,6 +1349,7 @@ export async function captureBrowserFrame(
         | "capture_daemon_socket_queue_version"
         | "capture_daemon_socket_pending_count"
         | "capture_daemon_socket_held_count"
+        | "capture_open_start_write_order_v1"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -1711,6 +1718,15 @@ export async function captureBrowserFrame(
                 precondition.capture_daemon_socket_queue_version = 1;
                 precondition.capture_daemon_socket_pending_count = queue[1];
                 precondition.capture_daemon_socket_held_count = queue[2];
+                // Only the still-started OPEN branch above scopes this order.
+                const order = parsed?.ot1;
+                if (
+                  stage === "fresh_screenshot" &&
+                  precondition.capture_open_phase === "started" &&
+                  (order === 1 || order === 2)
+                )
+                  precondition.capture_open_start_write_order_v1 =
+                    order === 1 ? "before_write" : "after_write";
               }
               const openIdle = parsed?.open_idle;
               if (
