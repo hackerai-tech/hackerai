@@ -3960,7 +3960,13 @@ it("strips the opt-in before an existing daemon sees the request", () => {
   expect(d.opened).toEqual([]);
 });
 
-describe("a screenshot connection that ends without a final reply", () => {
+const { recognize_closed: _screenshotOptIn, ...strictScreenshot } =
+  closedScreenshot;
+describe.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+  ["screenshot", closedScreenshot, strictScreenshot],
+  // A status that selected the socket before a completed CLOSE removed it.
+  ["status", closedRequest, { action: "stream_status" }],
+])("a %s connection ending without a final reply", (_kind, opted, strict) => {
   const liveSocket = { [closedSocketPath]: { kind: "socket", ino: "30" } };
   type Ending = (d: ReturnType<typeof closedDaemon>) => void;
   const socketError = (code: string) =>
@@ -3987,15 +3993,17 @@ describe("a screenshot connection that ends without a final reply", () => {
     ending: Ending,
     options: Parameters<typeof closedDaemon>[0] & {
       socketRemains?: boolean;
+      replacement?: FsNode;
     } = {},
   ) => {
     const d = closedDaemon({
-      request: closedScreenshot,
+      request: opted,
       ...options,
       files: { ...liveSocket, ...options.files },
     });
     expect(d.connect.mock.calls).toEqual([[closedSocketPath]]);
     if (!options.socketRemains) d.files.delete(closedSocketPath);
+    if (options.replacement) d.files.set(closedSocketPath, options.replacement);
     ending(d);
     return d;
   };
@@ -4009,13 +4017,7 @@ describe("a screenshot connection that ends without a final reply", () => {
       expect(d.descriptors.size).toBe(0);
       // The daemon never receives the internal opt-in.
       for (const [line] of d.socket.write.mock.calls)
-        expect(JSON.parse(line)).toEqual({
-          action: "screenshot",
-          path: directory + "/preview.jpg",
-          format: "jpeg",
-          quality: 65,
-          id: "hackerai-preview",
-        });
+        expect(JSON.parse(line)).toEqual({ ...strict, id: "hackerai-preview" });
     },
   );
 
@@ -4037,18 +4039,14 @@ describe("a screenshot connection that ends without a final reply", () => {
         ],
         ["the selected socket is still present", { socketRemains: true }],
         [
-          "the screenshot did not opt in",
-          {
-            request: {
-              action: "screenshot",
-              path: directory + "/preview.jpg",
-              format: "jpeg",
-              quality: 65,
-            },
-          },
+          "a replacement socket was published",
+          { replacement: { kind: "socket", ino: "31" } },
         ],
-        // A status exit already reports closed; its diagnostics stay unchanged.
-        ["the request is an opted-in status", { request: closedRequest }],
+        ["the request did not opt in", { request: strict }],
+        [
+          "the opt-in is a string",
+          { request: { ...opted, recognize_closed: "true" } },
+        ],
       ] as [string, Parameters<typeof run>[1]][]
     ).flatMap(([name, options]) =>
       endings.map(
@@ -4064,10 +4062,8 @@ describe("a screenshot connection that ends without a final reply", () => {
     expect(d.descriptors.size).toBe(0);
   });
 
-  it("never reads the proof when the screenshot did not opt in", () => {
-    const d = run(resetAfterWrite, {
-      request: { ...closedScreenshot, recognize_closed: undefined },
-    });
+  it("never reads the proof when the request did not opt in", () => {
+    const d = run(resetAfterWrite, { request: strict });
     expect(d.exit.mock.calls).toEqual([[6]]);
     expect(d.opened).not.toContain(proofPath);
   });

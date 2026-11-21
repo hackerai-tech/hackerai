@@ -820,11 +820,11 @@ try {
       } catch { finish(5, { r1: [1, 0] }); }
     });
     // A connection ending without a final reply is never a close by itself. Only an
-    // opted-in screenshot (status exits already report closed) whose selected socket
-    // is now absent beside the same verified close proof answers the helper literal.
+    // opted-in status or screenshot whose selected socket is now absent beside the
+    // same verified close proof answers the helper literal; anything else keeps exit6.
     const dropped = () => {
       if (done) return;
-      if (request.action === 'screenshot' && sessionClosed()) finish(0, { session_closed: 1 });
+      if (sessionClosed()) finish(0, { session_closed: 1 });
       else finish(6);
     };
     socket.on('error', dropped);
@@ -872,7 +872,7 @@ export const BROWSER_DAEMON_OPEN_DEFERRED = '{"open_deferred":1}';
 /**
  * The helper's exact exit-0 output when a recognize_closed status or screenshot
  * request found the selected owned socket absent after the wrapper's verified
- * close of that still-current selection; a screenshot also checks when its
+ * close of that still-current selection, either before connecting or when its
  * connection ends without a final reply. A daemon reply can never equal this
  * literal.
  */
