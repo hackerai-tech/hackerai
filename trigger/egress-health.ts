@@ -1,4 +1,4 @@
-import { Sandbox } from "@e2b/code-interpreter";
+import { CommandExitError, Sandbox } from "@e2b/code-interpreter";
 import { logger, schedules } from "@trigger.dev/sdk";
 import {
   DEFAULT_TRIGGER_RUN_REGION,
@@ -11,6 +11,10 @@ import {
   type E2BCluster,
   type E2BConnectionOptions,
 } from "@/lib/ai/tools/utils/e2b-cluster";
+import {
+  getE2BErrorKind,
+  type E2BErrorKind,
+} from "@/lib/ai/tools/utils/e2b-errors";
 import { CURRENT_E2B_SANDBOX_VERSION } from "@/lib/ai/tools/utils/e2b-sandbox-version";
 import {
   managedEgressForCluster,
@@ -188,9 +192,30 @@ function resolveProbeSetup(region: E2BCluster, budgets: ProbeBudgets) {
 }
 type ProbeSetup = ReturnType<typeof resolveProbeSetup>;
 
+type CommandDiagnostic = {
+  commandFailure: E2BErrorKind;
+  exitCode?: number;
+};
+
 type ProbeOutcome =
   | { kind: "observed"; ip: string }
-  | { kind: "unavailable"; stage: "create" | "command" | "response" };
+  | { kind: "unavailable"; stage: "create" | "response" }
+  | { kind: "unavailable"; stage: "command"; diagnostic: CommandDiagnostic };
+
+/** Preserve cleanup even if a thrown value cannot be classified. */
+function commandDiagnostic(error: unknown): CommandDiagnostic {
+  try {
+    if (error instanceof CommandExitError) {
+      const code = error.exitCode;
+      return Number.isInteger(code) && code >= 1 && code <= 255
+        ? { commandFailure: "command_exit", exitCode: code }
+        : { commandFailure: "command_exit" };
+    }
+  } catch {
+    return { commandFailure: "unreadable" };
+  }
+  return { commandFailure: getE2BErrorKind(error) };
+}
 
 /** One sandbox, one command, no retries. Cleanup is always awaited. */
 async function probeEgress(
@@ -227,8 +252,12 @@ async function probeEgress(
     outcome = ip
       ? { kind: "observed", ip }
       : { kind: "unavailable", stage: "response" };
-  } catch {
-    outcome = { kind: "unavailable", stage: "command" };
+  } catch (error) {
+    outcome = {
+      kind: "unavailable",
+      stage: "command",
+      diagnostic: commandDiagnostic(error),
+    };
   }
 
   try {
@@ -300,6 +329,9 @@ export async function runEgressHealthCheck(
     region,
     status,
     stage: outcome.kind === "unavailable" ? outcome.stage : undefined,
+    ...(outcome.kind === "unavailable" && outcome.stage === "command"
+      ? outcome.diagnostic
+      : {}),
     failures,
   };
   if (failures.length) {

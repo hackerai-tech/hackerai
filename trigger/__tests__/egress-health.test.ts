@@ -3,10 +3,16 @@ jest.mock("@trigger.dev/sdk", () => ({
   schedules: { task: (definition: unknown) => definition },
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
-jest.mock("@e2b/code-interpreter", () => ({ Sandbox: { create: jest.fn() } }));
+// This SDK-only transitive dependency has no root pnpm link; keep the SDK's
+// real error classes so attribution is tested against actual class identity.
+jest.mock("dockerfile-ast", () => ({}), { virtual: true });
+jest.mock("@e2b/code-interpreter", () => ({
+  ...jest.requireActual("@e2b/code-interpreter"),
+  Sandbox: { create: jest.fn() },
+}));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
-import { Sandbox } from "@e2b/code-interpreter";
+import { CommandExitError, Sandbox, TimeoutError } from "@e2b/code-interpreter";
 import { logger } from "@trigger.dev/sdk";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import {
@@ -351,6 +357,91 @@ describe("cleanup", () => {
     expect((await rejection(runEgressHealthCheck("us", T0))).reasons).toEqual([
       "wrong_ip",
       "cleanup",
+    ]);
+  });
+});
+
+describe("command failure attribution", () => {
+  const canary = "private-command-detail";
+  const exit = (exitCode: number) =>
+    new CommandExitError({ exitCode, stdout: canary, stderr: canary });
+
+  it.each([
+    [
+      "a command exit",
+      exit(28),
+      { commandFailure: "command_exit", exitCode: 28 },
+    ],
+    ["an invalid exit code", exit(256), { commandFailure: "command_exit" }],
+    ["an SDK timeout", new TimeoutError(canary), { commandFailure: "timeout" }],
+    [
+      "an untyped error",
+      Object.assign(new Error(canary), { exitCode: 28 }),
+      { commandFailure: "other_error" },
+    ],
+    [
+      "an unreadable command exit",
+      Object.create(CommandExitError.prototype),
+      { commandFailure: "unreadable" },
+    ],
+  ])(
+    "logs only bounded details for %s and still cleans up",
+    async (_label, error, diagnostic) => {
+      sandbox.commands.run.mockRejectedValueOnce(error);
+
+      await expect(runEgressHealthCheck("us", T0)).resolves.toEqual({
+        region: "us",
+        status: "unavailable",
+      });
+
+      expect(jest.mocked(logger.warn).mock.calls).toStrictEqual([
+        [
+          "Egress health probe unavailable",
+          {
+            region: "us",
+            status: "unavailable",
+            stage: "command",
+            failures: [],
+            ...diagnostic,
+          },
+        ],
+      ]);
+      expect(sandbox.kill).toHaveBeenCalledTimes(1);
+      expect(loggedText()).not.toContain(canary);
+    },
+  );
+
+  it("keeps the command diagnostic on a consecutive failure", async () => {
+    sandbox.commands.run.mockRejectedValueOnce(new TimeoutError(canary));
+    await runEgressHealthCheck("us", at(0));
+    sandbox.commands.run.mockRejectedValueOnce(exit(7));
+
+    expect(
+      (await rejection(runEgressHealthCheck("us", at(1)))).reasons,
+    ).toEqual(["unavailable"]);
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "Egress health check failed",
+      expect.objectContaining({ commandFailure: "command_exit", exitCode: 7 }),
+    );
+    expect(loggedText()).not.toContain(canary);
+  });
+
+  it("keeps an SDK timeout during create at the create stage", async () => {
+    create.mockRejectedValueOnce(new TimeoutError(canary));
+
+    await runEgressHealthCheck("us", T0);
+
+    expect(jest.mocked(logger.warn).mock.calls).toStrictEqual([
+      [
+        "Egress health probe unavailable",
+        {
+          region: "us",
+          status: "unavailable",
+          stage: "create",
+          failures: [],
+        },
+      ],
     ]);
   });
 });
