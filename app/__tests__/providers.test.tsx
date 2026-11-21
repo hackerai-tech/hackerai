@@ -1964,6 +1964,127 @@ describe("Desktop runtime identity", () => {
     }
   });
 
+  it("sends the committed owner's closed stream cancel nonconfirmation once, outside the SDK queue", async () => {
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn<typeof fetch>(() =>
+      Promise.resolve({ ok: false, status: 503 } as Response),
+    );
+    global.fetch = fetchMock;
+    try {
+      const { beforeSend, view } = await renderDesktop();
+      const retained = {
+        token: "phc_test",
+        distinct_id: "user-123",
+        $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+        $lib: "web",
+        version: 1,
+        command_id: "0193a5b2-7c41-7a10-8f00-222222222222",
+        caller: "relay_command_cancel",
+        outcome: "invoke_rejected",
+        hackerai_frontend_build_commit: "a".repeat(40),
+      };
+      const uuid = "0193a5b2-7c41-7a10-8f00-333333333333";
+      const enriched = (properties: Record<string, unknown> = {}) => ({
+        uuid,
+        event: "desktop_stream_cancel_nonconfirmation",
+        properties: {
+          ...retained,
+          $current_url: "https://hackerai.co/c/PRIVATE",
+          $referrer: "https://PRIVATE.example/",
+          chatId: "PRIVATE",
+          error: "PRIVATE",
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+          ...properties,
+        },
+        $set: { email: "PRIVATE" },
+        timestamp: new Date(1_794_094_000_000),
+      });
+      const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The SDK receives null, so it never queues, batches or retries it.
+      expect(beforeSend(enriched())).toBeNull();
+      // Exactly one request, started synchronously inside before_send.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe("https://us.i.posthog.com/i/v0/e/");
+      expect(init).toEqual({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: expect.any(String),
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        keepalive: false,
+        signal: expect.any(AbortSignal),
+      });
+      // The pinned SDK's capture body; measured runtime identity is applied
+      // after the strict projection, as for every Desktop event.
+      expect(JSON.parse(init!.body as string)).toEqual({
+        api_key: "phc_test",
+        batch: [
+          {
+            uuid,
+            event: "desktop_stream_cancel_nonconfirmation",
+            properties: { ...retained, ...identity },
+            timestamp: new Date(1_794_094_000_000).toISOString(),
+          },
+        ],
+        sent_at: expect.any(String),
+      });
+      expect(init!.body).not.toMatch(/PRIVATE|0\.0\.99|windows/);
+      // A 503 response is never retried.
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // A rejected request is swallowed and never retried either.
+      fetchMock.mockImplementationOnce(() =>
+        Promise.reject(new Error("offline")),
+      );
+      expect(beforeSend(enriched())).toBeNull();
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // A forged field or another carrier owner never dispatches.
+      expect(beforeSend(enriched({ caller: "pty_kill" }))).toBeNull();
+      expect(beforeSend(enriched({ distinct_id: "user-other" }))).toBeNull();
+      // Unrelated events keep going to the SDK and never dispatch directly.
+      expect(
+        beforeSend({ event: "pricing_viewed", properties: {} }),
+      ).not.toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Withdrawal aborts an in-flight fetch and blocks retained callbacks.
+      fetchMock.mockImplementationOnce(
+        (_, options) =>
+          new Promise((_, reject) => {
+            options?.signal?.addEventListener("abort", () =>
+              reject(new Error("aborted")),
+            );
+          }),
+      );
+      expect(beforeSend(enriched())).toBeNull();
+      const pending = fetchMock.mock.calls[2][1]?.signal;
+      expect(pending?.aborted).toBe(false);
+      view.rerender(
+        <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+      );
+      expect(pending?.aborted).toBe(true);
+      expect(beforeSend(enriched())).toBeNull();
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      view.unmount();
+    } finally {
+      global.fetch = originalFetch;
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    }
+  });
+
   it("keeps identity through the strict ACK projections and preserves a valid send receipt", async () => {
     const { beforeSend } = await renderDesktop();
     const ack = {

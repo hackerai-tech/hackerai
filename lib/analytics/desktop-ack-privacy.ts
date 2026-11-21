@@ -35,6 +35,11 @@ import {
   readDesktopStreamFenceDiagnostic,
   readDesktopStreamFenceRendererCancelDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
+import {
+  DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+  isDesktopStreamCancelOwner,
+  projectDesktopStreamCancelNonconfirmation,
+} from "./desktop-stream-cancel-diagnostic";
 
 const STOP_SOURCES = [
   "bridge_stop",
@@ -170,6 +175,103 @@ function lacksTriggerRunId(source: object): boolean {
     return !("triggerRunId" in source);
   } catch {
     return false;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown) =>
+  typeof value === "string" && value.length === 36 && UUID.test(value);
+
+// PostHog delivery metadata the cancel nonconfirmation keeps, each only in its
+// expected format. Everything else the SDK adds is dropped.
+const STREAM_CANCEL_TRANSPORT: [string, (value: unknown) => boolean][] = [
+  ["$session_id", isUuid],
+  ["$window_id", isUuid],
+  [
+    "$lib",
+    (value) =>
+      typeof value === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(value),
+  ],
+  [
+    "$lib_version",
+    (value) =>
+      typeof value === "string" &&
+      /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?$/.test(value),
+  ],
+  ["$is_identified", (value) => typeof value === "boolean"],
+  ["$process_person_profile", (value) => typeof value === "boolean"],
+];
+
+export type DesktopStreamCancelExpectation = {
+  /** The current permitted, identified and committed analytics owner, or null. */
+  owner: string | null;
+  /** The configured PostHog project key the SDK attaches as `token`. */
+  token: string | undefined;
+};
+
+/**
+ * Apply in before_send after SDK enrichment. The cancel nonconfirmation is
+ * rebuilt from its four validated own data fields, safe delivery metadata and
+ * the loaded bundle's full commit only, and must belong to the current
+ * committed owner; anything unreadable or invalid drops it. Every other event
+ * is returned unchanged. `resolveExpected` runs only for the target event.
+ */
+export function sanitizeDesktopStreamCancelEvent<T extends object>(
+  event: T | null,
+  resolveExpected: () => DesktopStreamCancelExpectation,
+): T | null {
+  if (!event) return event;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(event, "event");
+    // An accessor or inherited name could serialize as the target; the
+    // readiness guard already drops those, so only absent names pass.
+    if (!descriptor || !("value" in descriptor))
+      return "event" in event ? null : event;
+    if (descriptor.value !== DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT)
+      return event;
+    const container = enumerableOwnData(event, "properties");
+    const properties: unknown = container?.value;
+    if (typeof properties !== "object" || properties === null) return null;
+    const { owner, token } = resolveExpected();
+    if (!isDesktopStreamCancelOwner(owner)) return null;
+    const read = (key: string) => enumerableOwnData(properties, key)?.value;
+    // A queued event must not be exported under a different current owner.
+    if (read("distinct_id") !== owner) return null;
+    const schema = projectDesktopStreamCancelNonconfirmation(read);
+    if (!schema) return null;
+
+    const transport: Record<string, unknown> = { distinct_id: owner };
+    if (typeof token === "string" && token !== "" && read("token") === token)
+      transport.token = token;
+    for (const [key, isValid] of STREAM_CANCEL_TRANSPORT) {
+      const value = read(key);
+      if (isValid(value)) transport[key] = value;
+    }
+    const buildCommit = read("hackerai_frontend_build_commit");
+    if (typeof buildCommit === "string" && /^[0-9a-f]{40}$/.test(buildCommit))
+      transport.hackerai_frontend_build_commit = buildCommit;
+
+    const uuid = enumerableOwnData(event, "uuid")?.value;
+    const timestamp = enumerableOwnData(event, "timestamp")?.value;
+    let timestampMs: number | undefined;
+    if (timestamp !== undefined) {
+      try {
+        // Accept only a real Date; ignore its own properties, toJSON or proxies.
+        timestampMs = Date.prototype.getTime.call(timestamp);
+      } catch {
+        timestampMs = undefined;
+      }
+    }
+    // Rebuilt, so top-level $set/$set_once profile enrichment never survives.
+    return {
+      ...(isUuid(uuid) && { uuid }),
+      event: DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+      properties: { ...transport, ...schema },
+      ...(timestampMs !== undefined &&
+        Number.isFinite(timestampMs) && { timestamp: new Date(timestampMs) }),
+    } as unknown as T;
+  } catch {
+    return null;
   }
 }
 

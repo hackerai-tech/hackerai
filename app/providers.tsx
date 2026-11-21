@@ -37,11 +37,19 @@ import {
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
 import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
-import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import {
+  sanitizeDesktopAckEvent,
+  sanitizeDesktopStreamCancelEvent,
+} from "@/lib/analytics/desktop-ack-privacy";
 import {
   applyDesktopRuntimeIdentity,
   startDesktopRuntimeIdentityLookup,
 } from "@/lib/analytics/desktop-runtime-identity";
+import {
+  DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
+  desktopStreamCancelCaptureUrl,
+  sendDesktopStreamCancelOnce,
+} from "@/lib/analytics/desktop-stream-cancel-diagnostic";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import { sanitizeFileActionAuthDiagnosticEvent } from "@/lib/analytics/file-auth-diagnostics";
@@ -102,17 +110,25 @@ export function PostHogProvider({
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
   // Latest committed owner for the server action, file action, Agent HTTP 413
-  // (start and partial save), Desktop operation readiness, navigator and React
-  // boundary diagnostics. A previously installed before_send can run after a
-  // commit that withdraws consent, signs out, switches account or enters a
-  // private page, but before the passive effect below resets analytics identity.
+  // (start and partial save), Desktop operation readiness, Desktop stream
+  // cancel nonconfirmation, navigator and React boundary diagnostics. A previously
+  // installed before_send can run after a commit that withdraws consent, signs
+  // out, switches account or enters a private page, but before the passive
+  // effect below resets analytics identity.
   const serverActionDiagnosticOwner = useRef<string | null>(null);
+  const desktopStreamCancelSignal = useRef<AbortSignal | null>(null);
 
   useLayoutEffect(() => {
     serverActionDiagnosticOwner.current =
       analyticsAllowed && !privatePage && userId ? userId : null;
+    const cancelRequests = serverActionDiagnosticOwner.current
+      ? new AbortController()
+      : null;
+    desktopStreamCancelSignal.current = cancelRequests?.signal ?? null;
     return () => {
       serverActionDiagnosticOwner.current = null;
+      desktopStreamCancelSignal.current = null;
+      cancelRequests?.abort();
       // A later return to the same owner must not revive an older observation.
       clearMessageNavigatorDiagnostics();
       clearReactBoundaryCatches();
@@ -202,9 +218,10 @@ export function PostHogProvider({
         )
           return;
 
+        const apiHost =
+          process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com";
         const config = {
-          api_host:
-            process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
+          api_host: apiHost,
           capture_pageview: false,
           capture_pageleave: false,
           autocapture: false,
@@ -254,20 +271,23 @@ export function PostHogProvider({
               owner: committedDiagnosticOwner(),
               token: posthogKey,
             });
-            const sanitizedEvent = sanitizeDesktopOperationReadinessEvent(
-              sanitizeAgentHttp413DiagnosticEvent(
-                sanitizeFileActionAuthDiagnosticEvent(
-                  sanitizeServerActionClientContextEvent(
-                    sanitizeContextFeedbackEvent(
-                      sanitizeChatPerformanceEvent(
-                        sanitizeDesktopAckEvent(
-                          sanitizeAgentCancellationEvent(
-                            sanitizeDiffViewEvent(
-                              sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeDesktopStreamCancelEvent(
+              sanitizeDesktopOperationReadinessEvent(
+                sanitizeAgentHttp413DiagnosticEvent(
+                  sanitizeFileActionAuthDiagnosticEvent(
+                    sanitizeServerActionClientContextEvent(
+                      sanitizeContextFeedbackEvent(
+                        sanitizeChatPerformanceEvent(
+                          sanitizeDesktopAckEvent(
+                            sanitizeAgentCancellationEvent(
+                              sanitizeDiffViewEvent(
+                                sanitizeFrontendExceptionUrlProperties(event),
+                              ),
                             ),
                           ),
                         ),
                       ),
+                      committedDiagnosticExpectation,
                     ),
                     committedDiagnosticExpectation,
                   ),
@@ -295,12 +315,41 @@ export function PostHogProvider({
               }
             }
             // Last, so no event-specific projection can strip Desktop identity.
-            return applyDesktopRuntimeIdentity(
+            const finalEvent = applyDesktopRuntimeIdentity(
               enrichFrontendExceptionEvent(sanitizedEvent, {
                 navigatorDiagnosticOwner,
                 reactBoundaryDiagnosticOwner,
               }),
             );
+            if (
+              finalEvent.event !== DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT
+            )
+              return finalEvent;
+            // The SDK can batch and retry, even after consent changes. Start
+            // exactly one request now, while this owner is still committed,
+            // and never hand the event to the SDK queue.
+            try {
+              const owner = committedDiagnosticOwner();
+              const url = desktopStreamCancelCaptureUrl(apiHost);
+              const signal = desktopStreamCancelSignal.current;
+              if (
+                owner &&
+                signal &&
+                url &&
+                posthogKey &&
+                finalEvent.properties?.distinct_id === owner &&
+                !isAbuseReportingPath(window.location.pathname)
+              )
+                sendDesktopStreamCancelOnce(
+                  finalEvent,
+                  url,
+                  posthogKey,
+                  signal,
+                );
+            } catch {
+              // Best effort: a failed dispatch is never retried.
+            }
+            return null;
           },
         } satisfies Partial<PostHogConfig>;
 

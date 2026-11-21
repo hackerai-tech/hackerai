@@ -1,4 +1,5 @@
 import {
+  prepareDesktopStreamCancel,
   registerDesktopCommand,
   wasDesktopRunStopped,
 } from "./desktop-command-cancellation";
@@ -1253,20 +1254,22 @@ export class DesktopSandboxBridge {
           operation.kind === "command"
             ? this.rendererCancelAttempts.get(operation.id)
             : undefined;
+        const cancelCommand =
+          operation.kind === "command"
+            ? prepareDesktopStreamCancel(operation.id, "output_overflow")
+            : null;
         void import("@tauri-apps/api/core")
           .then(({ invoke }) => {
             if (operation.kind === "pty")
               return invoke("execute_pty_kill", { sessionId: operation.id });
-            if (operation.kind === "command") {
+            if (cancelCommand) {
               this.markRendererCancelAttempt(
                 operation.id,
                 owner,
                 "output_overflow",
                 operationRouter,
               );
-              return invoke("cancel_stream_command", {
-                commandId: operation.id,
-              });
+              return cancelCommand(invoke);
             }
           })
           .catch(() => {
@@ -2171,10 +2174,13 @@ export class DesktopSandboxBridge {
   }
 
   private async handleCommand(command: CommandMessage): Promise<void> {
+    // Only a Windows command can report an unconfirmed native cancel, and only
+    // to the analytics owner identified when it started.
     const unregister = registerDesktopCommand(
       command.commandId,
       command.chatId,
       command.triggerRunId,
+      this.nativePlatform === "windows" ? getIdentifiedAnalyticsUserId() : null,
     );
     try {
       await this.executeCommand(command);
@@ -3087,6 +3093,10 @@ export class DesktopSandboxBridge {
     // before any await.
     const router = this.operationRouter;
     const owner = this.rendererCancelAttempts.get(command.commandId);
+    const cancelCommand = prepareDesktopStreamCancel(
+      command.commandId,
+      "relay_command_cancel",
+    );
     if (this.activeCommands.has(command.commandId)) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -3096,9 +3106,7 @@ export class DesktopSandboxBridge {
           "relay_command_cancel",
           router,
         );
-        canceled = await invoke<boolean>("cancel_stream_command", {
-          commandId: command.commandId,
-        });
+        canceled = await cancelCommand(invoke);
       } catch (error) {
         console.error(
           "[desktop-bridge]",
