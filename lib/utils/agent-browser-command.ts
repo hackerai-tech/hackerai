@@ -316,6 +316,7 @@ export function detectAgentBrowserUsage(
  *   (e.g. `--headed open …`), `other_only` for any other action or none.
  * A plain OPEN is an operational invocation whose first argument is exactly
  * `open`; option prefixes are not resolved and execution is not inferred.
+ * This is the base domain that travels on the wire.
  */
 export const AGENT_BROWSER_PREVIEW_INTENTS = [
   "open_only",
@@ -326,14 +327,33 @@ export const AGENT_BROWSER_PREVIEW_INTENTS = [
   "info_with_operation",
   "info_with_open",
 ] as const;
-export type AgentBrowserPreviewIntent =
+type AgentBrowserPreviewBaseIntent =
   (typeof AGENT_BROWSER_PREVIEW_INTENTS)[number];
+
+/**
+ * Closed refinement of `other_only` by its single invocation's first argument:
+ * `bare` when there is none, `known_action` when it exactly matches a
+ * recognized action, `unrecognized_action` otherwise. Never the action text.
+ */
+export const AGENT_BROWSER_OTHER_ONLY_KINDS = [
+  "bare",
+  "known_action",
+  "unrecognized_action",
+] as const;
+export type AgentBrowserOtherOnlyKind =
+  (typeof AGENT_BROWSER_OTHER_ONLY_KINDS)[number];
+
+/** A base intent, with `other_only` always refined as `other_only.<kind>`. */
+export type AgentBrowserPreviewIntent =
+  | Exclude<AgentBrowserPreviewBaseIntent, "other_only">
+  | `other_only.${AgentBrowserOtherOnlyKind}`;
 
 /**
  * One parse for both the Browser Preview predicate and its diagnostic shape:
  * `null` exactly when the command does not request a preview, i.e. it has no
  * recognized invocation or only standalone version/help checks. Any other
- * recognized invocation keeps requesting it.
+ * recognized invocation keeps requesting it; the refinement of `other_only`
+ * never changes that decision.
  */
 export function agentBrowserPreviewIntent(
   command: string,
@@ -360,5 +380,9 @@ export function agentBrowserPreviewIntent(
   if (operational > 1)
     return plainOpen ? "multiple_with_open" : "multiple_operations";
   if (firstAction === "open") return "open_only";
-  return firstAction?.startsWith("-") ? "option_only" : "other_only";
+  if (firstAction?.startsWith("-")) return "option_only";
+  if (firstAction === undefined) return "other_only.bare";
+  return KNOWN_AGENT_BROWSER_ACTIONS.has(firstAction)
+    ? "other_only.known_action"
+    : "other_only.unrecognized_action";
 }
