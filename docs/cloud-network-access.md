@@ -377,35 +377,25 @@ the region, owner reference and minute. Unset or `false` disables review. An
 invalid value warns and disables review while original alerts continue. See
 [Automated egress burst review](abuse-response.md#automated-egress-burst-review).
 
-Reviews pass through a Redis queue so none is lost when its minute leaves the
-five-minute evaluation window. Each run adds every reviewable candidate not
-yet dispatched, one entry per case keyed by the review's idempotency key and
-scored by its minute, and then dispatches at most 10 entries, oldest first,
-even when it read no new candidates. An entry leaves the queue only after its
-dispatch is recorded; a dispatch whose outcome is uncertain is repeated under
-the same idempotency key. A failed queue read or write, or a failed dispatch,
-fails the run and is retried. Telemetry is kept for two hours and the review
-rereads its minute, so an entry more than 30 minutes older than the latest
-settled minute is removed with an `Egress abuse reviews expired before
-dispatch` warning and fails the run instead of being dispatched. The queue
-itself expires two hours after its last addition, so entries left while the
-monitor is off are not reviewed later.
+The Redis queue keeps deferred reviews beyond the five-minute evaluation
+window. Each run adds eligible candidates and dispatches at most 10 entries,
+oldest first, even when it reads no new candidates. Once dispatch is recorded,
+the entry leaves the queue. Retries use the same idempotency key. Queue and
+dispatch failures surface as errors. Entries over 30 minutes old are removed
+and reported as expired, leaving time for a successful review to recheck the
+telemetry before its two-hour retention ends. The queue itself expires two
+hours after its last addition.
 
 While the toggle is on, every successful cloud acquisition with a server chat
 and Trigger run also records a short-lived link from the verified workspace to
 that chat, run and time, after ownership and network verification. The write is
 best effort and not awaited, so a store outage cannot delay or fail an
-acquisition. Each acquisition is a separate record, so concurrent runs never
-overwrite each other and a run's later acquisition cannot replace the one that
-placed it before a burst; the review uses each run's latest acquisition before
-the burst ended. A workspace keeps at most 16 records from the last six hours,
-across all runs; when more were made, the review treats the set as incomplete
-and opens a manual case. Records use a versioned key. Records in the earlier
-per-run format are never read, because a later acquisition could have
-replaced their time; they expire within six hours. A link only says that a
-run used the workspace recently; the review still requires the run's
-persisted timing to overlap the burst. These links are separate from
-attribution credentials and their migration.
+acquisition. Each acquisition is a separate record. The review selects each
+run's latest acquisition before the burst ended and checks the run's
+persisted timing for overlap. It uses up to 16 records per workspace from
+the last six hours. Additional records signal incomplete coverage and route
+the case to manual review. The older per-run format expires on its original
+six-hour schedule. These links are separate from attribution credentials.
 
 ### Coverage and delivery
 

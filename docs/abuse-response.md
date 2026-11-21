@@ -368,47 +368,31 @@ this runbook.
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
-- **Bounded account history.** A linked run whose chat scan stopped before
-  the start of the chat is never excluded by its timing, since older rows
-  could place it in the burst. Before reading the selected run's evidence, the
-  review also lists the account's other Agent root runs, because a competing
-  run's acquisition link can be missing or expired. It reads one page of at
-  most 50 `agent-long` runs carrying the account's `user_` tag, which the
-  regular and approval entry points and goal continuations all set, created
-  by one minute after the burst, in the review worker's own Trigger
-  environment. It uses each run's status and start and finish times only,
-  never payloads, output or metadata. Another run counts as disjoint only if
-  it started more than a minute after the burst, finished more than a minute
-  before it, or ended without ever starting; a queued or otherwise unknown run
-  is treated as concurrent. Any concurrent run is a `multiple_runs` case. A
-  second page, a missing or never-started selected run, a run with another
-  identity, or a failed list is an `account_runs_unverified` case. Neither
-  case nor log contains the listed runs or the error.
-- **What it decides.** The model receives scrubbed evidence (targets become
-  stable class placeholders, secrets and identifiers are removed) and returns
-  only enums and evidence indices. Every dotted name is replaced, whatever its
-  suffix; a name outside a short list of known public suffixes, like an
-  address or range that cannot be parsed exactly, is ambiguous, which neither
-  supports an authorization request nor allows a no-case outcome. IPv6 addresses are compared in canonical form, and a CIDR range
-  has its own placeholder, separate from any address in it. Deterministic
-  rules then choose the outcome: clearly corroborated ordinary, lab, or
-  in-scope work creates no case; in-scope testing needs every command target
-  named in, or provably inside a range named in, the cited messages.
-  Cited concerning commands against public targets with no or mismatched
-  authorization, read from complete chat context, create a case with an unsent
-  authorization-request draft; a mismatch needs a target that no message in
-  the read history names or could contain. Everything else is a manual case
-  without a draft. Volume, keywords, or claimed authorization alone never
-  decide.
+- **Bounded account history.** Truncated chat history leaves run overlap
+  uncertain. Before reading evidence, the worker checks one page of up to
+  50 account-tagged `agent-long` runs in its own Trigger environment. The
+  check uses run status and timing, with one minute of clock skew. It includes
+  finished runs whose workspace links are missing or expired. A competing
+  run that could have overlapped creates a `multiple_runs` case. A missing
+  selected run, a second page, or an unreliable result creates an
+  `account_runs_unverified` case. Both outcomes require manual review.
+- **What it decides.** The model receives scrubbed evidence and returns
+  enums and evidence indices. Hostnames, dotted names with alphabetic
+  suffixes, and IPs become stable class placeholders. The scrubber normalizes
+  IPv6 spellings and gives CIDR ranges their own identifiers. To clear
+  in-scope testing, the cited messages must name or provably cover every
+  public or potentially public command target. A draft requires complete
+  context and cited concerning commands against a known public target. A
+  claimed scope mismatch also requires a target outside the scope supported
+  by the read history. Inconclusive evidence goes to manual review.
 - **What it stores.** One case per owner reference, region and 30-minute UTC
   window, encrypted with the abuse evidence keyring: fixed rationale text, the
   classification enums, coverage, the verified account, chat and run
   identifiers, and locators for the cited messages and tool calls. It never
   stores prompts, commands, user text, or model output. Later bursts in the
-  same window find the existing case and leave it, its encrypted record and
-  any operator review unchanged; that review run returns a `preserved`
-  receipt with no outcome or reason, since its own decision was not stored.
-  The case starts as `new` without an evidence hold.
+  same window preserve the encrypted case and any operator review. The run
+  returns a `preserved` receipt. The case starts as `new` without an evidence
+  hold.
 - **The draft.** It is from `abuse@hackerai.co` and asks for the targets, the
   permitted activity, the date and time scope, and redacted proof. It names the
   verified account ID, not an address: resolve the account's verified contact
