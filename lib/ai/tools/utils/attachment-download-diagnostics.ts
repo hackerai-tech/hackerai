@@ -34,7 +34,8 @@ type DownloadInput = {
    * wording; omitted when the caller has no recorded selection. */
   clientSelection?: AttachmentClientSelection;
   /** The selected terminal result's own stdout, supplied only when its
-   * Windows Bash curl command carried CURL_PROGRESS_WRITE_OUT. Never kept. */
+   * Windows Bash curl command carried CURL_PROGRESS_WRITE_OUT. Read only for
+   * exit 28 or 23. Never kept. */
   curlProgressStdout?: string;
   /** The selected observed E2B generic curl result's own SDK stdout; its
    * command carried CURL_PROGRESS_WRITE_OUT. Read only for exit 28 or 35 on
@@ -407,10 +408,12 @@ function summarize(input: DownloadInput) {
           attachment_download_timeout_hint: curlTimeoutHint(stderr),
         }
       : {}),
+    // For exit 23 the exit code alone names the failing phase (curl's local
+    // write); the milestone is only the last positive HTTP/TLS/body boundary.
     ...(input.platform === "windows" &&
     input.shell === "bash" &&
     input.httpClient === "curl" &&
-    input.exitCode === 28 &&
+    (input.exitCode === 28 || input.exitCode === 23) &&
     typeof input.curlProgressStdout === "string"
       ? curlProgressContext(input.curlProgressStdout)
       : {}),

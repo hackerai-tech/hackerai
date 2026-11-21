@@ -3446,7 +3446,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             : `(if not exist ${escapedDir} mkdir ${escapedDir}) &&`;
         let downloadPart: string;
         // Windows Git Bash only: the body goes to -o, so stdout carries just
-        // this static marker, read only for a terminal curl exit 28.
+        // this static marker, read only for a terminal curl exit 28 or 23.
         const curlProgress =
           httpClient === "curl" && useBash && this.isWindows();
         if (httpClient === "curl") {
