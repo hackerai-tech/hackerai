@@ -1068,10 +1068,11 @@ const OTHER_STAGE_CAPTURE_KEYS = [
 const MISSING_SOCKET_CAPTURE_KEYS = [
   "capture_open_socket_directory_v1",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
-// The write-order field requires a still-started OPEN. The general deadline
-// model includes completed-OPEN-only daemon fields and cannot include this key.
-const STARTED_OPEN_SCREENSHOT_CAPTURE_KEYS = [
+// The screenshot write order and status socket comparison are exclusive and
+// only a still-started OPEN can carry either field.
+const STARTED_OPEN_CAPTURE_KEYS = [
   "capture_open_start_write_order_v1",
+  "capture_open_preconnect_held_v1",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
 const EXIT_3_OR_5_CAPTURE_KEYS: ReadonlyArray<string> = [
   "capture_deadline_diagnostic_version",
@@ -1098,7 +1099,7 @@ type UnclassifiedCaptureKey = Exclude<
   keyof BrowserCaptureFailureContext,
   | (typeof COMMAND_EXIT_CAPTURE_KEYS)[number]
   | (typeof MISSING_SOCKET_CAPTURE_KEYS)[number]
-  | (typeof STARTED_OPEN_SCREENSHOT_CAPTURE_KEYS)[number]
+  | (typeof STARTED_OPEN_CAPTURE_KEYS)[number]
   | (typeof OTHER_STAGE_CAPTURE_KEYS)[number]
   | keyof BrowserBridgeFailureContext
 >;
@@ -1249,6 +1250,39 @@ describe("actual phLogger to OTLP export", () => {
     expect(
       attributes.find(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY)?.value,
     ).toEqual({ stringValue: `[1,71,"${READER}"]` });
+    expectBaselineSurvives(attributes, fields);
+  });
+
+  it("exports the held-connection comparison beside an active OPEN deadline", async () => {
+    const fields = routeFields({
+      ...captureWith(
+        DEADLINE_CAPTURE_KEYS.filter(
+          (key) =>
+            !key.startsWith("capture_daemon_process_") &&
+            key !== "capture_daemon_pid_status" &&
+            !key.startsWith("capture_daemon_version_file_") &&
+            !key.startsWith("capture_open_socket_return_"),
+        ),
+      ),
+      capture_stage: "stream_status",
+      capture_open_phase: "started",
+      capture_open_preconnect_held_v1: "present",
+    });
+    const attributes = await exported(
+      fields,
+      previewCaptureUrl(ENDPOINT, true, 1, READER, false, {
+        source: "command",
+        liveSelection: true,
+        intent: "plain_open",
+      }),
+    );
+    expect(
+      attributes.find(({ key }) => key === "capture_open_preconnect_held_v1")
+        ?.value,
+    ).toEqual({ stringValue: "present" });
+    expect(
+      attributes.some(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY),
+    ).toBe(true);
     expectBaselineSurvives(attributes, fields);
   });
 

@@ -983,6 +983,13 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // file state or a cause; a sent screenshot can still write after cleanup. Absent is
   // unmeasured (older helper, tie, budget or any other stage).
   capture_open_start_write_order_v1?: "before_write" | "after_write";
+  // Opted-in passive status only, beside that queue for the still-started plain OPEN
+  // with exactly one held and at least one pending connection: whether that held
+  // connection's inode was already held in one sample taken before the helper connected
+  // (same socket, daemon PID, listener and OPEN invocation). Not which client it is,
+  // request acceptance or a cause. Absent is unmeasured (older helper, any unverified
+  // sample, other counts, budget or any other stage).
+  capture_open_preconnect_held_v1?: "present" | "absent";
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -1365,6 +1372,7 @@ export async function captureBrowserFrame(
         | "capture_daemon_socket_pending_count"
         | "capture_daemon_socket_held_count"
         | "capture_open_start_write_order_v1"
+        | "capture_open_preconnect_held_v1"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -1737,6 +1745,18 @@ export async function captureBrowserFrame(
                 )
                   precondition.capture_open_start_write_order_v1 =
                     order === 1 ? "before_write" : "after_write";
+                // Only this request's own OPEN opt-in, at its status lookup.
+                const preconnectHeld = parsed?.ph1;
+                if (
+                  stage === "stream_status" &&
+                  deferDuringOpen &&
+                  precondition.capture_open_phase === "started" &&
+                  queue[1] >= 1 &&
+                  queue[2] === 1 &&
+                  (preconnectHeld === 1 || preconnectHeld === 2)
+                )
+                  precondition.capture_open_preconnect_held_v1 =
+                    preconnectHeld === 1 ? "present" : "absent";
               }
               const openIdle = parsed?.open_idle;
               if (

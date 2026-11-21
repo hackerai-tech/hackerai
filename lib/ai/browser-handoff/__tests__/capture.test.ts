@@ -4878,6 +4878,161 @@ it.each<[string, () => Promise<Record<string, unknown>>]>([
   expect(context.capture_deadline_phase).toBe("awaiting_response");
 });
 
+// The passive GET's options, including its OPEN opt-in.
+const openGetOptions = {
+  deferDuringWait: true,
+  deferDuringOpen: true,
+  recognizeClosed: true,
+  observeStatusProgress: true,
+};
+/** That GET's fresh capture, whose status (or screenshot) helper rejects with this packet. */
+async function observeOpenGetFailure(
+  packet: string,
+  {
+    options = openGetOptions as Record<string, boolean>,
+    action = "stream_status",
+    exitCode = 3,
+  } = {},
+) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode,
+    stderr: "PRIVATE",
+    stdout: packet,
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes(`"action":"${action}"`)) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      options,
+    ),
+  ).rejects.toBe(error);
+  expect(observe).toHaveBeenCalledTimes(1);
+  return {
+    context: observe.mock.calls[0][0] as Record<string, unknown>,
+    requests: daemonRequests(sandbox.commands.run),
+  };
+}
+/** The narrow regime: one held beside one pending behind the still-running OPEN. */
+const oneHeldPacket = (override: Record<string, unknown> = {}) =>
+  runningOpenPacket({ q1: [1, 1, 1], ...override });
+
+it.each<[number, string]>([
+  [1, "present"],
+  [2, "absent"],
+])(
+  "adds only the pre-connect held label for code %i at the opted-in status deadline",
+  async (ph1, label) => {
+    const { context, requests } = await observeOpenGetFailure(
+      oneHeldPacket({ ph1 }),
+    );
+    const { capture_open_preconnect_held_v1: projected, ...rest } = context;
+    expect(projected).toBe(label);
+    // The same strict rejection and context as without the code.
+    expect(rest).toEqual(
+      (await observeOpenGetFailure(oneHeldPacket())).context,
+    );
+    expect(rest).toMatchObject({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 3,
+      capture_deadline_phase: "awaiting_response",
+      capture_open_phase: "started",
+      capture_daemon_socket_pending_count: 1,
+      capture_daemon_socket_held_count: 1,
+    });
+    // One unchanged opted-in status request; no bridge, screenshot or retry.
+    expect(requests).toEqual([
+      {
+        action: "stream_status",
+        defer_wait: true,
+        defer_open: true,
+        recognize_closed: true,
+        observe_progress: true,
+      },
+    ]);
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, () => Promise<{ context: Record<string, unknown> }>]>([
+  ["no code", () => observeOpenGetFailure(oneHeldPacket())],
+  ...[0, 3, "1", 1.5, [1], null, true].map(
+    (ph1) =>
+      [
+        `the malformed code ${JSON.stringify(ph1)}`,
+        () => observeOpenGetFailure(oneHeldPacket({ ph1 })),
+      ] as [string, () => Promise<{ context: Record<string, unknown> }>],
+  ),
+  ...[
+    [1, 0, 1],
+    [1, 1, 2],
+    [1, 1, 0],
+    [1, 16, 1],
+  ].map(
+    (q1) =>
+      [
+        `the queue ${JSON.stringify(q1)}`,
+        () => observeOpenGetFailure(oneHeldPacket({ q1, ph1: 1 })),
+      ] as [string, () => Promise<{ context: Record<string, unknown> }>],
+  ),
+  [
+    "no verified queue",
+    () => observeOpenGetFailure(oneHeldPacket({ q1: undefined, ph1: 1 })),
+  ],
+  [
+    "a completed OPEN's queue",
+    () => observeOpenGetFailure(queuePacket({ q1: [1, 1, 1], ph1: 1 })),
+  ],
+  [
+    "a connecting deadline",
+    () =>
+      observeOpenGetFailure(
+        oneHeldPacket({ deadline: [1, "connecting"], ph1: 1 }),
+      ),
+  ],
+  [
+    "a daemon close",
+    () => observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), { exitCode: 6 }),
+  ],
+  [
+    "a status without the OPEN opt-in",
+    () =>
+      observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), {
+        options: { ...openGetOptions, deferDuringOpen: false },
+      }),
+  ],
+  [
+    "the owned-port lookup",
+    async () => ({
+      context: await observeDaemonFailure(3, oneHeldPacket({ ph1: 1 })),
+    }),
+  ],
+  [
+    "the fresh screenshot",
+    () =>
+      observeOpenGetFailure(oneHeldPacket({ ph1: 1 }), {
+        action: "screenshot",
+      }),
+  ],
+])("omits the pre-connect held label for %s", async (_case, observe) => {
+  const { context } = await observe();
+  expect(context).not.toHaveProperty("capture_open_preconnect_held_v1");
+  expect(JSON.stringify(context)).not.toContain("PRIVATE");
+});
+
 it.each([544, 545])(
   "keeps the unchanged parser cap for a %s-byte packet carrying the queue",
   async (bytes) => {

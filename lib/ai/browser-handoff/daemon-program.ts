@@ -205,6 +205,9 @@ let selectedSocketInfo;
 let queueSnapshot = false;
 // Only an opted-in fresh stream_status (never a screenshot or owned-port lookup).
 let deferOpen = false;
+// Only that opted-in status beside the selected still-running plain OPEN: one bounded
+// sample taken before this helper connects, compared once at its own deadline. Local only.
+let preconnect;
 // Only a recognize_closed screenshot: this guest's wall-clock ms just before its
 // one local write attempt (not daemon receipt). Compared locally, never exported.
 let screenshotWriteAt;
@@ -482,7 +485,7 @@ function wrapperReceipt() {
       if (declared) result.dv = declared;
       if (queueSnapshot) {
         const queue = listenerQueue();
-        if (queue) result.q1 = queue;
+        if (queue) result.q1 = queueTuple(queue);
       }
     } else if (queueSnapshot && receipt.action === 'open' && receipt.phase === 'started' &&
         receipt.session_key === sessionKey && result.w1 === 3 && open?.session_key === sessionKey &&
@@ -491,7 +494,18 @@ function wrapperReceipt() {
       // cause or navigation. q1 is dropped first at the cap, so the fields scoping it remain.
       const queue = listenerQueue();
       if (queue && openStillStarted(receipt, sessionKey)) {
-        result.q1 = queue;
+        result.q1 = queueTuple(queue);
+        // ph1: an opted-in status's sole held connection here, beside at least one pending,
+        // was already held (1) or not (2) at the pre-connect sample. Both samples matched the
+        // selected socket's start lstat and share the daemon PID, listener and this exact
+        // STARTED OPEN invocation. Not which client it is, request acceptance or a cause;
+        // never the inodes. Any unverified sample omits it.
+        const before = preconnect;
+        if (deferOpen && before && queue.held.size === 1 && queue.pending >= 1 &&
+            before.queue.pid === queue.pid && before.queue.listener === queue.listener &&
+            before.receipt.at === receipt.at &&
+            before.receipt.process.every((value, index) => value === receipt.process[index]))
+          result.ph1 = before.queue.held.has([...queue.held][0]) ? 1 : 2;
         // ot1: that exact OPEN's wrapper STARTED record (truncated ms, same guest clock)
         // relative to this screenshot's local write attempt: 1 before, 2 after. A tie is
         // omitted. Not daemon receipt or order, file state or a cause; never the values.
@@ -589,12 +603,13 @@ function ownedStreamPort(root, sockets, address) {
  * may already have closed it. Visible sockets only, not request acceptance, the
  * lock holder, Chromium state or a cause. Requires the same daemon PID to hold the
  * one selected listener; a bound, other-state, unowned, truncated, slow or drifting
- * view returns undefined. Paths, PIDs, inodes and rows stay local.
+ * view returns undefined. Returns the local PID, listener inode, pending count and held
+ * inode set; only queueTuple's counts leave. Paths, PIDs, inodes and rows stay local.
  */
-function listenerQueue() {
+function listenerQueue(budget = 200000000n) {
   try {
     const started = process.hrtime.bigint();
-    const late = () => process.hrtime.bigint() - started > 200000000n;
+    const late = () => process.hrtime.bigint() - started > budget;
     if (process.platform !== 'linux' || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
         typeof fs.constants.O_NONBLOCK !== 'number' || typeof fs.statfsSync !== 'function' ||
         [rootInfo, socketsInfo].some(item => !item?.isDirectory() || item.uid !== process.getuid() ||
@@ -637,7 +652,29 @@ function listenerQueue() {
     if (!current.isSocket() || current.uid !== process.getuid() || current.dev !== selectedSocketInfo.dev ||
         current.ino !== selectedSocketInfo.ino || ownedInteger(pidPath, 4194304) !== pid ||
         fs.statSync('/proc/' + pid).uid !== process.getuid() || late()) return;
-    return [1, Math.min(pending, 15), Math.min(held.size, 15)];
+    return { pid, listener, pending, held };
+  } catch {}
+}
+const queueTuple = queue => [1, Math.min(queue.pending, 15), Math.min(queue.held.size, 15)];
+/** Before connecting, an opted-in status samples the selected daemon's accepted connections
+ * once with the deadline scanner and a 20 ms budget, only between two checks that the selected
+ * session's same plain OPEN is still STARTED with its exact wrapper incarnation live. Keeps
+ * that receipt and the local sample; any doubt or a late sample is undefined. Never exported.
+ */
+function preconnectQueue() {
+  try {
+    const started = process.hrtime.bigint();
+    if (!argumentsValid || !rootInfo?.isDirectory() || rootInfo.uid !== process.getuid() ||
+        (rootInfo.mode & 0o077) !== 0 || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
+        typeof fs.constants.O_NONBLOCK !== 'number') return;
+    const receipt = readReceipt('wrapper-receipt.json');
+    const sessionKey = createHash('sha256').update(name, 'utf8').digest('hex');
+    if (!validReceipt(receipt) || receipt.action !== 'open' || receipt.phase !== 'started' ||
+        receipt.session_key !== sessionKey || receipt.open_receipt_support !== 1 ||
+        !openStillStarted(receipt, sessionKey)) return;
+    const queue = listenerQueue(20000000n);
+    if (queue && openStillStarted(receipt, sessionKey) &&
+        process.hrtime.bigint() - started <= 20000000n) return { queue, receipt };
   } catch {}
 }
 /** Only the selected session's still-STARTED WAIT whose exact wrapper incarnation
@@ -706,6 +743,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.ph1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ph1;
     if (value?.ot1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ot1;
     if (value?.q1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.q1;
     if (value?.sd1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.sd1;
@@ -784,6 +822,8 @@ try {
         ['stream_status', 'screenshot'].includes(request.action);
       finish(3, { deadline: [1, deadlinePhase] });
     }, 6000);
+    // With the unchanged deadline already armed and before any daemon traffic.
+    if (deferOpen) preconnect = preconnectQueue();
     socket = net.createConnection(address);
     socket.setEncoding('utf8');
     // The socket path is initialized with the 6s deadline already armed.
@@ -892,7 +932,8 @@ type BrowserDaemonRequest =
       observe_progress?: true;
     }
   // defer_wait lets a fresh passive preview yield to a verified active WAIT;
-  // defer_open lets its deadline report a verified still-running plain OPEN.
+  // defer_open lets its deadline report a verified still-running plain OPEN,
+  // and adds one local pre-connect queue sample beside it for an exit3 code.
   // The helper strips both and sends this same strict request otherwise.
   | {
       action: "stream_status";
