@@ -3582,8 +3582,8 @@ const completedPlainOpen = {
   lr: [1, 0, 1],
 };
 it.each<[string, Record<string, unknown>, DaemonOptions, OwnedState]>([
-  // One held beside a pending connection also keeps exit3; see the pre-connect
-  // comparison below, its only addition.
+  // One held beside a pending connection keeps exit3 unless the pre-connect
+  // comparison below proves it was already held.
   [
     "only this helper's own connection is held",
     openStatus,
@@ -3746,25 +3746,61 @@ const preconnectDeadline = (
   owned: OwnedState = {},
 ) => openDeadline(request, options, { ...oneHeldOnePending, ...owned });
 
-it.each<[string, OwnedState, number]>([
-  ["already held before the helper connected", {}, 1],
+/** The one pre-connect walk and the one deadline walk of the same recorded daemon PID,
+ * on one unchanged request at the unchanged 6 s deadline armed before both. */
+function expectPreconnectAndDeadlineWalks(
+  d: ReturnType<typeof daemon>,
+  wire: unknown[],
+) {
+  expect(d.connect).toHaveBeenCalledTimes(1);
+  expect(wire).toEqual(plainStatusWire);
+  expect(d.arm.mock.calls).toEqual([[expect.any(Function), 6000]]);
+  expect(d.openDescriptors.mock.calls).toEqual([
+    ["/proc/314159/fd"],
+    ["/proc/314159/fd"],
+  ]);
+  const [before, after] = d.openDescriptors.mock.invocationCallOrder;
+  expect(d.arm.mock.invocationCallOrder[0]).toBeLessThan(before);
+  expect(before).toBeLessThan(d.connect.mock.invocationCallOrder[0]);
+  expect(after).toBeLessThan(d.socket.destroy.mock.invocationCallOrder[0]);
+}
+
+// The first natural production positive: q1 [1, 1, 1] with the sole held connection
+// already accepted before the helper connected, so it is not the helper's own.
+it("reports only the helper OPEN literal when the sole held connection was already held before the helper connected", () => {
+  const { d, exit, wire, output } = preconnectDeadline();
+  expect(exit).toEqual([[0]]);
+  expect(output).toEqual([BROWSER_DAEMON_OPEN_DEFERRED]);
+  expectPreconnectAndDeadlineWalks(d, wire);
+  // Without the opt-in, the same observation keeps its strict exit3 packet.
+  const strict = preconnectDeadline(status);
+  expect(strict.exit).toEqual([[3]]);
+  expect(strict.wire).toEqual(plainStatusWire);
+  expect(JSON.parse(strict.output[0])).toMatchObject({
+    deadline: [1, "awaiting_response"],
+    q1: [1, 1, 1],
+    open_phase: "started",
+  });
+  expect(strict.output[0]).not.toMatch(/open_deferred|"ph1"/);
+});
+
+it.each<[string, OwnedState]>([
   [
     "not held before the helper connected",
     { beforeConnect: { unix: queueTable(pendingRow), fds: queueFds() } },
-    2,
   ],
   [
     "not the connection held before the helper connected",
     { beforeConnect: { unix: queueTable(heldRow(4250)), fds: queueFds(4250) } },
-    2,
   ],
 ])(
-  "reports only whether the sole held connection was %s, keeping exit3",
-  (_case, owned, code) => {
+  "keeps exit3 with only the pre-connect code when the sole held connection was %s",
+  (_case, owned) => {
     const { d, exit, wire, output } = preconnectDeadline(openStatus, {}, owned);
     expect(exit).toEqual([[3]]);
+    expect(output[0]).not.toContain("open_deferred");
     const { ph1, ...existing } = JSON.parse(output[0]);
-    expect(ph1).toBe(code);
+    expect(ph1).toBe(2);
     // The identical strict packet: the same counts either way cannot classify it.
     const strict = preconnectDeadline(status, {}, owned);
     expect(strict.exit).toEqual([[3]]);
@@ -3779,19 +3815,7 @@ it.each<[string, OwnedState, number]>([
     expect(output[0]).not.toMatch(
       /PRIVATE|314159|271828|123456|424[0-9]|4250|\/proc|\/dev\/shm|default|socket:/,
     );
-    // One unchanged request on one connection, at the unchanged 6 s deadline,
-    // armed before the one pre-connect walk of the same recorded daemon PID.
-    expect(d.connect).toHaveBeenCalledTimes(1);
-    expect(wire).toEqual(plainStatusWire);
-    expect(d.arm.mock.calls).toEqual([[expect.any(Function), 6000]]);
-    expect(d.openDescriptors.mock.calls).toEqual([
-      ["/proc/314159/fd"],
-      ["/proc/314159/fd"],
-    ]);
-    const [before, after] = d.openDescriptors.mock.invocationCallOrder;
-    expect(d.arm.mock.invocationCallOrder[0]).toBeLessThan(before);
-    expect(before).toBeLessThan(d.connect.mock.invocationCallOrder[0]);
-    expect(after).toBeLessThan(d.socket.destroy.mock.invocationCallOrder[0]);
+    expectPreconnectAndDeadlineWalks(d, wire);
     // The fixed Unix table once per sample; never the TCP table or a process scan.
     expect(
       d.openReceipt.mock.calls.filter(([file]) =>
@@ -3925,12 +3949,17 @@ it.each<[string, Record<string, unknown>]>([
 });
 
 it("drops the pre-connect code first at the unchanged cap, keeping the queue that scopes it", () => {
-  const complete = preconnectDeadline().output[0];
+  const notHeldBefore: OwnedState = {
+    beforeConnect: { unix: queueTable(pendingRow), fds: queueFds() },
+  };
+  const complete = preconnectDeadline(openStatus, {}, notHeldBefore).output[0];
   const { ph1, ...existing } = JSON.parse(complete);
-  expect(ph1).toBe(1);
-  const over = preconnectDeadline(openStatus, {
-    chargedBytes: 545 - Buffer.byteLength(complete),
-  }).output[0];
+  expect(ph1).toBe(2);
+  const over = preconnectDeadline(
+    openStatus,
+    { chargedBytes: 545 - Buffer.byteLength(complete) },
+    notHeldBefore,
+  ).output[0];
   expect(JSON.parse(over)).toEqual(existing);
   expect(existing.q1).toEqual([1, 1, 1]);
 });

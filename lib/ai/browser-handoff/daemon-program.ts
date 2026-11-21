@@ -729,10 +729,12 @@ function finish(code, value) {
   const early = queueSnapshot ? wrapperReceipt() : undefined;
   if (socket) socket.destroy();
   // Helper-only literal at this same original deadline, never a wait extension:
-  // an opted-in status queued behind the selected session's still-running plain
-  // OPEN, with the daemon holding at least one accepted connection besides this
-  // helper's own. Any other deadline keeps its unchanged exit3 packet.
-  if (code === 3 && deferOpen && early?.open_phase === 'started' && early.q1?.[2] >= 2) {
+  // an opted-in status awaiting a reply during the selected session's still-running
+  // plain OPEN, with the daemon holding at least one accepted connection besides this
+  // helper's own: two held, or its sole held one proved held before this helper
+  // connected (ph1 1). Any other deadline keeps its unchanged exit3 packet.
+  if (code === 3 && deferOpen && early?.open_phase === 'started' &&
+      (early.q1?.[2] >= 2 || early.ph1 === 1)) {
     code = 0;
     value = { open_deferred: 1 };
   }
@@ -905,7 +907,9 @@ export const BROWSER_DAEMON_WAIT_DEFERRED = '{"wait_deferred":1}';
  * unchanged original deadline awaiting a response while the selected session's
  * plain OPEN was still STARTED (same live wrapper incarnation before and after
  * the owned listener sample) and that daemon held at least two accepted
- * connections. A daemon reply can never equal this literal.
+ * connections, or its sole held one beside a pending connection was already
+ * held at the same OPEN's pre-connect sample. A daemon reply can never equal
+ * this literal.
  */
 export const BROWSER_DAEMON_OPEN_DEFERRED = '{"open_deferred":1}';
 
