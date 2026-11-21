@@ -28,11 +28,17 @@ import {
 
 const [first, second, europe] = fixture.vectors;
 const MINUTE = 30_000_000;
+/** MINUTE as the notification shows it. */
+const MINUTE_UTC = "2027-01-15T08:00Z";
 /** Runs two minutes after MINUTE, so MINUTE is the latest settled window. */
 const at = (minute = MINUTE) => new Date((minute + 2) * 60_000);
 const originalEnv = process.env;
+/** Reserved .test domain; fetch is mocked so nothing is ever sent. */
+const WEBHOOK = "https://hooks.example.test/services/T0/B0/webhook-secret";
 let store: Map<string, string>;
 let redis: Record<string, jest.Mock>;
+let fetchMock: jest.SpiedFunction<typeof fetch>;
+const accepted = async () => new Response("ok", { status: 200 });
 
 function fakeRedis() {
   store = new Map();
@@ -92,6 +98,19 @@ const failure = async (promise: Promise<unknown>) => {
   expect(error).toBeInstanceOf(EgressBurstAlertError);
   return error as EgressBurstAlertError;
 };
+const ok = (promise: Promise<unknown>) =>
+  expect(promise).resolves.toEqual({ status: "ok" });
+
+/** The text of every webhook message sent, in order. */
+const sent = () =>
+  fetchMock.mock.calls.map(
+    ([, init]) => JSON.parse(String(init?.body)) as { text: string },
+  );
+const lines = (index: number) => sent()[index].text.split("\n").slice(1);
+const volumeWarnings = () =>
+  jest
+    .mocked(logger.warn)
+    .mock.calls.filter(([message]) => message === "High connection volume");
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -99,16 +118,21 @@ beforeEach(async () => {
     ...originalEnv,
     E2B_EGRESS_BURST_ALERTS_ENABLED: "true",
     E2B_EGRESS_BURST_THRESHOLD: "5",
+    E2B_EGRESS_BURST_NOTIFICATION_URL: WEBHOOK,
   };
   fakeRedis();
+  fetchMock = jest.spyOn(globalThis, "fetch").mockImplementation(accepted);
   // Both collectors are alive unless a test says otherwise.
   await upload("eu", MINUTE);
+});
+afterEach(() => {
+  fetchMock.mockRestore();
 });
 afterAll(() => {
   process.env = originalEnv;
 });
 
-it("alerts on one owner's aggregate across workspaces with verified IDs only in logs", async () => {
+it("warns with verified IDs and notifies with the opaque owner only, without failing", async () => {
   await registerAttributedWorkspace("us", first, first.userId, first.sandboxId);
   // Registered to someone else: never reported as this owner's sandbox.
   store.set(
@@ -127,15 +151,10 @@ it("alerts on one owner's aggregate across workspaces with verified IDs only in 
   // 3 + 2 crosses the threshold; neither workspace does alone.
   await upload("us", MINUTE, [count(first, 3), count(second, 2), quiet]);
 
-  const error = await failure(runEgressBurstAlerts(at()));
-  expect(error.message).toBe(
-    `Egress attribution alert: us connection burst for owner ${first.owner}`,
-  );
-  expect(error.message).not.toContain(first.userId);
-  expect(error.message).not.toContain(first.sandboxId);
-  expect(jest.mocked(logger.error).mock.calls).toEqual([
+  await ok(runEgressBurstAlerts(at()));
+  expect(volumeWarnings()).toEqual([
     [
-      "Egress connection burst",
+      "High connection volume",
       {
         region: "us",
         minute: MINUTE,
@@ -149,94 +168,179 @@ it("alerts on one owner's aggregate across workspaces with verified IDs only in 
       },
     ],
   ]);
+  expect(logger.error).not.toHaveBeenCalled();
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [url, init] = fetchMock.mock.calls[0];
+  expect(String(url)).toBe(WEBHOOK);
+  expect(init).toMatchObject({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    redirect: "error",
+    signal: expect.any(AbortSignal),
+  });
+  expect(sent()).toEqual([
+    {
+      text:
+        "High connection volume\n" +
+        `us ${MINUTE_UTC} owner ${first.owner}: 5 connections (threshold 5)`,
+    },
+  ]);
+  const body = String(init?.body);
+  for (const raw of [first.userId, first.sandboxId, "user_other", "foreign"])
+    expect(body).not.toContain(raw);
 });
 
-const burstLogs = () =>
-  jest
-    .mocked(logger.error)
-    .mock.calls.filter(([message]) => message === "Egress connection burst");
+it("notifies unattributed overflow without failing", async () => {
+  await upload("us", MINUTE, [], { overflowConnections: 7 });
+  await ok(runEgressBurstAlerts(at()));
+  expect(volumeWarnings()).toEqual([
+    [
+      "High connection volume",
+      {
+        region: "us",
+        minute: MINUTE,
+        unattributed: true,
+        connections: 7,
+        threshold: 5,
+      },
+    ],
+  ]);
+  expect(lines(0)).toEqual([
+    `us ${MINUTE_UTC} unattributed: 7 connections (threshold 5)`,
+  ]);
+});
 
-it("fails every run while a burst is in the window and logs its details once", async () => {
+it("notifies a minute once while it stays in the window, and a new minute again", async () => {
   await upload("us", MINUTE, [count(first, 9)]);
-  // Concurrent runs both fail; at worst the detailed log is duplicated.
+  // Concurrent runs both succeed; at worst the notification is duplicated.
   const results = await Promise.allSettled([
     runEgressBurstAlerts(at()),
     runEgressBurstAlerts(at()),
   ]);
-  expect(results.map(({ status }) => status)).toEqual(["rejected", "rejected"]);
-  const afterConcurrent = burstLogs().length;
+  expect(results.map(({ status }) => status)).toEqual([
+    "fulfilled",
+    "fulfilled",
+  ]);
+  const afterConcurrent = fetchMock.mock.calls.length;
   expect(afterConcurrent).toBeGreaterThanOrEqual(1);
   expect(afterConcurrent).toBeLessThanOrEqual(2);
 
-  // A minute later the window still holds it: the run fails again (at least
-  // once delivery) but the detailed log is not repeated.
+  // A minute later the window still holds it, but it is not sent again.
   await upload("eu", MINUTE + 1);
-  const again = await failure(runEgressBurstAlerts(at(MINUTE + 1)));
-  expect(again.message).toContain(first.owner);
-  expect(burstLogs()).toHaveLength(afterConcurrent);
+  await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+  expect(fetchMock).toHaveBeenCalledTimes(afterConcurrent);
+  expect(volumeWarnings()).toHaveLength(afterConcurrent);
 
-  // Once the minute leaves the window, the alert clears.
-  for (let minute = MINUTE + 2; minute <= MINUTE + 5; minute++)
-    await upload("eu", minute);
-  await upload("us", MINUTE + 5);
-  await expect(runEgressBurstAlerts(at(MINUTE + 5))).resolves.toEqual({
-    status: "ok",
-  });
-
-  // A new burst window for the same owner is logged again.
-  await upload("us", MINUTE + 6, [count(first, 6)]);
-  await upload("eu", MINUTE + 6);
-  await failure(runEgressBurstAlerts(at(MINUTE + 6)));
-  expect(burstLogs()).toHaveLength(afterConcurrent + 1);
+  // A new minute for the same owner is notified again.
+  await upload("us", MINUTE + 2, [count(first, 6)]);
+  await upload("eu", MINUTE + 2);
+  await ok(runEgressBurstAlerts(at(MINUTE + 2)));
+  expect(fetchMock).toHaveBeenCalledTimes(afterConcurrent + 1);
+  expect(lines(afterConcurrent)).toEqual([
+    `us 2027-01-15T08:02Z owner ${first.owner}: 6 connections (threshold 5)`,
+  ]);
 });
 
-it("fails for every burst but defers logs past the per-run cap to later runs", async () => {
+it("sends one message for at most 20 candidates per run and the rest next run", async () => {
   const owners = Array.from({ length: 25 }, (_, index) => ({
     owner: index.toString(16).padStart(32, "0"),
     workspace: "f".repeat(32),
     connections: 5 + index,
   }));
   await upload("us", MINUTE, owners);
-  const error = await failure(runEgressBurstAlerts(at()));
-  // Every burst fails the run, even those whose details wait for a later run.
-  expect(error.failures.filter(({ kind }) => kind === "burst")).toHaveLength(
-    25,
-  );
-  expect(error.message).toMatch(/; and 5 more$/);
-  expect(burstLogs()).toHaveLength(20);
-  // The largest bursts are logged first.
-  expect(burstLogs().map(([, fields]) => fields.connections)).toEqual(
-    Array.from({ length: 20 }, (_, index) => 29 - index),
-  );
+  await ok(runEgressBurstAlerts(at()));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  // The largest are sent first.
+  expect(
+    lines(0).map((line) => Number(line.split(": ")[1].split(" ")[0])),
+  ).toEqual(Array.from({ length: 20 }, (_, index) => 29 - index));
+  expect(volumeWarnings()).toHaveLength(20);
   expect(logger.warn).toHaveBeenCalledWith(
-    "Egress burst logs deferred to the next run",
-    { pending: 25, logged: 20 },
+    "High connection volume notifications deferred to the next run",
+    { pending: 25, notified: 20 },
   );
 
-  // The next run logs the five that were deferred, not the first twenty again.
-  await failure(runEgressBurstAlerts(at()));
-  expect(burstLogs()).toHaveLength(25);
-  expect(new Set(burstLogs().map(([, fields]) => fields.ownerRef)).size).toBe(
-    25,
+  // The next run sends the five deferred, not the first twenty again.
+  await ok(runEgressBurstAlerts(at()));
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(lines(1)).toHaveLength(5);
+  expect(
+    new Set([...lines(0), ...lines(1)].map((line) => line.split(": ")[0])).size,
+  ).toBe(25);
+  await ok(runEgressBurstAlerts(at()));
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+describe("failed delivery", () => {
+  it.each<[string, () => Promise<Response>]>([
+    ["a server error", async () => new Response(WEBHOOK, { status: 500 })],
+    ["a rejected request", async () => new Response(WEBHOOK, { status: 403 })],
+    [
+      "an unfollowed redirect",
+      async () =>
+        new Response(null, { status: 302, headers: { location: WEBHOOK } }),
+    ],
+    [
+      "a network error",
+      async () => {
+        throw new TypeError(`fetch failed: ${WEBHOOK}`);
+      },
+    ],
+    [
+      "a timeout",
+      async () => {
+        throw new DOMException(`timed out: ${WEBHOOK}`, "TimeoutError");
+      },
+    ],
+  ])(
+    "fails the run on %s without exposing the URL, and retries next run",
+    async (_label, response) => {
+      await upload("us", MINUTE, [count(first, 9)]);
+      fetchMock.mockImplementationOnce(response);
+      const error = await failure(runEgressBurstAlerts(at()));
+      expect(error.message).toBe(
+        "Egress attribution alert: High connection volume notification could not be delivered",
+      );
+      expect(error.message).not.toContain(first.owner);
+      const logged = JSON.stringify([
+        jest.mocked(logger.warn).mock.calls,
+        jest.mocked(logger.error).mock.calls,
+        jest.mocked(logger.info).mock.calls,
+      ]);
+      expect(logged).not.toContain("hooks.example.test");
+      expect(logged).not.toContain("webhook-secret");
+
+      // Not marked: the next scheduled run sends it, then it is done.
+      await ok(runEgressBurstAlerts(at()));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(lines(1)).toEqual(lines(0));
+      await ok(runEgressBurstAlerts(at()));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
   );
 });
 
-it("does not mark a burst logged when the log fails, and retries it next run", async () => {
+it("does not notify or mark when the warning fails, and retries next run", async () => {
   await upload("us", MINUTE, [count(first, 5)]);
-  jest.mocked(logger.error).mockImplementationOnce(() => {
+  jest.mocked(logger.warn).mockImplementationOnce(() => {
     throw new Error("log sink unavailable");
   });
   const error = await failure(runEgressBurstAlerts(at()));
-  expect(error.message).toContain("alert state could not be recorded");
-  expect(error.message).toContain(first.owner);
+  expect(error.message).toBe(
+    "Egress attribution alert: alert state could not be recorded",
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
   expect([...store.keys()].some((key) => key.startsWith("egress-burst:"))).toBe(
     false,
   );
-  await failure(runEgressBurstAlerts(at()));
-  expect(burstLogs()).toHaveLength(2);
+  await ok(runEgressBurstAlerts(at()));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  // The failed attempt is recorded by the mock too.
+  expect(volumeWarnings()).toHaveLength(2);
 });
 
-it("tolerates a duplicate log after an uncertain mark", async () => {
+it("fails on an uncertain mark after delivery and tolerates one duplicate", async () => {
   await upload("us", MINUTE, [count(first, 5)]);
   const set = redis.set.getMockImplementation()!;
   redis.set.mockImplementation(async (key: string, ...rest: unknown[]) => {
@@ -244,27 +348,32 @@ it("tolerates a duplicate log after an uncertain mark", async () => {
     return set(key, ...rest);
   });
   const error = await failure(runEgressBurstAlerts(at()));
-  expect(error.message).toContain("alert state could not be recorded");
+  expect(error.message).toBe(
+    "Egress attribution alert: alert state could not be recorded",
+  );
   redis.set.mockImplementation(set);
-  await failure(runEgressBurstAlerts(at()));
-  await failure(runEgressBurstAlerts(at()));
-  // Logged again once after the failed mark, then never again.
-  expect(burstLogs()).toHaveLength(2);
+  await ok(runEgressBurstAlerts(at()));
+  await ok(runEgressBurstAlerts(at()));
+  // Sent again once after the failed mark, then never again.
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
 it("evaluates a late upload while its minute is still in the window", async () => {
   await upload("us", MINUTE - 1);
-  await expect(runEgressBurstAlerts(at())).resolves.toEqual({ status: "ok" });
+  await ok(runEgressBurstAlerts(at()));
+  expect(fetchMock).not.toHaveBeenCalled();
   await upload("us", MINUTE, [count(first, 5)]);
-  await failure(runEgressBurstAlerts(at(MINUTE + 1)));
+  await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-it("does not alert below the threshold or across regions", async () => {
+it("does not warn or notify below the threshold or across regions", async () => {
   // Different regions are different proxies and never aggregated.
   await upload("us", MINUTE, [count(first, 4)]);
   await upload("eu", MINUTE - 1, [count(europe, 4)]);
-  await expect(runEgressBurstAlerts(at())).resolves.toEqual({ status: "ok" });
-  expect(logger.error).not.toHaveBeenCalled();
+  await ok(runEgressBurstAlerts(at()));
+  expect(volumeWarnings()).toHaveLength(0);
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 it("fails on a missing collector heartbeat rather than reading it as zero", async () => {
@@ -307,19 +416,14 @@ it.each([
   );
 });
 
-it("fails on overflow that could hide a burst", async () => {
-  await upload("us", MINUTE, [], { overflowConnections: 7 });
+it("fails for lost telemetry but still notifies high volume in that minute", async () => {
+  await upload("us", MINUTE, [count(first, 9)], { droppedBatches: 1 });
   const error = await failure(runEgressBurstAlerts(at()));
-  expect(error.message).toBe(
-    "Egress attribution alert: us unattributed overflow at or over threshold",
-  );
-  expect(logger.error).toHaveBeenCalledWith(
-    "Egress unattributed overflow over threshold",
-    { region: "us", minute: MINUTE, connections: 7, threshold: 5 },
-  );
+  expect(error.failures.map(({ kind }) => kind)).toEqual(["loss"]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-it("still fails for a burst when the registry cannot be read, and logs it later", async () => {
+it("fails when the registry cannot be read, and notifies later", async () => {
   await upload("us", MINUTE, [count(first, 5)]);
   const read = redis.mget.getMockImplementation()!;
   redis.mget.mockImplementation(async (...keys: string[]) => {
@@ -328,29 +432,29 @@ it("still fails for a burst when the registry cannot be read, and logs it later"
   });
   const error = await failure(runEgressBurstAlerts(at()));
   expect(error.message).toBe(
-    "Egress attribution alert: alert state could not be recorded; " +
-      `us connection burst for owner ${first.owner}`,
+    "Egress attribution alert: alert state could not be recorded",
   );
-  expect(burstLogs()).toHaveLength(0);
+  expect(fetchMock).not.toHaveBeenCalled();
   redis.mget.mockImplementation(read);
-  expect((await failure(runEgressBurstAlerts(at()))).message).toContain(
-    first.owner,
-  );
-  expect(burstLogs()).toHaveLength(1);
+  await ok(runEgressBurstAlerts(at()));
+  expect(volumeWarnings()).toHaveLength(1);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 it.each([undefined, "", "false"])(
-  "is off for %p without reading the threshold or store",
+  "is off for %p without reading the threshold, URL or store",
   async (enabled) => {
     if (enabled === undefined)
       delete process.env.E2B_EGRESS_BURST_ALERTS_ENABLED;
     else process.env.E2B_EGRESS_BURST_ALERTS_ENABLED = enabled;
     delete process.env.E2B_EGRESS_BURST_THRESHOLD;
+    delete process.env.E2B_EGRESS_BURST_NOTIFICATION_URL;
     jest.mocked(createRedisClient).mockClear();
     await expect(runEgressBurstAlerts(at())).resolves.toEqual({
       status: "disabled",
     });
     expect(createRedisClient).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   },
 );
 
@@ -359,15 +463,40 @@ it.each<[string, Record<string, string | undefined>]>([
   ["no explicit threshold", { E2B_EGRESS_BURST_THRESHOLD: undefined }],
   ["a zero threshold", { E2B_EGRESS_BURST_THRESHOLD: "0" }],
   ["a fractional threshold", { E2B_EGRESS_BURST_THRESHOLD: "2.5" }],
+  ["no notification URL", { E2B_EGRESS_BURST_NOTIFICATION_URL: undefined }],
+  ["an empty notification URL", { E2B_EGRESS_BURST_NOTIFICATION_URL: "" }],
+  [
+    "a plain HTTP notification URL",
+    { E2B_EGRESS_BURST_NOTIFICATION_URL: WEBHOOK.replace("https", "http") },
+  ],
+  [
+    "a notification URL with credentials",
+    {
+      E2B_EGRESS_BURST_NOTIFICATION_URL: WEBHOOK.replace(
+        "https://",
+        "https://user:pass@",
+      ),
+    },
+  ],
+  [
+    "a notification URL with a fragment",
+    { E2B_EGRESS_BURST_NOTIFICATION_URL: `${WEBHOOK}#` },
+  ],
+  [
+    "a malformed notification URL",
+    { E2B_EGRESS_BURST_NOTIFICATION_URL: "hooks.example.test/webhook-secret" },
+  ],
 ])("fails with a configuration error on %s", async (_label, overrides) => {
   for (const [name, value] of Object.entries(overrides))
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
+  await upload("us", MINUTE, [count(first, 9)]);
   const error = await failure(runEgressBurstAlerts(at()));
   expect(error.message).toBe(
     "Egress attribution alert: alert configuration is missing or invalid",
   );
   expect(redis.mget).not.toHaveBeenCalled();
+  expect(fetchMock).not.toHaveBeenCalled();
 });
 
 describe("abuse review dispatch", () => {
@@ -376,19 +505,17 @@ describe("abuse review dispatch", () => {
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
   });
 
-  it("is off by default and leaves the existing alert unchanged", async () => {
+  it("is off by default and leaves notification unchanged", async () => {
     delete process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED;
     await upload("us", MINUTE, [count(first, 9)]);
-    const error = await failure(runEgressBurstAlerts(at()));
-    expect(error.message).toBe(
-      `Egress attribution alert: us connection burst for owner ${first.owner}`,
-    );
+    await ok(runEgressBurstAlerts(at()));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(trigger()).not.toHaveBeenCalled();
   });
 
   it("dispatches one delayed review per owner window with opaque references only", async () => {
     await upload("us", MINUTE, [count(first, 9)]);
-    await failure(runEgressBurstAlerts(at()));
+    await ok(runEgressBurstAlerts(at()));
     expect(trigger()).toHaveBeenCalledTimes(1);
     const [id, payload, options] = trigger().mock.calls[0] as unknown as [
       string,
@@ -411,10 +538,10 @@ describe("abuse review dispatch", () => {
     expect(JSON.stringify(trigger().mock.calls)).not.toContain(first.userId);
 
     // Later runs and the next minute of the same window do not dispatch again.
-    await failure(runEgressBurstAlerts(at()));
+    await ok(runEgressBurstAlerts(at()));
     await upload("eu", MINUTE + 1);
     await upload("us", MINUTE + 1, [count(first, 12)]);
-    await failure(runEgressBurstAlerts(at(MINUTE + 1)));
+    await ok(runEgressBurstAlerts(at(MINUTE + 1)));
     const sameWindow =
       Math.floor(MINUTE / 30) === Math.floor((MINUTE + 1) / 30);
     expect(trigger()).toHaveBeenCalledTimes(sameWindow ? 1 : 2);
@@ -426,32 +553,42 @@ describe("abuse review dispatch", () => {
       overflowConnections: 50,
     });
     const error = await failure(runEgressBurstAlerts(at()));
-    expect(error.failures.map(({ kind }) => kind).sort()).toEqual([
-      "burst",
-      "loss",
-      "overflow",
-    ]);
+    expect(error.failures.map(({ kind }) => kind)).toEqual(["loss"]);
+    expect(lines(0)).toHaveLength(2);
     expect(trigger()).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the review even when notification delivery fails", async () => {
+    await upload("us", MINUTE, [count(first, 9)]);
+    fetchMock.mockImplementationOnce(
+      async () => new Response(null, { status: 503 }),
+    );
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.failures.map(({ kind }) => kind)).toEqual(["notification"]);
+    expect(trigger()).toHaveBeenCalledTimes(1);
   });
 
   it("reports a failed dispatch and retries it on the next run", async () => {
     await upload("us", MINUTE, [count(first, 9)]);
     trigger().mockRejectedValueOnce(new Error("trigger unavailable"));
     const error = await failure(runEgressBurstAlerts(at()));
-    expect(error.message).toContain("abuse review could not be dispatched");
-    await failure(runEgressBurstAlerts(at()));
-    expect(trigger()).toHaveBeenCalledTimes(2);
-    expect((await failure(runEgressBurstAlerts(at()))).message).not.toContain(
-      "abuse review",
+    expect(error.message).toBe(
+      "Egress attribution alert: abuse review could not be dispatched",
     );
+    // Notification is independent of review dispatch.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await ok(runEgressBurstAlerts(at()));
     expect(trigger()).toHaveBeenCalledTimes(2);
+    await ok(runEgressBurstAlerts(at()));
+    expect(trigger()).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves the original burst alert working when the review toggle is invalid", async () => {
+  it("leaves notification working when the review toggle is invalid", async () => {
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "yes";
     await upload("us", MINUTE, [count(first, 9)]);
-    const error = await failure(runEgressBurstAlerts(at()));
-    expect(error.message).toContain("us connection burst");
+    await ok(runEgressBurstAlerts(at()));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
       "Invalid egress abuse review configuration",
     );

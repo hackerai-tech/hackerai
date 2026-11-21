@@ -305,36 +305,60 @@ to Preview or the reverse.
 
 The `egress-burst-alerts` Trigger task runs every minute, scheduled in
 Production only. It is off until the Agent worker sets
-`E2B_EGRESS_BURST_ALERTS_ENABLED=true` and `E2B_EGRESS_BURST_THRESHOLD`, the
+`E2B_EGRESS_BURST_ALERTS_ENABLED=true`, `E2B_EGRESS_BURST_THRESHOLD`, the
 number of accepted attributed connections from one owner's workspaces in one
-region and minute that fails a run. There is no default threshold; choose it
-from observed telemetry before enabling. Any other toggle value or a missing,
-zero or fractional threshold fails the run with a configuration error.
+region and minute that counts as high volume, and
+`E2B_EGRESS_BURST_NOTIFICATION_URL`, the operators' Slack-compatible incoming
+webhook. There is no default threshold; choose it from observed telemetry
+before enabling. Any other toggle value, a missing, zero or fractional
+threshold, or a missing notification URL, one that is not HTTPS, or one with
+embedded credentials or a fragment fails the run with a configuration error.
+The URL is not required while the monitor is off.
 
 Each run reads the five most recent settled minutes for both regions, so a
-briefly late upload is still evaluated. A run fails, and is visible to the
-environment's existing Trigger error alerts, when:
+briefly late upload is still evaluated. High volume is when an owner's total
+across its workspaces, or the connections beyond the collector's identity
+bound, reach the threshold. It is not a monitoring failure: the run logs a
+`High connection volume` warning, sends one webhook message and succeeds. The
+warning adds the registered user ID and the sandbox IDs verified for that
+owner. The message is titled `High connection volume`, with one line per
+candidate giving the region, UTC minute, opaque owner reference or
+`unattributed`, observed count and threshold; it never contains user or
+sandbox IDs.
 
-- an owner's total across its workspaces reaches the threshold; the error
-  names only the region and opaque owner reference, and the run's error log
-  adds the registered user ID and the sandbox IDs verified for that owner;
+A run fails, and is visible to the environment's existing Trigger error
+alerts, only when the monitor itself is broken:
+
+- its configuration is missing or invalid;
 - a region has uploaded nothing in those five minutes (missing heartbeat);
-- a collector reported dropped events or batches, which can hide a burst;
-- connections beyond the collector's identity bound reach the threshold;
-- telemetry or the registry cannot be read, or a detailed log cannot be
-  written or recorded.
+- a collector reported dropped events or batches, which can hide high volume;
+- telemetry or the registry cannot be read, or a warning cannot be written or
+  recorded as notified;
+- the webhook does not accept the message: a network error, a timeout after
+  five seconds, a redirect, which is never followed, or any non-2xx response;
+- an abuse review cannot be dispatched.
 
-Delivery is at least once. Every run fails while a burst is inside its
-five-minute window, so the same burst normally fails several consecutive
-runs, and a lost run is covered by the next one. Only the detailed error log
-is deduplicated per region, minute and owner: it is recorded as written only
-after it is written, so a failure or uncertain write logs it again on a later
-run, and concurrent runs can log it twice. At most 20 new detailed logs are
-written per run, largest bursts first; the run still fails for every burst,
-and the next run logs the rest. Incomplete minutes also fail the run, because a
-failed journal stream cannot quantify missing events. This includes the first
-partial minute after initial installation; wait for it to leave the evaluation
-window before expecting a clean run.
+Notification is at least once and deduplicated per region, minute and owner.
+Each run warns about and sends at most 20 candidates not yet notified, largest
+first, in a single delivery attempt; the next run handles the rest. Candidates
+are recorded as notified only after the webhook accepts them, so a failed
+delivery or uncertain record is retried by the next scheduled run while the
+minute is in the window, and concurrent runs can send a candidate twice. A
+retry can repeat the warning. Delivery failures use a fixed error message.
+The URL stays out of HTTP traces, and the response body is discarded.
+Incomplete minutes fail the run, because a failed journal stream cannot
+quantify missing events. This includes the first partial minute after initial
+installation; wait for it to leave the evaluation window before expecting a
+clean run.
+
+Treat the webhook URL as a secret. Point it at a private operator channel,
+never a customer-visible destination, and never paste it into logs, issues or
+pull requests. Before deploying a version that requires it in an environment
+where the monitor is enabled, set that environment's own URL in its Agent
+worker; otherwise every run fails with a configuration error. Verify a new
+destination in Preview first with synthetic telemetry, such as a low
+threshold on a Preview pilot workspace, and confirm that a message arrives
+and the run succeeds.
 
 Counts are accepted authenticated SOCKS connections, not HTTP requests: one
 connection can carry many requests, and exact request counts are not
