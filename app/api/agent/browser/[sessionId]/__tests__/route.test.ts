@@ -1129,7 +1129,10 @@ it.each(["resize_command", "capture_frame"] as const)(
       viewport_diagnostic_version: 1,
       viewport_failure_phase: phase,
       viewport_error_kind: "command_exit",
-      viewport_command_exit_code: 6,
+      viewport_command_exit_code: phase === "resize_command" ? 3 : 6,
+      ...(phase === "resize_command" && {
+        viewport_deadline_phase: "awaiting_response",
+      }),
     };
     mockResize.mockImplementationOnce(async (...args) => {
       const observe = args[5];
@@ -1149,6 +1152,10 @@ it.each(["resize_command", "capture_frame"] as const)(
         ...diagnostic,
       }),
     );
+    if (phase === "capture_frame")
+      expect(jest.mocked(phLogger.info).mock.calls[0][1]).not.toHaveProperty(
+        "viewport_deadline_phase",
+      );
     expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
       "PRIVATE_VIEWPORT_ERROR",
     );
