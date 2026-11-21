@@ -802,6 +802,11 @@ const OTHER_STAGE_CAPTURE_KEYS = [
 const MISSING_SOCKET_CAPTURE_KEYS = [
   "capture_open_socket_directory_v1",
 ] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
+// The write-order field requires a still-started OPEN. The general deadline
+// model includes completed-OPEN-only daemon fields and cannot include this key.
+const STARTED_OPEN_SCREENSHOT_CAPTURE_KEYS = [
+  "capture_open_start_write_order_v1",
+] as const satisfies ReadonlyArray<keyof BrowserCaptureFailureContext>;
 const EXIT_3_OR_5_CAPTURE_KEYS: ReadonlyArray<string> = [
   "capture_deadline_diagnostic_version",
   "capture_deadline_phase",
@@ -827,6 +832,7 @@ type UnclassifiedCaptureKey = Exclude<
   keyof BrowserCaptureFailureContext,
   | (typeof COMMAND_EXIT_CAPTURE_KEYS)[number]
   | (typeof MISSING_SOCKET_CAPTURE_KEYS)[number]
+  | (typeof STARTED_OPEN_SCREENSHOT_CAPTURE_KEYS)[number]
   | (typeof OTHER_STAGE_CAPTURE_KEYS)[number]
   | keyof BrowserBridgeFailureContext
 >;

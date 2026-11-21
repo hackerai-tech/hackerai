@@ -4554,6 +4554,87 @@ it("projects the queue at a fresh screenshot deadline and keeps its rejection an
   expect(queueGroup(context)).toEqual({ version: 1, pending: 0, held: 1 });
 });
 
+/** The GET's fresh screenshot rejects with this packet; the same request, rejection and cleanup. */
+async function observeScreenshotFailure(packet: string) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 3,
+    stderr: "PRIVATE",
+    stdout: packet,
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observe,
+      { recognizeClosed: true },
+    ),
+  ).rejects.toBe(error);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledTimes(1);
+  return observe.mock.calls[0][0];
+}
+
+it.each<[number, string]>([
+  [1, "before_write"],
+  [2, "after_write"],
+])(
+  "adds only the closed write order %i beside a still-running OPEN's screenshot queue",
+  async (ot1, order) => {
+    const context = await observeScreenshotFailure(runningOpenPacket({ ot1 }));
+    const { capture_open_start_write_order_v1: projected, ...rest } = context;
+    expect(projected).toBe(order);
+    expect(rest).toEqual(await observeScreenshotFailure(runningOpenPacket()));
+    expect(rest).toMatchObject({
+      capture_stage: "fresh_screenshot",
+      capture_command_exit_code: 3,
+      capture_deadline_phase: "awaiting_response",
+      capture_open_phase: "started",
+      capture_daemon_socket_held_count: 3,
+    });
+  },
+);
+
+it.each<[string, () => Promise<Record<string, unknown>>]>([
+  ["no code", () => observeScreenshotFailure(runningOpenPacket())],
+  ...[0, 3, "1", 1.5, [1], null].map(
+    (ot1) =>
+      [
+        `the malformed code ${JSON.stringify(ot1)}`,
+        () => observeScreenshotFailure(runningOpenPacket({ ot1 })),
+      ] as [string, () => Promise<Record<string, unknown>>],
+  ),
+  [
+    "no verified queue",
+    () =>
+      observeScreenshotFailure(runningOpenPacket({ ot1: 1, q1: undefined })),
+  ],
+  [
+    "a completed OPEN's queue",
+    () => observeScreenshotFailure(queuePacket({ ot1: 1 })),
+  ],
+  [
+    "a status failure",
+    () => observeDaemonFailure(3, runningOpenPacket({ ot1: 1 })),
+  ],
+])("omits the write order for %s", async (_case, observe) => {
+  const context = await observe();
+  expect(context).not.toHaveProperty("capture_open_start_write_order_v1");
+  expect(context.capture_deadline_phase).toBe("awaiting_response");
+});
+
 it.each([544, 545])(
   "keeps the unchanged parser cap for a %s-byte packet carrying the queue",
   async (bytes) => {

@@ -76,6 +76,42 @@ const unavailable = (error: unknown) => {
   return json({ state: "disconnected" }, 503);
 };
 
+type PreviewDeferralReason = "wait" | "open";
+type NegotiatedPreviewDeferrals = "neither" | PreviewDeferralReason | "both";
+
+// The OTLP logger caps records at 80 attributes, seven of them supplied by the logger.
+const MAX_BROWSER_PREVIEW_LOG_FIELDS = 72;
+const BROWSER_PREVIEW_REQUEST_ID =
+  /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/;
+
+function recordPreviewRefreshDeferral(
+  request: NextRequest,
+  reason: PreviewDeferralReason,
+) {
+  try {
+    const requestId = request.headers.get("x-vercel-id");
+    if (!requestId || !BROWSER_PREVIEW_REQUEST_ID.test(requestId)) return;
+    const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    phLogger.info("agent_browser_preview_refresh_deferral", {
+      diagnostic_version: 1,
+      reason,
+      request_id: requestId,
+      ...(build && /^[a-f0-9]{40}$/i.test(build)
+        ? { web_build_commit: build.toLowerCase() }
+        : {}),
+    });
+    after(async () => {
+      try {
+        await phLogger.flush();
+      } catch {
+        /* Optional delivery cannot alter the response. */
+      }
+    });
+  } catch {
+    /* Optional attribution must never change an accepted deferral. */
+  }
+}
+
 type PreviewGetStage =
   | "resolve_session"
   | "connect_sandbox"
@@ -91,6 +127,7 @@ const unavailableGet = (
   sessionId: string | undefined,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
   captureContext?: BrowserCaptureFailureContext,
+  negotiatedDeferrals?: NegotiatedPreviewDeferrals,
 ) => {
   const response = unavailable(error);
   if (response.status !== 503) return response;
@@ -124,10 +161,7 @@ const unavailableGet = (
         build && /^[a-f0-9]{40}$/i.test(build)
           ? build.toLowerCase()
           : "unknown",
-      ...(requestId &&
-      /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
-        requestId,
-      )
+      ...(requestId && BROWSER_PREVIEW_REQUEST_ID.test(requestId)
         ? { request_id: requestId }
         : {}),
       ...(sessionId && /^[a-f0-9]{32}$/.test(sessionId)
@@ -154,10 +188,18 @@ const unavailableGet = (
           : {}),
       }),
     };
-    phLogger.info(
-      "agent_browser_preview_get_unavailable",
-      withPreviewClientContext(fields, request.nextUrl.searchParams),
+    const logFields = withPreviewClientContext(
+      fields,
+      request.nextUrl.searchParams,
     );
+    phLogger.info("agent_browser_preview_get_unavailable", {
+      ...logFields,
+      ...(stage === "capture_frame" &&
+        negotiatedDeferrals !== undefined &&
+        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
+          capture_negotiated_deferrals_v1: negotiatedDeferrals,
+        }),
+    });
     after(async () => {
       try {
         await phLogger.flush();
@@ -363,6 +405,7 @@ export const GET = withServiceQueryRecovery(async function GET(
   let sessionId: string | undefined;
   let stage: PreviewGetStage = "resolve_session";
   let captureContext: BrowserCaptureFailureContext | undefined;
+  let negotiatedDeferrals: NegotiatedPreviewDeferrals | undefined;
   try {
     sessionId = (await params).sessionId;
     resolved = await resolveSession(request, sessionId);
@@ -399,9 +442,16 @@ export const GET = withServiceQueryRecovery(async function GET(
       passiveAgentRefresh && optedIn(PREVIEW_DEFER_WAIT_PARAM);
     const deferDuringOpen =
       passiveAgentRefresh && optedIn(PREVIEW_DEFER_OPEN_PARAM);
+    negotiatedDeferrals = deferDuringOpen
+      ? deferDuringWait
+        ? "both"
+        : "open"
+      : deferDuringWait
+        ? "wait"
+        : "neither";
     stage = "capture_frame";
     let frame: Awaited<ReturnType<typeof captureBrowserFrame>> | undefined;
-    let openDeferred = false;
+    let deferralReason: PreviewDeferralReason | undefined;
     try {
       frame = await captureBrowserFrame(
         sandbox,
@@ -421,11 +471,12 @@ export const GET = withServiceQueryRecovery(async function GET(
       );
     } catch (error) {
       if (!(error instanceof BrowserPreviewRefreshDeferred)) throw error;
-      openDeferred = error.reason === "open";
-      const allowed = openDeferred
-        ? deferDuringOpen
-        : error.reason === "wait" && deferDuringWait;
+      const allowed =
+        error.reason === "open"
+          ? deferDuringOpen
+          : error.reason === "wait" && deferDuringWait;
       if (!allowed) throw error;
+      deferralReason = error.reason;
     }
     stage = "verify_active_session";
     if (
@@ -433,15 +484,18 @@ export const GET = withServiceQueryRecovery(async function GET(
       browserSessionName
     )
       return json({ state: "stale" }, 409);
-    if (frame === undefined)
-      return json(
+    if (frame === undefined) {
+      const response = json(
         {
           state: resolved.session.state,
           refreshDeferred: true,
-          ...(openDeferred && { refreshDeferredReason: "open" }),
+          ...(deferralReason === "open" && { refreshDeferredReason: "open" }),
         },
         202,
       );
+      if (deferralReason) recordPreviewRefreshDeferral(request, deferralReason);
+      return response;
+    }
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
     return unavailableGet(
@@ -451,6 +505,7 @@ export const GET = withServiceQueryRecovery(async function GET(
       sessionId,
       resolved.session,
       captureContext,
+      negotiatedDeferrals,
     );
   }
 });

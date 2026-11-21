@@ -205,6 +205,9 @@ let selectedSocketInfo;
 let queueSnapshot = false;
 // Only an opted-in fresh stream_status (never a screenshot or owned-port lookup).
 let deferOpen = false;
+// Only a recognize_closed screenshot: this guest's wall-clock ms just before its
+// one local write attempt (not daemon receipt). Compared locally, never exported.
+let screenshotWriteAt;
 // Only the internal opted-in status request writes progress frames: constant
 // bytes, never caller data. A write to fd 2 blocks on a full Linux pipe, so
 // frames go only to this helper's own O_NONBLOCK open of that same stderr FIFO;
@@ -487,7 +490,14 @@ function wrapperReceipt() {
       // The selected plain OPEN observed STARTED before and after the sample, never a
       // cause or navigation. q1 is dropped first at the cap, so the fields scoping it remain.
       const queue = listenerQueue();
-      if (queue && openStillStarted(receipt, sessionKey)) result.q1 = queue;
+      if (queue && openStillStarted(receipt, sessionKey)) {
+        result.q1 = queue;
+        // ot1: that exact OPEN's wrapper STARTED record (truncated ms, same guest clock)
+        // relative to this screenshot's local write attempt: 1 before, 2 after. A tie is
+        // omitted. Not daemon receipt or order, file state or a cause; never the values.
+        if (Number.isSafeInteger(screenshotWriteAt) && receipt.at !== screenshotWriteAt)
+          result.ot1 = receipt.at < screenshotWriteAt ? 1 : 2;
+      }
     }
     return result;
   } catch { return {}; }
@@ -696,6 +706,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.ot1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ot1;
     if (value?.q1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.q1;
     if (value?.sd1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.sd1;
     if (value?.s1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.s1;
@@ -744,7 +755,7 @@ try {
   precondition = 'request_invalid';
   // The internal opt-ins never reach the daemon.
   const { owned_port: ownedPort, defer_wait: deferWait, defer_open: deferOpenRequested,
-    recognize_closed: _closed, observe_progress: _progress, ...request } = JSON.parse(payload);
+    recognize_closed: recognizeClosed, observe_progress: _progress, ...request } = JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   // A screenshot sent during an OPEN can still write its file later, so only status.
   deferOpen = deferOpenRequested === true && ownedPort === undefined &&
@@ -781,6 +792,7 @@ try {
       deadlinePhase = 'awaiting_response';
       // Local write-attempt boundary, not daemon receipt.
       mark('w');
+      if (recognizeClosed === true && request.action === 'screenshot') screenshotWriteAt = Date.now();
       socket.write(JSON.stringify({ ...request, id }) + '\n');
     });
     socket.on('data', chunk => {
