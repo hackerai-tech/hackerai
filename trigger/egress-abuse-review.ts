@@ -82,8 +82,10 @@ export type EgressAbuseReviewResult =
 
 /** Matches the `user_` tag both Agent entry points put on root runs. */
 const AGENT_TASK = "agent-long";
-/** One page of the account's root runs; more than this is not ruled out. */
 const ROOT_RUN_PAGE = 50;
+const MAX_ROOT_PAGES = 4;
+/** Allow time for Trigger's run history to catch up before evaluating overlap. */
+const ROOT_HISTORY_SETTLE_MS = 20 * 60_000;
 /** Run timing comes from Trigger's clock, not the collectors'. */
 const CLOCK_SKEW_MS = 60_000;
 const TERMINAL_RUN_STATUSES = new Set([
@@ -103,9 +105,9 @@ const timeOf = (value: unknown) =>
 
 /**
  * Lists the account's Agent root runs created by the end of the burst in this
- * worker's own environment, reading run timing and status only, never
- * payloads, output or metadata. `sole` requires the selected run on the one
- * page with matching identity and usable timing, and every other run proven
+ * worker's own environment. The provider can return metadata, which this
+ * check discards. `sole` requires the selected run in the settled history
+ * with matching identity and usable timing, and every other listed run proven
  * to have started after or finished before the burst, or to have ended
  * without ever starting. Anything else is `concurrent` or `unverified`.
  */
@@ -127,19 +129,27 @@ async function checkAccountRootRuns(
   }>;
   try {
     // The SDK adds filters, including the account tag, to its trace spans.
-    const page = await context.with(suppressTracing(context.active()), () =>
-      runs.list({
+    rows = await context.with(suppressTracing(context.active()), async () => {
+      let page = await runs.list({
         taskIdentifier: AGENT_TASK,
         tag,
         // Use the available history rather than the API's default window.
         from: 1,
         to: latest,
         limit: ROOT_RUN_PAGE,
-      }),
-    );
-    if (page.hasNextPage() || page.data.length > ROOT_RUN_PAGE)
-      return "unverified";
-    rows = page.data;
+      });
+      const history = [...page.data];
+      for (let read = 1; page.hasNextPage(); read++) {
+        if (read >= MAX_ROOT_PAGES) throw new Error("Run history page limit");
+        if (page.data.length > ROOT_RUN_PAGE)
+          throw new Error("Invalid page size");
+        page = await page.getNextPage();
+        history.push(...page.data);
+      }
+      if (page.data.length > ROOT_RUN_PAGE)
+        throw new Error("Invalid page size");
+      return history;
+    });
   } catch {
     // The error can echo request details; only the closed reason is kept.
     return "unverified";
@@ -366,6 +376,8 @@ export async function runEgressAbuseReview(
   const [{ link, status }] = plausible;
   const run = { chatId: link.chatId, runId: link.runId };
   if (status !== "overlaps") return pending("observation_incomplete", { run });
+  if (now - burst.burstEnd < ROOT_HISTORY_SETTLE_MS)
+    return pending("account_runs_unverified", { run });
   // A competing run's link may be missing or expired; rule out every other
   // root run of the account before reading this run's evidence.
   const roots = await checkAccountRootRuns(userId, link.runId, burst);

@@ -368,14 +368,14 @@ this runbook.
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
-- **Bounded account history.** Truncated chat history leaves run overlap
-  uncertain. Before reading evidence, the worker checks one page of up to
-  50 account-tagged `agent-long` runs in its own Trigger environment. The
-  check uses run status and timing, with one minute of clock skew. It includes
-  finished runs whose workspace links are missing or expired. A competing
-  run that could have overlapped creates a `multiple_runs` case. A missing
-  selected run, a second page, or an unreliable result creates an
-  `account_runs_unverified` case. Both outcomes require manual review.
+- **Bounded account history.** Truncated chat history leaves overlap
+  uncertain. The worker allows 20 minutes for Trigger run history to settle,
+  then reads up to four pages of 50 account-tagged `agent-long` runs in its own
+  environment. It uses only status and timing, with one minute of clock skew,
+  and discards any metadata returned by Trigger. A run that could have
+  overlapped creates a `multiple_runs` case, even if its workspace link is
+  missing. A missing selected run, exceeded page limit, or unreliable result
+  creates an `account_runs_unverified` case. Both require manual review.
 - **What it decides.** The model receives scrubbed evidence and returns
   enums and evidence indices. Hostnames, dotted names with alphabetic
   suffixes, and IPs become stable class placeholders. The scrubber normalizes
@@ -390,9 +390,10 @@ this runbook.
   classification enums, coverage, the verified account, chat and run
   identifiers, and locators for the cited messages and tool calls. It never
   stores prompts, commands, user text, or model output. Later bursts in the
-  same window preserve the encrypted case and any operator review. The run
-  returns a `preserved` receipt. The case starts as `new` without an evidence
-  hold.
+  same window preserve the encrypted case and any operator review. A repeat
+  write returns a `preserved` receipt. If a later review clears the activity,
+  its `no_case` result describes that attempt and the stored case is preserved.
+  The case starts as `new` without an evidence hold.
 - **The draft.** It is from `abuse@hackerai.co` and asks for the targets, the
   permitted activity, the date and time scope, and redacted proof. It names the
   verified account ID, not an address: resolve the account's verified contact
@@ -416,13 +417,13 @@ alerts, which keep their own toggle and continue unchanged. Acquisition links
 and queued reviews expire on their own, and existing cases stay available to
 operators.
 
-The alert schedule runs only in Production. To check a review in Preview,
-upload synthetic telemetry above the Preview threshold for a Preview pilot
-workspace with a linked Agent run, then trigger `egress-burst-alerts`
-manually in the Preview environment with a `timestamp` two minutes after
-that minute so it is settled. Confirm the alert run succeeds, then that the
-delayed `egress-abuse-review` run succeeds with a `completed` or `preserved`
-receipt.
+The alert schedule runs only in Production. In Preview, configure
+`E2B_EGRESS_BURST_NOTIFICATION_URL` and confirm both regional telemetry
+heartbeats. Upload synthetic traffic above the Preview threshold for a pilot
+workspace with a linked Agent run. Trigger `egress-burst-alerts` manually
+with a `timestamp` two minutes after the synthetic minute. Confirm the alert
+succeeds and the delayed `egress-abuse-review` returns a `completed` or
+`preserved` receipt after the run history has settled.
 
 ## Resolution and evidence lifecycle
 

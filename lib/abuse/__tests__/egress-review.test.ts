@@ -167,6 +167,32 @@ describe("evidence preparation", () => {
       expect(prompt.toLowerCase()).not.toContain(raw);
   });
 
+  it("uses one target for Unicode and ASCII hostname spellings", () => {
+    const clean = prepareReview(
+      evidence(
+        ["Scope bücher.sample.com"],
+        ["connect xn--bcher-kva.sample.com"],
+      ),
+      BURST,
+    );
+    expect(clean.commands[0].targets).toEqual(clean.messages[0].targets);
+    expect(clean.commands[0].targets.size).toBe(1);
+    expect(clean.prompt).not.toMatch(/bücher|xn--bcher/);
+  });
+
+  it("keeps an octet interval distinct from its first address", () => {
+    const clean = prepareReview(
+      evidence(["Scope 203.0.113.9, only"], ["inspect 203.0.113.9-20"]),
+      BURST,
+    );
+    const [address] = clean.messages[0].targets;
+    const [range] = clean.commands[0].targets;
+    expect(clean.isPublic(address)).toBe(true);
+    expect(clean.mayBePublic(range)).toBe(true);
+    expect(clean.covers(address, range)).toBe(false);
+    expect(clean.prompt).not.toContain("-20");
+  });
+
   it("keeps a range distinct from an address and classifies it by the whole range", () => {
     const e = evidence(
       ["Scope: 203.0.113.9 only"],

@@ -66,6 +66,10 @@ function fakeRedis() {
     get: jest.fn(async (key: string) => read(key)),
     mget: jest.fn(async (...keys: string[]) => keys.map(read)),
     expire: jest.fn(async () => 1),
+    zmscore: jest.fn(async (key: string, members: string[]) =>
+      members.map((member) => zset(key).get(member) ?? null),
+    ),
+    zcard: jest.fn(async (key: string) => zset(key).size),
     zadd: jest.fn(
       async (key: string, ...args: Array<ScoreMember | { nx?: boolean }>) => {
         const nx = !("member" in args[0]) && args[0].nx === true;
@@ -80,27 +84,29 @@ function fakeRedis() {
       },
     ),
     // Ascending by score, then member, as Redis orders ties.
-    zrange: jest.fn(async (key: string, start: number, stop: number) =>
-      [...zset(key).entries()]
-        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
-        .slice(start, stop + 1)
-        .flatMap(([member, score]) => [member, score]),
+    zrange: jest.fn(
+      async (
+        key: string,
+        start: string | number,
+        stop: number,
+        options: { offset: number; count: number; withScores?: boolean },
+      ) =>
+        [...zset(key).entries()]
+          .filter(
+            ([, score]) =>
+              (start === "-inf" || score >= Number(start)) && score <= stop,
+          )
+          .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+          .slice(options.offset, options.offset + options.count)
+          .flatMap(([member, score]) =>
+            options.withScores ? [member, score] : [member],
+          ),
     ),
     zrem: jest.fn(async (key: string, ...members: string[]) => {
       let removed = 0;
       for (const member of members) if (zset(key).delete(member)) removed++;
       return removed;
     }),
-    zremrangebyscore: jest.fn(
-      async (key: string, start: string, end: number) => {
-        if (start !== "-inf") throw new Error("Unexpected minimum score");
-        let removed = 0;
-        for (const [member, score] of zset(key)) {
-          if (score <= end && zset(key).delete(member)) removed++;
-        }
-        return removed;
-      },
-    ),
   };
   jest.mocked(createRedisClient).mockReturnValue(redis as never);
 }
@@ -625,7 +631,7 @@ describe("abuse review dispatch", () => {
     );
     // Notification is independent of review dispatch.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    await ok(runEgressBurstAlerts(at()));
+    await ok(runEgressBurstAlerts(at(MINUTE + 1)));
     expect(trigger()).toHaveBeenCalledTimes(2);
     await ok(runEgressBurstAlerts(at()));
     expect(trigger()).toHaveBeenCalledTimes(2);
@@ -643,6 +649,51 @@ describe("abuse review dispatch", () => {
     );
   // MINUTE - 4 is the oldest minute a run at at(MINUTE) evaluates.
   const LAST_VISIBLE = MINUTE - 4;
+
+  it.each(["write failure", "full queue"])(
+    "replays an enqueue blocked by %s on the last alert minute without re-notifying",
+    async (reason) => {
+      await upload("us", LAST_VISIBLE, [count(first, 9)]);
+      if (reason === "write failure")
+        redis.zadd.mockRejectedValueOnce(new Error("store down"));
+      else redis.zcard.mockResolvedValueOnce(2_000);
+      await failure(runEgressBurstAlerts(at()));
+      expect(trigger()).not.toHaveBeenCalled();
+      await heartbeat(MINUTE + 1);
+      await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+      expect(dispatchedMinutes()).toEqual([LAST_VISIBLE]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("gives an untried entry a slot when older submissions keep failing", async () => {
+    await upload(
+      "us",
+      MINUTE,
+      Array.from({ length: 11 }, (_, index) => ({
+        ...count(first, 9),
+        owner: index.toString(16).padStart(32, "0"),
+      })),
+    );
+    trigger().mockRejectedValue(new Error("trigger unavailable"));
+    await failure(runEgressBurstAlerts(at()));
+    expect(trigger()).toHaveBeenCalledTimes(10);
+    await heartbeat(MINUTE + 1);
+    await failure(runEgressBurstAlerts(at(MINUTE + 1)));
+    const payload = trigger().mock.calls[10][1] as { owner: string };
+    expect(payload.owner).toBe("a".padStart(32, "0"));
+  });
+
+  it("removes a stale queue entry with a dispatch mark without reporting expiry", async () => {
+    await upload("us", MINUTE, [count(first, 9)]);
+    redis.zrem.mockRejectedValueOnce(new Error("queue cleanup failed"));
+    await failure(runEgressBurstAlerts(at()));
+    expect(queued()).toHaveLength(1);
+    await heartbeat(MINUTE + 31);
+    await ok(runEgressBurstAlerts(at(MINUTE + 31)));
+    expect(trigger()).toHaveBeenCalledTimes(1);
+    expect(queued()).toEqual([]);
+  });
 
   it("dispatches a capped review after its minute leaves the evaluation window", async () => {
     const owners = Array.from({ length: 11 }, (_, index) => ({

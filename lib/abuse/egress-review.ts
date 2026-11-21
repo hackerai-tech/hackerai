@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isIPv4, isIPv6 } from "node:net";
+import { domainToASCII } from "node:url";
 import { z } from "zod";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { sanitizeResearchText } from "@/lib/research/user-research";
@@ -350,6 +351,9 @@ const URL = /\b([a-z][a-z0-9+.-]{1,15}):\/\/([^\s<>"'`]+)/gi;
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const IPV6_WITH_IPV4 =
   /(?<![\w:])((?:[0-9a-f]{0,4}:){1,7}(?:\d{1,3}\.){3}\d{1,3})(\/\d{1,3})?(?![\w:])/gi;
+// Preserve the entire dotted target when an octet denotes an interval or set.
+const IPV4_OCTET_SET =
+  /(?<![\w:.])((?:[0-9,*-]{1,80}\.){3}[0-9*-](?:[0-9,*-]{0,78}[0-9*-])?)(?![\w.])/g;
 const IPV4 =
   /\b((?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d))(\/\d{1,2})?\b/g;
 const IPV6 =
@@ -405,7 +409,9 @@ export function createEvidenceScrubber() {
     return `${placeholder(key, target, seen)}${suffix}`;
   };
   const name = (raw: string, seen: Set<number>) => {
-    const key = raw.toLowerCase().replace(/\.$/, "");
+    const normalized = raw.toLowerCase().replace(/\.$/, "");
+    const key = domainToASCII(normalized) || normalized;
+    if (isIPv4(key)) return address(key, undefined, seen);
     return placeholder(key, nameTarget(key), seen);
   };
   const hostPlaceholder = (host: string, seen: Set<number>) => {
@@ -442,6 +448,11 @@ export function createEvidenceScrubber() {
         return `${scheme.toLowerCase()}://${hostPlaceholder(host, seen)}${port ? `:${port}` : ""}${path}`;
       })
       .replace(EMAIL, "[email]")
+      .replace(IPV4_OCTET_SET, (raw) =>
+        /[-*,]/.test(raw)
+          ? placeholder(raw, { kind: "unclear-ip" }, seen)
+          : raw,
+      )
       .replace(IPV6_WITH_IPV4, (_match, ip: string, cidr?: string) =>
         address(ip, cidr, seen),
       )

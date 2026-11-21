@@ -381,6 +381,54 @@ describe("other root runs of the account", () => {
   const competing = (timing: Parameters<typeof rootRun>[1]) =>
     rootRun("run_unlinked", timing);
 
+  it("checks older disjoint rows on a second page before evaluating the selected run", async () => {
+    await seedRun();
+    await link();
+    const getNextPage = jest.fn().mockResolvedValue({
+      data: [
+        competing({
+          started: BURST_START - 120_000,
+          finished: BURST_START - 90_000,
+        }),
+      ],
+      hasNextPage: () => false,
+    });
+    jest.mocked(runs.list).mockReturnValue({
+      data: [selectedRun],
+      hasNextPage: () => true,
+      getNextPage,
+    } as never);
+    classifyAs(concerning);
+    await expect(run()).resolves.toMatchObject({
+      outcome: "authorization_request",
+    });
+    expect(getNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for recent Trigger history to settle before interpreting an apparent single run", async () => {
+    await seedRun();
+    await link();
+    const clock = jest
+      .spyOn(Date, "now")
+      .mockReturnValue(BURST_START + 10 * MINUTE_MS);
+    try {
+      await expect(
+        runEgressAbuseReview(
+          { region: "us", owner: first.owner, minute: MINUTE },
+          { number: 1, max: 4 },
+        ),
+      ).rejects.toThrow("evidence is still being recorded");
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "account_runs_unverified",
+      });
+      expect(runs.list).not.toHaveBeenCalled();
+      expect(generateText).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("reviews the selected run when every other run is disjoint", async () => {
     await seedRun();
     await link();
@@ -420,7 +468,7 @@ describe("other root runs of the account", () => {
       "multiple_runs",
     ],
     [
-      "more runs than one page",
+      "pagination is unavailable",
       () => listRootRuns([selectedRun], true),
       "account_runs_unverified",
     ],

@@ -13,6 +13,7 @@ import {
   readTelemetryMinutes,
   TELEMETRY_REGIONS,
   TELEMETRY_RETENTION_S,
+  type TelemetryMinute,
 } from "@/lib/cloud-network/egress-telemetry";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { egressAbuseReviewTask } from "./egress-abuse-review";
@@ -48,7 +49,8 @@ const REVIEW_DELAY = "10m";
 /** Reviews not yet dispatched, one per case, scored by burst minute. */
 const REVIEW_QUEUE_KEY = "egress-abuse-review:v1:dispatch-queue";
 /** Oldest entries read per run; at most MAX_REVIEWS of them are dispatched. */
-const REVIEW_QUEUE_READ = 50;
+const REVIEW_QUEUE_READ = 250;
+const REVIEW_QUEUE_CAPACITY = 2_000;
 /**
  * The review rereads its minute's telemetry, kept for TELEMETRY_RETENTION_S
  * (two hours). It starts REVIEW_DELAY after dispatch and its retries can add
@@ -139,6 +141,30 @@ type Candidate = {
   complete: boolean;
 };
 
+function ownerBursts(
+  region: E2BCluster,
+  minute: number,
+  record: TelemetryMinute,
+  threshold: number,
+  complete: boolean,
+) {
+  const owners = new Map<string, Candidate>();
+  for (const [owner, workspace, connections] of record.counts) {
+    const entry = owners.get(owner) ?? {
+      region,
+      minute,
+      owner,
+      connections: 0,
+      workspaces: [],
+      complete,
+    };
+    entry.connections += connections;
+    entry.workspaces.push(workspace);
+    owners.set(owner, entry);
+  }
+  return [...owners.values()].filter((entry) => entry.connections >= threshold);
+}
+
 // v2: v1 marked candidates logged, not notified.
 const notifiedKey = ({ region, minute, owner }: Candidate) =>
   `egress-burst:v2:${region}:${minute}:${owner}`;
@@ -200,28 +226,50 @@ export async function runEgressBurstAlerts(
           workspaces: [],
           complete,
         });
-      const owners = new Map<string, Candidate>();
-      for (const [owner, workspace, connections] of record.counts) {
-        const entry = owners.get(owner) ?? {
-          region,
-          minute,
-          owner,
-          connections: 0,
-          workspaces: [],
-          complete,
-        };
-        entry.connections += connections;
-        entry.workspaces.push(workspace);
-        owners.set(owner, entry);
-      }
-      for (const entry of owners.values())
-        if (entry.connections >= threshold) candidates.push(entry);
+      candidates.push(
+        ...ownerBursts(region, minute, record, threshold, complete),
+      );
     });
   }
 
   candidates.sort((a, b) => b.connections - a.connections);
   await notifyNewCandidates(redis, url, candidates, threshold, failures);
-  if (review) await dispatchReviews(redis, candidates, failures, latest);
+  if (review) {
+    // Retained telemetry recovers work that could not be written to the queue.
+    const replayMinutes = Array.from(
+      { length: REVIEW_QUEUE_RETENTION_MINUTES - EVALUATED_MINUTES + 1 },
+      (_, index) => latest - EVALUATED_MINUTES - index,
+    );
+    const reviews = [...candidates];
+    for (const region of TELEMETRY_REGIONS) {
+      try {
+        const records = await readTelemetryMinutes(
+          redis,
+          region,
+          replayMinutes,
+        );
+        records.forEach((record, index) => {
+          if (
+            record?.complete &&
+            !record.droppedEvents &&
+            !record.droppedBatches
+          )
+            reviews.push(
+              ...ownerBursts(
+                region,
+                replayMinutes[index],
+                record,
+                threshold,
+                true,
+              ),
+            );
+        });
+      } catch {
+        failures.push({ kind: "review" });
+      }
+    }
+    await dispatchReviews(redis, reviews, failures, latest);
+  }
 
   if (failures.length) throw new EgressBurstAlertError(failures);
   return { status: "ok" };
@@ -348,6 +396,7 @@ async function deliverNotification(
 }
 
 const reviewMarkKey = (caseKey: string) => `${caseKey}:dispatched`;
+const reviewRetryKey = (caseKey: string) => `${caseKey}:retry-after`;
 
 type QueuedReview = {
   key: string;
@@ -398,15 +447,26 @@ async function dispatchReviews(
 ) {
   const oldest = latest - REVIEW_QUEUE_RETENTION_MINUTES;
   try {
-    // Retire the entire expired range even when the queue is larger than one page.
-    const expired = await redis.zremrangebyscore(
+    const outdated = await redis.zrange<string[]>(
       REVIEW_QUEUE_KEY,
       "-inf",
       oldest - 1,
+      {
+        byScore: true,
+        offset: 0,
+        count: REVIEW_QUEUE_READ,
+      },
     );
-    if (expired > 0) {
-      failures.push({ kind: "review" });
-      logger.warn("Egress abuse reviews expired before dispatch", { expired });
+    if (outdated.length) {
+      const marks = await redis.mget<unknown[]>(...outdated.map(reviewMarkKey));
+      await redis.zrem(REVIEW_QUEUE_KEY, ...outdated);
+      const expired = marks.filter((mark) => mark === null).length;
+      if (expired > 0) {
+        failures.push({ kind: "review" });
+        logger.warn("Egress abuse reviews expired before dispatch", {
+          expired,
+        });
+      }
     }
   } catch {
     failures.push({ kind: "review" });
@@ -420,7 +480,7 @@ async function dispatchReviews(
       candidate.owner,
       reviewWindowStart(candidate.minute),
     );
-    // Candidates are largest first; keep each window's largest minute.
+    // Current candidates come first, followed by replay candidates.
     if (!byCase.has(key)) byCase.set(key, candidate);
   }
   if (byCase.size) {
@@ -429,13 +489,24 @@ async function dispatchReviews(
       const marks = await redis.mget<unknown[]>(...keys.map(reviewMarkKey));
       const fresh = keys.filter((_, index) => marks[index] === null);
       if (fresh.length) {
-        // NX keeps the minute an entry was first queued with.
-        const [first, ...rest] = fresh.map((key) => ({
+        const [existing, count] = await Promise.all([
+          redis.zmscore(REVIEW_QUEUE_KEY, fresh),
+          redis.zcard(REVIEW_QUEUE_KEY),
+        ]);
+        if (existing?.length !== fresh.length)
+          throw new Error("Incomplete queue lookup");
+        const missing = fresh.filter((_, index) => existing[index] === null);
+        const remaining = Math.max(0, REVIEW_QUEUE_CAPACITY - count);
+        if (missing.length > remaining) failures.push({ kind: "review" });
+        const [first, ...rest] = missing.slice(0, remaining).map((key) => ({
           score: byCase.get(key)!.minute,
           member: key,
         }));
-        await redis.zadd(REVIEW_QUEUE_KEY, { nx: true }, first, ...rest);
-        await redis.expire(REVIEW_QUEUE_KEY, TELEMETRY_RETENTION_S);
+        if (first) {
+          // NX keeps the minute an entry was first queued with.
+          await redis.zadd(REVIEW_QUEUE_KEY, { nx: true }, first, ...rest);
+          await redis.expire(REVIEW_QUEUE_KEY, TELEMETRY_RETENTION_S);
+        }
       }
     } catch {
       // The candidates stay in the evaluation window for the next run.
@@ -445,12 +516,12 @@ async function dispatchReviews(
 
   let raw: unknown[];
   try {
-    raw = await redis.zrange<unknown[]>(
-      REVIEW_QUEUE_KEY,
-      0,
-      REVIEW_QUEUE_READ - 1,
-      { withScores: true },
-    );
+    raw = await redis.zrange<unknown[]>(REVIEW_QUEUE_KEY, oldest, latest, {
+      byScore: true,
+      offset: 0,
+      count: REVIEW_QUEUE_READ,
+      withScores: true,
+    });
   } catch {
     failures.push({ kind: "review" });
     return;
@@ -477,16 +548,29 @@ async function dispatchReviews(
   if (!due.length) return;
 
   let marks: unknown[];
+  let retries: (number | null)[];
   try {
-    marks = await redis.mget<unknown[]>(
-      ...due.map(({ key }) => reviewMarkKey(key)),
-    );
+    [marks, retries] = await Promise.all([
+      redis.mget<unknown[]>(...due.map(({ key }) => reviewMarkKey(key))),
+      redis.mget<(number | null)[]>(
+        ...due.map(({ key }) => reviewRetryKey(key)),
+      ),
+    ]);
   } catch {
     failures.push({ kind: "review" });
     return;
   }
   const done = due.filter((_, index) => marks[index] !== null);
-  const pending = due.filter((_, index) => marks[index] === null);
+  // Preserve chronological order within each group and give untried work priority.
+  const pending = due
+    .map((entry, index) => ({
+      entry,
+      mark: marks[index],
+      retry: retries[index],
+    }))
+    .filter(({ mark, retry }) => mark === null && (retry ?? 0) <= latest)
+    .sort((a, b) => Number(a.retry !== null) - Number(b.retry !== null))
+    .map(({ entry }) => entry);
   for (const { key, region, owner, minute } of pending.slice(0, MAX_REVIEWS)) {
     try {
       await tasks.trigger<typeof egressAbuseReviewTask>(
@@ -504,6 +588,13 @@ async function dispatchReviews(
       done.push({ key, region, owner, minute });
     } catch {
       failures.push({ kind: "review" });
+      try {
+        await redis.set(reviewRetryKey(key), latest + 1, {
+          ex: REVIEW_QUEUE_RETENTION_MINUTES * 60,
+        });
+      } catch {
+        // The failure is already surfaced. Keep the entry for the next pass.
+      }
     }
   }
   if (done.length)

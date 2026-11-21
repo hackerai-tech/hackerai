@@ -377,14 +377,15 @@ the region, owner reference and minute. Unset or `false` disables review. An
 invalid value warns and disables review while original alerts continue. See
 [Automated egress burst review](abuse-response.md#automated-egress-burst-review).
 
-The Redis queue keeps deferred reviews beyond the five-minute evaluation
-window. Each run adds eligible candidates and dispatches at most 10 entries,
-oldest first, even when it reads no new candidates. Once dispatch is recorded,
-the entry leaves the queue. Retries use the same idempotency key. Queue and
-dispatch failures surface as errors. Entries over 30 minutes old are removed
-and reported as expired, leaving time for a successful review to recheck the
-telemetry before its two-hour retention ends. The queue itself expires two
-hours after its last addition.
+The Redis queue keeps deferred reviews beyond the five-minute alert window.
+The worker replays retained telemetry up to 30 minutes old to recover failed
+queue writes. The queue holds up to 2,000 entries. Each run attempts up to
+10 dispatches, prioritizing untried entries within its batch. Retries use the
+same idempotency key. Entries over 30 minutes old are removed and reported as
+expired when no dispatch mark exists. Queue and dispatch failures surface as
+errors. Disabling review pauses the queue. Entries still eligible can resume
+when review is enabled again. An idle queue expires two hours after its last
+addition.
 
 While the toggle is on, every successful cloud acquisition with a server chat
 and Trigger run also records a short-lived link from the verified workspace to
