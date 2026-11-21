@@ -181,5 +181,6 @@ export function workspaceReaderCommand(
     }),
   ).toString("base64");
   const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
-  return `python3 -c ${quote(WORKSPACE_READER_PYTHON)} ${quote(encoded)}${root ? ` ${quote(root)}` : ""}`;
+  // The working directory is user content. Keep it out of Python's import path.
+  return `python3 -I -c ${quote(WORKSPACE_READER_PYTHON)} ${quote(encoded)}${root ? ` ${quote(root)}` : ""}`;
 }

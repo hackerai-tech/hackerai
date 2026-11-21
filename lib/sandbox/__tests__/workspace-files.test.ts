@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKSPACE_READER_PYTHON, workspaceRequest } from "../workspace-files";
+import {
+  WORKSPACE_READER_PYTHON,
+  workspaceReaderCommand,
+  workspaceRequest,
+} from "../workspace-files";
 
 describe("workspace reader filesystem boundary", () => {
   let fixture: string;
@@ -42,6 +46,27 @@ describe("workspace reader filesystem boundary", () => {
         { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 },
       ),
     );
+
+  it("lists the working directory independently of Python environment settings", () => {
+    writeFileSync(join(root, "report.txt"), "fixture");
+    const request = workspaceRequest.parse({ chatId: "chat", action: "list" });
+    const output = execFileSync(
+      "sh",
+      ["-c", workspaceReaderCommand(request, null)],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PYTHONHOME: join(fixture, "missing-python-home"),
+        },
+      },
+    );
+    expect(JSON.parse(output)).toMatchObject({
+      root,
+      entries: [{ name: "report.txt", kind: "file", size: 7 }],
+    });
+  });
 
   it("lists actual nested files with metadata and reads exact binary bytes", () => {
     mkdirSync(join(root, "reports"));
