@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  CURL_PROGRESS_WRITE_OUT,
   copyAttachmentDownloadFailureContext,
   recordAttachmentDownloadDnsFallback,
   recordAttachmentDownloadFailure,
@@ -105,6 +106,8 @@ type SandboxCommandResult = {
   error?: string;
   stderrFromErrorMessage?: true;
   exitCodeFromErrorMessage?: true;
+  /** The SDK supplied no stdout string; `stdout` is only a placeholder. */
+  stdoutUnreported?: true;
 };
 
 type LocalCopyFailureReason =
@@ -260,15 +263,18 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
       ? (error as { stdout?: unknown; stderr?: unknown })
       : {};
   const message = error instanceof Error ? error.message : String(error);
+  const stdout = commandError.stdout;
   const stderr = commandError.stderr;
+  const hasReportedStdout = typeof stdout === "string";
   const hasReportedStderr = typeof stderr === "string" && stderr.length > 0;
 
   return copyAttachmentCommandFailureContext(error, {
-    stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
+    stdout: hasReportedStdout ? stdout : "",
     stderr: hasReportedStderr ? stderr : message,
     exitCode,
     error: message,
     ...(!hasReportedStderr && { stderrFromErrorMessage: true as const }),
+    ...(!hasReportedStdout && { stdoutUnreported: true as const }),
     ...(reportedExitCode === null && {
       exitCodeFromErrorMessage: true as const,
     }),
@@ -466,10 +472,14 @@ const runSandboxCommand = async (
         options,
       );
       signal?.throwIfAborted();
+      const stdout = result?.stdout;
       return {
-        stdout: result?.stdout ?? "",
+        stdout: stdout ?? "",
         stderr: result?.stderr ?? "",
         exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
+        ...(typeof stdout !== "string" && {
+          stdoutUnreported: true as const,
+        }),
       };
     } catch (error) {
       throwIfAttachmentAborted(signal, error);
@@ -952,7 +962,8 @@ type ObservedCurlFailure = Parameters<
 /**
  * A message-derived exit may preserve existing control flow without proving a
  * process result. Only a confirmed E2B command exit is evidence, and only SDK
- * stderr is evidence of what curl printed.
+ * stderr is evidence of what curl printed. Its own SDK stdout carries only the
+ * command's static progress marker, read by the diagnostic for exit 28 or 35.
  */
 const observedCloudCurlFailure = (
   sandbox: any,
@@ -981,6 +992,9 @@ const observedCloudCurlFailure = (
         exitCode: result.exitCode,
         // The legacy error keeps its fallback text; it is not SDK stderr.
         stderr: result.stderrFromErrorMessage ? "" : result.stderr,
+        ...(!result.stdoutUnreported && {
+          cloudCurlProgressStdout: result.stdout,
+        }),
       };
     }
   } catch {
@@ -1041,9 +1055,12 @@ const downloadFileToSandbox = async (
     const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
     const MAX_ATTEMPTS = 3;
 
+    // The body goes to -o, so stdout carries only each invocation's static
+    // progress marker, read only from its own observed failing result.
     const buildCurlCommand = (dnsPin?: string) =>
       `curl -fsSL --connect-timeout 10 --max-time 120 ` +
       `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
+      `-w ${shellQuote(CURL_PROGRESS_WRITE_OUT)} ` +
       (dnsPin ? `--resolve ${shellQuote(dnsPin)} ` : "") +
       `-o '${escapedLocalPath}' '${escapedUrl}'`;
     const curlCmd = buildCurlCommand();
