@@ -27,6 +27,7 @@ function expectPacketBudgets(text: string) {
     sd1: _socketDirectory,
     q1: _listenerQueue,
     ot1: _openWriteOrder,
+    ph1: _preconnectHeld,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -49,10 +50,21 @@ type OwnedState = {
   fdError?: string;
   linkError?: string;
   // Replaces the selected socket or the PID sidecar, or ends the started wrapper,
-  // once the descriptor walk starts.
+  // once the connected helper's descriptor walk starts.
   walkDrift?: "socket" | "pid" | "wrapper";
-  // Receipt contents once the descriptor walk starts; an undefined value is missing.
+  // Receipt contents once the connected helper's descriptor walk starts; an
+  // undefined value is missing.
   afterWalk?: { receipt?: unknown; openReceipt?: unknown };
+  // The view before the helper connects, where it differs; afterWalk applies once
+  // that pre-connect descriptor walk starts.
+  beforeConnect?: {
+    pidFile?: string;
+    unix?: string;
+    fds?: Record<string, string>;
+    receipt?: unknown;
+    openReceipt?: unknown;
+    afterWalk?: { receipt?: unknown; openReceipt?: unknown };
+  };
 };
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
@@ -160,9 +172,18 @@ function daemon(
       });
     delivered.push(text);
   });
+  // The pre-connect overrides apply only until the helper's one connection.
+  const preconnect = () =>
+    connect.mock.calls.length === 0 ? options.owned?.beforeConnect : undefined;
   const fileReceipt = (open: boolean, close = false) => {
     if (close) return options.closeReceipt;
     const key = open ? "openReceipt" : "receipt";
+    const before = preconnect();
+    if (before) {
+      const after = before.afterWalk;
+      if (preWalked && after && key in after) return after[key];
+      if (key in before) return before[key];
+    }
     const after = options.owned?.afterWalk;
     return walked && after && key in after ? after[key] : options[key];
   };
@@ -226,7 +247,20 @@ function daemon(
   });
   // procfs tables report size 0 and return at most a page per read.
   const tables = new Map<number, { text: Buffer; at: number }>();
+  // The connected helper's walk and, separately, any walk before it connects.
   let walked = false;
+  let preWalked = false;
+  const view = <K extends "pidFile" | "unix" | "fds">(
+    key: K,
+    fallback: NonNullable<OwnedState["beforeConnect"]>[K],
+  ) => {
+    const before = preconnect();
+    return before && key in before ? before[key] : fallback;
+  };
+  // The recorded daemon PID, or the pre-connect sidecar's when it differs.
+  const knownPid = (pid: string | undefined) =>
+    pid === "314159" ||
+    (pid !== undefined && pid === owned.beforeConnect?.pidFile);
   const readReceipt = jest.fn(
     (fd: number, bytes: Buffer, offset = 0, length = bytes.length) => {
       const table = tables.get(fd);
@@ -256,7 +290,7 @@ function daemon(
             : fd === 10
               ? walked && owned.walkDrift === "pid"
                 ? "314160"
-                : options.pidFile!
+                : view("pidFile", options.pidFile)!
               : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
     );
@@ -271,7 +305,7 @@ function daemon(
       return 30;
     }
     if (file === "/proc/net/unix" || file === "/proc/net/tcp") {
-      const text = file.endsWith("unix") ? owned.unix : owned.tcp;
+      const text = file.endsWith("unix") ? view("unix", owned.unix) : owned.tcp;
       if (owned.tableError || text === undefined)
         throw Object.assign(new Error("PRIVATE table"), {
           code: owned.tableError ?? "ENOENT",
@@ -376,29 +410,38 @@ function daemon(
   });
   const closeDescriptors = jest.fn();
   const openDescriptors = jest.fn((file: string) => {
-    if (file !== "/proc/314159/fd") throw new Error("Unexpected process path");
+    if (!knownPid(/^\/proc\/([0-9]+)\/fd$/.exec(file)?.[1]))
+      throw new Error("Unexpected process path");
     if (owned.fdError)
       throw Object.assign(new Error("PRIVATE descriptors"), {
         code: owned.fdError,
       });
-    const names = Object.keys(owned.fds ?? {});
+    const names = Object.keys(view("fds", owned.fds) ?? {});
     return {
       readSync: () => (names.length ? { name: names.shift() } : null),
       closeSync: closeDescriptors,
     };
   });
   const readLink = jest.fn((file: string) => {
-    const descriptor = /^\/proc\/314159\/fd\/([0-9]+)$/.exec(file)?.[1];
-    if (descriptor === undefined || owned.fds?.[descriptor] === undefined)
+    const [, pid, descriptor = ""] =
+      /^\/proc\/([0-9]+)\/fd\/([0-9]+)$/.exec(file) ?? [];
+    const fds = view("fds", owned.fds);
+    if (!knownPid(pid) || fds?.[descriptor] === undefined)
       throw new Error("Unexpected descriptor path");
-    walked = true;
+    if (connect.mock.calls.length > 0) walked = true;
+    else preWalked = true;
     if (owned.linkError)
       throw Object.assign(new Error("PRIVATE link"), {
         code: owned.linkError,
       });
-    return owned.fds[descriptor];
+    return fds[descriptor];
   });
   let deadline: (() => void) | undefined;
+  // The helper's one deadline timer and its requested delay.
+  const arm = jest.fn((callback: () => void, _ms: number) => {
+    deadline = callback;
+    return 1;
+  });
   runInNewContext(BROWSER_DAEMON_PROGRAM, {
     require: (name: string) => {
       if (name === "node:path") return path;
@@ -448,7 +491,7 @@ function daemon(
                 });
               return { isDirectory: () => true };
             }
-            if (file !== "/proc/314159")
+            if (!knownPid(/^\/proc\/([0-9]+)$/.exec(file)?.[1]))
               throw new Error("Unexpected process path");
             if (
               options.processVisibility === "missing" ||
@@ -493,10 +536,7 @@ function daemon(
               Buffer.byteLength(text) + options.chargedBytes!,
           })
         : Buffer,
-    setTimeout: (callback: () => void) => {
-      deadline = callback;
-      return 1;
-    },
+    setTimeout: arm,
     clearTimeout: jest.fn(),
     ...(options.now && { Date: { now: options.now } }),
   });
@@ -518,6 +558,7 @@ function daemon(
     openDescriptors,
     closeDescriptors,
     readLink,
+    arm,
     timeout: () => deadline?.(),
   };
 }
@@ -3495,6 +3536,13 @@ const openDeadline = (
 const plainStatusWire = [
   [JSON.stringify({ action: "stream_status", id: "hackerai-preview" }) + "\n"],
 ];
+/** The opted status's one pre-connect walk only, before its one connection. */
+function expectOnlyPreconnectWalk(d: ReturnType<typeof daemon>) {
+  expect(d.openDescriptors).toHaveBeenCalledTimes(1);
+  expect(d.openDescriptors.mock.invocationCallOrder[0]).toBeLessThan(
+    d.connect.mock.invocationCallOrder[0],
+  );
+}
 
 it.each<Record<string, unknown>>([
   openStatus,
@@ -3508,8 +3556,12 @@ it.each<Record<string, unknown>>([
     // One unchanged strict request without the internal flags, no retry.
     expect(d.connect).toHaveBeenCalledTimes(1);
     expect(wire).toEqual(plainStatusWire);
-    // The existing single sample and receipt reread decide it before the close.
-    expect(d.openDescriptors).toHaveBeenCalledTimes(1);
+    // The existing deadline sample and receipt reread decide it before the close;
+    // the one other walk is the pre-connect sample, which cannot change it.
+    expect(d.openDescriptors).toHaveBeenCalledTimes(2);
+    expect(d.openDescriptors.mock.invocationCallOrder[0]).toBeLessThan(
+      d.connect.mock.invocationCallOrder[0],
+    );
     expect(d.readLink.mock.invocationCallOrder.at(-1)).toBeLessThan(
       d.socket.destroy.mock.invocationCallOrder[0],
     );
@@ -3530,11 +3582,13 @@ const completedPlainOpen = {
   lr: [1, 0, 1],
 };
 it.each<[string, Record<string, unknown>, DaemonOptions, OwnedState]>([
+  // One held beside a pending connection also keeps exit3; see the pre-connect
+  // comparison below, its only addition.
   [
     "only this helper's own connection is held",
     openStatus,
     {},
-    { unix: queueTable(pendingRow, heldRow(4243)), fds: queueFds(4243) },
+    { unix: queueTable(heldRow(4243)), fds: queueFds(4243) },
   ],
   [
     "no connection is accepted",
@@ -3655,8 +3709,9 @@ it.each<[string, string[], string]>([
     expect(d.exit.mock.calls).toEqual([[3]]);
     const text = d.output.mock.calls[0][0];
     expect(JSON.parse(text).deadline).toEqual([1, phase]);
-    expect(text).not.toMatch(/open_deferred|q1|PRIVATE/);
-    expect(d.openDescriptors).not.toHaveBeenCalled();
+    expect(text).not.toMatch(/open_deferred|q1|ph1|PRIVATE/);
+    // Only the pre-connect sample; no deadline sample.
+    expectOnlyPreconnectWalk(d);
   },
 );
 
@@ -3675,7 +3730,209 @@ it("relays a daemon reply that answers before the deadline unchanged", () => {
   const text = d.output.mock.calls[0][0];
   expect(text).not.toBe(BROWSER_DAEMON_OPEN_DEFERRED);
   expect(JSON.parse(text)).toEqual(response);
-  expect(d.openDescriptors).not.toHaveBeenCalled();
+  expectOnlyPreconnectWalk(d);
+});
+
+// The narrow production regime: one held beside a pending connection at the
+// deadline. Those counts cannot tell whether the daemon still holds a connection
+// accepted before this helper connected; only the pre-connect sample compares it.
+const oneHeldOnePending: OwnedState = {
+  unix: queueTable(pendingRow, heldRow(4243)),
+  fds: queueFds(4243),
+};
+const preconnectDeadline = (
+  request: Record<string, unknown> = openStatus,
+  options: DaemonOptions = {},
+  owned: OwnedState = {},
+) => openDeadline(request, options, { ...oneHeldOnePending, ...owned });
+
+it.each<[string, OwnedState, number]>([
+  ["already held before the helper connected", {}, 1],
+  [
+    "not held before the helper connected",
+    { beforeConnect: { unix: queueTable(pendingRow), fds: queueFds() } },
+    2,
+  ],
+  [
+    "not the connection held before the helper connected",
+    { beforeConnect: { unix: queueTable(heldRow(4250)), fds: queueFds(4250) } },
+    2,
+  ],
+])(
+  "reports only whether the sole held connection was %s, keeping exit3",
+  (_case, owned, code) => {
+    const { d, exit, wire, output } = preconnectDeadline(openStatus, {}, owned);
+    expect(exit).toEqual([[3]]);
+    const { ph1, ...existing } = JSON.parse(output[0]);
+    expect(ph1).toBe(code);
+    // The identical strict packet: the same counts either way cannot classify it.
+    const strict = preconnectDeadline(status, {}, owned);
+    expect(strict.exit).toEqual([[3]]);
+    expect(existing).toEqual(JSON.parse(strict.output[0]));
+    expect(existing).toMatchObject({
+      deadline: [1, "awaiting_response"],
+      q1: [1, 1, 1],
+      open_phase: "started",
+      w1: 3,
+    });
+    expectPacketBudgets(output[0]);
+    expect(output[0]).not.toMatch(
+      /PRIVATE|314159|271828|123456|424[0-9]|4250|\/proc|\/dev\/shm|default|socket:/,
+    );
+    // One unchanged request on one connection, at the unchanged 6 s deadline,
+    // armed before the one pre-connect walk of the same recorded daemon PID.
+    expect(d.connect).toHaveBeenCalledTimes(1);
+    expect(wire).toEqual(plainStatusWire);
+    expect(d.arm.mock.calls).toEqual([[expect.any(Function), 6000]]);
+    expect(d.openDescriptors.mock.calls).toEqual([
+      ["/proc/314159/fd"],
+      ["/proc/314159/fd"],
+    ]);
+    const [before, after] = d.openDescriptors.mock.invocationCallOrder;
+    expect(d.arm.mock.invocationCallOrder[0]).toBeLessThan(before);
+    expect(before).toBeLessThan(d.connect.mock.invocationCallOrder[0]);
+    expect(after).toBeLessThan(d.socket.destroy.mock.invocationCallOrder[0]);
+    // The fixed Unix table once per sample; never the TCP table or a process scan.
+    expect(
+      d.openReceipt.mock.calls.filter(([file]) =>
+        file.startsWith("/proc/net/"),
+      ),
+    ).toEqual([
+      ["/proc/net/unix", 256 | 2048],
+      ["/proc/net/unix", 256 | 2048],
+    ]);
+  },
+);
+
+/** Each read advances 15 ms: past the 20 ms pre-connect budget, within the deadline's 200 ms. */
+const stepClock = () => {
+  let now = 0;
+  return () => BigInt((now += 15) * 1_000_000);
+};
+it.each<[string, () => DaemonOptions, OwnedState, number[] | undefined]>([
+  [
+    "the pre-connect table is unreadable",
+    () => ({}),
+    { beforeConnect: { unix: undefined } },
+    [1, 1, 1],
+  ],
+  [
+    "the pre-connect sample outlasts its budget",
+    () => ({ clock: stepClock() }),
+    {},
+    [1, 1, 1],
+  ],
+  [
+    "another process held a pre-connect connection",
+    () => ({}),
+    { beforeConnect: { fds: queueFds() } },
+    [1, 1, 1],
+  ],
+  [
+    "the daemon PID changed between the samples",
+    () => ({}),
+    { beforeConnect: { pidFile: "314158" } },
+    [1, 1, 1],
+  ],
+  [
+    "the listener changed between the samples",
+    () => ({}),
+    {
+      beforeConnect: {
+        unix: unixTable(
+          unixRow(4241, selectedSocket),
+          pendingRow,
+          heldRow(4243),
+        ),
+        fds: { "3": "socket:[4241]", "4": "socket:[4243]" },
+      },
+    },
+    [1, 1, 1],
+  ],
+  [
+    "a later OPEN replaced both records between the samples",
+    () => ({}),
+    {
+      beforeConnect: {
+        receipt: { ...openingWrapper, at: opening.at - 1 },
+        openReceipt: { ...openingRecord, at: opening.at - 1 },
+      },
+    },
+    [1, 1, 1],
+  ],
+  [
+    "the OPEN completes during the pre-connect sample",
+    () => ({}),
+    {
+      beforeConnect: {
+        afterWalk: { receipt: { ...completedPlainOpen, k1: 3 } },
+      },
+    },
+    [1, 1, 1],
+  ],
+  [
+    "no OPEN was running before the helper connected",
+    () => ({}),
+    {
+      beforeConnect: {
+        receipt: { ...receipt, action: "other", open_receipt_support: 1 },
+        openReceipt: successfulOpen,
+      },
+    },
+    [1, 1, 1],
+  ],
+  [
+    "the selected socket is replaced after connecting",
+    () => ({}),
+    { walkDrift: "socket" },
+    undefined,
+  ],
+  [
+    "the sole held connection has none pending beside it",
+    () => ({}),
+    { unix: queueTable(heldRow(4243)) },
+    [1, 0, 1],
+  ],
+])(
+  "keeps the strict exit3 packet without the pre-connect code when %s",
+  (_case, options, owned, queue) => {
+    const opted = preconnectDeadline(openStatus, options(), owned);
+    const strict = preconnectDeadline(status, options(), owned);
+    expect(opted.exit).toEqual([[3]]);
+    expect(opted.output).toEqual(strict.output);
+    expect(opted.wire).toEqual(strict.wire);
+    expect(opted.output[0]).not.toMatch(/"ph1"|PRIVATE|31415|424[0-9]/);
+    const packet = JSON.parse(opted.output[0]);
+    expect(packet.deadline).toEqual([1, "awaiting_response"]);
+    // The deadline sample still reports wherever only the earlier proof failed.
+    expect(packet.q1).toEqual(queue);
+  },
+);
+
+it.each<[string, Record<string, unknown>]>([
+  ["a strict status", status],
+  ["an owned-port status", { ...openStatus, owned_port: true }],
+  ["a fresh screenshot", { ...screenshotRequest, defer_open: true }],
+  ["a WAIT-only opt-in", { action: "stream_status", defer_wait: true }],
+])("never samples before connecting for %s", (_case, request) => {
+  const { d, output } = preconnectDeadline(request);
+  const connected = d.connect.mock.invocationCallOrder[0];
+  expect(d.openDescriptors).toHaveBeenCalledTimes(1);
+  expect(d.openDescriptors.mock.invocationCallOrder[0]).toBeGreaterThan(
+    connected,
+  );
+  expect(output[0]).not.toContain('"ph1"');
+});
+
+it("drops the pre-connect code first at the unchanged cap, keeping the queue that scopes it", () => {
+  const complete = preconnectDeadline().output[0];
+  const { ph1, ...existing } = JSON.parse(complete);
+  expect(ph1).toBe(1);
+  const over = preconnectDeadline(openStatus, {
+    chargedBytes: 545 - Buffer.byteLength(complete),
+  }).output[0];
+  expect(JSON.parse(over)).toEqual(existing);
+  expect(existing.q1).toEqual([1, 1, 1]);
 });
 
 /** One filesystem entry; hard links share the same object and so its identity. */
