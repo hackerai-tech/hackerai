@@ -537,6 +537,7 @@ describe("proxy", () => {
   it.each([
     "/api/internal/user-research",
     "/api/internal/influencers/partners",
+    "/api/internal/egress-telemetry",
   ])(
     "bypasses AuthKit for independently authenticated gateway %s",
     async (pathname) => {
@@ -557,31 +558,33 @@ describe("proxy", () => {
     },
   );
 
-  it("does not bypass AuthKit for sibling internal API paths", async () => {
-    mockAuthkit.mockResolvedValue({
-      session: { user: null },
-      headers: new Headers(),
-      authorizationUrl: "https://auth.hackerai.co/login",
-    });
-    const { default: proxy } = await import("../proxy");
+  it.each([
+    "/api/internal/user-research/status",
+    "/api/internal/egress-telemetry/batches",
+    "/api/internal/egress-telemetry-read",
+  ])(
+    "does not bypass AuthKit for sibling internal API path %s",
+    async (pathname) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: null },
+        headers: new Headers(),
+        authorizationUrl: "https://auth.hackerai.co/login",
+      });
+      const { default: proxy } = await import("../proxy");
 
-    await proxy(
-      createRequest({
-        pathname: "/api/internal/user-research/status",
-        method: "POST",
-      }),
-    );
+      await proxy(createRequest({ pathname, method: "POST" }));
 
-    expect(mockAuthkit).toHaveBeenCalledTimes(1);
-    expect(mockNextResponseJson).toHaveBeenCalledWith(
-      {
-        code: "unauthorized:auth",
-        message: "You need to sign in before continuing.",
-        cause: "Session expired or invalid",
-      },
-      expect.objectContaining({ status: 401 }),
-    );
-  });
+      expect(mockAuthkit).toHaveBeenCalledTimes(1);
+      expect(mockNextResponseJson).toHaveBeenCalledWith(
+        {
+          code: "unauthorized:auth",
+          message: "You need to sign in before continuing.",
+          cause: "Session expired or invalid",
+        },
+        expect.objectContaining({ status: 401 }),
+      );
+    },
+  );
 
   it.each(["/robots.txt", "/sitemap.xml"])(
     "bypasses AuthKit for the public SEO route %s",

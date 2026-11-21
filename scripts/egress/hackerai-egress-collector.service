@@ -1,0 +1,44 @@
+# Uploads per-minute counts of accepted attributed SOCKS connections from
+# danted's journal. See scripts/egress/README.md.
+[Unit]
+Description=HackerAI egress attribution collector
+After=network-online.target danted.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root only so it can open the root-owned 0600 telemetry key and the journal;
+# every capability is dropped and the filesystem is read-only except state.
+ExecStart=/usr/bin/python3 -I -B /usr/local/lib/hackerai-egress/collector.py --config /etc/hackerai-egress/collector.json --key /etc/hackerai-egress/telemetry.key
+StateDirectory=hackerai-egress-collector
+StateDirectoryMode=0700
+Restart=always
+RestartSec=5
+# Invalid configuration exits 78 and is not restarted in a loop.
+RestartPreventExitStatus=78
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=128M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

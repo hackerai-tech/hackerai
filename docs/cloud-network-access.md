@@ -135,9 +135,11 @@ saved by that first update; its behavior is unchanged.
 
 ### Rollback
 
-A workspace keeps the proxy address and username it was given. Acquisition
-rejects any workspace carrying a different managed proxy, and the editor
-never clears it. Disabling enrollment, or changing a region's proxy address or
+A workspace keeps the proxy address and username it was given, apart from the
+one move from the shared credential to its own described in
+[Per-workspace attribution](#per-workspace-attribution). Acquisition rejects
+any workspace carrying a different managed proxy, and the editor never clears
+it. Disabling enrollment, or changing a region's proxy address or
 username, therefore makes every workspace that still carries the previous proxy
 unavailable. Nothing is deleted or opened to direct egress, and restoring the
 previous values restores those workspaces.
@@ -220,3 +222,170 @@ IP, keeping the same proxy address, username and password (see Rollback).
 A different proxy address or username strands existing workspaces, and a
 different public IP breaks destinations that allowlist the current one, so do
 not change the expected IP to silence the alert.
+
+## Per-workspace attribution
+
+Attribution gives each managed-egress workspace its own SOCKS5 credential on
+the same regional proxy address and static IP, so operators can see which
+owner's workspaces open bursts of proxy connections. It is off by default,
+only alerts, and never blocks, suspends or rate-limits anyone. The proxy-side
+module and collector, and their installation, are in
+[scripts/egress](../scripts/egress/README.md).
+
+The username is `hae-v1-<owner>-<workspace>`, two opaque 128-bit HMAC
+references derived with the region's key; the password is an HMAC of that
+username and the region. Nothing in either reveals the user or sandbox ID. The
+proxy recomputes the password with its own region's key, so a credential from
+another region, another workspace or a guessed reference is rejected. The
+`hae-` prefix is reserved on the proxy: a malformed name in it fails rather
+than reaching the shared login, so the shared username must not use it.
+
+Credentials are assigned only during acquisition reconciliation or a Settings
+save, after E2B confirms the workspace's owner:
+
+- A workspace with no proxy, or with exactly its region's shared address and
+  username, moves to its attributed credential once enrolled. Its files and
+  network policy are unchanged; only the credential is rewritten.
+- A workspace that already carries its own attributed credential keeps it
+  whenever the keys are configured, even after its owner leaves the pilot.
+- Any other proxy, including another workspace's or region's attributed
+  credential, is rejected as before, never replaced or cleared.
+
+Before switching a workspace, acquisition records the reference in a Redis
+registry that maps it to the verified user and sandbox for seven days,
+refreshed on each acquisition. A reference already mapped to someone else
+fails acquisition closed. While the registry is unavailable a workspace keeps
+its current credential and is switched on a later acquisition. Registration
+waits at most two seconds, so an unresponsive registry cannot stall acquisition.
+
+### Configuration
+
+Set the same values in the web server and the Agent worker, after the proxies
+accept attributed credentials:
+
+- `E2B_EGRESS_ATTRIBUTION_ENABLED`: exactly `true` enrolls every
+  managed-egress account; unset, empty or `false` keeps the pilot list; any
+  other value fails closed for every managed-egress account.
+- `E2B_EGRESS_ATTRIBUTION_USERS`: comma-separated exact WorkOS user IDs for
+  the pilot.
+- `E2B_EGRESS_ATTRIBUTION_US_KEY` and `E2B_EGRESS_ATTRIBUTION_EU_KEY`: each
+  region's 64-character lowercase hex signing key, installed on that region's
+  proxy as well. Without enrollment, keys alone keep existing attributed
+  workspaces recognized. Set both valid keys before enabling anything: once
+  either key variable is set, a single key, a malformed key, one key for both
+  regions, a key equal to a telemetry key in the same process, enrollment
+  without keys or a shared username in the reserved namespace fails every
+  managed-egress account closed with the generic error, like other invalid
+  configuration.
+
+The collector on each proxy uploads to `/api/internal/egress-telemetry` on
+the web server, which needs:
+
+- `E2B_EGRESS_TELEMETRY_US_KEY` and `E2B_EGRESS_TELEMETRY_EU_KEY`: 64-character
+  lowercase hex keys, one per region. Generate every attribution and
+  telemetry key independently. Uploads for a region are rejected while its key
+  is missing, malformed, or equal to the other region's key or an attribution
+  key in the same process.
+- The existing Redis connection, which must be the same Redis that the Agent
+  worker uses.
+
+The route is outside AuthKit and authenticates each request itself: a region
+header, a timestamp within five minutes and an HMAC over both and the body,
+checked before the body is parsed or stored. Bodies are limited to 128 KiB,
+including chunked uploads, and must match a fixed schema of opaque references
+and counts. Each region and minute is stored once; a retry of the same body is
+acknowledged as a duplicate and a different body is rejected. Responses
+contain only a status, and there is no read API.
+
+Keys are per environment and per region. A proxy host holds one environment's
+keys, so Preview attribution needs Preview proxies; never copy Production keys
+to Preview or the reverse.
+
+### Burst alerts
+
+The `egress-burst-alerts` Trigger task runs every minute, scheduled in
+Production only. It is off until the Agent worker sets
+`E2B_EGRESS_BURST_ALERTS_ENABLED=true` and `E2B_EGRESS_BURST_THRESHOLD`, the
+number of accepted attributed connections from one owner's workspaces in one
+region and minute that fails a run. There is no default threshold; choose it
+from observed telemetry before enabling. Any other toggle value or a missing,
+zero or fractional threshold fails the run with a configuration error.
+
+Each run reads the five most recent settled minutes for both regions, so a
+briefly late upload is still evaluated. A run fails, and is visible to the
+environment's existing Trigger error alerts, when:
+
+- an owner's total across its workspaces reaches the threshold; the error
+  names only the region and opaque owner reference, and the run's error log
+  adds the registered user ID and the sandbox IDs verified for that owner;
+- a region has uploaded nothing in those five minutes (missing heartbeat);
+- a collector reported dropped events or batches, which can hide a burst;
+- connections beyond the collector's identity bound reach the threshold;
+- telemetry or the registry cannot be read, or a detailed log cannot be
+  written or recorded.
+
+Delivery is at least once. Every run fails while a burst is inside its
+five-minute window, so the same burst normally fails several consecutive
+runs, and a lost run is covered by the next one. Only the detailed error log
+is deduplicated per region, minute and owner: it is recorded as written only
+after it is written, so a failure or uncertain write logs it again on a later
+run, and concurrent runs can log it twice. At most 20 new detailed logs are
+written per run, largest bursts first; the run still fails for every burst,
+and the next run logs the rest. Incomplete minutes also fail the run, because a
+failed journal stream cannot quantify missing events. This includes the first
+partial minute after initial installation; wait for it to leave the evaluation
+window before expecting a clean run.
+
+Counts are accepted authenticated SOCKS connections, not HTTP requests: one
+connection can carry many requests, and exact request counts are not
+available.
+
+### Coverage and delivery
+
+Counts are lower bounds and only cover attributed credentials:
+
+- A new workspace is created with the shared credential, because its sandbox
+  ID is not known yet, and is switched by the acquisition that follows. Its
+  traffic until then is unattributed, as is any workspace not acquired since
+  enrollment.
+- The egress health monitor and every workspace still on the shared
+  credential are not counted and are never assigned a guessed owner. The
+  monitor therefore proves only the shared login: it does not detect a proxy
+  that rejects attributed credentials, so smoke-test an attributed credential
+  in each region before enabling attribution there and after any proxy
+  change.
+- Late or future-stamped events are reported as lost rather than counted in
+  another minute.
+- Events lost to journald rate limiting, journal vacuuming or a collector
+  outage beyond its 24-hour outbox are not recovered. Batches older than a day
+  are acknowledged and discarded, and the alert task only evaluates the last
+  five minutes. Detectable gaps are reported as incomplete minutes and dropped
+  counts, never as zero.
+
+### Rollout and rollback
+
+Install and verify the proxy side first, in each region, while the
+application issues only the shared credential: the shared login must keep
+working through PAM, only that shared username may use it, and an attributed
+credential for the region must connect while a forged one is denied. Then
+start the collector and confirm a heartbeat each minute. In the web server
+and Agent worker, set both keys with a pilot list, acquire a pilot workspace,
+and confirm it connects with its attributed credential and is counted. Observe counts before choosing a threshold and
+enabling alerts, and before global enrollment. Repeat in Preview, on Preview
+proxies, before Production.
+
+Rollback follows the managed-egress rule that a workspace keeps the identity
+it was given:
+
+- To stop new attribution, clear the pilot list or set
+  `E2B_EGRESS_ATTRIBUTION_ENABLED=false`. Attributed workspaces stay pinned and
+  keep working while the keys remain configured in both processes and on the
+  proxies.
+- Removing or changing a region's key, in the application or on its proxy, or
+  returning Dante to its `username` method, makes every attributed workspace in
+  that region unavailable or unable to connect. Nothing is deleted or opened to
+  direct egress; restoring the previous key and configuration restores them.
+  Moving attributed workspaces back to the shared credential needs a
+  deliberate, reviewed migration.
+- To stop alerts, set `E2B_EGRESS_BURST_ALERTS_ENABLED=false`. Stopping the
+  collector does not affect traffic.
