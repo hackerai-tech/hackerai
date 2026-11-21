@@ -19,6 +19,7 @@ import { registerAttributedWorkspace } from "@/lib/cloud-network/egress-attribut
 import {
   ingestTelemetryBatch,
   telemetryBatchSchema,
+  telemetryMinuteKey,
 } from "@/lib/cloud-network/egress-telemetry";
 import {
   EgressBurstAlertError,
@@ -36,15 +37,23 @@ const originalEnv = process.env;
 /** Reserved .test domain; fetch is mocked so nothing is ever sent. */
 const WEBHOOK = "https://hooks.example.test/services/T0/B0/webhook-secret";
 let store: Map<string, string>;
+let zsets: Map<string, Map<string, number>>;
 let redis: Record<string, jest.Mock>;
 let fetchMock: jest.SpiedFunction<typeof fetch>;
 const accepted = async () => new Response("ok", { status: 200 });
 
+type ScoreMember = { score: number; member: string };
+/** Key-value and sorted-set semantics of the Upstash calls the task uses. */
 function fakeRedis() {
   store = new Map();
+  zsets = new Map();
   const read = (key: string) => {
     const value = store.get(key);
     return value === undefined ? null : JSON.parse(value);
+  };
+  const zset = (key: string) => {
+    if (!zsets.has(key)) zsets.set(key, new Map());
+    return zsets.get(key)!;
   };
   redis = {
     set: jest.fn(
@@ -57,9 +66,47 @@ function fakeRedis() {
     get: jest.fn(async (key: string) => read(key)),
     mget: jest.fn(async (...keys: string[]) => keys.map(read)),
     expire: jest.fn(async () => 1),
+    zadd: jest.fn(
+      async (key: string, ...args: Array<ScoreMember | { nx?: boolean }>) => {
+        const nx = !("member" in args[0]) && args[0].nx === true;
+        let added = 0;
+        for (const entry of args) {
+          if (!("member" in entry)) continue;
+          if (nx && zset(key).has(entry.member)) continue;
+          if (!zset(key).has(entry.member)) added++;
+          zset(key).set(entry.member, entry.score);
+        }
+        return added;
+      },
+    ),
+    // Ascending by score, then member, as Redis orders ties.
+    zrange: jest.fn(async (key: string, start: number, stop: number) =>
+      [...zset(key).entries()]
+        .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+        .slice(start, stop + 1)
+        .flatMap(([member, score]) => [member, score]),
+    ),
+    zrem: jest.fn(async (key: string, ...members: string[]) => {
+      let removed = 0;
+      for (const member of members) if (zset(key).delete(member)) removed++;
+      return removed;
+    }),
+    zremrangebyscore: jest.fn(
+      async (key: string, start: string, end: number) => {
+        if (start !== "-inf") throw new Error("Unexpected minimum score");
+        let removed = 0;
+        for (const [member, score] of zset(key)) {
+          if (score <= end && zset(key).delete(member)) removed++;
+        }
+        return removed;
+      },
+    ),
   };
   jest.mocked(createRedisClient).mockReturnValue(redis as never);
 }
+const queued = () => [
+  ...(zsets.get("egress-abuse-review:v1:dispatch-queue") ?? new Map()),
+];
 
 type Count = { owner: string; workspace: string; connections: number };
 /** Through the real ingestion path, as the route stores collector uploads. */
@@ -503,6 +550,7 @@ describe("abuse review dispatch", () => {
   const trigger = () => jest.mocked(tasks.trigger);
   beforeEach(() => {
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
+    trigger().mockResolvedValue({ id: "run_review" } as never);
   });
 
   it("is off by default and leaves notification unchanged", async () => {
@@ -582,6 +630,112 @@ describe("abuse review dispatch", () => {
     await ok(runEgressBurstAlerts(at()));
     expect(trigger()).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** Collector heartbeats for a later run, with no new candidates. */
+  const heartbeat = async (minute: number) => {
+    await upload("us", minute);
+    await upload("eu", minute);
+  };
+  const dispatchedMinutes = () =>
+    trigger().mock.calls.map(
+      ([, payload]) => (payload as unknown as { minute: number }).minute,
+    );
+  // MINUTE - 4 is the oldest minute a run at at(MINUTE) evaluates.
+  const LAST_VISIBLE = MINUTE - 4;
+
+  it("dispatches a capped review after its minute leaves the evaluation window", async () => {
+    const owners = Array.from({ length: 11 }, (_, index) => ({
+      owner: index.toString(16).padStart(32, "0"),
+      workspace: "f".repeat(32),
+      connections: 9,
+    }));
+    await upload("us", LAST_VISIBLE, owners);
+    await ok(runEgressBurstAlerts(at()));
+    expect(trigger()).toHaveBeenCalledTimes(10);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Egress abuse reviews deferred to the next run",
+      { pending: 11, dispatched: 10 },
+    );
+    expect(queued()).toHaveLength(1);
+
+    // The next run no longer reads that minute and has no new candidates.
+    await heartbeat(MINUTE + 1);
+    await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+    expect(trigger()).toHaveBeenCalledTimes(11);
+    expect(dispatchedMinutes()).toEqual(Array(11).fill(LAST_VISIBLE));
+    expect(
+      new Set(
+        trigger().mock.calls.map(
+          ([, payload]) => (payload as unknown as { owner: string }).owner,
+        ),
+      ).size,
+    ).toBe(11);
+    expect(queued()).toEqual([]);
+    // The review rechecks a minute whose telemetry is still retained.
+    expect(store.has(telemetryMinuteKey("us", LAST_VISIBLE))).toBe(true);
+  });
+
+  it("retries a failed dispatch after its minute leaves the evaluation window", async () => {
+    await upload("us", LAST_VISIBLE, [count(first, 9)]);
+    trigger().mockRejectedValueOnce(new Error("trigger unavailable"));
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.failures.map(({ kind }) => kind)).toEqual(["review"]);
+
+    await heartbeat(MINUTE + 1);
+    await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+    expect(dispatchedMinutes()).toEqual([LAST_VISIBLE, LAST_VISIBLE]);
+    // Both attempts carry the case's one global idempotency key.
+    const keys = trigger().mock.calls.map(
+      ([, , options]) =>
+        (options as unknown as { idempotencyKey: string }).idempotencyKey,
+    );
+    expect(new Set(keys).size).toBe(1);
+    await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+    expect(trigger()).toHaveBeenCalledTimes(2);
+    expect(queued()).toEqual([]);
+  });
+
+  it.each(["zadd", "zrange"])(
+    "fails the run when the review queue %s is unavailable, and recovers",
+    async (method) => {
+      await upload("us", MINUTE, [count(first, 9)]);
+      redis[method].mockRejectedValueOnce(new Error("store down"));
+      const error = await failure(runEgressBurstAlerts(at()));
+      expect(error.message).toBe(
+        "Egress attribution alert: abuse review could not be dispatched",
+      );
+      // Notification is independent of review dispatch.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(trigger()).not.toHaveBeenCalled();
+      await ok(runEgressBurstAlerts(at()));
+      expect(trigger()).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reports and removes expired reviews even beyond the first queue page", async () => {
+    await upload(
+      "us",
+      MINUTE,
+      Array.from({ length: 51 }, (_, index) => ({
+        ...count(first, 9),
+        owner: index.toString(16).padStart(32, "0"),
+      })),
+    );
+    trigger().mockRejectedValue(new Error("trigger unavailable"));
+    await failure(runEgressBurstAlerts(at()));
+    expect(queued()).toHaveLength(51);
+
+    await heartbeat(MINUTE + 31);
+    const error = await failure(runEgressBurstAlerts(at(MINUTE + 31)));
+    expect(error.failures.map(({ kind }) => kind)).toEqual(["review"]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Egress abuse reviews expired before dispatch",
+      { expired: 51 },
+    );
+    expect(trigger()).toHaveBeenCalledTimes(10);
+    expect(queued()).toEqual([]);
+    await ok(runEgressBurstAlerts(at(MINUTE + 31)));
   });
 
   it("leaves notification working when the review toggle is invalid", async () => {

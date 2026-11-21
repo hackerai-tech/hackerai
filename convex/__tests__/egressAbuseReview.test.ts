@@ -196,6 +196,31 @@ describe("matchRun", () => {
     ).resolves.toEqual({ status: "unknown" });
   });
 
+  it("does not call a run disjoint when older chat history was not read", async () => {
+    const ctx = reviewDatabase();
+    // Older rows of the same run, beyond the bounded scan, could place it in
+    // the burst even though its visible rows start after it.
+    for (let index = 0; index < 130; index++)
+      await ctx.db.insert("messages", {
+        id: `old-${index}`,
+        chat_id: CHAT,
+        user_id: USER,
+        role: "assistant",
+        trigger_run_id: RUN,
+        generation_started_at: BURST.burstStart,
+        generation_time_ms: 1,
+        parts: [],
+      });
+    await seedChat(ctx);
+    const earlier = {
+      burstStart: BURST.burstStart - 60 * MINUTE_MS,
+      burstEnd: BURST.burstEnd - 60 * MINUTE_MS,
+    };
+    await expect(
+      invoke("matchRun", ctx, { ...runArgs, ...earlier, runKind: "parent" }),
+    ).resolves.toEqual({ status: "unknown" });
+  });
+
   it("places subagent links by their own run record", async () => {
     const ctx = reviewDatabase();
     await seedChat(ctx);

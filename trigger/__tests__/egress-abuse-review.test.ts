@@ -2,6 +2,7 @@
 jest.mock("@trigger.dev/sdk", () => ({
   schemaTask: (definition: unknown) => definition,
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+  runs: { list: jest.fn() },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 jest.mock("@/lib/db/service-client", () => ({
@@ -22,6 +23,7 @@ jest.mock("@/convex/lib/serviceFunctions", () => ({
 
 import { getFunctionName } from "convex/server";
 import { generateText } from "ai";
+import { logger, runs } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import * as reviewFunctions from "@/convex/egressAbuseReview";
 import { database } from "@/__mocks__/abuse-database";
@@ -150,6 +152,7 @@ async function link(
   runId = RUN,
   runKind: "parent" | "subagent" = "parent",
   chatId = CHAT,
+  now = BURST_START - 10 * MINUTE_MS,
 ) {
   recordEgressReviewAcquisition({
     region: "us",
@@ -158,9 +161,36 @@ async function link(
     chatId,
     runId,
     runKind,
-    now: BURST_START - 10 * MINUTE_MS,
+    now,
   });
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** One root run as Trigger lists it: status and timing only. */
+const rootRun = (
+  id: string,
+  timing: { started?: number; finished?: number; status?: string } = {},
+) => ({
+  id,
+  status: timing.status ?? "COMPLETED",
+  taskIdentifier: "agent-long",
+  tags: [`user_${first.userId}`, `chat_${CHAT}`],
+  ...(timing.started !== undefined
+    ? { startedAt: new Date(timing.started) }
+    : {}),
+  ...(timing.finished !== undefined
+    ? { finishedAt: new Date(timing.finished) }
+    : {}),
+});
+const selectedRun = rootRun(RUN, {
+  started: BURST_START - 5 * MINUTE_MS,
+  finished: BURST_START + 10 * MINUTE_MS,
+});
+function listRootRuns(rows: unknown[], hasNextPage = false) {
+  jest.mocked(runs.list).mockReturnValue({
+    data: rows,
+    hasNextPage: () => hasNextPage,
+  } as never);
 }
 
 const terminal = (toolCallId: string, command: string) => ({
@@ -240,6 +270,7 @@ beforeEach(async () => {
   } as never);
   await upload([[first, 900]]);
   await registerAttributedWorkspace("us", first, first.userId, first.sandboxId);
+  listRootRuns([selectedRun]);
 });
 afterAll(() => {
   process.env = originalEnv;
@@ -333,6 +364,140 @@ it("saves one encrypted case with an unsent draft for cited concerning activity"
     "abuse_responses",
   ])
     expect(convex.tables[table] ?? []).toHaveLength(0);
+
+  // Account root runs come from one bounded, account-scoped list in this
+  // worker's environment, created by the end of the burst plus clock skew.
+  expect(runs.list).toHaveBeenCalledTimes(1);
+  expect(runs.list).toHaveBeenCalledWith({
+    taskIdentifier: "agent-long",
+    tag: `user_${first.userId}`,
+    from: 1,
+    to: BURST_START + 2 * MINUTE_MS,
+    limit: 50,
+  });
+});
+
+describe("other root runs of the account", () => {
+  const competing = (timing: Parameters<typeof rootRun>[1]) =>
+    rootRun("run_unlinked", timing);
+
+  it("reviews the selected run when every other run is disjoint", async () => {
+    await seedRun();
+    await link();
+    listRootRuns([
+      competing({ started: BURST_START + 3 * MINUTE_MS }),
+      selectedRun,
+      rootRun("run_earlier", {
+        started: BURST_START - 60 * MINUTE_MS,
+        finished: BURST_START - 2 * MINUTE_MS,
+      }),
+      // Cancelled before it ever started.
+      rootRun("run_cancelled", { status: "CANCELED" }),
+    ]);
+    classifyAs(concerning);
+    await expect(run()).resolves.toMatchObject({
+      outcome: "authorization_request",
+      case: "created",
+    });
+  });
+
+  it.each<[string, () => void, string]>([
+    [
+      "a finished run with no acquisition link that overlapped the burst",
+      () =>
+        listRootRuns([
+          competing({
+            started: BURST_START - 20 * MINUTE_MS,
+            finished: BURST_START + 30_000,
+          }),
+          selectedRun,
+        ]),
+      "multiple_runs",
+    ],
+    [
+      "a run that has not started yet",
+      () => listRootRuns([competing({ status: "QUEUED" }), selectedRun]),
+      "multiple_runs",
+    ],
+    [
+      "more runs than one page",
+      () => listRootRuns([selectedRun], true),
+      "account_runs_unverified",
+    ],
+    [
+      "a list without the selected run",
+      () =>
+        listRootRuns([
+          competing({
+            started: BURST_START - 60 * MINUTE_MS,
+            finished: BURST_START - 30 * MINUTE_MS,
+          }),
+        ]),
+      "account_runs_unverified",
+    ],
+    [
+      "a selected run Trigger never started",
+      () => listRootRuns([rootRun(RUN, { status: "CANCELED" })]),
+      "account_runs_unverified",
+    ],
+    [
+      "a row for another account",
+      () =>
+        listRootRuns([
+          selectedRun,
+          { ...competing({ status: "CANCELED" }), tags: ["user_someone"] },
+        ]),
+      "account_runs_unverified",
+    ],
+    [
+      "an unavailable run list",
+      () =>
+        jest.mocked(runs.list).mockImplementation(() => {
+          throw new Error(`list failed for user_${first.userId} ${CHAT}`);
+        }),
+      "account_runs_unverified",
+    ],
+  ])("opens a closed manual case for %s", async (_label, arrange, reason) => {
+    await seedRun();
+    await link();
+    arrange();
+    classifyAs(concerning);
+    await expect(run()).resolves.toEqual({
+      status: "completed",
+      outcome: "manual_review",
+      reason,
+      case: "created",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    const record = caseRecord();
+    expect(record).toMatchObject({
+      reason,
+      draft: null,
+      run: { chatId: CHAT, runId: RUN },
+      coverage: null,
+    });
+    // Neither run data nor an SDK error reaches the case or the logs.
+    const exposed = JSON.stringify([
+      record,
+      jest.mocked(logger.info).mock.calls,
+      jest.mocked(logger.warn).mock.calls,
+      jest.mocked(logger.error).mock.calls,
+    ]);
+    for (const raw of ["run_unlinked", "list failed", "user_someone"])
+      expect(exposed).not.toContain(raw);
+  });
+});
+
+it("finds a run by its pre-burst acquisition after it re-acquired the workspace", async () => {
+  await seedRun();
+  await link();
+  // Acquired again after the burst; that record must not hide the first.
+  await link(RUN, "parent", CHAT, BURST_START + 3 * MINUTE_MS);
+  classifyAs(concerning);
+  await expect(run()).resolves.toMatchObject({
+    outcome: "authorization_request",
+    case: "created",
+  });
 });
 
 it("skips clearly corroborated legitimate work without creating a case", async () => {
@@ -364,11 +529,12 @@ it("dedupes a sustained burst into the window's case and preserves operator revi
   const ciphertext = row.ciphertext;
   Object.assign(row, { status: "reviewing", revision: 2 });
 
-  // The next minute of the same burst, now classified differently.
+  // The next minute of the same burst, now classified differently. The
+  // receipt says the case was kept, not what this attempt decided.
   await upload([[first, 1_200]], MINUTE + 1);
   classifyAs({ ...concerning, verdict: "ambiguous" });
-  await expect(run(MINUTE + 1)).resolves.toMatchObject({
-    outcome: "manual_review",
+  await expect(run(MINUTE + 1)).resolves.toEqual({
+    status: "preserved",
     case: "existing",
   });
   expect(convex.tables.abuse_cases).toHaveLength(1);
@@ -479,7 +645,7 @@ it("waits for an active run and never skips it on partial evidence", async () =>
     activity: "ordinary_development",
     authorization: "not_stated",
     commandIndices: [1],
-    messageIndices: [],
+    messageIndices: [1],
   });
   await expect(run(MINUTE, { number: 1, max: 4 })).rejects.toThrow(
     "still being recorded",

@@ -137,6 +137,7 @@ async function inspectParentRun(
         (row) => row.generation_started_at! + row.generation_time_ms!,
       ),
     );
+  const status = overlap(args, runStart, runEnd);
   return {
     rows,
     runRows,
@@ -144,13 +145,16 @@ async function inspectParentRun(
     historyTruncated,
     runStart,
     runEnd,
-    status: overlap(args, runStart, runEnd),
+    // Older rows of the run beyond the scan could place it during the burst.
+    status:
+      historyTruncated && status === "disjoint" ? ("unknown" as const) : status,
   };
 }
 
 /**
  * Whether one recorded acquisition link's run could have been active during
- * the burst. `unknown` is plausible; `unavailable` means the linked chat is
+ * the burst. `unknown` is plausible, including a parent run that looks
+ * disjoint in a truncated scan; `unavailable` means the linked chat is
  * missing, deleted or owned by someone else.
  */
 export const matchRun = query({

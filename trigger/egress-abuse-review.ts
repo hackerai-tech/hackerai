@@ -1,4 +1,6 @@
-import { logger, schemaTask } from "@trigger.dev/sdk";
+import { context } from "@opentelemetry/api";
+import { suppressTracing } from "@opentelemetry/core";
+import { logger, runs, schemaTask } from "@trigger.dev/sdk";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
@@ -72,8 +74,109 @@ export type EgressAbuseReviewResult =
       status: "completed";
       outcome: ReviewDecision["outcome"];
       reason: ReviewDecision["reason"];
-      case: "created" | "existing" | "none";
-    };
+      case: "created" | "none";
+    }
+  // The window's case already existed and was left unchanged. This attempt's
+  // decision was not stored, so the receipt does not report one.
+  | { status: "preserved"; case: "existing" };
+
+/** Matches the `user_` tag both Agent entry points put on root runs. */
+const AGENT_TASK = "agent-long";
+/** One page of the account's root runs; more than this is not ruled out. */
+const ROOT_RUN_PAGE = 50;
+/** Run timing comes from Trigger's clock, not the collectors'. */
+const CLOCK_SKEW_MS = 60_000;
+const TERMINAL_RUN_STATUSES = new Set([
+  "COMPLETED",
+  "CANCELED",
+  "FAILED",
+  "CRASHED",
+  "SYSTEM_FAILURE",
+  "TIMED_OUT",
+  "EXPIRED",
+]);
+
+const timeOf = (value: unknown) =>
+  value instanceof Date && Number.isFinite(value.getTime())
+    ? value.getTime()
+    : undefined;
+
+/**
+ * Lists the account's Agent root runs created by the end of the burst in this
+ * worker's own environment, reading run timing and status only, never
+ * payloads, output or metadata. `sole` requires the selected run on the one
+ * page with matching identity and usable timing, and every other run proven
+ * to have started after or finished before the burst, or to have ended
+ * without ever starting. Anything else is `concurrent` or `unverified`.
+ */
+async function checkAccountRootRuns(
+  userId: string,
+  runId: string,
+  burst: { burstStart: number; burstEnd: number },
+): Promise<"sole" | "concurrent" | "unverified"> {
+  const tag = `user_${userId}`;
+  const latest = burst.burstEnd + CLOCK_SKEW_MS;
+  const earliest = burst.burstStart - CLOCK_SKEW_MS;
+  let rows: Array<{
+    id: string;
+    status: string;
+    taskIdentifier: string;
+    tags: string[];
+    startedAt?: Date;
+    finishedAt?: Date;
+  }>;
+  try {
+    // The SDK adds filters, including the account tag, to its trace spans.
+    const page = await context.with(suppressTracing(context.active()), () =>
+      runs.list({
+        taskIdentifier: AGENT_TASK,
+        tag,
+        // Use the available history rather than the API's default window.
+        from: 1,
+        to: latest,
+        limit: ROOT_RUN_PAGE,
+      }),
+    );
+    if (page.hasNextPage() || page.data.length > ROOT_RUN_PAGE)
+      return "unverified";
+    rows = page.data;
+  } catch {
+    // The error can echo request details; only the closed reason is kept.
+    return "unverified";
+  }
+  let selected = false;
+  let concurrent = false;
+  for (const row of rows) {
+    if (row.taskIdentifier !== AGENT_TASK || !row.tags?.includes(tag))
+      return "unverified";
+    const startedAt = timeOf(row.startedAt);
+    const finishedAt = timeOf(row.finishedAt);
+    if (
+      startedAt !== undefined &&
+      finishedAt !== undefined &&
+      finishedAt < startedAt
+    )
+      return "unverified";
+    if (row.id === runId) {
+      // Trigger must agree that the selected run could overlap the burst.
+      if (
+        startedAt === undefined ||
+        startedAt > latest ||
+        (finishedAt !== undefined && finishedAt < earliest)
+      )
+        return "unverified";
+      selected = true;
+      continue;
+    }
+    const disjoint =
+      (startedAt !== undefined && startedAt > latest) ||
+      (finishedAt !== undefined && finishedAt < earliest) ||
+      (startedAt === undefined && TERMINAL_RUN_STATUSES.has(row.status));
+    if (!disjoint) concurrent = true;
+  }
+  if (!selected) return "unverified";
+  return concurrent ? "concurrent" : "sole";
+}
 
 /** Retried by Trigger while a still-active run's evidence may grow. */
 class EgressReviewPendingError extends Error {
@@ -156,11 +259,13 @@ export async function runEgressAbuseReview(
       digest: reviewDigest(caseKey),
       ciphertext,
     });
+    if (result.outcome === "existing")
+      return { status: "preserved", case: "existing" };
     return {
       status: "completed",
       outcome: decision.outcome,
       reason: decision.reason,
-      case: result.outcome,
+      case: "created",
     };
   };
   const manual = (
@@ -216,9 +321,15 @@ export async function runEgressAbuseReview(
       since,
     );
     if (!read.complete) return manual("acquisition_incomplete");
+    // Each run's latest acquisition before the burst ended; one after it
+    // cannot hide an earlier one.
     for (const link of read.links) {
-      if (link.acquiredAt < burst.burstEnd)
-        links.set(`${link.kind}|${link.chatId}|${link.runId}`, link);
+      const key = `${link.kind}|${link.chatId}|${link.runId}`;
+      if (
+        link.acquiredAt < burst.burstEnd &&
+        link.acquiredAt >= (links.get(key)?.acquiredAt ?? -Infinity)
+      )
+        links.set(key, link);
     }
   }
   if (!links.size) return manual("no_acquisition_link");
@@ -255,6 +366,11 @@ export async function runEgressAbuseReview(
   const [{ link, status }] = plausible;
   const run = { chatId: link.chatId, runId: link.runId };
   if (status !== "overlaps") return pending("observation_incomplete", { run });
+  // A competing run's link may be missing or expired; rule out every other
+  // root run of the account before reading this run's evidence.
+  const roots = await checkAccountRootRuns(userId, link.runId, burst);
+  if (roots === "concurrent") return manual("multiple_runs", { run });
+  if (roots === "unverified") return manual("account_runs_unverified", { run });
 
   const read = await client.query(api.egressAbuseReview.readRunEvidence, {
     serviceKey,
@@ -382,7 +498,9 @@ export const egressAbuseReviewTask = schemaTask({
       "Egress abuse review finished",
       result.status === "completed"
         ? { outcome: result.outcome, reason: result.reason, case: result.case }
-        : { status: result.status },
+        : result.status === "preserved"
+          ? { status: result.status, case: result.case }
+          : { status: result.status },
     );
     return result;
   },

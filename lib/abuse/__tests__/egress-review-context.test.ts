@@ -1,6 +1,7 @@
 /** @jest-environment node */
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
+import { createHash } from "node:crypto";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import {
   egressAbuseReviewGate,
@@ -96,7 +97,7 @@ it("is off by default and does not touch the store", async () => {
   expect(createRedisClient).not.toHaveBeenCalled();
 });
 
-it("keeps concurrent runs on one workspace instead of overwriting them", async () => {
+it("keeps every acquisition, so a later one cannot replace an earlier one", async () => {
   recordEgressReviewAcquisition({
     ...base,
     chatId: "chat_a",
@@ -110,13 +111,14 @@ it("keeps concurrent runs on one workspace instead of overwriting them", async (
     runKind: "subagent",
     now: 2_000,
   });
-  // A repeat acquisition by the same run refreshes, not duplicates, its link.
-  recordEgressReviewAcquisition({
-    ...base,
-    chatId: "chat_a",
-    runId: "run_a",
-    now: 3_000,
-  });
+  // The same run acquires again later, and one write is retried.
+  for (let attempt = 0; attempt < 2; attempt++)
+    recordEgressReviewAcquisition({
+      ...base,
+      chatId: "chat_a",
+      runId: "run_a",
+      now: 3_000,
+    });
   await flush();
   const read = await readAcquisitionLinks(
     redis as never,
@@ -128,6 +130,7 @@ it("keeps concurrent runs on one workspace instead of overwriting them", async (
   expect(read).toEqual({
     complete: true,
     links: [
+      { kind: "parent", chatId: "chat_a", runId: "run_a", acquiredAt: 1_000 },
       { kind: "subagent", chatId: "chat_b", runId: "run_b", acquiredAt: 2_000 },
       { kind: "parent", chatId: "chat_a", runId: "run_a", acquiredAt: 3_000 },
     ],
@@ -166,6 +169,42 @@ it("reports a trimmed link set as incomplete", async () => {
   // One more than the bound is kept so the reader can see the trim.
   expect(read.links).toHaveLength(MAX_ACQUISITION_LINKS + 1);
   expect(read.complete).toBe(false);
+});
+
+it("reports repeated acquisitions by one run beyond the bound as incomplete", async () => {
+  for (let index = 0; index <= MAX_ACQUISITION_LINKS; index++)
+    recordEgressReviewAcquisition({
+      ...base,
+      chatId: "chat",
+      runId: "run_a",
+      now: 1_000 + index,
+    });
+  await flush();
+  const read = await readAcquisitionLinks(
+    redis as never,
+    "us",
+    "user_1",
+    "sbx_1",
+    0,
+  );
+  expect(read.complete).toBe(false);
+});
+
+it("never reads links stored in the v1 per-run format", async () => {
+  // v1 kept one member per run at its latest time, which may have replaced
+  // the acquisition that placed the run before a burst.
+  const v1Key = `egress-review:v1:us:acquisition:${createHash("sha256")
+    .update("user_1\nsbx_1")
+    .digest("hex")
+    .slice(0, 32)}`;
+  redis
+    .pipeline()
+    .zadd(v1Key, { score: 5_000, member: "p|chat_old|run_old" })
+    .exec();
+  await flush();
+  await expect(
+    readAcquisitionLinks(redis as never, "us", "user_1", "sbx_1", 0),
+  ).resolves.toEqual({ links: [], complete: true });
 });
 
 it("never delays, throws from, or fails an acquisition when the store is down", async () => {

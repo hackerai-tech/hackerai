@@ -4,11 +4,15 @@ import { idempotencyKeys, logger, schedules, tasks } from "@trigger.dev/sdk";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
 import { reviewCaseKey, reviewWindowStart } from "@/lib/abuse/egress-review";
-import { resolveAttribution } from "@/lib/cloud-network/egress-attribution";
+import {
+  ATTRIBUTION_REF,
+  resolveAttribution,
+} from "@/lib/cloud-network/egress-attribution";
 import {
   egressBurstThreshold,
   readTelemetryMinutes,
   TELEMETRY_REGIONS,
+  TELEMETRY_RETENTION_S,
 } from "@/lib/cloud-network/egress-telemetry";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { egressAbuseReviewTask } from "./egress-abuse-review";
@@ -41,6 +45,17 @@ const MAX_REVIEWS = 10;
 const REVIEW_MARK_TTL_S = 2 * 60 * 60;
 /** Lets most active runs persist their messages before review. */
 const REVIEW_DELAY = "10m";
+/** Reviews not yet dispatched, one per case, scored by burst minute. */
+const REVIEW_QUEUE_KEY = "egress-abuse-review:v1:dispatch-queue";
+/** Oldest entries read per run; at most MAX_REVIEWS of them are dispatched. */
+const REVIEW_QUEUE_READ = 50;
+/**
+ * The review rereads its minute's telemetry, kept for TELEMETRY_RETENTION_S
+ * (two hours). It starts REVIEW_DELAY after dispatch and its retries can add
+ * about 45 minutes more, so a queued minute older than this is reported and
+ * removed rather than dispatched to a review that could no longer verify it.
+ */
+const REVIEW_QUEUE_RETENTION_MINUTES = 30;
 
 type Failure =
   | { kind: "configuration" }
@@ -206,7 +221,7 @@ export async function runEgressBurstAlerts(
 
   candidates.sort((a, b) => b.connections - a.connections);
   await notifyNewCandidates(redis, url, candidates, threshold, failures);
-  if (review) await dispatchReviews(redis, candidates, failures);
+  if (review) await dispatchReviews(redis, candidates, failures, latest);
 
   if (failures.length) throw new EgressBurstAlertError(failures);
   return { status: "ok" };
@@ -334,18 +349,69 @@ async function deliverNotification(
 
 const reviewMarkKey = (caseKey: string) => `${caseKey}:dispatched`;
 
+type QueuedReview = {
+  key: string;
+  region: E2BCluster;
+  owner: string;
+  minute: number;
+};
+
+/** The member is the case key, which is also the review's idempotency key. */
+function decodeQueuedReview(
+  member: unknown,
+  score: unknown,
+): QueuedReview | null {
+  if (typeof member !== "string") return null;
+  const minute = Number(score);
+  const [, , region, owner] = member.split(":");
+  if (
+    !Number.isSafeInteger(minute) ||
+    !TELEMETRY_REGIONS.includes(region as E2BCluster) ||
+    !ATTRIBUTION_REF.test(owner ?? "") ||
+    member !==
+      reviewCaseKey(region as E2BCluster, owner, reviewWindowStart(minute))
+  )
+    return null;
+  return { key: member, region: region as E2BCluster, owner, minute };
+}
+
 /**
  * Hands verified, complete owner bursts to the read-only abuse review, one per
- * owner, region and 30-minute UTC window. A global idempotency key dedupes
- * overlapping runs and sustained bursts; the Redis mark only avoids asking
- * Trigger again every minute. The payload carries opaque references only.
- * A failed dispatch is not marked and is retried by the next run.
+ * owner, region and 30-minute UTC window. The payload carries opaque
+ * references only.
+ *
+ * Each candidate not yet dispatched is first added to a Redis queue, scored
+ * by its minute, so a review deferred by the per-run cap or a failed dispatch
+ * survives its minute leaving the evaluation window. Every run then drains
+ * the oldest entries, with or without new candidates. A global idempotency
+ * key per case dedupes overlapping runs, sustained bursts and a dispatch
+ * whose outcome was uncertain; the Redis mark only avoids asking Trigger
+ * again. An entry leaves the queue after its dispatch is marked. Any store or
+ * dispatch failure fails the run, and an entry too old for the review to
+ * recheck its telemetry is removed only as a reported failure.
  */
 async function dispatchReviews(
   redis: NonNullable<ReturnType<typeof createRedisClient>>,
   candidates: Candidate[],
   failures: Failure[],
+  latest: number,
 ) {
+  const oldest = latest - REVIEW_QUEUE_RETENTION_MINUTES;
+  try {
+    // Retire the entire expired range even when the queue is larger than one page.
+    const expired = await redis.zremrangebyscore(
+      REVIEW_QUEUE_KEY,
+      "-inf",
+      oldest - 1,
+    );
+    if (expired > 0) {
+      failures.push({ kind: "review" });
+      logger.warn("Egress abuse reviews expired before dispatch", { expired });
+    }
+  } catch {
+    failures.push({ kind: "review" });
+    return;
+  }
   const byCase = new Map<string, Candidate>();
   for (const candidate of candidates) {
     if (candidate.owner === "overflow" || !candidate.complete) continue;
@@ -357,18 +423,71 @@ async function dispatchReviews(
     // Candidates are largest first; keep each window's largest minute.
     if (!byCase.has(key)) byCase.set(key, candidate);
   }
-  if (!byCase.size) return;
-  const keys = [...byCase.keys()];
-  let marks: unknown[];
+  if (byCase.size) {
+    try {
+      const keys = [...byCase.keys()];
+      const marks = await redis.mget<unknown[]>(...keys.map(reviewMarkKey));
+      const fresh = keys.filter((_, index) => marks[index] === null);
+      if (fresh.length) {
+        // NX keeps the minute an entry was first queued with.
+        const [first, ...rest] = fresh.map((key) => ({
+          score: byCase.get(key)!.minute,
+          member: key,
+        }));
+        await redis.zadd(REVIEW_QUEUE_KEY, { nx: true }, first, ...rest);
+        await redis.expire(REVIEW_QUEUE_KEY, TELEMETRY_RETENTION_S);
+      }
+    } catch {
+      // The candidates stay in the evaluation window for the next run.
+      failures.push({ kind: "review" });
+    }
+  }
+
+  let raw: unknown[];
   try {
-    marks = await redis.mget<unknown[]>(...keys.map(reviewMarkKey));
+    raw = await redis.zrange<unknown[]>(
+      REVIEW_QUEUE_KEY,
+      0,
+      REVIEW_QUEUE_READ - 1,
+      { withScores: true },
+    );
   } catch {
     failures.push({ kind: "review" });
     return;
   }
-  const pending = keys.filter((_, index) => marks[index] === null);
-  for (const key of pending.slice(0, MAX_REVIEWS)) {
-    const { region, owner, minute } = byCase.get(key)!;
+  const due: QueuedReview[] = [];
+  const invalid: string[] = [];
+  if (raw.length % 2 !== 0) failures.push({ kind: "review" });
+  for (let index = 0; index + 1 < raw.length; index += 2) {
+    const entry = decodeQueuedReview(raw[index], raw[index + 1]);
+    if (entry && entry.minute >= oldest) due.push(entry);
+    else {
+      failures.push({ kind: "review" });
+      const member = raw[index];
+      if (typeof member === "string") invalid.push(member);
+    }
+  }
+  if (invalid.length) {
+    try {
+      await redis.zrem(REVIEW_QUEUE_KEY, ...invalid);
+    } catch {
+      // Already reported; the next run removes them.
+    }
+  }
+  if (!due.length) return;
+
+  let marks: unknown[];
+  try {
+    marks = await redis.mget<unknown[]>(
+      ...due.map(({ key }) => reviewMarkKey(key)),
+    );
+  } catch {
+    failures.push({ kind: "review" });
+    return;
+  }
+  const done = due.filter((_, index) => marks[index] !== null);
+  const pending = due.filter((_, index) => marks[index] === null);
+  for (const { key, region, owner, minute } of pending.slice(0, MAX_REVIEWS)) {
     try {
       await tasks.trigger<typeof egressAbuseReviewTask>(
         "egress-abuse-review",
@@ -382,14 +501,22 @@ async function dispatchReviews(
         },
       );
       await redis.set(reviewMarkKey(key), "1", { ex: REVIEW_MARK_TTL_S });
+      done.push({ key, region, owner, minute });
     } catch {
       failures.push({ kind: "review" });
     }
   }
-  if (pending.length > MAX_REVIEWS)
+  if (done.length)
+    try {
+      await redis.zrem(REVIEW_QUEUE_KEY, ...done.map(({ key }) => key));
+    } catch {
+      // Marked entries are removed by the next run.
+      failures.push({ kind: "review" });
+    }
+  if (pending.length > MAX_REVIEWS || raw.length / 2 >= REVIEW_QUEUE_READ)
     logger.warn("Egress abuse reviews deferred to the next run", {
       pending: pending.length,
-      dispatched: MAX_REVIEWS,
+      dispatched: Math.min(pending.length, MAX_REVIEWS),
     });
 }
 

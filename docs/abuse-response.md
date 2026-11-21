@@ -368,21 +368,47 @@ this runbook.
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
+- **Bounded account history.** A linked run whose chat scan stopped before
+  the start of the chat is never excluded by its timing, since older rows
+  could place it in the burst. Before reading the selected run's evidence, the
+  review also lists the account's other Agent root runs, because a competing
+  run's acquisition link can be missing or expired. It reads one page of at
+  most 50 `agent-long` runs carrying the account's `user_` tag, which the
+  regular and approval entry points and goal continuations all set, created
+  by one minute after the burst, in the review worker's own Trigger
+  environment. It uses each run's status and start and finish times only,
+  never payloads, output or metadata. Another run counts as disjoint only if
+  it started more than a minute after the burst, finished more than a minute
+  before it, or ended without ever starting; a queued or otherwise unknown run
+  is treated as concurrent. Any concurrent run is a `multiple_runs` case. A
+  second page, a missing or never-started selected run, a run with another
+  identity, or a failed list is an `account_runs_unverified` case. Neither
+  case nor log contains the listed runs or the error.
 - **What it decides.** The model receives scrubbed evidence (targets become
   stable class placeholders, secrets and identifiers are removed) and returns
-  only enums and evidence indices. Deterministic rules then choose the outcome:
-  clearly corroborated ordinary, lab, or in-scope work creates no case; cited
-  concerning commands against public targets with no or mismatched
+  only enums and evidence indices. Every dotted name is replaced, whatever its
+  suffix; a name outside a short list of known public suffixes, like an
+  address or range that cannot be parsed exactly, is ambiguous, which neither
+  supports an authorization request nor allows a no-case outcome. IPv6 addresses are compared in canonical form, and a CIDR range
+  has its own placeholder, separate from any address in it. Deterministic
+  rules then choose the outcome: clearly corroborated ordinary, lab, or
+  in-scope work creates no case; in-scope testing needs every command target
+  named in, or provably inside a range named in, the cited messages.
+  Cited concerning commands against public targets with no or mismatched
   authorization, read from complete chat context, create a case with an unsent
-  authorization-request draft; everything else is a manual case without a
-  draft. Volume, keywords, or claimed authorization alone never decide.
+  authorization-request draft; a mismatch needs a target that no message in
+  the read history names or could contain. Everything else is a manual case
+  without a draft. Volume, keywords, or claimed authorization alone never
+  decide.
 - **What it stores.** One case per owner reference, region and 30-minute UTC
   window, encrypted with the abuse evidence keyring: fixed rationale text, the
   classification enums, coverage, the verified account, chat and run
   identifiers, and locators for the cited messages and tool calls. It never
   stores prompts, commands, user text, or model output. Later bursts in the
-  same window find the existing case and leave it and any operator review
-  unchanged. The case starts as `new` without an evidence hold.
+  same window find the existing case and leave it, its encrypted record and
+  any operator review unchanged; that review run returns a `preserved`
+  receipt with no outcome or reason, since its own decision was not stored.
+  The case starts as `new` without an evidence hold.
 - **The draft.** It is from `abuse@hackerai.co` and asks for the targets, the
   permitted activity, the date and time scope, and redacted proof. It names the
   verified account ID, not an address: resolve the account's verified contact
@@ -395,9 +421,24 @@ Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions.
 The worker also needs `ABUSE_EVIDENCE_KEYS` and the existing research model
-configuration. To stop it, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the
-web server, Agent worker, and Convex deployment. Enable the toggle in all three
-for a rollout. Existing cases stay available to operators.
+configuration. Enable the toggle in all three of the web app, the Agent
+worker, and the Convex deployment for a rollout. Reviews are dispatched
+through the persistent queue described under
+[Burst alerts](cloud-network-access.md#burst-alerts).
+
+To roll back reviews, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web
+app, the Agent worker, and the Convex deployment. This is separate from burst
+alerts, which keep their own toggle and continue unchanged. Acquisition links
+and queued reviews expire on their own, and existing cases stay available to
+operators.
+
+The alert schedule runs only in Production. To check a review in Preview,
+upload synthetic telemetry above the Preview threshold for a Preview pilot
+workspace with a linked Agent run, then trigger `egress-burst-alerts`
+manually in the Preview environment with a `timestamp` two minutes after
+that minute so it is settled. Confirm the alert run succeeds, then that the
+delayed `egress-abuse-review` run succeeds with a `completed` or `preserved`
+receipt.
 
 ## Resolution and evidence lifecycle
 

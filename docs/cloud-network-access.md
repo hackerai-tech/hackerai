@@ -336,7 +336,8 @@ alerts, only when the monitor itself is broken:
   recorded as notified;
 - the webhook does not accept the message: a network error, a timeout after
   five seconds, a redirect, which is never followed, or any non-2xx response;
-- an abuse review cannot be dispatched.
+- an abuse review cannot be queued or dispatched, or a queued review expired
+  before dispatch.
 
 Notification is at least once and deduplicated per region, minute and owner.
 Each run warns about and sends at most 20 candidates not yet notified, largest
@@ -357,30 +358,53 @@ pull requests. Before deploying a version that requires it in an environment
 where the monitor is enabled, set that environment's own URL in its Agent
 worker; otherwise every run fails with a configuration error. Verify a new
 destination in Preview first with synthetic telemetry, such as a low
-threshold on a Preview pilot workspace, and confirm that a message arrives
-and the run succeeds.
+threshold on a Preview pilot workspace. The schedule runs only in Production,
+so in Preview trigger `egress-burst-alerts` manually in the Preview
+environment, with a `timestamp` two minutes after the synthetic minute so
+that minute is settled and evaluated. Confirm that the webhook message
+arrives and the run succeeds.
 
 Counts are accepted authenticated SOCKS connections, not HTTP requests: one
 connection can carry many requests, and exact request counts are not
 available.
 
-With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true` in the web server and Agent worker,
-each burst from a complete minute is also handed to the read-only
+With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true` in the web server, Agent worker
+and Convex, each burst from a complete minute is also handed to the read-only
 `egress-abuse-review` task, once per owner reference, region and 30-minute UTC
 window, after a short delay so the active run can persist its messages.
 Overflow and incomplete minutes are never reviewed. The payload carries only
-the region, owner reference and minute; a failed dispatch fails the alert run
-and is retried by the next one. Unset or `false` disables review. An invalid
-value warns and disables review while original alerts continue. See
+the region, owner reference and minute. Unset or `false` disables review. An
+invalid value warns and disables review while original alerts continue. See
 [Automated egress burst review](abuse-response.md#automated-egress-burst-review).
+
+Reviews pass through a Redis queue so none is lost when its minute leaves the
+five-minute evaluation window. Each run adds every reviewable candidate not
+yet dispatched, one entry per case keyed by the review's idempotency key and
+scored by its minute, and then dispatches at most 10 entries, oldest first,
+even when it read no new candidates. An entry leaves the queue only after its
+dispatch is recorded; a dispatch whose outcome is uncertain is repeated under
+the same idempotency key. A failed queue read or write, or a failed dispatch,
+fails the run and is retried. Telemetry is kept for two hours and the review
+rereads its minute, so an entry more than 30 minutes older than the latest
+settled minute is removed with an `Egress abuse reviews expired before
+dispatch` warning and fails the run instead of being dispatched. The queue
+itself expires two hours after its last addition, so entries left while the
+monitor is off are not reviewed later.
 
 While the toggle is on, every successful cloud acquisition with a server chat
 and Trigger run also records a short-lived link from the verified workspace to
 that chat, run and time, after ownership and network verification. The write is
 best effort and not awaited, so a store outage cannot delay or fail an
-acquisition, and concurrent runs never overwrite each other's links. A link
-only says that a run used the workspace recently; the review still requires
-the run's persisted timing to overlap the burst. These links are separate from
+acquisition. Each acquisition is a separate record, so concurrent runs never
+overwrite each other and a run's later acquisition cannot replace the one that
+placed it before a burst; the review uses each run's latest acquisition before
+the burst ended. A workspace keeps at most 16 records from the last six hours,
+across all runs; when more were made, the review treats the set as incomplete
+and opens a manual case. Records use a versioned key. Records in the earlier
+per-run format are never read, because a later acquisition could have
+replaced their time; they expire within six hours. A link only says that a
+run used the workspace recently; the review still requires the run's
+persisted timing to overlap the burst. These links are separate from
 attribution credentials and their migration.
 
 ### Coverage and delivery
@@ -433,5 +457,7 @@ it was given:
 - To stop alerts, set `E2B_EGRESS_BURST_ALERTS_ENABLED=false`. Stopping the
   collector does not affect traffic.
 - To stop burst reviews and acquisition links, set
-  `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false`. Alerts continue unchanged, and
-  existing links expire on their own.
+  `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web server, Agent worker and
+  Convex. This is separate from alerts, which continue unchanged under their
+  own toggle. Existing links and queued reviews expire on their own, and
+  existing cases stay available to operators.
