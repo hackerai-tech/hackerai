@@ -87,9 +87,12 @@ function wrapBuilder<T>(builder: T): T {
         const deployment = process.env.CONVEX_CLOUD_URL;
         if (!deployment || metadata.componentPath)
           throw new Error("Invalid service deployment identity");
+        // Narrow workers get their own key, valid only for their module.
         const secret = metadata.name.startsWith("userResearch:")
           ? process.env.CONVEX_USER_RESEARCH_SERVICE_KEY
-          : process.env.CONVEX_SERVICE_ROLE_KEY;
+          : metadata.name.startsWith("egressAbuseReview:")
+            ? process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY
+            : process.env.CONVEX_SERVICE_ROLE_KEY;
         const scope: ServiceScope = {
           deployment,
           name: metadata.name,
@@ -129,6 +132,7 @@ function wrapBuilder<T>(builder: T): T {
             for (const secret of [
               process.env.CONVEX_SERVICE_ROLE_KEY,
               process.env.CONVEX_USER_RESEARCH_SERVICE_KEY,
+              process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY,
             ]) {
               if (secret) clean = clean.split(secret).join("[Redacted]");
             }

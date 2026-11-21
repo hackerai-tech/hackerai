@@ -349,6 +349,56 @@ Limits:
   its containment is in progress. Resolving a case restriction any other way
   stops further leased steps; only `finish` can release the lease.
 
+## Automated egress burst review
+
+With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true`, a verified attributed egress
+burst (see [Cloud network access](cloud-network-access.md#burst-alerts)) can
+open an operator case. The review is read-only triage that informs an operator
+decision. It never sends email, restricts an account, contains a run, or
+contacts a sandbox, and its cases follow the review, hold and erasure rules in
+this runbook.
+
+- **What it reads.** Only the one chat and Trigger run that acquired the
+  burst's verified workspace and whose persisted generation time overlaps the
+  burst: the account's stored user text and terminal commands with a recorded
+  start receipt. It excludes the contents of command output, interactive terminal
+  input, system or hidden text, attachments, and other chats. If the run cannot
+  be pinned exactly (several plausible runs, a
+  subagent that may have shared the workspace, an unverified workspace, a
+  deleted chat, or incomplete records), it opens a manual case without calling
+  the model. An incomplete telemetry minute or a replay below the current
+  threshold creates no case.
+- **What it decides.** The model receives scrubbed evidence (targets become
+  stable class placeholders, secrets and identifiers are removed) and returns
+  only enums and evidence indices. Deterministic rules then choose the outcome:
+  clearly corroborated ordinary, lab, or in-scope work creates no case; cited
+  concerning commands against public targets with no or mismatched
+  authorization, read from complete chat context, create a case with an unsent
+  authorization-request draft; everything else is a manual case without a
+  draft. Volume, keywords, or claimed authorization alone never decide.
+- **What it stores.** One case per owner reference, region and 30-minute UTC
+  window, encrypted with the abuse evidence keyring: fixed rationale text, the
+  classification enums, coverage, the verified account, chat and run
+  identifiers, and locators for the cited messages and tool calls. It never
+  stores prompts, commands, user text, or model output. Later bursts in the
+  same window find the existing case and leave it and any operator review
+  unchanged. The case starts as `new` without an evidence hold.
+- **The draft.** It is from `abuse@hackerai.co` and asks for the targets, the
+  permitted activity, the date and time scope, and redacted proof. It names the
+  verified account ID, not an address: resolve the account's verified contact
+  during review, confirm the facts from the cited messages and tool calls, and
+  send it yourself only if appropriate. A connection count does not show which
+  command, if any, caused the connections.
+
+The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
+Convex. Generate it independently of the general and research service keys.
+It authorizes only the `egressAbuseReview` functions, which can
+create or preserve a review case but cannot create notices or restrictions.
+The worker also needs `ABUSE_EVIDENCE_KEYS` and the existing research model
+configuration. To stop it, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the
+web server, Agent worker, and Convex deployment. Enable the toggle in all three
+for a rollout. Existing cases stay available to operators.
+
 ## Resolution and evidence lifecycle
 
 Resolve with a recorded reason. An exonerated case can restore its verified original workspace selection without killing the sandbox; the exact case fence is rolled back and process-stop status remains separate. A changed or unfamiliar workspace stays restricted until investigated. Resolution releases only the case-owned security

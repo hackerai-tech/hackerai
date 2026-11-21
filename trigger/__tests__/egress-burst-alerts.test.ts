@@ -2,10 +2,17 @@
 jest.mock("@trigger.dev/sdk", () => ({
   schedules: { task: (definition: unknown) => definition },
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+  tasks: { trigger: jest.fn(async () => ({ id: "run_review" })) },
+  idempotencyKeys: {
+    create: jest.fn(
+      async (key: string, options: { scope: string }) =>
+        `${options.scope}:${key}`,
+    ),
+  },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
-import { logger } from "@trigger.dev/sdk";
+import { logger, tasks } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { registerAttributedWorkspace } from "@/lib/cloud-network/egress-attribution";
@@ -361,6 +368,95 @@ it.each<[string, Record<string, string | undefined>]>([
     "Egress attribution alert: alert configuration is missing or invalid",
   );
   expect(redis.mget).not.toHaveBeenCalled();
+});
+
+describe("abuse review dispatch", () => {
+  const trigger = () => jest.mocked(tasks.trigger);
+  beforeEach(() => {
+    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
+  });
+
+  it("is off by default and leaves the existing alert unchanged", async () => {
+    delete process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED;
+    await upload("us", MINUTE, [count(first, 9)]);
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.message).toBe(
+      `Egress attribution alert: us connection burst for owner ${first.owner}`,
+    );
+    expect(trigger()).not.toHaveBeenCalled();
+  });
+
+  it("dispatches one delayed review per owner window with opaque references only", async () => {
+    await upload("us", MINUTE, [count(first, 9)]);
+    await failure(runEgressBurstAlerts(at()));
+    expect(trigger()).toHaveBeenCalledTimes(1);
+    const [id, payload, options] = trigger().mock.calls[0] as unknown as [
+      string,
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(id).toBe("egress-abuse-review");
+    expect(payload).toEqual({
+      region: "us",
+      owner: first.owner,
+      minute: MINUTE,
+    });
+    // Global scope: a raw key would only dedupe within this one scheduled run.
+    expect(options).toMatchObject({
+      idempotencyKey: expect.stringMatching(
+        /^global:egress-abuse-review:v1:us:/,
+      ),
+      delay: "10m",
+    });
+    expect(JSON.stringify(trigger().mock.calls)).not.toContain(first.userId);
+
+    // Later runs and the next minute of the same window do not dispatch again.
+    await failure(runEgressBurstAlerts(at()));
+    await upload("eu", MINUTE + 1);
+    await upload("us", MINUTE + 1, [count(first, 12)]);
+    await failure(runEgressBurstAlerts(at(MINUTE + 1)));
+    const sameWindow =
+      Math.floor(MINUTE / 30) === Math.floor((MINUTE + 1) / 30);
+    expect(trigger()).toHaveBeenCalledTimes(sameWindow ? 1 : 2);
+  });
+
+  it("never dispatches from overflow or incomplete minutes", async () => {
+    await upload("us", MINUTE, [count(first, 9)], {
+      complete: false,
+      overflowConnections: 50,
+    });
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.failures.map(({ kind }) => kind).sort()).toEqual([
+      "burst",
+      "loss",
+      "overflow",
+    ]);
+    expect(trigger()).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed dispatch and retries it on the next run", async () => {
+    await upload("us", MINUTE, [count(first, 9)]);
+    trigger().mockRejectedValueOnce(new Error("trigger unavailable"));
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.message).toContain("abuse review could not be dispatched");
+    await failure(runEgressBurstAlerts(at()));
+    expect(trigger()).toHaveBeenCalledTimes(2);
+    expect((await failure(runEgressBurstAlerts(at()))).message).not.toContain(
+      "abuse review",
+    );
+    expect(trigger()).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the original burst alert working when the review toggle is invalid", async () => {
+    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "yes";
+    await upload("us", MINUTE, [count(first, 9)]);
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.message).toContain("us connection burst");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Invalid egress abuse review configuration",
+    );
+    expect(trigger()).not.toHaveBeenCalled();
+  });
 });
 
 it("is scheduled every minute in Production only, without retries", () => {

@@ -340,6 +340,25 @@ Counts are accepted authenticated SOCKS connections, not HTTP requests: one
 connection can carry many requests, and exact request counts are not
 available.
 
+With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true` in the web server and Agent worker,
+each burst from a complete minute is also handed to the read-only
+`egress-abuse-review` task, once per owner reference, region and 30-minute UTC
+window, after a short delay so the active run can persist its messages.
+Overflow and incomplete minutes are never reviewed. The payload carries only
+the region, owner reference and minute; a failed dispatch fails the alert run
+and is retried by the next one. Unset or `false` disables review. An invalid
+value warns and disables review while original alerts continue. See
+[Automated egress burst review](abuse-response.md#automated-egress-burst-review).
+
+While the toggle is on, every successful cloud acquisition with a server chat
+and Trigger run also records a short-lived link from the verified workspace to
+that chat, run and time, after ownership and network verification. The write is
+best effort and not awaited, so a store outage cannot delay or fail an
+acquisition, and concurrent runs never overwrite each other's links. A link
+only says that a run used the workspace recently; the review still requires
+the run's persisted timing to overlap the burst. These links are separate from
+attribution credentials and their migration.
+
 ### Coverage and delivery
 
 Counts are lower bounds and only cover attributed credentials:
@@ -389,3 +408,6 @@ it was given:
   deliberate, reviewed migration.
 - To stop alerts, set `E2B_EGRESS_BURST_ALERTS_ENABLED=false`. Stopping the
   collector does not affect traffic.
+- To stop burst reviews and acquisition links, set
+  `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false`. Alerts continue unchanged, and
+  existing links expire on their own.

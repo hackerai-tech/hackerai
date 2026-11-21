@@ -1,11 +1,15 @@
-import { logger, schedules } from "@trigger.dev/sdk";
+import { idempotencyKeys, logger, schedules, tasks } from "@trigger.dev/sdk";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
+import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
+import { reviewCaseKey, reviewWindowStart } from "@/lib/abuse/egress-review";
 import { resolveAttribution } from "@/lib/cloud-network/egress-attribution";
 import {
+  egressBurstThreshold,
   readTelemetryMinutes,
   TELEMETRY_REGIONS,
 } from "@/lib/cloud-network/egress-telemetry";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import type { egressAbuseReviewTask } from "./egress-abuse-review";
 
 // Operator alert only: per-owner bursts of accepted attributed SOCKS
 // connections, aggregated across that owner's workspaces in one region and
@@ -25,6 +29,11 @@ const LOGGED_TTL_S = 60 * 60;
 /** New detailed logs per run; the rest are logged by the next runs. */
 const MAX_LOGGED = 20;
 const MAX_MESSAGE_PARTS = 20;
+/** New abuse reviews per run; the rest are dispatched by the next runs. */
+const MAX_REVIEWS = 10;
+const REVIEW_MARK_TTL_S = 2 * 60 * 60;
+/** Lets most active runs persist their messages before review. */
+const REVIEW_DELAY = "10m";
 
 type Failure =
   | { kind: "configuration" }
@@ -32,12 +41,15 @@ type Failure =
   | { kind: "heartbeat"; region: E2BCluster }
   | { kind: "loss"; region: E2BCluster }
   | { kind: "burst"; region: E2BCluster; owner: string }
-  | { kind: "overflow"; region: E2BCluster };
+  | { kind: "overflow"; region: E2BCluster }
+  | { kind: "review" };
 
 function describe(failure: Failure) {
   switch (failure.kind) {
     case "configuration":
       return "alert configuration is missing or invalid";
+    case "review":
+      return "abuse review could not be dispatched";
     case "state":
       return failure.region
         ? `${failure.region} telemetry could not be read`
@@ -76,11 +88,14 @@ export class EgressBurstAlertError extends Error {
 function resolveConfig() {
   const enabled = process.env.E2B_EGRESS_BURST_ALERTS_ENABLED;
   if (!enabled || enabled === "false") return null;
-  const threshold = process.env.E2B_EGRESS_BURST_THRESHOLD ?? "";
+  const threshold = egressBurstThreshold();
+  const review = egressAbuseReviewGate();
   const redis = createRedisClient();
-  if (enabled !== "true" || !/^[1-9]\d{0,8}$/.test(threshold) || !redis)
+  if (enabled !== "true" || threshold === null || !redis)
     throw new EgressBurstAlertError([{ kind: "configuration" }]);
-  return { threshold: Number(threshold), redis };
+  if (review === "invalid")
+    logger.warn("Invalid egress abuse review configuration");
+  return { threshold, redis, review: review === "on" };
 }
 
 type Candidate = {
@@ -90,6 +105,8 @@ type Candidate = {
   owner: string;
   connections: number;
   workspaces: string[];
+  /** The minute reported no loss, so its counts are verified complete. */
+  complete: boolean;
 };
 
 const loggedKey = ({ region, minute, owner }: Candidate) =>
@@ -102,7 +119,7 @@ export async function runEgressBurstAlerts(
 ): Promise<EgressBurstAlertResult> {
   const config = resolveConfig();
   if (!config) return { status: "disabled" };
-  const { threshold, redis } = config;
+  const { threshold, redis, review } = config;
   const latest =
     Math.floor(new Date(scheduledAt).getTime() / 60_000) - SETTLE_MINUTES;
   if (!Number.isSafeInteger(latest))
@@ -128,11 +145,12 @@ export async function runEgressBurstAlerts(
     records.forEach((record, index) => {
       if (!record) return;
       const minute = minutes[index];
+      const complete =
+        record.complete && !record.droppedEvents && !record.droppedBatches;
       // A broken journal stream cannot quantify its missing events. Treat
       // incomplete minutes as loss too, including the initial partial minute.
-      if (!record.complete || record.droppedEvents || record.droppedBatches)
-        failures.push({ kind: "loss", region });
-      if (!record.complete || record.droppedEvents || record.droppedBatches)
+      if (!complete) failures.push({ kind: "loss", region });
+      if (!complete)
         logger.warn("Egress telemetry incomplete", {
           region,
           minute,
@@ -149,6 +167,7 @@ export async function runEgressBurstAlerts(
           owner: "overflow",
           connections: record.overflowConnections,
           workspaces: [],
+          complete,
         });
       const owners = new Map<string, Candidate>();
       for (const [owner, workspace, connections] of record.counts) {
@@ -158,6 +177,7 @@ export async function runEgressBurstAlerts(
           owner,
           connections: 0,
           workspaces: [],
+          complete,
         };
         entry.connections += connections;
         entry.workspaces.push(workspace);
@@ -177,6 +197,7 @@ export async function runEgressBurstAlerts(
     );
   candidates.sort((a, b) => b.connections - a.connections);
   await logNewCandidates(redis, candidates, threshold, failures);
+  if (review) await dispatchReviews(redis, candidates, failures);
 
   if (failures.length) throw new EgressBurstAlertError(failures);
   return { status: "ok" };
@@ -240,6 +261,67 @@ async function logNewCandidates(
     logger.warn("Egress burst logs deferred to the next run", {
       pending: pending.length,
       logged: MAX_LOGGED,
+    });
+}
+
+const reviewMarkKey = (caseKey: string) => `${caseKey}:dispatched`;
+
+/**
+ * Hands verified, complete owner bursts to the read-only abuse review, one per
+ * owner, region and 30-minute UTC window. A global idempotency key dedupes
+ * overlapping runs and sustained bursts; the Redis mark only avoids asking
+ * Trigger again every minute. The payload carries opaque references only.
+ * A failed dispatch is not marked and is retried by the next run.
+ */
+async function dispatchReviews(
+  redis: NonNullable<ReturnType<typeof createRedisClient>>,
+  candidates: Candidate[],
+  failures: Failure[],
+) {
+  const byCase = new Map<string, Candidate>();
+  for (const candidate of candidates) {
+    if (candidate.owner === "overflow" || !candidate.complete) continue;
+    const key = reviewCaseKey(
+      candidate.region,
+      candidate.owner,
+      reviewWindowStart(candidate.minute),
+    );
+    // Candidates are largest first; keep each window's largest minute.
+    if (!byCase.has(key)) byCase.set(key, candidate);
+  }
+  if (!byCase.size) return;
+  const keys = [...byCase.keys()];
+  let marks: unknown[];
+  try {
+    marks = await redis.mget<unknown[]>(...keys.map(reviewMarkKey));
+  } catch {
+    failures.push({ kind: "review" });
+    return;
+  }
+  const pending = keys.filter((_, index) => marks[index] === null);
+  for (const key of pending.slice(0, MAX_REVIEWS)) {
+    const { region, owner, minute } = byCase.get(key)!;
+    try {
+      await tasks.trigger<typeof egressAbuseReviewTask>(
+        "egress-abuse-review",
+        { region, owner, minute },
+        {
+          idempotencyKey: await idempotencyKeys.create(key, {
+            scope: "global",
+          }),
+          idempotencyKeyTTL: "1d",
+          delay: REVIEW_DELAY,
+        },
+      );
+      await redis.set(reviewMarkKey(key), "1", { ex: REVIEW_MARK_TTL_S });
+    } catch {
+      failures.push({ kind: "review" });
+    }
+  }
+  if (pending.length > MAX_REVIEWS)
+    logger.warn("Egress abuse reviews deferred to the next run", {
+      pending: pending.length,
+      dispatched: MAX_REVIEWS,
     });
 }
 

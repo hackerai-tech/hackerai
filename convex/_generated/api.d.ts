@@ -27,6 +27,7 @@ import type * as cloudNetworkValidators from "../cloudNetworkValidators.js";
 import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as deletions from "../deletions.js";
+import type * as egressAbuseReview from "../egressAbuseReview.js";
 import type * as engagementScopeValidators from "../engagementScopeValidators.js";
 import type * as engagementScopes from "../engagementScopes.js";
 import type * as extraUsage from "../extraUsage.js";
@@ -138,6 +139,7 @@ declare const fullApi: ApiFromModules<{
   constants: typeof constants;
   crons: typeof crons;
   deletions: typeof deletions;
+  egressAbuseReview: typeof egressAbuseReview;
   engagementScopeValidators: typeof engagementScopeValidators;
   engagementScopes: typeof engagementScopes;
   extraUsage: typeof extraUsage;

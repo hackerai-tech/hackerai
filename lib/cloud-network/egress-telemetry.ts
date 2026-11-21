@@ -21,6 +21,10 @@ export const MAX_BATCH_IDENTITIES = 1000;
 export const TELEMETRY_FRESHNESS_S = 300;
 /** Accepted batches are kept long enough for late evaluation, not history. */
 export const TELEMETRY_RETENTION_S = 2 * 60 * 60;
+export function egressBurstThreshold(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.E2B_EGRESS_BURST_THRESHOLD ?? "";
+  return /^[1-9]\d{0,8}$/.test(value) ? Number(value) : null;
+}
 const MAX_BATCH_AGE_MINUTES = 24 * 60;
 const KEY_HEX = /^[0-9a-f]{64}$/;
 const SIGNATURE = /^v1=([0-9a-f]{64})$/;
