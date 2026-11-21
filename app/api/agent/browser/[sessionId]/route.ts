@@ -6,6 +6,7 @@ import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
 import {
+  PREVIEW_DEFER_OPEN_PARAM,
   PREVIEW_DEFER_WAIT_PARAM,
   withPreviewClientContext,
 } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
@@ -386,15 +387,21 @@ export const GET = withServiceQueryRecovery(async function GET(
       return json({ state: "stale" }, 409);
     const query = request.nextUrl.searchParams;
     const fresh = query.get("fresh") === "1";
-    const deferWait = query.getAll(PREVIEW_DEFER_WAIT_PARAM);
-    const allowDeferral =
+    const passiveAgentRefresh =
       fresh &&
-      deferWait.length === 1 &&
-      deferWait[0] === "1" &&
       resolved.session.state === "agent" &&
       resolved.session.runActive === true;
+    const optedIn = (param: string) => {
+      const values = query.getAll(param);
+      return values.length === 1 && values[0] === "1";
+    };
+    const deferDuringWait =
+      passiveAgentRefresh && optedIn(PREVIEW_DEFER_WAIT_PARAM);
+    const deferDuringOpen =
+      passiveAgentRefresh && optedIn(PREVIEW_DEFER_OPEN_PARAM);
     stage = "capture_frame";
     let frame: Awaited<ReturnType<typeof captureBrowserFrame>> | undefined;
+    let openDeferred = false;
     try {
       frame = await captureBrowserFrame(
         sandbox,
@@ -408,12 +415,17 @@ export const GET = withServiceQueryRecovery(async function GET(
         {
           recognizeClosed: true,
           observeStatusProgress: true,
-          ...(allowDeferral && { deferDuringWait: true }),
+          ...(deferDuringWait && { deferDuringWait: true }),
+          ...(deferDuringOpen && { deferDuringOpen: true }),
         },
       );
     } catch (error) {
-      if (!allowDeferral || !(error instanceof BrowserPreviewRefreshDeferred))
-        throw error;
+      if (!(error instanceof BrowserPreviewRefreshDeferred)) throw error;
+      openDeferred = error.reason === "open";
+      const allowed = openDeferred
+        ? deferDuringOpen
+        : error.reason === "wait" && deferDuringWait;
+      if (!allowed) throw error;
     }
     stage = "verify_active_session";
     if (
@@ -423,7 +435,11 @@ export const GET = withServiceQueryRecovery(async function GET(
       return json({ state: "stale" }, 409);
     if (frame === undefined)
       return json(
-        { state: resolved.session.state, refreshDeferred: true },
+        {
+          state: resolved.session.state,
+          refreshDeferred: true,
+          ...(openDeferred && { refreshDeferredReason: "open" }),
+        },
         202,
       );
     return json({ state: resolved.session.state, frame, now: Date.now() });

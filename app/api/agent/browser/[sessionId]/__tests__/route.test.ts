@@ -129,7 +129,11 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
       super(state);
     }
   },
-  BrowserPreviewRefreshDeferred: class extends Error {},
+  BrowserPreviewRefreshDeferred: class extends Error {
+    constructor(public readonly reason: "wait" | "open" = "wait") {
+      super("Browser preview refresh deferred");
+    }
+  },
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
@@ -237,19 +241,68 @@ it("defers only a negotiated refresh on the active Agent browser", async () => {
   expect(mockMutation).not.toHaveBeenCalled();
 });
 
-it("does not acknowledge a deferral after the browser changes", async () => {
+it("identifies a negotiated OPEN deferral without changing WAIT responses", async () => {
   mockFailure = "";
   mockState = "agent";
-  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred());
-  jest
-    .mocked(getActiveBrowserSessionName)
-    .mockResolvedValueOnce("default")
-    .mockResolvedValueOnce("another-browser");
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewRefreshDeferred("open"));
 
-  const response = await preview(true, undefined, "deferWait=1");
-  expect(response.status).toBe(409);
-  expect(await response.json()).toEqual({ state: "stale" });
+  const response = await preview(true, undefined, "deferWait=1&deferOpen=1");
+
+  expect(response.status).toBe(202);
+  expect(await response.json()).toEqual({
+    state: "agent",
+    refreshDeferred: true,
+    refreshDeferredReason: "open",
+  });
+  expect(mockCapture.mock.calls[0].at(-1)).toEqual({
+    deferDuringWait: true,
+    deferDuringOpen: true,
+    recognizeClosed: true,
+    observeStatusProgress: true,
+  });
+  expect(phLogger.info).not.toHaveBeenCalled();
 });
+
+it.each([
+  ["wait", "deferWait=1"],
+  ["open", "deferOpen=1"],
+] as const)(
+  "does not acknowledge a %s deferral after the browser changes",
+  async (reason, query) => {
+    mockFailure = "";
+    mockState = "agent";
+    mockCapture.mockRejectedValueOnce(
+      new BrowserPreviewRefreshDeferred(reason),
+    );
+    jest
+      .mocked(getActiveBrowserSessionName)
+      .mockResolvedValueOnce("default")
+      .mockResolvedValueOnce("another-browser");
+
+    const response = await preview(true, undefined, query);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ state: "stale" });
+  },
+);
+
+it.each([
+  ["wait", "deferOpen=1"],
+  ["open", "deferWait=1"],
+  ["open", "deferOpen=1&deferOpen=1"],
+] as const)(
+  "keeps %s unavailable without its own valid negotiation (%s)",
+  async (reason, query) => {
+    mockFailure = "";
+    mockState = "agent";
+    mockCapture.mockRejectedValueOnce(
+      new BrowserPreviewRefreshDeferred(reason),
+    );
+
+    const response = await preview(true, undefined, query);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+  },
+);
 
 it.each([
   ["agent", false, true, "deferWait=1"],
@@ -258,6 +311,9 @@ it.each([
   ["agent", true, true, "deferWait=1&deferWait=1"],
   ["human", true, true, "deferWait=1"],
   ["waiting", true, true, "deferWait=1"],
+  ["agent", false, true, "deferOpen=1"],
+  ["agent", true, false, "deferOpen=1"],
+  ["human", true, true, "deferOpen=1"],
 ] as const)(
   "keeps the existing capture path for %s, active=%s, fresh=%s, query=%s",
   async (state, runActive, fresh, query) => {

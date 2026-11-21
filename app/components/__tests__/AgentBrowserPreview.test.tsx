@@ -1529,6 +1529,64 @@ describe("refresh deferral during an Agent browser WAIT", () => {
     expect(takeButton()).toBeEnabled();
   });
 
+  it("keeps the verified frame behind a still-running OPEN without describing it as a WAIT", async () => {
+    let opening = true;
+    const updated = { ...frame, image: "data:image/png;base64,updated" };
+    const deferOpenRequested = (url: unknown) =>
+      captureUrl(url).searchParams.getAll("deferOpen").join(",") === "1";
+    global.fetch = jest.fn(async (url) =>
+      !isFreshCapture(url)
+        ? response({ frame })
+        : opening && deferOpenRequested(url)
+          ? response({ ...deferral, refreshDeferredReason: "open" }, true, 202)
+          : response({ frame: updated }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    // Both opt-ins are sent, each once, beside the unchanged fresh=1.
+    expect(freshGets()).toHaveLength(1);
+    const first = captureUrl(freshGets()[0][0]).searchParams;
+    expect(first.getAll("fresh")).toEqual(["1"]);
+    expect(first.getAll("deferWait")).toEqual(["1"]);
+    expect(first.getAll("deferOpen")).toEqual(["1"]);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+
+    // The OPEN deferral never renews the frame; it goes stale on its own clock
+    // with the existing waiting-for-browser words, never the WAIT wording.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(7000);
+    });
+    expect(freshGets().length).toBeGreaterThan(3);
+    expect(viewport()).toHaveAttribute("src", frame.image);
+    expect(screen.getByText("Connecting browser…")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for Agent browser…")).toBeInTheDocument();
+    expect(screen.queryByText("Agent is waiting…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/The Agent is waiting on this page/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Browser preview disconnected/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+    expect(takeButton()).toBeDisabled();
+    expect(actions).toEqual([]);
+
+    // The OPEN returns: the next strict screenshot at the normal cadence wins.
+    opening = false;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(viewport()).toHaveAttribute("src", updated.image);
+    expect(screen.getByText("Live preview")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for Agent browser…"),
+    ).not.toBeInTheDocument();
+    expect(takeButton()).toBeEnabled();
+  });
+
   it.each<[string, Response]>([
     ["a 200 deferral", response(deferral)],
     [
@@ -1538,6 +1596,18 @@ describe("refresh deferral during an Agent browser WAIT", () => {
     ["another state", response({ ...deferral, state: "waiting" }, true, 202)],
     ["a frame field", response({ ...deferral, frame }, true, 202)],
     ["an error status", response(deferral, false, 503)],
+    [
+      "an unknown deferral reason",
+      response({ ...deferral, refreshDeferredReason: "close" }, true, 202),
+    ],
+    [
+      "an explicit wait reason",
+      response({ ...deferral, refreshDeferredReason: "wait" }, true, 202),
+    ],
+    [
+      "a 200 open deferral",
+      response({ ...deferral, refreshDeferredReason: "open" }),
+    ],
   ])("keeps %s a real refresh failure", async (_case, reply) => {
     global.fetch = jest.fn(async (url) =>
       isFreshCapture(url) ? reply : response({ frame }),
@@ -1576,8 +1646,30 @@ describe("refresh deferral during an Agent browser WAIT", () => {
       gets.some(([url]) => captureUrl(url).searchParams.has("deferWait")),
     ).toBe(false);
     expect(
+      gets.some(([url]) => captureUrl(url).searchParams.has("deferOpen")),
+    ).toBe(false);
+    expect(
       screen.getByText(/Browser preview disconnected/),
     ).toBeInTheDocument();
+  });
+
+  it("never honors an unrequested OPEN deferral outside a passive Agent-state refresh", async () => {
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    global.fetch = jest.fn(async (url) =>
+      isFreshCapture(url)
+        ? response({ ...deferral, refreshDeferredReason: "open" }, true, 202)
+        : response({ frame }),
+    );
+    await mount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4000);
+    });
+    expect(
+      screen.getByText(/Browser preview disconnected/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for Agent browser…"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not opt in while this viewer holds a control grant", async () => {
@@ -1590,7 +1682,11 @@ describe("refresh deferral during an Agent browser WAIT", () => {
     const after = freshGets().slice(before);
     expect(after.length).toBeGreaterThan(0);
     expect(
-      after.some(([url]) => captureUrl(url).searchParams.has("deferWait")),
+      after.some(
+        ([url]) =>
+          captureUrl(url).searchParams.has("deferWait") ||
+          captureUrl(url).searchParams.has("deferOpen"),
+      ),
     ).toBe(false);
   });
 });

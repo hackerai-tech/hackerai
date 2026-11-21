@@ -38,6 +38,7 @@ import {
   BROWSER_WRAPPER_RESULT_ELAPSED,
   BROWSER_DAEMON_VERSION_FILE_STATUSES,
   BROWSER_DAEMON_WAIT_DEFERRED,
+  BROWSER_DAEMON_OPEN_DEFERRED,
   BROWSER_DAEMON_SESSION_CLOSED,
   BROWSER_DAEMON_PROGRESS_FRAMES,
   BROWSER_DAEMON_PROGRESS_SEQUENCES,
@@ -69,11 +70,13 @@ export class BrowserPreviewUnavailable extends Error {
 
 /**
  * An opted-in fresh capture yielded to the selected session's verified active
- * WAIT. Carries no frame, freshness or failure context; only the opted-in
- * passive GET may present it, and nothing else should treat it as a capture.
+ * WAIT, or its status lookup reached the original deadline behind a verified
+ * still-running plain OPEN (reason "open"). Carries no frame, freshness or
+ * failure context; only the opted-in passive GET may present it, and nothing
+ * else should treat it as a capture.
  */
 export class BrowserPreviewRefreshDeferred extends Error {
-  constructor() {
+  constructor(readonly reason: "wait" | "open" = "wait") {
     super("Browser preview refresh deferred");
   }
 }
@@ -540,8 +543,8 @@ function statusWaitProgress(
  * Only a non-fresh preview passes ownedListener: the helper may then return a
  * port its daemon provably listens on without waiting behind serialized daemon
  * work, and otherwise sends this same status request. Only a fresh passive
- * preview passes deferDuringWait instead: the helper may then report its exact
- * deferral literal, which rejects with BrowserPreviewRefreshDeferred.
+ * preview may request WAIT or OPEN deferral. The helper's corresponding
+ * literal rejects with BrowserPreviewRefreshDeferred.
  * Independently, only the Browser Preview GET passes recognizeClosed: an absent
  * owned socket with the wrapper's verified close of the still-current selection
  * then rejects with the existing closed state instead of the missing-socket exit.
@@ -558,20 +561,25 @@ export async function getPrivateStreamPort(
   deferDuringWait = false,
   recognizeClosed = false,
   observeProgress = false,
+  deferDuringOpen = false,
 ) {
   const observed = observeProgress && onRejected !== undefined;
   const closed: { recognize_closed?: true; observe_progress?: true } = {
     ...(recognizeClosed && { recognize_closed: true }),
     ...(observed && { observe_progress: true }),
   };
+  const deferOpen = deferDuringOpen && !ownedListener;
   const command = browserDaemonCommand(
     session.directory,
     browserSessionName,
     ownedListener
       ? { action: "stream_status", owned_port: true, ...closed }
-      : deferDuringWait
-        ? { action: "stream_status", defer_wait: true, ...closed }
-        : { action: "stream_status", ...closed },
+      : {
+          action: "stream_status",
+          ...(deferDuringWait && { defer_wait: true as const }),
+          ...(deferOpen && { defer_open: true as const }),
+          ...closed,
+        },
   );
   const options = { ...buildSandboxCommandOptions(sandbox), timeoutMs: 7_000 };
   let result: CommandResult;
@@ -635,6 +643,8 @@ export async function getPrivateStreamPort(
     result.stdout === BROWSER_DAEMON_WAIT_DEFERRED
   )
     throw new BrowserPreviewRefreshDeferred();
+  if (deferOpen && result.stdout === BROWSER_DAEMON_OPEN_DEFERRED)
+    throw new BrowserPreviewRefreshDeferred("open");
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -1055,7 +1065,10 @@ function statusSdkPhaseContext({
  * looks up its own port; its status or later screenshot may then reject with
  * BrowserPreviewRefreshDeferred, which is not a capture failure, returns no
  * frame and reaches no observer. Without verified WAIT and listener proof the
- * original strict capture runs unchanged. Only that GET
+ * original strict capture runs unchanged. That GET may independently opt into
+ * deferDuringOpen for the same fresh own-port capture: only its status lookup
+ * (never the fresh screenshot) may then reject with
+ * BrowserPreviewRefreshDeferred("open") at the unchanged deadline. Only that GET
  * also opts into recognizeClosed when it looks up its own port: a verified close
  * of the absent selected socket, at status or during the fresh screenshot,
  * then rejects with the existing closed state.
@@ -1071,6 +1084,7 @@ export async function captureBrowserFrame(
   onFailure?: (context: BrowserCaptureFailureContext) => void,
   options?: {
     deferDuringWait?: boolean;
+    deferDuringOpen?: boolean;
     recognizeClosed?: boolean;
     observeStatusProgress?: boolean;
   },
@@ -1084,6 +1098,10 @@ export async function captureBrowserFrame(
     requireFresh &&
     streamPort === undefined &&
     options?.deferDuringWait === true;
+  const deferDuringOpen =
+    requireFresh &&
+    streamPort === undefined &&
+    options?.deferDuringOpen === true;
   const screenshotRecognizesClosed =
     requireFresh &&
     streamPort === undefined &&
@@ -1103,6 +1121,7 @@ export async function captureBrowserFrame(
         deferDuringWait,
         options?.recognizeClosed === true,
         options?.observeStatusProgress === true,
+        deferDuringOpen,
       ));
     stage = "frame_bridge";
     const result = await sandbox.commands.run(
@@ -1254,9 +1273,12 @@ export async function captureBrowserFrame(
   } catch (error) {
     // An explicit deferral outcome, never a failure: no diagnostics or relabeling.
     if (
-      deferDuringWait &&
-      (stage === "stream_status" || stage === "fresh_screenshot") &&
-      error instanceof BrowserPreviewRefreshDeferred
+      error instanceof BrowserPreviewRefreshDeferred &&
+      (error.reason === "open"
+        ? deferDuringOpen && stage === "stream_status"
+        : error.reason === "wait" &&
+          deferDuringWait &&
+          (stage === "stream_status" || stage === "fresh_screenshot"))
     )
       throw error;
     if (onFailure) {
