@@ -36,6 +36,10 @@ type DownloadInput = {
   /** The selected terminal result's own stdout, supplied only when its
    * Windows Bash curl command carried CURL_PROGRESS_WRITE_OUT. Never kept. */
   curlProgressStdout?: string;
+  /** The selected observed E2B generic curl result's own SDK stdout; its
+   * command carried CURL_PROGRESS_WRITE_OUT. Read only for exit 28 or 35 on
+   * the cloud's unknown-platform Bash shape. Never kept. */
+  cloudCurlProgressStdout?: string;
 };
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
@@ -409,6 +413,14 @@ function summarize(input: DownloadInput) {
     input.exitCode === 28 &&
     typeof input.curlProgressStdout === "string"
       ? curlProgressContext(input.curlProgressStdout)
+      : {}),
+    // Cloud scope is a distinct input, so local paths never read it.
+    ...(input.platform === "unknown" &&
+    input.shell === "bash" &&
+    input.httpClient === "curl" &&
+    (input.exitCode === 28 || input.exitCode === 35) &&
+    typeof input.cloudCurlProgressStdout === "string"
+      ? curlProgressContext(input.cloudCurlProgressStdout)
       : {}),
     ...(input.httpClient === "curl" && input.exitCode === 1
       ? curl1Context(stderr, input.stderr.length > 8192)

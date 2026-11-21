@@ -376,6 +376,8 @@ it.each([
 it.each([
   ["not supplied by the caller", undefined, {}],
   ["a non-28 exit", lookupOnly, { exitCode: 7 }],
+  // Windows Bash stays exit28-only; the cloud's exit35 scope is separate.
+  ["a Windows exit 35", lookupOnly, { exitCode: 35 }],
   ["successful exit", lookupOnly, { exitCode: 0 }],
   ["Windows cmd", lookupOnly, { shell: "cmd" }],
   ["POSIX Bash", lookupOnly, { platform: "posix" }],
@@ -389,6 +391,70 @@ it.each([
     false,
   );
 });
+
+// The generic E2B shape: platform stays unknown, shell bash, client curl.
+const cloudProgressFields = (
+  exitCode: number,
+  cloudCurlProgressStdout?: string,
+  overrides = {},
+) =>
+  getAttachmentDownloadFailureContext(
+    recordAttachmentDownloadFailure(new Error("private original"), {
+      ...input,
+      platform: "unknown",
+      exitCode,
+      stderr: `curl: (${exitCode}) private detail`,
+      cloudCurlProgressStdout,
+      ...overrides,
+    }),
+  );
+
+it.each([28, 35])(
+  "reads a cloud curl exit%i marker only through the shared strict parser",
+  (exitCode) => {
+    const cases = [
+      [progress(...afterTls, "000", "0", zero), "observed", "tls_handshake"],
+      ["", "absent", null],
+      [
+        `${lookupOnly}\nprivate https://private.example/x`,
+        "unrecognized",
+        null,
+      ],
+    ] as const;
+    for (const [stdout, state, milestone] of cases) {
+      const fields = cloudProgressFields(exitCode, stdout);
+      expect(fields).toMatchObject({
+        attachment_download_exit_code: exitCode,
+        attachment_download_curl_progress_version: 1,
+        attachment_download_curl_progress_state: state,
+        attachment_download_curl_progress_milestone: milestone,
+      });
+      expect(JSON.stringify(fields)).not.toMatch(
+        /\d\.\d|hackerai_curl|private/,
+      );
+    }
+  },
+);
+
+it.each([
+  ["not supplied by the caller", 28, undefined, {}],
+  ["another curl exit", 7, lookupOnly, {}],
+  ["successful exit", 0, lookupOnly, {}],
+  // The cloud input never applies to a local transport's platform or client.
+  ["a Windows platform", 28, lookupOnly, { platform: "windows" }],
+  ["a POSIX platform", 35, lookupOnly, { platform: "posix" }],
+  ["cmd", 28, lookupOnly, { shell: "cmd" }],
+  ["wget", 35, lookupOnly, { httpClient: "wget" }],
+] as const)(
+  "omits cloud curl progress for %s",
+  (_, exitCode, stdout, overrides) => {
+    const fields = cloudProgressFields(exitCode, stdout, overrides);
+    expect(fields).toBeDefined();
+    expect(Object.keys(fields!).some((key) => key.includes("progress"))).toBe(
+      false,
+    );
+  },
+);
 
 const curl1Protocol =
   'curl: (1) Protocol "privateproto" not supported or disabled in libcurl';
