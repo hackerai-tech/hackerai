@@ -4,12 +4,14 @@
  * public bundle commit it loaded, plus, only beside browserRequested, which
  * terminal input field produced the display text and whether the selection
  * followed the live edge, and for a live command, its closed invocation shape
- * (with a closed refinement of `other_only`). These describe the client's
- * polling decision. The server treats them as untrusted
+ * (with a closed refinement of `other_only`), and for a selected command on a
+ * non-fresh request, its displayed execution phase. These describe the
+ * client's polling decision. The server treats them as untrusted
  * diagnostics only; they never affect auth, session selection, capture,
  * caching or the response.
  */
 
+import type { SidebarTerminal } from "@/types/chat";
 import {
   AGENT_BROWSER_OTHER_ONLY_KINDS,
   AGENT_BROWSER_PREVIEW_INTENTS,
@@ -27,7 +29,9 @@ export const PREVIEW_TEXT_SOURCE_PARAM = "preview_text_source";
  * The single String log attribute holding the canonical `[1,mask,reader]`
  * tuple. A valid text-source add-on is appended as a fourth element,
  * `[1,source,liveSelection]`; positions 0-2 never change, so v1 readers that
- * read those positions are unaffected.
+ * read those positions are unaffected. A valid terminal phase beside a
+ * `command` source is appended as a fifth element, `[1,phase]`, leaving
+ * positions 0-3 unchanged.
  */
 export const PREVIEW_CLIENT_CONTEXT_KEY = "preview_client_context";
 /**
@@ -56,6 +60,33 @@ export const PREVIEW_TERMINAL_OTHER_KIND_PARAM = "preview_terminal_other_kind";
  * `preview_terminal_intent` value.
  */
 export const PREVIEW_TERMINAL_OTHER_KIND_KEY = "preview_terminal_other_kind";
+/**
+ * Optional add-on `1.<phase>`: the selected terminal's displayed
+ * `SidebarTerminal.executionPhase`, sent only on a non-fresh request beside
+ * the browserRequested bit and a `command` source, live or historical. It is
+ * UI state, not proof that the command was dispatched. A valid value is
+ * appended to `preview_client_context` as a fifth element `[1,"<phase>"]`;
+ * positions 0-3 never change and no attribute is added. Older servers ignore
+ * it.
+ */
+export const PREVIEW_TERMINAL_PHASE_PARAM = "preview_terminal_phase";
+
+/** The closed `SidebarTerminal.executionPhase` domain; the compiler keeps it exhaustive. */
+const TERMINAL_PHASE_DOMAIN = {
+  reviewing: true,
+  awaiting_approval: true,
+  executing: true,
+  completed: true,
+  failed: true,
+  interrupted: true,
+  stopped: true,
+} as const satisfies Record<
+  NonNullable<SidebarTerminal["executionPhase"]>,
+  true
+>;
+export const PREVIEW_TERMINAL_PHASES = Object.keys(
+  TERMINAL_PHASE_DOMAIN,
+) as ReadonlyArray<keyof typeof TERMINAL_PHASE_DOMAIN>;
 
 /**
  * The selected terminal's producer tag (`SidebarTerminal.commandSource`) for
@@ -86,6 +117,18 @@ const MAX_TEXT_SOURCE_LENGTH = Math.max(
 );
 /** The only text-source add-on that admits a terminal intent. */
 const LIVE_COMMAND_TEXT_SOURCE = "1.command.1";
+/** The only text-source add-ons that admit a terminal phase. */
+const COMMAND_TEXT_SOURCES = new Set([LIVE_COMMAND_TEXT_SOURCE, "1.command.0"]);
+
+/** Closed 7-value domain: canonical query value → canonical tuple element. */
+const TERMINAL_PHASES = new Map<string, string>(
+  PREVIEW_TERMINAL_PHASES.map(
+    (phase) => [`1.${phase}`, `[1,"${phase}"]`] as const,
+  ),
+);
+const MAX_TERMINAL_PHASE_LENGTH = Math.max(
+  ...[...TERMINAL_PHASES.keys()].map((value) => value.length),
+);
 
 /** Closed 7-value domain: canonical query value → canonical attribute value. */
 const TERMINAL_INTENTS = new Map<string, string>(
@@ -225,6 +268,8 @@ export const PREVIEW_DEFER_OPEN_PARAM = "deferOpen";
  * edge, and only for a value in its closed domain. A refined
  * `other_only.<kind>` sends the unchanged `1.other_only` intent followed by
  * its `1.<kind>` sibling; every other intent sends no sibling.
+ * The terminal phase is added only on a non-fresh request beside a `command`
+ * source, live or historical, and only for a value in its closed domain.
  */
 export function previewCaptureUrl(
   endpoint: string,
@@ -232,7 +277,12 @@ export function previewCaptureUrl(
   activationMask: number,
   loadedBuildCommit: unknown,
   deferWait = false,
-  textSource?: { source: unknown; liveSelection: unknown; intent?: unknown },
+  textSource?: {
+    source: unknown;
+    liveSelection: unknown;
+    intent?: unknown;
+    phase?: unknown;
+  },
   deferOpen = false,
 ): string {
   const query = new URLSearchParams();
@@ -267,6 +317,18 @@ export function previewCaptureUrl(
         if (terminal.otherKind !== undefined)
           query.set(PREVIEW_TERMINAL_OTHER_KIND_PARAM, terminal.otherKind);
       }
+      const phase =
+        typeof textSource?.phase === "string" &&
+        textSource.phase.length < MAX_TERMINAL_PHASE_LENGTH
+          ? `1.${textSource.phase}`
+          : undefined;
+      if (
+        !fresh &&
+        COMMAND_TEXT_SOURCES.has(addOn) &&
+        phase !== undefined &&
+        TERMINAL_PHASES.has(phase)
+      )
+        query.set(PREVIEW_TERMINAL_PHASE_PARAM, phase);
     }
   }
   const search = query.toString();
@@ -306,9 +368,20 @@ function closedValue(
   }
 }
 
+/** True only when the key is provably absent; a read failure counts as present. */
+function absent(params: URLSearchParams, name: string): boolean {
+  try {
+    return params.getAll(name).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The canonical tuple plus whether its add-on validated as a live `command`
- * source beside the browserRequested bit, the only basis for an intent.
+ * source beside the browserRequested bit, the only basis for an intent. A
+ * valid phase is appended as a fifth element only beside a validated
+ * `command` source (live or historical) on a request without any `fresh` key.
  */
 function decodePreviewClientContext(
   params: URLSearchParams,
@@ -334,12 +407,20 @@ function decodePreviewClientContext(
             MAX_TEXT_SOURCE_LENGTH,
           )
         : undefined;
-    return addOn === undefined
-      ? { tuple: `[${base}]`, liveCommand: false }
-      : {
-          tuple: `[${base},${addOn.element}]`,
-          liveCommand: addOn.value === LIVE_COMMAND_TEXT_SOURCE,
-        };
+    if (addOn === undefined) return { tuple: `[${base}]`, liveCommand: false };
+    const phase =
+      COMMAND_TEXT_SOURCES.has(addOn.value) && absent(params, "fresh")
+        ? closedValue(
+            params,
+            PREVIEW_TERMINAL_PHASE_PARAM,
+            TERMINAL_PHASES,
+            MAX_TERMINAL_PHASE_LENGTH,
+          )
+        : undefined;
+    return {
+      tuple: `[${base},${addOn.element}${phase === undefined ? "" : `,${phase.element}`}]`,
+      liveCommand: addOn.value === LIVE_COMMAND_TEXT_SOURCE,
+    };
   } catch {
     return undefined;
   }
@@ -349,7 +430,9 @@ function decodePreviewClientContext(
  * Strictly decode the optional group into its canonical tuple, or nothing.
  * Absent, partial, duplicated, future-version or noncanonical input drops the
  * whole group. The text-source add-on is read only when the decoded mask has
- * the browserRequested bit; any problem with it drops only the add-on.
+ * the browserRequested bit; any problem with it drops only the add-on. The
+ * terminal phase is read only beside a valid `command` add-on and only when
+ * no `fresh` key is present; any problem with it drops only the phase.
  * Unrelated query keys are never read.
  */
 export function parsePreviewClientContext(

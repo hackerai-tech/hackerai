@@ -829,6 +829,8 @@ describe("ComputerSidebar reconnect behavior", () => {
       expect(fetchPreview).toHaveBeenCalledTimes(2);
       expect(sentQuery(1).get("preview_activation")).toBe("1");
       expect(sentQuery(1).get("preview_text_source")).toBe("1.brief.0");
+      // A brief is not the command whose phase the selection displays.
+      expect(sentQuery(1).has("preview_terminal_phase")).toBe(false);
       view.unmount();
     });
 
@@ -866,8 +868,60 @@ describe("ComputerSidebar reconnect behavior", () => {
       expect(sentQuery(1).get("preview_activation")).toBe("1");
       expect(sentQuery(1).get("preview_text_source")).toBe("1.command.0");
       expect(sentQuery(1).has("preview_terminal_intent")).toBe(false);
+      // The historical command keeps its own display phase.
+      expect(sentQuery(1).getAll("preview_terminal_phase")).toEqual([
+        "1.completed",
+      ]);
       view.unmount();
     });
+
+    it.each([
+      ["approval-requested", "1.awaiting_approval"],
+      ["input-available", "1.executing"],
+    ])(
+      "reports a %s selection's display phase, then its settled phase without restarting the poll",
+      async (state, initialPhase) => {
+        const command = { action: "exec", command: OPEN };
+        const pending = { ...shellPart("browser-tool", command), state };
+        const { view, rerender } = renderSelected(
+          messagesWith(pending),
+          "browser-tool",
+        );
+        await act(async () => {});
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        expect(sentQuery(0).has("fresh")).toBe(false);
+        expect(sentQuery(0).get("preview_text_source")).toBe("1.command.1");
+        expect(sentQuery(0).getAll("preview_terminal_phase")).toEqual([
+          initialPhase,
+        ]);
+
+        // The same selected tool settles; only the next dispatch reads it.
+        rerender(messagesWith(shellPart("browser-tool", command)));
+        await act(async () => {});
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          jest.advanceTimersByTime(999);
+        });
+        expect(fetchPreview).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          jest.advanceTimersByTime(1);
+        });
+        expect(fetchPreview).toHaveBeenCalledTimes(2);
+        expect(sentQuery(1).getAll("preview_terminal_phase")).toEqual([
+          "1.completed",
+        ]);
+        // Every other parameter, including the mask and intent, is unchanged.
+        const withoutPhase = (call: number) =>
+          [...sentQuery(call).entries()].filter(
+            ([name]) => name !== "preview_terminal_phase",
+          );
+        expect(withoutPhase(1)).toEqual(withoutPhase(0));
+        expect(String(fetchPreview.mock.calls[1][0])).not.toMatch(
+          /example\.org|browser-tool/,
+        );
+        view.unmount();
+      },
+    );
 
     it.each(["agent-browser --version", "agent-browser open --help"])(
       "keeps standalone informational %s hidden and untagged",

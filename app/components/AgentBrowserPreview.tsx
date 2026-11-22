@@ -26,7 +26,10 @@ import {
   previewActivationMask,
   previewCaptureUrl,
 } from "@/lib/ai/browser-handoff/preview-activation-diagnostics";
-import type { SidebarTerminalCommandSource } from "@/types/chat";
+import type {
+  SidebarTerminal,
+  SidebarTerminalCommandSource,
+} from "@/types/chat";
 import type { AgentBrowserPreviewIntent } from "@/lib/utils/agent-browser-command";
 import {
   readBrowserRelay,
@@ -129,6 +132,7 @@ export function AgentBrowserPreview({
   browserRequested = false,
   browserRequestSource,
   browserRequestIntent,
+  browserRequestPhase,
   takeoverRequest,
   onTakeoverRequestConsumed,
   runActive = false,
@@ -145,6 +149,8 @@ export function AgentBrowserPreview({
   browserRequestSource?: SidebarTerminalCommandSource;
   /** Diagnostic-only closed shape of the same text's browser invocations. */
   browserRequestIntent?: AgentBrowserPreviewIntent | null;
+  /** Diagnostic-only displayed phase of the selected terminal; UI state only. */
+  browserRequestPhase?: SidebarTerminal["executionPhase"];
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
@@ -319,19 +325,27 @@ export function AgentBrowserPreview({
   }, [activationMask]);
   // Sent only beside the browserRequested bit (an absent tag is reported as
   // unavailable); read at dispatch like the mask so it never restarts polling.
-  // The intent travels only for a live command source.
+  // The intent travels only for a live command source; the phase for any
+  // command source on a non-fresh request.
   const textSourceRef = useRef({
     source: browserRequestSource,
     liveSelection,
     intent: browserRequestIntent,
+    phase: browserRequestPhase,
   });
   useLayoutEffect(() => {
     textSourceRef.current = {
       source: browserRequestSource,
       liveSelection,
       intent: browserRequestIntent,
+      phase: browserRequestPhase,
     };
-  }, [browserRequestSource, liveSelection, browserRequestIntent]);
+  }, [
+    browserRequestSource,
+    liveSelection,
+    browserRequestIntent,
+    browserRequestPhase,
+  ]);
   // Read at dispatch like the mask, so a state change never restarts polling.
   const sessionStateRef = useRef(session?.state);
   useLayoutEffect(() => {

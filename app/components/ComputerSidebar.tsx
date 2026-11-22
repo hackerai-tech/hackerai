@@ -854,6 +854,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     browserRequested={browserRequestIntent !== null}
                     browserRequestSource={resolvedTerminal?.commandSource}
                     browserRequestIntent={browserRequestIntent}
+                    browserRequestPhase={resolvedTerminal?.executionPhase}
                     runActive={status === "streaming" || status === "submitted"}
                     onJumpToLive={handleJumpToLive}
                   />
