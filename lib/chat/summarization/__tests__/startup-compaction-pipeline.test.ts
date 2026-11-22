@@ -676,6 +676,10 @@ describe("startup compaction through the real AI SDK", () => {
             }),
           );
         }
+        // Timeouts and successful attempts never carry the structured subtype.
+        expect(JSON.stringify(recordEvent.mock.calls)).not.toContain(
+          "structured_summary_",
+        );
       } finally {
         timeout.mockRestore();
         jest.useRealTimers();
@@ -685,7 +689,14 @@ describe("startup compaction through the real AI SDK", () => {
 
   it.each(
     (
-      ["reasoning", "malformed", "missing", "blank", "truncated"] as const
+      [
+        "reasoning",
+        "malformed",
+        "array",
+        "missing",
+        "blank",
+        "truncated",
+      ] as const
     ).flatMap((kind) =>
       [false, true].map((expandedAgentContext) => ({
         kind,
@@ -722,7 +733,11 @@ describe("startup compaction through the real AI SDK", () => {
                   {
                     type: "text",
                     text:
-                      kind === "malformed" ? "{broken" : JSON.stringify(fields),
+                      kind === "malformed"
+                        ? "{broken"
+                        : kind === "array"
+                          ? JSON.stringify([fields])
+                          : JSON.stringify(fields),
                   },
                 ],
           usage: {
@@ -795,8 +810,38 @@ describe("startup compaction through the real AI SDK", () => {
           reasoning_tokens: 20,
         }),
       );
+      // Only a stop-finished structured rejection carries the closed subtype;
+      // provider failures and successful attempts stay unchanged.
+      const subtypes: Partial<Record<typeof kind, string>> = {
+        malformed: "invalid_json",
+        array: "invalid_object",
+        missing: "invalid_sections",
+        blank: "invalid_sections",
+      };
+      const subtype = subtypes[kind];
+      const attempts = recordEvent.mock.calls
+        .filter(([event]) => event === "compaction_model_attempt_finished")
+        .map(([, properties]) => properties as Record<string, unknown>);
+      expect(
+        attempts.map((properties) => [
+          properties.served_model,
+          properties.structured_summary_diagnostic_version,
+          properties.structured_summary_failure_kind,
+        ]),
+      ).toEqual([
+        ...(expandedAgentContext
+          ? [
+              ["model-abliterated-large-v2", undefined, undefined],
+              ["model-deepseek-v4.1-flash-1017-pro", undefined, undefined],
+            ]
+          : []),
+        ["model-glm-5.3-flash", subtype && 1, subtype],
+        ...(expandedAgentContext
+          ? []
+          : [["model-abliterated", undefined, undefined]]),
+      ]);
       expect(JSON.stringify(recordEvent.mock.calls)).not.toMatch(
-        /Synthetic private reasoning|Never send to analytics/,
+        /Synthetic private reasoning|Never send to analytics|Current State/,
       );
       expect(saveSummary).toHaveBeenCalledTimes(expandedAgentContext ? 0 : 1);
       expect(JSON.stringify(messages)).toBe(original);
