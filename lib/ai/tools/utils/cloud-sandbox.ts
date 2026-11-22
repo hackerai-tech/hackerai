@@ -22,6 +22,7 @@ import type {
 import { ensureSandboxConnection, E2BAcquisitionError } from "./sandbox";
 import { isE2BSandbox } from "./sandbox-types";
 import { phLogger } from "@/lib/posthog/server";
+import { recordEgressReviewAcquisition } from "@/lib/abuse/egress-review-context";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import {
   getConfiguredE2BClustersForCleanup,
@@ -258,6 +259,15 @@ export async function ensureCloudSandboxConnection(options: {
     workspaceVerificationPhase = "post_checks";
     registerE2BWorkspaceLease(result.sandbox, options.userId);
     options.signal?.throwIfAborted();
+    // Ownership and network are verified; synchronous, never throws or waits.
+    recordEgressReviewAcquisition({
+      region: workspaceCluster,
+      userId: options.userId,
+      sandboxId: result.sandbox.sandboxId,
+      chatId: options.context?.chatId,
+      runId: options.context?.triggerRunId,
+      runKind: options.context?.runKind ?? "parent",
+    });
     options.setSandbox(result.sandbox);
     recordOutcome("success");
     return { ...result, provider: "e2b" };

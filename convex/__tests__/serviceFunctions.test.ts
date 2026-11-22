@@ -30,11 +30,13 @@ Object.defineProperty(globalThis, "crypto", {
 });
 const secret = "synthetic-main-service-credential";
 const researchSecret = "synthetic-research-credential";
+const egressReviewSecret = "synthetic-egress-review-credential";
 const deployment = "https://fixture.convex.cloud";
 const original = { ...process.env };
 beforeEach(() => {
   process.env.CONVEX_SERVICE_ROLE_KEY = secret;
   process.env.CONVEX_USER_RESEARCH_SERVICE_KEY = researchSecret;
+  process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY = egressReviewSecret;
   process.env.CONVEX_CLOUD_URL = deployment;
   delete process.env.CONVEX_SERVICE_AUTH_LEGACY_UNTIL;
 });
@@ -139,6 +141,31 @@ describe("service registration boundary", () => {
       rejection("verification_failed"),
       rejection("verification_failed"),
     ]);
+  });
+
+  it("isolates the burst review key from account enforcement and the general service key", async () => {
+    const registered = (mutation as any)({
+      args: { serviceKey: v.string() },
+      returns: v.null(),
+      handler: async () => null,
+    });
+    const invoke = async (name: string, serviceKey: string) => {
+      const signed = await signServiceArgs(
+        { deployment, name, type: "mutation" },
+        { serviceKey },
+      );
+      return registered.handler(context(name), signed);
+    };
+    const review = "egressAbuseReview:recordCase";
+    await expect(invoke(review, egressReviewSecret)).resolves.toBeNull();
+    await expect(invoke(review, secret)).rejects.toThrow(unauthorized);
+    await expect(
+      invoke("abuseResponse:apply", egressReviewSecret),
+    ).rejects.toThrow(unauthorized);
+    delete process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY;
+    await expect(invoke(review, egressReviewSecret)).rejects.toThrow(
+      unauthorized,
+    );
   });
 
   it("signs internal child calls again for their own destination and arguments", async () => {

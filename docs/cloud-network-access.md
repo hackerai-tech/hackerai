@@ -305,40 +305,100 @@ to Preview or the reverse.
 
 The `egress-burst-alerts` Trigger task runs every minute, scheduled in
 Production only. It is off until the Agent worker sets
-`E2B_EGRESS_BURST_ALERTS_ENABLED=true` and `E2B_EGRESS_BURST_THRESHOLD`, the
+`E2B_EGRESS_BURST_ALERTS_ENABLED=true`, `E2B_EGRESS_BURST_THRESHOLD`, the
 number of accepted attributed connections from one owner's workspaces in one
-region and minute that fails a run. There is no default threshold; choose it
-from observed telemetry before enabling. Any other toggle value or a missing,
-zero or fractional threshold fails the run with a configuration error.
+region and minute that counts as high volume. There is no default threshold.
+Choose it from observed telemetry before enabling. Leave
+`E2B_EGRESS_BURST_NOTIFICATION_URL` unset or empty for warnings in Trigger
+only. Set it to an operators' private Slack-compatible webhook for delivery.
+When enabled, an invalid toggle, a missing, zero or fractional threshold, or
+a nonempty notification URL that is invalid, uses a protocol other than HTTPS,
+or has embedded credentials or a fragment fails the run.
 
 Each run reads the five most recent settled minutes for both regions, so a
-briefly late upload is still evaluated. A run fails, and is visible to the
-environment's existing Trigger error alerts, when:
+briefly late upload is still evaluated. High volume is when an owner's total
+across its workspaces, or the connections beyond the collector's identity
+bound, reach the threshold. It is not a monitoring failure: the run logs a
+`High connection volume` warning, sends a message if configured and succeeds. The
+warning adds the registered user ID and the sandbox IDs verified for that
+owner. The message is titled `High connection volume`, with one line per
+candidate giving the region, UTC minute, opaque owner reference or
+`unattributed`, observed count and threshold; it never contains user or
+sandbox IDs.
 
-- an owner's total across its workspaces reaches the threshold; the error
-  names only the region and opaque owner reference, and the run's error log
-  adds the registered user ID and the sandbox IDs verified for that owner;
+A run fails, and is visible to the environment's existing Trigger error
+alerts, only when the monitor itself is broken:
+
+- its configuration is missing or invalid;
 - a region has uploaded nothing in those five minutes (missing heartbeat);
-- a collector reported dropped events or batches, which can hide a burst;
-- connections beyond the collector's identity bound reach the threshold;
-- telemetry or the registry cannot be read, or a detailed log cannot be
-  written or recorded.
+- a collector reported dropped events or batches, which can hide high volume;
+- telemetry or the registry cannot be read, or a warning cannot be written or
+  recorded;
+- the webhook does not accept the message: a network error, a timeout after
+  five seconds, a redirect, which is never followed, or any non-2xx response;
+- an abuse review cannot be queued or dispatched, or a queued review expired
+  before dispatch.
 
-Delivery is at least once. Every run fails while a burst is inside its
-five-minute window, so the same burst normally fails several consecutive
-runs, and a lost run is covered by the next one. Only the detailed error log
-is deduplicated per region, minute and owner: it is recorded as written only
-after it is written, so a failure or uncertain write logs it again on a later
-run, and concurrent runs can log it twice. At most 20 new detailed logs are
-written per run, largest bursts first; the run still fails for every burst,
-and the next run logs the rest. Incomplete minutes also fail the run, because a
-failed journal stream cannot quantify missing events. This includes the first
-partial minute after initial installation; wait for it to leave the evaluation
-window before expecting a clean run.
+Warnings without a webhook are deduplicated per region, minute and owner
+independently of webhook delivery. Notification is at least once and uses
+the same dimensions for deduplication.
+Each run warns about and sends at most 20 candidates not yet notified, largest
+first, in a single delivery attempt; the next run handles the rest. Candidates
+are recorded as notified only after the webhook accepts them, so a failed
+delivery or uncertain record is retried by the next scheduled run while the
+minute is in the window, and concurrent runs can send a candidate twice. A
+retry can repeat the warning. Delivery failures use a fixed error message.
+The URL stays out of HTTP traces, and the response body is discarded.
+Incomplete minutes fail the run, because a failed journal stream cannot
+quantify missing events. This includes the first partial minute after initial
+installation; wait for it to leave the evaluation window before expecting a
+clean run.
+
+Treat the webhook URL as a secret. Point it at a private operator channel,
+never a customer-visible destination, and never paste it into logs, issues or
+pull requests. Before deploying a version that requires it in an environment
+where the monitor is enabled, set that environment's own URL in its Agent
+worker; otherwise every run fails with a configuration error. Verify a new
+destination in Preview first with synthetic telemetry, such as a low
+threshold on a Preview pilot workspace. The schedule runs only in Production,
+so in Preview trigger `egress-burst-alerts` manually in the Preview
+environment, with a `timestamp` two minutes after the synthetic minute so
+that minute is settled and evaluated. Confirm that the webhook message
+arrives and the run succeeds.
 
 Counts are accepted authenticated SOCKS connections, not HTTP requests: one
 connection can carry many requests, and exact request counts are not
 available.
+
+With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true` in the web server, Agent worker
+and Convex, each burst from a complete minute is also handed to the read-only
+`egress-abuse-review` task, once per owner reference, region and 30-minute UTC
+window, after a short delay so the active run can persist its messages.
+Overflow and incomplete minutes are never reviewed. The payload carries only
+the region, owner reference and minute. Unset or `false` disables review. An
+invalid value warns and disables review while original alerts continue. See
+[Automated egress burst review](abuse-response.md#automated-egress-burst-review).
+
+The Redis queue keeps deferred reviews beyond the five-minute alert window.
+The worker replays retained telemetry up to 30 minutes old to recover failed
+queue writes. The queue holds up to 2,000 entries. Each run attempts up to
+10 dispatches, prioritizing untried entries within its batch. Retries use the
+same idempotency key. Entries over 30 minutes old are removed and reported as
+expired when no dispatch mark exists. Queue and dispatch failures surface as
+errors. Disabling review pauses the queue. Entries still eligible can resume
+when review is enabled again. An idle queue expires two hours after its last
+addition.
+
+While the toggle is on, every successful cloud acquisition with a server chat
+and Trigger run also records a short-lived link from the verified workspace to
+that chat, run and time, after ownership and network verification. The write is
+best effort and not awaited, so a store outage cannot delay or fail an
+acquisition. Each acquisition is a separate record. The review selects each
+run's latest acquisition before the burst ended and checks the run's
+persisted timing for overlap. It uses up to 16 records per workspace from
+the last six hours. Additional records signal incomplete coverage and route
+the case to manual review. The older per-run format expires on its original
+six-hour schedule. These links are separate from attribution credentials.
 
 ### Coverage and delivery
 
@@ -389,3 +449,8 @@ it was given:
   deliberate, reviewed migration.
 - To stop alerts, set `E2B_EGRESS_BURST_ALERTS_ENABLED=false`. Stopping the
   collector does not affect traffic.
+- To stop burst reviews and acquisition links, set
+  `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web server, Agent worker and
+  Convex. This is separate from alerts, which continue unchanged under their
+  own toggle. Existing links and queued reviews expire on their own, and
+  existing cases stay available to operators.
