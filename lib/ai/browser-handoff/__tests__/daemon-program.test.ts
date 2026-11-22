@@ -29,6 +29,7 @@ function expectPacketBudgets(text: string) {
     ot1: _openWriteOrder,
     ph1: _preconnectHeld,
     e1: _activeEval,
+    cp1: _closeProof,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -355,6 +356,11 @@ function daemon(
   });
   const lstat = jest.fn((file: string) => {
     if (file.endsWith("/cli-at-prepare.json")) return cliStat();
+    // This harness models no close proof; closedDaemon below does.
+    if (file.endsWith("/closed-session"))
+      throw Object.assign(new Error("PRIVATE missing proof"), {
+        code: "ENOENT",
+      });
     if (file.endsWith(".stream")) {
       if (owned.stream === undefined)
         throw Object.assign(new Error("PRIVATE missing stream"), {
@@ -1808,6 +1814,32 @@ it("drops the socket-directory code first, before o1 or any existing field, at t
   // One byte over the cap drops only sd1; every existing field remains.
   const justOver = near(2, 545 - Buffer.byteLength(complete));
   expect(JSON.parse(justOver)).toEqual(JSON.parse(near()));
+});
+
+it("drops the close-proof code before sd1 or any other helper field at the 544 cap", () => {
+  const near = (request: Record<string, unknown>, chargedBytes?: number) =>
+    missingDirectory(
+      { idle_env_version: 1, idle_env: "unparsed" },
+      {
+        request,
+        chargedBytes,
+        pidFile: "314159",
+        processVisibility: "same_uid",
+        cliReceipt: [1, 1, 999999999],
+        versionFile: "999.999.999",
+      },
+    ).output.mock.calls[0][0] as string;
+  const opted = { action: "stream_status", recognize_closed: true };
+  const complete = near(opted);
+  expectPacketBudgets(complete);
+  const { cp1, ...existing } = JSON.parse(complete);
+  // This harness has no proof file.
+  expect(cp1).toBe(0);
+  // Otherwise the same packet as a status that never opted in.
+  expect(existing).toEqual(JSON.parse(near({ action: "stream_status" })));
+  expect(existing).toMatchObject({ sd1: 2, os1: 2, o1: 0 });
+  const justOver = near(opted, 545 - Buffer.byteLength(complete));
+  expect(JSON.parse(justOver)).toEqual(existing);
 });
 
 /** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
@@ -4234,10 +4266,18 @@ function closedDaemon(
     request?: Record<string, unknown>;
     files?: Record<string, FsNode | undefined>;
     socketError?: string;
-    afterProofOpens?: (files: Map<string, FsNode>) => void;
+    // Error codes for lstat of these paths; afterProofOpens can add more.
+    lstatErrors?: Record<string, string>;
+    // Reading the proof throws an error without a code.
+    proofReadThrows?: boolean;
+    afterProofOpens?: (
+      files: Map<string, FsNode>,
+      lstatErrors: Map<string, string>,
+    ) => void;
   } = {},
 ) {
   const files = new Map<string, FsNode>();
+  const lstatErrors = new Map(Object.entries(options.lstatErrors ?? {}));
   for (const [file, node] of Object.entries({
     [directory]: { kind: "dir", ino: "1" },
     [directory + "/sockets"]: { kind: "dir", ino: "2" },
@@ -4281,6 +4321,7 @@ function closedDaemon(
           lstatSync: (file: string, flags?: { bigint?: boolean }) => {
             if (file === closedSocketPath && options.socketError)
               throw missing(options.socketError);
+            if (lstatErrors.has(file)) throw missing(lstatErrors.get(file));
             const node = files.get(file);
             if (!node) throw missing();
             return stat(node, flags?.bigint === true);
@@ -4292,13 +4333,16 @@ function closedDaemon(
             opened.push(file);
             const fd = 20 + descriptors.size;
             descriptors.set(fd, node);
-            if (file === proofPath) options.afterProofOpens?.(files);
+            if (file === proofPath)
+              options.afterProofOpens?.(files, lstatErrors);
             return fd;
           },
           fstatSync: (fd: number, flags?: { bigint?: boolean }) =>
             stat(descriptors.get(fd)!, flags?.bigint === true),
-          readSync: (fd: number, bytes: Buffer) =>
-            bytes.write(descriptors.get(fd)!.content ?? "", "utf8"),
+          readSync: (fd: number, bytes: Buffer) => {
+            if (options.proofReadThrows) throw new Error("PRIVATE read");
+            return bytes.write(descriptors.get(fd)!.content ?? "", "utf8");
+          },
           closeSync: (fd: number) => descriptors.delete(fd),
         };
       throw new Error("Unexpected process or module access");
@@ -4348,41 +4392,74 @@ it.each<Record<string, unknown>>([
   },
 );
 
-it.each<[string, Parameters<typeof closedDaemon>[0]]>([
-  ["no proof exists (an older wrapper)", { files: { [proofPath]: undefined } }],
+// The cp1 code names the first refusing check; undefined means the packet omits it.
+it.each<[string, Parameters<typeof closedDaemon>[0], number | undefined]>([
+  [
+    "no proof exists (an older wrapper)",
+    { files: { [proofPath]: undefined } },
+    0,
+  ],
   [
     "a later command published a new selection inode",
     { files: { [activePath]: { ...selection, ino: "1152921504606846978" } } },
+    5,
+  ],
+  [
+    "the selection was removed",
+    { files: { [activePath]: undefined, [proofPath]: selection } },
+    4,
   ],
   [
     "the proof names another selection",
     { files: linked({ ...selection, content: "other" }) },
+    2,
   ],
   [
     "the proof names the selection with extra bytes",
     { files: linked({ ...selection, content: "default\n" }) },
+    2,
   ],
   [
     "the proof is a symlink to the selection",
     { files: { [proofPath]: { kind: "symlink", ino: "9" } } },
+    1,
   ],
   [
     "the proof is readable by others",
     { files: linked({ ...selection, mode: 0o640 }) },
+    1,
   ],
-  ["another user owns the proof", { files: linked({ ...selection, uid: 0 }) }],
-  ["the proof is empty", { files: linked({ ...selection, content: "" }) }],
+  [
+    "another user owns the proof",
+    { files: linked({ ...selection, uid: 0 }) },
+    1,
+  ],
+  ["the proof is empty", { files: linked({ ...selection, content: "" }) }, 1],
   [
     "the proof is oversized",
     { files: linked({ ...selection, content: "x".repeat(513) }) },
+    1,
+  ],
+  [
+    "the proof cannot be examined",
+    { lstatErrors: { [proofPath]: "EACCES" } },
+    6,
+  ],
+  // An uncoded failure is no distinct fact.
+  [
+    "reading the proof fails without a code",
+    { proofReadThrows: true },
+    undefined,
   ],
   [
     "the selection is a symlink",
     { files: { [activePath]: { kind: "symlink", ino: selection.ino } } },
+    8,
   ],
   [
     "the run root is not private",
     { files: { [directory]: { kind: "dir", ino: "1", mode: 0o755 } } },
+    7,
   ],
   [
     "the sockets directory is not private",
@@ -4391,10 +4468,12 @@ it.each<[string, Parameters<typeof closedDaemon>[0]]>([
         [directory + "/sockets"]: { kind: "dir", ino: "2", mode: 0o750 },
       },
     },
+    7,
   ],
   [
     "another user owns the sockets directory",
     { files: { [directory + "/sockets"]: { kind: "dir", ino: "2", uid: 0 } } },
+    7,
   ],
   [
     "the socket reappears after the proof opens",
@@ -4402,6 +4481,15 @@ it.each<[string, Parameters<typeof closedDaemon>[0]]>([
       afterProofOpens: (files) =>
         files.set(closedSocketPath, { kind: "socket", ino: "30" }),
     },
+    3,
+  ],
+  [
+    "the socket becomes unreadable after the proof opens",
+    {
+      afterProofOpens: (_files, errors) =>
+        errors.set(closedSocketPath, "EACCES"),
+    },
+    6,
   ],
   [
     "a stale proof is replaced by a matching one after it opens",
@@ -4410,14 +4498,26 @@ it.each<[string, Parameters<typeof closedDaemon>[0]]>([
       // Rechecking the path instead of the pinned descriptor would accept.
       afterProofOpens: (files) => files.set(proofPath, selection),
     },
+    5,
   ],
   [
     "the opt-in is a string",
     { request: { ...closedRequest, recognize_closed: "true" } },
+    undefined,
   ],
   [
     "the opt-in is numeric",
     { request: { ...closedRequest, recognize_closed: 1 } },
+    undefined,
+  ],
+  // The owned-port lookup's same verification never exports its reason.
+  [
+    "the owned-port lookup has no proof",
+    {
+      request: { ...closedRequest, owned_port: true },
+      files: { [proofPath]: undefined },
+    },
+    undefined,
   ],
   [
     "the request is neither status nor screenshot",
@@ -4430,30 +4530,41 @@ it.each<[string, Parameters<typeof closedDaemon>[0]]>([
         recognize_closed: true,
       },
     },
+    undefined,
+  ],
+  // A screenshot's exit2 never carries the status-only code.
+  [
+    "an opted-in screenshot has no proof",
+    { request: closedScreenshot, files: { [proofPath]: undefined } },
+    undefined,
   ],
   [
     "the screenshot opt-in is a string",
     { request: { ...closedScreenshot, recognize_closed: "true" } },
+    undefined,
   ],
 ])(
   "keeps the unchanged missing-socket exit2 packet when %s",
-  (_case, options) => {
+  (_case, options, reason) => {
     const d = closedDaemon(options);
     expect(d.exit.mock.calls).toEqual([[2]]);
     expect(d.connect).not.toHaveBeenCalled();
     const text = d.output.mock.calls[0][0];
-    // Byte-identical to a request that never opted in.
+    const { cp1, ...existing } = JSON.parse(text);
+    expect(cp1).toBe(reason);
+    // Apart from that one code, byte-identical to a request that never opted in.
     const strict = closedDaemon({
       ...options,
       request: { action: "stream_status" },
     });
     expect(strict.opened).toEqual([]);
-    expect(text).toBe(strict.output.mock.calls[0][0]);
-    expect(JSON.parse(text)).toMatchObject({
+    expect(JSON.stringify(existing)).toBe(strict.output.mock.calls[0][0]);
+    expect(existing).toMatchObject({
       diagnostic_reason: "socket_stat",
       diagnostic_error: "missing",
     });
     expect(text).not.toMatch(/session_closed|PRIVATE|default|115292/);
+    expectPacketBudgets(text);
     expect(d.descriptors.size).toBe(0);
   },
 );
@@ -4462,10 +4573,12 @@ it("never checks a proof unless the selected socket is exactly missing", () => {
   const d = closedDaemon({ socketError: "EACCES" });
   expect(d.exit.mock.calls).toEqual([[2]]);
   expect(d.opened).toEqual([]);
-  expect(JSON.parse(d.output.mock.calls[0][0])).toMatchObject({
+  const value = JSON.parse(d.output.mock.calls[0][0]);
+  expect(value).toMatchObject({
     diagnostic_reason: "socket_stat",
     diagnostic_error: "permission",
   });
+  expect(value).not.toHaveProperty("cp1");
 });
 
 it("strips the opt-in before an existing daemon sees the request", () => {
@@ -4585,8 +4698,9 @@ describe.each<[string, Record<string, unknown>, Record<string, unknown>]>([
   )("keeps the unchanged exit6 when %s", (_case, ending, options) => {
     const d = run(ending, options);
     expect(d.exit.mock.calls).toEqual([[6]]);
+    // The status-only exit2 close-proof code never reaches exit6.
     expect(d.output.mock.calls.map(([text]) => text).join("")).not.toMatch(
-      /session_closed|PRIVATE|default|115292/,
+      /session_closed|PRIVATE|default|115292|cp1/,
     );
     expect(d.descriptors.size).toBe(0);
   });

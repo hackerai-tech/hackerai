@@ -127,6 +127,26 @@ export const BROWSER_WRAPPER_RESULT_ELAPSED = [
   "older",
 ] as const;
 
+// Wire code cp1 is the index. Only an opted-in recognize_closed status without
+// owned_port whose selected socket lstat found no entry (exit2 socket_stat
+// missing): the first check of the existing close-proof verification that
+// refused it, in that one call. Absent proof includes older wrappers and closes
+// that earned none; superseded means the selection is no longer the proof's
+// linked private inode; out_of_scope means the root or sockets directory is
+// not owned and private. Not whether a close ran, a cause, or any path, name or
+// inode. Absent is unmeasured (older helper, budget or an unclassified error).
+export const BROWSER_CLOSE_PROOF_FAILURES = [
+  "proof_absent",
+  "proof_invalid",
+  "proof_mismatch",
+  "socket_reappeared",
+  "selection_missing",
+  "selection_superseded",
+  "unreadable",
+  "out_of_scope",
+  "selection_invalid",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -711,34 +731,54 @@ function activeWait() {
  * exact name. The proof stays pinned by its descriptor, so a replaced proof cannot alias a reused
  * inode; with it pinned the socket is absent again and the selection is unchanged, so no
  * later command has started. Never exports the name, path or inode; any doubt is false.
+ * Past the opt-in, a false result also records its first refusing check in closeProofFailure
+ * (a BROWSER_CLOSE_PROOF_FAILURES index) from these same calls; the result is unchanged.
  */
+let closeProofFailure;
 function sessionClosed() {
   let fd;
+  // Which check is running, for classifying a thrown error; undefined before the opt-in.
+  let step;
+  const refuse = code => { closeProofFailure = code; return false; };
   try {
     const opted = JSON.parse(payload);
-    if (opted?.recognize_closed !== true || !['stream_status', 'screenshot'].includes(opted.action) ||
-        !argumentsValid || typeof fs.constants?.O_NOFOLLOW !== 'number' || typeof fs.constants.O_NONBLOCK !== 'number' ||
+    if (opted?.recognize_closed !== true || !['stream_status', 'screenshot'].includes(opted.action)) return false;
+    step = 'scope';
+    if (!argumentsValid || typeof fs.constants?.O_NOFOLLOW !== 'number' || typeof fs.constants.O_NONBLOCK !== 'number' ||
         [rootInfo, socketsInfo].some(item => !item?.isDirectory() || item.uid !== process.getuid() ||
-          (item.mode & 0o077) !== 0)) return false;
+          (item.mode & 0o077) !== 0)) return refuse(7);
     const uid = BigInt(process.getuid());
     // BigInt identities: large inode numbers can collide as Numbers.
     const valid = entry => entry.isFile() && entry.uid === uid && (entry.mode & 0o077n) === 0n &&
       entry.size >= 1n && entry.size <= 512n;
     const proofPath = path.join(directory, 'closed-session');
-    if (!valid(fs.lstatSync(proofPath, { bigint: true }))) return false;
+    step = 'proof';
+    if (!valid(fs.lstatSync(proofPath, { bigint: true }))) return refuse(1);
     fd = fs.openSync(proofPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     const proof = fs.fstatSync(fd, { bigint: true });
-    if (!valid(proof)) return false;
+    if (!valid(proof)) return refuse(1);
     const bytes = Buffer.alloc(513);
     const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
-    if (!Buffer.from(name, 'utf8').equals(bytes.subarray(0, size))) return false;
+    if (!Buffer.from(name, 'utf8').equals(bytes.subarray(0, size))) return refuse(2);
+    step = 'socket';
     try {
       fs.lstatSync(path.join(directory, 'sockets', name + '.sock'));
-      return false;
-    } catch (error) { if (error?.code !== 'ENOENT') return false; }
+      return refuse(3);
+    } catch (error) { if (error?.code !== 'ENOENT') return refuse(6); }
+    step = 'selection';
     const active = fs.lstatSync(path.join(directory, 'active-session'), { bigint: true });
-    return valid(active) && active.dev === proof.dev && active.ino === proof.ino;
-  } catch { return false; } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+    if (!valid(active)) return refuse(8);
+    return active.dev === proof.dev && active.ino === proof.ino ? true : refuse(5);
+  } catch (error) {
+    // A missing proof or selection entry is distinct; any other coded error is unreadable,
+    // and an uncoded one is no distinct fact.
+    try {
+      const code = error?.code;
+      if (step !== undefined && typeof code === 'string')
+        closeProofFailure = code !== 'ENOENT' ? 6 : step === 'proof' ? 0 : step === 'selection' ? 4 : 6;
+    } catch {}
+    return false;
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
@@ -765,6 +805,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.cp1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.cp1;
     if (value?.e1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.e1;
     if (value?.ph1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ph1;
     if (value?.ot1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ot1;
@@ -910,6 +951,11 @@ try {
         code === 'EACCES' || code === 'EPERM' ? 'permission' :
         code === 'ENOTDIR' ? 'not_directory' : 'other';
     }
+    // That same refused close-proof check, for an opted-in status without owned_port only.
+    try {
+      if (statusSocketMissing && closeProofFailure !== undefined &&
+          JSON.parse(payload)?.owned_port === undefined) value.cp1 = closeProofFailure;
+    } catch {}
     finish(2, value);
   }
 }

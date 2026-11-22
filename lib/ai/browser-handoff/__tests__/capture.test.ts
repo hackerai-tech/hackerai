@@ -10,6 +10,7 @@ import {
   renewBrowserRelay,
   resizeBrowserViewport,
   setAgentBrowserPaused,
+  type BrowserCaptureFailureContext,
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
@@ -2920,6 +2921,173 @@ it("omits the socket-directory field outside the stream_status stage", async () 
     capture_open_info_flags: "none",
   });
   expect(context).not.toHaveProperty("capture_open_socket_directory_v1");
+});
+
+/** The status helper's exit2 missing-socket packet beside a completed selected CLOSE. */
+const closeProofPacket = (override: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    diagnostic_reason: "socket_stat",
+    diagnostic_error: "missing",
+    cp1: 5,
+    ...successfulSelectedOpen,
+    close_receipt: [
+      1,
+      "recorded",
+      "completed",
+      0,
+      "selected_session",
+      "lt10s",
+      "after",
+    ],
+    cv: [1, 0],
+    private: "PRIVATE",
+    ...override,
+  });
+const getOptions = { recognizeClosed: true, observeStatusProgress: true };
+
+/** One rejected status lookup, as the Browser Preview GET or another caller makes it. */
+async function observeStatusExit(
+  exitCode: number,
+  packet: string,
+  requireFresh = true,
+  options: Parameters<typeof captureBrowserFrame>[6] = getOptions,
+) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode,
+    stdout: packet,
+    stderr: "PRIVATE",
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command) => {
+      if (command.includes('"action":"stream_status"')) throw error;
+      return run(command);
+    }),
+  );
+  const observe = jest.fn();
+  // The SDK's exit rejection itself, never a closed or deferred state.
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      observe,
+      options,
+    ),
+  ).rejects.toBe(error);
+  expect(daemonRequests(sandbox.commands.run)).toHaveLength(1);
+  expect(observe).toHaveBeenCalledTimes(1);
+  return observe.mock.calls[0][0] as BrowserCaptureFailureContext;
+}
+
+it.each([
+  [0, "proof_absent"],
+  [5, "selection_superseded"],
+  [8, "selection_invalid"],
+])(
+  "projects the GET's own missing-socket close-proof code %j as one versioned field",
+  async (cp1, failure) => {
+    const context = await observeStatusExit(2, closeProofPacket({ cp1 }));
+    const { capture_close_proof_failure_v1: projected, ...existing } = context;
+    expect(projected).toBe(failure);
+    // Every existing field is unchanged beside the one new field.
+    expect(existing).toEqual(
+      await observeStatusExit(2, closeProofPacket({ cp1: undefined })),
+    );
+    expect(existing).toMatchObject({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 2,
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+      capture_close_receipt_status: "recorded",
+      capture_close_scope: "selected_session",
+      capture_close_open_order: "after",
+    });
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, Record<string, unknown>, number?]>([
+  ["an older helper", { cp1: undefined }],
+  ["an out-of-range code", { cp1: 9 }],
+  ["a fractional code", { cp1: 0.5 }],
+  ["a private value", { cp1: "PRIVATE" }],
+  ["an unreadable status socket", { diagnostic_error: "permission" }],
+  ["a missing sockets directory", { diagnostic_reason: "sockets_stat" }],
+  ["a deadline exit", { deadline: [1, "awaiting_response"] }, 3],
+])(
+  "omits the close-proof field for %s",
+  async (_case, override, exitCode = 2) => {
+    const context = await observeStatusExit(
+      exitCode,
+      closeProofPacket(override),
+    );
+    expect(context.capture_command_exit_code).toBe(exitCode);
+    expect(context).not.toHaveProperty("capture_close_proof_failure_v1");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each<[string, boolean, Parameters<typeof captureBrowserFrame>[6]]>([
+  ["a cached owned-port lookup", false, getOptions],
+  ["a fresh lookup without the closed opt-in", true, {}],
+])(
+  "never projects a close-proof code for %s",
+  async (_case, requireFresh, options) => {
+    const context = await observeStatusExit(
+      2,
+      closeProofPacket(),
+      requireFresh,
+      options,
+    );
+    // The same packet's existing fields still project.
+    expect(context).toMatchObject({
+      capture_stage: "stream_status",
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+      capture_close_receipt_status: "recorded",
+    });
+    expect(context).not.toHaveProperty("capture_close_proof_failure_v1");
+  },
+);
+
+it("never projects a close-proof code from the GET's fresh screenshot", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const error = new CommandExitError({
+    exitCode: 2,
+    stdout: closeProofPacket(),
+    stderr: "PRIVATE",
+  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      undefined,
+      observed,
+      getOptions,
+    ),
+  ).rejects.toBe(error);
+  expect(observed).toHaveBeenCalledTimes(1);
+  const context = observed.mock.calls[0][0];
+  expect(context).toMatchObject({
+    capture_stage: "fresh_screenshot",
+    capture_precondition_reason: "socket_stat",
+  });
+  expect(context).not.toHaveProperty("capture_close_proof_failure_v1");
 });
 
 it.each([
