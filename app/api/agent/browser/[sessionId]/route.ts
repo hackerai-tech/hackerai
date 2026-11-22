@@ -86,22 +86,27 @@ const MAX_BROWSER_PREVIEW_LOG_FIELDS = 72;
 const BROWSER_PREVIEW_REQUEST_ID =
   /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/;
 
-function recordPreviewRefreshDeferral(
+function recordPreviewPending(
   request: NextRequest,
-  reason: PreviewDeferralReason,
+  reason: PreviewDeferralReason | "setup_only",
 ) {
   try {
     const requestId = request.headers.get("x-vercel-id");
     if (!requestId || !BROWSER_PREVIEW_REQUEST_ID.test(requestId)) return;
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
-    phLogger.info("agent_browser_preview_refresh_deferral", {
-      diagnostic_version: 1,
-      reason,
-      request_id: requestId,
-      ...(build && /^[a-f0-9]{40}$/i.test(build)
-        ? { web_build_commit: build.toLowerCase() }
-        : {}),
-    });
+    phLogger.info(
+      reason === "setup_only"
+        ? "agent_browser_preview_open_pending"
+        : "agent_browser_preview_refresh_deferral",
+      {
+        diagnostic_version: 1,
+        reason,
+        request_id: requestId,
+        ...(build && /^[a-f0-9]{40}$/i.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+      },
+    );
     after(async () => {
       try {
         await phLogger.flush();
@@ -112,6 +117,30 @@ function recordPreviewRefreshDeferral(
   } catch {
     /* Optional attribution must never change an accepted deferral. */
   }
+}
+
+function hasSetupOnlyCaptureEvidence(context?: BrowserCaptureFailureContext) {
+  // Older or incomplete packets cannot distinguish setup from a lost browser.
+  return (
+    context?.capture_stage === "stream_status" &&
+    context.capture_error_kind === "command_exit" &&
+    context.capture_command_exit_code === 2 &&
+    context.capture_precondition_reason === "socket_stat" &&
+    context.capture_precondition_error === "missing" &&
+    context.capture_wrapper_receipt_version === 1 &&
+    context.capture_wrapper_action === "version" &&
+    context.capture_wrapper_phase === "completed" &&
+    context.capture_wrapper_exit_code === 0 &&
+    context.capture_wrapper_session_matches === true &&
+    context.capture_wrapper_history_version === 1 &&
+    context.capture_wrapper_history_scope === "handoff_root" &&
+    context.capture_wrapper_other_cli_completed === false &&
+    context.capture_wrapper_option_prefix_completed === false &&
+    context.capture_open_receipt_version === 1 &&
+    context.capture_open_receipt_status === "not_observed" &&
+    context.capture_close_receipt_version === 1 &&
+    context.capture_close_receipt_status === "not_observed"
+  );
 }
 
 type PreviewGetStage =
@@ -480,6 +509,7 @@ export const GET = withServiceQueryRecovery(async function GET(
     stage = "capture_frame";
     let frame: Awaited<ReturnType<typeof captureBrowserFrame>> | undefined;
     let deferralReason: PreviewDeferralReason | undefined;
+    let setupOnly = false;
     try {
       frame = await captureBrowserFrame(
         sandbox,
@@ -498,13 +528,25 @@ export const GET = withServiceQueryRecovery(async function GET(
         },
       );
     } catch (error) {
-      if (!(error instanceof BrowserPreviewRefreshDeferred)) throw error;
-      const allowed =
-        error.reason === "open"
-          ? deferDuringOpen
-          : error.reason === "wait" && deferDuringWait;
-      if (!allowed) throw error;
-      deferralReason = error.reason;
+      if (error instanceof BrowserPreviewRefreshDeferred) {
+        const allowed =
+          error.reason === "open"
+            ? deferDuringOpen
+            : error.reason === "wait" && deferDuringWait;
+        if (!allowed) throw error;
+        deferralReason = error.reason;
+      } else {
+        if (
+          fresh ||
+          resolved.session.state !== "agent" ||
+          resolved.session.runActive !== true ||
+          (error instanceof BrowserPreviewUnavailable &&
+            error.state === "closed") ||
+          !hasSetupOnlyCaptureEvidence(captureContext)
+        )
+          throw error;
+        setupOnly = true;
+      }
     }
     stage = "verify_active_session";
     if (
@@ -512,6 +554,10 @@ export const GET = withServiceQueryRecovery(async function GET(
       browserSessionName
     )
       return json({ state: "stale" }, 409);
+    if (setupOnly) {
+      recordPreviewPending(request, "setup_only");
+      return json({ state: "loading" }, 202);
+    }
     if (frame === undefined) {
       const response = json(
         {
@@ -521,7 +567,7 @@ export const GET = withServiceQueryRecovery(async function GET(
         },
         202,
       );
-      if (deferralReason) recordPreviewRefreshDeferral(request, deferralReason);
+      if (deferralReason) recordPreviewPending(request, deferralReason);
       return response;
     }
     return json({ state: resolved.session.state, frame, now: Date.now() });

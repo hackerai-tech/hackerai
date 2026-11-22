@@ -3,6 +3,7 @@ import { phLogger } from "@/lib/posthog/server";
 import {
   BrowserPreviewRefreshDeferred,
   BrowserPreviewUnavailable,
+  type BrowserCaptureFailureContext,
   getActiveBrowserSessionName,
 } from "@/lib/ai/browser-handoff/server";
 
@@ -226,6 +227,114 @@ it.each([false, true])(
     );
   },
 );
+
+const mockSetupOnlyCapture = (
+  overrides: Partial<BrowserCaptureFailureContext> = {},
+  error = new Error("Status command exited"),
+) => {
+  mockFailure = "";
+  mockCapture.mockImplementationOnce(async (...args: unknown[]) => {
+    const observe = args[5] as (value: BrowserCaptureFailureContext) => void;
+    observe({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 2,
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+      capture_wrapper_receipt_version: 1,
+      capture_wrapper_action: "version",
+      capture_wrapper_phase: "completed",
+      capture_wrapper_exit_code: 0,
+      capture_wrapper_session_matches: true,
+      capture_wrapper_history_version: 1,
+      capture_wrapper_history_scope: "handoff_root",
+      capture_wrapper_other_cli_completed: false,
+      capture_wrapper_option_prefix_completed: false,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "not_observed",
+      capture_close_receipt_version: 1,
+      capture_close_receipt_status: "not_observed",
+      ...overrides,
+    });
+    throw error;
+  });
+};
+
+it("waits for an active Agent browser after setup and still serves a later frame", async () => {
+  mockState = "agent";
+  mockSetupOnlyCapture();
+
+  const waiting = await preview(false);
+  expect(waiting.status).toBe(202);
+  expect(await waiting.json()).toEqual({ state: "loading" });
+  expect(getActiveBrowserSessionName).toHaveBeenCalledTimes(2);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_open_pending",
+    expect.objectContaining({
+      diagnostic_version: 1,
+      reason: "setup_only",
+      request_id: previewRequestId,
+    }),
+  );
+  expect(phLogger.event).not.toHaveBeenCalled();
+
+  const opened = await preview(false);
+  expect(opened.status).toBe(200);
+  expect(await opened.json()).toMatchObject({ frame: { image: "fresh" } });
+});
+
+it.each<Partial<BrowserCaptureFailureContext>>([
+  { capture_command_exit_code: 3 },
+  { capture_precondition_error: "permission" },
+  { capture_wrapper_phase: "started" },
+  { capture_wrapper_session_matches: false },
+  { capture_wrapper_history_version: undefined },
+  { capture_wrapper_other_cli_completed: true },
+  { capture_wrapper_option_prefix_completed: true },
+  { capture_open_receipt_status: "unavailable" },
+  { capture_open_receipt_status: "recorded" },
+  { capture_close_receipt_status: "recorded" },
+])("retains unavailable when capture evidence is %o", async (overrides) => {
+  mockState = "agent";
+  mockSetupOnlyCapture(overrides);
+
+  expect((await preview(false)).status).toBe(503);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_get_unavailable",
+    expect.anything(),
+  );
+});
+
+it.each([
+  { state: "agent", runActive: true, fresh: true },
+  { state: "agent", runActive: false, fresh: false },
+  { state: "human", runActive: true, fresh: false },
+  { state: "recovery", runActive: true, fresh: false },
+])("retains unavailable for other capture scope %o", async (scope) => {
+  mockState = scope.state;
+  mockRunActive = scope.runActive;
+  mockSetupOnlyCapture();
+
+  expect((await preview(scope.fresh)).status).toBe(503);
+  expect(phLogger.info).not.toHaveBeenCalledWith(
+    "agent_browser_preview_open_pending",
+    expect.anything(),
+  );
+});
+
+it("retains closure or a changed selection during a setup-only check", async () => {
+  mockState = "agent";
+  mockSetupOnlyCapture({}, new BrowserPreviewUnavailable("closed"));
+  expect((await preview(false)).status).toBe(410);
+
+  mockSetupOnlyCapture();
+  jest
+    .mocked(getActiveBrowserSessionName)
+    .mockResolvedValueOnce("default")
+    .mockResolvedValueOnce("another-browser");
+  expect((await preview(false)).status).toBe(409);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
 
 it("defers only a negotiated refresh on the active Agent browser", async () => {
   mockFailure = "";
