@@ -6,6 +6,7 @@ import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { myProvider } from "@/lib/ai/providers";
 import { createServiceConvexClient } from "@/lib/db/service-client";
+import { signServiceArgs } from "@/lib/db/service-proof";
 import { encryptAbuseEvidence } from "@/lib/abuse/evidence-crypto";
 import {
   ACQUISITION_LINK_TTL_S,
@@ -14,8 +15,11 @@ import {
   type AcquisitionLink,
 } from "@/lib/abuse/egress-review-context";
 import {
+  accountActivityReason,
   buildCaseRecord,
+  decideAccountActivity,
   decideReview,
+  EGRESS_ACCOUNT_ACTIVITY_PROMPT_VERSION,
   EGRESS_REVIEW_PROMPT_VERSION,
   egressReviewClassificationSchema,
   prepareReview,
@@ -23,11 +27,14 @@ import {
   reviewDigest,
   reviewReference,
   reviewWindowStart,
+  type AccountActivityChat,
+  type AccountActivityReview,
   type EgressReviewClassification,
   type EgressReviewObservation,
   type ManualReason,
   type ReviewDecision,
   type ReviewEvidence,
+  type ReviewItems,
 } from "@/lib/abuse/egress-review";
 import {
   ATTRIBUTION_REF,
@@ -47,7 +54,8 @@ import {
 
 // Defensive, read-only triage of one verified attributed burst. It reads the
 // exact linked run's stored evidence, and either skips clearly corroborated
-// legitimate work or creates one encrypted operator case. It never sends
+// legitimate work or creates one encrypted operator case. Without a linked
+// run it attaches bounded, advisory account activity to a manual case. It never sends
 // mail, restricts, blocks, contains, or contacts a sandbox, and its payload,
 // output and logs carry only opaque references and closed enums.
 
@@ -203,7 +211,106 @@ function reviewClient() {
     throw new Error(
       "NEXT_PUBLIC_CONVEX_URL and CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY are required",
     );
-  return { client: createServiceConvexClient(convexUrl), serviceKey };
+  return {
+    client: createServiceConvexClient(convexUrl),
+    serviceKey,
+    convexUrl,
+  };
+}
+
+/** False when the existing privacy guard rejects the prepared prompt. */
+function passesPrivacyGuard(prompt: string) {
+  try {
+    assertResearchPromptIsSafe(prompt, (category) => {
+      logger.warn("Egress abuse review privacy guard rejected evidence", {
+        category,
+      });
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Structured enums and indices only: no tools, no telemetry of content. */
+async function classifyEvidence(
+  prompt: string,
+): Promise<
+  EgressReviewClassification | "classifier_invalid" | "classifier_unavailable"
+> {
+  try {
+    const result = await generateText({
+      model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
+      output: Output.object({ schema: egressReviewClassificationSchema }),
+      providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+      experimental_telemetry: { isEnabled: false },
+      temperature: 0,
+      maxOutputTokens: 2_000,
+      maxRetries: 1,
+      prompt,
+    });
+    const parsed = egressReviewClassificationSchema.safeParse(result.output);
+    return parsed.success ? parsed.data : "classifier_invalid";
+  } catch {
+    return "classifier_unavailable";
+  }
+}
+
+/**
+ * Advisory review of one recent chat that is not linked to the burst. Each
+ * chat is prepared and classified on its own, so one chat's messages never
+ * authorize or explain another chat's commands.
+ */
+async function assessAccountChat(
+  chat: ReviewItems & { chatId: string; runIds: string[] },
+  burst: { start: number; end: number },
+): Promise<{ assessment: AccountActivityChat; classified: boolean }> {
+  const base = {
+    chatId: chat.chatId,
+    runIds: chat.runIds,
+    coverage: chat.coverage,
+    classification: null,
+    locators: { commands: [], messages: [] },
+  };
+  // Started commands corroborate user text, and text gives commands context.
+  if (!chat.userMessages.length)
+    return {
+      assessment: { ...base, finding: "no_user_context" },
+      classified: false,
+    };
+  const prepared = prepareReview(chat, burst, "account_activity");
+  if (!passesPrivacyGuard(prepared.prompt))
+    return {
+      assessment: { ...base, finding: "privacy_guard" },
+      classified: false,
+    };
+  const classification = await classifyEvidence(prepared.prompt);
+  if (typeof classification === "string")
+    return {
+      assessment: { ...base, finding: classification },
+      classified: true,
+    };
+  const decision = decideAccountActivity(classification, chat, prepared);
+  return {
+    assessment: {
+      ...base,
+      finding: decision.finding,
+      classification: {
+        verdict: classification.verdict,
+        activity: classification.activity,
+        authorization: classification.authorization,
+      },
+      locators: {
+        commands: decision.commands.map(
+          (index) => prepared.commandLocators[index],
+        ),
+        messages: decision.messages.map(
+          (index) => prepared.messageLocators[index],
+        ),
+      },
+    },
+    classified: true,
+  };
 }
 
 export async function runEgressAbuseReview(
@@ -221,7 +328,7 @@ export async function runEgressAbuseReview(
     egressAbuseReviewPayloadSchema.parse(payload);
   const redis = createRedisClient();
   if (!redis) throw new Error("Egress review store is unavailable");
-  const { client, serviceKey } = reviewClient();
+  const { client, serviceKey, convexUrl } = reviewClient();
   const now = Date.now();
   if (minute > Math.floor(now / 60_000) - SETTLE_MINUTES)
     throw new EgressReviewPendingError();
@@ -249,7 +356,12 @@ export async function runEgressAbuseReview(
     decision: Exclude<ReviewDecision, { outcome: "no_case" }>,
     details: Pick<
       Parameters<typeof buildCaseRecord>[0],
-      "run" | "coverage" | "classification" | "locators" | "model"
+      | "run"
+      | "coverage"
+      | "classification"
+      | "locators"
+      | "model"
+      | "accountActivity"
     > = {},
   ): Promise<EgressAbuseReviewResult> => {
     const record = buildCaseRecord({
@@ -342,7 +454,63 @@ export async function runEgressAbuseReview(
         links.set(key, link);
     }
   }
-  if (!links.size) return manual("no_acquisition_link");
+  if (!links.size) {
+    // Nothing links the workspace to a chat. Recent account activity is read
+    // once per case as operator context; it never clears the burst, drafts a
+    // request, or names a chat as its cause.
+    const read = await (async () => {
+      const attributionKey = process.env.CONVEX_SERVICE_ROLE_KEY?.trim();
+      if (!attributionKey || attributionKey === serviceKey)
+        return { status: "unavailable" } as const;
+      const subject = { userId, reference, ...burst };
+      const proof = await signServiceArgs(
+        {
+          deployment: convexUrl,
+          name: "egressAbuseReview:readAccountActivity",
+          type: "query",
+        },
+        { ...subject, serviceKey: attributionKey },
+      );
+      return client.query(api.egressAbuseReview.readAccountActivity, {
+        ...subject,
+        serviceKey,
+        attributionProof: String(proof.serviceKey),
+      });
+    })().catch(() => ({ status: "unavailable" }) as const);
+    if (read.status === "case_exists")
+      return { status: "preserved", case: "existing" };
+    let accountActivity: AccountActivityReview = { status: "unavailable" };
+    let classified = false;
+    if (read.status === "ok") {
+      const chats: AccountActivityChat[] = [];
+      for (const chat of read.chats) {
+        const result = await assessAccountChat(chat, {
+          start: burst.burstStart,
+          end: burst.burstEnd,
+        });
+        chats.push(result.assessment);
+        classified ||= result.classified;
+      }
+      accountActivity = {
+        status: "read",
+        windowStart: read.windowStart,
+        windowEnd: read.windowEnd,
+        coverage: read.coverage,
+        chats,
+      };
+    }
+    return manual(accountActivityReason(accountActivity), {
+      accountActivity,
+      ...(classified
+        ? {
+            model: {
+              key: USER_RESEARCH_MODEL_KEY,
+              promptVersion: EGRESS_ACCOUNT_ACTIVITY_PROMPT_VERSION,
+            },
+          }
+        : {}),
+    });
+  }
   if (links.size > MAX_LINKS) return manual("acquisition_incomplete");
 
   const matches = await Promise.all(
@@ -428,40 +596,16 @@ export async function runEgressAbuseReview(
     prepared.itemsOmitted
   )
     return manual("observation_incomplete", base);
-  try {
-    assertResearchPromptIsSafe(prepared.prompt, (category) => {
-      logger.warn("Egress abuse review privacy guard rejected evidence", {
-        category,
-      });
-    });
-  } catch {
+  if (!passesPrivacyGuard(prepared.prompt))
     return manual("privacy_guard", base);
-  }
 
   const model = {
     key: USER_RESEARCH_MODEL_KEY,
     promptVersion: EGRESS_REVIEW_PROMPT_VERSION,
   };
-  let classification: EgressReviewClassification;
-  try {
-    // Structured enums and indices only: no tools, no telemetry of content.
-    const result = await generateText({
-      model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-      output: Output.object({ schema: egressReviewClassificationSchema }),
-      providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
-      experimental_telemetry: { isEnabled: false },
-      temperature: 0,
-      maxOutputTokens: 2_000,
-      maxRetries: 1,
-      prompt: prepared.prompt,
-    });
-    const parsed = egressReviewClassificationSchema.safeParse(result.output);
-    if (!parsed.success)
-      return manual("classifier_invalid", { ...base, model });
-    classification = parsed.data;
-  } catch {
-    return manual("classifier_unavailable", { ...base, model });
-  }
+  const classification = await classifyEvidence(prepared.prompt);
+  if (typeof classification === "string")
+    return manual(classification, { ...base, model });
 
   const decision = decideReview(classification, evidence, prepared);
   if (decision.outcome === "no_case")

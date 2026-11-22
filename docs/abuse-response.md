@@ -358,16 +358,33 @@ decision. It never sends email, restricts an account, contains a run, or
 contacts a sandbox, and its cases follow the review, hold and erasure rules in
 this runbook.
 
-- **What it reads.** Only the one chat and Trigger run that acquired the
-  burst's verified workspace and whose persisted generation time overlaps the
-  burst: the account's stored user text and terminal commands with a recorded
-  start receipt. It excludes the contents of command output, interactive terminal
+- **What it reads.** With a recorded acquisition, only the one chat and
+  Trigger run that acquired the burst's verified workspace and whose
+  persisted generation time overlaps the burst: the account's stored user
+  text and terminal commands with a recorded start receipt. It excludes the contents of command output, interactive terminal
   input, system or hidden text, attachments, and other chats. If the run cannot
   be pinned exactly (several plausible runs, a
   subagent that may have shared the workspace, an unverified workspace, a
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
+- **Without an acquisition link.** When the verified workspace has no
+  recorded acquisition before the burst, the review still opens a manual case
+  and attaches bounded account activity as operator context. Messages do not
+  record a workspace, so this mode never names a chat as the cause of the
+  burst. It reads the account's chats updated since 24 hours before the burst,
+  at most 20 chats and 6 MiB, newest first. For up to three chats, it reads
+  the most recent completed Agent run with a recorded terminal start and
+  the user turn immediately preceding that run. Hidden, system, and deleted
+  content stays outside the review. The worker supplies a short-lived
+  attribution proof bound to the verified account, case, and time window in
+  addition to the dedicated review credential. After a window's case exists,
+  the fallback skips the read. Each run is scrubbed, guarded, and classified on
+  its own. A run that meets the same evidence standard as an authorization
+  request marks the case `account_activity_concerning`;
+  otherwise it stays `no_acquisition_link`. Neither outcome clears the burst
+  or produces a draft. Cases created before this mode (record version 1) have
+  no account activity; rerunning a review for them does not add it.
 - **Bounded account history.** Truncated chat history leaves overlap
   uncertain. The worker allows 20 minutes for Trigger run history to settle,
   then reads up to four pages of 50 account-tagged `agent-long` runs in its own
@@ -387,8 +404,10 @@ this runbook.
   by the read history. Inconclusive evidence goes to manual review.
 - **What it stores.** One case per owner reference, region and 30-minute UTC
   window, encrypted with the abuse evidence keyring: fixed rationale text, the
+  evidence mode (`exact_run`, `account_activity` or `none`), the
   classification enums, coverage, the verified account, chat and run
-  identifiers, and locators for the cited messages and tool calls. It never
+  identifiers, and locators for the cited messages and tool calls. Account
+  activity is stored per chat with its finding, coverage and locators. It never
   stores prompts, commands, user text, or model output. Later bursts in the
   same window preserve the encrypted case and any operator review. A repeat
   write returns a `preserved` receipt. If a later review clears the activity,
@@ -405,10 +424,18 @@ The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions.
-The worker also needs `ABUSE_EVIDENCE_KEYS` and the existing research model
-configuration. Enable the toggle in all three of the web app, the Agent
-worker, and the Convex deployment for a rollout. Reviews are dispatched
-through the persistent queue described under
+The Agent worker and Convex deployment must share the same
+`CONVEX_SERVICE_ROLE_KEY` for signing and verifying the account-activity
+attribution proof. This key must differ from the dedicated review key. A
+missing or mismatched key leaves account activity unavailable in the manual
+case. The worker also needs `ABUSE_EVIDENCE_KEYS` and the existing research
+model configuration.
+
+Deploy the Convex query before releasing the updated Agent worker. If the
+worker reaches Convex before the query is available, it preserves the warning
+as a manual case without account evidence. Later attempts preserve that case.
+Enable the toggle in the web app, the Agent worker, and the Convex deployment.
+Reviews are dispatched through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
 
 To roll back reviews, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web
