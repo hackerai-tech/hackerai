@@ -463,8 +463,8 @@ describe("readAccountActivity", () => {
       user_id: USER,
       role: "user",
       is_hidden: true,
-      update_time: burstStart - HOUR_MS,
-      _creationTime: burstStart - HOUR_MS,
+      update_time: burstStart - 2 * HOUR_MS - 1,
+      _creationTime: burstStart - 2 * HOUR_MS - 1,
       parts: [{ type: "text", text: "HIDDEN TEXT" }],
     });
     await ctx.db.insert("messages", {
@@ -508,8 +508,8 @@ describe("readAccountActivity", () => {
       chat_id: "chat_main",
       user_id: "someone_else",
       role: "user",
-      update_time: burstStart - HOUR_MS,
-      _creationTime: burstStart - HOUR_MS,
+      update_time: burstStart - 2 * HOUR_MS - 1,
+      _creationTime: burstStart - 2 * HOUR_MS - 1,
       parts: [{ type: "text", text: "FOREIGN TEXT" }],
     });
 
@@ -597,8 +597,72 @@ describe("readAccountActivity", () => {
     const result = await read(ctx);
     expect(result.chats[0]).toMatchObject({
       runIds: ["run_latest"],
+      coverage: { userMessagesOmitted: 1 },
       userMessages: [{ messageId: "latest-user", text: "LATEST REQUEST" }],
       commands: [{ messageId: "latest-assistant", text: "LATEST COMMAND" }],
+    });
+  });
+
+  it("marks a selected run incomplete when a later saved row has no duration", async () => {
+    const ctx = reviewDatabase();
+    const at = burstStart - HOUR_MS;
+    await seedActivity(ctx, "chat_main", at);
+    await ctx.db.insert("messages", {
+      id: "late-assistant",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "assistant",
+      trigger_run_id: "run_chat_main",
+      generation_started_at: at + MINUTE_MS,
+      _creationTime: at + 2 * MINUTE_MS,
+      parts: [command("call-late", "LATER COMMAND")],
+    });
+    const result = await read(ctx);
+    expect(result.chats[0].coverage.incompleteToolCalls).toBe(1);
+    expect(result.chats[0].commands).toHaveLength(1);
+  });
+
+  it("does not accept a command row that would exceed the chat byte budget", async () => {
+    const ctx = reviewDatabase();
+    const at = burstStart - HOUR_MS;
+    await seedActivity(ctx, "chat_main", at, {
+      commandText: "a".repeat(800 * 1024),
+    });
+    await ctx.db.insert("messages", {
+      id: "large-later-user",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "user",
+      update_time: at + 2 * MINUTE_MS,
+      _creationTime: at + 2 * MINUTE_MS,
+      parts: [{ type: "text", text: "b".repeat(800 * 1024) }],
+    });
+    const result = await read(ctx);
+    expect(result.chats).toEqual([]);
+    expect(result.coverage.scanTruncated).toBe(true);
+  });
+
+  it("does not count a truncated chat as having no command evidence", async () => {
+    const ctx = reviewDatabase();
+    const at = burstStart - HOUR_MS;
+    await seedActivity(ctx, "chat_main", at);
+    for (let index = 0; index < 80; index++) {
+      const time = at + MINUTE_MS + index + 1;
+      await ctx.db.insert("messages", {
+        id: `later-user-${index}`,
+        chat_id: "chat_main",
+        user_id: USER,
+        role: "user",
+        update_time: time,
+        _creationTime: time,
+        parts: [],
+      });
+    }
+    const result = await read(ctx);
+    expect(result.chats).toEqual([]);
+    expect(result.coverage).toMatchObject({
+      chatsWithoutCommands: 0,
+      scanTruncated: true,
     });
   });
 
@@ -659,6 +723,9 @@ describe("readAccountActivity", () => {
         ctx,
         `chat_${String(index).padStart(2, "0")}`,
         burstStart - (21 - index) * HOUR_MS,
+        index === 20
+          ? { chat: { _creationTime: burstStart - 30 * HOUR_MS } }
+          : {},
       );
     const result = await read(ctx);
     expect(result.coverage).toEqual({

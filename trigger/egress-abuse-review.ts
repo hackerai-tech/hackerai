@@ -458,25 +458,25 @@ export async function runEgressAbuseReview(
     // Nothing links the workspace to a chat. Recent account activity is read
     // once per case as operator context; it never clears the burst, drafts a
     // request, or names a chat as its cause.
-    const attributionKey = process.env.CONVEX_SERVICE_ROLE_KEY?.trim();
-    if (!attributionKey || attributionKey === serviceKey)
-      return manual("no_acquisition_link", {
-        accountActivity: { status: "unavailable" },
+    const read = await (async () => {
+      const attributionKey = process.env.CONVEX_SERVICE_ROLE_KEY?.trim();
+      if (!attributionKey || attributionKey === serviceKey)
+        return { status: "unavailable" } as const;
+      const subject = { userId, reference, ...burst };
+      const proof = await signServiceArgs(
+        {
+          deployment: convexUrl,
+          name: "egressAbuseReview:readAccountActivity",
+          type: "query",
+        },
+        { ...subject, serviceKey: attributionKey },
+      );
+      return client.query(api.egressAbuseReview.readAccountActivity, {
+        ...subject,
+        serviceKey,
+        attributionProof: String(proof.serviceKey),
       });
-    const subject = { userId, reference, ...burst };
-    const proof = await signServiceArgs(
-      {
-        deployment: convexUrl,
-        name: "egressAbuseReview:readAccountActivity",
-        type: "query",
-      },
-      { ...subject, serviceKey: attributionKey },
-    );
-    const read = await client.query(api.egressAbuseReview.readAccountActivity, {
-      ...subject,
-      serviceKey,
-      attributionProof: String(proof.serviceKey),
-    });
+    })().catch(() => ({ status: "unavailable" }) as const);
     if (read.status === "case_exists")
       return { status: "preserved", case: "existing" };
     let accountActivity: AccountActivityReview = { status: "unavailable" };

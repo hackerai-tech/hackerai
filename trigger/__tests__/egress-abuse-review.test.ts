@@ -798,6 +798,21 @@ describe("without an acquisition link", () => {
     });
   }
 
+  it("writes a manual case when the advisory account read fails", async () => {
+    const fixture = createServiceConvexClient("https://fixture.convex.cloud");
+    jest
+      .mocked(fixture.query)
+      .mockRejectedValueOnce(new Error("advisory read unavailable"));
+    await expect(run()).resolves.toEqual({
+      status: "completed",
+      outcome: "manual_review",
+      reason: "no_acquisition_link",
+      case: "created",
+    });
+    expect(caseRecord().accountActivity.status).toBe("unavailable");
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
   it("flags a separately corroborated concerning chat for manual review without a draft", async () => {
     await seedAccountChat("chat_recent", "Find open ports for me.", SCAN);
     classifyAs(concerning);

@@ -476,21 +476,23 @@ async function readChatActivity(
   const rows: Doc<"messages">[] = [];
   let truncated = false;
   let chatBytes = 0;
+  let scannedRows = 0;
   for await (const row of ctx.db
     .query("messages")
     .withIndex("by_chat_id", (q) =>
       q.eq("chat_id", chat.id).gte("_creationTime", window.windowStart),
     )
     .order("desc")) {
+    const size = getDocumentSize(row);
     if (
-      rows.length >= MAX_ACTIVITY_ROWS_PER_CHAT ||
-      chatBytes >= MAX_ACTIVITY_CHAT_BYTES ||
-      budget.bytes >= MAX_ACTIVITY_BYTES
+      scannedRows >= MAX_ACTIVITY_ROWS_PER_CHAT ||
+      chatBytes + size > MAX_ACTIVITY_CHAT_BYTES ||
+      budget.bytes + size > MAX_ACTIVITY_BYTES
     ) {
       truncated = true;
       break;
     }
-    const size = getDocumentSize(row);
+    scannedRows++;
     chatBytes += size;
     budget.bytes += size;
     if (row.user_id === window.userId) rows.push(row);
@@ -505,28 +507,33 @@ async function readChatActivity(
     const start = row.generation_started_at;
     const duration = row.generation_time_ms;
     const id = row.trigger_run_id;
+    if (row.role !== "assistant" || !id) continue;
+    const activity = runs.get(id) ?? {
+      start: Infinity,
+      commands: [],
+      incomplete: 0,
+    };
+    runs.set(id, activity);
     if (
-      row.role !== "assistant" ||
-      !id ||
       typeof start !== "number" ||
       typeof duration !== "number" ||
       start + duration < window.windowStart ||
       start + duration > window.windowEnd
-    )
+    ) {
+      activity.incomplete++;
       continue;
-    const activity = runs.get(id) ?? { start, commands: [], incomplete: 0 };
+    }
     const read = startedCommands(row);
     activity.start = Math.min(start, activity.start);
     activity.commands.push(...read.commands);
     activity.incomplete += read.incomplete;
-    runs.set(id, activity);
   }
   // Only one run's commands and the user turn that preceded it can support a
   // finding. An older run's stated scope does not authorize this one.
   const selected = [...runs]
     .filter(([, run]) => run.commands.length)
     .sort(([, a], [, b]) => b.start - a.start)[0];
-  if (!selected) return null;
+  if (!selected) return { activity: null, truncated };
   const [runId, { start, commands, incomplete }] = selected;
   const previousAssistant =
     rows.findLast(
@@ -536,17 +543,12 @@ async function readChatActivity(
         row._creationTime < start,
     )?._creationTime ?? window.windowStart - 1;
 
-  let laterEditedMessages = 0;
+  let omittedContext = 0;
   const users = rows.flatMap((row) => {
-    if (
-      row.role !== "user" ||
-      row.is_hidden === true ||
-      row._creationTime <= previousAssistant ||
-      row._creationTime > start
-    )
+    if (row.role !== "user" || row.is_hidden || row._creationTime > start)
       return [];
-    if (row.update_time > start) {
-      laterEditedMessages++;
+    if (row._creationTime <= previousAssistant || row.update_time > start) {
+      omittedContext++;
       return [];
     }
     const text = userText(row.parts);
@@ -570,7 +572,7 @@ async function readChatActivity(
 
   const keptUsers = users.slice(-MAX_ACTIVITY_USER_MESSAGES);
   const keptCommands = commands.slice(-MAX_ACTIVITY_COMMANDS);
-  return {
+  const activity = {
     latestCommandStart: start,
     chat: {
       chatId: chat.id,
@@ -578,16 +580,16 @@ async function readChatActivity(
       userMessages: keptUsers,
       commands: keptCommands,
       coverage: {
-        rawReads: rows.length,
+        rawReads: scannedRows,
         historyTruncated: earlierHistory,
-        userMessagesOmitted:
-          laterEditedMessages + users.length - keptUsers.length,
+        userMessagesOmitted: omittedContext + users.length - keptUsers.length,
         commandsOmitted: commands.length - keptCommands.length,
         incompleteToolCalls: incomplete,
         runActive: chat.active_trigger_run_id === runId,
       },
     },
   };
+  return { activity, truncated };
 }
 
 /**
@@ -687,8 +689,9 @@ export const readAccountActivity = query({
     const scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
     for (const chat of scanned) budget.bytes += getDocumentSize(chat);
 
-    const found: NonNullable<Awaited<ReturnType<typeof readChatActivity>>>[] =
-      [];
+    const found: NonNullable<
+      Awaited<ReturnType<typeof readChatActivity>>["activity"]
+    >[] = [];
     let chatsScanned = 0;
     let chatsWithoutCommands = 0;
     for (const chat of scanned) {
@@ -698,9 +701,15 @@ export const readAccountActivity = query({
         break;
       }
       chatsScanned++;
-      const activity = await readChatActivity(ctx, window, chat, budget);
+      const { activity, truncated } = await readChatActivity(
+        ctx,
+        window,
+        chat,
+        budget,
+      );
+      scanTruncated ||= truncated;
       if (activity) found.push(activity);
-      else chatsWithoutCommands++;
+      else if (!truncated) chatsWithoutCommands++;
     }
     // The chats whose commands started closest to the end of the burst.
     found.sort((a, b) => b.latestCommandStart - a.latestCommandStart);

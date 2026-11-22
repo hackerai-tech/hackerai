@@ -424,9 +424,12 @@ The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions.
-The worker also needs `ABUSE_EVIDENCE_KEYS` and the existing research model
-configuration. Enable the toggle in all three of the web app, the Agent
-worker, and the Convex deployment for a rollout. Reviews are dispatched
+The worker signs the account-activity attribution proof with
+`CONVEX_SERVICE_ROLE_KEY`. If that key is missing or equals the review key,
+the worker records a manual case with account activity unavailable. The worker
+also needs `ABUSE_EVIDENCE_KEYS` and the existing research model configuration.
+Enable the toggle in the web app, the Agent worker, and the Convex deployment.
+Reviews are dispatched
 through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
 
