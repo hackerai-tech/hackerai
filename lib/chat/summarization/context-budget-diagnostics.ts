@@ -34,7 +34,8 @@ export type ContextBudgetProjectionDiagnostics = {
   context_budget_without_file_annotations_status: WithoutFileAnnotationsStatus;
   context_budget_without_file_annotations_message_tokens?: number;
   context_budget_file_annotation_count?: number;
-} & ContextBudgetAnnotationImageDiagnostics;
+} & ContextBudgetAnnotationImageDiagnostics &
+  ContextBudgetPreparedPdfDiagnostics;
 
 /**
  * Independent group: how much of the attached annotation batch is image URL
@@ -57,6 +58,27 @@ export type ContextBudgetAnnotationImageDiagnostics = {
   /** Present only when status is `measured`; partial scans are never reported. */
   context_budget_annotation_image_part_count?: number;
   context_budget_annotation_image_url_chars?: number;
+};
+
+/**
+ * Independent group, emitted only with an exact attached annotation batch:
+ * whether the same prepared request still carries original PDF file parts
+ * (`type: "file"`, `mediaType: "application/pdf"`) in user content. A positive
+ * count shows presence only; it does not prove the PDF matches an annotation.
+ */
+export const CONTEXT_BUDGET_PREPARED_PDF_DIAGNOSTIC_VERSION = 1;
+
+/** Fixed shared bounds across the whole prepared request. */
+export const CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES = 1024;
+export const CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS = 2048;
+
+export type PreparedPdfStatus = "measured" | "size_cap" | "unavailable";
+
+export type ContextBudgetPreparedPdfDiagnostics = {
+  context_budget_prepared_pdf_diagnostic_version?: typeof CONTEXT_BUDGET_PREPARED_PDF_DIAGNOSTIC_VERSION;
+  context_budget_prepared_pdf_status?: PreparedPdfStatus;
+  /** Present only when status is `measured`; zero is a complete scan. */
+  context_budget_prepared_pdf_part_count?: number;
 };
 
 /** Missing, invalid or non-finite values are omitted, never reported as zero. */
@@ -188,6 +210,73 @@ const measureAnnotationImages = (
   }
 };
 
+const MODEL_MESSAGE_ROLES_WITHOUT_USER_INPUT = new Set<unknown>([
+  "system",
+  "assistant",
+  "tool",
+]);
+
+const PDF_MEDIA_TYPE = "application/pdf";
+
+/**
+ * Reads only roles, part types and media types; never file data, names, URLs
+ * or text. Any unrecognized shape is unavailable so it never reports a false
+ * zero. The fixed part budget also bounds the count.
+ */
+const measurePreparedPdfParts = (
+  preparedMessages: readonly ModelMessage[],
+):
+  | { status: "measured"; partCount: number }
+  | { status: "size_cap" | "unavailable" } => {
+  try {
+    const messageCount = finiteCount(preparedMessages.length);
+    if (messageCount === undefined) return { status: "unavailable" };
+    if (messageCount > CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES) {
+      return { status: "size_cap" };
+    }
+    let scannedParts = 0;
+    let partCount = 0;
+    for (let m = 0; m < messageCount; m++) {
+      const message: unknown = preparedMessages[m];
+      if (!isRecord(message)) return { status: "unavailable" };
+      const role = message.role;
+      if (MODEL_MESSAGE_ROLES_WITHOUT_USER_INPUT.has(role)) continue;
+      if (role !== "user") return { status: "unavailable" };
+      const content = message.content;
+      if (typeof content === "string") continue;
+      if (!Array.isArray(content)) return { status: "unavailable" };
+      const contentLength = finiteCount(content.length);
+      if (contentLength === undefined) return { status: "unavailable" };
+      if (
+        contentLength >
+        CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS - scannedParts
+      ) {
+        return { status: "size_cap" };
+      }
+      scannedParts += contentLength;
+      for (let p = 0; p < contentLength; p++) {
+        const part: unknown = content[p];
+        if (!isRecord(part)) return { status: "unavailable" };
+        const type = part.type;
+        if (type === "text" || type === "image") continue;
+        if (type !== "file") return { status: "unavailable" };
+        const mediaType = part.mediaType;
+        if (typeof mediaType !== "string") return { status: "unavailable" };
+        // Length first, so a hostile string is never copied by normalization.
+        if (
+          mediaType.length === PDF_MEDIA_TYPE.length &&
+          mediaType.toLowerCase() === PDF_MEDIA_TYPE
+        ) {
+          partCount += 1;
+        }
+      }
+    }
+    return { status: "measured", partCount };
+  } catch {
+    return { status: "unavailable" };
+  }
+};
+
 const measureWithoutFileAnnotations = ({
   preparedMessages,
   attachedFileAnnotations,
@@ -290,6 +379,12 @@ export function buildContextBudgetProjectionDiagnostics({
     preparedMessages,
     attachedFileAnnotations,
   );
+  // Reuse the exact-batch evidence: annotationCount is set only after the
+  // attached array matched, so an unproven batch emits no PDF fields.
+  const pdfs =
+    (withoutAnnotations.annotationCount ?? 0) > 0
+      ? measurePreparedPdfParts(preparedMessages)
+      : undefined;
 
   return {
     context_budget_projection_diagnostic_version:
@@ -320,5 +415,13 @@ export function buildContextBudgetProjectionDiagnostics({
         context_budget_annotation_image_part_count: images.partCount,
         context_budget_annotation_image_url_chars: images.urlChars,
       }),
+    ...(pdfs && {
+      context_budget_prepared_pdf_diagnostic_version:
+        CONTEXT_BUDGET_PREPARED_PDF_DIAGNOSTIC_VERSION,
+      context_budget_prepared_pdf_status: pdfs.status,
+      ...(pdfs.status === "measured" && {
+        context_budget_prepared_pdf_part_count: pdfs.partCount,
+      }),
+    }),
   };
 }

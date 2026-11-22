@@ -6,6 +6,8 @@ import {
   CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_URL_CHARS,
   CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
   CONTEXT_BUDGET_DIAGNOSTIC_MAX_CHARS,
+  CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES,
+  CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS,
 } from "../context-budget-diagnostics";
 import { estimateSummaryInputTokens } from "../helpers";
 
@@ -80,6 +82,10 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
       context_budget_annotation_image_status: "measured",
       context_budget_annotation_image_part_count: 0,
       context_budget_annotation_image_url_chars: 0,
+      // String-only user turns: a complete scan found no original PDF parts.
+      context_budget_prepared_pdf_diagnostic_version: 1,
+      context_budget_prepared_pdf_status: "measured",
+      context_budget_prepared_pdf_part_count: 0,
     });
     expect(countTokens).toHaveBeenCalledTimes(1);
     const projection = JSON.parse(countTokens.mock.calls[0][0]);
@@ -163,6 +169,9 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
       expect(result).not.toHaveProperty(
         "context_budget_annotation_image_url_chars",
       );
+      for (const key of Object.keys(result)) {
+        expect(key).not.toMatch(/^context_budget_prepared_pdf_/);
+      }
     },
   );
 
@@ -466,6 +475,132 @@ describe("annotation image composition diagnostics", () => {
     });
     expect(result.context_budget_annotation_image_status).toBe("unavailable");
     expectNoImageCounts(result);
+    // An unproven batch emits no PDF group rather than a guessed state.
+    expect(result).not.toHaveProperty("context_budget_prepared_pdf_status");
     expect(JSON.stringify(result)).not.toContain(ANNOTATION_CANARY);
   });
+});
+
+describe("prepared PDF file part diagnostics", () => {
+  const PDF_CANARY = "PRIVATE_PDF_CANARY";
+  const pdfPart = () => ({
+    type: "file",
+    mediaType: "application/pdf",
+    filename: `${PDF_CANARY}.pdf`,
+    data: `data:application/pdf;base64,${PDF_CANARY}`,
+  });
+  // Same length as the PDF media type, so only the comparison excludes it.
+  const otherFilePart = {
+    type: "file",
+    mediaType: "application/zip",
+    filename: `${PDF_CANARY}.zip`,
+    data: PDF_CANARY,
+  };
+  const imagePart = {
+    type: "image",
+    image: PDF_CANARY,
+    mediaType: "image/png",
+  };
+  const textPart = { type: "text", text: PDF_CANARY };
+  const user = (content: unknown): ModelMessage =>
+    ({ role: "user", content }) as ModelMessage;
+  // Every case carries an exact attached batch on the last assistant.
+  const run = (...users: unknown[]) => {
+    const attached = annotations();
+    return buildContextBudgetProjectionDiagnostics({
+      ...base,
+      preparedMessages: [...users, ...preparedWith(attached)] as ModelMessage[],
+      attachedFileAnnotations: attached,
+      countTokens: () => 77,
+    });
+  };
+  const expectNoPrivateData = (result: object) =>
+    expect(JSON.stringify(result)).not.toContain(PDF_CANARY);
+
+  it("counts original PDF parts that survived in prepared user content", () => {
+    const result = run(
+      user([textPart, pdfPart(), imagePart]),
+      user([{ ...pdfPart(), mediaType: "Application/PDF" }]),
+    );
+    expect(result).toMatchObject({
+      context_budget_prepared_pdf_diagnostic_version: 1,
+      context_budget_prepared_pdf_status: "measured",
+      context_budget_prepared_pdf_part_count: 2,
+    });
+    expectNoPrivateData(result);
+  });
+
+  it("reports a complete zero when annotations replaced the original PDF", () => {
+    // Non-PDF user parts remain; assistant file parts are not user input.
+    const result = run(user([textPart, otherFilePart, imagePart]), {
+      role: "assistant",
+      content: [pdfPart()],
+    });
+    expect(result).toMatchObject({
+      context_budget_prepared_pdf_status: "measured",
+      context_budget_prepared_pdf_part_count: 0,
+    });
+    expectNoPrivateData(result);
+  });
+
+  it.each([
+    [
+      "messages",
+      Array(CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES - 5).fill(user("filler")),
+      [user("filler")],
+    ],
+    [
+      "user content parts",
+      [
+        user(
+          Array(CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS - 1).fill(textPart),
+        ),
+      ],
+      [user([textPart])],
+    ],
+  ])(
+    "measures at the shared %s bound and caps beyond it without a partial count",
+    (_case, fill, overflow) => {
+      // With the four fixture messages and one PDF turn, `fill` is exactly
+      // at the bound.
+      expect(run(user([pdfPart()]), ...fill)).toMatchObject({
+        context_budget_prepared_pdf_status: "measured",
+        context_budget_prepared_pdf_part_count: 1,
+      });
+      const capped = run(user([pdfPart()]), ...fill, ...overflow);
+      expect(capped.context_budget_prepared_pdf_status).toBe("size_cap");
+      expect(capped).not.toHaveProperty(
+        "context_budget_prepared_pdf_part_count",
+      );
+    },
+  );
+
+  it.each([
+    ["a primitive message", 5],
+    ["an unknown role", { role: "developer", content: [pdfPart()] }],
+    ["non-array user content", user({ parts: [pdfPart()] })],
+    ["a null user content part", user([null])],
+    ["an unknown user part type", user([{ type: "document" }])],
+    ["a file part without a string media type", user([{ type: "file" }])],
+    [
+      "a throwing accessor",
+      Object.defineProperty({ role: "user" }, "content", {
+        enumerable: true,
+        get() {
+          throw new Error(PDF_CANARY);
+        },
+      }),
+    ],
+  ])(
+    "reports unavailable instead of a partial or zero count for %s",
+    (_case, malformed) => {
+      // A valid PDF is counted first, so a partial result would be non-zero.
+      const result = run(user([pdfPart()]), malformed);
+      expect(result.context_budget_prepared_pdf_status).toBe("unavailable");
+      expect(result).not.toHaveProperty(
+        "context_budget_prepared_pdf_part_count",
+      );
+      expectNoPrivateData(result);
+    },
+  );
 });
