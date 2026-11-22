@@ -10,7 +10,7 @@ import {
   assertUserCanAccessChatHistory,
 } from "@/lib/suspensions";
 import { getChatById } from "@/lib/db/actions";
-import { ChatSDKError } from "@/lib/errors";
+import { ChatSDKError, ERROR_SURFACES, ERROR_TYPES } from "@/lib/errors";
 import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
@@ -32,25 +32,194 @@ const headers = {
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers });
 
-async function authorize(req: NextRequest, chatId: string) {
+type Stage =
+  | "request"
+  | "auth"
+  | "history_access"
+  | "chat"
+  | "feature_flag"
+  | "cost_gate"
+  | "rate_limit"
+  | "environment"
+  | "project"
+  | "workspace";
+
+/** Carries a fixed diagnostic reason; responses still use only code/status. */
+class AuthorizationRejection extends WorkspaceFileError {
+  constructor(
+    code: string,
+    status: number,
+    readonly reason: string,
+  ) {
+    super(code, status);
+  }
+}
+
+async function authorize(
+  req: NextRequest,
+  chatId: string,
+  progress: { stage: Stage } = { stage: "auth" },
+) {
+  progress.stage = "auth";
   let session;
   try {
     session = await getUserIDAndPro(req);
   } catch {
-    throw new WorkspaceFileError("unauthorized", 401);
+    throw new AuthorizationRejection("unauthorized", 401, "unauthenticated");
   }
+  progress.stage = "history_access";
   await assertUserCanAccessChatHistory(session.userId);
+  progress.stage = "chat";
   const chat = await getChatById({ id: chatId });
   if (!chat || chat.user_id !== session.userId || chat.deletion_started_at)
-    throw new WorkspaceFileError("not_found", 404);
+    throw new AuthorizationRejection(
+      "not_found",
+      404,
+      !chat
+        ? "chat_missing"
+        : chat.user_id !== session.userId
+          ? "chat_not_owned"
+          : "chat_deleting",
+    );
+  progress.stage = "feature_flag";
   const enabled = await getPostHogBooleanFlagDecisionForUser(
     WORKSPACE_FILES_FLAG,
     session.userId,
     undefined,
     { sendFeatureFlagEvents: false },
   );
-  if (enabled !== true) throw new WorkspaceFileError("unavailable", 404);
+  if (enabled !== true)
+    throw new AuthorizationRejection("unavailable", 404, "flag_unavailable");
   return { ...session, chat };
+}
+
+// Closed vocabularies only: a rejection log must never carry request values,
+// unrecognized property names, identifiers, paths, or provider error text.
+const SCHEMA_FIELDS = new Set(Object.keys(workspaceRequest.shape));
+const SCHEMA_ISSUE_CODES = new Set([
+  "invalid_type",
+  "too_big",
+  "too_small",
+  "invalid_format",
+  "not_multiple_of",
+  "unrecognized_keys",
+  "invalid_union",
+  "invalid_key",
+  "invalid_element",
+  "invalid_value",
+  "custom",
+]);
+const WORKSPACE_ERROR_CODES = new Set([
+  "workspace_unavailable",
+  "select_environment",
+  "workspace_changed",
+  "local_reader_unavailable",
+  "not_found",
+  "invalid_request",
+  "unreadable_path",
+  "file_too_large",
+  "file_changed",
+  "directory_too_large",
+  "invalid_path",
+  "not_file",
+]);
+const ERROR_NAMES = new Set([
+  "TypeError",
+  "SyntaxError",
+  "RangeError",
+  "ZodError",
+  "AbortError",
+  "TimeoutError",
+]);
+
+type Rejection = { reason: string } & Record<string, string | number>;
+
+function logRejection(
+  status: number,
+  action: string | undefined,
+  details: Rejection | (() => Rejection),
+) {
+  try {
+    const fields = typeof details === "function" ? details() : details;
+    console.warn(
+      JSON.stringify({
+        ...fields,
+        event: "workspace_files_request_rejected",
+        status,
+        action,
+      }),
+    );
+  } catch {
+    // Diagnostics must preserve the original failure response.
+  }
+}
+
+function knownAction(body: unknown) {
+  const action = workspaceRequest.shape.action.safeParse(
+    typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>).action
+      : undefined,
+  );
+  return action.success ? action.data : undefined;
+}
+
+function describeSchemaFailure(
+  issues: readonly { code: string; path: PropertyKey[] }[],
+): Rejection {
+  const [issue] = issues;
+  const field = issue?.path[0];
+  return {
+    reason: "invalid_schema",
+    issue_count: issues.length,
+    ...(typeof field === "string" && SCHEMA_FIELDS.has(field) ? { field } : {}),
+    ...(issue && SCHEMA_ISSUE_CODES.has(issue.code)
+      ? { issue_code: issue.code }
+      : {}),
+  };
+}
+
+function describeFailure(error: unknown, stage: Stage): Rejection {
+  if (error instanceof AuthorizationRejection)
+    return { reason: error.reason, stage };
+  if (error instanceof ChatSDKError) {
+    const reason =
+      stage === "history_access" && error.type === "forbidden"
+        ? "history_access_denied"
+        : stage === "cost_gate" && error.type === "forbidden"
+          ? "cost_suspended"
+          : stage === "project"
+            ? "project_unavailable"
+            : "request_denied";
+    return {
+      reason,
+      stage,
+      error_type: ERROR_TYPES.includes(error.type) ? error.type : "other",
+      error_surface: ERROR_SURFACES.includes(error.surface)
+        ? error.surface
+        : "other",
+    };
+  }
+  if (error instanceof WorkspaceFileError)
+    return {
+      reason: "workspace_file_error",
+      stage,
+      error_code: WORKSPACE_ERROR_CODES.has(error.code) ? error.code : "other",
+    };
+  if (error instanceof CloudWorkspaceUnavailableError)
+    return {
+      reason: "recovery_required",
+      stage,
+      recovery_reason:
+        CloudWorkspaceUnavailableError.getCleanupClaimFailureReason(error),
+    };
+  return {
+    reason: "unexpected_error",
+    stage,
+    error_name:
+      error instanceof Error && ERROR_NAMES.has(error.name)
+        ? error.name
+        : "other",
+  };
 }
 
 function failure(error: unknown) {
@@ -79,32 +248,49 @@ export async function POST(req: NextRequest) {
   const started = Date.now();
   let userId: string | undefined;
   let action: string | undefined;
+  const progress: { stage: Stage } = { stage: "request" };
+  const reject = (error: string, status: number, fields: Rejection) => {
+    logRejection(status, action, fields);
+    return json({ error }, status);
+  };
   try {
     // Cookie-authenticated actions are same-origin, including explicit resume.
     const origin = req.headers.get("origin");
     if (origin && origin !== req.nextUrl.origin)
-      return json({ error: "forbidden" }, 403);
+      return reject("forbidden", 403, { reason: "origin_mismatch" });
     const text = await req.text();
-    if (text.length > 8192) return json({ error: "invalid_request" }, 400);
+    if (text.length > 8192)
+      return reject("invalid_request", 400, { reason: "body_too_large" });
     let body: unknown;
     try {
       body = JSON.parse(text);
     } catch {
-      return json({ error: "invalid_request" }, 400);
+      return reject("invalid_request", 400, { reason: "malformed_json" });
     }
     const parsed = workspaceRequest.safeParse(body);
-    if (!parsed.success) return json({ error: "invalid_request" }, 400);
+    if (!parsed.success) {
+      action = knownAction(body);
+      return reject(
+        "invalid_request",
+        400,
+        describeSchemaFailure(parsed.error.issues),
+      );
+    }
     const input = parsed.data;
     action = input.action;
-    const auth = await authorize(req, input.chatId);
+    const auth = await authorize(req, input.chatId, progress);
     userId = auth.userId;
     const preference = input.environment ?? auth.chat.sandbox_type ?? "e2b";
     const local = preference !== "e2b" && preference !== "cloud";
     if (!local && auth.subscription === "free")
-      return json({ error: "subscription_required" }, 403);
+      return reject("subscription_required", 403, {
+        reason: "subscription_required",
+      });
     if (!["status", "list"].includes(input.action) && !input.sandboxId)
-      return json({ error: "invalid_request" }, 400);
+      return reject("invalid_request", 400, { reason: "sandbox_id_missing" });
+    progress.stage = "cost_gate";
     await assertUserCanMakeCostIncurringRequest(userId);
+    progress.stage = "rate_limit";
     const redis = createRedisClient();
     if (redis) {
       const count = await redis.eval<unknown[], number>(
@@ -112,10 +298,12 @@ export async function POST(req: NextRequest) {
         [`workspace_files_rate:${userId}`],
         [],
       );
-      if (count > 120) return json({ error: "rate_limited" }, 429);
+      if (count > 120)
+        return reject("rate_limited", 429, { reason: "rate_limited" });
     }
     let normalizedPreference = preference;
     if (local) {
+      progress.stage = "environment";
       const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
       if (!serviceKey)
         throw new WorkspaceFileError("workspace_unavailable", 503);
@@ -124,6 +312,7 @@ export async function POST(req: NextRequest) {
         { serviceKey, userId, preference },
       );
     }
+    progress.stage = "project";
     const project = local
       ? await resolveProjectExecutionContext({
           chat: auth.chat,
@@ -132,6 +321,7 @@ export async function POST(req: NextRequest) {
           sandboxPreference: normalizedPreference,
         })
       : {};
+    progress.stage = "workspace";
     const result = local
       ? await accessLocalWorkspaceFiles(
           userId,
@@ -159,6 +349,10 @@ export async function POST(req: NextRequest) {
         outcome: "error",
         duration_ms: Date.now() - started,
       });
-    return failure(error);
+    const response = failure(error);
+    logRejection(response.status, action, () =>
+      describeFailure(error, progress.stage),
+    );
+    return response;
   }
 }

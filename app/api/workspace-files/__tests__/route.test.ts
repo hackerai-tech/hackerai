@@ -13,6 +13,7 @@ import {
 } from "@/lib/suspensions";
 import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import { WorkspaceFileError } from "@/lib/sandbox/workspace-files";
 
 jest.mock("@/lib/sandbox/local-workspace-files", () => ({
   accessLocalWorkspaceFiles: jest.fn(),
@@ -64,11 +65,9 @@ const request = (values = {}) =>
 beforeEach(() => {
   jest.resetAllMocks();
   process.env.CONVEX_SERVICE_ROLE_KEY = "test";
-  jest
-    .mocked(getConvexClient)
-    .mockReturnValue({
-      query: jest.fn(async (_ref, args) => args.preference),
-    } as any);
+  jest.mocked(getConvexClient).mockReturnValue({
+    query: jest.fn(async (_ref, args) => args.preference),
+  } as any);
   jest
     .mocked(
       require("@/lib/chat/project-context").resolveProjectExecutionContext,
@@ -176,13 +175,11 @@ it("bounds repeated workspace access before calling the provider", async () => {
 });
 
 it("normalizes a legacy Desktop connection before checking its linked project folder", async () => {
-  jest
-    .mocked(getChatById)
-    .mockResolvedValue({
-      user_id: "owner",
-      sandbox_type: "legacy-session",
-      project_id: "project",
-    } as any);
+  jest.mocked(getChatById).mockResolvedValue({
+    user_id: "owner",
+    sandbox_type: "legacy-session",
+    project_id: "project",
+  } as any);
   jest
     .mocked(getProjectById)
     .mockResolvedValue({ folder_path: "/Users/test/project" } as any);
@@ -207,4 +204,203 @@ it("normalizes a legacy Desktop connection before checking its linked project fo
     "/Users/test/project",
   );
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+});
+
+describe("POST rejection diagnostics", () => {
+  // Every user-controlled or identifying value below carries this marker.
+  const MARKER = "7f3e9c";
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.mocked(getUserIDAndPro).mockResolvedValue({
+      userId: `user-${MARKER}`,
+      subscription: "pro",
+      emailVerified: true,
+    });
+    jest.mocked(getChatById).mockResolvedValue({
+      user_id: `user-${MARKER}`,
+      sandbox_type: "e2b",
+    } as any);
+  });
+  afterEach(() => warn.mockRestore());
+
+  const sensitive = (values = {}) =>
+    request({ chatId: `chat-${MARKER}`, ...values });
+  const rawRequest = (text: string, origin = "https://preview.example") =>
+    ({
+      nextUrl: new URL(
+        `https://preview.example/api/workspace-files?q=${MARKER}`,
+      ),
+      headers: new Headers({ origin }),
+      text: async () => text,
+    }) as unknown as NextRequest;
+  const expectRejection = async (
+    response: Response | Promise<Response>,
+    status: number,
+    error: string,
+    fields: Record<string, unknown>,
+  ) => {
+    const resolved = await response;
+    expect(resolved.status).toBe(status);
+    expect(await resolved.json()).toEqual({ error });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0][0]);
+    expect(line).not.toContain(MARKER);
+    expect(JSON.parse(line)).toEqual({
+      event: "workspace_files_request_rejected",
+      status,
+      ...fields,
+    });
+    warn.mockClear();
+  };
+
+  it("names each request validation failure without request values", async () => {
+    await expectRejection(
+      POST(rawRequest("{}", `https://${MARKER}.example`)),
+      403,
+      "forbidden",
+      { reason: "origin_mismatch" },
+    );
+    await expectRejection(
+      POST(rawRequest(`"${MARKER}${"x".repeat(8192)}"`)),
+      400,
+      "invalid_request",
+      { reason: "body_too_large" },
+    );
+    await expectRejection(
+      POST(rawRequest(`{"${MARKER}":`)),
+      400,
+      "invalid_request",
+      { reason: "malformed_json" },
+    );
+    await expectRejection(
+      POST(sensitive({ action: "preview", path: `../${MARKER}` })),
+      400,
+      "invalid_request",
+      {
+        reason: "invalid_schema",
+        action: "preview",
+        field: "path",
+        issue_code: "custom",
+        issue_count: 1,
+      },
+    );
+    // Unrecognized property names are user-controlled and must not be logged.
+    await expectRejection(
+      POST(sensitive({ action: MARKER, [MARKER]: MARKER })),
+      400,
+      "invalid_request",
+      {
+        reason: "invalid_schema",
+        field: "action",
+        issue_code: "invalid_value",
+        issue_count: 2,
+      },
+    );
+    await expectRejection(
+      POST(sensitive({ action: "download", path: `${MARKER}.txt` })),
+      400,
+      "invalid_request",
+      { reason: "sandbox_id_missing", action: "download" },
+    );
+    expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes access, history, subscription and cost-suspension gates", async () => {
+    jest.mocked(getChatById).mockResolvedValueOnce({ user_id: "other" } as any);
+    await expectRejection(POST(sensitive()), 404, "not_found", {
+      reason: "chat_not_owned",
+      stage: "chat",
+      action: "list",
+    });
+    jest
+      .mocked(getPostHogBooleanFlagDecisionForUser)
+      .mockResolvedValueOnce(false);
+    await expectRejection(POST(sensitive()), 404, "unavailable", {
+      reason: "flag_unavailable",
+      stage: "feature_flag",
+      action: "list",
+    });
+    jest
+      .mocked(assertUserCanAccessChatHistory)
+      .mockRejectedValueOnce(
+        new ChatSDKError("forbidden:chat", `suspended ${MARKER}`),
+      );
+    await expectRejection(POST(sensitive()), 403, "forbidden", {
+      reason: "history_access_denied",
+      stage: "history_access",
+      action: "list",
+      error_type: "forbidden",
+      error_surface: "chat",
+    });
+    jest
+      .mocked(assertUserCanMakeCostIncurringRequest)
+      .mockRejectedValueOnce(
+        new ChatSDKError("forbidden:chat", `suspended ${MARKER}`),
+      );
+    await expectRejection(POST(sensitive()), 403, "forbidden", {
+      reason: "cost_suspended",
+      stage: "cost_gate",
+      action: "list",
+      error_type: "forbidden",
+      error_surface: "chat",
+    });
+    jest.mocked(getUserIDAndPro).mockResolvedValueOnce({
+      userId: `user-${MARKER}`,
+      subscription: "free",
+      emailVerified: true,
+    });
+    await expectRejection(POST(sensitive()), 403, "subscription_required", {
+      reason: "subscription_required",
+      action: "list",
+    });
+    expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+  });
+
+  it("logs known sandbox codes and only a fixed fallback for provider errors", async () => {
+    const preview = {
+      action: "preview",
+      sandboxId: `sbx-${MARKER}`,
+      path: `${MARKER}.txt`,
+    };
+    jest
+      .mocked(accessCloudWorkspaceFiles)
+      .mockRejectedValueOnce(new WorkspaceFileError("file_too_large", 400));
+    await expectRejection(POST(sensitive(preview)), 400, "file_too_large", {
+      reason: "workspace_file_error",
+      stage: "workspace",
+      action: "preview",
+      error_code: "file_too_large",
+    });
+    jest
+      .mocked(accessCloudWorkspaceFiles)
+      .mockRejectedValueOnce(
+        new TypeError(`https://${MARKER}.e2b.dev/home/user/${MARKER}`),
+      );
+    await expectRejection(
+      POST(sensitive(preview)),
+      503,
+      "workspace_unavailable",
+      {
+        reason: "unexpected_error",
+        stage: "workspace",
+        action: "preview",
+        error_name: "TypeError",
+      },
+    );
+  });
+
+  it("does not log successful requests", async () => {
+    expect((await POST(sensitive())).status).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("preserves the original rejection when writing diagnostics throws", async () => {
+    warn.mockImplementation(() => {
+      throw new Error("Log transport unavailable");
+    });
+    const response = await POST(rawRequest("{"));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_request" });
+  });
 });
