@@ -528,7 +528,7 @@ export const GET = withServiceQueryRecovery(async function GET(
   } catch (error) {
     const session = resolved.session;
     const activeSessionRead =
-      stage === "read_active_session" &&
+      (stage === "read_active_session" || stage === "verify_active_session") &&
       request.nextUrl.searchParams.get("fresh") === "1"
         ? browserSessionReadFailureContext(error)
         : undefined;
