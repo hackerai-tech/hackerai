@@ -374,9 +374,14 @@ it("records only the closed negotiation result on an opted-in capture failure", 
   expect(JSON.stringify(fields)).not.toContain("PRIVATE");
 });
 
-it.each([false, true])(
-  "gives the active EVAL diagnostic only spare log budget (full: %s)",
-  async (full) => {
+it.each([
+  ["capture_active_other_command_v1", "eval", false],
+  ["capture_active_other_command_v1", "eval", true],
+  ["capture_close_proof_failure_v1", "proof_absent", false],
+  ["capture_close_proof_failure_v1", "proof_absent", true],
+] as const)(
+  "gives %s=%s only spare Browser Preview log budget (full: %s)",
+  async (diagnostic, value, full) => {
     mockState = "agent";
     const captureFields = full
       ? Object.fromEntries(
@@ -385,7 +390,7 @@ it.each([false, true])(
       : {};
     mockCapture.mockImplementationOnce(async (...args) => {
       const report = args.at(-2) as (context: Record<string, unknown>) => void;
-      report({ ...captureFields, capture_active_other_command_v1: "eval" });
+      report({ ...captureFields, [diagnostic]: value });
       throw new Error("PRIVATE capture failure");
     });
 
@@ -401,9 +406,9 @@ it.each([false, true])(
     });
     if (full) {
       expect(Object.keys(fields ?? {})).toHaveLength(72);
-      expect(fields).not.toHaveProperty("capture_active_other_command_v1");
+      expect(fields).not.toHaveProperty(diagnostic);
     } else {
-      expect(fields).toHaveProperty("capture_active_other_command_v1", "eval");
+      expect(fields).toHaveProperty(diagnostic, value);
     }
     expect(JSON.stringify(fields)).not.toContain("PRIVATE");
   },

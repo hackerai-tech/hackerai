@@ -142,6 +142,7 @@ const unavailableGet = (
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
     const {
       capture_active_other_command_v1: activeOtherCommand,
+      capture_close_proof_failure_v1: closeProofFailure,
       ...captureFields
     } = captureContext ?? {};
     const fields = {
@@ -206,15 +207,19 @@ const unavailableGet = (
           capture_negotiated_deferrals_v1: negotiatedDeferrals,
         }),
     };
+    // The optional fields come from disjoint helper exits and may use only
+    // space remaining after baseline and negotiation fields.
+    const optionalCaptureField =
+      activeOtherCommand === "eval"
+        ? { capture_active_other_command_v1: activeOtherCommand }
+        : closeProofFailure === undefined
+          ? {}
+          : { capture_close_proof_failure_v1: closeProofFailure };
     phLogger.info("agent_browser_preview_get_unavailable", {
       ...logFields,
-      // Preserve baseline and negotiation fields when this optional diagnostic
-      // would exceed the logger's shared attribute budget.
       ...(stage === "capture_frame" &&
-        activeOtherCommand === "eval" &&
-        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS && {
-          capture_active_other_command_v1: activeOtherCommand,
-        }),
+        Object.keys(logFields).length < MAX_BROWSER_PREVIEW_LOG_FIELDS &&
+        optionalCaptureField),
     });
     after(async () => {
       try {
