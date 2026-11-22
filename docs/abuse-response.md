@@ -417,13 +417,12 @@ alerts, which keep their own toggle and continue unchanged. Acquisition links
 and queued reviews expire on their own, and existing cases stay available to
 operators.
 
-The alert schedule runs only in Production. In Preview, configure
-`E2B_EGRESS_BURST_NOTIFICATION_URL` and confirm both regional telemetry
-heartbeats. Upload synthetic traffic above the Preview threshold for a pilot
-workspace with a linked Agent run. Trigger `egress-burst-alerts` manually
-with a `timestamp` two minutes after the synthetic minute. Confirm the alert
-succeeds and the delayed `egress-abuse-review` returns a `completed` or
-`preserved` receipt after the run history has settled.
+The alert schedule runs only in Production. In Preview, confirm both regional
+telemetry heartbeats. Upload synthetic traffic above the Preview threshold for
+a pilot workspace with a linked Agent run. Trigger `egress-burst-alerts` manually
+with a `timestamp` two minutes after the synthetic minute. Confirm the monitor
+logs a `High connection volume` warning and the delayed `egress-abuse-review`
+returns a `completed` or `preserved` receipt after the run history has settled.
 
 ## Resolution and evidence lifecycle
 

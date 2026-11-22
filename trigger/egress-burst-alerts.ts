@@ -1,5 +1,3 @@
-import { context } from "@opentelemetry/api";
-import { suppressTracing } from "@opentelemetry/core";
 import { idempotencyKeys, logger, schedules, tasks } from "@trigger.dev/sdk";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
@@ -22,25 +20,17 @@ import type { egressAbuseReviewTask } from "./egress-abuse-review";
 // connections, aggregated across that owner's workspaces in one region and
 // minute. It never blocks, suspends or rate-limits anyone.
 //
-// High volume is logged as a warning and sent to the operators' webhook when
-// configured, and the run succeeds. A run fails, reaching the
-// environment's Trigger error alerts, only when the monitor itself is broken:
-// configuration, state, heartbeat, collector loss, review dispatch or
-// notification delivery.
-//
-// Notification is at least once. A candidate is marked notified only after the
-// webhook accepts it, so a failed delivery or uncertain mark is retried by the
-// next run while the minute is still in the evaluation window.
+// High volume is logged as a warning in Trigger and the run succeeds. Failures
+// in configuration, telemetry, warning state or review dispatch fail the run.
 
 /** Collectors seal a minute after it ends; evaluate settled minutes only. */
 const SETTLE_MINUTES = 2;
 /** Re-read recent minutes so a briefly late upload is still evaluated. */
 const EVALUATED_MINUTES = 5;
-const NOTIFIED_TTL_S = 60 * 60;
-/** New notified candidates per run; the rest are sent by the next runs. */
-const MAX_NOTIFIED = 20;
-const NOTIFICATION_TIMEOUT_MS = 5_000;
-const NOTIFICATION_TITLE = "High connection volume";
+const WARNING_TTL_S = 60 * 60;
+/** New warnings per run; later runs handle the rest. */
+const MAX_WARNINGS = 20;
+const WARNING_TITLE = "High connection volume";
 /** New abuse reviews per run; the rest are dispatched by the next runs. */
 const MAX_REVIEWS = 10;
 const REVIEW_MARK_TTL_S = 2 * 60 * 60;
@@ -64,7 +54,6 @@ type Failure =
   | { kind: "state"; region?: E2BCluster }
   | { kind: "heartbeat"; region: E2BCluster }
   | { kind: "loss"; region: E2BCluster }
-  | { kind: "notification" }
   | { kind: "review" };
 
 function describe(failure: Failure) {
@@ -73,8 +62,6 @@ function describe(failure: Failure) {
       return "alert configuration is missing or invalid";
     case "review":
       return "abuse review could not be dispatched";
-    case "notification":
-      return `${NOTIFICATION_TITLE} notification could not be delivered`;
     case "state":
       return failure.region
         ? `${failure.region} telemetry could not be read`
@@ -86,7 +73,7 @@ function describe(failure: Failure) {
   }
 }
 
-/** Fixed text only; never IDs, owner references or the webhook URL. */
+/** Fixed text only; excludes IDs and owner references. */
 export class EgressBurstAlertError extends Error {
   constructor(readonly failures: Failure[]) {
     const parts = [...new Set(failures.map(describe))].sort();
@@ -95,44 +82,18 @@ export class EgressBurstAlertError extends Error {
   }
 }
 
-/**
- * The operators' private webhook, treated as a secret. HTTPS only, with no
- * embedded credentials or fragment.
- */
-function notificationUrl(value: string | undefined) {
-  if (!value || value.includes("#")) return null;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || url.username || url.password) return null;
-  return url;
-}
-
-/**
- * Unset, empty or "false" is off. Enabled requires an explicit positive
- * per-owner threshold. The notification URL is optional.
- */
+/** Unset, empty or "false" is off. Enabled requires a positive threshold. */
 function resolveConfig() {
   const enabled = process.env.E2B_EGRESS_BURST_ALERTS_ENABLED;
   if (!enabled || enabled === "false") return null;
   const threshold = egressBurstThreshold();
-  const destination = process.env.E2B_EGRESS_BURST_NOTIFICATION_URL;
-  const url = notificationUrl(destination);
   const review = egressAbuseReviewGate();
   const redis = createRedisClient();
-  if (
-    enabled !== "true" ||
-    threshold === null ||
-    (destination && !url) ||
-    !redis
-  )
+  if (enabled !== "true" || threshold === null || !redis)
     throw new EgressBurstAlertError([{ kind: "configuration" }]);
   if (review === "invalid")
     logger.warn("Invalid egress abuse review configuration");
-  return { threshold, url, redis, review: review === "on" };
+  return { threshold, redis, review: review === "on" };
 }
 
 type Candidate = {
@@ -170,9 +131,6 @@ function ownerBursts(
   return [...owners.values()].filter((entry) => entry.connections >= threshold);
 }
 
-// v2: v1 marked candidates logged, not notified.
-const notifiedKey = ({ region, minute, owner }: Candidate) =>
-  `egress-burst:v2:${region}:${minute}:${owner}`;
 const warningKey = ({ region, minute, owner }: Candidate) =>
   `egress-burst:warning:v1:${region}:${minute}:${owner}`;
 
@@ -183,7 +141,7 @@ export async function runEgressBurstAlerts(
 ): Promise<EgressBurstAlertResult> {
   const config = resolveConfig();
   if (!config) return { status: "disabled" };
-  const { threshold, url, redis, review } = config;
+  const { threshold, redis, review } = config;
   const latest =
     Math.floor(new Date(scheduledAt).getTime() / 60_000) - SETTLE_MINUTES;
   if (!Number.isSafeInteger(latest))
@@ -240,7 +198,7 @@ export async function runEgressBurstAlerts(
   }
 
   candidates.sort((a, b) => b.connections - a.connections);
-  await notifyNewCandidates(redis, url, candidates, threshold, failures);
+  await warnForNewCandidates(redis, candidates, threshold, failures);
   if (review) {
     // Retained telemetry recovers work that could not be written to the queue.
     const replayMinutes = Array.from(
@@ -283,36 +241,29 @@ export async function runEgressBurstAlerts(
 }
 
 /**
- * Writes up to MAX_NOTIFIED warnings, sends one message when a webhook is
- * configured, and marks each candidate after the warning or webhook delivery.
- * Separate keys let a newly configured webhook deliver previously logged
- * warnings still in the evaluation window. A failed read, warning or mark
- * is a state failure and a failed delivery a notification failure; either
- * leaves the candidate for the next run, which may warn or send it again.
+ * Marks each candidate after its warning is logged. A failed warning or mark
+ * leaves it eligible for another attempt while its minute is still in the window.
  */
-async function notifyNewCandidates(
+async function warnForNewCandidates(
   redis: NonNullable<ReturnType<typeof createRedisClient>>,
-  url: URL | null,
   candidates: Candidate[],
   threshold: number,
   failures: Failure[],
 ) {
   if (!candidates.length) return;
-  const markerKey = url ? notifiedKey : warningKey;
-  let notified: unknown[];
+  let marks: unknown[];
   try {
-    notified = await redis.mget<unknown[]>(...candidates.map(markerKey));
+    marks = await redis.mget<unknown[]>(...candidates.map(warningKey));
   } catch {
     failures.push({ kind: "state" });
     return;
   }
-  const pending = candidates.filter((_, index) => notified[index] === null);
-  const warned: Candidate[] = [];
-  for (const candidate of pending.slice(0, MAX_NOTIFIED)) {
+  const pending = candidates.filter((_, index) => marks[index] === null);
+  for (const candidate of pending.slice(0, MAX_WARNINGS)) {
     const { region, minute, owner, connections } = candidate;
     try {
       if (owner === "overflow")
-        logger.warn(NOTIFICATION_TITLE, {
+        logger.warn(WARNING_TITLE, {
           region,
           minute,
           unattributed: true,
@@ -326,7 +277,7 @@ async function notifyNewCandidates(
           owner,
           candidate.workspaces,
         );
-        logger.warn(NOTIFICATION_TITLE, {
+        logger.warn(WARNING_TITLE, {
           region,
           minute,
           ownerRef: owner,
@@ -338,70 +289,16 @@ async function notifyNewCandidates(
           threshold,
         });
       }
-      warned.push(candidate);
+      await redis.set(warningKey(candidate), "1", { ex: WARNING_TTL_S });
     } catch {
       failures.push({ kind: "state" });
     }
   }
-  if (pending.length > MAX_NOTIFIED)
-    logger.warn(
-      `${NOTIFICATION_TITLE} ${url ? "notifications" : "warnings"} deferred to the next run`,
-      {
-        pending: pending.length,
-        notified: MAX_NOTIFIED,
-      },
-    );
-  if (!warned.length) return;
-
-  if (url && !(await deliverNotification(url, warned, threshold))) {
-    failures.push({ kind: "notification" });
-    return;
-  }
-  for (const candidate of warned)
-    try {
-      await redis.set(markerKey(candidate), "1", { ex: NOTIFIED_TTL_S });
-    } catch {
-      failures.push({ kind: "state" });
-    }
-}
-
-/** One line per candidate, with opaque owner references only. */
-function notificationText(candidates: Candidate[], threshold: number) {
-  const lines = candidates.map(({ region, minute, owner, connections }) => {
-    // 2026-11-21T08:15Z
-    const utc = `${new Date(minute * 60_000).toISOString().slice(0, 16)}Z`;
-    const who = owner === "overflow" ? "unattributed" : `owner ${owner}`;
-    return `${region} ${utc} ${who}: ${connections} connections (threshold ${threshold})`;
-  });
-  return [NOTIFICATION_TITLE, ...lines].join("\n");
-}
-
-/**
- * Slack-compatible incoming webhook message. Accepted only on a 2xx response
- * without redirects. The response body and any fetch error are discarded:
- * they can echo the secret URL.
- */
-async function deliverNotification(
-  url: URL,
-  candidates: Candidate[],
-  threshold: number,
-) {
-  try {
-    // The path can contain a delivery credential. Keep it out of HTTP spans.
-    const response = await context.with(suppressTracing(context.active()), () =>
-      fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: notificationText(candidates, threshold) }),
-        redirect: "error",
-        signal: AbortSignal.timeout(NOTIFICATION_TIMEOUT_MS),
-      }),
-    );
-    await response.body?.cancel().catch(() => undefined);
-    return response.ok;
-  } catch {
-    return false;
-  }
+  if (pending.length > MAX_WARNINGS)
+    logger.warn(`${WARNING_TITLE} warnings deferred to the next run`, {
+      pending: pending.length,
+      warned: MAX_WARNINGS,
+    });
 }
 
 const reviewMarkKey = (caseKey: string) => `${caseKey}:dispatched`;
