@@ -8,6 +8,8 @@ import {
   PREVIEW_TERMINAL_INTENT_PARAM,
   PREVIEW_TERMINAL_OTHER_KIND_KEY,
   PREVIEW_TERMINAL_OTHER_KIND_PARAM,
+  PREVIEW_TERMINAL_PHASE_PARAM,
+  PREVIEW_TERMINAL_PHASES,
   PREVIEW_TEXT_SOURCE_PARAM,
   PREVIEW_TEXT_SOURCES,
   parsePreviewClientContext,
@@ -940,6 +942,222 @@ describe("terminal intent", () => {
   });
 });
 
+describe("terminal phase", () => {
+  const params = (url: string) =>
+    new URL(url, "https://app.example").searchParams;
+  const fieldsWith = (count: number) =>
+    Object.fromEntries(
+      Array.from({ length: count }, (_, index) => [`field_${index}`, index]),
+    );
+  const command = (liveSelection: unknown, phase: unknown, intent?: unknown) =>
+    ({ source: "command", liveSelection, intent, phase }) as const;
+
+  it("carries each closed phase as a fifth tuple element for live and historical commands", () => {
+    for (const phase of PREVIEW_TERMINAL_PHASES)
+      for (const live of [true, false]) {
+        const sent = params(
+          previewCaptureUrl(ENDPOINT, false, 1, READER, false, {
+            ...command(live, phase, "multiple_operations"),
+          }),
+        );
+        expect(sent.getAll(PREVIEW_TERMINAL_PHASE_PARAM)).toEqual([
+          `1.${phase}`,
+        ]);
+        const legacy = parsePreviewClientContext(
+          query(
+            [...sent.entries()].filter(
+              ([name]) => name !== PREVIEW_TERMINAL_PHASE_PARAM,
+            ),
+          ),
+        );
+        const tuple = JSON.parse(parsePreviewClientContext(sent)!);
+        expect(tuple).toEqual([1, 1, READER, [1, "command", live], [1, phase]]);
+        // Readers of positions 0-3 see exactly the pre-phase tuple.
+        expect(tuple.slice(0, 4)).toEqual(JSON.parse(legacy!));
+        // The phase rides inside the existing attribute; it never adds one.
+        const fields = fieldsWith(69);
+        const withPhase = withPreviewClientContext(fields, sent);
+        const without = withPreviewClientContext(
+          fields,
+          query(
+            [...sent.entries()].filter(
+              ([name]) => name !== PREVIEW_TERMINAL_PHASE_PARAM,
+            ),
+          ),
+        );
+        expect(Object.keys(withPhase)).toEqual(Object.keys(without));
+        expect(withPhase[PREVIEW_CLIENT_CONTEXT_KEY]).toBe(
+          JSON.stringify(tuple),
+        );
+        expect(withPhase[PREVIEW_TERMINAL_INTENT_KEY]).toBe(
+          live ? '[1,"multiple_operations"]' : undefined,
+        );
+      }
+  });
+
+  it("is sent only beside a non-fresh browserRequested command source with a closed phase", () => {
+    const sent = (
+      fresh: boolean,
+      mask: number,
+      textSource: Parameters<typeof previewCaptureUrl>[5],
+    ) =>
+      params(
+        previewCaptureUrl(ENDPOINT, fresh, mask, READER, false, textSource),
+      );
+    const omitted = [
+      sent(true, 1, command(true, "executing")),
+      sent(true, 1, command(false, "awaiting_approval")),
+      sent(false, 8, command(true, "executing")),
+      sent(false, 9, command(undefined, "executing")),
+      sent(false, 1, { ...command(true, "executing"), source: "brief" }),
+      sent(false, 1, {
+        ...command(false, "reviewing"),
+        source: "interactive_brief",
+      }),
+      sent(false, 1, { ...command(true, "executing"), source: "unavailable" }),
+      sent(false, 1, { ...command(true, "executing"), source: undefined }),
+      sent(false, 1, command(true, undefined)),
+      sent(false, 1, command(true, "PRIVATE_COMMAND")),
+      sent(false, 1, command(true, "__proto__")),
+      sent(false, 1, command(true, "Executing")),
+      sent(false, 1, command(true, `executing${"x".repeat(100_000)}`)),
+    ];
+    for (const sentQuery of omitted)
+      expect(sentQuery.has(PREVIEW_TERMINAL_PHASE_PARAM)).toBe(false);
+    // The phase never alters the parameters the existing tuple is built from.
+    expect(
+      [...sent(false, 1, command(true, "reviewing", "open_only")).entries()]
+        .filter(([name]) => name !== PREVIEW_TERMINAL_PHASE_PARAM)
+        .map(String),
+    ).toEqual(
+      [...sent(false, 1, command(true, undefined, "open_only")).entries()].map(
+        String,
+      ),
+    );
+  });
+
+  const phase = (value: string): Array<[string, string]> => [
+    [PREVIEW_TERMINAL_PHASE_PARAM, value],
+  ];
+  const source = (value: string): Array<[string, string]> => [
+    [PREVIEW_TEXT_SOURCE_PARAM, value],
+  ];
+  const live = [...group("1"), ...source("1.command.1")];
+  const historical = [...group("1"), ...source("1.command.0")];
+  it.each([
+    ["absent phase", live, []],
+    [
+      "duplicate phase",
+      live,
+      [...phase("1.executing"), ...phase("1.executing")],
+    ],
+    [
+      "conflicting duplicate phase",
+      historical,
+      [...phase("1.reviewing"), ...phase("1.completed")],
+    ],
+    ["future phase", live, phase("2.executing")],
+    ["unversioned phase", historical, phase("executing")],
+    ["whitespace phase", live, phase("1.executing ")],
+    ["uppercase phase", live, phase("1.Executing")],
+    ["forged phase", live, phase("1.PRIVATE_COMMAND")],
+    ["prototype phase", historical, phase("__proto__")],
+    ["injected phase", live, phase('1.executing"],["PRIVATE_COMMAND')],
+    ["oversized phase", live, phase(`1.executing${" ".repeat(10_000)}`)],
+    ["fresh live request", [...live, ["fresh", "1"]], phase("1.executing")],
+    [
+      "fresh historical request",
+      [...historical, ["fresh", "1"]],
+      phase("1.completed"),
+    ],
+    ["any fresh key", [...live, ["fresh", "0"]], phase("1.executing")],
+    ["absent source", group("1"), phase("1.executing")],
+    [
+      "brief source",
+      [...group("1"), ...source("1.brief.1")],
+      phase("1.executing"),
+    ],
+    [
+      "interactive brief source",
+      [...group("1"), ...source("1.interactive_brief.0")],
+      phase("1.executing"),
+    ],
+    [
+      "unavailable source",
+      [...group("1"), ...source("1.unavailable.1")],
+      phase("1.executing"),
+    ],
+    [
+      "invalid source",
+      [...group("1"), ...source("1.command.true")],
+      phase("1.executing"),
+    ],
+    [
+      "duplicate source",
+      [...live, ...source("1.command.1")],
+      phase("1.executing"),
+    ],
+    [
+      "mask without browserRequested",
+      [...group("8"), ...source("1.command.1")],
+      phase("1.executing"),
+    ],
+  ] as Array<[string, Array<[string, string]>, Array<[string, string]>]>)(
+    "drops only the phase for a %s",
+    (_name, base, extra) => {
+      const fields = fieldsWith(3);
+      expect(parsePreviewClientContext(query([...base, ...extra]))).toBe(
+        parsePreviewClientContext(query(base)),
+      );
+      const result = withPreviewClientContext(
+        fields,
+        query([...base, ...extra]),
+      );
+      expect(result).toEqual(withPreviewClientContext(fields, query(base)));
+      expect(JSON.stringify(result)).not.toMatch(/PRIVATE|executing|completed/);
+    },
+  );
+
+  it("never rescues an invalid base", () => {
+    expect(
+      parsePreviewClientContext(
+        query([
+          ...group("24"),
+          ...source("1.command.1"),
+          ...phase("1.executing"),
+        ]),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps the four-element tuple and intent if only the phase cannot be read", () => {
+    for (const unreadable of [PREVIEW_TERMINAL_PHASE_PARAM, "fresh"]) {
+      const real = params(
+        previewCaptureUrl(
+          ENDPOINT,
+          false,
+          1,
+          READER,
+          false,
+          command(true, "awaiting_approval", "open_only"),
+        ),
+      );
+      const hostile = {
+        getAll: (name: string) => {
+          if (name === unreadable) throw new Error("PRIVATE_COOKIE");
+          return real.getAll(name);
+        },
+      } as unknown as URLSearchParams;
+      const fields = fieldsWith(3);
+      expect(withPreviewClientContext(fields, hostile)).toEqual({
+        ...fields,
+        [PREVIEW_CLIENT_CONTEXT_KEY]: `[1,1,"${READER}",[1,"command",true]]`,
+        [PREVIEW_TERMINAL_INTENT_KEY]: '[1,"open_only"]',
+      });
+    }
+  });
+});
+
 describe("bounded field append", () => {
   const fieldsWith = (count: number) =>
     Object.fromEntries(
@@ -1464,6 +1682,38 @@ describe("actual phLogger to OTLP export", () => {
     expect(
       withoutTimestamp(attributes.filter(({ key }) => !added.includes(key))),
     ).toEqual(withoutTimestamp(legacy));
+    expectBaselineSurvives(attributes, fields);
+  });
+
+  it("exports the terminal phase inside the existing tuple beside the full daemon deadline context", async () => {
+    const fields = routeFields(captureWith(DEADLINE_CAPTURE_KEYS));
+    expect(Object.keys(fields)).toHaveLength(69);
+    const url = (phase?: string) =>
+      `${previewCaptureUrl(ENDPOINT, false, 1, READER, false, {
+        source: "command",
+        liveSelection: true,
+        intent: "multiple_operations",
+        phase,
+      })}&cmd=PRIVATE_COMMAND&note=PRIVATE_NOTE`;
+    const withoutPhase = await exported(fields, url());
+    const attributes = await exported(fields, url("awaiting_approval"));
+    const context = (list: Attribute[]) =>
+      list.find(({ key }) => key === PREVIEW_CLIENT_CONTEXT_KEY)?.value;
+    expect(context(attributes)).toEqual({
+      stringValue: `[1,1,"${READER}",[1,"command",true],[1,"awaiting_approval"]]`,
+    });
+    // Same keys, order and values; only the tuple string gained its element.
+    const others = (list: Attribute[]) =>
+      withoutTimestamp(
+        list.filter(({ key }) => key !== PREVIEW_CLIENT_CONTEXT_KEY),
+      );
+    expect(attributes.map(({ key }) => key)).toEqual(
+      withoutPhase.map(({ key }) => key),
+    );
+    expect(others(attributes)).toEqual(others(withoutPhase));
+    expect(
+      attributes.find(({ key }) => key === PREVIEW_TERMINAL_INTENT_KEY)?.value,
+    ).toEqual({ stringValue: '[1,"multiple_operations"]' });
     expectBaselineSurvives(attributes, fields);
   });
 
