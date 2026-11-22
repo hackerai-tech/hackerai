@@ -804,14 +804,14 @@ function finish(code, value) {
     const cli = cliAtPrepare();
     if (cli) value = { ...value, cv: cli };
     // Drop optional codes newest first at the parser cap. The unchecked CLI
-    // fallback [1, 0] yields to cp1 when that swap alone fits.
-    if (value?.cp1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) {
+    // fallback [1, 0] yields to cp1 (exit2) or e1 (exit3) when that swap alone fits.
+    for (const key of ['cp1', 'e1']) {
+      if (value?.[key] === undefined || Buffer.byteLength(JSON.stringify(value)) <= 544) continue;
       const { cv, ...rest } = value;
       if (cv?.length === 2 && cv[0] === 1 && cv[1] === 0 &&
           Buffer.byteLength(JSON.stringify(rest)) <= 544) value = rest;
-      else delete value.cp1;
+      else delete value[key];
     }
-    if (value?.e1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.e1;
     if (value?.ph1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ph1;
     if (value?.ot1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.ot1;
     if (value?.q1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.q1;
