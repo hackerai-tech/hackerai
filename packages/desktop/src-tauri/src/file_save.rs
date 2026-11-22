@@ -48,6 +48,10 @@ fn keep_destination_permissions(
     destination: &Path,
 ) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(target_os = "linux")]
+    if !permissions::supports_mode_copy(staging) {
+        return Ok(());
+    }
     match permissions::replacement_mode(destination, temporary, &staging.metadata()?) {
         Some(mode) if mode != permissions::PRIVATE => {
             staging.set_permissions(fs::Permissions::from_mode(mode))
@@ -69,6 +73,24 @@ mod permissions {
 
     /// New saves, and replacements whose old permissions cannot be carried over safely.
     pub(super) const PRIVATE: u32 = 0o600;
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn supports_mode_copy(staging: &fs::File) -> bool {
+        use std::os::fd::AsRawFd;
+        // From Linux's uapi/linux/magic.h. These mounts can have native ACLs
+        // even when the POSIX and NFSv4 ACL probes report unsupported.
+        const SMB_SUPER_MAGIC: u32 = 0x517B;
+        const CIFS_SUPER_MAGIC: u32 = 0xFF53_4D42;
+        const SMB2_SUPER_MAGIC: u32 = 0xFE53_4D42;
+        let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: the file stays open and the buffer is writable and correctly aligned.
+        if unsafe { libc::fstatfs(staging.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+            return false;
+        }
+        // SAFETY: fstatfs succeeded and initialized the buffer.
+        let kind = unsafe { stats.assume_init() }.f_type as u32;
+        !matches!(kind, SMB_SUPER_MAGIC | CIFS_SUPER_MAGIC | SMB2_SUPER_MAGIC)
+    }
 
     /// The old rwx bits when the replacement can take them without granting
     /// anything the destination did not: a regular file (never a symlink's
