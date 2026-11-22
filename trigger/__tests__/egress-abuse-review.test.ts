@@ -252,6 +252,8 @@ beforeEach(async () => {
     E2B_EGRESS_ABUSE_REVIEW_ENABLED: "true",
     E2B_EGRESS_BURST_THRESHOLD: "800",
     NEXT_PUBLIC_CONVEX_URL: "https://fixture.convex.cloud",
+    CONVEX_CLOUD_URL: "https://fixture.convex.cloud",
+    CONVEX_SERVICE_ROLE_KEY: "synthetic-main-key",
     CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY: REVIEW_KEY,
     ABUSE_EVIDENCE_KEYS: JSON.stringify({
       active: "k1",

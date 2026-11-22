@@ -373,15 +373,15 @@ this runbook.
   and attaches bounded account activity as operator context. Messages do not
   record a workspace, so this mode never names a chat as the cause of the
   burst. It reads the account's chats updated since 24 hours before the burst,
-  at most 20 chats and 6 MiB, newest first. It returns at most three chats
-  whose Agent runs recorded a started terminal command between that time and
-  one minute after the burst. Each chat includes only that window's user
-  text and those commands. Chats without such a command, hidden or system
-  text, earlier history, and deleted chats are not returned. The read runs once
-  per case: after the window's case exists, it reads nothing. Each chat is
-  scrubbed, guarded and classified separately, so one chat's stated scope
-  never covers another chat's commands. A chat that meets the same policy as
-  an authorization request marks the case `account_activity_concerning`;
+  at most 20 chats and 6 MiB, newest first. For up to three chats, it reads
+  the most recent completed Agent run with a recorded terminal start and
+  the user turn immediately preceding that run. Hidden, system, and deleted
+  content stays outside the review. The worker supplies a short-lived
+  attribution proof bound to the verified account, case, and time window in
+  addition to the dedicated review credential. After a window's case exists,
+  the fallback skips the read. Each run is scrubbed, guarded, and classified on
+  its own. A run that meets the same evidence standard as an authorization
+  request marks the case `account_activity_concerning`;
   otherwise it stays `no_acquisition_link`. Neither outcome clears the burst
   or produces a draft. Cases created before this mode (record version 1) have
   no account activity; rerunning a review for them does not add it.

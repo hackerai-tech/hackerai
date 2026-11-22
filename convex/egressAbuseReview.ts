@@ -1,4 +1,5 @@
 import { getDocumentSize, v } from "convex/values";
+import { verifyServiceArgs } from "../lib/db/service-proof";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./lib/serviceFunctions";
 import { boundedAbuseCiphertext } from "./lib/abuseResponse";
@@ -496,47 +497,55 @@ async function readChatActivity(
   }
   rows.reverse();
 
-  const runRows = rows.filter((row) => {
+  const runs = new Map<
+    string,
+    { start: number; commands: Command[]; incomplete: number }
+  >();
+  for (const row of rows) {
     const start = row.generation_started_at;
+    const duration = row.generation_time_ms;
+    const id = row.trigger_run_id;
     if (
       row.role !== "assistant" ||
-      typeof row.trigger_run_id !== "string" ||
-      !row.trigger_run_id ||
+      !id ||
       typeof start !== "number" ||
-      start > window.windowEnd
+      typeof duration !== "number" ||
+      start + duration < window.windowStart ||
+      start + duration > window.windowEnd
     )
-      return false;
-    const duration = row.generation_time_ms;
-    return (
-      typeof duration !== "number" || start + duration >= window.windowStart
-    );
-  });
-  const commands: Command[] = [];
-  const runIds = new Set<string>();
-  let incompleteToolCalls = 0;
-  let latestCommandStart = -Infinity;
-  for (const row of runRows) {
+      continue;
+    const activity = runs.get(id) ?? { start, commands: [], incomplete: 0 };
     const read = startedCommands(row);
-    incompleteToolCalls += read.incomplete;
-    if (!read.commands.length) continue;
-    commands.push(...read.commands);
-    runIds.add(row.trigger_run_id!);
-    latestCommandStart = Math.max(
-      latestCommandStart,
-      row.generation_started_at!,
-    );
+    activity.start = Math.min(start, activity.start);
+    activity.commands.push(...read.commands);
+    activity.incomplete += read.incomplete;
+    runs.set(id, activity);
   }
-  if (!commands.length) return null;
+  // Only one run's commands and the user turn that preceded it can support a
+  // finding. An older run's stated scope does not authorize this one.
+  const selected = [...runs]
+    .filter(([, run]) => run.commands.length)
+    .sort(([, a], [, b]) => b.start - a.start)[0];
+  if (!selected) return null;
+  const [runId, { start, commands, incomplete }] = selected;
+  const previousAssistant =
+    rows.findLast(
+      (row) =>
+        row.role === "assistant" &&
+        row.trigger_run_id !== runId &&
+        row._creationTime < start,
+    )?._creationTime ?? window.windowStart - 1;
 
   let laterEditedMessages = 0;
   const users = rows.flatMap((row) => {
     if (
       row.role !== "user" ||
       row.is_hidden === true ||
-      row._creationTime > window.windowEnd
+      row._creationTime <= previousAssistant ||
+      row._creationTime > start
     )
       return [];
-    if (row.update_time > window.windowEnd) {
+    if (row.update_time > start) {
       laterEditedMessages++;
       return [];
     }
@@ -562,10 +571,10 @@ async function readChatActivity(
   const keptUsers = users.slice(-MAX_ACTIVITY_USER_MESSAGES);
   const keptCommands = commands.slice(-MAX_ACTIVITY_COMMANDS);
   return {
-    latestCommandStart,
+    latestCommandStart: start,
     chat: {
       chatId: chat.id,
-      runIds: [...runIds],
+      runIds: [runId],
       userMessages: keptUsers,
       commands: keptCommands,
       coverage: {
@@ -574,10 +583,8 @@ async function readChatActivity(
         userMessagesOmitted:
           laterEditedMessages + users.length - keptUsers.length,
         commandsOmitted: commands.length - keptCommands.length,
-        incompleteToolCalls,
-        runActive:
-          !!chat.active_trigger_run_id &&
-          runIds.has(chat.active_trigger_run_id),
+        incompleteToolCalls: incomplete,
+        runActive: chat.active_trigger_run_id === runId,
       },
     },
   };
@@ -598,6 +605,7 @@ async function readChatActivity(
 export const readAccountActivity = query({
   args: {
     serviceKey: v.string(),
+    attributionProof: v.string(),
     userId: v.string(),
     reference: v.string(),
     burstStart: v.number(),
@@ -629,6 +637,21 @@ export const readAccountActivity = query({
   ),
   handler: async (ctx, args) => {
     authorize(args.serviceKey);
+    const { serviceKey: _serviceKey, attributionProof, ...subject } = args;
+    const deployment = process.env.CONVEX_CLOUD_URL;
+    if (
+      !deployment ||
+      !(await verifyServiceArgs(
+        {
+          deployment,
+          name: "egressAbuseReview:readAccountActivity",
+          type: "query",
+        },
+        { ...subject, serviceKey: attributionProof },
+        process.env.CONVEX_SERVICE_ROLE_KEY,
+      ))
+    )
+      throw new Error("Unauthorized: Invalid account attribution proof");
     assertBurst(args);
     if (!REFERENCE.test(args.reference))
       throw new Error("Invalid review case identity");

@@ -5,8 +5,11 @@ jest.mock("../lib/serviceFunctions", () => ({
 }));
 import * as functions from "../egressAbuseReview";
 import { database } from "../../__mocks__/abuse-database";
+import { signServiceArgs } from "../../lib/db/service-proof";
 
 const KEY = "synthetic-egress-review-key";
+const DEPLOYMENT = "https://fixture.convex.cloud";
+const ROLE_KEY = "synthetic-main-key";
 const USER = "user_subject";
 const CHAT = "chat_1";
 const RUN = "run_parent1";
@@ -18,7 +21,8 @@ const originalEnv = { ...process.env };
 beforeEach(() => {
   process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
   process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY = KEY;
-  process.env.CONVEX_SERVICE_ROLE_KEY = "synthetic-main-key";
+  process.env.CONVEX_SERVICE_ROLE_KEY = ROLE_KEY;
+  process.env.CONVEX_CLOUD_URL = DEPLOYMENT;
   process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
     active: "k1",
     keys: { k1: "ab".repeat(32) },
@@ -358,8 +362,32 @@ describe("readAccountActivity", () => {
   const HOUR_MS = 60 * MINUTE_MS;
   const reference = "AB-0123abcd-0000-4000-8000-00000000abcd";
   const activityArgs = { serviceKey: KEY, userId: USER, reference, ...burst };
-  const read = (ctx: any, overrides: Record<string, unknown> = {}) =>
-    invoke("readAccountActivity", ctx, { ...activityArgs, ...overrides });
+  const read = async (ctx: any, overrides: Record<string, unknown> = {}) => {
+    const { serviceKey, attributionProof, ...subject } = {
+      ...activityArgs,
+      ...overrides,
+    };
+    const signed = await signServiceArgs(
+      {
+        deployment: DEPLOYMENT,
+        name: "egressAbuseReview:readAccountActivity",
+        type: "query",
+      },
+      { ...subject, serviceKey: ROLE_KEY },
+    );
+    return invoke("readAccountActivity", ctx, {
+      serviceKey,
+      ...subject,
+      attributionProof: attributionProof ?? signed.serviceKey,
+    });
+  };
+
+  it("does not accept the review credential as proof of account attribution", async () => {
+    const ctx = reviewDatabase();
+    await expect(read(ctx, { attributionProof: KEY })).rejects.toThrow(
+      "Invalid account attribution proof",
+    );
+  });
 
   /** One chat with a user request and a run that started a command at `at`. */
   async function seedActivity(
@@ -538,6 +566,40 @@ describe("readAccountActivity", () => {
       "chat_deleted",
     ])
       expect(serialized).not.toContain(excluded);
+  });
+
+  it("does not combine an earlier run's request or commands with the latest run", async () => {
+    const ctx = reviewDatabase();
+    const earlier = burstStart - 2 * HOUR_MS;
+    await seedActivity(ctx, "chat_main", earlier);
+    const latest = burstStart - HOUR_MS;
+    await ctx.db.insert("messages", {
+      id: "latest-user",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "user",
+      update_time: latest - MINUTE_MS,
+      _creationTime: latest - MINUTE_MS,
+      parts: [{ type: "text", text: "LATEST REQUEST" }],
+    });
+    await ctx.db.insert("messages", {
+      id: "latest-assistant",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "assistant",
+      trigger_run_id: "run_latest",
+      generation_started_at: latest,
+      generation_time_ms: MINUTE_MS,
+      update_time: latest + MINUTE_MS,
+      _creationTime: latest + MINUTE_MS,
+      parts: [command("call-latest", "LATEST COMMAND")],
+    });
+    const result = await read(ctx);
+    expect(result.chats[0]).toMatchObject({
+      runIds: ["run_latest"],
+      userMessages: [{ messageId: "latest-user", text: "LATEST REQUEST" }],
+      commands: [{ messageId: "latest-assistant", text: "LATEST COMMAND" }],
+    });
   });
 
   it("marks a chat incomplete when it has history before the window", async () => {

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { myProvider } from "@/lib/ai/providers";
 import { createServiceConvexClient } from "@/lib/db/service-client";
+import { signServiceArgs } from "@/lib/db/service-proof";
 import { encryptAbuseEvidence } from "@/lib/abuse/evidence-crypto";
 import {
   ACQUISITION_LINK_TTL_S,
@@ -210,7 +211,11 @@ function reviewClient() {
     throw new Error(
       "NEXT_PUBLIC_CONVEX_URL and CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY are required",
     );
-  return { client: createServiceConvexClient(convexUrl), serviceKey };
+  return {
+    client: createServiceConvexClient(convexUrl),
+    serviceKey,
+    convexUrl,
+  };
 }
 
 /** False when the existing privacy guard rejects the prepared prompt. */
@@ -323,7 +328,7 @@ export async function runEgressAbuseReview(
     egressAbuseReviewPayloadSchema.parse(payload);
   const redis = createRedisClient();
   if (!redis) throw new Error("Egress review store is unavailable");
-  const { client, serviceKey } = reviewClient();
+  const { client, serviceKey, convexUrl } = reviewClient();
   const now = Date.now();
   if (minute > Math.floor(now / 60_000) - SETTLE_MINUTES)
     throw new EgressReviewPendingError();
@@ -453,11 +458,24 @@ export async function runEgressAbuseReview(
     // Nothing links the workspace to a chat. Recent account activity is read
     // once per case as operator context; it never clears the burst, drafts a
     // request, or names a chat as its cause.
+    const attributionKey = process.env.CONVEX_SERVICE_ROLE_KEY?.trim();
+    if (!attributionKey || attributionKey === serviceKey)
+      return manual("no_acquisition_link", {
+        accountActivity: { status: "unavailable" },
+      });
+    const subject = { userId, reference, ...burst };
+    const proof = await signServiceArgs(
+      {
+        deployment: convexUrl,
+        name: "egressAbuseReview:readAccountActivity",
+        type: "query",
+      },
+      { ...subject, serviceKey: attributionKey },
+    );
     const read = await client.query(api.egressAbuseReview.readAccountActivity, {
+      ...subject,
       serviceKey,
-      userId,
-      reference,
-      ...burst,
+      attributionProof: String(proof.serviceKey),
     });
     if (read.status === "case_exists")
       return { status: "preserved", case: "existing" };
