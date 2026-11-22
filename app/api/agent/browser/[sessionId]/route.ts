@@ -527,19 +527,29 @@ export const GET = withServiceQueryRecovery(async function GET(
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
     const session = resolved.session;
-    if (
+    const activeSessionRead =
+      stage === "read_active_session" &&
+      request.nextUrl.searchParams.get("fresh") === "1"
+        ? browserSessionReadFailureContext(error)
+        : undefined;
+    const missingActiveSession =
+      activeSessionRead?.active_session_read_diagnostic_version === 1 &&
+      activeSessionRead.active_session_read_error_kind === "file_not_found";
+    const missingFreshFrame =
       stage === "capture_frame" &&
-      session.state === "agent" &&
-      session.runActive === true &&
       captureContext?.capture_stage === "fresh_read" &&
       captureContext.capture_fresh_read_diagnostic_version === 1 &&
       captureContext.capture_fresh_read_phase === "sdk_read" &&
-      captureContext.capture_fresh_read_error_kind === "file_not_found" &&
+      captureContext.capture_fresh_read_error_kind === "file_not_found";
+    if (
+      (missingActiveSession || missingFreshFrame) &&
+      session.state === "agent" &&
+      session.runActive === true &&
       serviceKey &&
       request.signal &&
       !request.signal.aborted
     ) {
-      // The owner can remove the frame and close the handoff during capture.
+      // Owner cleanup can remove the selection or frame before the close is visible.
       // Only the existing ownership-scoped query can confirm that close.
       const signal = AbortSignal.any([
         request.signal,

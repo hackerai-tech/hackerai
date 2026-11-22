@@ -494,10 +494,12 @@ it.each(["start", "wait"] as const)(
 const connectFreshRead = ({
   stat = async () => ({ size: 6 }),
   bytes,
+  activeName = () => "default\n",
   remove = jest.fn(async () => undefined),
 }: {
   stat?: () => Promise<unknown>;
   bytes: () => unknown;
+  activeName?: () => string;
   remove?: jest.Mock;
 }) => {
   const frame = JSON.stringify({
@@ -515,7 +517,7 @@ const connectFreshRead = ({
         : { exitCode: 0, stdout: frame },
   );
   const read = jest.fn(async (_path: string, options?: { format?: string }) =>
-    options?.format === "bytes" ? bytes() : "default\n",
+    options?.format === "bytes" ? bytes() : activeName(),
   );
   jest.mocked(Sandbox.getInfo).mockResolvedValue({
     state: "running",
@@ -599,7 +601,7 @@ it.each([
   },
 );
 
-describe("passive fresh-read FileNotFound close confirmation", () => {
+describe("passive fresh FileNotFound close confirmation", () => {
   const fileNotFound = () => new FileNotFoundError("PRIVATE preview.jpg");
   const closedRow = (overrides = {}) =>
     sessionRow({ state: "closed", runActive: false, ...overrides });
@@ -611,12 +613,16 @@ describe("passive fresh-read FileNotFound close confirmation", () => {
       throw fileNotFound();
     },
     stat,
+    activeName,
+    fresh = true,
     controller = new AbortController(),
   }: {
     initial?: Record<string, unknown>;
     reread?: (signal?: AbortSignal) => Promise<unknown>;
     bytes?: () => unknown;
     stat?: () => Promise<unknown>;
+    activeName?: () => string;
+    fresh?: boolean;
     controller?: AbortController;
   } = {}) {
     const confirm = jest.fn(
@@ -635,8 +641,11 @@ describe("passive fresh-read FileNotFound close confirmation", () => {
               : sessionRow(initial),
         }) as never,
     );
-    const sandbox = connectFreshRead({ bytes, stat });
-    const response = await get(freshRequest(controller.signal), routeContext());
+    const sandbox = connectFreshRead({ bytes, stat, activeName });
+    const request = fresh
+      ? freshRequest(controller.signal)
+      : getRequest(controller.signal);
+    const response = await get(request, routeContext());
     return { ...sandbox, response, confirm };
   }
 
@@ -662,6 +671,77 @@ describe("passive fresh-read FileNotFound close confirmation", () => {
     expect(remove).toHaveBeenCalledTimes(1);
     expect(phLogger.info).not.toHaveBeenCalled();
   });
+
+  const missingActiveName = () => {
+    throw new FileNotFoundError("PRIVATE active-session");
+  };
+
+  it("returns 410 when an active-session read loses its file to confirmed closure", async () => {
+    const { response, confirm, screenshots, bytesReads } = await freshGet({
+      activeName: missingActiveName,
+    });
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ state: "closed" });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      "getForBackend",
+      {
+        serviceKey: "test-only-service-key",
+        userId: "owner",
+        sessionId: SESSION_ID,
+        allowEnded: true,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(screenshots()).toBe(0);
+    expect(bytesReads()).toBe(0);
+    expect(phLogger.info).not.toHaveBeenCalled();
+  });
+
+  it("keeps loading when the active-session file is gone before closure is visible", async () => {
+    const { response, confirm, screenshots } = await freshGet({
+      activeName: missingActiveName,
+      reread: async () => sessionRow({ state: "agent", runActive: true }),
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "loading" });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screenshots()).toBe(0);
+    expect(loggedEvent().fields).toMatchObject({
+      failure_stage: "read_active_session",
+      active_session_read_diagnostic_version: 1,
+      active_session_read_error_kind: "file_not_found",
+    });
+  });
+
+  it.each<[string, Parameters<typeof freshGet>[0]]>([
+    ["a nonfresh request", { fresh: false, activeName: missingActiveName }],
+    [
+      "a human-controlled session",
+      {
+        initial: { state: "human", runActive: true },
+        activeName: missingActiveName,
+      },
+    ],
+    [
+      "a generic not-found",
+      {
+        activeName: () => {
+          throw new NotFoundError("PRIVATE generic");
+        },
+      },
+    ],
+  ])(
+    "does not confirm a close after an active-session error in %s",
+    async (_case, options) => {
+      const { response, confirm } = await freshGet(options);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ state: "loading" });
+      expect(confirm).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["a missing or superseded row", async () => null],
