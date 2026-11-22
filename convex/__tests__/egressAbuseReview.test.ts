@@ -141,6 +141,14 @@ describe("authorization", () => {
       invoke("readRunEvidence", ctx, { ...runArgs, ...main }),
     ).rejects.toThrow("Unauthorized");
     await expect(
+      invoke("readAccountActivity", ctx, {
+        ...main,
+        userId: USER,
+        reference: "AB-00000000-0000-0000-0000-000000000000",
+        ...BURST,
+      }),
+    ).rejects.toThrow("Unauthorized");
+    await expect(
       invoke("recordCase", ctx, {
         ...main,
         reference: "AB-00000000-0000-0000-0000-000000000000",
@@ -340,6 +348,289 @@ describe("readRunEvidence", () => {
     const result = await invoke("readRunEvidence", ctx, runArgs);
     expect(result.coverage.historyTruncated).toBe(true);
     expect(result.coverage.rawReads).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("readAccountActivity", () => {
+  // A recent burst: account activity is never read for an old window.
+  const burstStart = (Math.floor(Date.now() / MINUTE_MS) - 30) * MINUTE_MS;
+  const burst = { burstStart, burstEnd: burstStart + MINUTE_MS };
+  const HOUR_MS = 60 * MINUTE_MS;
+  const reference = "AB-0123abcd-0000-4000-8000-00000000abcd";
+  const activityArgs = { serviceKey: KEY, userId: USER, reference, ...burst };
+  const read = (ctx: any, overrides: Record<string, unknown> = {}) =>
+    invoke("readAccountActivity", ctx, { ...activityArgs, ...overrides });
+
+  /** One chat with a user request and a run that started a command at `at`. */
+  async function seedActivity(
+    ctx: any,
+    chatId: string,
+    at: number,
+    options: {
+      user?: string;
+      chat?: Record<string, unknown>;
+      commandText?: string;
+    } = {},
+  ) {
+    const user = options.user ?? USER;
+    await ctx.db.insert("chats", {
+      id: chatId,
+      user_id: user,
+      update_time: at + MINUTE_MS,
+      _creationTime: at - HOUR_MS,
+      ...options.chat,
+    });
+    await ctx.db.insert("messages", {
+      id: `${chatId}-user`,
+      chat_id: chatId,
+      user_id: user,
+      role: "user",
+      update_time: at - MINUTE_MS,
+      _creationTime: at - MINUTE_MS,
+      parts: [{ type: "text", text: `REQUEST ${chatId}` }],
+    });
+    await ctx.db.insert("messages", {
+      id: `${chatId}-assistant`,
+      chat_id: chatId,
+      user_id: user,
+      role: "assistant",
+      trigger_run_id: `run_${chatId}`,
+      generation_started_at: at,
+      generation_time_ms: MINUTE_MS,
+      update_time: at + MINUTE_MS,
+      _creationTime: at + MINUTE_MS,
+      parts: [
+        { type: "reasoning", text: "REASONING TEXT" },
+        command(`call-${chatId}`, options.commandText ?? `COMMAND ${chatId}`),
+        { type: "text", text: "ASSISTANT TEXT" },
+      ],
+    });
+  }
+
+  it("returns only owned chats whose runs started commands in the window, without other content", async () => {
+    const ctx = reviewDatabase();
+    // Text-only chat: its user text is never read out.
+    await ctx.db.insert("chats", {
+      id: "chat_text",
+      user_id: USER,
+      update_time: burstStart - HOUR_MS,
+      _creationTime: burstStart - 2 * HOUR_MS,
+    });
+    await ctx.db.insert("messages", {
+      id: "text-only",
+      chat_id: "chat_text",
+      user_id: USER,
+      role: "user",
+      update_time: burstStart - HOUR_MS,
+      _creationTime: burstStart - HOUR_MS,
+      parts: [{ type: "text", text: "UNCORROBORATED TEXT" }],
+    });
+    await seedActivity(ctx, "chat_deleted", burstStart - 3 * HOUR_MS, {
+      chat: { deletion_started_at: 1 },
+    });
+    await seedActivity(ctx, "chat_main", burstStart - 2 * HOUR_MS);
+    await ctx.db.insert("messages", {
+      id: "hidden",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "user",
+      is_hidden: true,
+      update_time: burstStart - HOUR_MS,
+      _creationTime: burstStart - HOUR_MS,
+      parts: [{ type: "text", text: "HIDDEN TEXT" }],
+    });
+    await ctx.db.insert("messages", {
+      id: "system",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "system",
+      update_time: burstStart - HOUR_MS,
+      _creationTime: burstStart - HOUR_MS,
+      parts: [{ type: "text", text: "SYSTEM TEXT" }],
+    });
+    // Written after the burst: it cannot have preceded it.
+    await ctx.db.insert("messages", {
+      id: "after",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "user",
+      update_time: burstStart + 5 * MINUTE_MS,
+      _creationTime: burstStart + 5 * MINUTE_MS,
+      parts: [{ type: "text", text: "LATER TEXT" }],
+    });
+    // A run that started after the burst ended.
+    await ctx.db.insert("messages", {
+      id: "later-run",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "assistant",
+      trigger_run_id: "run_later",
+      generation_started_at: burstStart + 10 * MINUTE_MS,
+      generation_time_ms: MINUTE_MS,
+      update_time: burstStart + 11 * MINUTE_MS,
+      _creationTime: burstStart + 11 * MINUTE_MS,
+      parts: [command("call-later", "LATER COMMAND")],
+    });
+    // Another account's chat, and its row placed under this account's chat.
+    await seedActivity(ctx, "chat_other", burstStart - HOUR_MS, {
+      user: "someone_else",
+    });
+    await ctx.db.insert("messages", {
+      id: "foreign",
+      chat_id: "chat_main",
+      user_id: "someone_else",
+      role: "user",
+      update_time: burstStart - HOUR_MS,
+      _creationTime: burstStart - HOUR_MS,
+      parts: [{ type: "text", text: "FOREIGN TEXT" }],
+    });
+
+    const result = await read(ctx);
+    expect(result).toMatchObject({
+      status: "ok",
+      windowStart: burstStart - 24 * HOUR_MS,
+      windowEnd: burst.burstEnd + MINUTE_MS,
+      coverage: {
+        chatsScanned: 2,
+        chatsWithoutCommands: 1,
+        chatsOmitted: 0,
+        scanTruncated: false,
+      },
+    });
+    expect(result.chats).toEqual([
+      {
+        chatId: "chat_main",
+        runIds: ["run_chat_main"],
+        userMessages: [
+          {
+            messageId: "chat_main-user",
+            text: "REQUEST chat_main",
+            truncated: false,
+          },
+        ],
+        commands: [
+          {
+            messageId: "chat_main-assistant",
+            toolCallId: "call-chat_main",
+            tool: "run_terminal_cmd",
+            text: "COMMAND chat_main",
+            truncated: false,
+          },
+        ],
+        coverage: expect.objectContaining({
+          historyTruncated: false,
+          incompleteToolCalls: 0,
+        }),
+      },
+    ]);
+    const serialized = JSON.stringify(result);
+    for (const excluded of [
+      "UNCORROBORATED TEXT",
+      "HIDDEN TEXT",
+      "SYSTEM TEXT",
+      "REASONING TEXT",
+      "ASSISTANT TEXT",
+      "TOOL OUTPUT",
+      "LATER TEXT",
+      "LATER COMMAND",
+      "FOREIGN TEXT",
+      "chat_other",
+      "chat_deleted",
+    ])
+      expect(serialized).not.toContain(excluded);
+  });
+
+  it("marks a chat incomplete when it has history before the window", async () => {
+    const ctx = reviewDatabase();
+    await ctx.db.insert("messages", {
+      id: "older",
+      chat_id: "chat_main",
+      user_id: USER,
+      role: "user",
+      update_time: burstStart - 30 * HOUR_MS,
+      _creationTime: burstStart - 30 * HOUR_MS,
+      parts: [{ type: "text", text: "OLDER SCOPE TEXT" }],
+    });
+    await seedActivity(ctx, "chat_main", burstStart - HOUR_MS);
+    const result = await read(ctx);
+    expect(result.chats[0].coverage.historyTruncated).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("OLDER SCOPE TEXT");
+  });
+
+  it("reads nothing once the window's case exists", async () => {
+    const ctx = reviewDatabase();
+    await seedActivity(ctx, "chat_main", burstStart - HOUR_MS);
+    await invoke("recordCase", ctx, {
+      serviceKey: KEY,
+      reference,
+      digest: "d".repeat(64),
+      ciphertext,
+    });
+    await expect(read(ctx)).resolves.toEqual({ status: "case_exists" });
+  });
+
+  it("returns nothing for an account being deleted", async () => {
+    const ctx = reviewDatabase();
+    await seedActivity(ctx, "chat_main", burstStart - HOUR_MS);
+    await ctx.db.insert("user_deletion_fences", { user_id: USER });
+    await expect(read(ctx)).resolves.toEqual({ status: "unavailable" });
+  });
+
+  it.each([
+    ["older than a day", -25 * HOUR_MS],
+    ["in the future", 40 * MINUTE_MS],
+  ])("rejects a burst %s", async (_label, shift) => {
+    const ctx = reviewDatabase();
+    await expect(
+      read(ctx, {
+        burstStart: burstStart + shift,
+        burstEnd: burst.burstEnd + shift,
+      }),
+    ).rejects.toThrow("Invalid burst window");
+  });
+
+  it("bounds the chats it scans and returns, and reports what it left out", async () => {
+    const ctx = reviewDatabase();
+    // Twenty-one chats updated in the window, oldest first.
+    for (let index = 0; index < 21; index++)
+      await seedActivity(
+        ctx,
+        `chat_${String(index).padStart(2, "0")}`,
+        burstStart - (21 - index) * HOUR_MS,
+      );
+    const result = await read(ctx);
+    expect(result.coverage).toEqual({
+      chatsScanned: 20,
+      chatsWithoutCommands: 0,
+      chatsOmitted: 17,
+      scanTruncated: true,
+    });
+    // The chats whose commands started closest to the burst.
+    expect(result.chats.map((chat: any) => chat.chatId)).toEqual([
+      "chat_20",
+      "chat_19",
+      "chat_18",
+    ]);
+  });
+
+  it("stops reading a long chat and reports it as truncated", async () => {
+    const ctx = reviewDatabase();
+    for (let index = 0; index < 100; index++)
+      await ctx.db.insert("messages", {
+        id: `filler-${index}`,
+        chat_id: "chat_main",
+        user_id: USER,
+        role: "user",
+        update_time: burstStart - 3 * HOUR_MS + index,
+        _creationTime: burstStart - 3 * HOUR_MS + index,
+        parts: [{ type: "text", text: `filler ${index}` }],
+      });
+    await seedActivity(ctx, "chat_main", burstStart - HOUR_MS);
+    const result = await read(ctx);
+    expect(result.chats[0].coverage).toMatchObject({
+      rawReads: 80,
+      historyTruncated: true,
+    });
   });
 });
 

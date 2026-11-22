@@ -358,16 +358,33 @@ decision. It never sends email, restricts an account, contains a run, or
 contacts a sandbox, and its cases follow the review, hold and erasure rules in
 this runbook.
 
-- **What it reads.** Only the one chat and Trigger run that acquired the
-  burst's verified workspace and whose persisted generation time overlaps the
-  burst: the account's stored user text and terminal commands with a recorded
-  start receipt. It excludes the contents of command output, interactive terminal
+- **What it reads.** With a recorded acquisition, only the one chat and
+  Trigger run that acquired the burst's verified workspace and whose
+  persisted generation time overlaps the burst: the account's stored user
+  text and terminal commands with a recorded start receipt. It excludes the contents of command output, interactive terminal
   input, system or hidden text, attachments, and other chats. If the run cannot
   be pinned exactly (several plausible runs, a
   subagent that may have shared the workspace, an unverified workspace, a
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
+- **Without an acquisition link.** When the verified workspace has no
+  recorded acquisition before the burst, the review still opens a manual case
+  and attaches bounded account activity as operator context. Messages do not
+  record a workspace, so this mode never names a chat as the cause of the
+  burst. It reads the account's chats updated since 24 hours before the burst,
+  at most 20 chats and 6 MiB, newest first. It returns at most three chats
+  whose Agent runs recorded a started terminal command between that time and
+  one minute after the burst. Each chat includes only that window's user
+  text and those commands. Chats without such a command, hidden or system
+  text, earlier history, and deleted chats are not returned. The read runs once
+  per case: after the window's case exists, it reads nothing. Each chat is
+  scrubbed, guarded and classified separately, so one chat's stated scope
+  never covers another chat's commands. A chat that meets the same policy as
+  an authorization request marks the case `account_activity_concerning`;
+  otherwise it stays `no_acquisition_link`. Neither outcome clears the burst
+  or produces a draft. Cases created before this mode (record version 1) have
+  no account activity; rerunning a review for them does not add it.
 - **Bounded account history.** Truncated chat history leaves overlap
   uncertain. The worker allows 20 minutes for Trigger run history to settle,
   then reads up to four pages of 50 account-tagged `agent-long` runs in its own
@@ -387,8 +404,10 @@ this runbook.
   by the read history. Inconclusive evidence goes to manual review.
 - **What it stores.** One case per owner reference, region and 30-minute UTC
   window, encrypted with the abuse evidence keyring: fixed rationale text, the
+  evidence mode (`exact_run`, `account_activity` or `none`), the
   classification enums, coverage, the verified account, chat and run
-  identifiers, and locators for the cited messages and tool calls. It never
+  identifiers, and locators for the cited messages and tool calls. Account
+  activity is stored per chat with its finding, coverage and locators. It never
   stores prompts, commands, user text, or model output. Later bursts in the
   same window preserve the encrypted case and any operator review. A repeat
   write returns a `preserved` receipt. If a later review clears the activity,

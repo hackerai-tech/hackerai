@@ -345,6 +345,10 @@ it("saves one encrypted case with an unsent draft for cited concerning activity"
       recipient: { accountId: first.userId },
     },
   });
+  expect(record).toMatchObject({
+    evidenceMode: "exact_run",
+    accountActivity: null,
+  });
   // Locators and fixed text only: never the command, prompt or model payload.
   const stored = JSON.stringify(record);
   for (const raw of [SCAN, "203.0.113", "Find open ports", "masscan"])
@@ -753,4 +757,185 @@ it("records a manual case when the classifier is unavailable", async () => {
     reason: "classifier_unavailable",
   });
   expect(caseRecord().draft).toBeNull();
+});
+
+describe("without an acquisition link", () => {
+  /** A recent Agent chat of the account, not linked to the workspace. */
+  async function seedAccountChat(
+    chatId: string,
+    request: string,
+    command: string,
+    at = BURST_START - 30 * MINUTE_MS,
+  ) {
+    await convex.db.insert("chats", {
+      id: chatId,
+      user_id: first.userId,
+      update_time: at + MINUTE_MS,
+      _creationTime: at - MINUTE_MS,
+    });
+    await convex.db.insert("messages", {
+      id: `${chatId}-user`,
+      chat_id: chatId,
+      user_id: first.userId,
+      role: "user",
+      update_time: at - MINUTE_MS,
+      _creationTime: at - MINUTE_MS,
+      parts: [{ type: "text", text: request }],
+    });
+    await convex.db.insert("messages", {
+      id: `${chatId}-assistant`,
+      chat_id: chatId,
+      user_id: first.userId,
+      role: "assistant",
+      trigger_run_id: `run_${chatId}`,
+      generation_started_at: at,
+      generation_time_ms: 5 * MINUTE_MS,
+      update_time: at + 5 * MINUTE_MS,
+      _creationTime: at + 5 * MINUTE_MS,
+      parts: [terminal("call-1", command)],
+    });
+  }
+
+  it("flags a separately corroborated concerning chat for manual review without a draft", async () => {
+    await seedAccountChat("chat_recent", "Find open ports for me.", SCAN);
+    classifyAs(concerning);
+
+    const result = await run();
+    expect(result).toEqual({
+      status: "completed",
+      outcome: "manual_review",
+      reason: "account_activity_concerning",
+      case: "created",
+    });
+    const record = caseRecord();
+    expect(record).toMatchObject({
+      version: 2,
+      evidenceMode: "account_activity",
+      draft: null,
+      run: null,
+      model: { promptVersion: "egress-account-activity-review-v1" },
+      accountActivity: {
+        status: "read",
+        coverage: { chatsScanned: 1, chatsOmitted: 0 },
+        chats: [
+          {
+            chatId: "chat_recent",
+            runIds: ["run_chat_recent"],
+            finding: "concerning_corroborated",
+            classification: { verdict: "concerning_unauthorized" },
+            locators: {
+              commands: [
+                { messageId: "chat_recent-assistant", toolCallId: "call-1" },
+              ],
+              messages: [],
+            },
+          },
+        ],
+      },
+    });
+    const stored = JSON.stringify(record);
+    for (const raw of [SCAN, "203.0.113", "Find open ports", "masscan"])
+      expect(stored).not.toContain(raw);
+    // The model is told the chat is not linked to the alerting workspace.
+    const prompt = (jest.mocked(generateText).mock.calls[0][0] as any).prompt;
+    expect(prompt).toContain("No record links this chat");
+    expect(prompt).not.toContain("203.0.113");
+    for (const table of [
+      "user_suspensions",
+      "abuse_notifications",
+      "abuse_responses",
+    ])
+      expect(convex.tables[table] ?? []).toHaveLength(0);
+  });
+
+  it("never clears the burst from legitimate-looking unlinked activity", async () => {
+    await seedAccountChat(
+      "chat_recent",
+      "Run the unit tests.",
+      "npm install && npm test",
+    );
+    classifyAs({
+      verdict: "clearly_legitimate",
+      activity: "ordinary_development",
+      authorization: "not_stated",
+      commandIndices: [1],
+      messageIndices: [1],
+    });
+    await expect(run()).resolves.toEqual({
+      status: "completed",
+      outcome: "manual_review",
+      reason: "no_acquisition_link",
+      case: "created",
+    });
+    expect(caseRecord()).toMatchObject({
+      draft: null,
+      accountActivity: { chats: [{ finding: "inconclusive" }] },
+    });
+  });
+
+  it("assesses each chat on its own so one chat's scope never covers another", async () => {
+    await seedAccountChat(
+      "chat_scope",
+      "AUTHORIZED SCOPE 203.0.113.0/24",
+      "npm test",
+      BURST_START - 3 * 60 * MINUTE_MS,
+    );
+    await seedAccountChat("chat_scan", "Find open ports for me.", SCAN);
+    classifyAs({ ...concerning, verdict: "ambiguous" });
+    await run();
+    const prompts = jest
+      .mocked(generateText)
+      .mock.calls.map(([request]) => (request as any).prompt as string);
+    expect(prompts).toHaveLength(2);
+    // Each prompt holds exactly one chat's text.
+    expect(prompts.filter((p) => p.includes("AUTHORIZED SCOPE"))).toHaveLength(
+      1,
+    );
+    expect(prompts.filter((p) => p.includes("Find open ports"))).toHaveLength(
+      1,
+    );
+    expect(
+      prompts.some(
+        (p) => p.includes("AUTHORIZED SCOPE") && p.includes("Find open ports"),
+      ),
+    ).toBe(false);
+    expect(
+      caseRecord().accountActivity.chats.map((chat: any) => chat.chatId),
+    ).toEqual(["chat_scan", "chat_scope"]);
+  });
+
+  it("keeps the neutral case when the privacy guard rejects a chat", async () => {
+    // An unterminated quoted value passes the scrubber but not the guard.
+    await seedAccountChat(
+      "chat_recent",
+      "Log in to the box.",
+      'curl -d password="unterminated-synthetic-value',
+    );
+    classifyAs(concerning);
+    await expect(run()).resolves.toMatchObject({
+      reason: "no_acquisition_link",
+    });
+    expect(caseRecord()).toMatchObject({
+      model: null,
+      accountActivity: { chats: [{ finding: "privacy_guard" }] },
+    });
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("does not reread account activity once the window's case exists", async () => {
+    await seedAccountChat("chat_recent", "Find open ports for me.", SCAN);
+    classifyAs(concerning);
+    await run();
+    jest.mocked(generateText).mockClear();
+    const ciphertext = convex.tables.abuse_cases[0].ciphertext;
+
+    await upload([[first, 1_200]], MINUTE + 1);
+    await expect(run(MINUTE + 1)).resolves.toEqual({
+      status: "preserved",
+      case: "existing",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expect(convex.tables.abuse_cases).toHaveLength(1);
+    expect(convex.tables.abuse_cases[0].ciphertext).toBe(ciphertext);
+  });
 });

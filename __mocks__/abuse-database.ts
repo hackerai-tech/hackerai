@@ -27,6 +27,10 @@ export function database() {
               predicates.push((row) => row[field] > value);
               return query;
             },
+            gte(field: string, value: any) {
+              predicates.push((row) => row[field] >= value);
+              return query;
+            },
             lte(field: string, value: any) {
               predicates.push((row) => row[field] <= value);
               return query;
@@ -76,7 +80,12 @@ export function database() {
     },
     async insert(table: string, row: any) {
       const id = `${table}-${++sequence}`;
-      (tables[table] ??= []).push({ ...row, _id: id, _creationTime: sequence });
+      // A row may set its own creation time to exercise time-ranged reads.
+      (tables[table] ??= []).push({
+        ...row,
+        _id: id,
+        _creationTime: row._creationTime ?? sequence,
+      });
       return id;
     },
     async get(id: string) {

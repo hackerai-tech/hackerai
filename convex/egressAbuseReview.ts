@@ -6,9 +6,10 @@ import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
 // Read-only evidence lookups and a create-or-preserve case write for the
 // automated egress burst review. Authorized only by the dedicated review key,
-// which serviceFunctions scopes to this module. Nothing here reads beyond one
-// linked chat and run, searches a user's chats, or creates a notice or
-// restriction.
+// which serviceFunctions scopes to this module. The exact-run path reads one
+// linked chat and run. Without a link, `readAccountActivity` reads a bounded
+// window of the verified account's recent Agent chats, once per case.
+// Nothing here searches message content or creates a notice or restriction.
 
 const ACTOR = "egress_abuse_review";
 const MAX_SCAN = 120;
@@ -236,6 +237,91 @@ function commandWasStarted(part: TerminalPart) {
   );
 }
 
+type Command = {
+  messageId: string;
+  toolCallId: string;
+  tool: "run_terminal_cmd" | "interact_terminal_session";
+  text: string;
+  truncated: boolean;
+};
+
+/**
+ * Inputs of one assistant row's terminal commands that have a recorded start
+ * receipt. Never tool output, reasoning, text, or interactive input; any
+ * call that cannot be read that way is counted as incomplete.
+ */
+function startedCommands(row: Doc<"messages">) {
+  const commands: Command[] = [];
+  if (
+    row.is_hidden ||
+    row.is_browser_handoff ||
+    row.finish_reason === "trigger_crashed_client_saved"
+  )
+    return { commands, incomplete: 1 };
+  let incomplete = 0;
+  for (const raw of row.parts) {
+    const part = (raw ?? {}) as TerminalPart;
+    const tool =
+      part.type === "tool-run_terminal_cmd"
+        ? ("run_terminal_cmd" as const)
+        : part.type === "tool-interact_terminal_session"
+          ? ("interact_terminal_session" as const)
+          : undefined;
+    if (!tool) continue;
+    // Interactive keystrokes may contain a password, a reply, or a
+    // command. Leave the run for an operator without reading this input.
+    if (tool === "interact_terminal_session") {
+      if (part.input?.action === "send") incomplete++;
+      continue;
+    }
+    if (part.input?.action && part.input.action !== "exec") continue;
+    const value = part.input?.command;
+    if (
+      part.state !== "output-available" ||
+      !commandWasStarted(part) ||
+      typeof part.toolCallId !== "string" ||
+      !part.toolCallId ||
+      part.toolCallId.length > 128 ||
+      typeof value !== "string" ||
+      !value.trim()
+    ) {
+      incomplete++;
+      continue;
+    }
+    commands.push({
+      messageId: row.id,
+      toolCallId: part.toolCallId,
+      tool,
+      ...clip(value),
+    });
+  }
+  return { commands, incomplete };
+}
+
+const userMessageValidator = v.object({
+  messageId: v.string(),
+  text: v.string(),
+  truncated: v.boolean(),
+});
+const commandValidator = v.object({
+  messageId: v.string(),
+  toolCallId: v.string(),
+  tool: v.union(
+    v.literal("run_terminal_cmd"),
+    v.literal("interact_terminal_session"),
+  ),
+  text: v.string(),
+  truncated: v.boolean(),
+});
+const coverageValidator = v.object({
+  rawReads: v.number(),
+  historyTruncated: v.boolean(),
+  userMessagesOmitted: v.number(),
+  commandsOmitted: v.number(),
+  incompleteToolCalls: v.number(),
+  runActive: v.boolean(),
+});
+
 /**
  * Re-verifies the single matched run, then returns only stored user text and
  * the inputs of that run's completed terminal tool calls. No tool output,
@@ -249,33 +335,9 @@ export const readRunEvidence = query({
       status: v.literal("ok"),
       runStart: v.number(),
       runEnd: v.union(v.number(), v.null()),
-      userMessages: v.array(
-        v.object({
-          messageId: v.string(),
-          text: v.string(),
-          truncated: v.boolean(),
-        }),
-      ),
-      commands: v.array(
-        v.object({
-          messageId: v.string(),
-          toolCallId: v.string(),
-          tool: v.union(
-            v.literal("run_terminal_cmd"),
-            v.literal("interact_terminal_session"),
-          ),
-          text: v.string(),
-          truncated: v.boolean(),
-        }),
-      ),
-      coverage: v.object({
-        rawReads: v.number(),
-        historyTruncated: v.boolean(),
-        userMessagesOmitted: v.number(),
-        commandsOmitted: v.number(),
-        incompleteToolCalls: v.number(),
-        runActive: v.boolean(),
-      }),
+      userMessages: v.array(userMessageValidator),
+      commands: v.array(commandValidator),
+      coverage: coverageValidator,
     }),
   ),
   handler: async (ctx, args) => {
@@ -345,59 +407,12 @@ export const readRunEvidence = query({
       return text ? [{ messageId: row.id, ...clip(text) }] : [];
     });
 
-    const commands: Array<{
-      messageId: string;
-      toolCallId: string;
-      tool: "run_terminal_cmd" | "interact_terminal_session";
-      text: string;
-      truncated: boolean;
-    }> = [];
+    const commands: Command[] = [];
     let incompleteToolCalls = 0;
     for (const row of run.runRows) {
-      if (
-        row.is_hidden ||
-        row.is_browser_handoff ||
-        row.finish_reason === "trigger_crashed_client_saved"
-      ) {
-        incompleteToolCalls++;
-        continue;
-      }
-      for (const raw of row.parts) {
-        const part = (raw ?? {}) as TerminalPart;
-        const tool =
-          part.type === "tool-run_terminal_cmd"
-            ? ("run_terminal_cmd" as const)
-            : part.type === "tool-interact_terminal_session"
-              ? ("interact_terminal_session" as const)
-              : undefined;
-        if (!tool) continue;
-        // Interactive keystrokes may contain a password, a reply, or a
-        // command. Leave the run for an operator without reading this input.
-        if (tool === "interact_terminal_session") {
-          if (part.input?.action === "send") incompleteToolCalls++;
-          continue;
-        }
-        if (part.input?.action && part.input.action !== "exec") continue;
-        const value = part.input?.command;
-        if (
-          part.state !== "output-available" ||
-          !commandWasStarted(part) ||
-          typeof part.toolCallId !== "string" ||
-          !part.toolCallId ||
-          part.toolCallId.length > 128 ||
-          typeof value !== "string" ||
-          !value.trim()
-        ) {
-          incompleteToolCalls++;
-          continue;
-        }
-        commands.push({
-          messageId: row.id,
-          toolCallId: part.toolCallId,
-          tool,
-          ...clip(value),
-        });
-      }
+      const read = startedCommands(row);
+      commands.push(...read.commands);
+      incompleteToolCalls += read.incomplete;
     }
 
     const keptUsers = users.slice(-MAX_USER_MESSAGES);
@@ -416,6 +431,267 @@ export const readRunEvidence = query({
         commandsOmitted: commands.length - keptCommands.length,
         incompleteToolCalls,
         runActive: run.active,
+      },
+    };
+  },
+});
+
+// --- Account activity --------------------------------------------------------
+//
+// Used only when no server-recorded acquisition links the burst's verified
+// workspace to a chat and run. Messages do not record a workspace, so nothing
+// read here shows which activity, if any, caused the burst.
+
+/** Context before the burst; later rows count only if they started by its end. */
+const ACTIVITY_LOOKBACK_MS = 24 * 60 * 60_000;
+/** Account activity is read only for a recent burst, never an old window. */
+const MAX_ACTIVITY_BURST_AGE_MS = 24 * 60 * 60_000;
+const MAX_ACTIVITY_CHAT_SCAN = 20;
+const MAX_ACTIVITY_CHATS = 3;
+const MAX_ACTIVITY_ROWS_PER_CHAT = 80;
+const MAX_ACTIVITY_CHAT_BYTES = 1_536 * 1024;
+/** Shared by every chat and message document this query reads. */
+const MAX_ACTIVITY_BYTES = 6 * 1024 * 1024;
+const MAX_ACTIVITY_USER_MESSAGES = 15;
+const MAX_ACTIVITY_COMMANDS = 40;
+
+type ActivityWindow = {
+  userId: string;
+  windowStart: number;
+  windowEnd: number;
+};
+
+/**
+ * One owned chat's started commands from Agent runs that ran in the window,
+ * and its user text from the same window. A chat without such a command
+ * returns nothing, so uncorroborated text is never read out.
+ */
+async function readChatActivity(
+  ctx: QueryCtx,
+  window: ActivityWindow,
+  chat: Doc<"chats">,
+  budget: { bytes: number },
+) {
+  const rows: Doc<"messages">[] = [];
+  let truncated = false;
+  let chatBytes = 0;
+  for await (const row of ctx.db
+    .query("messages")
+    .withIndex("by_chat_id", (q) =>
+      q.eq("chat_id", chat.id).gte("_creationTime", window.windowStart),
+    )
+    .order("desc")) {
+    if (
+      rows.length >= MAX_ACTIVITY_ROWS_PER_CHAT ||
+      chatBytes >= MAX_ACTIVITY_CHAT_BYTES ||
+      budget.bytes >= MAX_ACTIVITY_BYTES
+    ) {
+      truncated = true;
+      break;
+    }
+    const size = getDocumentSize(row);
+    chatBytes += size;
+    budget.bytes += size;
+    if (row.user_id === window.userId) rows.push(row);
+  }
+  rows.reverse();
+
+  const runRows = rows.filter((row) => {
+    const start = row.generation_started_at;
+    if (
+      row.role !== "assistant" ||
+      typeof row.trigger_run_id !== "string" ||
+      !row.trigger_run_id ||
+      typeof start !== "number" ||
+      start > window.windowEnd
+    )
+      return false;
+    const duration = row.generation_time_ms;
+    return (
+      typeof duration !== "number" || start + duration >= window.windowStart
+    );
+  });
+  const commands: Command[] = [];
+  const runIds = new Set<string>();
+  let incompleteToolCalls = 0;
+  let latestCommandStart = -Infinity;
+  for (const row of runRows) {
+    const read = startedCommands(row);
+    incompleteToolCalls += read.incomplete;
+    if (!read.commands.length) continue;
+    commands.push(...read.commands);
+    runIds.add(row.trigger_run_id!);
+    latestCommandStart = Math.max(
+      latestCommandStart,
+      row.generation_started_at!,
+    );
+  }
+  if (!commands.length) return null;
+
+  let laterEditedMessages = 0;
+  const users = rows.flatMap((row) => {
+    if (
+      row.role !== "user" ||
+      row.is_hidden === true ||
+      row._creationTime > window.windowEnd
+    )
+      return [];
+    if (row.update_time > window.windowEnd) {
+      laterEditedMessages++;
+      return [];
+    }
+    const text = userText(row.parts);
+    return text ? [{ messageId: row.id, ...clip(text) }] : [];
+  });
+
+  // Context before the window is never read out, so a chat that has any is
+  // reported as truncated rather than complete.
+  let earlierHistory = true;
+  if (!truncated && budget.bytes < MAX_ACTIVITY_BYTES) {
+    const earlier = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) =>
+        q.eq("chat_id", chat.id).lt("_creationTime", window.windowStart),
+      )
+      .order("desc")
+      .first();
+    if (earlier) budget.bytes += getDocumentSize(earlier);
+    earlierHistory = earlier !== null;
+  }
+
+  const keptUsers = users.slice(-MAX_ACTIVITY_USER_MESSAGES);
+  const keptCommands = commands.slice(-MAX_ACTIVITY_COMMANDS);
+  return {
+    latestCommandStart,
+    chat: {
+      chatId: chat.id,
+      runIds: [...runIds],
+      userMessages: keptUsers,
+      commands: keptCommands,
+      coverage: {
+        rawReads: rows.length,
+        historyTruncated: earlierHistory,
+        userMessagesOmitted:
+          laterEditedMessages + users.length - keptUsers.length,
+        commandsOmitted: commands.length - keptCommands.length,
+        incompleteToolCalls,
+        runActive:
+          !!chat.active_trigger_run_id &&
+          runIds.has(chat.active_trigger_run_id),
+      },
+    },
+  };
+}
+
+/**
+ * Bounded recent activity of one verified account for a burst that no
+ * acquisition links to a chat and run. It reads chats the account updated
+ * since the start of the window, newest first, and returns at most a few
+ * chats whose Agent runs recorded a started terminal command in the window,
+ * each with only its own user text and those command inputs. Hidden, system,
+ * reasoning and tool output content, files, deleted chats, and rows of other
+ * accounts are never returned.
+ *
+ * Scoped to one case: it reads nothing once the case for `reference` exists,
+ * so a sustained burst cannot repeat the read.
+ */
+export const readAccountActivity = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    reference: v.string(),
+    burstStart: v.number(),
+    burstEnd: v.number(),
+  },
+  returns: v.union(
+    v.object({ status: v.literal("case_exists") }),
+    v.object({ status: v.literal("unavailable") }),
+    v.object({
+      status: v.literal("ok"),
+      windowStart: v.number(),
+      windowEnd: v.number(),
+      chats: v.array(
+        v.object({
+          chatId: v.string(),
+          runIds: v.array(v.string()),
+          userMessages: v.array(userMessageValidator),
+          commands: v.array(commandValidator),
+          coverage: coverageValidator,
+        }),
+      ),
+      coverage: v.object({
+        chatsScanned: v.number(),
+        chatsWithoutCommands: v.number(),
+        chatsOmitted: v.number(),
+        scanTruncated: v.boolean(),
+      }),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    authorize(args.serviceKey);
+    assertBurst(args);
+    if (!REFERENCE.test(args.reference))
+      throw new Error("Invalid review case identity");
+    const now = Date.now();
+    if (
+      args.burstEnd > now + CLOCK_SKEW_MS ||
+      args.burstStart < now - MAX_ACTIVITY_BURST_AGE_MS
+    )
+      throw new Error("Invalid burst window");
+    const existing = await ctx.db
+      .query("abuse_cases")
+      .withIndex("by_reference", (q) => q.eq("reference", args.reference))
+      .unique();
+    if (existing) return { status: "case_exists" as const };
+    if (await isUserDeletionFenced(ctx.db, args.userId))
+      return { status: "unavailable" as const };
+
+    const window: ActivityWindow = {
+      userId: args.userId,
+      windowStart: args.burstStart - ACTIVITY_LOOKBACK_MS,
+      windowEnd: args.burstEnd + CLOCK_SKEW_MS,
+    };
+    // A chat active during the window was updated at or after its start.
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", args.userId).gte("update_time", window.windowStart),
+      )
+      .order("desc")
+      .take(MAX_ACTIVITY_CHAT_SCAN + 1);
+    let scanTruncated = chats.length > MAX_ACTIVITY_CHAT_SCAN;
+    const budget = { bytes: 0 };
+    const scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
+    for (const chat of scanned) budget.bytes += getDocumentSize(chat);
+
+    const found: NonNullable<Awaited<ReturnType<typeof readChatActivity>>>[] =
+      [];
+    let chatsScanned = 0;
+    let chatsWithoutCommands = 0;
+    for (const chat of scanned) {
+      if (chat.user_id !== args.userId || chat.deletion_started_at) continue;
+      if (budget.bytes >= MAX_ACTIVITY_BYTES) {
+        scanTruncated = true;
+        break;
+      }
+      chatsScanned++;
+      const activity = await readChatActivity(ctx, window, chat, budget);
+      if (activity) found.push(activity);
+      else chatsWithoutCommands++;
+    }
+    // The chats whose commands started closest to the end of the burst.
+    found.sort((a, b) => b.latestCommandStart - a.latestCommandStart);
+    const kept = found.slice(0, MAX_ACTIVITY_CHATS);
+    return {
+      status: "ok" as const,
+      windowStart: window.windowStart,
+      windowEnd: window.windowEnd,
+      chats: kept.map(({ chat }) => chat),
+      coverage: {
+        chatsScanned,
+        chatsWithoutCommands,
+        chatsOmitted: found.length - kept.length,
+        scanTruncated,
       },
     };
   },

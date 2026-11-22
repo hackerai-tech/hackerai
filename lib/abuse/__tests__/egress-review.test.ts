@@ -558,4 +558,24 @@ describe("case identity and record", () => {
     expect(record.draft).toBeNull();
     expect(record.rationale).toMatch(/review manually/);
   });
+
+  it("never drafts a request from unlinked account activity", () => {
+    const record = buildCaseRecord({
+      reference: "AB-00000000-0000-0000-0000-000000000001",
+      observation,
+      decision: {
+        outcome: "authorization_request",
+        reason: "concerning_unauthorized",
+      },
+      userId: "user_subject",
+      accountActivity: { status: "unavailable" },
+      reviewedAt: 0,
+    });
+    expect(record).toMatchObject({
+      draft: null,
+      evidenceMode: "account_activity",
+      accountActivity: { status: "unavailable" },
+    });
+    expect(record.accountActivity!.caveat).toMatch(/not shown|no listed chat/);
+  });
 });
