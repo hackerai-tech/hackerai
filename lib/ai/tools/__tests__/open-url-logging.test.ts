@@ -167,6 +167,185 @@ describe("Open URL failure capture through phLogger", () => {
     expect(onToolFailure).not.toHaveBeenCalled();
   });
 
+  describe("in-flight abort stage", () => {
+    const URL = "https://example.com/private-path?token=synthetic";
+    const deferred = <T>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    const abortError = () =>
+      Object.assign(new Error("aborted"), { name: "AbortError" });
+    const createTool = (onToolFailure = jest.fn()) =>
+      createOpenUrlTool({
+        chatId: "chat_123",
+        userID: "user_123",
+        assistantMessageId: "assistant_msg_123",
+        onToolFailure,
+      });
+    const run = (
+      openUrl: ReturnType<typeof createTool>,
+      abortSignal: AbortSignal,
+      cursor?: string,
+    ) =>
+      openUrl.execute!(
+        { url: URL, brief: "Read", ...(cursor && { cursor }) },
+        { toolCallId: "call_123", messages: [], abortSignal },
+      ) as Promise<string>;
+    const stageLogs = () =>
+      mockEmitPostHogLog.mock.calls
+        .map(
+          ([record]) =>
+            record as { level: string; attributes: Record<string, unknown> },
+        )
+        .filter((r) => r.attributes.event === "open_url_in_flight_aborted");
+
+    it("reports the header and body phases before the provider settles", async () => {
+      const onToolFailure = jest.fn();
+      const openUrl = createTool(onToolFailure);
+
+      const headers = deferred<Response>();
+      mockFetch.mockReturnValueOnce(headers.promise);
+      const headerController = new AbortController();
+      const headerRun = run(openUrl, headerController.signal);
+      headerController.abort(new Error("PRIVATE_REASON"));
+
+      // Receipt is recorded while fetch is still pending.
+      expect(stageLogs()).toHaveLength(1);
+      expect(stageLogs()[0]).toMatchObject({
+        level: "info",
+        attributes: {
+          event: "open_url_in_flight_aborted",
+          tool_name: "open_url",
+          provider: "jina",
+          phase: "awaiting_headers",
+          elapsed_ms: expect.any(Number),
+          assistant_message_id: "assistant_msg_123",
+        },
+      });
+      headers.reject(abortError());
+      await expect(headerRun).resolves.toBe("Error: Operation aborted");
+
+      const body = deferred<string>();
+      const reading = deferred<void>();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: () => {
+          reading.resolve();
+          return body.promise;
+        },
+      } as unknown as Response);
+      const bodyController = new AbortController();
+      const bodyRun = run(openUrl, bodyController.signal);
+      await reading.promise;
+      bodyController.abort();
+
+      expect(stageLogs()).toHaveLength(2);
+      expect(stageLogs()[1].attributes.phase).toBe("reading_body");
+      body.reject(abortError());
+      await expect(bodyRun).resolves.toBe("Error: Operation aborted");
+
+      // A repeated phase on the same tool instance stays bounded.
+      const repeatedHeaders = deferred<Response>();
+      mockFetch.mockReturnValueOnce(repeatedHeaders.promise);
+      const repeatController = new AbortController();
+      const repeatRun = run(openUrl, repeatController.signal);
+      repeatController.abort();
+      expect(stageLogs()).toHaveLength(2);
+      repeatedHeaders.reject(abortError());
+      await expect(repeatRun).resolves.toBe("Error: Operation aborted");
+
+      expect(mockCaptureException).not.toHaveBeenCalled();
+      expect(onToolFailure).not.toHaveBeenCalled();
+      expect(mockEmitPostHogLog).toHaveBeenCalledTimes(2);
+      const logged = JSON.stringify(mockEmitPostHogLog.mock.calls);
+      for (const value of [
+        "example.com",
+        "private-path",
+        "synthetic",
+        "PRIVATE_REASON",
+        "call_123",
+        "chat_123",
+        "user_123",
+      ]) {
+        expect(logged).not.toContain(value);
+      }
+    });
+
+    it("distinguishes discarding a non-success body and keeps provider failure handling", async () => {
+      const onToolFailure = jest.fn();
+      const cancel = deferred<void>();
+      const discarding = deferred<void>();
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        body: {
+          cancel: () => {
+            discarding.resolve();
+            return cancel.promise;
+          },
+        },
+      } as unknown as Response);
+      const controller = new AbortController();
+      const result = run(createTool(onToolFailure), controller.signal);
+      await discarding.promise;
+      controller.abort();
+
+      expect(stageLogs()).toHaveLength(1);
+      expect(stageLogs()[0].attributes.phase).toBe("discarding_error_body");
+      cancel.resolve();
+      await expect(result).resolves.toBe(
+        "Error opening URL: The URL reader request failed (HTTP 503).",
+      );
+      expect(onToolFailure).toHaveBeenCalledTimes(1);
+      expect(onToolFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "open_url_provider_failed" }),
+      );
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it("does not report aborts after completion, before invocation, or on cached pages", async () => {
+      const openUrl = createTool();
+      const content = `Title: Example\n\nMarkdown Content:\n${"word ".repeat(20_000)}`;
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => content,
+      } as unknown as Response);
+      const succeeded = new AbortController();
+      const first = await run(openUrl, succeeded.signal);
+      succeeded.abort();
+      const cursor = first.match(/cursor="([\w-]+)"/)?.[1];
+      expect(cursor).toBeDefined();
+
+      const cached = new AbortController();
+      await expect(run(openUrl, cached.signal, cursor)).resolves.toContain(
+        "[Page content tokens",
+      );
+      cached.abort();
+
+      mockFetch.mockRejectedValueOnce(new RangeError("Invalid string length"));
+      const failed = new AbortController();
+      await run(openUrl, failed.signal);
+      failed.abort();
+
+      const preAborted = new AbortController();
+      preAborted.abort();
+      await expect(run(openUrl, preAborted.signal)).resolves.toBe(
+        "Error: Operation aborted",
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(stageLogs()).toHaveLength(0);
+    });
+  });
+
   it.each(["run cancelled", "Canceled by user"])(
     "keeps runtime cancellation silent: %s",
     async (error) => {

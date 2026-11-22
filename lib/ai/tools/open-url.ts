@@ -34,9 +34,18 @@ const NETWORK_ERROR_MESSAGE_PATTERN =
 type OpenUrlLogContext = Partial<
   Pick<
     ToolContext,
-    "chatId" | "getCurrentModelName" | "modelName" | "onToolFailure" | "userID"
+    | "assistantMessageId"
+    | "chatId"
+    | "getCurrentModelName"
+    | "modelName"
+    | "onToolFailure"
+    | "triggerRunId"
+    | "userID"
   >
 >;
+
+type OpenUrlProviderPhase =
+  "awaiting_headers" | "reading_body" | "discarding_error_body";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -118,6 +127,34 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
   // Keep only the latest document, scoped to this tool instance (never global or
   // shared across chats). A rebuilt worker can refetch and verify the cursor.
   let snapshot: { url: string; content: string; expiresAt: number } | undefined;
+  // Cancellation stays out of failure accounting, so record which provider
+  // await a stop interrupted. Once per phase per instance; fixed fields only.
+  const reportedAbortPhases = new Set<OpenUrlProviderPhase>();
+  const observeProviderAbort = (
+    abortSignal: AbortSignal | undefined,
+    getPhase: () => OpenUrlProviderPhase,
+    startedAt: number,
+  ) => {
+    if (!abortSignal) return undefined;
+    const onAbort = () => {
+      const phase = getPhase();
+      if (reportedAbortPhases.has(phase)) return;
+      reportedAbortPhases.add(phase);
+      phLogger.info("Open URL provider request aborted in flight", {
+        event: "open_url_in_flight_aborted",
+        tool_name: "open_url",
+        provider: "jina",
+        phase,
+        elapsed_ms: Date.now() - startedAt,
+        ...(context?.assistantMessageId && {
+          assistant_message_id: context.assistantMessageId,
+        }),
+        ...(context?.triggerRunId && { trigger_run_id: context.triggerRunId }),
+      });
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    return () => abortSignal.removeEventListener("abort", onAbort);
+  };
   return tool({
     ...openUrlTool,
     inputSchema: createOpenUrlToolSchema({
@@ -125,6 +162,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
     }).inputSchema,
     execute: async ({ url, cursor }: OpenUrlToolInput, { abortSignal }) => {
       const startedAt = Date.now();
+      let stopObservingAbort: (() => void) | undefined;
 
       try {
         if (abortSignal?.aborted) return "Error: Operation aborted";
@@ -134,6 +172,13 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         }
         // Construct the Jina AI reader URL with proper encoding
         const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
+
+        let phase: OpenUrlProviderPhase = "awaiting_headers";
+        stopObservingAbort = observeProviderAbort(
+          abortSignal,
+          () => phase,
+          startedAt,
+        );
 
         // Make the request to Jina AI reader
         const response = await fetch(jinaUrl, {
@@ -148,6 +193,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         if (!response.ok) {
           // Provider error pages can be arbitrarily large and may reflect request
           // details. Only the status belongs in the model's error result.
+          phase = "discarding_error_body";
           await response.body?.cancel().catch(() => {});
           reportToolFailure(context?.onToolFailure, {
             event: "open_url_provider_failed",
@@ -162,6 +208,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           return `Error opening URL: The URL reader request failed (HTTP ${response.status}).`;
         }
 
+        phase = "reading_body";
         const content = await response.text();
         const failure = getUrlContentFailure(content);
         if (failure) {
@@ -227,6 +274,8 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           error: toDiagnosticError(error, errorMessage),
         });
         return `Error opening URL: ${errorMessage}`;
+      } finally {
+        stopObservingAbort?.();
       }
     },
   });
