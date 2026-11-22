@@ -716,6 +716,75 @@ describe("passive fresh FileNotFound close confirmation", () => {
     });
   });
 
+  /**
+   * The initial selection read succeeds and a genuine fresh frame is captured;
+   * only the post-capture verification read loses the file to owner cleanup.
+   */
+  const missingAfterCapture = () => {
+    let reads = 0;
+    return {
+      activeNameReads: () => reads,
+      activeName: () => {
+        reads += 1;
+        if (reads === 1) return "default\n";
+        throw new FileNotFoundError("PRIVATE active-session");
+      },
+    };
+  };
+  const capturedJpeg = () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+
+  it("returns 410 when the post-capture verification read loses its file to confirmed closure", async () => {
+    const { activeName, activeNameReads } = missingAfterCapture();
+    const { response, confirm, screenshots, bytesReads, remove } =
+      await freshGet({ activeName, bytes: capturedJpeg });
+
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ state: "closed" });
+    expect(activeNameReads()).toBe(2);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      "getForBackend",
+      {
+        serviceKey: "test-only-service-key",
+        userId: "owner",
+        sessionId: SESSION_ID,
+        allowEnded: true,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(screenshots()).toBe(1);
+    expect(bytesReads()).toBe(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).not.toHaveBeenCalled();
+  });
+
+  it("keeps loading at verification when the owner is still active after one guarded proof", async () => {
+    const { activeName, activeNameReads } = missingAfterCapture();
+    const { response, confirm, screenshots, bytesReads } = await freshGet({
+      activeName,
+      bytes: capturedJpeg,
+      reread: async () => sessionRow({ state: "agent", runActive: true }),
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "loading" });
+    expect(activeNameReads()).toBe(2);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screenshots()).toBe(1);
+    expect(bytesReads()).toBe(1);
+    const { event, fields } = loggedEvent();
+    expect(event).toBe("agent_browser_preview_get_unavailable");
+    expect(fields).toMatchObject({
+      failure_stage: "verify_active_session",
+      fresh_requested: true,
+      handoff_state: "agent",
+      run_active: true,
+      active_session_read_diagnostic_version: 1,
+      active_session_read_error_kind: "file_not_found",
+    });
+    expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|\/dev\/shm/);
+  });
+
   it.each<[string, Parameters<typeof freshGet>[0]]>([
     ["a nonfresh request", { fresh: false, activeName: missingActiveName }],
     [
