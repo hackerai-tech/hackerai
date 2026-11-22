@@ -1842,6 +1842,99 @@ it("drops the close-proof code before sd1 or any other helper field at the 544 c
   expect(JSON.parse(justOver)).toEqual(existing);
 });
 
+// A selected CLOSE returned 0 after a matching OPEN, then the socket was missing.
+// No CLI-at-prepare receipt (cv [1, 0]); no PID or version sidecar.
+it.each([
+  ["lt5m", 4, 537, false],
+  ["lt60s", 4, 538, false],
+  // Below the cap, both the close proof code and the CLI observation remain.
+  ["lt60s", undefined, 531, true],
+])(
+  "keeps the close-proof code over an unavailable CLI observation at the 544 cap (open %s, k1 %s)",
+  (openAge, k1, strictBytes, keepsCli) => {
+    const run = (request: Record<string, unknown>, chargedBytes?: number) => {
+      const at = Date.now();
+      const d = daemon({
+        request,
+        chargedBytes,
+        missingPath: directory + "/sockets/default.sock",
+        receipt: {
+          ...receipt,
+          at,
+          exit: 0,
+          k1,
+          lr: [1, 0, 0],
+          history: [1, true, false],
+          open_receipt_support: 1,
+          close_receipt_support: 1,
+        },
+        openReceipt: {
+          ...receipt,
+          action: "open",
+          exit: 0,
+          at: at - (openAge === "lt5m" ? 120_000 : 30_000),
+          idle_env_version: 1,
+          idle_env: "15m",
+          os1: 1,
+          o1: 0,
+        },
+        closeReceipt: { ...receipt, at, exit: 0 },
+      });
+      expect(d.exit.mock.calls).toEqual([[2]]);
+      expect(d.connect).not.toHaveBeenCalled();
+      return d.output.mock.calls[0][0] as string;
+    };
+    const strict = run({ action: "stream_status" });
+    expect(Buffer.byteLength(strict)).toBe(strictBytes);
+    expect(JSON.parse(strict)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      wrapper_action: "close",
+      wrapper_exit: 0,
+      wrapper_session_matches: true,
+      open_age: openAge,
+      open_idle: [1, "15m"],
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        0,
+        "selected_session",
+        "lt10s",
+        "after",
+      ],
+      l1: [1, 0, 0],
+      h1: 1,
+      p1: [1, 0, 0],
+      os1: 1,
+      o1: 0,
+      dv: [1, 2],
+      cv: [1, 0],
+    });
+    const text = run({ action: "stream_status", recognize_closed: true });
+    const { cp1, ...existing } = JSON.parse(text);
+    // This harness has no proof file.
+    expect(cp1).toBe(0);
+    const { cv, ...strictExisting } = JSON.parse(strict);
+    expect(existing).toEqual(
+      keepsCli ? { ...strictExisting, cv } : strictExisting,
+    );
+    expect(text).not.toMatch(/PRIVATE|default|session_key/);
+    expectPacketBudgets(text);
+    // Still over without cv: the old policy drops cp1 and keeps cv.
+    const { cv: _cli, ...withoutCli } = JSON.parse(text);
+    const charged = 545 - Buffer.byteLength(JSON.stringify(withoutCli));
+    const over = run(
+      { action: "stream_status", recognize_closed: true },
+      charged,
+    );
+    expect(JSON.parse(over)).toEqual(
+      JSON.parse(run({ action: "stream_status" }, charged)),
+    );
+    expect(JSON.parse(over)).toMatchObject({ cv: [1, 0] });
+  },
+);
+
 /** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
 const maximalOpenSocket = (started: boolean, os1?: number, exit = 999) => {
   const longest = { ...receipt, at: Date.now() + 60_000, exit };
