@@ -4320,17 +4320,124 @@ it.each<[string, string[], string]>([
   },
 );
 
-it("drops the active-eval code first at the unchanged cap", () => {
-  const complete = evalDeadline().text;
+it("drops the active-eval code first at the unchanged cap beside a measured CLI observation", () => {
+  const measured = { cliReceipt: [1, 1, 999999999] };
+  const complete = evalDeadline(openStatus, measured).text;
   const { e1, ...existing } = JSON.parse(complete);
   expect(e1).toBe(1);
   const over = evalDeadline(openStatus, {
+    ...measured,
     chargedBytes: 545 - Buffer.byteLength(complete),
   }).text;
   expect(JSON.parse(over)).toEqual(existing);
-  // Every older optional field that scopes it survives.
-  expect(existing).toMatchObject({ q1: [1, 0, 3], w1: 3, k1: 6 });
+  // Every older optional field that scopes it survives, and the measured CLI.
+  expect(existing).toMatchObject({
+    q1: [1, 0, 3],
+    w1: 3,
+    k1: 6,
+    cv: [1, 1, 999999999],
+  });
 });
+
+it("keeps the active-eval code over the unchecked CLI fallback only when that swap alone fits", () => {
+  const complete = evalDeadline().text;
+  const { cv, ...withoutCli } = JSON.parse(complete);
+  expect(cv).toEqual([1, 0]);
+  expect(withoutCli.e1).toBe(1);
+  const run = (chargedBytes: number, declaresEval: boolean) =>
+    JSON.parse(
+      evalDeadline(openStatus, {
+        chargedBytes,
+        receipt: { ...activeEval, e1: declaresEval ? 1 : undefined },
+      }).text,
+    );
+  // Exactly at the cap without the fallback: only cv leaves.
+  const fits = 544 - Buffer.byteLength(JSON.stringify(withoutCli));
+  expect(run(fits, true)).toEqual(withoutCli);
+  // One byte over even without it: the older writer's packet at that same
+  // charge, keeping the fallback, as before.
+  const over = run(fits + 1, true);
+  expect(over).toEqual(run(fits + 1, false));
+  expect(over).not.toHaveProperty("e1");
+  expect(over.cv).toEqual([1, 0]);
+});
+
+it.each([3, 4])(
+  "keeps the active-eval code in the crowded packet with %s held connections",
+  (held) => {
+    const request = {
+      action: "stream_status",
+      defer_wait: true,
+      defer_open: true,
+      recognize_closed: true,
+      observe_progress: true,
+    };
+    const at = Date.now();
+    const current = {
+      ...activeEval,
+      at: at - 20_000,
+      lr: [1, 0, 0],
+      history: [1, true, false],
+      close_receipt_support: 1,
+    };
+    const options = {
+      openReceipt: {
+        ...successfulOpen,
+        at: at - 120_000,
+        idle_env_version: 1,
+        idle_env: "15m",
+        os1: 1,
+        o1: 0,
+      },
+      closeReceipt: {
+        ...receipt,
+        session_key: "f".repeat(64),
+        at: at - 600_000,
+        exit: 0,
+      },
+      versionFile: "0.39.3",
+    };
+    const ids = [4243, 4244, 4245, 4246].slice(0, held);
+    const queue = {
+      unix: queueTable(...ids.map(heldRow)),
+      fds: queueFds(...ids),
+    };
+    const legacy = evalDeadline(
+      request,
+      { ...options, receipt: { ...current, e1: undefined } },
+      queue,
+    ).text;
+    const { d, text } = evalDeadline(
+      request,
+      { ...options, receipt: current },
+      queue,
+    );
+    const { cv, ...context } = JSON.parse(legacy);
+    expect(Buffer.byteLength(legacy)).toBe(541);
+    expect(cv).toEqual([1, 0]);
+    expect(Buffer.byteLength(text)).toBe(537);
+    expect(JSON.parse(text)).toEqual({ ...context, e1: 1 });
+    expect(context).toMatchObject({
+      deadline: [1, "awaiting_response"],
+      wrapper_session_matches: true,
+      w1: 3,
+      k1: 6,
+      open_exit: 0,
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        0,
+        "other_session",
+        "older",
+        "unavailable",
+      ],
+      q1: [1, 0, held],
+    });
+    expectPacketBudgets(text);
+    expect(d.socket.write.mock.calls).toEqual(plainStatusWire);
+  },
+);
 
 /** One filesystem entry; hard links share the same object and so its identity. */
 type FsNode = {
