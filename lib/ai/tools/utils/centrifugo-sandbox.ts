@@ -169,6 +169,31 @@ function nativePathOutputShape(value: string) {
   return "relative_or_other";
 }
 
+const NATIVE_PATH_STDERR_SCAN_CODE_UNITS = 2048;
+
+type NativePathStderrFamily =
+  "empty" | "utility_name_prefix" | "runtime_fatal_shape" | "unknown";
+
+/**
+ * Classify returned conversion stderr by a fixed leading text shape only. A
+ * shape is not proof of its producer or cause, and no text is retained.
+ */
+function nativePathStderrFamily(stderr: string): NativePathStderrFamily {
+  if (stderr.length === 0) return "empty";
+  const line = stderr
+    .slice(0, NATIVE_PATH_STDERR_SCAN_CODE_UNITS)
+    .split(/[\r\n]/, 1)[0];
+  // MSYS2 cygpath.cc leads its own messages with its program name.
+  if (/^cygpath(?:\.exe)?: /.test(line)) return "utility_name_prefix";
+  // MSYS2/Cygwin api_fatal: "<n> [<thread>] <program> (<pid>) <path>: *** fatal error".
+  if (
+    /^ {0,16}\d{1,12} \[[A-Za-z0-9_]{1,32}\] /.test(line) &&
+    line.includes(": *** fatal error")
+  )
+    return "runtime_fatal_shape";
+  return "unknown";
+}
+
 type NativeReceiverErrorClass =
   | "authorization_invalid"
   | "origin_unavailable_or_denied"
@@ -2274,6 +2299,18 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               terminal_ack_published: receipt?.terminalAckPublished,
               last_received_sequence: receipt?.lastReceivedSequence,
               exit_success: result.exitCode === 0,
+              ...(result.exitCode !== 0 && {
+                exit_observation_version: 1,
+                // Keep only a POSIX status; native error terminals (-1) and
+                // any other returned value collapse to "other".
+                exit_code:
+                  Number.isInteger(result.exitCode) &&
+                  result.exitCode >= 1 &&
+                  result.exitCode <= 255
+                    ? result.exitCode
+                    : "other",
+                stderr_family: nativePathStderrFamily(result.stderr),
+              }),
               ...(failure === "non_absolute_output" && {
                 stdout_shape_version: 1,
                 stdout_shape: nativePathOutputShape(resolved),

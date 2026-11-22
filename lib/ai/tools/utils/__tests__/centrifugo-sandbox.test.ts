@@ -5914,6 +5914,11 @@ describe("CentrifugoSandbox", () => {
             terminal_ack_published: sequenced,
             last_received_sequence: sequenced ? 0 : -1,
             exit_success: terminal === "exit",
+            ...(terminal === "error" && {
+              exit_observation_version: 1,
+              exit_code: "other",
+              stderr_family: "unknown",
+            }),
             stdout_bytes: 0,
             stderr_bytes:
               terminal === "exit" ? 0 : "PRIVATE_ERROR_CANARY".length,
@@ -5963,8 +5968,173 @@ describe("CentrifugoSandbox", () => {
           stdout_shape: shape,
           stdout_shape_version: 1,
         });
+        // Zero-exit output-shape failures keep their nonempty stderr unprojected.
+        expect(records[0][1]).not.toHaveProperty("exit_observation_version");
+        expect(records[0][1]).not.toHaveProperty("exit_code");
+        expect(records[0][1]).not.toHaveProperty("stderr_family");
         expect(JSON.stringify(records)).not.toMatch(
           /PRIVATE|host|cygpath|file\.txt/,
+        );
+        expect(command).toHaveBeenCalledTimes(2);
+        expect(mockSubscriptions).toHaveLength(0);
+      },
+    );
+
+    it("projects a returned nonzero cygpath exit onto its exact command receipt", async () => {
+      const id = "33333333-3333-4333-8333-333333333333";
+      crypto.randomUUID = jest.fn().mockReturnValueOnce(id);
+      const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH_CANARY");
+      (sandbox as any).shellKind = "bash";
+      const command = jest.spyOn(sandbox.commands, "run");
+      const pending = sandbox.files
+        .write("file.txt", "PRIVATE_CONTENT_CANARY")
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const stderr = `cygpath: error converting "/tmp/PRIVATE_PATH_CANARY/file.txt" - ${"PRIVATE_SUFFIX_CANARY".repeat(15)}\n`;
+      reply.emit("publication", {
+        data: { type: "stderr", commandId: id, data: stderr },
+      });
+      reply.emit("publication", {
+        data: { type: "exit", commandId: id, exitCode: 1 },
+      });
+      const error = await pending;
+      expect(checkpointFailureOrigin(error)).toBe(
+        "windows_path_command_failed",
+      );
+      expect(checkpointCommandContext(error)).toMatchObject({
+        native_path_command_id: id,
+      });
+      const records = guardLog.mock.calls.filter(
+        ([event]) => event === "windows_native_path_resolution_failed",
+      );
+      expect(records).toHaveLength(1);
+      expect(records[0][1]).toMatchObject({
+        reason: "command_failed",
+        command_id: id,
+        receipt_available: true,
+        exit_success: false,
+        exit_observation_version: 1,
+        exit_code: 1,
+        stderr_family: "utility_name_prefix",
+        stdout_bytes: 0,
+        stderr_bytes: Buffer.byteLength(stderr, "utf8"),
+      });
+      expect(JSON.stringify(records)).not.toMatch(
+        /PRIVATE|cygpath|file\.txt|error converting/,
+      );
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(mockSubscriptions).toHaveLength(1);
+    });
+
+    const RUNTIME_HEADER = "      1 [main] cygpath (4321) C:\\PRIVATE_GIT\\";
+    it.each([
+      // Utility program-name prefix, independent of a long private suffix.
+      [
+        1,
+        `cygpath: ${"PRIVATE_SUFFIX_CANARY".repeat(200)}`,
+        "command_failed",
+        1,
+        "utility_name_prefix",
+      ],
+      [
+        255,
+        "cygpath.exe: can't convert PRIVATE_PATH_CANARY\r\n",
+        "command_failed",
+        255,
+        "utility_name_prefix",
+      ],
+      [
+        255,
+        `${RUNTIME_HEADER}cygpath.exe: *** fatal error - PRIVATE_SUFFIX_CANARY\r\nThis problem is probably due to PRIVATE_SUFFIX_CANARY\n`,
+        "command_failed",
+        255,
+        "runtime_fatal_shape",
+      ],
+      [2, "", "command_failed", 2, "empty"],
+      // The name is not leading text: no utility family is inferred.
+      [
+        127,
+        "bash: /usr/bin/cygpath: command not found",
+        "missing_utility",
+        127,
+        "unknown",
+      ],
+      [
+        1,
+        "PRIVATE_PREFIX_CANARY cygpath: PRIVATE",
+        "command_failed",
+        1,
+        "unknown",
+      ],
+      [1, "PRIVATE\ncygpath: PRIVATE", "command_failed", 1, "unknown"],
+      // A runtime header alone, or a fatal marker beyond the scan, is not fatal.
+      [
+        1,
+        "      0 [main] cygpath 4321 child_info_fork::abort: PRIVATE",
+        "command_failed",
+        1,
+        "unknown",
+      ],
+      [
+        1,
+        `${RUNTIME_HEADER}${"P".repeat(2048)}: *** fatal error - PRIVATE`,
+        "command_failed",
+        1,
+        "unknown",
+      ],
+      [
+        1,
+        `PRIVATE ${RUNTIME_HEADER}cygpath.exe: *** fatal error - PRIVATE`,
+        "command_failed",
+        1,
+        "unknown",
+      ],
+      // Unsupported returned codes collapse to one finite value.
+      [
+        -1,
+        "cygpath: PRIVATE",
+        "command_failed",
+        "other",
+        "utility_name_prefix",
+      ],
+      [256, "", "command_failed", "other", "empty"],
+      [3221225794, "PRIVATE", "command_failed", "other", "unknown"],
+      [Number.NaN, "PRIVATE", "command_failed", "other", "unknown"],
+      [undefined, "PRIVATE", "command_failed", "other", "unknown"],
+    ] as const)(
+      "projects returned nonzero exit %s without copying stderr",
+      async (exitCode, stderr, reason, exitObservation, family) => {
+        const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH_CANARY");
+        (sandbox as any).shellKind = "bash";
+        const command = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr,
+          exitCode: exitCode as number,
+        });
+        for (let i = 0; i < 2; i++) {
+          await expect(
+            sandbox.files.write("file.txt", "PRIVATE_CONTENT_CANARY"),
+          ).rejects.toMatchObject({ failure: reason });
+        }
+        const records = guardLog.mock.calls.filter(
+          ([event]) => event === "windows_native_path_resolution_failed",
+        );
+        expect(records).toHaveLength(1);
+        expect(records[0][1]).toMatchObject({
+          reason,
+          exit_success: false,
+          exit_observation_version: 1,
+          exit_code: exitObservation,
+          stderr_family: family,
+          stdout_bytes: 0,
+          stderr_bytes: Buffer.byteLength(stderr, "utf8"),
+        });
+        expect(records[0][1]).not.toHaveProperty("stdout_shape");
+        expect(JSON.stringify(records)).not.toMatch(
+          /PRIVATE|cygpath|\[main\]|C:|file\.txt|4321/,
         );
         expect(command).toHaveBeenCalledTimes(2);
         expect(mockSubscriptions).toHaveLength(0);
