@@ -1420,6 +1420,55 @@ it.each(["503", "transport", "no-frame"])(
   },
 );
 
+it("keeps a frameless 202 loading setup response connecting with bounded backoff until a frame arrives", async () => {
+  let settingUp = true;
+  const requestedAt: number[] = [];
+  global.fetch = jest.fn(async () => {
+    requestedAt.push(Date.now());
+    return settingUp
+      ? response({ state: "loading" }, true, 202)
+      : response({ frame });
+  });
+  await mount();
+  const startedAt = requestedAt[0];
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(23_000);
+  });
+  // Setup is not a disconnect: the existing loading words stay visible.
+  expect(screen.getByRole("status")).toHaveTextContent("Connecting browser…");
+  expect(screen.getByText("Waiting for Agent browser…")).toBeInTheDocument();
+  expect(
+    screen.queryByText(/Browser preview disconnected/),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Preview unavailable")).not.toBeInTheDocument();
+  expect(
+    screen.queryByAltText("Current Agent browser viewport"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeDisabled();
+  // A long setup slows to one request per eight seconds instead of a loop.
+  expect(requestedAt.map((time) => time - startedAt)).toEqual([
+    0, 1000, 3000, 7000, 15_000, 23_000,
+  ]);
+
+  settingUp = false;
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(8000);
+  });
+  expect(screen.getByAltText("Current Agent browser viewport")).toHaveAttribute(
+    "src",
+    frame.image,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Live preview");
+  expect(
+    screen.queryByText("Waiting for Agent browser…"),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
 it("discards the old session's pending preview retry when the session changes", async () => {
   global.fetch = jest.fn(async () => response({ state: "waiting" }, false));
   const view = await mount();
