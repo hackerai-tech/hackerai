@@ -73,18 +73,25 @@ export const getStructuredCompactionPrompt = (mode: ChatMode) =>
     .map(([name, description]) => `${name}: ${description}`)
     .join("\n");
 
+/** Closed telemetry classes; never derived from returned keys or values. */
+export type StructuredSummaryFailureKind =
+  "invalid_json" | "invalid_object" | "invalid_sections";
+
 /** Fail closed before replacing history; never fill missing fields or use reasoning. */
 export function renderStructuredCompaction(
   text: string,
   mode: ChatMode,
-): string | null {
+):
+  | { text: string; failureKind?: never }
+  | { text: null; failureKind: StructuredSummaryFailureKind } {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    return null;
+    return { text: null, failureKind: "invalid_json" };
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return { text: null, failureKind: "invalid_object" };
   const record = value as Record<string, unknown>;
   const sections = getCompactionSections(mode);
   if (
@@ -93,8 +100,10 @@ export function renderStructuredCompaction(
       (name) => typeof record[name] !== "string" || !record[name].trim(),
     )
   )
-    return null;
-  return sections
-    .map((name) => `## ${name}\n${(record[name] as string).trim()}`)
-    .join("\n\n");
+    return { text: null, failureKind: "invalid_sections" };
+  return {
+    text: sections
+      .map((name) => `## ${name}\n${(record[name] as string).trim()}`)
+      .join("\n\n"),
+  };
 }

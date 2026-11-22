@@ -948,9 +948,10 @@ export const generateSummaryText = async (
     finishReason: result.finishReason,
     reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens,
   };
-  const summaryText = generationOptions?.structuredSummary
+  const structured = generationOptions?.structuredSummary
     ? renderStructuredCompaction(result.text, mode)
-    : result.text;
+    : undefined;
+  const summaryText = structured ? structured.text : result.text;
   // A discarded warm attempt can still be billable. Account for its reported
   // usage separately before trying a differently priced bounded fallback.
   if (
@@ -962,14 +963,16 @@ export const generateSummaryText = async (
   ) {
     generationOptions?.onDiscardedUsage?.(usage);
     abortSignal?.throwIfAborted();
+    const reason = !result.text.trim()
+      ? usage.reasoningTokens && usage.reasoningTokens > 0
+        ? "reasoning_only"
+        : "empty_summary"
+      : result.finishReason !== "stop"
+        ? "non_stop_finish"
+        : "missing_sections";
     throw new InvalidCompactionSummaryError(
-      !result.text.trim()
-        ? usage.reasoningTokens && usage.reasoningTokens > 0
-          ? "reasoning_only"
-          : "empty_summary"
-        : result.finishReason !== "stop"
-          ? "non_stop_finish"
-          : "missing_sections",
+      reason,
+      reason === "missing_sections" ? structured?.failureKind : undefined,
     );
   }
   return { text: summaryText, usage };

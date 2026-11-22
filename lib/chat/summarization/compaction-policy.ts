@@ -16,7 +16,7 @@ import {
   phLogger,
 } from "@/lib/posthog/server";
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
-import type { InvalidCompactionSummaryError } from "./startup-compaction";
+import { InvalidCompactionSummaryError } from "./startup-compaction";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
 import type { AgentContextPolicy } from "@/lib/ai/agent-context-budget";
@@ -249,6 +249,12 @@ export class CompactionModelPolicy {
           served_model: model,
           outcome,
           failure_reason: failureReason ?? null,
+          ...(failureReason === "missing_sections" &&
+            error instanceof InvalidCompactionSummaryError &&
+            error.structuredFailureKind && {
+              structured_summary_diagnostic_version: 1,
+              structured_summary_failure_kind: error.structuredFailureKind,
+            }),
           ...compactionProviderFailure(error),
           duration_ms: durationMs,
           input_tokens: usage?.inputTokens ?? null,

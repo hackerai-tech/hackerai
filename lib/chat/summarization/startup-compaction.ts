@@ -1,3 +1,5 @@
+import type { StructuredSummaryFailureKind } from "./structured-summary";
+
 export const STARTUP_COMPACTION_VARIANT =
   "glm53_flash_deepseek_v41_glm53_v1" as const;
 export const STARTUP_COMPACTION_FALLBACK_MODELS = [
@@ -32,6 +34,8 @@ export class InvalidCompactionSummaryError extends Error {
       | "non_stop_finish"
       | "missing_sections"
       | "invalid_summary" = "invalid_summary",
+    /** Set only when a nonempty stop-finished structured response was rejected. */
+    readonly structuredFailureKind?: StructuredSummaryFailureKind,
   ) {
     super("Compaction returned an empty or incomplete summary");
     this.name = "InvalidCompactionSummaryError";
