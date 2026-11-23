@@ -80,6 +80,9 @@ jobs:
       - name: Test native text file reads within the UTF-8 byte cap
         working-directory: packages/desktop/src-tauri
         run: cargo test --locked --lib file_read_tests
+      - name: Test streamed command Job ownership, stop confirmation and background survival
+        working-directory: packages/desktop/src-tauri
+        run: cargo test --locked --lib -- stream_lifecycle windows_stream_job
       # Reuse the tested executable for source-pinned Windows VM diagnostics.
       # This is a test harness, not a Desktop installer or updater artifact.
       - name: Retain Windows native test executable
