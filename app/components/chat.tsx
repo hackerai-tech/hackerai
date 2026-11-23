@@ -2831,7 +2831,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         !!agentLongRunId ||
         status === "streaming" ||
         status === "submitted",
-      onRequeue: requeueUnreadSteers,
+      // After Stop, nothing the user sent to that run is sent again by itself.
+      onRequeue: (steerChatId, steers) =>
+        requeueUnreadSteers(
+          steerChatId,
+          hasManuallyStoppedRef.current && steerChatId === chatId
+            ? steers.map((steer) => ({ ...steer, held: true }))
+            : steers,
+        ),
     });
 
   // Automatic queue processing - send next queued message when ready

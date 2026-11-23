@@ -1,5 +1,6 @@
 import type { ChatMessage } from "@/types";
 import type { FilePart } from "@/types/file";
+import { AGENT_STEER_PART_TYPE } from "@/lib/chat/agent-steer";
 
 type MessagePart = ChatMessage["parts"][number];
 
@@ -88,6 +89,8 @@ const shouldProjectWorkPart = (part: MessagePart) => {
     type === "text" ||
     type === "reasoning" ||
     type === "data-summarization" ||
+    // A follow-up the Agent read mid-run, shown where it read it.
+    type === AGENT_STEER_PART_TYPE ||
     Boolean(type?.startsWith("tool-"))
   );
 };

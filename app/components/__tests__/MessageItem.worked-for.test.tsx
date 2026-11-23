@@ -376,6 +376,47 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
+  it("shows a steer the Agent read between the tool calls it separated", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        parts: [
+          { type: "step-start" },
+          {
+            type: "tool-shell",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: "first",
+          },
+          {
+            type: "data-agent-steer",
+            id: "steer-1",
+            data: { id: "steer-1", text: "Use staging" },
+          },
+          { type: "step-start" },
+          {
+            type: "tool-shell",
+            toolCallId: "call-2",
+            state: "output-available",
+            input: "second",
+          },
+          { type: "text", text: "final answer" },
+        ],
+      } as ChatMessage,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /worked for/i }));
+    const rendered = screen
+      .getAllByTestId(/^part-/)
+      .map((element) => element.getAttribute("data-part-index"));
+    expect(screen.getByTestId("part-data-agent-steer")).toHaveAttribute(
+      "data-part-index",
+      "2",
+    );
+    expect(rendered.indexOf("2")).toBeGreaterThan(rendered.indexOf("1"));
+    expect(rendered.indexOf("2")).toBeLessThan(rendered.indexOf("4"));
+  });
+
   it("shows Worked for for messages generated in agent mode", () => {
     renderMessageItem({ mode: "ask" });
 
