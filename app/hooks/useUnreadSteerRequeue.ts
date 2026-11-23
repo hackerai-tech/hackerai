@@ -71,6 +71,12 @@ export function useUnreadSteerRequeue({
 
   useLayoutEffect(() => {
     visit.current = { chatId, startedAt: Date.now() };
+    // Leaving the chat ends the visit, so anything restored afterward is
+    // held. Layout cleanup runs before the DOM is removed, ahead of any
+    // deferred passive cleanup that a completing withdrawal could outrun.
+    return () => {
+      visit.current = { chatId: "", startedAt: Infinity };
+    };
   }, [chatId]);
 
   const mounted = useRef(true);
@@ -78,8 +84,6 @@ export function useUnreadSteerRequeue({
     mounted.current = true;
     return () => {
       mounted.current = false;
-      // Leaving the chat ends the visit: anything restored afterward is held.
-      visit.current = { chatId: "", startedAt: Infinity };
       clearTimeout(retryTimer.current);
     };
   }, []);
