@@ -48,9 +48,13 @@ async function main() {
       listed.some((p) => p.id === first.process.id),
       `process is still running after ${waitSeconds}s`,
     );
-    const ticks = (
-      await sandbox.commands.run(`grep -c tick ${first.process.logPath}`)
-    ).stdout.trim();
+    const ticks =
+      // The launcher runs as root like other app commands; its registry is 0700.
+      (
+        await sandbox.commands.run(`grep -c tick ${first.process.logPath}`, {
+          user: "root",
+        })
+      ).stdout.trim();
     check(
       Number(ticks) >= waitSeconds - 5,
       `log kept growing (${ticks} lines)`,
