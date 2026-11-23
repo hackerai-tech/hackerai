@@ -523,9 +523,13 @@ corepack pnpm exec tsx scripts/abuse-block-notices.ts summary \
   --expect-convex-url <deployment URL>
 ```
 
-`NEXT_PUBLIC_CONVEX_URL` must equal the asserted URL and `WORKOS_API_KEY` must
-start with `sk_<env>_`; otherwise nothing is called. `dispatch` also needs
-`ABUSE_NOTICE_BRIDGE_DIR`, the absolute directory of the pinned Proton Bridge
+`NEXT_PUBLIC_CONVEX_URL` must equal the asserted URL. Test dispatch uses
+the approved staging key. For live dispatch, verify the WorkOS key against
+the intended Production directory and pin the exact key's SHA-256 digest
+in `ABUSE_NOTICE_WORKOS_KEY_SHA256`. WorkOS keys can use the opaque `sk_`
+format. A mismatched digest or a staging key fails the live assertion before
+any claim. `dispatch` also needs `ABUSE_NOTICE_BRIDGE_DIR`, the absolute
+directory of the pinned Proton Bridge
 helper exposing `imap_session()` and `smtp_session()`, and optionally `ABUSE_NOTICE_PYTHON` and
 `ABUSE_NOTICE_MAIL_HELPER`. The Bridge session must be able to send as
 `abuse@hackerai.co`.

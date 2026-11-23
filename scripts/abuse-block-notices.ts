@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { WorkOS } from "@workos-inc/node";
@@ -23,12 +23,13 @@ import {
 
 const COMMANDS = ["dispatch", "summary"] as const;
 type Command = (typeof COMMANDS)[number];
-const WORKOS_ENVIRONMENTS = ["test", "live"] as const;
+
 const USAGE = `Usage: tsx scripts/abuse-block-notices.ts <dispatch|summary> --expect-convex-url <url> [--expect-workos-env test|live] [--max <1-20>]
 
 Environment: NEXT_PUBLIC_CONVEX_URL, CONVEX_ABUSE_NOTICE_DISPATCH_SERVICE_KEY.
-dispatch also needs WORKOS_API_KEY with --expect-workos-env, ABUSE_NOTICE_BRIDGE_DIR (the
-pinned Proton Bridge helper directory), and optionally ABUSE_NOTICE_PYTHON (default
+dispatch also needs WORKOS_API_KEY with --expect-workos-env and ABUSE_NOTICE_BRIDGE_DIR.
+For a live assertion, ABUSE_NOTICE_WORKOS_KEY_SHA256 must pin the key verified
+against the intended Production WorkOS directory. Optional ABUSE_NOTICE_PYTHON (default
 /usr/bin/python3) and ABUSE_NOTICE_MAIL_HELPER (default scripts/abuse-notices/send_block_notice.py).`;
 
 const MESSAGES: Record<string, string> = {
@@ -114,16 +115,23 @@ export async function main(
     }
     const workosEnv = values["expect-workos-env"] ?? "";
     const workosKey = env.WORKOS_API_KEY;
+    const workosKeyMatches =
+      workosKey &&
+      /^sk_[A-Za-z0-9_.=-]{8,512}$/.test(workosKey) &&
+      (workosEnv === "test"
+        ? workosKey.startsWith("sk_test_")
+        : workosEnv === "live" &&
+          !workosKey.startsWith("sk_test_") &&
+          createHash("sha256").update(workosKey).digest("hex") ===
+            env.ABUSE_NOTICE_WORKOS_KEY_SHA256);
     const bridgeDir = env.ABUSE_NOTICE_BRIDGE_DIR;
     const python = env.ABUSE_NOTICE_PYTHON || "/usr/bin/python3";
     const script =
       env.ABUSE_NOTICE_MAIL_HELPER ||
       resolve(__dirname, "abuse-notices/send_block_notice.py");
     if (
-      !WORKOS_ENVIRONMENTS.includes(
-        workosEnv as (typeof WORKOS_ENVIRONMENTS)[number],
-      ) ||
-      !workosKey?.startsWith(`sk_${workosEnv}_`) ||
+      !workosKey ||
+      !workosKeyMatches ||
       !bridgeDir ||
       !isAbsolute(bridgeDir) ||
       !isAbsolute(python) ||

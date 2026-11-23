@@ -4,6 +4,7 @@ jest.mock("../../convex/lib/serviceFunctions", () => ({
   query: (config: unknown) => config,
   internalMutation: (config: unknown) => config,
 }));
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -370,6 +371,55 @@ describe("CLI", () => {
     expect(made.createDispatchDeps).not.toHaveBeenCalled();
     expect(JSON.parse(err[0]).message).toMatch(/Nothing was called/);
     expect(err.join("")).not.toContain("synthetic");
+  });
+
+  it("accepts an opaque Production WorkOS key only with its verified fingerprint", async () => {
+    const key = "sk_opaque_synthetic_production_key";
+    const pin = createHash("sha256").update(key).digest("hex");
+    const made = factories();
+    const { io: streams, out } = io();
+    made.createConvex.mockReturnValue({
+      mutation: async () => ({ status: "empty" }),
+    });
+    made.createDispatchDeps = () => ({
+      resolveRecipient: async () => ({ status: "unavailable" }),
+      send: async () => "not_sent",
+    });
+    const args = [
+      "dispatch",
+      "--expect-convex-url",
+      URL,
+      "--expect-workos-env",
+      "live",
+    ];
+    for (const candidate of [
+      { WORKOS_API_KEY: key },
+      { WORKOS_API_KEY: key, ABUSE_NOTICE_WORKOS_KEY_SHA256: "0".repeat(64) },
+      {
+        WORKOS_API_KEY: env.WORKOS_API_KEY,
+        ABUSE_NOTICE_WORKOS_KEY_SHA256: createHash("sha256")
+          .update(env.WORKOS_API_KEY)
+          .digest("hex"),
+      },
+    ]) {
+      await expect(
+        main(args, { ...env, ...candidate }, streams, made),
+      ).resolves.toBe(1);
+    }
+    expect(made.createConvex).not.toHaveBeenCalled();
+    await expect(
+      main(
+        args,
+        {
+          ...env,
+          WORKOS_API_KEY: key,
+          ABUSE_NOTICE_WORKOS_KEY_SHA256: pin,
+        },
+        streams,
+        made,
+      ),
+    ).resolves.toBe(0);
+    expect(JSON.parse(out[0]).result.status).toBe("idle");
   });
 
   it("prints only the aggregate summary", async () => {
