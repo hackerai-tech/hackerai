@@ -102,6 +102,8 @@ export function useUnreadSteerRequeue({
               timestamp: steer.sentAt,
               sentHere: steersSentHere.has(steer.id),
             });
+          // Its run still holds it; a later snapshot can try again.
+          else withdrawing.current.delete(steer.id);
         } catch {
           // Still pending; a bounded retry runs even if nothing else changes.
           // Later steers wait too, so none is restored ahead of this one.

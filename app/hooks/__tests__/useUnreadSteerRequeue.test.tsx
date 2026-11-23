@@ -186,6 +186,23 @@ describe("useUnreadSteerRequeue", () => {
     ]);
   });
 
+  it("tries again on a later snapshot when the run still held the steer", async () => {
+    mockPending = [steer("held-by-run", "Also check X")];
+    mockWithdraw
+      .mockResolvedValueOnce({ outcome: "not_found" })
+      .mockResolvedValueOnce({ outcome: "withdrawn", text: "Also check X" });
+    const onRequeue = jest.fn();
+    const { rerender } = render(onRequeue);
+    await waitFor(() => expect(mockWithdraw).toHaveBeenCalledTimes(1));
+    // The server still listed it: the run ended without saving it.
+    mockPending = [...mockPending];
+    await act(async () => rerender({ runActive: false }));
+    await waitFor(() => expect(mockWithdraw).toHaveBeenCalledTimes(2));
+    expect(onRequeue).toHaveBeenLastCalledWith("chat-1", [
+      expect.objectContaining({ text: "Also check X" }),
+    ]);
+  });
+
   it("retries a failed withdrawal without a new snapshot", async () => {
     jest.useFakeTimers();
     try {

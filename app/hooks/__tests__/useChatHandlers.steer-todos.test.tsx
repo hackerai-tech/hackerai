@@ -1026,6 +1026,75 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(mockSendMessage).not.toHaveBeenCalled();
     });
 
+    it("only queues a Cmd/Ctrl+Enter follow-up sent during summarization", async () => {
+      const { result, rerender } = renderSummarySteer(true);
+      expect(await submit(result, { metaKey: true })).toBe(true);
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+      expect(result.current.hasPendingSummarySteer).toBe(false);
+      await act(async () => {
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+      });
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+    });
+
+    it("still stops the run for a Stop & send deferred by summarization", async () => {
+      mockQueueBehavior = "stop-and-send";
+      mockQueueMessage.mockImplementationOnce(() => {
+        mockMessageQueue = [
+          { id: "queued-1", text: mockInput, files: [], timestamp: 123 },
+        ];
+        return "queued-1";
+      });
+      const { result, rerender } = renderSummarySteer(true);
+      expect(await submit(result)).toBe(true);
+      expect(result.current.hasPendingSummarySteer).toBe(true);
+      await act(async () => {
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+      });
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockStop).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a queued message edited while its steer was pending", async () => {
+      mockMessageQueue = [
+        { id: "queued-1", text: "Change direction", files: [], timestamp: 1 },
+      ];
+      let accept!: (outcome: string) => void;
+      mockCreateAgentSteer.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            accept = resolve;
+          }),
+      );
+      const { result, rerender } = renderSummarySteer(false);
+      let sending!: Promise<void>;
+      act(() => {
+        sending = result.current.handleSendNow("queued-1");
+      });
+      mockMessageQueue = [
+        { id: "queued-1", text: "Edited meanwhile", files: [], timestamp: 1 },
+      ];
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+      await act(async () => {
+        accept("pending");
+        await sending;
+      });
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    });
+
     it("keeps a queued message queued when the run refuses the steer", async () => {
       mockCreateAgentSteer.mockResolvedValueOnce("no_active_run");
       mockMessageQueue = [

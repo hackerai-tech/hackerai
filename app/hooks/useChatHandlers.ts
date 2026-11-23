@@ -222,6 +222,7 @@ export const useChatHandlers = ({
   // values.
   const requestSelectedModelRef = useCommittedRef(requestSelectedModel);
   const chatModeRef = useCommittedRef(chatMode);
+  const messageQueueRef = useLatestRef(messageQueue);
   const sandboxPreferenceRef = useCommittedRef(sandboxPreference);
   const desktopEnvironmentIdRef = useCommittedRef(desktopEnvironmentId);
   const agentPermissionModeRef = useCommittedRef(agentPermissionMode);
@@ -1273,8 +1274,12 @@ export const useChatHandlers = ({
         }
       }
 
+      // Summarization defers a follow-up that will stop the run. With steering
+      // available, a queue choice (including Cmd/Ctrl+Enter) only queues.
       const deferForSummary =
-        !steerFellBackToQueue && (wasSummarizing || isSummarizingRef.current);
+        !steerFellBackToQueue &&
+        (wasSummarizing || isSummarizingRef.current) &&
+        (!agentSteeringEnabled || followUpBehavior === "stop-and-send");
       if (deferForSummary || followUpBehavior === "queue") {
         // During compaction, accept the draft now and steer as soon as the
         // summary settles. Ordinary queue mode waits for the full response.
@@ -2002,6 +2007,8 @@ export const useChatHandlers = ({
     messageId: string,
     options: RetryOptions = {},
     retryAction?: ReplacementAction,
+    // A follow-up deferred by summarization already chose to stop the run.
+    { allowSteer = true }: { allowSteer?: boolean } = {},
   ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
@@ -2013,6 +2020,7 @@ export const useChatHandlers = ({
         goalStateRef.current,
       );
     if (
+      allowSteer &&
       agentSteeringEnabled &&
       chatModeRef.current === "agent" &&
       !isSendingNowRef.current &&
@@ -2027,7 +2035,12 @@ export const useChatHandlers = ({
       try {
         // Keep its queue position if the run never reads it.
         if (await steerActiveRun(message.text, message.timestamp)) {
-          removeQueuedMessage(messageId);
+          // An edit made while the steer was pending stays queued.
+          const latest = messageQueueRef.current.find(
+            (item) => item.id === messageId,
+          );
+          if (!latest || latest.text === message.text)
+            removeQueuedMessage(messageId);
         } else if (currentChatIdRef.current === chatId) {
           // Never fall back to stopping a run the user asked to steer.
           toast.error("Could not steer the Agent run", {
@@ -2162,6 +2175,7 @@ export const useChatHandlers = ({
       message.id,
       summarySteer.options,
       summarySteer.retryAction,
+      { allowSteer: false },
     );
   }, [
     summarySteer,
