@@ -26,6 +26,7 @@ const originalInferenceKey = process.env.INFERENCE_API_KEY;
 beforeEach(() => {
   jest.clearAllMocks();
   process.env.ABLITERATION_API_KEY = "test-only";
+  process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED = "true";
   process.env.INFERENCE_API_KEY = "test-only";
 });
 afterAll(() => {
@@ -33,6 +34,7 @@ afterAll(() => {
   else process.env.INFERENCE_API_KEY = originalInferenceKey;
   if (originalKey === undefined) delete process.env.ABLITERATION_API_KEY;
   else process.env.ABLITERATION_API_KEY = originalKey;
+  delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
 });
 
 describe.each(["ask", "agent"] as const)(

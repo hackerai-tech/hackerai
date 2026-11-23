@@ -41,10 +41,12 @@ describe("paid moderation-gated three-step Abliteration", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.ABLITERATION_API_KEY = "test-only-placeholder";
+    process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED = "true";
   });
   afterAll(() => {
     if (originalKey === undefined) delete process.env.ABLITERATION_API_KEY;
     else process.env.ABLITERATION_API_KEY = originalKey;
+    delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
   });
   const messages = [
     {
@@ -292,6 +294,7 @@ describe("Inference rollout assignment", () => {
     if (originalAbliterationKey === undefined)
       delete process.env.ABLITERATION_API_KEY;
     else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
+    delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
   });
   const evaluate = (
     inferenceEnvironment: "preview" | "production" | undefined,
@@ -328,6 +331,7 @@ describe("Inference rollout assignment", () => {
     jest.clearAllMocks();
     process.env.INFERENCE_API_KEY = "test-only";
     process.env.ABLITERATION_API_KEY = "test-only";
+    process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED = "true";
     jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   });
   it("enables eligible Production and Preview requests", async () => {
@@ -365,10 +369,14 @@ describe("Inference rollout assignment", () => {
     ).toBeUndefined();
     expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
   });
-  it("requires the retained fallback provider to be configured", async () => {
-    delete process.env.ABLITERATION_API_KEY;
+  it("keeps Inference but never routes to Abliteration without confirmed zero data retention", async () => {
+    delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
+    expect(await evaluate("production")).toMatchObject({
+      key: INFERENCE_CYBER_FLAG,
+      inferenceCyberEnabled: true,
+    });
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
     expect(await evaluate("production")).toBeUndefined();
-    expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
   });
   it("does not enable Inference outside a trusted deployed runtime", async () => {
     expect((await evaluate(undefined))?.inferenceCyberEnabled).toBe(false);

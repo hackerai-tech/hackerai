@@ -78,8 +78,10 @@ pnpm run setup
 
 To use abliteration.ai for eligible security requests, create an API key in the
 [abliteration.ai console](https://abliteration.ai/console) and set
-`ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
-optional key, HackerAI continues using its standard models.
+`ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. HackerAI also
+requires `ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED=true` before routing any
+request there, because every model provider must use zero data retention.
+Without both, HackerAI continues using its standard models.
 
 ### Start the development server
 

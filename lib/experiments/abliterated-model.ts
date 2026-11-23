@@ -170,7 +170,6 @@ export async function evaluateAbliteratedModel({
   // Keep the selected Free baseline for generations after the first three.
   if (subscription === "free") {
     if (
-      !providerConfigured ||
       !userId ||
       limitRescue ||
       !newUserTurn ||
@@ -187,20 +186,29 @@ export async function evaluateAbliteratedModel({
       );
       return undefined;
     }
+    const inferenceCyberEnabled = await evaluateInference();
+    // Without Abliteration, only the Inference route may serve these steps.
+    if (!providerConfigured && !inferenceCyberEnabled) {
+      reportDecision(
+        "provider_not_configured",
+        undefined,
+        ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
+      );
+      return undefined;
+    }
     return {
       key: ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
       variant: "test",
       modelKey: ABLITERATION_MODEL_KEY,
       baselineModel: selectedModel,
       generationStepLimit: 3,
-      inferenceCyberEnabled: await evaluateInference(),
+      inferenceCyberEnabled,
       selectionSource: "moderation",
       moderationEligible,
       moderationChecked,
     };
   }
   if (
-    !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
       moderationEligible,
@@ -209,8 +217,7 @@ export async function evaluateAbliteratedModel({
     })
   ) {
     let reason = "moderation_not_eligible";
-    if (!providerConfigured) reason = "provider_not_configured";
-    else if (limitRescue) reason = "limit_rescue";
+    if (limitRescue) reason = "limit_rescue";
     else if (!messages.length || messagesContainUnsupportedFiles(messages))
       reason = "unsupported_input";
     reportDecision(reason);
@@ -233,6 +240,11 @@ export async function evaluateAbliteratedModel({
       moderationEligible,
       moderationChecked,
     };
+  }
+
+  if (!providerConfigured) {
+    reportDecision("provider_not_configured");
+    return undefined;
   }
 
   reportDecision("moderated_three_step_default", "test");

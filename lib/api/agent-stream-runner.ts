@@ -45,6 +45,7 @@ import {
   type AbliterationGenerationStepLimit,
 } from "@/lib/experiments/abliterated-model-steps";
 import {
+  isAbliterationConfigured,
   isAbliterationModel,
   ABLITERATION_MODEL_KEY,
   ABLITERATION_LARGE_V2_MODEL_KEY,
@@ -1236,10 +1237,12 @@ export async function createAgentStream(
       );
     };
     let recoveryModel = wrapAttempt(languageModel);
+    // Without Abliteration, an Inference failure uses the baseline recovery.
     if (
       typeof languageModel !== "string" &&
       languageModel.specificationVersion === "v3" &&
-      isInferenceCyberModel(languageModel.modelId)
+      isInferenceCyberModel(languageModel.modelId) &&
+      isAbliterationConfigured()
     ) {
       const fallback = wrapAttempt(
         ctx.trackedProvider.languageModel(ABLITERATION_MODEL_KEY),

@@ -17,8 +17,12 @@ export const isAbliterationModel = (modelName: string | undefined) =>
   modelName === ABLITERATION_LARGE_FLASH_MODEL_ID;
 
 // Server-only credential. Missing credentials never make a request eligible.
+// Every route keeps Abliteration off until its zero data retention is confirmed
+// in writing for HackerAI's account; then set the confirmation variable to
+// "true" in each deployed environment.
 export const isAbliterationConfigured = () =>
-  Boolean(process.env.ABLITERATION_API_KEY?.trim());
+  Boolean(process.env.ABLITERATION_API_KEY?.trim()) &&
+  process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED === "true";
 
 export const abliteration = createOpenAICompatible({
   name: "abliteration",

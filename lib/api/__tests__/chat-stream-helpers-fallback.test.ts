@@ -2025,6 +2025,7 @@ describe("Max Agent Grok recovery on Amazon Bedrock", () => {
       only: ["amazon-bedrock"],
       allow_fallbacks: false,
       ignore: ["xai"],
+      zdr: true,
     });
     expect(body.reasoning).toEqual({ enabled: true, effort: "high" });
     expect(body).not.toHaveProperty("models");

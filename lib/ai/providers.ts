@@ -291,6 +291,27 @@ export const sanitizeOpenRouterEncryptedReasoning = (
   };
 };
 
+/**
+ * Every OpenRouter generation may use only zero-data-retention endpoints. It is
+ * enforced at this shared transport so no caller's routing options can drop it.
+ */
+export const requireOpenRouterZeroDataRetention = (
+  body: unknown,
+): { body: unknown; changed: boolean } => {
+  if (
+    !isRecord(body) ||
+    (body.model === undefined && body.models === undefined)
+  ) {
+    return { body, changed: false };
+  }
+  const provider = isRecord(body.provider) ? body.provider : {};
+  if (provider.zdr === true) return { body, changed: false };
+  return {
+    body: { ...body, provider: { ...provider, zdr: true } },
+    changed: true,
+  };
+};
+
 export const makeOpenRouterToolChoiceCompatibleWithXaiReasoning = (
   body: unknown,
 ): { body: unknown; changed: boolean } => {
@@ -1153,16 +1174,21 @@ export const createOpenRouterPatchFetch =
           makeOpenRouterToolChoiceCompatibleWithXaiReasoning(
             reasoningPatched.body,
           );
-        parsedRequestBody = xaiCompatible.body;
+        // Recovery retries rebuild their bodies from this parsed request.
+        const zdrRequired = requireOpenRouterZeroDataRetention(
+          xaiCompatible.body,
+        );
+        parsedRequestBody = zdrRequired.body;
         if (
           kimiNormalized.changed ||
           kimiPatched.changed ||
           reasoningPatched.changed ||
-          xaiCompatible.changed
+          xaiCompatible.changed ||
+          zdrRequired.changed
         ) {
           nextInit = {
             ...nextInit,
-            body: JSON.stringify(xaiCompatible.body),
+            body: JSON.stringify(zdrRequired.body),
           };
         }
       } catch {

@@ -62,7 +62,9 @@ old parts as before.
 Conversation compaction shares the `inference_cyber_v1` rollout control with
 eligible security generation. With the flag enabled and Inference configured,
 all plans use Inference for ordinary and expanded-context summaries, with
-Abliteration as the first recovery provider when configured. Existing
+Abliteration as the first recovery provider when configured. Abliteration
+counts as configured only when its zero data retention confirmation variable is
+also set; without it, Inference failures use the baseline recovery. Existing
 OpenRouter recovery follows if both direct providers fail. The summary must
 finish normally and contain every required checkpoint section before it can
 replace history; discarded output usage is still accounted to its actual

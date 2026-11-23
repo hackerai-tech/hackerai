@@ -35,6 +35,7 @@ describe("processChatMessages authorization metadata", () => {
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key";
     process.env.ABLITERATION_API_KEY = "test-only-key";
+    process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED = "true";
     mockModerationsCreate.mockReset();
   });
 
@@ -43,6 +44,7 @@ describe("processChatMessages authorization metadata", () => {
     if (originalAbliterationKey === undefined)
       delete process.env.ABLITERATION_API_KEY;
     else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
+    delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
   });
 
   it.each([
