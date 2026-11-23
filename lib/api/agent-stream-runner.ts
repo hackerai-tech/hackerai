@@ -398,8 +398,7 @@ export const resolveAgentModelForImageToolResults = (
     if (
       selectedModelOverride === "hackerai-pro" ||
       (!selectedModelOverride &&
-        (modelName === "model-deepseek-v4-pro" ||
-          modelName === "model-deepseek-v4-pro-0813" ||
+        (modelName === "model-deepseek-v4-pro-0813" ||
           modelName === PRO_AGENT_GLM_VISION_MODEL ||
           modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL))
     ) {
@@ -409,9 +408,7 @@ export const resolveAgentModelForImageToolResults = (
   }
   if (
     selectedModelOverride === "hackerai-pro" ||
-    (!selectedModelOverride &&
-      (modelName === "model-deepseek-v4-pro" ||
-        modelName === "model-deepseek-v4-pro-0813"))
+    (!selectedModelOverride && modelName === "model-deepseek-v4-pro-0813")
   ) {
     return PRO_AGENT_DEEPSEEK_VISION_MODEL;
   }

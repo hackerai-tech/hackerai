@@ -743,20 +743,13 @@ export function createAgentCompactionReporter({
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses Grok 4.6 for text and images. Both DeepSeek
- * Flash routes try GLM 5.3 Flash before the established recovery models.
- * Historical aliases remain recognized for in-flight requests and accounting.
+ * DeepSeek Flash routes try GLM 5.3 Flash before the established recovery
+ * models. V4 Pro 0813 remains only as a recovery model.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
-const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
-  "model-kimi-k3",
-  "model-grok-4.6",
-] as const satisfies readonly ModelName[];
-
 const GROK_4_6_FALLBACK_CHAIN = [
   "model-glm-5.3",
   "model-kimi-k3",
@@ -793,30 +786,16 @@ const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
   ...PRO_TEXT_FALLBACK_CHAIN,
 ] as const satisfies readonly ModelName[];
 
-// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.3
-// remains its first fallback, followed by Kimi K3.
-const HACKERAI_PRO_FALLBACK_CHAIN = [
-  "model-glm-5.3",
-  "model-kimi-k3",
-] as const satisfies readonly ModelName[];
-
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "ask-model-free-glm": GLM_FLASH_AGENT_FALLBACK_CHAIN,
   "ask-model-free-deepseek-v41": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": GLM_FLASH_AGENT_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
-  "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
-  "ask-model": GROK_4_6_FALLBACK_CHAIN,
-  "agent-model": GROK_4_6_FALLBACK_CHAIN,
   "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
   "model-grok-4.5": ["model-kimi-k3"],
   "model-grok-4.5-pro": ["model-kimi-k3"],
-  "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
-  "model-opus-4.6": ["model-grok-4.6"],
-  "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "model-glm-5.3": ["model-kimi-k3"],
   "model-glm-5.3-flash": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
   "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
@@ -829,20 +808,16 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
-  "ask-model",
   "ask-model-free",
   "ask-model-free-glm",
   "ask-model-free-deepseek-v41",
-  "agent-model",
   "agent-model-free",
 ]);
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
   "model-glm-5.3",
   "model-grok-4.6",
-  "model-grok-4.6-pro",
 ]);
 const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
-  "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",
 ]);
 
@@ -885,14 +860,10 @@ const HIGH_REASONING_MODELS = [
   DEEPSEEK_1017_MODEL_KEY,
   "model-grok-4.5-pro",
   "model-grok-4.6",
-  "model-grok-4.6-pro",
-  "model-deepseek-v4-flash-0731",
   "model-deepseek-v4-pro-0813",
-  "model-glm-5.2",
   "model-glm-5.3",
   "model-glm-5.3-flash-pro",
   "model-deepseek-v4-flash-vision-pro",
-  "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
 const isHighReasoningModel = (modelName?: string): boolean =>
@@ -973,7 +944,6 @@ export function getRetryFallbackModel(
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
     modelName === "model-deepseek-v4-flash-vision-pro"
   ) {
@@ -982,21 +952,10 @@ export function getRetryFallbackModel(
   if (modelName === "model-deepseek-v4-pro-0813") {
     return "model-glm-5.3";
   }
-  if (modelName === "model-grok-4.6-pro") {
-    return "model-glm-5.3";
-  }
   if (modelName === "model-grok-4.5" || modelName === "model-grok-4.5-pro") {
     return "model-kimi-k3";
   }
-  if (modelName === "model-opus-4.6") {
-    return "model-grok-4.6";
-  }
-  if (modelName === "model-deepseek-v4-pro") {
-    return "model-glm-5.3";
-  }
   if (
-    modelName === "ask-model" ||
-    modelName === "agent-model" ||
     modelName === "model-grok-4.6" ||
     modelName === "model-grok-4.5" ||
     modelName === "fallback-agent-model" ||
@@ -1122,7 +1081,6 @@ export function getFallbackSlugs(
 }
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
-  "anthropic/claude-opus-4.6": "model-opus-4.6",
   [DEEPSEEK_1017_SLUG]: DEEPSEEK_1017_MODEL_KEY,
   [DEEPSEEK_1017_CANONICAL_SLUG]: DEEPSEEK_1017_MODEL_KEY,
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
@@ -1136,8 +1094,6 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "x-ai/grok-4.5": "model-grok-4.5",
   "x-ai/grok-4.5-20260708": "model-grok-4.5",
   "x-ai/grok-4.6": "model-grok-4.6",
-  "z-ai/glm-5.2": "model-glm-5.2",
-  "z-ai/glm-5.2-20260616": "model-glm-5.2",
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
@@ -1151,14 +1107,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
 function resolveOpenRouterResponseModelCostKey(
   responseModel: string,
 ): string | undefined {
-  const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
-  if (exactKey) return exactKey;
-  // Scope Opus response aliases to the priced generation rather than matching
-  // every Claude family or version.
-  if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
-    return "model-opus-4.6";
-  }
-  return undefined;
+  return OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
 }
 
 function areEquivalentProviderModelIds(
@@ -1288,14 +1237,7 @@ export function buildProviderOptions(
   const providerRouting = options.ignoredProviderSlugs?.length
     ? {
         ...baseProviderRouting,
-        ignore: [
-          ...new Set([
-            ...(baseProviderRouting && "ignore" in baseProviderRouting
-              ? baseProviderRouting.ignore
-              : []),
-            ...options.ignoredProviderSlugs,
-          ]),
-        ],
+        ignore: [...new Set(options.ignoredProviderSlugs)],
       }
     : baseProviderRouting;
   // Max uses the same high effort for native Grok text and vision, including

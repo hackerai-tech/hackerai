@@ -125,4 +125,22 @@ describe("Free Ask DeepSeek 1017", () => {
       await evaluateFlashRouting({ ...freeAsk, posthog: posthog as never }),
     ).toBeUndefined();
   });
+
+  it("does not fail generation when exposure capture throws", async () => {
+    const assignment = await evaluateFlashRouting({
+      ...freeAsk,
+      posthog: flags("test") as never,
+    });
+    const record = createFlashRoutingExposureRecorder({
+      ...freeAsk,
+      assignment,
+      requestId: "synthetic-request",
+      posthog: {
+        capture: () => {
+          throw new Error("unavailable");
+        },
+      } as never,
+    });
+    expect(() => record(assignment!.configuredModel)).not.toThrow();
+  });
 });

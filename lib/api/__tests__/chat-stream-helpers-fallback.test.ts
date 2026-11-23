@@ -73,19 +73,16 @@ describe("transport recovery provider exclusions", () => {
     expect(result.openrouter.models?.length).toBeGreaterThan(0);
   });
 
-  it("preserves existing ignored upstreams and deduplicates them", () => {
+  it("deduplicates ignored upstreams", () => {
     const result = buildProviderOptions(
       true,
       "user",
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
       "agent",
-      {
-        requestedModelSlug: "deepseek/deepseek-v4-flash",
-        ignoredProviderSlugs: ["together", "novita"],
-      },
+      { ignoredProviderSlugs: ["together", "novita", "together"] },
     );
     expect(result.openrouter.provider).toEqual({
-      ignore: ["novita", "together"],
+      ignore: ["together", "novita"],
     });
   });
 
@@ -107,7 +104,6 @@ describe("transport recovery provider exclusions", () => {
 const GROK_4_5_SLUG = "x-ai/grok-4.5";
 const GROK_SLUG = "x-ai/grok-4.6";
 const KIMI_K3_SLUG = "moonshotai/kimi-k3";
-const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
 const GLM_FLASH_SLUG = "z-ai/glm-5.3-flash";
 const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash-1017";
@@ -118,16 +114,9 @@ const DEEPSEEK_FLASH_PREVIOUS_CANONICAL_SLUG =
   "deepseek/deepseek-v4-flash-20260423";
 const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 const HIGH_REASONING_ROUTES = [
-  "ask-model",
-  "agent-model",
   "model-grok-4.5-pro",
   "model-grok-4.6",
-  "model-grok-4.6-pro",
-  "model-deepseek-v4-flash-0731",
-  "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",
-  "model-opus-4.6",
-  "model-glm-5.2",
   "model-glm-5.3",
   "model-kimi-k3",
   "fallback-agent-model",
@@ -272,7 +261,6 @@ describe("buildProviderOptions fallback chain", () => {
     DEEPSEEK_1017_MODEL_KEY,
     "model-deepseek-v4-flash-vision-pro",
     "model-deepseek-v4-flash-vision",
-    "model-deepseek-v4-flash-0731",
     "model-deepseek-v4-pro-0813",
   ])("uses max reasoning for paid Auto Agent on %s", (modelName) => {
     const opts = buildProviderOptions(false, "user-1", modelName, "agent", {
@@ -473,28 +461,6 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("ignores Novita only for the previous DeepSeek Flash route", () => {
-    const previousRoute = buildProviderOptions(
-      false,
-      "user-1",
-      "ask-model-free",
-      "ask",
-      { requestedModelSlug: DEEPSEEK_FLASH_PREVIOUS_SLUG },
-    );
-    const currentRoute = buildProviderOptions(
-      false,
-      "user-1",
-      "ask-model-free",
-      "ask",
-      { requestedModelSlug: DEEPSEEK_FLASH_SLUG },
-    );
-
-    expect(previousRoute.openrouter.provider).toEqual({
-      ignore: ["novita"],
-    });
-    expect(currentRoute.openrouter).not.toHaveProperty("provider");
-  });
-
   it.each(HIGH_REASONING_ROUTES)(
     "uses high reasoning for paid or Grok-reachable route %s",
     (modelName) => {
@@ -512,54 +478,6 @@ describe("buildProviderOptions fallback chain", () => {
       }
     },
   );
-
-  it("resolves the Max Kimi K3 ask route to Grok fallback", () => {
-    const opts = buildProviderOptions(false, "user-1", "model-opus-4.6", "ask");
-    expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves the Max Kimi K3 text-only agent route to Grok fallback", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-opus-4.6",
-      "agent",
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves the Max Kimi K3 multimodal agent route to Grok fallback", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-opus-4.6",
-      "agent",
-      { hasMultimodalToolResults: true },
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [GROK_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("resolves GLM 5.2 to Kimi K3 then Grok", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-glm-5.2",
-      "agent",
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [KIMI_K3_SLUG, GROK_SLUG],
-      user: "user-1",
-    });
-  });
 
   it("resolves GLM 5.3 to Kimi K3", () => {
     const opts = buildProviderOptions(
@@ -606,7 +524,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
-      "model-grok-4.6-pro",
+      "model-grok-4.6",
       "agent",
       { excludedModelSlugs: ["z-ai/glm-5.3-20260816"] },
     );
@@ -625,30 +543,18 @@ describe("buildProviderOptions fallback chain", () => {
     ).toEqual([DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG]);
   });
 
-  it("falls back from the Grok-backed auto agent route through GLM 5.3 then Kimi K3", () => {
-    const opts = buildProviderOptions(false, "user-1", "agent-model", "agent");
+  it("falls back from the Grok 4.6 agent route through GLM 5.3 then Kimi K3", () => {
+    const opts = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.6",
+      "agent",
+    );
     expect(opts.openrouter).toMatchObject({
       models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
   });
-
-  it.each(["ask", "agent"] as const)(
-    "falls back from HackerAI Pro Grok 4.6 to GLM 5.3 then Kimi K3 in %s mode",
-    (mode) => {
-      const opts = buildProviderOptions(
-        mode === "agent",
-        "user-1",
-        "model-grok-4.6-pro",
-        mode,
-      );
-      expect(opts.openrouter).toMatchObject({
-        reasoning: { enabled: true, effort: "high" },
-        models: [GLM_SLUG, KIMI_K3_SLUG],
-        user: "user-1",
-      });
-    },
-  );
 
   it("routes Pro vision through Grok 4.5 high with Kimi K3 fallback", () => {
     const opts = buildProviderOptions(
@@ -733,21 +639,8 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("falls back from explicit DeepSeek Pro ask model through GLM 5.3 then Kimi K3", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-deepseek-v4-pro",
-      "ask",
-    );
-    expect(opts.openrouter).toMatchObject({
-      models: [GLM_SLUG, KIMI_K3_SLUG],
-      user: "user-1",
-    });
-  });
-
   it.each([
-    "model-deepseek-v4-flash-0731",
+    "model-deepseek-v4-flash-vision",
     "model-deepseek-v4-pro-0813",
   ] as const)(
     "enables OpenRouter Mistral OCR for PDFs sent to %s",
@@ -766,7 +659,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
       "agent",
     );
 
@@ -777,7 +670,7 @@ describe("buildProviderOptions fallback chain", () => {
     const deepSeek = buildProviderOptions(
       false,
       "user-1",
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
       "agent",
       { cacheSessionId: "hackerai-cache-v1-test" },
     );
@@ -797,7 +690,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
       "agent",
       {
         hasPdfAttachments: true,
@@ -810,20 +703,6 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("falls back from DeepSeek V4 Flash 0731 through GLM Flash, Pro 0813, and GLM 5.3", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-deepseek-v4-flash-0731",
-      "ask",
-    );
-    expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "high" },
-      models: [GLM_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
-      user: "user-1",
-    });
-  });
-
   it("falls back from DeepSeek V4 Pro 0813 through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(
       false,
@@ -833,14 +712,6 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: true, effort: "high" },
-      models: [GLM_SLUG, KIMI_K3_SLUG],
-      user: "user-1",
-    });
-  });
-
-  it("falls back from the Grok-backed paid Ask image route through GLM 5.3 then Kimi K3", () => {
-    const opts = buildProviderOptions(false, "user-1", "ask-model", "ask");
-    expect(opts.openrouter).toMatchObject({
       models: [GLM_SLUG, KIMI_K3_SLUG],
       user: "user-1",
     });
@@ -925,7 +796,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-pro-0813",
       "ask",
       {
         reasoningOverride: { enabled: true, effort: "medium" },
@@ -961,7 +832,7 @@ describe("buildProviderOptions fallback chain", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
-      "model-opus-4.6",
+      "model-kimi-k3",
       "agent",
       {
         reasoningOverride: { enabled: true, effort: "max" },
@@ -986,7 +857,7 @@ describe("buildProviderOptions fallback chain", () => {
       const opts = buildProviderOptions(
         true,
         "user-1",
-        "model-opus-4.6",
+        "model-kimi-k3",
         "agent",
         { reasoningOverride },
       );
@@ -1031,19 +902,6 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
-  it("enables high reasoning for the DeepSeek Pro route with a GLM fallback", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "model-deepseek-v4-pro",
-      "ask",
-    );
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
-
   it("keeps Grok 4.5 Standard vision at medium despite a high override", () => {
     const opts = buildProviderOptions(
       false,
@@ -1074,52 +932,33 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it.each([
-    "model-grok-4.5-pro",
-    "model-grok-4.6-pro",
-    "model-glm-5.2",
-    "model-glm-5.3",
-    "model-opus-4.6",
-  ])("enables high reasoning for ask mode model %s", (modelName) => {
-    const opts = buildProviderOptions(false, "user-1", modelName, "ask");
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
+  it.each(["model-grok-4.5-pro", "model-glm-5.3"])(
+    "enables high reasoning for ask mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
-  it.each([
-    "model-grok-4.5-pro",
-    "model-grok-4.6-pro",
-    "model-glm-5.2",
-    "model-glm-5.3",
-    "model-opus-4.6",
-  ])("enables high reasoning for agent mode model %s", (modelName) => {
-    const opts = buildProviderOptions(true, "user-1", modelName, "agent");
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
-
-  it("uses high reasoning for DeepSeek V4 Pro in agent mode", () => {
-    const opts = buildProviderOptions(
-      true,
-      "user-1",
-      "model-deepseek-v4-pro",
-      "agent",
-    );
-    expect(opts.openrouter.reasoning).toEqual({
-      enabled: true,
-      effort: "high",
-    });
-  });
+  it.each(["model-grok-4.5-pro", "model-glm-5.3"])(
+    "enables high reasoning for agent mode model %s",
+    (modelName) => {
+      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+    },
+  );
 
   it("includes reasoning settings independent of fallback chain", () => {
     const reasoning = buildProviderOptions(
       true,
       "user-1",
-      "model-opus-4.6",
+      "model-kimi-k3",
       "agent",
     );
     expect(reasoning.openrouter).toMatchObject({
@@ -1130,7 +969,7 @@ describe("buildProviderOptions fallback chain", () => {
     const grokReasoning = buildProviderOptions(
       false,
       "user-1",
-      "agent-model",
+      "model-grok-4.6",
       "agent",
     );
     expect(grokReasoning.openrouter).toMatchObject({
@@ -1141,7 +980,7 @@ describe("buildProviderOptions fallback chain", () => {
     const multimodal = buildProviderOptions(
       true,
       "user-1",
-      "model-opus-4.6",
+      "model-kimi-k3",
       "agent",
       { hasMultimodalToolResults: true },
     );
@@ -1156,7 +995,7 @@ describe("isAutoModelSelectionForRetry", () => {
   it("keeps paid ask Auto retryable after it resolves to explicit DeepSeek Pro", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-deepseek-v4-pro",
+        selectedModel: "model-deepseek-v4-pro-0813",
         selectedModelOverride: "auto",
       }),
     ).toBe(true);
@@ -1165,7 +1004,7 @@ describe("isAutoModelSelectionForRetry", () => {
   it("treats missing paid model override as Auto even with an explicit provider key", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-deepseek-v4-pro",
+        selectedModel: "model-deepseek-v4-pro-0813",
       }),
     ).toBe(true);
   });
@@ -1173,19 +1012,10 @@ describe("isAutoModelSelectionForRetry", () => {
   it("does not treat an explicit paid Standard selection as Auto", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-deepseek-v4-pro",
+        selectedModel: "model-deepseek-v4-pro-0813",
         selectedModelOverride: "hackerai-standard",
       }),
     ).toBe(false);
-  });
-
-  it("keeps the Grok 4.6 Pro route retryable", () => {
-    expect(
-      isAutoModelSelectionForRetry({
-        selectedModel: "model-grok-4.6-pro",
-        selectedModelOverride: "hackerai-pro",
-      }),
-    ).toBe(true);
   });
 
   it("keeps explicitly selected HackerAI Max GLM 5.3 retryable", () => {
@@ -1271,25 +1101,22 @@ describe("isExplicitDeepSeekProSelectionForRetry", () => {
     },
   );
 
-  it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
-    "recognizes explicit HackerAI Pro on %s",
-    (selectedModel) => {
-      expect(
-        isExplicitDeepSeekProSelectionForRetry({
-          selectedModel,
-          selectedModelOverride: "hackerai-pro",
-        }),
-      ).toBe(true);
-    },
-  );
+  it("recognizes explicit HackerAI Pro on DeepSeek V4 Pro 0813", () => {
+    expect(
+      isExplicitDeepSeekProSelectionForRetry({
+        selectedModel: "model-deepseek-v4-pro-0813",
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(true);
+  });
 
   it.each([
     {
-      selectedModel: "model-deepseek-v4-pro",
+      selectedModel: "model-deepseek-v4-pro-0813",
       selectedModelOverride: "auto" as const,
     },
     {
-      selectedModel: "model-deepseek-v4-pro",
+      selectedModel: "model-deepseek-v4-pro-0813",
       selectedModelOverride: "hackerai-standard" as const,
     },
     {
@@ -1342,39 +1169,9 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it.each(["ask", "agent"] as const)(
-    "retries the Max Kimi K3 route with Grok in %s mode",
-    (mode) => {
-      expect(getRetryFallbackModel("model-opus-4.6", mode)).toBe(
-        "model-grok-4.6",
-      );
-    },
-  );
-
-  it("retries HackerAI Pro Grok with GLM 5.3", () => {
-    expect(getRetryFallbackModel("model-grok-4.6-pro", "agent")).toBe(
-      "model-glm-5.3",
-    );
-    expect(getRetryFallbackModel("model-grok-4.6-pro", "ask")).toBe(
-      "model-glm-5.3",
-    );
-  });
-
   it("retries the Grok 4.5 Pro vision route with Kimi K3", () => {
     expect(getRetryFallbackModel("model-grok-4.5-pro", "agent")).toBe(
       "model-kimi-k3",
-    );
-  });
-
-  it("retries paid DeepSeek Pro with GLM 5.3", () => {
-    expect(getRetryFallbackModel("model-deepseek-v4-pro", "ask")).toBe(
-      "model-glm-5.3",
-    );
-  });
-
-  it("retries DeepSeek V4 Flash 0731 with GLM Flash", () => {
-    expect(getRetryFallbackModel("model-deepseek-v4-flash-0731", "ask")).toBe(
-      "model-glm-5.3-flash",
     );
   });
 
@@ -1655,50 +1452,6 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "agent",
       }),
     ).toBe("model-kimi-k3");
-  });
-
-  it("maps dated Opus provider response slugs back to the local cost key", () => {
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-opus-4.6",
-        responseModel: "anthropic/claude-4.6-opus-20260205",
-        mode: "agent",
-      }),
-    ).toBe("model-opus-4.6");
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-opus-4.6",
-        responseModel: "anthropic/claude-4.6-opus-20261231",
-        mode: "agent",
-      }),
-    ).toBe("model-opus-4.6");
-  });
-
-  it("maps the Max Kimi K3 primary response to the persisted Max cost key", () => {
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-opus-4.6",
-        responseModel: KIMI_K3_SLUG,
-        mode: "agent",
-      }),
-    ).toBe("model-opus-4.6");
-  });
-
-  it("maps GLM 5.2 provider response slugs back to the historical cost key", () => {
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-glm-5.2",
-        responseModel: GLM_5_2_SLUG,
-        mode: "agent",
-      }),
-    ).toBe("model-glm-5.2");
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-glm-5.2",
-        responseModel: "z-ai/glm-5.2-20260616",
-        mode: "ask",
-      }),
-    ).toBe("model-glm-5.2");
   });
 
   it("maps GLM 5.3 provider response slugs back to the active cost key", () => {

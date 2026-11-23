@@ -188,12 +188,6 @@ describe("provider registry", () => {
       ).modelId,
     ).toBe("abliterated-model-large-flash");
     expect(
-      (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.6");
-    expect(
-      (myProvider.languageModel("agent-model") as { modelId: string }).modelId,
-    ).toBe("x-ai/grok-4.6");
-    expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4.1-flash-1017");
@@ -270,17 +264,6 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("x-ai/grok-4.5");
     expect(
-      (myProvider.languageModel("model-grok-4.6-pro") as { modelId: string })
-        .modelId,
-    ).toBe("x-ai/grok-4.6");
-    expect(
-      (
-        myProvider.languageModel("model-deepseek-v4-flash-0731") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash-1017");
-    expect(
       (
         myProvider.languageModel("model-deepseek-v4-pro-0813") as {
           modelId: string;
@@ -288,19 +271,11 @@ describe("provider registry", () => {
       ).modelId,
     ).toBe("deepseek/deepseek-v4-pro-0813");
     expect(
-      (myProvider.languageModel("model-glm-5.2") as { modelId: string })
-        .modelId,
-    ).toBe("z-ai/glm-5.2");
-    expect(
       (myProvider.languageModel("model-glm-5.3") as { modelId: string })
         .modelId,
     ).toBe("z-ai/glm-5.3");
     expect(
       (myProvider.languageModel("model-kimi-k3") as { modelId: string })
-        .modelId,
-    ).toBe("moonshotai/kimi-k3");
-    expect(
-      (myProvider.languageModel("model-opus-4.6") as { modelId: string })
         .modelId,
     ).toBe("moonshotai/kimi-k3");
     expect(
@@ -322,32 +297,21 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.5-pro")).toBe("xAI Grok 4.5");
     expect(getModelCutoffDate("model-grok-4.5")).toBeUndefined();
     expect(getModelCutoffDate("model-grok-4.5-pro")).toBeUndefined();
-    expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
-    expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
-    expect(getModelDisplayName("model-deepseek-v4-flash-0731")).toBe(
-      "DeepSeek V4.1 Flash",
-    );
-    expect(getModelCutoffDate("model-deepseek-v4-flash-0731")).toBe(
-      "August 2026",
-    );
     expect(getModelDisplayName("model-deepseek-v4-pro-0813")).toBe(
       "DeepSeek V4 Pro 0813",
     );
     expect(getModelCutoffDate("model-deepseek-v4-pro-0813")).toBe(
       "August 2026",
     );
-    expect(getModelDisplayName("model-glm-5.2")).toBe("Z.ai GLM 5.2");
     expect(getModelDisplayName("model-glm-5.3")).toBe("Z.ai GLM 5.3");
     expect(getModelCutoffDate("model-glm-5.3")).toBeUndefined();
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
-    expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
-    expect(getModelDisplayName("model-opus-4.6")).toBe("Moonshot Kimi K3");
     expect(getModelDisplayName("title-generator-model")).toBe("GLM 5.3 Flash");
   });
 
-  it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
-    expect(isKimiModel("model-opus-4.6")).toBe(true);
-    expect(isAnthropicModel("model-opus-4.6")).toBe(false);
+  it("applies Kimi rather than Anthropic provider behavior to Kimi K3", () => {
+    expect(isKimiModel("model-kimi-k3")).toBe(true);
+    expect(isAnthropicModel("model-kimi-k3")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
@@ -377,8 +341,6 @@ describe("provider registry", () => {
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
     expect(isDeepSeekModel("ask-model-free")).toBe(true);
     expect(isDeepSeekModel("agent-model-free")).toBe(true);
-    expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
-    expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
   });
 
@@ -1803,8 +1765,6 @@ describe("OpenRouter PDF parser recovery", () => {
 
 describe("supportsMultimodalToolResults", () => {
   it("allows active Grok and Kimi routes for image tool results", () => {
-    expect(supportsMultimodalToolResults("agent-model")).toBe(true);
-    expect(supportsMultimodalToolResults("ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-agent-model")).toBe(true);
     expect(supportsMultimodalToolResults("fallback-ask-model")).toBe(true);
     expect(supportsMultimodalToolResults("model-kimi-k3")).toBe(true);
@@ -1813,9 +1773,6 @@ describe("supportsMultimodalToolResults", () => {
 
   it("allows active multimodal keys and slugs used after image tool results", () => {
     expect(supportsMultimodalToolResults("ask-model-free")).toBe(true);
-    expect(supportsMultimodalToolResults("model-deepseek-v4-flash-0731")).toBe(
-      true,
-    );
     expect(supportsMultimodalToolResults("model-glm-5.3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("model-glm-5.3-flash-pro")).toBe(true);
     expect(
@@ -1836,7 +1793,6 @@ describe("supportsMultimodalToolResults", () => {
     ).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
-    expect(supportsMultimodalToolResults("model-grok-4.6-pro")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("x-ai/grok-4.6")).toBe(true);
   });
@@ -1846,7 +1802,6 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults("model-glm-5.3-flash-agent")).toBe(
       true,
     );
-    expect(supportsMultimodalToolResults("model-deepseek-v4-pro")).toBe(false);
     expect(supportsMultimodalToolResults("model-deepseek-v4-pro-0813")).toBe(
       false,
     );

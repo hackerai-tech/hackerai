@@ -42,37 +42,21 @@ does not cancel an already submitted database mutation; revision/ownership check
 remain authoritative for late writes. Failed notes lookups preserve the last known
 state rather than emitting a false deletion.
 
-## Separate summarization treatment
-
-`cache_aligned_summary_v1` additionally permits **in-run** summarization with the
-current DeepSeek model, frozen system, last active tool schemas and unchanged
-history followed by a summary instruction. The full prefix must fit after system,
-schema and instruction/output headroom. Otherwise the existing bounded summary
-ladder is used, including after non-cancellation warm-summary failures. Tool execution is disabled, output is bounded, cancellation is
-respected, and empty/truncated summaries cannot replace history. The existing
-startup-compaction ladder is unchanged.
-
-This follows [DeepSeek's aligned summarization](https://github.com/deepseek-ai/deepseek-harness/blob/ddefc45fbc7f8e46dd73185e68295696d1297887/packages/compaction/compaction-basic/src/summarizer.ts)
-and append-only context approach, and [Hermes's private API-content replay](https://github.com/NousResearch/hermes-agent/blob/6159bf4d87a32de72869e0b479606ddd2b9977a1/tests/agent/test_api_content_sidecar.py)
-and frozen prompt snapshots. It does not copy their thresholds or claim their
-reported savings transfer to HackerAI.
-
 ## Rollout and verification
 
-Deployment does not activate either flag. Configure Preview and Production
+Deployment does not activate the flag. Configure Preview and Production
 separately under the environment rules in AGENTS.md; Production activation needs
 an explicit staged rollout decision. Deploy the Convex schema/functions before
 enabling the application treatment. Verify the actual Trigger worker's project,
 not only Vercel's. Flag evaluation happens at the start of a new model stream;
-disable flags to roll back subsequent streams without a code deployment.
+disable the flag to roll back subsequent streams without a code deployment.
 
-Start with history only. `cache_stable_history_exposed` records actual execution
-and whether compatible saved history was restored; `cache_aligned_summary_exposed`
-records actual warm-summary selection. Neither exports content or content hashes.
+`cache_stable_history_exposed` records actual execution and whether compatible
+saved history was restored. It does not export content or content hashes.
 Compare token-weighted cache reads and cost per started/successful run alongside
 completion, errors, latency, compaction frequency and summary quality. An improved
-hit ratio alone is not a release criterion. Review before adding the summary
-treatment or expanding the cohort; HAC-129 owns readout and flag removal.
+hit ratio alone is not a release criterion. Review before expanding the cohort;
+HAC-129 owns readout and flag removal.
 
 ### Low-volume measurement
 
@@ -110,13 +94,13 @@ missing reads from write-only telemetry. Never export history digests or content
 
 Before rollout, use disposable chats in the verified Preview environment:
 
-- Test Ask and Agent with flags off, history only, then both flags on. Run a short
+- Test Ask and Agent with the flag off, then on. Run a short
   multi-tool task, update/delete a note, and verify the latest state is respected.
 - Reload and continue; confirm replay-restored exposure and coherent context.
   Edit/regenerate, change model/permissions, and stop/retry: old snapshots must
   not override the new task, policy or cancellation.
-- Trigger bounded context pressure; verify a complete summary and continuation,
-  fallback for an over-budget prefix, and unchanged startup compaction behavior.
+- Trigger bounded context pressure; verify a complete summary and continuation
+  and unchanged startup compaction behavior.
 - Exercise cloud and local/desktop Agent transports; delete the disposable chat
   and confirm no private history remains. Check provider usage/cost and ensure
   analytics contain no prompt, tool-output or target content.
