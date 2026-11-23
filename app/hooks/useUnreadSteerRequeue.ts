@@ -78,6 +78,8 @@ export function useUnreadSteerRequeue({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // Leaving the chat ends the visit: anything restored afterward is held.
+      visit.current = { chatId: "", startedAt: Infinity };
       clearTimeout(retryTimer.current);
     };
   }, []);

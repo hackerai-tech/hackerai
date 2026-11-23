@@ -203,6 +203,28 @@ describe("useUnreadSteerRequeue", () => {
     ]);
   });
 
+  it("holds a steer whose withdrawal completes after the chat unmounts", async () => {
+    mockPending = [steer("late", "Also check X")];
+    let finish!: (result: { outcome: "withdrawn"; text: string }) => void;
+    mockWithdraw.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onRequeue = jest.fn();
+    const { unmount } = render(onRequeue);
+    await act(async () => {});
+    // Chat routes are keyed by chat ID, so switching chats unmounts the hook.
+    unmount();
+    await act(async () =>
+      finish({ outcome: "withdrawn", text: "Also check X" }),
+    );
+    expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+      expect.objectContaining({ text: "Also check X", held: true }),
+    ]);
+  });
+
   it("retries a failed withdrawal without a new snapshot", async () => {
     jest.useFakeTimers();
     try {
