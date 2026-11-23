@@ -504,20 +504,34 @@ describe("model content-filter exclusions", () => {
     );
   });
 
-  it("reports a refusal with text on the final attempt as an exclusion", async () => {
-    mockProfileEvidence();
-    useNoOutputModel("content-filter", "I can't help with that.");
-
-    await expect(
-      child.run(workerPayload, {
-        ctx: { ...ctx, attempt: { number: 2 } },
+  it.each([
+    ["refusal text", "I can't help with that."],
+    [
+      "schema-valid output",
+      JSON.stringify({
+        ...profile,
+        userTypes: [
+          { type: "bug_bounty_hunter", evidenceCount: 1, confidence: "low" },
+        ],
       }),
-    ).resolves.toMatchObject({
-      status: "skipped",
-      reason: "model_content_filter",
-    });
-    expect(mockMutation).not.toHaveBeenCalled();
-  });
+    ],
+  ])(
+    "reports a filtered response with %s on the final attempt as an exclusion",
+    async (_label, responseText) => {
+      mockProfileEvidence();
+      useNoOutputModel("content-filter", responseText);
+
+      await expect(
+        child.run(workerPayload, {
+          ctx: { ...ctx, attempt: { number: 2 } },
+        }),
+      ).resolves.toMatchObject({
+        status: "skipped",
+        reason: "model_content_filter",
+      });
+      expect(mockMutation).not.toHaveBeenCalled();
+    },
+  );
 
   it("counts a stored profile as analyzed even when its task failed", async () => {
     child.batchTriggerAndWait.mockResolvedValue({
@@ -644,7 +658,7 @@ describe("model content-filter exclusions", () => {
     );
   });
 
-  it.each([undefined, "I can't help with that."])(
+  it.each([undefined, "I can't help with that.", JSON.stringify(synthesis)])(
     "fails with a closed reason when the synthesis itself is refused (text: %s)",
     async (refusalText) => {
       child.batchTriggerAndWait.mockResolvedValue({

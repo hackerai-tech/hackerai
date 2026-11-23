@@ -154,11 +154,29 @@ async function flushWithinBound() {
   }
 }
 
+async function reportStructuredOutputFailure(
+  result: StructuredOutputResult<unknown>,
+  operation: ResearchStructuredOutputOperation,
+  ctx: ResearchTaskContext,
+) {
+  try {
+    // System event: no userId, so no user or cohort identity is attached.
+    phLogger.event(
+      STRUCTURED_OUTPUT_FAILED_EVENT,
+      buildDiagnosticFields(result, operation, ctx),
+    );
+    await flushWithinBound();
+  } catch {
+    // Diagnostics are best effort.
+  }
+}
+
 /**
- * Reads `result.output` and, only when the SDK getter reports that no output was
- * generated, publishes a privacy-safe diagnostic. A content-filter finish is
- * rethrown as ResearchContentFilterError (original as `cause`); every other
- * error is rethrown unchanged.
+ * Reads `result.output` and publishes a privacy-safe diagnostic when the SDK
+ * reports no output or the model's content filter stopped the response. A
+ * content-filter finish throws ResearchContentFilterError even when the
+ * response still parses, so filtered output is never accepted as evidence.
+ * Every other error is rethrown unchanged.
  */
 export async function readResearchStructuredOutput<OUTPUT>(
   result: StructuredOutputResult<OUTPUT>,
@@ -170,27 +188,24 @@ export async function readResearchStructuredOutput<OUTPUT>(
     ctx: ResearchTaskContext;
   },
 ): Promise<OUTPUT> {
+  let output: OUTPUT;
   try {
-    return result.output;
+    output = result.output;
   } catch (error) {
     // Metadata and even SDK error-marker access are best effort. Never
     // replace the original output failure with a diagnostic exception.
     if (readSafely(() => NoOutputGeneratedError.isInstance(error)) !== true) {
       throw error;
     }
-    try {
-      // System event: no userId, so no user or cohort identity is attached.
-      phLogger.event(
-        STRUCTURED_OUTPUT_FAILED_EVENT,
-        buildDiagnosticFields(result, operation, ctx),
-      );
-      await flushWithinBound();
-    } catch {
-      // Diagnostics are best effort.
-    }
+    await reportStructuredOutputFailure(result, operation, ctx);
     if (readSafely(() => result.finishReason) === "content-filter") {
       throw new ResearchContentFilterError({ cause: error });
     }
     throw error;
   }
+  if (readSafely(() => result.finishReason) === "content-filter") {
+    await reportStructuredOutputFailure(result, operation, ctx);
+    throw new ResearchContentFilterError();
+  }
+  return output;
 }
