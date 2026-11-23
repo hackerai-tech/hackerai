@@ -273,6 +273,40 @@ describe("sandbox acquisition serialization", () => {
     expect(mockReleaseIdleLease).toHaveBeenCalledWith(late);
   });
 
+  it("closes the run lease before a pending heartbeat stop settles", async () => {
+    mockIsE2BSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
+    );
+    let finishStop!: () => void;
+    mockStartLeaseHeartbeat.mockImplementationOnce(() => ({
+      stop: () => new Promise<void>((resolve) => (finishStop = resolve)),
+    }));
+    const args: Parameters<typeof createTools> = [
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+    ];
+    args[8] = "e2b";
+    args[9] = "service-key";
+    args[20] = "run-1";
+    args[22] = { keepE2BLeaseAliveForRun: true };
+    const { stopE2BSandboxRunLeaseHeartbeat } = createTools(...args);
+    mockTrackSandboxUsage?.({ provider: "e2b", sandboxId: "first" });
+    expect(mockStartLeaseHeartbeat).toHaveBeenCalledTimes(1);
+
+    const cleanup = stopE2BSandboxRunLeaseHeartbeat();
+    // A late client publishes while the heartbeat stop is still pending.
+    const late = { provider: "e2b", sandboxId: "late" };
+    mockTrackSandboxUsage?.(late);
+    expect(mockStartLeaseHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mockReleaseIdleLease).toHaveBeenCalledWith(late);
+
+    finishStop();
+    await cleanup;
+  });
+
   it("accounts for E2B runtime", async () => {
     jest.useFakeTimers();
     mockIsE2BSandbox.mockImplementation(
