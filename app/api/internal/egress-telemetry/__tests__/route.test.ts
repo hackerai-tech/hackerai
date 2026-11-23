@@ -113,6 +113,38 @@ it("stores a signed batch once, acknowledges its retry and returns no telemetry"
   );
 });
 
+it("logs one fixed-field receipt per ingested minute with its delivery delay", async () => {
+  // Delivered 95 seconds after the batch's minute ended, as after an outage.
+  jest.mocked(Date.now).mockReturnValue(NOW_MS + 155_000);
+  await post(signed());
+  await post(signed());
+  await post(signed(vector.body.replace(":3,", ":30,")));
+  const entries = logs
+    .flatMap((log) => log.mock.calls)
+    .map(([entry]) => JSON.parse(entry));
+  const receipt = (outcome: string) => ({
+    timestamp: expect.any(String),
+    level: "info",
+    event: "egress_telemetry_received",
+    service: "hackerai-web",
+    environment: expect.any(String),
+    region: "us",
+    minute: 30_000_000,
+    minuteStart: new Date(30_000_000 * 60_000).toISOString(),
+    outcome,
+    delayAfterMinuteEndS: 95,
+  });
+  // No counts or references; a conflict keeps only its rejection log.
+  expect(entries).toEqual([
+    receipt("accepted"),
+    receipt("duplicate"),
+    expect.objectContaining({
+      event: "egress_telemetry_rejected",
+      reason: "conflict",
+    }),
+  ]);
+});
+
 it("rejects a different body for a stored minute without changing it", async () => {
   await post(signed());
   const stored = [...mockStore.entries()];

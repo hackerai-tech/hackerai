@@ -969,6 +969,26 @@ describe("GET status wait progress", () => {
   };
   const timeout = () =>
     new TimeoutError("PRIVATE deadline https://private.invalid/?token=PRIVATE");
+  // Literal copies of the texts pinned e2b 2.52.1 appends after its private
+  // transport message as `${message}: ${text}` when it builds a TimeoutError.
+  const SDK_TEXTS = {
+    rpc_deadline:
+      "This error is likely due to exceeding 'timeoutMs' — the total time a long running request (like command execution or directory watch) can be active. It can be modified by passing 'timeoutMs' when making the request. Use '0' to disable the timeout.",
+    rpc_canceled:
+      "This error is likely due to exceeding 'requestTimeoutMs'. You can pass the request timeout value as an option when making the request.",
+    sandbox_unavailable:
+      "This error is likely due to sandbox timeout. You can modify the sandbox timeout by passing 'timeoutMs' when starting the sandbox or calling '.setTimeout' on the sandbox with the desired timeout.",
+    sandbox_gone:
+      "The sandbox was killed or reached its end of life while the request was in flight.",
+  } as const;
+  const PRIVATE_PREFIX =
+    "PRIVATE [deadline_exceeded] https://private.invalid/?token=PRIVATE";
+  const sdkTimeout = (
+    origin: keyof typeof SDK_TEXTS,
+    prefix: string = PRIVATE_PREFIX,
+  ) => new TimeoutError(`${prefix}: ${SDK_TEXTS[origin]}`);
+  // Neither the private prefix nor any SDK text may reach the event.
+  const LEAKED = /PRIVATE|hp1|likely due|end of life|timeoutMs/;
   /** Run GET with a status wait that rejects after the given delivered stderr. */
   async function rejectedGet(error: unknown, stderr: () => unknown) {
     const { handle, reads } = progressHandle(async () => {
@@ -979,7 +999,7 @@ describe("GET status wait progress", () => {
     );
     connect(run);
     const response = await get(getRequest(), routeContext());
-    return { response, run, reads };
+    return { response, run, reads, wait: handle.wait };
   }
 
   it.each<[string, string]>([
@@ -1019,10 +1039,202 @@ describe("GET status wait progress", () => {
         capture_sdk_command_phase: "wait",
         capture_sdk_start_ack_latency: "lt1s",
         capture_sdk_wait_progress_v1: `${label}:gte7s`,
+        // A TimeoutError without any pinned SDK text.
+        capture_sdk_wait_timeout_origin_v1: "unclassified",
       });
       expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|hp1|\/dev\/shm/);
     },
   );
+
+  describe("SDK timeout origin", () => {
+    const originOf = (fields: Record<string, unknown>) =>
+      fields.capture_sdk_wait_timeout_origin_v1;
+
+    it.each<[string, () => unknown, string]>([
+      ["DeadlineExceeded", () => sdkTimeout("rpc_deadline"), "rpc_deadline"],
+      ["Canceled", () => sdkTimeout("rpc_canceled"), "rpc_canceled"],
+      [
+        "Unavailable",
+        () => sdkTimeout("sandbox_unavailable"),
+        "sandbox_unavailable",
+      ],
+      [
+        "a confirmed-gone health check",
+        () => sdkTimeout("sandbox_gone"),
+        "sandbox_gone",
+      ],
+      // The SDK's message may be empty; only the separator and text remain.
+      [
+        "an empty SDK message",
+        () => sdkTimeout("rpc_canceled", ""),
+        "rpc_canceled",
+      ],
+      // Only the final text counts, never one quoted inside the prefix.
+      [
+        "a prefix quoting another SDK text",
+        () =>
+          sdkTimeout(
+            "rpc_deadline",
+            `PRIVATE: ${SDK_TEXTS.sandbox_gone} ${SDK_TEXTS.rpc_canceled}`,
+          ),
+        "rpc_deadline",
+      ],
+    ])(
+      "hints %s beside the unchanged wait group and response",
+      async (_case, error, origin) => {
+        clock(1_000, 1_200, 8_100);
+
+        const { response, run, wait } = await rejectedGet(error(), () =>
+          frames("ecw"),
+        );
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ state: "disconnected" });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(wait).toHaveBeenCalledTimes(1);
+        const { event, fields } = loggedEvent();
+        expect(event).toBe("agent_browser_preview_get_unavailable");
+        expect(fields).toMatchObject({
+          failure_stage: "capture_frame",
+          capture_stage: "stream_status",
+          capture_error_kind: "timeout",
+          capture_command_exit_code: "none",
+        });
+        expect(progressFields(fields)).toEqual({
+          capture_sdk_command_diagnostic_version: 1,
+          capture_sdk_command_phase: "wait",
+          capture_sdk_start_ack_latency: "lt1s",
+          capture_sdk_wait_progress_v1: "write_attempted:gte7s",
+          capture_sdk_wait_timeout_origin_v1: origin,
+        });
+        expect(JSON.stringify(fields)).not.toMatch(LEAKED);
+      },
+    );
+
+    const withMessage = (descriptor: PropertyDescriptor) =>
+      Object.defineProperty(
+        new TimeoutError("PRIVATE original"),
+        "message",
+        descriptor,
+      );
+    it.each<[string, () => unknown]>([
+      ["a compact legacy timeout", () => new TimeoutError("PRIVATE timeout")],
+      [
+        "no own message",
+        () => new (TimeoutError as unknown as new () => Error)(),
+      ],
+      [
+        "the SDK text without its separator",
+        () => new TimeoutError(`PRIVATE ${SDK_TEXTS.rpc_deadline}`),
+      ],
+      [
+        "a truncated SDK text",
+        () =>
+          new TimeoutError(`PRIVATE: ${SDK_TEXTS.sandbox_gone.slice(0, -1)}`),
+      ],
+      [
+        "trailing whitespace",
+        () => new TimeoutError(`PRIVATE: ${SDK_TEXTS.rpc_canceled}\n`),
+      ],
+      [
+        "appended private text",
+        () =>
+          new TimeoutError(
+            `PRIVATE: ${SDK_TEXTS.sandbox_unavailable} PRIVATE retry`,
+          ),
+      ],
+      [
+        "an ASCII hyphen for the SDK's em dash",
+        () =>
+          new TimeoutError(
+            `PRIVATE: ${SDK_TEXTS.rpc_deadline.replace("—", "-")}`,
+          ),
+      ],
+      [
+        "a differently cased SDK text",
+        () =>
+          new TimeoutError(`PRIVATE: ${SDK_TEXTS.sandbox_gone.toUpperCase()}`),
+      ],
+      ["a non-string message", () => withMessage({ value: 42 })],
+      // Never invoked: its exact SDK text would otherwise classify.
+      [
+        "an accessor message",
+        () =>
+          withMessage({
+            get: () => `PRIVATE: ${SDK_TEXTS.rpc_deadline}`,
+            configurable: true,
+          }),
+      ],
+    ])(
+      "records a TimeoutError with %s only as unclassified",
+      async (_case, error) => {
+        clock(1_000, 1_200, 3_900);
+
+        const { response, run } = await rejectedGet(error(), () => "");
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ state: "disconnected" });
+        expect(run).toHaveBeenCalledTimes(1);
+        const { fields } = loggedEvent();
+        expect(fields).toMatchObject({
+          capture_error_kind: "timeout",
+          capture_sdk_command_phase: "wait",
+          capture_sdk_wait_progress_v1: "none_delivered:lt3s",
+        });
+        expect(originOf(fields)).toBe("unclassified");
+        expect(JSON.stringify(fields)).not.toMatch(LEAKED);
+      },
+    );
+
+    it.each<[string, () => unknown, string]>([
+      [
+        "another SDK error",
+        () => new Error(`${PRIVATE_PREFIX}: ${SDK_TEXTS.rpc_deadline}`),
+        "other_error",
+      ],
+      [
+        "a thrown string",
+        () => `${PRIVATE_PREFIX}: ${SDK_TEXTS.sandbox_gone}`,
+        "thrown_value",
+      ],
+    ])(
+      "omits the hint for %s carrying an exact SDK text",
+      async (_case, error, kind) => {
+        clock(1_000, 1_200, 1_900);
+
+        const { response } = await rejectedGet(error(), () => frames("ec"));
+
+        expect(response.status).toBe(503);
+        const { fields } = loggedEvent();
+        expect(fields).toMatchObject({
+          capture_error_kind: kind,
+          capture_sdk_command_phase: "wait",
+          capture_sdk_wait_progress_v1: "connecting:lt1s",
+        });
+        expect(fields).not.toHaveProperty("capture_sdk_wait_timeout_origin_v1");
+        expect(JSON.stringify(fields)).not.toMatch(LEAKED);
+      },
+    );
+
+    it("omits the hint when the start request rejects", async () => {
+      const run = jest.fn(async () => {
+        throw sdkTimeout("rpc_deadline");
+      });
+      connect(run);
+
+      const response = await get(getRequest(), routeContext());
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ state: "disconnected" });
+      expect(run).toHaveBeenCalledTimes(1);
+      const { fields } = loggedEvent();
+      expect(progressFields(fields)).toEqual({
+        capture_sdk_command_diagnostic_version: 1,
+        capture_sdk_command_phase: "start",
+      });
+      expect(JSON.stringify(fields)).not.toMatch(LEAKED);
+    });
+  });
 
   it.each<[string, () => unknown]>([
     ["a partial trailing frame", () => frames("e") + "hp1:c"],
@@ -1187,7 +1399,8 @@ describe("GET status wait progress", () => {
     const commands: string[] = [];
     const { handle, reads } = progressHandle(
       async () => {
-        throw timeout();
+        // An exact SDK text that the opted-in GET would classify.
+        throw sdkTimeout("rpc_deadline");
       },
       () => frames("ecw"),
     );
@@ -1236,5 +1449,7 @@ describe("GET status wait progress", () => {
       capture_sdk_command_phase: "wait",
     });
     expect(fields).not.toHaveProperty("capture_sdk_wait_progress_v1");
+    expect(fields).not.toHaveProperty("capture_sdk_wait_timeout_origin_v1");
+    expect(JSON.stringify(fields)).not.toMatch(LEAKED);
   });
 });

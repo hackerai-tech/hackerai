@@ -23,6 +23,8 @@ function visit(node: ts.Node) {
       const name = declaration.name.getText(source);
       if (
         [
+          "taskStartTime",
+          "taskStartMonotonicMs",
           "agentLongMaxDurationMs",
           "activeGoal",
           "runtimeBudget",
@@ -43,10 +45,12 @@ function visit(node: ts.Node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
-if (!claim || statements.size !== 5)
+if (!claim || statements.size !== 7)
   throw new Error("Worker goal/runtime setup not found");
 const body = ts.transpileModule(
   `return (async () => {
+    ${statements.get("taskStartTime")}
+    ${statements.get("taskStartMonotonicMs")}
     ${statements.get("agentLongMaxDurationMs")}
     ${statements.get("activeGoal")}
     ${claim}
@@ -66,6 +70,7 @@ async function setup({
   enabled = true,
   wrapUpEnabled = null as boolean | null,
   maxDurationMs = 1000,
+  duringClaim = () => {},
 } = {}) {
   const exposed = jest.fn();
   const abort = jest.fn();
@@ -74,9 +79,10 @@ async function setup({
     "agent-limit-wrapup-v1": wrapUpEnabled,
   };
   const decision = jest.fn(async (flagKey: string) => flags[flagKey] ?? null);
-  const mutation = jest.fn(async () =>
-    claimed ? { generation: 2, state: "running" } : null,
-  );
+  const mutation = jest.fn(async () => {
+    duringClaim();
+    return claimed ? { generation: 2, state: "running" } : null;
+  });
   const deps = {
     payload: goal ? { goalGeneration: 2 } : {},
     isAutoContinue,
@@ -98,7 +104,6 @@ async function setup({
     // Keep the former cap available so restoring it fails the duration assertion.
     GOAL_SLICE_MS: 20 * 60 * 1000,
     subscription: "pro",
-    taskStartTime: Date.now(),
     markAgentLongDurationExceeded: jest.fn(),
     runtimeSettlementWatchdog: undefined,
     stopSignal: { abort },
@@ -136,6 +141,25 @@ it.each([
   try {
     expect(run.agentLongMaxDurationMs).toBe(planDurationMs);
     expect(run.abort).not.toHaveBeenCalled();
+  } finally {
+    run.runtimeBudget.dispose();
+  }
+});
+
+it("counts setup time toward the hard stop across a wall-clock change", async () => {
+  const run = await setup({
+    goal: true,
+    duringClaim: () => {
+      jest.advanceTimersByTime(250);
+      jest.setSystemTime(Date.now() + 90_000);
+    },
+  });
+  try {
+    expect(run.runtimeBudget.getElapsedTimeMs()).toBe(250);
+    jest.advanceTimersByTime(749);
+    expect(run.abort).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(run.abort).toHaveBeenCalledWith("active_runtime_budget");
   } finally {
     run.runtimeBudget.dispose();
   }

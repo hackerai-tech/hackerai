@@ -385,17 +385,17 @@ describe("resolveAgentModelForImageToolResults", () => {
   it("keeps DeepSeek for text-only Agent steps", () => {
     expect(
       resolveAgentModelForImageToolResults(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-pro-0813",
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-pro");
+    ).toBe("model-deepseek-v4-pro-0813");
   });
 
   it("infers the DeepSeek vision Pro route for image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-pro-0813",
         "agent",
         true,
       ),
@@ -463,7 +463,7 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro-0813");
   });
 
-  it.each(["model-deepseek-v4-flash-0731", "model-deepseek-v4-pro-0813"])(
+  it.each(["model-deepseek-v4-flash-vision", "model-deepseek-v4-pro-0813"])(
     "keeps %s active when image tool results have auxiliary descriptions",
     (modelName) => {
       expect(

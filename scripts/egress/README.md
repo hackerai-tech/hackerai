@@ -118,3 +118,8 @@ moved into another minute); identities beyond 1,000 per minute as
 `overflowConnections`; and batches it discarded (outbox beyond 24 hours, or
 permanently rejected) as `droppedBatches` in a later batch. The alert task
 fails on any reported dropped events or batches.
+
+The collector logs a fixed-field line to its own journal at startup, on each
+deferred upload and once when uploads recover, with the oldest pending minute
+and its age. See
+[Missing heartbeat](../../docs/cloud-network-access.md#missing-heartbeat).

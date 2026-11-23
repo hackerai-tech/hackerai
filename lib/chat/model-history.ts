@@ -3,7 +3,6 @@ import type { ModelMessage } from "ai";
 import { preparePlatformAuthorizationForModel } from "./platform-authorization";
 
 export const MODEL_HISTORY_FLAG = "cache_stable_history_v1";
-export const CACHE_ALIGNED_SUMMARY_FLAG = "cache_aligned_summary_v1";
 export const MODEL_HISTORY_MAX_BYTES = 700_000;
 
 export type ModelHistorySnapshot = {

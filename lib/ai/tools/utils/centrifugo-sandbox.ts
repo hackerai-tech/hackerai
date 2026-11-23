@@ -1,5 +1,6 @@
 import {
   CURL_PROGRESS_WRITE_OUT,
+  getAttachmentDownloadFailureContext,
   recordAttachmentDownloadFailure,
   recordAttachmentDownloadBoundary,
   recordAttachmentCommandReceiver,
@@ -55,7 +56,7 @@ import {
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { IncompleteFileWriteError } from "./incomplete-file-write";
 import { EventEmitter } from "events";
-import { Centrifuge, type Subscription } from "centrifuge";
+import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
@@ -363,6 +364,38 @@ const redactTransferDetails = (
 
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
+
+/**
+ * A command's own relay socket closed before it connected, so the command was
+ * never published. Decided only from this receiver's typed rejection and the
+ * closed snapshot it bound to that rejection; never from error text. Any
+ * connection, subscription, publication or message, a connection-limit
+ * predicate or missing evidence leaves the original failure terminal.
+ */
+const isPreconnectTransportClosure = (error: unknown): boolean => {
+  if (
+    !(error instanceof LocalCommandDispatchError) ||
+    error.dispatched !== false ||
+    error.retryable !== true
+  )
+    return false;
+  const receiver = getAttachmentDownloadFailureContext(error);
+  return (
+    receiver?.attachment_command_receiver_version === 1 &&
+    receiver.attachment_command_receiver_reason === "client_error" &&
+    receiver.attachment_command_receiver_connected_observed === false &&
+    receiver.attachment_command_receiver_subscribed_observed === false &&
+    receiver.attachment_command_receiver_publication_started === false &&
+    receiver.attachment_command_receiver_publish_completed === false &&
+    receiver.attachment_command_receiver_first_message_observed === false &&
+    receiver.attachment_command_receiver_client_error_version === 1 &&
+    receiver.attachment_command_receiver_client_error_type === "transport" &&
+    receiver.attachment_command_receiver_client_error_code ===
+      errorCodes.transportClosed &&
+    receiver.attachment_command_receiver_client_error_connection_limit_predicate ===
+      false
+  );
+};
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -3587,14 +3620,19 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               phase = "check_result";
             } catch (error) {
               throwIfAttachmentAborted(signal, error);
+              // Shares this loop's attempt budget with every other cause.
+              const preconnectClosure = isPreconnectTransportClosure(error);
               if (
                 attempt === MAX_ATTEMPTS ||
-                !isTransientCommandTimeoutError(error)
+                (!preconnectClosure && !isTransientCommandTimeoutError(error))
               ) {
                 throw error;
               }
               console.warn(
-                `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+                preconnectClosure
+                  ? // Closed marker only: no error text, URL or path.
+                    `[centrifugo-download] relay transport closed before connecting on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`
+                  : `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
               );
               phase = "retry_delay";
               await abortableDelay(500 * attempt, signal);

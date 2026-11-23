@@ -29,6 +29,10 @@ import {
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
+import {
+  CLOUD_SANDBOX_UPLOAD_ROOT,
+  isCanonicalLocalStagedAttachmentPath,
+} from "@/lib/utils/sandbox-upload-paths";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -498,17 +502,49 @@ const getAttributeFromAttachmentTag = (
 ): string | undefined =>
   new RegExp(`\\b${attribute}="([^"]+)"`, "i").exec(tag)?.[1];
 
+/**
+ * Which provider file parts an attachment annotation may replace:
+ * - `pdf_parser`: PDF parts annotated with a cloud or local staged path.
+ * - `generic_parser`: any cloud-annotated file part, or local-annotated PDFs.
+ * - `request_size`: any cloud-annotated file part only.
+ */
+type SandboxFileRecoveryScope =
+  "pdf_parser" | "generic_parser" | "request_size";
+
+/** Cloud annotations may replace any file part; local ones only PDFs. */
+type StagedAttachmentSource = "cloud" | "local";
+
+// Keep the local extension on the stager's exact annotation shape. The
+// existing cloud matcher still recognizes its historical annotations.
+const LOCAL_ATTACHMENT_TAG =
+  /^<attachment filename="[^"]+" local_path="[^"]+" staging="(?:requested_this_run|not_requested_this_run)"(?: legacy_fallback_path="[^"]+" use_legacy_fallback_only_if_primary_missing="true")? \/>$/;
+
 const collectSandboxAttachmentFilenames = (
   messages: unknown[],
-): Set<string> => {
-  const filenames = new Set<string>();
-  const collectFromText = (text: string) => {
+  scope: SandboxFileRecoveryScope,
+): Map<string, StagedAttachmentSource> => {
+  const filenames = new Map<string, StagedAttachmentSource>();
+  const collectFromText = (text: string, role: unknown) => {
     for (const match of text.matchAll(/<attachment\b[^>]*>/gi)) {
       const tag = match[0];
       const localPath = getAttributeFromAttachmentTag(tag, "local_path");
       const filename = getAttributeFromAttachmentTag(tag, "filename");
-      if (localPath?.startsWith("/home/user/upload/") && filename) {
-        filenames.add(filename);
+      if (!localPath || !filename) continue;
+      if (localPath.startsWith(`${CLOUD_SANDBOX_UPLOAD_ROOT}/`)) {
+        filenames.set(filename, "cloud");
+        continue;
+      }
+      // The local stager writes only to user messages with a known staging
+      // role. Matching the exact path shape keeps legacy, rewritten, and
+      // arbitrary local paths out of provider-part removal.
+      if (
+        scope !== "request_size" &&
+        role === "user" &&
+        LOCAL_ATTACHMENT_TAG.test(tag) &&
+        isCanonicalLocalStagedAttachmentPath(localPath, filename) &&
+        !filenames.has(filename)
+      ) {
+        filenames.set(filename, "local");
       }
     }
   };
@@ -516,7 +552,7 @@ const collectSandboxAttachmentFilenames = (
   messages.forEach((message) => {
     if (!isRecord(message)) return;
     if (typeof message.content === "string") {
-      collectFromText(message.content);
+      collectFromText(message.content, message.role);
       return;
     }
     if (!Array.isArray(message.content)) return;
@@ -526,7 +562,7 @@ const collectSandboxAttachmentFilenames = (
         part.type === "text" &&
         typeof part.text === "string"
       ) {
-        collectFromText(part.text);
+        collectFromText(part.text, message.role);
       }
     });
   });
@@ -708,7 +744,7 @@ type SandboxPdfRecoveryUnavailableReason =
 
 const createSandboxPdfRecoveryBody = (
   body: unknown,
-  removeAllFileParts = false,
+  scope: SandboxFileRecoveryScope,
 ): { body: unknown } & (
   | { changed: true }
   | { changed: false; unavailableReason: SandboxPdfRecoveryUnavailableReason }
@@ -720,7 +756,7 @@ const createSandboxPdfRecoveryBody = (
       unavailableReason: "unsupported_request_shape",
     };
   }
-  if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
+  if (collectSandboxAttachmentFilenames(body.messages, scope).size === 0) {
     return { body, changed: false, unavailableReason: "no_staged_attachments" };
   }
 
@@ -733,9 +769,10 @@ const createSandboxPdfRecoveryBody = (
 
     // The provider file part does not retain a stable attachment ID. Limit a
     // filename match to the same message and reject duplicate names there.
-    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames([
-      message,
-    ]);
+    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
+      [message],
+      scope,
+    );
     const filePartFilenameCounts = new Map<string, number>();
     message.content.forEach((part) => {
       if (!isFileRequestPart(part)) return;
@@ -749,11 +786,17 @@ const createSandboxPdfRecoveryBody = (
 
     const content = message.content.filter((part) => {
       const filename = getFileRequestFilename(part);
+      const source =
+        filename === undefined
+          ? undefined
+          : sandboxAttachmentFilenames.get(filename);
       const shouldRemove =
         filename !== undefined &&
-        sandboxAttachmentFilenames.has(filename) &&
+        source !== undefined &&
         filePartFilenameCounts.get(filename) === 1 &&
-        (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
+        (scope !== "pdf_parser" && source === "cloud"
+          ? isFileRequestPart(part)
+          : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
     });
@@ -777,9 +820,10 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(lastUserMessage)) {
     return { body, changed: false, unavailableReason: "no_user_message" };
   }
-  const recoveryInstruction = removeAllFileParts
-    ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
-    : SANDBOX_PDF_RECOVERY_INSTRUCTION;
+  const recoveryInstruction =
+    scope === "pdf_parser"
+      ? SANDBOX_PDF_RECOVERY_INSTRUCTION
+      : GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION;
   const existingContent = lastUserMessage.content;
   const content = Array.isArray(existingContent)
     ? [...existingContent, { type: "text", text: recoveryInstruction }]
@@ -967,7 +1011,10 @@ const enforceOpenRouterRequestSizeLimit = (
     requestContext = getOpenRouterRequestLogContext(parsedBody);
     diagnostics = getOpenRouterRequestSizeDiagnostics(parsedBody);
 
-    const sandboxFallback = createSandboxPdfRecoveryBody(parsedBody, true);
+    const sandboxFallback = createSandboxPdfRecoveryBody(
+      parsedBody,
+      "request_size",
+    );
     let recoveryBody = sandboxFallback.changed
       ? sandboxFallback.body
       : parsedBody;
@@ -1229,7 +1276,7 @@ export const createOpenRouterPatchFetch =
     ) {
       const sandboxBody = createSandboxPdfRecoveryBody(
         parsedRequestBody,
-        parserFailure === "generic_parse",
+        parserFailure === "generic_parse" ? "generic_parser" : "pdf_parser",
       );
       if (!sandboxBody.changed) {
         logPdfParserRecovery(
@@ -1256,7 +1303,10 @@ export const createOpenRouterPatchFetch =
     }
 
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
-      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
+      const sandboxBody = createSandboxPdfRecoveryBody(
+        parsedRequestBody,
+        "pdf_parser",
+      );
       if (!sandboxBody.changed) {
         logPdfParserRecovery(
           "cloudflare-ai",
@@ -1307,7 +1357,10 @@ export const createOpenRouterPatchFetch =
       );
     }
 
-    const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
+    const sandboxBody = createSandboxPdfRecoveryBody(
+      cloudflareBody.body,
+      "pdf_parser",
+    );
     if (!sandboxBody.changed) {
       logPdfParserRecovery(
         "cloudflare-ai",
@@ -1348,7 +1401,6 @@ const openrouterUs = createOpenRouter({
 type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
-export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
@@ -1360,23 +1412,17 @@ export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // image turns route the original pixels through GLM Flash and then DeepSeek
 // Vision, so the lossy description hop is paid only when both direct routes fail.
 export const AUXILIARY_VISION_SLUG = MINIMAX_M3_SLUG;
-export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
-export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
   modelName?: string,
 ):
-  | { ignore: string[] }
   | { sort: "latency"; data_collection: "deny" }
   | typeof AMAZON_BEDROCK_ONLY_ROUTING
   | undefined => {
   if (modelName === GROK_4_6_BEDROCK_MODEL_KEY) {
     return AMAZON_BEDROCK_ONLY_ROUTING;
-  }
-  if (modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG) {
-    return { ignore: ["novita"] };
   }
   if (modelSlug === GLM_5_3_FLASH_SLUG) {
     return { sort: "latency", data_collection: "deny" };
@@ -1395,26 +1441,16 @@ const buildProviderMap = (
     withOpenRouterStreamErrorContext(provider(id));
   return {
     [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
-    "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
     "ask-model-free-deepseek-v41": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
-    "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentModelSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
     // Separate internal keys use the same Grok 4.5 provider model while
     // provider reasoning options distinguish Standard from Pro vision.
     "model-grok-4.5": or(GROK_4_5_SLUG),
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
-    "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    // Redirect persisted legacy selections; never send new requests to 0731.
-    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
-    "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
     "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
-    // Keep the persisted Max compatibility key while routing new requests to
-    // Kimi K3. Renaming the key would invalidate existing stored selections.
-    "model-opus-4.6": or(KIMI_K3_SLUG),
-    "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-glm-5.3": or(GLM_5_3_SLUG),
     "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
@@ -1449,16 +1485,9 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Partial<Record<ModelName, string>> &
   Record<string, string | undefined> = {
-  "ask-model": "August 2026",
-  "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
   [GROK_4_6_BEDROCK_MODEL_KEY]: "August 2026",
-  "model-grok-4.6-pro": "August 2026",
-  "model-deepseek-v4-flash-0731": "August 2026",
-  "model-deepseek-v4-pro": "May 2025",
   "model-deepseek-v4-pro-0813": "August 2026",
-  "model-opus-4.6": "July 2026",
-  "model-glm-5.2": "June 2026",
   "model-glm-5.3-flash": "August 2026",
   "model-glm-5.3-flash-pro": "August 2026",
   "model-glm-5.3-flash-agent": "August 2026",
@@ -1476,23 +1505,16 @@ export const modelDisplayNames: Record<ModelName, string> &
   [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
   [ABLITERATION_LARGE_V2_MODEL_KEY]:
     "Abliteration abliterated-model-large-flash",
-  "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-deepseek-v41":
     "Auto, an intelligent model router built by HackerAI",
-  "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
   [GROK_4_6_BEDROCK_MODEL_KEY]: "xAI Grok 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
-  "model-grok-4.6-pro": "xAI Grok 4.6",
-  "model-deepseek-v4-flash-0731": "DeepSeek V4.1 Flash",
-  "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-  "model-opus-4.6": "Moonshot Kimi K3",
-  "model-glm-5.2": "Z.ai GLM 5.2",
   "model-glm-5.3": "Z.ai GLM 5.3",
   "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
@@ -1529,10 +1551,8 @@ export function isDeepSeekModel(modelName: string): boolean {
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
     modelName === "model-deepseek-v4-flash-vision-pro" ||
-    modelName === "model-deepseek-v4-pro" ||
     modelName === "model-deepseek-v4-pro-0813"
   );
 }
@@ -1540,24 +1560,19 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "model-kimi-k3" ||
-    normalized === "model-opus-4.6" ||
-    normalized.includes("moonshotai/kimi")
+    normalized === "model-kimi-k3" || normalized.includes("moonshotai/kimi")
   );
 }
 
 function isGrokModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "agent-model" ||
-    normalized === "ask-model" ||
     normalized === "fallback-agent-model" ||
     normalized === "fallback-ask-model" ||
     normalized === "model-grok-4.6" ||
     normalized === GROK_4_6_BEDROCK_MODEL_KEY ||
     normalized === "model-grok-4.5" ||
     normalized === "model-grok-4.5-pro" ||
-    normalized === "model-grok-4.6-pro" ||
     normalized.includes("x-ai/") ||
     normalized === "grok-4.5" ||
     normalized === "grok-4.6"
@@ -1576,7 +1591,6 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
     normalized === "ask-model-free" ||
-    normalized === "model-deepseek-v4-flash-0731" ||
     normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||

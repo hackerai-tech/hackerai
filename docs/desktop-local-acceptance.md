@@ -127,6 +127,14 @@ permissions. Check the merged CSP, remote URL scopes, native command bridge,
 and authentication/deep-link behavior. Add only the necessary local scopes in
 the QA override; do not weaken the installed app's permissions.
 
+For journeys that exercise both sign-in and file uploads, check the chosen
+frontend origin before building with
+`corepack pnpm desktop:qa doctor origin <plan.json>`
+([origin doctor](desktop-qa-tooling.md#check-the-frontend-origin-before-building)).
+Choose another port or correct the Development callback and upload
+registrations if it reports BLOCKED; resolve UNVERIFIED items before relying
+on sign-in or uploads.
+
 From the repository root, run either the native development process or build:
 
 ```bash

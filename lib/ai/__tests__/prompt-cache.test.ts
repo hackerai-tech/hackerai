@@ -243,7 +243,7 @@ describe("provider cache policy", () => {
     ).toBe(4);
   });
 
-  it("uses actual registry model IDs for direct calls and persisted compatibility aliases", () => {
+  it("uses actual registry model IDs for direct calls and OpenRouter routes", () => {
     for (const name of ["model-abliterated", "model-abliterated-large-v2"]) {
       const model = myProvider.languageModel(name);
       expect(model.provider).toBe("abliteration.chat");
@@ -253,7 +253,7 @@ describe("provider cache policy", () => {
     }
     expect(
       buildPromptCacheOptions(
-        myProvider.languageModel("model-opus-4.6").modelId,
+        myProvider.languageModel("model-kimi-k3").modelId,
         "opaque-session",
       ),
     ).toEqual({
