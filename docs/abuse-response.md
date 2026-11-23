@@ -474,7 +474,9 @@ active with a reason of `legitimate_corroborated`, `coverage_incomplete`,
    authorization, citing the stating message, the command and the target.
    The worker checks that the target is public, named in the cited message,
    and acted on by every cited command, and that the first pass cited the
-   same commands. Scanning, volume, tool names, missing or mismatched scope,
+   same commands. Each cited message must already have existed in its
+   current form before the run started. Scanning, volume, tool names, missing
+   or mismatched scope,
    claimed impact and model confidence never establish intent.
 4. The Convex mutation `egressAbuseEnforcement:applyBlock` rechecks the burst
    age (at most 24 hours), account, chat ownership, deletion fence, finished
@@ -564,7 +566,8 @@ days, notice counts, and action items with only a reference:
 - Uncertain notice: search the abuse@ Sent folder for its Message-ID, then run
   the internal `abuseBlockNotices:resolveNotice` from the authorized dashboard
   with the notice ID, its current status and attempts, and
-  `confirmed_sent` or `confirmed_not_sent`. A failed notice accepts `retry`
+  `confirmed_sent` or `confirmed_not_sent`. An expired sending lease can be
+  reconciled while dispatch is paused. A failed notice accepts `retry`
   while the block is active, or `dismiss` after contacting the account
   another way. Attempts are never reset.
 - Rollback: turn off the enforcement switch first, then dispatch. Keep the

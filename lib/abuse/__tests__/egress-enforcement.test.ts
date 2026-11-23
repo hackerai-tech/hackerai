@@ -23,6 +23,7 @@ const complete = {
 const evidence = (messages: string[], commands: string[]): ReviewItems => ({
   userMessages: messages.map((text, i) => ({
     messageId: `m${i}`,
+    observedAt: BURST.start - 2,
     text,
     truncated: false,
   })),
@@ -39,6 +40,7 @@ const concerning = {
   outcome: "authorization_request" as const,
   reason: "concerning_unauthorized" as const,
   activity: "denial_of_service" as const,
+  runStart: BURST.start - 1,
   commands: [0],
   messages: [],
 };
@@ -99,6 +101,15 @@ describe("decideEnforcement", () => {
     );
   });
 
+  it("keeps the account active when the intent was recorded after the run began", () => {
+    expect(
+      decideEnforcement(confirmation(), prepared, {
+        ...concerning,
+        runStart: BURST.start - 3,
+      }),
+    ).toEqual({ block: false, reason: "intent_not_established" });
+  });
+
   it("keeps the account active when the observed action was only scanning", () => {
     expect(
       decideEnforcement(confirmation(), prepared, {
@@ -152,6 +163,7 @@ describe("decideEnforcement", () => {
         decideEnforcement(confirmation(), prepared, {
           ...decision,
           activity: concerning.activity,
+          runStart: concerning.runStart,
           commands: [0],
           messages: [0],
         }),

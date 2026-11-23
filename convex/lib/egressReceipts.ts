@@ -14,8 +14,8 @@ export const RECEIPT_TTL_MS = 30 * 24 * 60 * 60_000;
 const PURGE_BATCH = 20;
 
 /**
- * One receipt per review case window. The first decision wins, like the case
- * it describes; expired receipts are purged in small batches on each write.
+ * One receipt per window. A committed case supersedes a prior no-case
+ * decision. Once a case exists, later attempts preserve its receipt.
  */
 export async function insertReceipt(
   ctx: MutationCtx,
@@ -31,11 +31,18 @@ export async function insertReceipt(
     .query("egress_review_receipts")
     .withIndex("by_digest", (q) => q.eq("digest", fields.digest))
     .first();
-  if (existing) return "existing";
-  await ctx.db.insert("egress_review_receipts", {
+  if (fields.caseOutcome === "existing") return "existing";
+  const next = {
     ...fields,
     createdAt: now,
     expiresAt: now + RECEIPT_TTL_MS,
-  });
+  };
+  if (existing) {
+    if (existing.caseOutcome !== "none" || fields.caseOutcome !== "created")
+      return "existing";
+    await ctx.db.replace(existing._id, next);
+  } else {
+    await ctx.db.insert("egress_review_receipts", next);
+  }
   return "created";
 }

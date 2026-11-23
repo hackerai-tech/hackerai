@@ -228,7 +228,9 @@ export const applyBlock = mutation({
     )
       return refused("evidence_mismatch");
     const users = new Set(
-      evidence.userMessages.map(({ messageId }) => messageId),
+      evidence.userMessages
+        .filter(({ observedAt }) => observedAt < evidence.runStart)
+        .map(({ messageId }) => messageId),
     );
     if (
       !args.messageIds.every((id) => users.has(id)) ||

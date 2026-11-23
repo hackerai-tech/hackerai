@@ -30,6 +30,7 @@ const MAX_CITATIONS = 10;
 
 export type ReviewUserMessage = {
   messageId: string;
+  observedAt?: number;
   text: string;
   truncated: boolean;
 };
@@ -542,6 +543,7 @@ export type PreparedReview = {
   commands: ScrubbedItem[];
   /** Locators of the prompt items, in prompt index order (1-based in prompt). */
   messageLocators: { messageId: string }[];
+  messageObservedAt: (number | undefined)[];
   commandLocators: { messageId: string; toolCallId: string }[];
   isPublic: (target: number) => boolean;
   mayBePublic: (target: number) => boolean;
@@ -630,6 +632,7 @@ export function prepareReview(
     messages,
     commands,
     messageLocators: messageSource.map(({ messageId }) => ({ messageId })),
+    messageObservedAt: messageSource.map(({ observedAt }) => observedAt),
     commandLocators: commandSource.map(({ messageId, toolCallId }) => ({
       messageId,
       toolCallId,

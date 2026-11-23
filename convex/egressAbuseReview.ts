@@ -304,6 +304,7 @@ export function startedCommands(row: Doc<"messages">) {
 
 const userMessageValidator = v.object({
   messageId: v.string(),
+  observedAt: v.optional(v.number()),
   text: v.string(),
   truncated: v.boolean(),
 });
@@ -393,7 +394,19 @@ export async function collectRunEvidence(
       return [];
     }
     const text = userText(row.parts);
-    return text ? [{ messageId: row.id, ...clip(text) }] : [];
+    return text
+      ? [
+          {
+            messageId: row.id,
+            // The current text version must have existed before the run began.
+            observedAt: Math.max(
+              row._creationTime,
+              row.update_time ?? row._creationTime,
+            ),
+            ...clip(text),
+          },
+        ]
+      : [];
   });
 
   const commands: Command[] = [];

@@ -282,6 +282,27 @@ describe("applyBlock", () => {
     expect(rowCounts(ctx)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
+  it("supersedes an earlier no-case receipt when the same window produces a block", async () => {
+    const ctx = database();
+    await seed(ctx);
+    await call(review, "recordReceipt", ctx, {
+      serviceKey: REVIEW_KEY,
+      digest: DIGEST,
+      decision: "keep_active",
+      reason: "legitimate_corroborated",
+      reviewReason: "legitimate_corroborated",
+      evidenceMode: "exact_run",
+      coverage: "complete",
+      caseOutcome: "none",
+    });
+    await apply(ctx);
+    const report = await summary(ctx);
+    expect(report.reviews).toMatchObject({
+      total: 1,
+      decisions: { block_applied: 1, keep_active: 0 },
+    });
+  });
+
   it("returns the recorded block on a duplicate retry without writing again", async () => {
     const ctx = database();
     await seed(ctx);
@@ -542,6 +563,43 @@ describe("notice outbox", () => {
     expect(row).toMatchObject({
       status: "failed",
       failure: "attempts_exhausted",
+    });
+  });
+
+  it("recovers an expired send while dispatch is paused and rejects a live lease", async () => {
+    const ctx = await blocked();
+    const { notice } = await claim(ctx);
+    process.env.ABUSE_BLOCK_NOTICE_DISPATCH_ENABLED = "false";
+    const resolve = () =>
+      call(notices, "resolveNotice", ctx, {
+        noticeId: notice.noticeId,
+        expectedStatus: "sending",
+        expectedAttempts: 1,
+        resolution: "confirmed_sent",
+      });
+    await expect(resolve()).rejects.toThrow(/live lease/);
+    await ctx.db.patch(notice.noticeId, { leaseExpiresAt: Date.now() - 1 });
+    await expect(resolve()).resolves.toEqual({ status: "sent" });
+    const row = await ctx.db.get(notice.noticeId);
+    expect(row.leaseToken).toBeUndefined();
+    expect(row.leaseExpiresAt).toBeUndefined();
+    expect((await summary(ctx)).notices.confirmedSentInBlockWindow).toBe(1);
+  });
+
+  it("reports incomplete actions when the pending-enforcement scan reaches its budget", async () => {
+    const ctx = database();
+    const now = Date.now();
+    for (let i = 0; i < 201; i++) {
+      await ctx.db.insert("egress_review_receipts", {
+        decision: "enforcement_pending",
+        reason: "enforcement_disabled",
+        coverage: "complete",
+        createdAt: now,
+      });
+    }
+    await expect(summary(ctx)).resolves.toMatchObject({
+      actions: [],
+      actionsTruncated: true,
     });
   });
 

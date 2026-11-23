@@ -1080,6 +1080,36 @@ describe("automatic enforcement", () => {
       expect(logs).not.toContain(raw);
   });
 
+  it("keeps a preserved case from becoming a new pending action", async () => {
+    await convex.db.insert("abuse_cases", {
+      reference,
+      status: "new",
+      revision: 0,
+    });
+    classifyThenConfirm(confirmed);
+    await expect(run()).resolves.toEqual({
+      status: "preserved",
+      case: "existing",
+    });
+    expect(receipts()).toHaveLength(0);
+  });
+
+  it("reports incomplete coverage when preparing the prompt clipped the evidence", async () => {
+    const message = convex.tables.messages.find(
+      (row: any) => row.role === "user",
+    );
+    message.parts = [
+      { type: "text", text: "synthetic short words ".repeat(100) },
+    ];
+    await expect(run()).resolves.toMatchObject({
+      reason: "observation_incomplete",
+    });
+    expect(receipts()).toEqual([
+      expect.objectContaining({ coverage: "incomplete" }),
+    ]);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
   it("records pending enforcement and changes nothing while the switch is off", async () => {
     classifyThenConfirm(confirmed);
     await expect(run()).resolves.toMatchObject({

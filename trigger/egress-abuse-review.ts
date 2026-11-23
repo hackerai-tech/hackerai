@@ -389,7 +389,7 @@ export async function runEgressAbuseReview(
     | "model"
     | "accountActivity"
     | "enforcement"
-  >;
+  > & { promptIncomplete?: boolean };
   const digest = reviewDigest(caseKey);
   const encryptRecord = (
     decision: Exclude<ReviewDecision, { outcome: "no_case" }>,
@@ -424,7 +424,8 @@ export async function runEgressAbuseReview(
   ) => {
     const { coverage: run, accountActivity: activity } = details;
     const coverage: ReviewCoverageState = run
-      ? !run.historyTruncated &&
+      ? !details.promptIncomplete &&
+        !run.historyTruncated &&
         !run.userMessagesOmitted &&
         !run.commandsOmitted &&
         !run.incompleteToolCalls &&
@@ -481,9 +482,9 @@ export async function runEgressAbuseReview(
       digest,
       ciphertext: encryptRecord(decision, details),
     });
-    await receipt(decision, details, enforcement, result.outcome);
     if (result.outcome === "existing")
       return { status: "preserved", case: "existing" };
+    await receipt(decision, details, enforcement, "created");
     return {
       status: "completed",
       outcome: decision.outcome,
@@ -686,7 +687,14 @@ export async function runEgressAbuseReview(
     start: burst.burstStart,
     end: burst.burstEnd,
   });
-  const base = { run: runDetails, coverage: evidence.coverage };
+  const base = {
+    run: runDetails,
+    coverage: evidence.coverage,
+    promptIncomplete:
+      prepared.itemsTruncated ||
+      prepared.itemsOmitted ||
+      !evidence.userMessages.length,
+  };
   const { coverage } = evidence;
   if (
     !evidence.userMessages.length ||
@@ -758,6 +766,7 @@ export async function runEgressAbuseReview(
       check = decideEnforcement(confirmation, prepared, {
         ...decision,
         activity: classification.activity,
+        runStart: evidence.runStart,
       });
   }
   if (!check.block)

@@ -165,6 +165,7 @@ export function decideEnforcement(
   decision: ReviewDecision & {
     commands: number[];
     activity: EgressReviewClassification["activity"];
+    runStart: number;
   },
 ): EnforcementCheck {
   if (decision.outcome !== "authorization_request")
@@ -205,6 +206,13 @@ export function decideEnforcement(
     return notEstablished;
   // Both independent passes must point at the same recorded action.
   if (!commands.every((index) => decision.commands.includes(index)))
+    return notEstablished;
+  if (
+    !messages.every(
+      (index) =>
+        (prepared.messageObservedAt[index] ?? Infinity) < decision.runStart,
+    )
+  )
     return notEstablished;
   const statedTargets = new Set(
     messages.flatMap((index) => [...prepared.messages[index].targets]),

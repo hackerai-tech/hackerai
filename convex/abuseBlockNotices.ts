@@ -364,8 +364,10 @@ export const summary = query({
           .eq("decision", "enforcement_pending")
           .gte("createdAt", now - BLOCK_WINDOW_MS),
       )
-      .take(SUMMARY_SCAN);
-    for (const receipt of pendingEnforcement) {
+      .take(SUMMARY_SCAN + 1);
+    const pendingEnforcementTruncated =
+      pendingEnforcement.length > SUMMARY_SCAN;
+    for (const receipt of pendingEnforcement.slice(0, SUMMARY_SCAN)) {
       if (!receipt.reference) continue;
       const row = await ctx.db
         .query("abuse_cases")
@@ -478,7 +480,14 @@ export const summary = query({
             : Math.floor((now - oldestPending) / 60_000),
       },
       actions: actions.slice(0, MAX_ACTIONS),
-      actionsTruncated: actions.length > MAX_ACTIONS,
+      actionsTruncated:
+        actions.length > MAX_ACTIONS ||
+        pendingEnforcementTruncated ||
+        pending.truncated ||
+        sending.truncated ||
+        uncertain.truncated ||
+        failed.truncated ||
+        recent.length > SUMMARY_SCAN,
     };
   },
 });
@@ -493,7 +502,11 @@ export const summary = query({
 export const resolveNotice = internalMutation({
   args: {
     noticeId: v.id("abuse_block_notices"),
-    expectedStatus: v.union(v.literal("uncertain"), v.literal("failed")),
+    expectedStatus: v.union(
+      v.literal("uncertain"),
+      v.literal("failed"),
+      v.literal("sending"),
+    ),
     expectedAttempts: v.number(),
     resolution: v.union(
       v.literal("confirmed_sent"),
@@ -505,13 +518,16 @@ export const resolveNotice = internalMutation({
   returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     const notice = await ctx.db.get(args.noticeId);
+    const now = Date.now();
     if (
       !notice ||
       notice.status !== args.expectedStatus ||
-      notice.attempts !== args.expectedAttempts
+      notice.attempts !== args.expectedAttempts ||
+      (notice.status === "sending" && (notice.leaseExpiresAt ?? 0) > now)
     )
-      throw new Error("Notice changed; read it again before recovering");
-    const now = Date.now();
+      throw new Error(
+        "Notice changed or has a live lease; recheck before recovering",
+      );
     const clear = { leaseToken: undefined, leaseExpiresAt: undefined };
     const requeue = async () => {
       if (!(await blockActive(ctx, notice)))
@@ -524,7 +540,7 @@ export const resolveNotice = internalMutation({
     };
     let patch: Partial<Doc<"abuse_block_notices">>;
     if (args.resolution === "dismiss") patch = { status: "cancelled" };
-    else if (notice.status === "uncertain") {
+    else if (notice.status === "uncertain" || notice.status === "sending") {
       if (args.resolution === "retry")
         throw new Error("Reconcile an uncertain notice first");
       patch =

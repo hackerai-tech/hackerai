@@ -110,7 +110,12 @@ export const VERIFIED_EGRESS_BLOCK_SCOPE =
 export async function egressEvidenceFingerprint(evidence: {
   runStart: number;
   runEnd: number | null;
-  userMessages: { messageId: string; text: string; truncated: boolean }[];
+  userMessages: {
+    messageId: string;
+    text: string;
+    truncated: boolean;
+    observedAt?: number;
+  }[];
   commands: {
     messageId: string;
     toolCallId: string;
@@ -122,10 +127,11 @@ export async function egressEvidenceFingerprint(evidence: {
   const input = JSON.stringify([
     evidence.runStart,
     evidence.runEnd,
-    evidence.userMessages.map(({ messageId, text, truncated }) => [
+    evidence.userMessages.map(({ messageId, text, truncated, observedAt }) => [
       messageId,
       text,
       truncated,
+      observedAt ?? null,
     ]),
     evidence.commands.map(
       ({ messageId, toolCallId, tool, text, truncated }) => [
