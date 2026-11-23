@@ -456,6 +456,32 @@ const compactToolInputForStorage = (value: unknown, depth = 0): unknown => {
   return compacted;
 };
 
+/**
+ * The file card reads `input.files` as path strings, so storage compaction
+ * keeps that list complete and string-only instead of appending a marker.
+ */
+const compactToolPartInputForStorage = (
+  toolName: string | null,
+  input: unknown,
+): unknown => {
+  if (
+    toolName !== "get_terminal_files" ||
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    !Array.isArray((input as { files?: unknown }).files)
+  ) {
+    return compactToolInputForStorage(input);
+  }
+  const { files, ...rest } = input as { files: unknown[] };
+  return {
+    ...(compactToolInputForStorage(rest) as Record<string, unknown>),
+    files: files
+      .filter((path): path is string => typeof path === "string")
+      .map((path) => truncateStorageString(path, 512)),
+  };
+};
+
 const compactNoteForStorage = (value: unknown): unknown => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return compactToolInputForStorage(value);
@@ -547,7 +573,7 @@ const compactToolPartForStorage = (
 
   return {
     ...part,
-    input: compactToolInputForStorage(part.input),
+    input: compactToolPartInputForStorage(toolName, part.input),
     output: PROTECTED_TOOLS.has(toolName)
       ? compactProtectedToolOutputForStorage(toolName, part.output)
       : isCompactPlaceholderOutput(part.output)
@@ -798,7 +824,10 @@ const compactNonCompletedPartForStorage = (
   if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
     return {
       ...toolPart,
-      input: compactToolInputForStorage(toolPart.input),
+      input: compactToolPartInputForStorage(
+        toolPart.type.slice(TOOL_TYPE_PREFIX.length),
+        toolPart.input,
+      ),
     } as UIMessage["parts"][number];
   }
 

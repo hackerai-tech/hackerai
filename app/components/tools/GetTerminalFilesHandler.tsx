@@ -13,10 +13,7 @@ import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 interface TerminalFilesPart {
   toolCallId: string;
   state:
-    | "input-streaming"
-    | "input-available"
-    | "output-available"
-    | "output-error";
+    "input-streaming" | "input-available" | "output-available" | "output-error";
   input?: { files: string[]; brief?: string };
   errorText?: string;
   output?: {
@@ -44,7 +41,16 @@ export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
 
   // Memoize requestedPaths to prevent unstable references from triggering
   // infinite re-render loops via useToolSidebar's updateSidebarContent effect.
-  const requestedPaths = useMemo(() => input?.files || [], [input?.files]);
+  // Stored messages compacted before string-only file lists may contain
+  // non-path marker entries; the card only renders real paths.
+  const inputFiles: unknown = input?.files;
+  const requestedPaths = useMemo(
+    () =>
+      (Array.isArray(inputFiles) ? inputFiles : []).filter(
+        (path): path is string => typeof path === "string",
+      ),
+    [inputFiles],
+  );
 
   const getFileNames = (paths: string[]) => {
     return paths.map((path) => path.split("/").pop() || path).join(", ");

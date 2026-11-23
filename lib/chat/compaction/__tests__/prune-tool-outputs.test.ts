@@ -2256,6 +2256,34 @@ describe("get_terminal_files delivery records", () => {
     });
   });
 
+  it("keeps every requested path a string when storage compacts a failed delivery", () => {
+    const requested = Array.from(
+      { length: 25 },
+      (_, index) => `/home/user/missing-${index}.zip`,
+    );
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "get_terminal_files",
+        {
+          result: "x".repeat(40_000),
+          files: [],
+          deliveryReceipts: [],
+          failedFiles: requested.map((path) => ({ path, reason: "not found" })),
+        },
+        { files: requested },
+      ),
+    ]);
+    const before = estimateSerializedSizeBytes(message.parts);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: before - 10_000,
+      toolOutputTokenBudget: 0,
+    });
+
+    // The file card falls back to these paths when nothing was delivered.
+    expect((result.message.parts[0] as any).input.files).toEqual(requested);
+  });
+
   it("keeps every receipt, path, and failure when the storage byte cap compacts a delivery", () => {
     const delivered = 25;
     const delivery = makeDeliveryOutput(delivered, "x".repeat(20_000));
