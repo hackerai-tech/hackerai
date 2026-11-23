@@ -28,6 +28,15 @@ pub(crate) trait SleepLock {
     /// On failure, a closed failure class for logs, never OS output.
     fn acquire(&mut self) -> Result<(), &'static str>;
     fn release(&mut self);
+    /// Locks held by a helper process can be lost after acquisition; those
+    /// return how often the controller should confirm the lock still holds.
+    fn health_check_interval(&self) -> Option<Duration> {
+        None
+    }
+    /// Whether an acquired lock is still in effect.
+    fn still_held(&mut self) -> bool {
+        true
+    }
 }
 
 /// Pure state machine: callers supply the time and the controller returns
@@ -93,6 +102,19 @@ impl<L: SleepLock> Controller<L> {
             self.retry_at = None;
             return None;
         }
+        if self.held && !self.lock.still_held() {
+            // A lost lock goes through the same capped backoff as a failure.
+            self.lock.release();
+            self.held = false;
+            self.failures += 1;
+            let delay = retry_delay(self.failures);
+            self.retry_at = Some(now + delay);
+            log::warn!(
+                "Desktop keep-awake lost (lock_exited); attempt {}, retrying in {}s",
+                self.failures,
+                delay.as_secs()
+            );
+        }
         if !self.held && self.retry_at.is_none_or(|retry| now >= retry) {
             match self.lock.acquire() {
                 Ok(()) => {
@@ -114,10 +136,15 @@ impl<L: SleepLock> Controller<L> {
             }
         }
         let retry = self.retry_at.filter(|_| !self.held);
-        match (self.idle_deadline(), retry) {
-            (Some(idle), Some(retry)) => Some(idle.min(retry)),
-            (idle, retry) => idle.or(retry),
-        }
+        let health = self
+            .lock
+            .health_check_interval()
+            .filter(|_| self.held)
+            .map(|interval| now + interval);
+        [self.idle_deadline(), retry, health]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn shutdown(&mut self) {
@@ -268,7 +295,7 @@ mod platform {
             // SAFETY: a NUL-terminated UTF-8 string and the default allocator.
             let string =
                 unsafe { CFStringCreateWithCString(std::ptr::null(), value.as_ptr(), UTF8) };
-            (!string.is_null()).then_some(Self(string))
+            (!string.is_null()).then(|| Self(string))
         }
     }
 
@@ -350,15 +377,20 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    //! A logind sleep inhibitor held by `systemd-inhibit`. Its child exits
-    //! when this app's PID exits, which ends the inhibitor even after a crash.
-    //! logind ignores inhibitors for lid switches by default.
+    //! A logind idle inhibitor held by `systemd-inhibit`. `idle` blocks only
+    //! automatic idle suspend: an explicit Sleep request and the lid switch
+    //! still sleep. Its child exits when this app's PID exits, which ends the
+    //! inhibitor even after a crash.
+    use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc;
     use std::time::Duration;
 
-    /// An inhibitor that cannot reach logind exits almost immediately.
-    const STARTUP_CHECK: Duration = Duration::from_millis(250);
+    /// `systemd-inhibit` runs its command only after logind grants the
+    /// inhibitor, so the command's first line confirms the lock is active.
+    const READY_TIMEOUT: Duration = Duration::from_secs(5);
+    const HEALTH_CHECK: Duration = Duration::from_secs(30);
 
     pub(super) struct InhibitorLock(Option<Child>);
 
@@ -370,41 +402,64 @@ mod platform {
         fn acquire(&mut self) -> Result<(), &'static str> {
             let mut child = Command::new("systemd-inhibit")
                 .args([
-                    "--what=sleep",
+                    "--what=idle",
                     "--mode=block",
                     "--who=HackerAI",
                     "--why=HackerAI Agent is running commands on this computer",
-                    "tail",
-                    &format!("--pid={}", std::process::id()),
-                    "-f",
-                    "/dev/null",
+                    "sh",
+                    "-c",
+                    "echo ready; exec tail --pid=\"$1\" -f /dev/null",
+                    "hackerai-keep-awake",
+                    &std::process::id().to_string(),
                 ])
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 // Its own group, so release stops the inhibitor and `tail`.
                 .process_group(0)
                 .spawn()
                 .map_err(|_| "inhibitor_spawn_failed")?;
-            std::thread::sleep(STARTUP_CHECK);
-            if !matches!(child.try_wait(), Ok(None)) {
-                let _ = child.wait();
-                return Err("inhibitor_exited");
+            let stdout = child.stdout.take();
+            let (ready, confirmed) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                let ok = stdout.is_some_and(|out| {
+                    BufReader::new(out).read_line(&mut line).is_ok() && line.trim() == "ready"
+                });
+                let _ = ready.send(ok);
+            });
+            if confirmed.recv_timeout(READY_TIMEOUT) != Ok(true) {
+                stop(&mut child);
+                return Err("inhibitor_unconfirmed");
             }
             self.0 = Some(child);
             Ok(())
         }
 
+        fn health_check_interval(&self) -> Option<Duration> {
+            Some(HEALTH_CHECK)
+        }
+
+        fn still_held(&mut self) -> bool {
+            self.0
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+        }
+
         fn release(&mut self) {
             if let Some(mut child) = self.0.take() {
-                if let Ok(group) = libc::pid_t::try_from(child.id()) {
-                    // SAFETY: the group this lock created; its leader is
-                    // unreaped, so the group ID cannot have been reused.
-                    unsafe { libc::killpg(group, libc::SIGTERM) };
-                }
-                let _ = child.wait();
+                stop(&mut child);
             }
         }
+    }
+
+    fn stop(child: &mut Child) {
+        if let Ok(group) = libc::pid_t::try_from(child.id()) {
+            // SAFETY: the group this lock created; its leader is unreaped
+            // until the wait below, so the group ID cannot have been reused.
+            unsafe { libc::killpg(group, libc::SIGTERM) };
+        }
+        let _ = child.wait();
     }
 }
 
@@ -439,6 +494,8 @@ mod tests {
         acquires: usize,
         releases: usize,
         failures_left: usize,
+        monitored: bool,
+        lost: bool,
     }
 
     impl Fake {
@@ -446,6 +503,16 @@ mod tests {
             let fake = Self::default();
             fake.0.lock().unwrap().failures_left = times;
             fake
+        }
+
+        fn monitored() -> Self {
+            let fake = Self::default();
+            fake.0.lock().unwrap().monitored = true;
+            fake
+        }
+
+        fn lose(&self) {
+            self.0.lock().unwrap().lost = true;
         }
 
         fn held(&self) -> bool {
@@ -475,8 +542,38 @@ mod tests {
             let mut state = self.0.lock().unwrap();
             assert!(state.held, "released without holding");
             state.held = false;
+            state.lost = false;
             state.releases += 1;
         }
+
+        fn health_check_interval(&self) -> Option<Duration> {
+            self.0
+                .lock()
+                .unwrap()
+                .monitored
+                .then_some(Duration::from_secs(30))
+        }
+
+        fn still_held(&mut self) -> bool {
+            !self.0.lock().unwrap().lost
+        }
+    }
+
+    #[test]
+    fn a_lost_lock_is_retried_with_backoff_while_a_command_runs() {
+        let fake = Fake::monitored();
+        let mut controller = Controller::new(fake.clone(), GRACE);
+        let start = Instant::now();
+
+        // A monitored lock is re-checked even while no idle deadline exists.
+        assert_eq!(controller.begin(start), Some(at(start, 30)));
+        fake.lose();
+        // The loss is detected on the next check and retried after backoff.
+        assert_eq!(controller.reconcile(at(start, 30)), Some(at(start, 35)));
+        assert!(!fake.held());
+        controller.reconcile(at(start, 35));
+        assert!(fake.held(), "lock not reacquired after loss");
+        assert_eq!(fake.counts(), (2, 1));
     }
 
     const GRACE: Duration = Duration::from_secs(60);
