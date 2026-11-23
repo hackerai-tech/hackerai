@@ -12,6 +12,14 @@ export const rememberSteerSentHere = (steerId: string) => {
   steersSentHere.add(steerId);
 };
 
+// Runs the user stopped in this tab. Their unread steers come back held,
+// whatever happens to page state while the withdrawal is in flight.
+const stoppedRuns = new Set<string>();
+export const rememberStoppedRun = (runId: string) => {
+  stoppedRuns.add(runId);
+};
+export const wasRunStopped = (runId: string) => stoppedRuns.has(runId);
+
 export type RestoredSteer = {
   text: string;
   timestamp: number;
@@ -97,7 +105,9 @@ export function useUnreadSteerRequeue({
     for (const steer of unread) withdrawing.current.add(steer.id);
     void (async () => {
       setInFlight((count) => count + 1);
-      const withdrawn: Array<Omit<RestoredSteer, "held">> = [];
+      const withdrawn: Array<
+        Omit<RestoredSteer, "held"> & { fromStoppedRun: boolean }
+      > = [];
       let failed = false;
       for (const [index, steer] of unread.entries()) {
         try {
@@ -107,6 +117,7 @@ export function useUnreadSteerRequeue({
               text: result.text,
               timestamp: steer.sentAt,
               sentHere: steersSentHere.has(steer.id),
+              fromStoppedRun: stoppedRuns.has(steer.runId),
             });
           // Its run still holds it; a later snapshot can try again.
           else withdrawing.current.delete(steer.id);
@@ -125,9 +136,12 @@ export function useUnreadSteerRequeue({
         visit.current.chatId === chatId ? visit.current.startedAt : Infinity;
       onRequeueRef.current(
         chatId,
-        withdrawn.map((steer) => ({
+        withdrawn.map(({ fromStoppedRun, ...steer }) => ({
           ...steer,
-          held: !steer.sentHere || steer.timestamp < visitStartedAt,
+          held:
+            fromStoppedRun ||
+            !steer.sentHere ||
+            steer.timestamp < visitStartedAt,
         })),
       );
       if (!failed) {

@@ -63,7 +63,10 @@ import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_STEER_MAX_TEXT_LENGTH } from "@/lib/chat/agent-steer";
-import { rememberSteerSentHere } from "@/app/hooks/useUnreadSteerRequeue";
+import {
+  rememberSteerSentHere,
+  rememberStoppedRun,
+} from "@/app/hooks/useUnreadSteerRequeue";
 import {
   isAlternateSubmit,
   resolveFollowUpBehavior,
@@ -741,6 +744,8 @@ export const useChatHandlers = ({
     action: "stop_and_send" | "send_now",
   ): Promise<boolean> => {
     const requestGeneration = getAgentRunRequestGeneration?.();
+    if (activeTriggerRunRef?.current)
+      rememberStoppedRun(activeTriggerRunRef.current);
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
     // Capture a pending start now, before the todo save can outlive its response.
@@ -1442,6 +1447,9 @@ export const useChatHandlers = ({
 
     // Set manual stop flag to prevent auto-processing of queue
     hasManuallyStoppedRef.current = true;
+    // Its unread steers must wait for the user, not ride this flag.
+    if (activeTriggerRunRef?.current)
+      rememberStoppedRun(activeTriggerRunRef.current);
 
     // Clear any active status indicators immediately
     onStopCallback?.();

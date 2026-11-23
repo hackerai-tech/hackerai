@@ -21,7 +21,7 @@ jest.mock("convex/react", () => ({
   useMutation: () => mockWithdraw,
 }));
 
-const { useUnreadSteerRequeue, rememberSteerSentHere } =
+const { useUnreadSteerRequeue, rememberSteerSentHere, rememberStoppedRun } =
   require("../useUnreadSteerRequeue") as typeof import("../useUnreadSteerRequeue");
 
 // Sent from this tab during this visit unless a test says otherwise.
@@ -223,6 +223,24 @@ describe("useUnreadSteerRequeue", () => {
     expect(onRequeue).toHaveBeenCalledWith("chat-1", [
       expect.objectContaining({ text: "Also check X", held: true }),
     ]);
+  });
+
+  it("holds a steer from a run the user stopped, even if sent this visit", async () => {
+    rememberStoppedRun("run-stopped");
+    mockPending = [
+      { ...steer("from-stopped", "Also check X"), runId: "run-stopped" },
+    ];
+    mockWithdraw.mockResolvedValue({
+      outcome: "withdrawn",
+      text: "Also check X",
+    });
+    const onRequeue = jest.fn();
+    render(onRequeue);
+    await waitFor(() =>
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+        expect.objectContaining({ text: "Also check X", held: true }),
+      ]),
+    );
   });
 
   it("retries a failed withdrawal without a new snapshot", async () => {

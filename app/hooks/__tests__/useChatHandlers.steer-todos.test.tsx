@@ -743,7 +743,7 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  const renderSummarySteer = (isSummarizing = true) => {
+  const renderSummarySteer = (isSummarizing = true, runId = "run-1") => {
     const isSendingNowRef = { current: false };
     const hasManuallyStoppedRef = { current: false };
     const hook = renderHook(
@@ -760,7 +760,7 @@ describe("useChatHandlers steer todo handoff", () => {
           isSummarizing,
           isSendingNowRef,
           hasManuallyStoppedRef,
-          activeTriggerRunRef: { current: "run-1" },
+          activeTriggerRunRef: { current: runId },
         }),
       {
         initialProps: {
@@ -1093,6 +1093,18 @@ describe("useChatHandlers steer todo handoff", () => {
         await sending;
       });
       expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    });
+
+    it("marks the run Stop cancels so its unread steers come back held", async () => {
+      const { wasRunStopped } = jest.requireActual<
+        typeof import("@/app/hooks/useUnreadSteerRequeue")
+      >("@/app/hooks/useUnreadSteerRequeue");
+      const { result } = renderSummarySteer(false, "run-stop-check");
+      expect(wasRunStopped("run-stop-check")).toBe(false);
+      await act(async () => {
+        await result.current.handleStop();
+      });
+      expect(wasRunStopped("run-stop-check")).toBe(true);
     });
 
     it("keeps a queued message queued when the run refuses the steer", async () => {
