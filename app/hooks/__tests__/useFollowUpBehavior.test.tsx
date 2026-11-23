@@ -57,4 +57,16 @@ describe("useFollowUpBehavior", () => {
     expect(settled.agentSteeringEnabled).toBe(false);
     expect(settled.queueBehavior).toBe("queue");
   });
+
+  it("keeps a choice made while the rollout is off once it turns on", async () => {
+    localStorage.setItem("follow-up-behavior", "queue");
+    respond(false);
+    const { result } = renderHook(() => useFollowUpBehavior("user-1"));
+    await settle(result);
+    act(() => result.current.setQueueBehavior("stop-and-send"));
+
+    respond(true);
+    const { result: enabled } = renderHook(() => useFollowUpBehavior("user-1"));
+    expect((await settle(enabled)).queueBehavior).toBe("stop-and-send");
+  });
 });

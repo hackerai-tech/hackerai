@@ -75,7 +75,9 @@ export function useFollowUpBehavior(userId: string | undefined) {
 
   const setQueueBehavior = useCallback(
     (behavior: QueueBehavior) => {
-      if (agentSteeringEnabled) {
+      // Every explicit choice is newer than one saved during another rollout
+      // state; only steer itself needs steering to be available.
+      if (agentSteeringEnabled || behavior !== "steer") {
         setExplicit(behavior);
         write(FOLLOW_UP_KEY, behavior);
       }

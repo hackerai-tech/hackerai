@@ -47,6 +47,7 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useUnreadSteerRequeue } from "@/app/hooks/useUnreadSteerRequeue";
+import { isAgentSteerPart } from "@/lib/chat/agent-steer";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
@@ -2819,20 +2820,38 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
-  const pendingSteers = useUnreadSteerRequeue({
-    chatId,
-    enabled: agentSteeringEnabled && isConvexAuthenticated,
-    runActive:
-      !!activeTriggerRunId ||
-      !!agentLongRunId ||
-      status === "streaming" ||
-      status === "submitted",
-    onRequeue: (steerChatId, steers, hold) => {
-      if (!steers.length) return;
-      requeueUnreadSteers(steerChatId, steers);
-      if (hold && steerChatId === chatId) hasManuallyStoppedRef.current = true;
-    },
-  });
+  const steerIdsInTranscript = useMemo(
+    () =>
+      new Set(
+        messages.flatMap((message) =>
+          message.role === "assistant"
+            ? message.parts.flatMap((part) =>
+                isAgentSteerPart(part) ? [part.data.id] : [],
+              )
+            : [],
+        ),
+      ),
+    [messages],
+  );
+  const { pendingSteers, recovering: recoveringUnreadSteers } =
+    useUnreadSteerRequeue({
+      chatId,
+      enabled: agentSteeringEnabled && isConvexAuthenticated,
+      isInTranscript: (steerId) => steerIdsInTranscript.has(steerId),
+      // Until the chat loads, an active run is unknown; never withdraw early.
+      runActive:
+        !hasLoadedCurrentChat ||
+        !!activeTriggerRunId ||
+        !!agentLongRunId ||
+        status === "streaming" ||
+        status === "submitted",
+      onRequeue: (steerChatId, steers, hold) => {
+        if (!steers.length) return;
+        requeueUnreadSteers(steerChatId, steers);
+        if (hold && steerChatId === chatId)
+          hasManuallyStoppedRef.current = true;
+      },
+    });
 
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
@@ -2861,7 +2880,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
-      !hasManuallyStoppedRef.current
+      !hasManuallyStoppedRef.current &&
+      !recoveringUnreadSteers
     ) {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
@@ -2900,6 +2920,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    recoveringUnreadSteers,
     hasPendingSummarySteer,
     hasPendingUserWait,
     persistedGoal?.state,

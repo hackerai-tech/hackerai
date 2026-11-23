@@ -617,15 +617,7 @@ export class SummarizationTracker {
   ): T {
     if (message.role !== "assistant") return message;
     const response = withoutContextUsageParts(message);
-    const steers = this.steers.filter(
-      (record) =>
-        record.messageId === undefined || record.messageId === message.id,
-    );
-    for (const record of steers) record.messageId ??= message.id;
-    const saved = insertAgentSteerParts(
-      this.withSummarizationParts(response),
-      steers,
-    );
+    const saved = this.withSteerParts(this.withSummarizationParts(response));
     // A diagnostics snapshot never makes a response without its own content
     // eligible for persistence.
     return response.parts?.some(
@@ -633,6 +625,23 @@ export class SummarizationTracker {
     )
       ? this.withContextPressure(saved)
       : saved;
+  }
+
+  /**
+   * Place recorded steers in a saved response without other save processing,
+   * for checkpoint saves that keep their own parts. Each steer belongs to the
+   * first response saved after it was read.
+   */
+  withSteerParts<T extends { id?: string; role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (message.role !== "assistant") return message;
+    const steers = this.steers.filter(
+      (record) =>
+        record.messageId === undefined || record.messageId === message.id,
+    );
+    for (const record of steers) record.messageId ??= message.id;
+    return insertAgentSteerParts(message, steers);
   }
 
   /** Appends exactly one tracked snapshot. */

@@ -6,6 +6,7 @@ import {
   type QueryCtx,
 } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
+import type { Doc } from "./_generated/dataModel";
 import {
   AGENT_STEER_MAX_PENDING,
   AGENT_STEER_MAX_TEXT_LENGTH,
@@ -97,7 +98,16 @@ export const create = mutation({
   },
 });
 
-/** Steers the active run has not read yet, oldest first. */
+type SteerRow = Doc<"agent_steers">;
+
+/**
+ * The client may take back a steer nobody holds: one the run has not claimed,
+ * or one claimed by a run that is no longer active and never acknowledged.
+ */
+const isWithdrawable = (row: SteerRow, activeRunId: string | undefined) =>
+  row.claimed_at === undefined || row.run_id !== activeRunId;
+
+/** Steers no running Agent holds, oldest first. */
 export const listPending = query({
   args: { chatId: v.string() },
   returns: v.array(
@@ -106,6 +116,7 @@ export const listPending = query({
       text: v.string(),
       runId: v.string(),
       createdAt: v.number(),
+      claimed: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -118,20 +129,26 @@ export const listPending = query({
       .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
       .take(AGENT_STEER_MAX_PENDING);
     return rows
-      .filter((row) => row.user_id === identity.subject)
+      .filter(
+        (row) =>
+          row.user_id === identity.subject &&
+          isWithdrawable(row, chat.active_trigger_run_id),
+      )
       .sort((a, b) => a.created_at - b.created_at)
       .map((row) => ({
         id: row.id,
         text: row.text,
         runId: row.run_id,
         createdAt: row.created_at,
+        claimed: row.claimed_at !== undefined,
       }));
   },
 });
 
 /**
- * Take back an unread steer, for example after its run ended. This races the
- * run's claim inside one transaction, so exactly one side gets the text.
+ * Take back a steer no running Agent holds, for example after its run ended.
+ * This races the run's claim inside one transaction, so exactly one side gets
+ * the text.
  */
 export const withdraw = mutation({
   args: { chatId: v.string(), id: v.string() },
@@ -147,34 +164,91 @@ export const withdraw = mutation({
       .first();
     if (!row || row.user_id !== userId || row.chat_id !== args.chatId)
       return { outcome: "not_found" as const };
+    const chat = await getOwnedChat(ctx, args.chatId, userId);
+    if (
+      row.claimed_at !== undefined &&
+      chat?.active_trigger_run_id === row.run_id
+    )
+      return { outcome: "not_found" as const };
     await ctx.db.delete(row._id);
     return { outcome: "withdrawn" as const, text: row.text };
   },
 });
 
-/** The owning run reads new steers before a model step; reading removes them. */
+async function deleteAcknowledged(
+  ctx: MutationCtx,
+  rows: SteerRow[],
+  deliveredIds: string[],
+) {
+  const delivered = new Set(deliveredIds);
+  const remaining: SteerRow[] = [];
+  for (const row of rows) {
+    if (delivered.has(row.id)) await ctx.db.delete(row._id);
+    else remaining.push(row);
+  }
+  return remaining;
+}
+
+async function getRunRows(
+  ctx: MutationCtx,
+  args: { userId: string; chatId: string; runId: string },
+) {
+  const rows = await ctx.db
+    .query("agent_steers")
+    .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
+    .take(AGENT_STEER_MAX_PENDING * 2);
+  return rows.filter(
+    (row) => row.chat_id === args.chatId && row.user_id === args.userId,
+  );
+}
+
+const backendRunArgs = {
+  serviceKey: v.string(),
+  userId: v.string(),
+  chatId: v.string(),
+  runId: v.string(),
+  /** Steers this run already received; their rows are removed. */
+  deliveredIds: v.array(v.string()),
+};
+
+/**
+ * The owning run reads steers before a model step. A claimed row stays until
+ * the run acknowledges it, so a claim whose response was lost returns the
+ * same steer again on the next step instead of losing it.
+ */
 export const claimForBackend = mutation({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    chatId: v.string(),
-    runId: v.string(),
-  },
+  args: backendRunArgs,
   returns: v.array(v.object({ id: v.string(), text: v.string() })),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    const rows = await deleteAcknowledged(
+      ctx,
+      await getRunRows(ctx, args),
+      args.deliveredIds,
+    );
     const chat = await getOwnedChat(ctx, args.chatId, args.userId);
     if (!chat || chat.active_trigger_run_id !== args.runId) return [];
-    const rows = await ctx.db
-      .query("agent_steers")
-      .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
-      .take(AGENT_STEER_MAX_PENDING);
-    const claimed = rows
-      .filter(
-        (row) => row.chat_id === args.chatId && row.user_id === args.userId,
-      )
-      .sort((a, b) => a.created_at - b.created_at);
-    for (const row of claimed) await ctx.db.delete(row._id);
-    return claimed.map((row) => ({ id: row.id, text: row.text }));
+    const now = Date.now();
+    for (const row of rows)
+      if (row.claimed_at === undefined)
+        await ctx.db.patch(row._id, { claimed_at: now });
+    return rows
+      .sort((a, b) => a.created_at - b.created_at)
+      .map((row) => ({ id: row.id, text: row.text }));
+  },
+});
+
+/** A finishing run confirms the steers it received without claiming more. */
+export const acknowledgeForBackend = mutation({
+  args: backendRunArgs,
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await deleteAcknowledged(
+      ctx,
+      await getRunRows(ctx, args),
+      args.deliveredIds,
+    );
+    return null;
   },
 });

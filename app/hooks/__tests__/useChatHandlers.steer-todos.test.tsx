@@ -977,6 +977,37 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(isSendingNowRef.current).toBe(false);
     });
 
+    it("queues a follow-up with attachments instead of stopping the run", async () => {
+      mockUploadedFiles = [
+        {
+          file: new File(["scan"], "scan.txt"),
+          uploaded: true,
+          fileId: "scan-file",
+        },
+      ];
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result)).toBe(true);
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", [
+        expect.objectContaining({ fileId: "scan-file" }),
+      ]);
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("keeps a queued message queued when the run refuses the steer", async () => {
+      mockCreateAgentSteer.mockResolvedValueOnce("no_active_run");
+      mockMessageQueue = [
+        { id: "queued-1", text: "Change direction", files: [], timestamp: 1 },
+      ];
+      const { result } = renderSummarySteer(false);
+      await act(async () => result.current.handleSendNow("queued-1"));
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
     it("never steers when the rollout is off, even with Cmd/Ctrl+Enter", async () => {
       mockAgentSteeringEnabled = false;
       mockQueueBehavior = "queue";

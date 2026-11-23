@@ -5684,14 +5684,15 @@ export const agentLongTask = task({
                               chatId,
                               userId,
                               triggerRunId: ctx.run.id,
-                              message:
+                              message: summarizationTracker.withSteerParts(
                                 loopContinuation &&
-                                message.id === loopRecoverySourceMessageId
+                                  message.id === loopRecoverySourceMessageId
                                   ? markLoopRecoveryCheckpoint(
                                       message,
                                       retryMessageId,
                                     )
                                   : message,
+                              ),
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
                               mode,
@@ -5926,7 +5927,10 @@ export const agentLongTask = task({
                                         chatId,
                                         userId,
                                         triggerRunId: ctx.run.id,
-                                        message,
+                                        message:
+                                          summarizationTracker.withSteerParts(
+                                            message,
+                                          ),
                                         extraFileIds: preservedFileIds,
                                         model:
                                           trackedProvider.languageModel(

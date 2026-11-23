@@ -37,19 +37,40 @@ describe("agent steer history", () => {
 });
 
 describe("createAgentSteerInbox", () => {
-  it("keeps every read steer for replay and never returns one twice", async () => {
+  it("confirms each received steer on the next claim and at the end", async () => {
     const claim = jest
-      .fn<Promise<Array<{ id: string; text: string }>>, []>()
+      .fn<Promise<Array<{ id: string; text: string }>>, [string[]]>()
       .mockResolvedValueOnce([{ id: "a", text: "first" }])
-      .mockResolvedValueOnce([
-        { id: "a", text: "first" },
-        { id: "b", text: "second" },
-      ]);
-    const inbox = createAgentSteerInbox({ claim });
+      .mockResolvedValueOnce([{ id: "b", text: "second" }]);
+    const acknowledge = jest.fn<Promise<void>, [string[]]>(async () => {});
+    const inbox = createAgentSteerInbox({ claim, acknowledge });
 
     expect(await inbox.claim()).toEqual([{ id: "a", text: "first" }]);
     expect(await inbox.claim()).toEqual([{ id: "b", text: "second" }]);
+    await inbox.acknowledge();
+    await inbox.acknowledge();
+
+    expect(claim.mock.calls).toEqual([[[]], [["a"]]]);
+    expect(acknowledge.mock.calls).toEqual([[["b"]]]);
     expect(inbox.delivered().map((steer) => steer.id)).toEqual(["a", "b"]);
+  });
+
+  it("reads a steer once when a lost response makes the store return it again", async () => {
+    const steer = { id: "a", text: "first" };
+    const claim = jest
+      .fn<Promise<Array<{ id: string; text: string }>>, [string[]]>()
+      .mockRejectedValueOnce(new Error("timeout after commit"))
+      .mockResolvedValueOnce([steer])
+      .mockResolvedValueOnce([steer]);
+    const inbox = createAgentSteerInbox({
+      claim,
+      acknowledge: async () => {},
+    });
+
+    expect(await inbox.claim()).toEqual([]);
+    expect(await inbox.claim()).toEqual([steer]);
+    expect(await inbox.claim()).toEqual([]);
+    expect(inbox.delivered()).toEqual([steer]);
   });
 
   it("continues the step without new steers when the store is unavailable", async () => {
@@ -58,6 +79,7 @@ describe("createAgentSteerInbox", () => {
     });
     const inbox = createAgentSteerInbox({
       claim: () => Promise.reject(new Error("convex down")),
+      acknowledge: async () => {},
       onError,
     });
 

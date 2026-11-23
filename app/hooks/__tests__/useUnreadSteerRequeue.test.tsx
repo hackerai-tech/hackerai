@@ -1,8 +1,13 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 
-let mockPending:
-  | Array<{ id: string; text: string; runId: string; createdAt: number }>
-  | undefined;
+type Pending = Array<{
+  id: string;
+  text: string;
+  runId: string;
+  createdAt: number;
+  claimed: boolean;
+}>;
+let mockPending: Pending | undefined;
 const mockWithdraw = jest.fn<
   Promise<{ outcome: "withdrawn"; text: string } | { outcome: "not_found" }>,
   [{ chatId: string; id: string }]
@@ -20,22 +25,36 @@ jest.mock("convex/react", () => ({
 const { useUnreadSteerRequeue } =
   require("../useUnreadSteerRequeue") as typeof import("../useUnreadSteerRequeue");
 
+const steer = (id: string, text: string, createdAt = Date.now()) => ({
+  id,
+  text,
+  runId: "run-1",
+  createdAt,
+  claimed: false,
+});
+
+const render = (
+  onRequeue: jest.Mock,
+  options: { runActive?: boolean; inTranscript?: string[] } = {},
+) =>
+  renderHook(
+    ({ runActive }) =>
+      useUnreadSteerRequeue({
+        chatId: "chat-1",
+        enabled: true,
+        runActive,
+        isInTranscript: (id) => options.inTranscript?.includes(id) ?? false,
+        onRequeue,
+      }),
+    { initialProps: { runActive: options.runActive ?? false } },
+  );
+
 describe("useUnreadSteerRequeue", () => {
   beforeEach(() => {
     mockWithdraw.mockReset();
     mockPending = [
-      {
-        id: "read",
-        text: "Already read",
-        runId: "run-1",
-        createdAt: Date.now(),
-      },
-      {
-        id: "late",
-        text: "Also check X",
-        runId: "run-1",
-        createdAt: Date.now(),
-      },
+      steer("read", "Already read"),
+      steer("late", "Also check X"),
     ];
   });
 
@@ -46,19 +65,12 @@ describe("useUnreadSteerRequeue", () => {
         : { outcome: "not_found" },
     );
     const onRequeue = jest.fn();
-    const { rerender } = renderHook(
-      ({ runActive }) =>
-        useUnreadSteerRequeue({
-          chatId: "chat-1",
-          enabled: true,
-          runActive,
-          onRequeue,
-        }),
-      { initialProps: { runActive: true } },
-    );
+    const { result, rerender } = render(onRequeue, { runActive: true });
     expect(mockWithdraw).not.toHaveBeenCalled();
+    expect(result.current.recovering).toBe(false);
 
     rerender({ runActive: false });
+    expect(result.current.recovering).toBe(true);
     await waitFor(() => expect(onRequeue).toHaveBeenCalledTimes(1));
     expect(onRequeue).toHaveBeenCalledWith(
       "chat-1",
@@ -71,23 +83,27 @@ describe("useUnreadSteerRequeue", () => {
     expect(mockWithdraw).toHaveBeenCalledTimes(2);
   });
 
+  it("drops a steer the transcript already shows instead of sending it twice", async () => {
+    mockPending = [steer("shown", "Use staging")];
+    mockWithdraw.mockResolvedValue({
+      outcome: "withdrawn",
+      text: "Use staging",
+    });
+    const onRequeue = jest.fn();
+    render(onRequeue, { inTranscript: ["shown"] });
+    await waitFor(() =>
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [], false),
+    );
+  });
+
   it("holds steers left from an earlier visit instead of sending them", async () => {
-    mockPending = [
-      { id: "old", text: "From yesterday", runId: "run-0", createdAt: 1 },
-    ];
+    mockPending = [steer("old", "From yesterday", 1)];
     mockWithdraw.mockResolvedValue({
       outcome: "withdrawn",
       text: "From yesterday",
     });
     const onRequeue = jest.fn();
-    renderHook(() =>
-      useUnreadSteerRequeue({
-        chatId: "chat-1",
-        enabled: true,
-        runActive: false,
-        onRequeue,
-      }),
-    );
+    render(onRequeue);
     await waitFor(() =>
       expect(onRequeue).toHaveBeenCalledWith(
         "chat-1",
@@ -95,5 +111,30 @@ describe("useUnreadSteerRequeue", () => {
         true,
       ),
     );
+  });
+
+  it("retries a failed withdrawal without a new snapshot", async () => {
+    jest.useFakeTimers();
+    try {
+      mockPending = [steer("late", "Also check X")];
+      mockWithdraw
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValueOnce({ outcome: "withdrawn", text: "Also check X" });
+      const onRequeue = jest.fn();
+      render(onRequeue);
+      await act(async () => {});
+      expect(mockWithdraw).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(1_000);
+      });
+      expect(mockWithdraw).toHaveBeenCalledTimes(2);
+      expect(onRequeue).toHaveBeenLastCalledWith(
+        "chat-1",
+        [{ text: "Also check X", timestamp: expect.any(Number) }],
+        false,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

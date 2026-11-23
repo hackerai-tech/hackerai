@@ -3553,6 +3553,8 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      // Confirm read steers before the run ends and the client reclaims rows.
+      await ctx.steerInbox?.acknowledge();
       state.providerTerminalFinishReasonBeforeAbort =
         !ctx.abortController.signal.aborted &&
         (finishResult.finishReason === "error" ||
@@ -3879,6 +3881,7 @@ export async function createAgentStream(
     },
 
     onAbort: async ({ steps }) => {
+      await ctx.steerInbox?.acknowledge();
       if (
         ctx.abortController.signal.reason instanceof LocalConnectionLostError
       ) {

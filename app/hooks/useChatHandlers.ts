@@ -1240,9 +1240,10 @@ export const useChatHandlers = ({
         agentSteeringEnabled && isAlternateSubmit(e),
       );
       if (followUpBehavior === "steer") {
-        // Attachments cannot join a running step; restart with them instead.
+        // Attachments cannot join a running step. Queue them rather than
+        // cancelling work the user did not ask to stop.
         if (validFiles.length > 0) {
-          followUpBehavior = "stop-and-send";
+          followUpBehavior = "queue";
         } else {
           const steered = await steerActiveRun(input);
           if (steered) {
@@ -1992,10 +1993,17 @@ export const useChatHandlers = ({
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message || message.deliveryStatus === "sending") return;
+    // Goal runs keep the existing pause-and-send path.
+    const goalActive =
+      !!goalStateRef.current &&
+      ["queued", "running", "waiting", "needs_approval"].includes(
+        goalStateRef.current,
+      );
     if (
       agentSteeringEnabled &&
       !isSendingNowRef.current &&
       !retryAction &&
+      !goalActive &&
       !message.deliveryStatus &&
       !message.files?.length &&
       hasActiveRunToReplace()
@@ -2005,8 +2013,13 @@ export const useChatHandlers = ({
       try {
         if (await steerActiveRun(message.text)) {
           removeQueuedMessage(messageId);
-          return;
+        } else if (currentChatIdRef.current === chatId) {
+          // Never fall back to stopping a run the user asked to steer.
+          toast.error("Could not steer the Agent run", {
+            description: "Your message is still queued.",
+          });
         }
+        return;
       } finally {
         isSendingNowRef.current = false;
       }

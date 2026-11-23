@@ -72,6 +72,13 @@ function fixture(user = "owner") {
       insert: async (table: string, value: Record<string, unknown>) => {
         rows[table].push({ _id: `steer-row-${++nextId}`, ...value });
       },
+      patch: async (id: string, value: Record<string, unknown>) => {
+        const row = Object.values(rows)
+          .flat()
+          .find((entry) => entry._id === id);
+        if (!row) throw new Error("missing row");
+        Object.assign(row, value);
+      },
       delete: async (id: string) => {
         for (const table of Object.keys(rows))
           rows[table] = rows[table].filter((row) => row._id !== id);
@@ -80,26 +87,45 @@ function fixture(user = "owner") {
   };
   const create = (id: string, text = `message ${id}`, chatId = "chat") =>
     steers.create.handler(ctx as never, { chatId, id, text });
-  const claim = (runId = "run-1", userId = "owner") =>
-    steers.claimForBackend.handler(ctx as never, {
-      serviceKey: "service-key",
-      userId,
-      chatId: "chat",
-      runId,
-    });
+  const runArgs = (runId: string, deliveredIds: string[]) => ({
+    serviceKey: "service-key",
+    userId: "owner",
+    chatId: "chat",
+    runId,
+    deliveredIds,
+  });
+  const claim = (runId = "run-1", deliveredIds: string[] = []) =>
+    steers.claimForBackend.handler(ctx as never, runArgs(runId, deliveredIds));
+  const acknowledge = (runId: string, deliveredIds: string[]) =>
+    steers.acknowledgeForBackend.handler(
+      ctx as never,
+      runArgs(runId, deliveredIds),
+    );
   const withdraw = (id: string) =>
     steers.withdraw.handler(ctx as never, { chatId: "chat", id });
-  return { rows, ctx, create, claim, withdraw };
+  return { rows, ctx, create, claim, acknowledge, withdraw };
 }
 
 describe("agent steers", () => {
-  it("delivers a steer to the chat's active run exactly once", async () => {
-    const { create, claim } = fixture();
+  it("keeps returning a claimed steer until the run confirms receipt", async () => {
+    const { create, claim, rows } = fixture();
     expect(await create("a", "  check the login form first  ")).toBe("pending");
-    expect(await claim()).toEqual([
-      { id: "a", text: "check the login form first" },
-    ]);
-    expect(await claim()).toEqual([]);
+    const steer = { id: "a", text: "check the login form first" };
+    expect(await claim()).toEqual([steer]);
+    // The first response was lost: the next step's claim recovers it.
+    expect(await claim()).toEqual([steer]);
+    expect(await claim("run-1", ["a"])).toEqual([]);
+    expect(rows.agent_steers).toEqual([]);
+  });
+
+  it("drops steers a finishing run confirms without claiming new ones", async () => {
+    const { create, claim, acknowledge, rows } = fixture();
+    await create("a");
+    await claim();
+    await create("b");
+    await acknowledge("run-1", ["a"]);
+    expect(rows.agent_steers.map((row) => row.id)).toEqual(["b"]);
+    expect(rows.agent_steers[0].claimed_at).toBeUndefined();
   });
 
   it("does not hand a steer to a run that is not the chat's active run", async () => {
@@ -127,6 +153,23 @@ describe("agent steers", () => {
       text: "use the staging host",
     });
     expect(await withdrawnFirst.claim()).toEqual([]);
+  });
+
+  it("returns a steer the ended run claimed but never confirmed", async () => {
+    const { create, claim, withdraw, rows, ctx } = fixture();
+    await create("a", "also check X");
+    await claim();
+    rows.chats[0].active_trigger_run_id = undefined;
+    const pending = await steers.listPending.handler(ctx as never, {
+      chatId: "chat",
+    });
+    expect(pending).toEqual([
+      expect.objectContaining({ id: "a", claimed: true }),
+    ]);
+    expect(await withdraw("a")).toEqual({
+      outcome: "withdrawn",
+      text: "also check X",
+    });
   });
 
   it("asks the client to queue when no run is active", async () => {
