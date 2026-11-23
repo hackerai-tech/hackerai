@@ -103,6 +103,9 @@ export function useUnreadSteerRequeue({
     );
     if (!unread.length) return;
     for (const steer of unread) withdrawing.current.add(steer.id);
+    // Restore into the queue of the account that started this withdrawal,
+    // even if the signed-in account changes before it completes.
+    const requeue = onRequeueRef.current;
     void (async () => {
       setInFlight((count) => count + 1);
       const withdrawn: Array<
@@ -134,7 +137,7 @@ export function useUnreadSteerRequeue({
       // the user moved to another chat, nobody is here to see it: hold it.
       const visitStartedAt =
         visit.current.chatId === chatId ? visit.current.startedAt : Infinity;
-      onRequeueRef.current(
+      requeue(
         chatId,
         withdrawn.map(({ fromStoppedRun, ...steer }) => ({
           ...steer,

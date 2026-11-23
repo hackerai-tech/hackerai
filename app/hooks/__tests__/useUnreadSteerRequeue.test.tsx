@@ -243,6 +243,38 @@ describe("useUnreadSteerRequeue", () => {
     );
   });
 
+  it("restores to the account that started the withdrawal after a switch", async () => {
+    mockPending = [steer("late", "Private to account A")];
+    let finish!: (result: { outcome: "withdrawn"; text: string }) => void;
+    mockWithdraw.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const accountA = jest.fn();
+    const accountB = jest.fn();
+    const { rerender } = renderHook(
+      ({ onRequeue }) =>
+        useUnreadSteerRequeue({
+          chatId: "chat-1",
+          enabled: true,
+          runActive: false,
+          onRequeue,
+        }),
+      { initialProps: { onRequeue: accountA } },
+    );
+    await act(async () => {});
+    rerender({ onRequeue: accountB });
+    await act(async () =>
+      finish({ outcome: "withdrawn", text: "Private to account A" }),
+    );
+    expect(accountA).toHaveBeenCalledWith("chat-1", [
+      expect.objectContaining({ text: "Private to account A" }),
+    ]);
+    expect(accountB).not.toHaveBeenCalled();
+  });
+
   it("retries a failed withdrawal without a new snapshot", async () => {
     jest.useFakeTimers();
     try {
