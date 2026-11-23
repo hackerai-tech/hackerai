@@ -11,6 +11,7 @@ import {
   limitModelImageToolResults,
   MODEL_IMAGE_TOOL_RESULT_LIMIT,
 } from "../prune-tool-outputs";
+import { resolveSandboxAttachments } from "@/lib/chat/sandbox-attachment-links";
 
 // Helper to create a UIMessage with tool parts
 function makeAssistantMessage(
@@ -2166,5 +2167,127 @@ describe("file mutation outcomes survive compaction", () => {
     expect((result.messages[0].parts[0] as any).output).toContain(
       "outcome unknown",
     );
+  });
+});
+
+describe("get_terminal_files delivery records", () => {
+  // Mirrors the object returned by createGetTerminalFiles.
+  const makeDeliveryOutput = (delivered: number, failedReason?: string) => {
+    const paths = Array.from(
+      { length: delivered },
+      (_, index) => `/home/user/report-${index}.txt`,
+    );
+    return {
+      result: failedReason
+        ? `Partially provided ${delivered} of ${delivered + 1} file(s) to the user. 1 file(s) could not be retrieved: /home/user/missing.zip: ${failedReason}.`
+        : `Successfully provided ${delivered} file(s) to the user`,
+      files: paths.map((path) => ({ path })),
+      deliveryReceipts: paths.map((path, index) => ({
+        fileId: `file-${index}`,
+        sourcePath: path,
+        name: path.split("/").pop(),
+        sizeBytes: 100,
+        sourceEnvironment: "cloud",
+        storageStatus: "stored",
+        validation: "not_performed_by_delivery_tool",
+      })),
+      failedFiles: failedReason
+        ? [{ path: "/home/user/missing.zip", reason: failedReason }]
+        : [],
+    };
+  };
+  const newerTerminalPart = () =>
+    makeToolPart(
+      "run_terminal_cmd",
+      { result: { output: "scan output\n".repeat(2000), exitCode: 0 } },
+      { command: "nmap target" },
+    );
+
+  it("keeps old delivery receipts in the chat history the runner prunes", () => {
+    const delivery = makeDeliveryOutput(2);
+    const messages = [
+      makeAssistantMessage([makeToolPart("get_terminal_files", delivery)]),
+      makeAssistantMessage([newerTerminalPart()], "msg-new"),
+    ];
+
+    const result = pruneToolOutputs(messages, 1, NO_MIN);
+
+    expect((result.messages[0].parts[0] as any).output).toEqual(delivery);
+  });
+
+  it("keeps old delivery receipts in the live model loop", () => {
+    const delivery = makeDeliveryOutput(2, "upload failed");
+    const messages = [
+      makeAssistantModelMsg([
+        {
+          toolCallId: "deliver",
+          toolName: "get_terminal_files",
+          args: { files: ["/home/user/report-0.txt"] },
+        },
+      ]),
+      makeToolModelMsg([
+        {
+          toolCallId: "deliver",
+          toolName: "get_terminal_files",
+          output: { type: "json", value: delivery },
+        },
+      ]),
+      makeAssistantModelMsg([
+        {
+          toolCallId: "scan",
+          toolName: "run_terminal_cmd",
+          args: { command: "nmap target" },
+        },
+      ]),
+      makeToolModelMsg([
+        {
+          toolCallId: "scan",
+          toolName: "run_terminal_cmd",
+          output: { type: "text", value: "scan output\n".repeat(2000) },
+        },
+      ]),
+    ];
+
+    const result = pruneModelMessages(messages, 1, NO_MIN);
+
+    expect((result.messages[1].content as any)[0].output).toEqual({
+      type: "json",
+      value: delivery,
+    });
+  });
+
+  it("keeps every receipt, path, and failure when the storage byte cap compacts a delivery", () => {
+    const delivered = 25;
+    const delivery = makeDeliveryOutput(delivered, "x".repeat(20_000));
+    const lastPath = `/home/user/report-${delivered - 1}.txt`;
+    const message = makeAssistantMessage([
+      makeToolPart("get_terminal_files", delivery, {
+        files: [...delivery.files.map(({ path }) => path), "missing.zip"],
+      }),
+      { type: "text", text: `Download [the report](sandbox:${lastPath}).` },
+    ]);
+    const before = estimateSerializedSizeBytes(message.parts);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: before - 10_000,
+      toolOutputTokenBudget: 0,
+    });
+    const output = (result.message.parts[0] as any).output;
+
+    expect(result.afterSizeBytes).toBeLessThanOrEqual(before - 10_000);
+    // The file card counts these entries; each must still be a real path.
+    expect(output.files).toEqual(delivery.files);
+    expect(output.failedFiles).toHaveLength(1);
+    expect(output.failedFiles[0].path).toBe("/home/user/missing.zip");
+    expect(output.deliveryReceipts).toEqual(delivery.deliveryReceipts);
+    // The compacted record still tells the model exactly what was delivered.
+    expect(output.result).toContain(`delivered ${delivered} of 26 file(s)`);
+    expect(output.result).toContain(lastPath);
+    expect(output.result).toContain("failed 1: /home/user/missing.zip");
+    // Inline sandbox links resolve against these receipts after reload.
+    const attachments = resolveSandboxAttachments(result.message.parts, [
+      { fileId: `file-${delivered - 1}`, name: "report.txt" } as any,
+    ]);
+    expect(attachments.get(lastPath)?.fileId).toBe(`file-${delivered - 1}`);
   });
 });
