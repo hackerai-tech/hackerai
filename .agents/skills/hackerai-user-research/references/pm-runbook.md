@@ -186,7 +186,9 @@ customer content, or restricted per-user profiles.
 ## 3. Interpret the result
 
 Use the aggregate report to understand supported user types, customer avatars,
-and decisions. Always include coverage and confidence. Detailed profiles remain
+and decisions. Always include coverage and confidence. Report `excludedUsers`
+apart from the findings, with each reason; `model_content_filter` users were
+refused by the analysis model and are not represented in the findings. Detailed profiles remain
 restricted in Convex. Treat acquisition channels and marketing messages as
 hypotheses until a separate experiment validates them.
 Behavioral messages, including messages immediately before a cancellation, do

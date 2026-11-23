@@ -527,4 +527,45 @@ describe("PM user research gateway", () => {
     });
     expect(JSON.stringify(body)).not.toContain("provider secret diagnostic");
   });
+
+  it("returns only a closed failure reason from the run error", async () => {
+    retrieveRun.mockResolvedValue({
+      taskIdentifier: "pm-user-research",
+      tags: ["pm-user-research-gateway"],
+      isSuccess: false,
+      isFailed: true,
+      isCancelled: false,
+      error: {
+        message:
+          "User research analysis failed [comparison_group_below_minimum]. Review the restricted Trigger run for diagnostics.",
+      },
+    });
+    const { GET } = await import("../route");
+
+    const body = await (await GET(request({ runId: "run_gateway123" }))).json();
+
+    expect(body).toEqual({
+      runId: "run_gateway123",
+      status: "failed",
+      error: "research_run_failed",
+      reason: "comparison_group_below_minimum",
+    });
+  });
+
+  it("drops an unknown bracketed failure code", async () => {
+    retrieveRun.mockResolvedValue({
+      taskIdentifier: "pm-user-research",
+      tags: ["pm-user-research-gateway"],
+      isSuccess: false,
+      isFailed: true,
+      isCancelled: false,
+      error: { message: "User research analysis failed [leaked_value]." },
+    });
+    const { GET } = await import("../route");
+
+    const body = await (await GET(request({ runId: "run_gateway123" }))).json();
+
+    expect(body).not.toHaveProperty("reason");
+    expect(JSON.stringify(body)).not.toContain("leaked_value");
+  });
 });

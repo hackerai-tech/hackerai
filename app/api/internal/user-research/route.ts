@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { pmUserResearch } from "@/trigger/user-research";
 import {
   normalizePmUserResearchGatewayInput,
+  parseResearchRunFailureReason,
   pmUserResearchGatewayRequestSchema,
   pmUserResearchResultSchema,
 } from "@/lib/research/user-research";
@@ -244,7 +245,16 @@ export async function GET(request: NextRequest) {
     }
 
     if (run.isFailed || run.isCancelled) {
-      return json({ runId, status: "failed", error: "research_run_failed" });
+      // Only a closed reason code crosses this boundary, never error text.
+      const reason = run.isFailed
+        ? parseResearchRunFailureReason(run.error?.message)
+        : undefined;
+      return json({
+        runId,
+        status: "failed",
+        error: "research_run_failed",
+        ...(reason ? { reason } : {}),
+      });
     }
 
     return json({ runId, status: "running" });

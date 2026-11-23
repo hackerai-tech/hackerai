@@ -31,6 +31,12 @@ export interface SandboxInfo {
   sandboxVersion?: string;
 }
 
+/** Opaque ordering snapshot for one sandbox health check. */
+export type SandboxHealthCheckToken = {
+  readonly epoch: number;
+  readonly generation: number;
+};
+
 export interface SandboxManager {
   /** End this run when its local connection is lost; a successor requires a new run. */
   stopOnLocalDisconnect?(
@@ -65,10 +71,17 @@ export interface SandboxManager {
   getEffectivePreference(): string;
   /** Track consecutive sandbox health failures across all tools. Returns true if the limit has been exceeded. */
   recordHealthFailure(): boolean;
-  /** Reset the health failure counter (call on successful health check). */
-  resetHealthFailures(): void;
-  /** Check if the sandbox has been marked as permanently unavailable for this session. */
+  /** Snapshot taken before a health check wait; pass it to `resetHealthFailures`. */
+  beginHealthCheck?(): SandboxHealthCheckToken;
+  /**
+   * Reset the health failure counter (call on successful health check). With a
+   * token, a stale success cannot erase failures or a cooldown recorded since.
+   */
+  resetHealthFailures(token?: SandboxHealthCheckToken): void;
+  /** Whether sandbox tools must not run now: a cloud cooldown, a cloud failure that disables this run, or a lost local sandbox. */
   isSandboxUnavailable(): boolean;
+  /** Model-facing cloud reason while unavailable, including when tools will retry. Undefined for local sandboxes. */
+  getSandboxUnavailableMessage?(): string | undefined;
   /** Whether the effective sandbox can create interactive PTY sessions. */
   supportsInteractivePty?(): Promise<boolean>;
 }

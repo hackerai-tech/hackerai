@@ -5,6 +5,7 @@ import type {
   SandboxInfo,
   SandboxManager,
   SandboxType,
+  SandboxHealthCheckToken,
 } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import {
@@ -29,15 +30,16 @@ import {
   type ReportCloudAcquisitionStage,
 } from "./cloud-acquisition-budget";
 
-// One failed initial readiness check plus one failed reconnect is enough to
-// stop terminal retries in this Agent run. The manager only forgets its local
-// SDK client; it never kills the shared per-user sandbox or another run's work.
+// One failed initial readiness check plus one failed reconnect pauses cloud
+// tools for the acquisition budget's cooldown. The manager only forgets its
+// local SDK client; it never kills the shared per-user sandbox or another run's work.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
-  private sandboxUnavailable = false;
+  // Advances on every recorded health failure; see beginHealthCheck.
+  private healthEpoch = 0;
   private activeCloudProvider: CloudSandboxProvider;
   private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
@@ -58,21 +60,38 @@ export class DefaultSandboxManager implements SandboxManager {
       "e2b";
   }
 
-  recordHealthFailure(): boolean {
-    this.healthFailureCount++;
-    if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
-      this.sandboxUnavailable = true;
-    }
-    return this.sandboxUnavailable;
+  beginHealthCheck(): SandboxHealthCheckToken {
+    return {
+      epoch: this.healthEpoch,
+      generation: this.acquisitionBudget.readinessGeneration(),
+    };
   }
 
-  resetHealthFailures(): void {
+  recordHealthFailure(): boolean {
+    this.healthEpoch++;
+    this.healthFailureCount++;
+    if (this.healthFailureCount < MAX_SANDBOX_HEALTH_FAILURES) return false;
     this.healthFailureCount = 0;
-    this.sandboxUnavailable = false;
+    this.acquisitionBudget.recordReadinessFailure({
+      userId: this.userID,
+      ...this.cloudSandboxContext,
+    });
+    return true;
+  }
+
+  resetHealthFailures(token?: SandboxHealthCheckToken): void {
+    // A check that began before a newer failure must not erase it.
+    if (token && token.epoch !== this.healthEpoch) return;
+    this.healthFailureCount = 0;
+    this.acquisitionBudget.recordReadinessSuccess(token?.generation);
   }
 
   isSandboxUnavailable(): boolean {
-    return this.sandboxUnavailable;
+    return this.acquisitionBudget.isBlocked();
+  }
+
+  getSandboxUnavailableMessage(): string | undefined {
+    return this.acquisitionBudget.blockedMessage();
   }
 
   getSandboxInfo(): SandboxInfo | null {
@@ -100,15 +119,15 @@ export class DefaultSandboxManager implements SandboxManager {
     sandbox: AnySandbox;
   }> {
     if (this.acquisition) return this.acquisition;
+    // A cooldown's re-probe must reconnect rather than reuse the unready client.
+    if (this.acquisitionBudget.blocksCachedSandbox()) this.sandbox = null;
     if (this.sandbox) {
+      const cached = this.sandbox;
       let reacquire = false;
-      if (isE2BSandbox(this.sandbox)) {
+      if (isE2BSandbox(cached)) {
         try {
-          await assertCloudWorkspaceAvailable(
-            this.userID,
-            this.sandbox.sandboxId,
-          );
-          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          await assertCloudWorkspaceAvailable(this.userID, cached.sandboxId);
+          await refreshE2BSandboxLeaseBestEffort(cached, {
             source: "default_manager_cache",
           });
         } catch (error) {
@@ -116,7 +135,14 @@ export class DefaultSandboxManager implements SandboxManager {
           reacquire = true;
         }
       }
-      if (!reacquire) return { sandbox: this.sandbox };
+      // A concurrent call may have replaced the client or started a cooldown
+      // during the awaits; re-evaluate instead of returning a cleared cache.
+      if (
+        this.sandbox !== cached ||
+        this.acquisitionBudget.blocksCachedSandbox()
+      )
+        return this.getSandbox();
+      if (!reacquire) return { sandbox: cached };
       this.sandbox = null;
     }
 
