@@ -3792,6 +3792,9 @@ export class DesktopSandboxBridge {
     const connectionId = this.connectionId;
     this.connectionId = null;
 
+    // Captured before the bounded wait below: a restart during that wait owns
+    // the new client and subscription, which this stop must not tear down.
+    const client = this.client;
     const subscription = this.subscription;
     if (subscription) {
       // A run waiting for this connection would otherwise wait out its whole
@@ -3823,16 +3826,16 @@ export class DesktopSandboxBridge {
       if (this.subscription === subscription) this.subscription = null;
     }
 
-    if (this.client) {
+    if (client) {
       try {
-        this.client.disconnect();
+        client.disconnect();
       } catch (error) {
         console.warn(
           "[DesktopSandboxBridge] Failed to disconnect client:",
           error,
         );
       }
-      this.client = null;
+      if (this.client === client) this.client = null;
     }
 
     // Convex queues mutations while offline. Local cleanup and recovery must

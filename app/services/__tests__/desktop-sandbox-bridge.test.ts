@@ -5,6 +5,7 @@ jest.mock("@/lib/analytics/diagnostic-sampling", () => ({
 import { cancelDesktopRunLocally } from "../desktop-command-cancellation";
 import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
+import { Centrifuge } from "centrifuge";
 import {
   CentrifugoMessageReassembler,
   isCentrifugoTransportFragment,
@@ -5838,6 +5839,35 @@ describe("desktop lifecycle recovery", () => {
     await stuck.stop();
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(mockClient.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a client started during the pending end notice connected", async () => {
+    let resolvePublish!: () => void;
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolvePublish = resolve)),
+    );
+    const stopping = bridge.stop();
+    await Promise.resolve();
+
+    // A restart while the notice is pending creates its own client.
+    const restarted = {
+      ...mockClient,
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      on: jest.fn(),
+      ready: jest.fn().mockResolvedValue(undefined),
+    };
+    jest.mocked(Centrifuge).mockImplementationOnce(() => restarted as never);
+    await bridge.start();
+    resolvePublish();
+    await stopping;
+
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+    expect(restarted.disconnect).not.toHaveBeenCalled();
+    await bridge.stop();
+    expect(restarted.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("finishes local shutdown while the remote disconnect stays offline", async () => {
