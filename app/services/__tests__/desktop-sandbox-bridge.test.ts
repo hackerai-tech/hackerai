@@ -6327,7 +6327,8 @@ describe("desktop lifecycle recovery", () => {
 
   it("leaves a client started during the pending end notice connected", async () => {
     let resolvePublish!: () => void;
-    const bridge = new DesktopSandboxBridge(buildConfig());
+    const onConnectionState = jest.fn();
+    const bridge = new DesktopSandboxBridge(buildConfig({ onConnectionState }));
     await bridge.start();
     // The old connection's lifecycle handlers, to replay its teardown events.
     const oldClientHandlers = new Map(
@@ -6367,9 +6368,18 @@ describe("desktop lifecycle recovery", () => {
     const connectionAfterRestart = bridge.getConnectionId();
     resolvePublish();
     await stopping;
-    // The old connection's teardown events arrive after the restart.
+    // The old connection's late events arrive after the restart.
+    onConnectionState.mockClear();
+    oldSubscriptionHandlers.get("subscribing")?.({ code: 0, reason: "" });
+    oldSubscriptionHandlers.get("subscribed")?.({
+      recovered: false,
+      wasRecovering: false,
+    });
     oldSubscriptionHandlers.get("unsubscribed")?.({ code: 0, reason: "" });
     oldClientHandlers.get("disconnected")?.({ code: 0, reason: "" });
+
+    // They cannot report state or reset timers for the replacement.
+    expect(onConnectionState).not.toHaveBeenCalled();
 
     expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
     expect(restarted.disconnect).not.toHaveBeenCalled();

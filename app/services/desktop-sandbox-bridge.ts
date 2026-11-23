@@ -1250,7 +1250,8 @@ export class DesktopSandboxBridge {
     });
 
     subscription.on("subscribing", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
@@ -1263,7 +1264,8 @@ export class DesktopSandboxBridge {
       });
     });
     subscription.on("subscribed", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       this.clearReconnectTimer();
       this.config.onConnectionState?.("connected");
       this.logRelayState("connected", {
