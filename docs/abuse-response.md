@@ -572,8 +572,11 @@ days, notice counts, and action items with only a reference:
   has settled. A disabled switch or an expired lease leaves any open SMTP
   submission running. Recheck Sent after the drain and confirm that Proton
   did not accept the message. Keep the notice uncertain if acceptance is
-  unresolved. A failed notice accepts `retry` while the block is active or
-  `dismiss` after another contact method. Attempts are never reset.
+  unresolved. Once reconciliation is complete, restore the previous claims
+  switch and dispatcher service state. If dispatch was active before the
+  drain, restart the dispatchers and verify that they can claim work.
+  A failed notice accepts `retry` while the block is active or `dismiss`
+  after another contact method. Attempts are never reset.
 - Rollback: turn off the enforcement switch first, then dispatch. Keep the
   schema, tables and handlers deployed while any automated case, restriction
   or notice exists.
