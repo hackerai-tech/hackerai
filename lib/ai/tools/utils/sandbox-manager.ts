@@ -29,15 +29,14 @@ import {
   type ReportCloudAcquisitionStage,
 } from "./cloud-acquisition-budget";
 
-// One failed initial readiness check plus one failed reconnect is enough to
-// stop terminal retries in this Agent run. The manager only forgets its local
-// SDK client; it never kills the shared per-user sandbox or another run's work.
+// One failed initial readiness check plus one failed reconnect pauses cloud
+// tools for the acquisition budget's cooldown. The manager only forgets its
+// local SDK client; it never kills the shared per-user sandbox or another run's work.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
-  private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
@@ -60,19 +59,26 @@ export class DefaultSandboxManager implements SandboxManager {
 
   recordHealthFailure(): boolean {
     this.healthFailureCount++;
-    if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
-      this.sandboxUnavailable = true;
-    }
-    return this.sandboxUnavailable;
+    if (this.healthFailureCount < MAX_SANDBOX_HEALTH_FAILURES) return false;
+    this.healthFailureCount = 0;
+    this.acquisitionBudget.recordReadinessFailure({
+      userId: this.userID,
+      ...this.cloudSandboxContext,
+    });
+    return true;
   }
 
   resetHealthFailures(): void {
     this.healthFailureCount = 0;
-    this.sandboxUnavailable = false;
+    this.acquisitionBudget.recordReadinessSuccess();
   }
 
   isSandboxUnavailable(): boolean {
-    return this.sandboxUnavailable;
+    return this.acquisitionBudget.isBlocked();
+  }
+
+  getSandboxUnavailableMessage(): string | undefined {
+    return this.acquisitionBudget.blockedMessage();
   }
 
   getSandboxInfo(): SandboxInfo | null {
@@ -100,6 +106,8 @@ export class DefaultSandboxManager implements SandboxManager {
     sandbox: AnySandbox;
   }> {
     if (this.acquisition) return this.acquisition;
+    // A cooldown's re-probe must reconnect rather than reuse the unready client.
+    if (this.acquisitionBudget.blocksCachedSandbox()) this.sandbox = null;
     if (this.sandbox) {
       let reacquire = false;
       if (isE2BSandbox(this.sandbox)) {

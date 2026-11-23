@@ -10,6 +10,14 @@ fail rather than creating an empty replacement. Unknown legacy provider records,
 in-progress cleanup, malformed records, and unavailable Production Redis remain
 blocked for operator recovery.
 
+Within an Agent run, transient acquisition or readiness failures pause cloud
+tools for a bounded, jittered cooldown and the next cloud tool call re-probes
+by reconnecting; each re-probe re-runs these guards. Failures that a retry
+cannot fix (authorization, account restrictions, configuration, a missing or
+mismatched pinned workspace) disable cloud tools for the rest of the run. Agent
+guidance for any of these must point to the customer recovery flow or support,
+never to deleting the workspace.
+
 A record with `recoveryPending` can permit execution in its pinned E2B workspace,
 but does not establish that earlier files were restored. Account/workspace
 cleanup remains blocked until that outstanding recovery is resolved. Do not

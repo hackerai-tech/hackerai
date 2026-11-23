@@ -112,6 +112,8 @@ export class E2BAcquisitionError extends Error {
       e2b_connect_type_error_signal?: CloudErrorContext["cloud_type_error_signal"];
       e2b_connect_transport_code?: CloudErrorContext["cloud_transport_code"];
     },
+    /** Closed SDK class of the replaced provider error; drives retry policy. */
+    readonly errorKind: ReturnType<typeof getE2BErrorKind> = "other_error",
   ) {
     super(message);
     this.name = "E2BAcquisitionError";
@@ -686,12 +688,17 @@ export const ensureSandboxConnection = async (
     // Surface specific error messages for known E2B errors
     const userMessage = getUserFacingE2BErrorMessage(error);
     if (userMessage) {
-      throw new E2BAcquisitionError(userMessage, diagnostics);
+      throw new E2BAcquisitionError(
+        userMessage,
+        diagnostics,
+        getE2BErrorKind(error),
+      );
     }
 
     throw new E2BAcquisitionError(
       "Cloud sandbox is temporarily unavailable. Please retry shortly.",
       diagnostics,
+      getE2BErrorKind(error),
     );
   }
 };

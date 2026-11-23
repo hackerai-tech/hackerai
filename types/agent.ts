@@ -67,8 +67,10 @@ export interface SandboxManager {
   recordHealthFailure(): boolean;
   /** Reset the health failure counter (call on successful health check). */
   resetHealthFailures(): void;
-  /** Check if the sandbox has been marked as permanently unavailable for this session. */
+  /** Whether sandbox tools must not run now: a cloud cooldown, a cloud failure that disables this run, or a lost local sandbox. */
   isSandboxUnavailable(): boolean;
+  /** Model-facing cloud reason while unavailable, including when tools will retry. Undefined for local sandboxes. */
+  getSandboxUnavailableMessage?(): string | undefined;
   /** Whether the effective sandbox can create interactive PTY sessions. */
   supportsInteractivePty?(): Promise<boolean>;
 }

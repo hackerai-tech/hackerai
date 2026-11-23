@@ -101,9 +101,9 @@ export interface SandboxFallbackInfo {
  * - Reconnect-required errors when the selected computer is unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
-// Match DefaultSandboxManager: stop retries in this Agent run after the
-// initial readiness check and one reconnect both fail. E2B reset remains
-// connection-only and never kills the shared per-user sandbox.
+// Match DefaultSandboxManager: after the initial readiness check and one
+// reconnect both fail, cloud tools cool down and a local sandbox stops for this
+// run. E2B reset remains connection-only and never kills the shared sandbox.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
@@ -519,7 +519,6 @@ export class HybridSandboxManager implements SandboxManager {
   recordHealthFailure(): boolean {
     this.healthFailureCount++;
     if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
-      // Mark as unavailable regardless of sandbox type.
       // Don't auto-fallback from local to E2B — the user explicitly chose local
       // and switching environments mid-conversation loses files, network context,
       // and tools the agent was working with.
@@ -527,8 +526,16 @@ export class HybridSandboxManager implements SandboxManager {
         console.warn(
           `[${this.userID}] Local sandbox health failures exceeded threshold, marking unavailable`,
         );
+        this.sandboxUnavailable = true;
+      } else {
+        this.healthFailureCount = 0;
+        this.acquisitionBudget.recordReadinessFailure({
+          userId: this.userID,
+          chatId: this.chatId,
+          ...this.cloudSandboxContext,
+        });
+        return true;
       }
-      this.sandboxUnavailable = true;
     }
     return this.sandboxUnavailable;
   }
@@ -536,10 +543,19 @@ export class HybridSandboxManager implements SandboxManager {
   resetHealthFailures(): void {
     this.healthFailureCount = 0;
     this.sandboxUnavailable = false;
+    if (!this.isLocal) this.acquisitionBudget.recordReadinessSuccess();
   }
 
   isSandboxUnavailable(): boolean {
-    return this.sandboxUnavailable;
+    return (
+      this.sandboxUnavailable ||
+      (!this.isLocal && this.acquisitionBudget.isBlocked())
+    );
+  }
+
+  getSandboxUnavailableMessage(): string | undefined {
+    if (this.sandboxUnavailable || this.isLocal) return undefined;
+    return this.acquisitionBudget.blockedMessage();
   }
 
   async quarantineLocalConnection(
@@ -1152,6 +1168,13 @@ export class HybridSandboxManager implements SandboxManager {
 
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     if (this.cloudAcquisition) return this.cloudAcquisition;
+    // A cooldown's re-probe must reconnect rather than reuse the unready client.
+    if (
+      !this.isLocal &&
+      this.sandbox &&
+      this.acquisitionBudget.blocksCachedSandbox()
+    )
+      this.sandbox = null;
     if (!this.isLocal && this.sandbox) {
       let reacquire = false;
       if (isE2BSandbox(this.sandbox)) {

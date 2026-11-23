@@ -2018,7 +2018,7 @@ exit 7
     ptySessionManager.forget("chat-1", result.result.session!);
   });
 
-  test("stops terminal retries when the initial check and reconnect both fail", async () => {
+  test("pauses terminal retries when the initial check and reconnect both fail", async () => {
     jest.useFakeTimers();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -2064,16 +2064,16 @@ exit 7
       await jest.advanceTimersByTimeAsync(2_000);
       const result = await resultPromise;
 
-      expect(result.result.error).toContain(
-        "initial health check and reconnect both failed",
-      );
+      // A transient readiness failure pauses cloud tools for a cooldown; it
+      // must never advise deleting the user's workspace.
+      expect(result.result.error).toContain("temporarily unavailable");
+      expect(result.result.error).toMatch(/after about \d+ seconds/);
+      expect(result.result.error).not.toMatch(/delet|Data Controls/i);
       const modelOutput = (await getModelOutput(tool, result)) as {
         value: string;
       };
       expect(modelOutput.value).not.toContain("Process exited with code");
-      expect(modelOutput.value).toContain(
-        "initial health check and reconnect both failed",
-      );
+      expect(modelOutput.value).toContain("temporarily unavailable");
       expect(recordHealthFailure).toHaveBeenCalledTimes(2);
       expect(sandboxManager.resetSandbox).toHaveBeenCalledWith(
         "terminal_health_check_failed",

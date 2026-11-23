@@ -70,6 +70,8 @@ import {
   createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import { CLOUD_COOLDOWN_BASE_MS } from "./utils/cloud-acquisition-budget";
+import { describeCloudUnavailability } from "./utils/cloud-unavailability-message";
 import {
   collectAgentAutoReviewTerminalInspection,
   getAgentAutoReviewInspectionKind,
@@ -93,6 +95,12 @@ const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+// A local sandbox stays unavailable for the run; cloud managers report a
+// cooldown or a disabled reason instead and never suggest deleting the workspace.
+const LOCAL_SANDBOX_UNAVAILABLE_ERROR =
+  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.";
+const READINESS_RECONNECT_FAILED =
+  "The sandbox did not respond to its readiness check or to a reconnect. ";
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
@@ -674,6 +682,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }
         };
 
+        const cloudUnavailableError = () =>
+          sandboxManager.getSandboxUnavailableMessage?.() ??
+          describeCloudUnavailability({
+            kind: "cooldown",
+            retryAfterMs: CLOUD_COOLDOWN_BASE_MS,
+          });
+
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
           return {
@@ -681,7 +696,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               output: "",
               exitCode: 1,
               error:
-                "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                sandboxManager.getSandboxUnavailableMessage?.() ??
+                LOCAL_SANDBOX_UNAVAILABLE_ERROR,
             },
           };
         }
@@ -725,8 +741,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 result: {
                   output: "",
                   exitCode: 1,
-                  error:
-                    "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                  error: READINESS_RECONNECT_FAILED + cloudUnavailableError(),
                 },
               };
             }
@@ -792,7 +807,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       output: "",
                       exitCode: 1,
                       error: unavailable
-                        ? "Sandbox is unavailable after the initial health check and reconnect both failed. Do NOT retry terminal or sandbox commands in this run. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support."
+                        ? READINESS_RECONNECT_FAILED + cloudUnavailableError()
                         : "Sandbox reconnection failed. The sandbox environment is not responding.",
                     },
                   },
