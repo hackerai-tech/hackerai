@@ -220,6 +220,7 @@ pub(crate) enum LeaderWait {
 }
 
 impl LeaderWait {
+    #[cfg(any(unix, test))]
     fn of<T, E, D>(waited: Result<Result<T, E>, D>) -> Self {
         match waited {
             Ok(Ok(_)) => Self::Reaped,
@@ -243,6 +244,7 @@ pub(crate) struct GracefulKill {
 impl GracefulKill {
     /// The tree stop's own result, as `cancel_process_tree_observed` reported
     /// it, beside the bounded leader wait.
+    #[cfg(any(unix, test))]
     fn of(tree: Result<(), Option<TaskkillFailure>>, leader: LeaderWait) -> Self {
         Self {
             tree_stopped: tree.is_ok(),
@@ -263,14 +265,18 @@ impl GracefulKill {
 /// On Windows: stops the process tree before killing/reaping the shell.
 /// Reaps the process with a bounded wait() afterward. True only when the tree,
 /// as `cancel_process_tree` defines it, was confirmed stopped and the shell
-/// reaped; anything else is unknown.
+/// reaped; anything else is unknown. Only the test-only buffered command runs
+/// it; streamed commands stop through `stream_lifecycle`'s owner.
+#[cfg(test)]
 pub async fn graceful_kill(child: &mut tokio::process::Child) -> bool {
     graceful_kill_observed(child).await.confirmed()
 }
 
 /// `graceful_kill`, which delegates here, reporting which of its checks were
 /// confirmed and, on Windows, its one taskkill call's closed failure. The
-/// signals, waits, commands and their order are unchanged.
+/// signals, waits, commands and their order are unchanged. Streamed Windows
+/// commands stop through their Job instead, so its taskkill leg is test-only.
+#[cfg(any(unix, test))]
 pub(crate) async fn graceful_kill_observed(child: &mut tokio::process::Child) -> GracefulKill {
     use std::time::Duration;
     #[cfg(unix)]
@@ -342,9 +348,10 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
 }
 
 /// How Windows `taskkill` failed to confirm a tree stopped: a closed class of
-/// its result, never its output, text, PID or OS error.
-// Only the Windows path and tests construct a failure.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+/// its result, never its output, text, PID or OS error. Kept for the closed
+/// receipt schema; streamed Windows commands no longer run taskkill.
+// Only tests construct a failure.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskkillFailure {
     /// It exited unsuccessfully, with its nonzero code when the OS reported
@@ -423,6 +430,8 @@ impl TreeStopFailure {
 /// `cancel_process_tree`, which delegates here: Ok only when confirmed stopped.
 /// An unconfirmed outcome carries the Windows taskkill path's closed failure,
 /// or the Unix path's final group probe class; any other path reports None.
+/// Production uses only its Unix path; the Windows taskkill path is test-only.
+#[cfg(any(unix, test))]
 pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<TreeStopFailure>> {
     #[cfg(unix)]
     let stopped = {
@@ -471,7 +480,7 @@ pub(crate) async fn cancel_process_tree_observed(pid: u32) -> Result<(), Option<
 /// Otherwise which failure occurred. The captured output of a
 /// `TASKKILL_NOT_FOUND_EXIT` exit is only compared here, then dropped; no
 /// byte of it, nor the PID, leaves this function.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn taskkill_outcome(
     pid: u32,
     result: std::io::Result<std::process::Output>,
@@ -496,7 +505,7 @@ fn taskkill_outcome(
 /// English report for this exact decimal PID, optionally ending in one LF or
 /// CRLF. Another language, PID, line, byte or encoding is unclassified. The
 /// comparison is bounded by the expected line's length.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn reports_requested_pid_not_found(pid: u32, stdout: &[u8], stderr: &[u8]) -> bool {
     let report = match (stdout.is_empty(), stderr.is_empty()) {
         (true, false) => stderr,

@@ -17,10 +17,13 @@
 //! (`setsid`, `setpgid`, daemonizing) are outside any owner's reach, and abrupt
 //! native death runs no cleanup at all.
 //!
-//! On Windows the owned tree is instead the command's private Job Object
-//! (`windows_stream_job`), joined before the shell can run. Every stop
-//! terminates that Job and confirms it empty, even after the shell itself
-//! exited, and never signals a PID. A normal exit only closes the Job handle.
+//! On Windows the owned tree is instead the members of the command's private
+//! Job Object (`windows_stream_job`): the shell, joined before it can run, and
+//! the processes members create. Every stop terminates that Job and confirms
+//! it empty, even after the shell itself exited, and never signals a PID. A
+//! process a separate service starts for the command, such as through WMI, is
+//! never a member and outside any owner's reach. A normal exit only closes the
+//! Job handle.
 //!
 //! Admission fails closed: once any owner cannot confirm its group stopped,
 //! members may still be running, so no further streamed command starts in this
@@ -3206,8 +3209,13 @@ mod windows_tests {
         format!("'{}'", path.display().to_string().replace('\'', "''"))
     }
 
+    /// The only output an announcing descendant ever writes, on its stdout.
+    const ANNOUNCEMENT: &str = "descendant ready\r\n";
+
     /// A descendant that records its own PID, optionally reports on its
-    /// stdout, then outlives any test that does not stop it.
+    /// stdout, then outlives any test that does not stop it. It sleeps through
+    /// .NET rather than `Start-Sleep`, whose module load can report progress
+    /// on stderr, so the announcement is its only output on either stream.
     fn sleeper(pid_file: &Path, announce: bool) -> String {
         let announce = if announce {
             "[Console]::Out.WriteLine('descendant ready'); "
@@ -3215,7 +3223,8 @@ mod windows_tests {
             ""
         };
         format!(
-            "[IO.File]::WriteAllText({}, \"$PID`n\"); {announce}Start-Sleep -Seconds 120",
+            "[IO.File]::WriteAllText({}, \"$PID`n\"); {announce}\
+             [Threading.Thread]::Sleep(120000)",
             literal(pid_file)
         )
     }
@@ -3414,9 +3423,27 @@ mod windows_tests {
                 }
                 // The descendant's own output is the first delivery to fail.
                 Stop::DeliveryFailed => {
-                    let closed: Channel<StreamEvent> =
-                        Channel::new(|_| Err(std::io::Error::other("receiver closed").into()));
+                    let rejected = Arc::new(Mutex::new(Vec::new()));
+                    let sink = rejected.clone();
+                    let closed: Channel<StreamEvent> = Channel::new(move |body| {
+                        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                            sink.lock().unwrap().push(json);
+                        }
+                        Err(std::io::Error::other("receiver closed").into())
+                    });
                     run(owned, None, Duration::from_secs(120), &closed).await;
+                    // The owner stopped at its first failed delivery, which
+                    // was the descendant's own output: never a timeout's
+                    // error event. Pipe reads may split the line.
+                    let rejected = rejected.lock().unwrap().clone();
+                    assert_eq!(rejected.len(), 1, "{rejected:?}");
+                    let event: serde_json::Value = serde_json::from_str(&rejected[0]).unwrap();
+                    assert_eq!(event["type"], "stdout", "{event}");
+                    let data = event["data"].as_str().unwrap_or_default();
+                    assert!(
+                        !data.is_empty() && ANNOUNCEMENT.starts_with(data),
+                        "{event}"
+                    );
                 }
             }
             assert_eq!(

@@ -1,11 +1,17 @@
 //! A private Win32 Job Object for each streamed Windows command.
 //!
 //! The shell is created suspended, assigned to a new unnamed Job whose handle
-//! is never inheritable, and only then resumed, so it and everything it starts
-//! are members before any of its code runs. A stop terminates that Job and
-//! confirms through the Job's own accounting that no member remains. Neither
-//! step needs the shell to still be running or any PID, so a launcher that
-//! already exited can no longer hide its descendants.
+//! is never inheritable, and only then resumed, so the shell is a member
+//! before any of its code runs, and every process a member creates inherits
+//! that membership. A stop terminates that Job and confirms through the Job's
+//! own accounting that no member remains. Neither step needs the shell to
+//! still be running or any PID, so a launcher that already exited can no
+//! longer hide the descendants it created.
+//!
+//! The guarantee covers only the Job's members. A process another service
+//! creates on the command's behalf, such as through WMI's
+//! `Win32_Process.Create`, the Task Scheduler or another COM broker, is that
+//! service's child, never a member, and no stop reaches or counts it.
 //!
 //! The Job sets no limits. Without kill-on-close, dropping its handle after a
 //! normal exit leaves intentional background work running, as before. Without
