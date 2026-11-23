@@ -30,21 +30,14 @@ const makeMessage = (text: string): UIMessage => ({
 
 describe("processChatMessages authorization metadata", () => {
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
-  const originalAbliterationKey = process.env.ABLITERATION_API_KEY;
 
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key";
-    process.env.ABLITERATION_API_KEY = "test-only-key";
-    process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED = "true";
     mockModerationsCreate.mockReset();
   });
 
   afterEach(() => {
     process.env.OPENAI_API_KEY = originalOpenAiApiKey;
-    if (originalAbliterationKey === undefined)
-      delete process.env.ABLITERATION_API_KEY;
-    else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
-    delete process.env.ABLITERATION_ZERO_DATA_RETENTION_CONFIRMED;
   });
 
   it.each([

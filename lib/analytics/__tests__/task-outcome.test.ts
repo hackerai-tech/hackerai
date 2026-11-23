@@ -90,7 +90,7 @@ it("freezes experiment attribution without forwarding content or treating unchec
     experiment_request_id: "original",
     feedback_phase: "abliterated_max_moderated_feedback_v1",
     selected_model_override: "hackerai-pro",
-    assigned_model: "abliterated-model",
+    assigned_model: "deepseek-v4.1-flash-1017-cyber",
     baseline_model: "baseline",
     answer: "not_checked",
     content: "private",

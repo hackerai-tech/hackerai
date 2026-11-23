@@ -7,7 +7,6 @@ import {
 } from "ai";
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
@@ -54,7 +53,6 @@ export class AbliteratedModelTelemetry {
     provider_content_filter_count: 0,
     provider_truncated_count: 0,
     provider_empty_count: 0,
-    provider_abliteration_attempt_count: 0,
     provider_inference_attempt_count: 0,
     provider_baseline_attempt_count: 0,
     provider_continuation_completed_count: 0,
@@ -75,7 +73,6 @@ export class AbliteratedModelTelemetry {
     model_routing_telemetry_version: 1 as const,
     planned_baseline_attempt_count: 0,
     vision_route_attempt_count: 0,
-    abliterated_provider_error_count: 0,
     baseline_provider_error_count: 0,
     inference_provider_error_count: 0,
     provider_error_recovery_attempt_count: 0,
@@ -147,7 +144,7 @@ export class AbliteratedModelTelemetry {
         free_three_steps_measurement_version: 1,
         experiment_release: args.release ?? "unknown",
       }),
-      assigned_platform_authorization_context: isAbliterationModel(
+      assigned_platform_authorization_context: isInferenceCyberModel(
         args.assignment.modelKey,
       )
         ? "not_appended"
@@ -320,9 +317,7 @@ export class AbliteratedModelTelemetry {
               requested_model: model.modelId,
               generation_step: stepIndex + 1,
             });
-          } else if (isAbliterationModel(model.modelId))
-            this.totals.provider_abliteration_attempt_count++;
-          else this.totals.provider_baseline_attempt_count++;
+          } else this.totals.provider_baseline_attempt_count++;
           const start = Date.now();
           let terminal = false;
           let textCharacters = 0;
@@ -381,8 +376,6 @@ export class AbliteratedModelTelemetry {
             if (outcome === "error") {
               if (isInferenceCyberModel(model.modelId))
                 this.routing.inference_provider_error_count++;
-              else if (isAbliterationModel(model.modelId))
-                this.routing.abliterated_provider_error_count++;
               else this.routing.baseline_provider_error_count++;
             }
             this.totals.provider_duration_ms += duration;
@@ -408,10 +401,8 @@ export class AbliteratedModelTelemetry {
             }
             if (
               outcome === "completed" &&
-              (isAbliterationModel(responseModel) ||
-                isInferenceCyberModel(responseModel)) &&
-              (isAbliterationModel(model.modelId) ||
-                isInferenceCyberModel(model.modelId))
+              isInferenceCyberModel(responseModel) &&
+              isInferenceCyberModel(model.modelId)
             )
               this.successfulAbliterationGeneration = true;
             // Keep first-step comparisons and every exceptional outcome. Normal

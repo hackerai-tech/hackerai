@@ -1,5 +1,6 @@
 import {
   INFERENCE_CYBER_FLAG,
+  INFERENCE_CYBER_MODEL_KEY,
   isInferenceConfigured,
 } from "@/lib/ai/inference";
 import { phLogger } from "@/lib/posthog/server";
@@ -32,10 +33,6 @@ import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { ModelName } from "@/lib/ai/providers";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
-import {
-  ABLITERATION_MODEL_KEY,
-  isAbliterationConfigured,
-} from "@/lib/ai/abliteration";
 
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   key:
@@ -57,7 +54,6 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   moderationChecked?: boolean;
   independentHistoryCount?: number;
   generationStepLimit?: AbliterationGenerationStepLimit;
-  inferenceCyberEnabled?: boolean;
 };
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
@@ -121,7 +117,6 @@ export async function evaluateAbliteratedModel({
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
   inferenceEnvironment?: "preview" | "production";
 }): Promise<AbliteratedAssignment | undefined> {
-  const providerConfigured = isAbliterationConfigured();
   const reportDecision = (
     reason: string,
     variant?: string,
@@ -139,7 +134,6 @@ export async function evaluateAbliteratedModel({
         selected_model_override: selectedModelOverride,
         moderation_eligible: moderationEligible,
         moderation_checked: moderationChecked,
-        provider_configured: providerConfigured,
         reason,
         ...(variant && { variant }),
       });
@@ -148,8 +142,8 @@ export async function evaluateAbliteratedModel({
     }
   };
   // Only trusted deployed callers can enable the direct-provider rollout.
-  // Evaluate lazily after application eligibility. A lookup failure preserves
-  // the Abliteration route, independently of the retired Free experiment.
+  // Evaluate lazily after application eligibility. Without Inference, every
+  // request keeps its selected model with the usual authorization context.
   const evaluateInference = async (): Promise<boolean> => {
     if (!inferenceEnvironment || !isInferenceConfigured() || !posthog)
       return false;
@@ -186,9 +180,7 @@ export async function evaluateAbliteratedModel({
       );
       return undefined;
     }
-    const inferenceCyberEnabled = await evaluateInference();
-    // Without Abliteration, only the Inference route may serve these steps.
-    if (!providerConfigured && !inferenceCyberEnabled) {
+    if (!(await evaluateInference())) {
       reportDecision(
         "provider_not_configured",
         undefined,
@@ -199,10 +191,9 @@ export async function evaluateAbliteratedModel({
     return {
       key: ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
       variant: "test",
-      modelKey: ABLITERATION_MODEL_KEY,
+      modelKey: INFERENCE_CYBER_MODEL_KEY,
       baselineModel: selectedModel,
       generationStepLimit: 3,
-      inferenceCyberEnabled,
       selectionSource: "moderation",
       moderationEligible,
       moderationChecked,
@@ -224,37 +215,18 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  const inferenceCyberEnabled = await evaluateInference();
-
-  if (inferenceCyberEnabled) {
-    const baselineModel = selectedModel;
-    reportDecision("inference_cyber_rollout", "test", INFERENCE_CYBER_FLAG);
-    return {
-      key: INFERENCE_CYBER_FLAG,
-      variant: "test",
-      modelKey: ABLITERATION_MODEL_KEY,
-      baselineModel,
-      generationStepLimit: 3,
-      inferenceCyberEnabled: true,
-      selectionSource: "moderation",
-      moderationEligible,
-      moderationChecked,
-    };
-  }
-
-  if (!providerConfigured) {
+  if (!(await evaluateInference())) {
     reportDecision("provider_not_configured");
     return undefined;
   }
 
-  reportDecision("moderated_three_step_default", "test");
+  reportDecision("inference_cyber_rollout", "test", INFERENCE_CYBER_FLAG);
   return {
-    key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    key: INFERENCE_CYBER_FLAG,
     variant: "test",
-    modelKey: ABLITERATION_MODEL_KEY,
+    modelKey: INFERENCE_CYBER_MODEL_KEY,
     baselineModel: selectedModel,
     generationStepLimit: 3,
-    inferenceCyberEnabled,
     selectionSource: "moderation",
     moderationEligible,
     moderationChecked,

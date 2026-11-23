@@ -4,7 +4,6 @@ import {
   TextDecoderStream as NodeTextDecoderStream,
   WritableStream as NodeWritableStream,
 } from "node:stream/web";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   generateText,
   streamText,
@@ -69,8 +68,6 @@ const slugs = [
   "anthropic/claude-sonnet-4.6",
   "openai/gpt-5",
   "google/gemini-2.5-pro",
-  "abliterated-model",
-  "abliterated-model-large-flash",
 ];
 
 describe("provider cache policy", () => {
@@ -173,22 +170,14 @@ describe("provider cache policy", () => {
     expect(addPromptCacheBreakpoints(messages, slugs[4])).toEqual(messages);
   });
   it.each(slugs)("uses the correct namespace for %s", (slug) => {
-    const options = buildPromptCacheOptions(slug, "opaque-session");
-    if (slug.startsWith("abliterated-")) {
-      expect(options).toEqual({
-        abliteration: { prompt_cache_key: "opaque-session" },
-      });
-    } else {
-      expect(options).toEqual({
-        openrouter: {
-          session_id: "opaque-session",
-        },
-      });
-    }
+    expect(buildPromptCacheOptions(slug, "opaque-session")).toEqual({
+      openrouter: {
+        session_id: "opaque-session",
+      },
+    });
   });
 
   it("keeps affinity absent without a conversation and avoids paid TTL overrides", () => {
-    expect(buildPromptCacheOptions("abliterated-model")).toEqual({});
     expect(buildPromptCacheOptions("z-ai/glm-5.3")).toEqual({ openrouter: {} });
     expect(buildPromptCacheOptions("anthropic/claude-sonnet-4.6")).toEqual({
       openrouter: {},
@@ -243,14 +232,7 @@ describe("provider cache policy", () => {
     ).toBe(4);
   });
 
-  it("uses actual registry model IDs for direct calls and OpenRouter routes", () => {
-    for (const name of ["model-abliterated", "model-abliterated-large-v2"]) {
-      const model = myProvider.languageModel(name);
-      expect(model.provider).toBe("abliteration.chat");
-      expect(buildPromptCacheOptions(model.modelId, "opaque-session")).toEqual({
-        abliteration: { prompt_cache_key: "opaque-session" },
-      });
-    }
+  it("uses actual registry model IDs for OpenRouter routes", () => {
     expect(
       buildPromptCacheOptions(
         myProvider.languageModel("model-kimi-k3").modelId,
@@ -351,14 +333,7 @@ it.each(
         { headers: { "Content-Type": "application/json" } },
       );
     });
-    const model = slug.startsWith("abliterated-")
-      ? createOpenAICompatible({
-          name: "abliteration",
-          baseURL: "https://example.test/v1",
-          apiKey: "test",
-          fetch,
-        })(slug)
-      : createOpenRouter({ apiKey: "test", fetch })(slug);
+    const model = createOpenRouter({ apiKey: "test", fetch })(slug);
     const key = createOpenRouterCacheSessionId({
       chatId: "private-chat",
       mode: "agent",
@@ -400,14 +375,8 @@ it.each(
     ).toBe(80);
     for (const request of requests) {
       expect(request.model).toBe(slug);
-      expect(
-        request[
-          slug.startsWith("abliterated-") ? "prompt_cache_key" : "session_id"
-        ],
-      ).toBe(key);
-      expect(request).not.toHaveProperty(
-        slug.startsWith("abliterated-") ? "session_id" : "prompt_cache_key",
-      );
+      expect(request.session_id).toBe(key);
+      expect(request).not.toHaveProperty("prompt_cache_key");
       expect(request).not.toHaveProperty("cache_control");
       const markerCount =
         JSON.stringify(request).match(/"cache_control":/g)?.length ?? 0;

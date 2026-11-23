@@ -34,10 +34,6 @@ jest.mock("@/lib/posthog/server", () => ({
   getPostHogBooleanFlagDecisionForUser: async () => false,
   phLogger: { event: jest.fn(), warn: jest.fn(), info: jest.fn() },
 }));
-jest.mock("@/lib/ai/abliteration", () => ({
-  ...jest.requireActual("@/lib/ai/abliteration"),
-  isAbliterationConfigured: () => false,
-}));
 jest.mock("@/lib/ai/inference", () => ({
   ...jest.requireActual("@/lib/ai/inference"),
   isInferenceConfigured: () => false,

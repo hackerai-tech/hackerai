@@ -62,12 +62,6 @@ const subprocessors: Subprocessor[] = [
     dataCategories: MODEL_REQUEST_DATA,
   },
   {
-    name: "Abliteration.ai",
-    purpose:
-      "Serves abliterated models directly, without OpenRouter, and handles some fallback requests",
-    dataCategories: MODEL_REQUEST_DATA,
-  },
-  {
     name: "OpenAI",
     purpose: "Content moderation",
     dataCategories: "Message content",
@@ -296,11 +290,6 @@ function TrustContent() {
                 without passing through OpenRouter. See the{" "}
                 <InlineLink href="https://inference.net/privacy-policy/">
                   Inference.net privacy policy
-                </InlineLink>
-                . HackerAI sends requests to Abliteration.ai only after it
-                confirms zero data retention for our account; see the{" "}
-                <InlineLink href="https://abliteration.ai/privacy-policy">
-                  Abliteration.ai privacy policy
                 </InlineLink>
                 .
               </p>

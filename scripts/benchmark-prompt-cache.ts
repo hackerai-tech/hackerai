@@ -9,7 +9,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parse } from "dotenv";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, jsonSchema, tool, type ModelMessage } from "ai";
 import {
   buildPromptCacheOptions,
@@ -20,7 +19,6 @@ import {
   systemPrompt,
   SYSTEM_PROMPT_RUNTIME_BOUNDARY,
 } from "../lib/system-prompt";
-import { isAbliterationModel } from "../lib/ai/abliteration";
 import {
   getOpenRouterProviderRoutingForModel,
   DEEPSEEK_V4_FLASH_VISION_SLUG,
@@ -135,19 +133,12 @@ async function main() {
       "Use --live [--model provider/model] [--scope agent|subagent] [--pairs 1|2] [--scenario tools|model-mode] [--provider slug]",
     );
   }
-  const direct = isAbliterationModel(modelId);
-  const keyName = direct ? "ABLITERATION_API_KEY" : "OPENROUTER_API_KEY";
+  const keyName = "OPENROUTER_API_KEY";
   // Load only the needed model key, never backend/service configuration.
   const apiKey =
     process.env[keyName] || parse(readFileSync(".env.local"))[keyName];
   if (!apiKey) throw new Error(`Missing ${keyName}`);
-  const model = direct
-    ? createOpenAICompatible({
-        name: "abliteration",
-        baseURL: "https://api.abliteration.ai/v1",
-        apiKey,
-      })(modelId)
-    : createOpenRouter({ apiKey })(modelId);
+  const model = createOpenRouter({ apiKey })(modelId);
   const runId = randomUUID();
   const outputPath = `.artifacts/prompt-cache/${runId}.json`;
   mkdirSync(".artifacts/prompt-cache", { recursive: true });
@@ -224,16 +215,14 @@ async function main() {
         variant === "treatment" || scenario === "model-mode"
           ? buildPromptCacheOptions(modelId, sessionId)
           : baselineCacheOptions(modelId, sessionId, scope);
-      const providerOptions = direct
-        ? cacheOptions
-        : {
-            openrouter: {
-              provider: providerOnly
-                ? { only: [providerOnly], allow_fallbacks: false }
-                : getOpenRouterProviderRoutingForModel(modelId),
-              ...("openrouter" in cacheOptions ? cacheOptions.openrouter : {}),
-            },
-          };
+      const providerOptions = {
+        openrouter: {
+          provider: providerOnly
+            ? { only: [providerOnly], allow_fallbacks: false }
+            : getOpenRouterProviderRoutingForModel(modelId),
+          ...("openrouter" in cacheOptions ? cacheOptions.openrouter : {}),
+        },
+      };
       for (let step = 0; step < 3; step++) {
         if (deadline.aborted) throw new Error("Benchmark deadline reached");
         if (rows.reduce((sum, r) => sum + (r.cost ?? 0), 0) > 1)

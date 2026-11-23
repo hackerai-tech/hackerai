@@ -65,7 +65,11 @@ describe("Free Ask DeepSeek 1017", () => {
         $insert_id: "synthetic-request:free-ask-1017-exposure",
       });
       expect(
-        getActiveFlashRoutingAssignment(assignment, "model-abliterated", false),
+        getActiveFlashRoutingAssignment(
+          assignment,
+          "model-inference-cyber",
+          false,
+        ),
       ).toBeUndefined();
       expect(
         getActiveFlashRoutingAssignment(assignment, assignment!.modelKey, true),
@@ -76,7 +80,7 @@ describe("Free Ask DeepSeek 1017", () => {
   it.each([
     { mode: "agent" as const },
     { subscription: "pro" as const },
-    { selectedModel: "model-abliterated" },
+    { selectedModel: "model-inference-cyber" },
     { modelPolicyActive: true },
     { limitRescue: true },
     { hasImages: true },

@@ -28,50 +28,6 @@ import {
  * that can properly initialize and control the Redis/Ratelimit dependencies.
  */
 describe("token-bucket", () => {
-  it.each(["abliterated-model"])(
-    "prices %s with the direct provider rates and cache discount",
-    (modelName) => {
-      expect(
-        calculateRawModelUsageCostDollars({
-          inputTokens: 1_000_000,
-          outputTokens: 1_000_000,
-          cacheReadTokens: 500_000,
-          modelName,
-        }),
-      ).toBeCloseTo(3.55);
-      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(10_000);
-    },
-  );
-  it.each(["abliterated-model-large-v2"])(
-    "prices %s with the Large v2 rates",
-    (modelName) => {
-      expect(
-        calculateRawModelUsageCostDollars({
-          inputTokens: 1_000_000,
-          outputTokens: 1_000_000,
-          cacheReadTokens: 500_000,
-          modelName,
-        }),
-      ).toBeCloseTo(6.65);
-      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
-    },
-  );
-  it.each([
-    "model-abliterated",
-    "model-abliterated-large-v2",
-    "abliterated-model-large-flash",
-  ])("prices the active Flash route %s including cached input", (modelName) => {
-    expect(
-      calculateRawModelUsageCostDollars({
-        inputTokens: 1_000_000,
-        outputTokens: 1_000_000,
-        cacheReadTokens: 500_000,
-        modelName,
-      }),
-    ).toBeCloseTo(2.55);
-    expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(10_000);
-    expect(calculateRawTokenCost(1_000_000, "output", modelName)).toBe(20_000);
-  });
   // ==========================================================================
   // calculateTokenCost - Core pricing logic
   // ==========================================================================

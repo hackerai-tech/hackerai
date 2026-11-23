@@ -10,7 +10,7 @@ import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { getAgentContextPolicy } from "@/lib/ai/agent-context-budget";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -1331,7 +1331,7 @@ export const createChatHandler = () => {
             let retryUsedFallbackModel = false;
             const retrySelectionModel =
               abliteratedExperiment &&
-              isAbliterationModel(abliteratedExperiment.modelKey)
+              isInferenceCyberModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -1340,7 +1340,7 @@ export const createChatHandler = () => {
             });
             let fallbackModel =
               abliteratedExperiment &&
-              isAbliterationModel(abliteratedExperiment.modelKey)
+              isInferenceCyberModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(
                     maxBaselineModel ?? selectedModel,
@@ -1803,10 +1803,8 @@ export const createChatHandler = () => {
                 }),
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment &&
-                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                isInferenceCyberModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
-                    inferenceCyberEnabled:
-                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,

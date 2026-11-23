@@ -35,7 +35,7 @@ async function main() {
     );
     return;
   }
-  if (!process.env.ABLITERATION_API_KEY || !process.env.OPENROUTER_API_KEY)
+  if (!process.env.INFERENCE_API_KEY || !process.env.OPENROUTER_API_KEY)
     throw Error("Development provider configuration is incomplete");
   const { myProvider, resolveAgentTierToProviderKey } =
     await import("../lib/ai/providers");
@@ -77,10 +77,8 @@ async function main() {
       InstanceType<typeof CompactionModelPolicy>["resolve"]
     > {
       return {
-        model: this.expanded
-          ? ("model-abliterated-large-v2" as const)
-          : ("model-abliterated" as const),
-        fallbackModel: "model-glm-5.3-flash" as const,
+        model: "model-inference-cyber" as const,
+        fallbackModel: "model-deepseek-v4.1-flash-1017-pro" as const,
         policy: this.expanded
           ? this.tier === "hackerai-pro"
             ? PRO_CONTEXT_COMPACTION_POLICY_VERSION

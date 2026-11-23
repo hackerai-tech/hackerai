@@ -177,17 +177,6 @@ describe("enrichOpenRouterStreamError", () => {
 describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {
     expect(
-      (myProvider.languageModel("model-abliterated") as { modelId: string })
-        .modelId,
-    ).toBe("abliterated-model-large-flash");
-    expect(
-      (
-        myProvider.languageModel("model-abliterated-large-v2") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("abliterated-model-large-flash");
-    expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4.1-flash-1017");
