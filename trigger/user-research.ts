@@ -32,7 +32,7 @@ import {
   type ResearchRunFailureReason,
 } from "@/lib/research/user-research";
 import {
-  ResearchContentFilterError,
+  isResearchContentFilterRefusal,
   readResearchStructuredOutput,
   type ResearchStructuredOutputOperation,
 } from "@/lib/research/structured-output-diagnostics";
@@ -212,27 +212,33 @@ export const analyzeUserResearchProfile = schemaTask({
       chats: evidence,
     });
     assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("profile"));
-    const result = await generateText({
-      model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-      output: Output.object({ schema: researchUserProfileSchema }),
-      providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
-      temperature: 0,
-      maxOutputTokens: 6_000,
-      maxRetries: 1,
-      prompt,
-    });
-    let output: unknown;
-    try {
-      output = await readResearchStructuredOutput(result, {
-        operation: "profile",
-        ctx,
+    const generateProfile = async () => {
+      const result = await generateText({
+        model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
+        output: Output.object({ schema: researchUserProfileSchema }),
+        providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+        temperature: 0,
+        maxOutputTokens: 6_000,
+        maxRetries: 1,
+        prompt,
       });
+      return {
+        output: await readResearchStructuredOutput(result, {
+          operation: "profile",
+          ctx,
+        }),
+        usage: result.usage,
+      };
+    };
+    let generated: Awaited<ReturnType<typeof generateProfile>>;
+    try {
+      generated = await generateProfile();
     } catch (error) {
       // A refusal can clear on a fresh attempt, so let Trigger retry it. On
       // the final attempt, report an explicit exclusion so the cohort keeps
       // the reason instead of an anonymous task failure.
       if (
-        error instanceof ResearchContentFilterError &&
+        isResearchContentFilterRefusal(error) &&
         ctx.attempt.number >= PROFILE_MAX_ATTEMPTS
       ) {
         return {
@@ -246,10 +252,10 @@ export const analyzeUserResearchProfile = schemaTask({
       throw error;
     }
     const profile = normalizeResearchUserProfile(
-      output,
+      generated.output,
       coverage.chatsReviewed,
     );
-    const usage = usageForStorage(result.usage);
+    const usage = usageForStorage(generated.usage);
 
     await client.mutation(api.userResearch.saveUserProfile, {
       serviceKey,
@@ -360,8 +366,18 @@ export const pmUserResearch = schemaTask({
           },
         })),
       );
+      // A stored profile is analyzed even if its task later failed or was
+      // retried, so each user is either analyzed or excluded, never both.
       // A missing batch entry is a failed profile, never a silent omission.
+      const profiles = await client.query(api.userResearch.listProfiles, {
+        serviceKey,
+        analysisId,
+      });
+      const availablePseudonyms = new Set(
+        profiles.map((profile) => profile.pseudonym),
+      );
       const excludedMembers = members.flatMap((member, index) => {
+        if (availablePseudonyms.has(member.pseudonym)) return [];
         const run = batchResult.runs[index];
         const reason: ResearchExclusionReason | undefined = !run?.ok
           ? "profile_failed"
@@ -390,19 +406,12 @@ export const pmUserResearch = schemaTask({
         });
       }
 
-      const profiles = await client.query(api.userResearch.listProfiles, {
-        serviceKey,
-        analysisId,
-      });
       if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
         throw new ResearchRunFailure(
           "no_analyzable_profiles",
           `No users could be analyzed (${exclusionDetail})`,
         );
       }
-      const availablePseudonyms = new Set(
-        profiles.map((profile) => profile.pseudonym),
-      );
       const comparisonGroupsForPrompt = comparisonGroups?.map((group) => ({
         label: group.label,
         pseudonyms: group.userIds
@@ -464,23 +473,29 @@ export const pmUserResearch = schemaTask({
         profiles: profilesWithBasis,
       });
       assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("synthesis"));
-      const result = await generateText({
-        model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-        output: Output.object({ schema: cohortSynthesisSchema }),
-        providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
-        temperature: 0,
-        maxOutputTokens: 8_000,
-        maxRetries: 1,
-        prompt,
-      });
-      let synthesisOutput: unknown;
-      try {
-        synthesisOutput = await readResearchStructuredOutput(result, {
-          operation: "synthesis",
-          ctx,
+      const generateSynthesis = async () => {
+        const result = await generateText({
+          model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
+          output: Output.object({ schema: cohortSynthesisSchema }),
+          providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+          temperature: 0,
+          maxOutputTokens: 8_000,
+          maxRetries: 1,
+          prompt,
         });
+        return {
+          output: await readResearchStructuredOutput(result, {
+            operation: "synthesis",
+            ctx,
+          }),
+          usage: result.usage,
+        };
+      };
+      let generated: Awaited<ReturnType<typeof generateSynthesis>>;
+      try {
+        generated = await generateSynthesis();
       } catch (error) {
-        if (error instanceof ResearchContentFilterError) {
+        if (isResearchContentFilterRefusal(error)) {
           throw new ResearchRunFailure(
             "synthesis_blocked_by_content_filter",
             "The model content filter refused the cohort synthesis",
@@ -489,7 +504,7 @@ export const pmUserResearch = schemaTask({
         throw error;
       }
       const synthesis = withContentFilterLimitation(
-        normalizeCohortSynthesis(synthesisOutput, profiles.length),
+        normalizeCohortSynthesis(generated.output, profiles.length),
         blockedProfiles,
         payload.userIds.length,
       );
@@ -518,7 +533,7 @@ export const pmUserResearch = schemaTask({
         report,
         model: GROK_4_6_SLUG,
         promptVersion: USER_RESEARCH_PROMPT_VERSION,
-        ...usageForStorage(result.usage),
+        ...usageForStorage(generated.usage),
       });
 
       return {

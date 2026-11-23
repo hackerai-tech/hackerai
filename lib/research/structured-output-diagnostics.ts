@@ -1,4 +1,4 @@
-import { NoOutputGeneratedError } from "ai";
+import { NoObjectGeneratedError, NoOutputGeneratedError } from "ai";
 import { phLogger } from "@/lib/posthog/server";
 import { USER_RESEARCH_MODEL_KEY } from "@/lib/research/user-research";
 
@@ -28,6 +28,17 @@ export class ResearchContentFilterError extends Error {
     this.name = "ResearchContentFilterError";
   }
 }
+
+/**
+ * True when the model's content filter refused the request. An empty refusal
+ * surfaces from readResearchStructuredOutput; a refusal with text fails
+ * structured parsing inside generateText as NoObjectGeneratedError.
+ */
+export const isResearchContentFilterRefusal = (error: unknown): boolean =>
+  error instanceof ResearchContentFilterError ||
+  (readSafely(() => NoObjectGeneratedError.isInstance(error)) === true &&
+    readSafely(() => (error as { finishReason?: unknown }).finishReason) ===
+      "content-filter");
 
 /** The subset of Trigger's task context used for run correlation. */
 export type ResearchTaskContext = {

@@ -47,10 +47,11 @@ const parent = pmUserResearch as unknown as {
 // result.output throws.
 const useNoOutputModel = (
   finishReason: "length" | "content-filter" = "length",
+  refusalText?: string,
 ) => {
   const model = new MockLanguageModelV3({
     doGenerate: {
-      content: [],
+      content: refusalText ? [{ type: "text", text: refusalText }] : [],
       finishReason: { unified: finishReason, raw: finishReason },
       usage: {
         inputTokens: {
@@ -503,6 +504,47 @@ describe("model content-filter exclusions", () => {
     );
   });
 
+  it("reports a refusal with text on the final attempt as an exclusion", async () => {
+    mockProfileEvidence();
+    useNoOutputModel("content-filter", "I can't help with that.");
+
+    await expect(
+      child.run(workerPayload, {
+        ctx: { ...ctx, attempt: { number: 2 } },
+      }),
+    ).resolves.toMatchObject({
+      status: "skipped",
+      reason: "model_content_filter",
+    });
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it("counts a stored profile as analyzed even when its task failed", async () => {
+    child.batchTriggerAndWait.mockResolvedValue({
+      runs: [
+        { ok: true, output: { status: "completed" } },
+        { ok: false, error: { message: "response lost after save" } },
+      ],
+    });
+    mockQuery.mockResolvedValue([storedProfile("U01"), storedProfile("U02")]);
+    (generateText as jest.Mock).mockResolvedValue({
+      output: { ...synthesis, avatars: [{ ...synthesis.avatars[0] }] },
+      usage: {},
+    });
+
+    const result = await parent.run(
+      { ...parentPayload, userIds: ["user-1", "user-2"] },
+      taskOptions,
+    );
+
+    expect(result).toMatchObject({
+      usersAnalyzed: 2,
+      failedProfiles: 0,
+      blockedProfiles: 0,
+      excludedUsers: [],
+    });
+  });
+
   it("keeps other users' findings and names each excluded user with its reason", async () => {
     child.batchTriggerAndWait.mockResolvedValue({
       runs: [
@@ -602,21 +644,24 @@ describe("model content-filter exclusions", () => {
     );
   });
 
-  it("fails with a closed reason when the synthesis itself is refused", async () => {
-    child.batchTriggerAndWait.mockResolvedValue({
-      runs: [{ ok: true, output: { status: "completed" } }],
-    });
-    mockQuery.mockResolvedValue([storedProfile("U01")]);
-    useNoOutputModel("content-filter");
+  it.each([undefined, "I can't help with that."])(
+    "fails with a closed reason when the synthesis itself is refused (text: %s)",
+    async (refusalText) => {
+      child.batchTriggerAndWait.mockResolvedValue({
+        runs: [{ ok: true, output: { status: "completed" } }],
+      });
+      mockQuery.mockResolvedValue([storedProfile("U01")]);
+      useNoOutputModel("content-filter", refusalText);
 
-    await expect(
-      parent.run({ ...parentPayload, userIds: ["user-1"] }, taskOptions),
-    ).rejects.toThrow(
-      "User research analysis failed [synthesis_blocked_by_content_filter].",
-    );
-    const mutationArgs = mockMutation.mock.calls.map(([, args]) => args);
-    expect(mutationArgs).not.toContainEqual(
-      expect.objectContaining({ report: expect.anything() }),
-    );
-  });
+      await expect(
+        parent.run({ ...parentPayload, userIds: ["user-1"] }, taskOptions),
+      ).rejects.toThrow(
+        "User research analysis failed [synthesis_blocked_by_content_filter].",
+      );
+      const mutationArgs = mockMutation.mock.calls.map(([, args]) => args);
+      expect(mutationArgs).not.toContainEqual(
+        expect.objectContaining({ report: expect.anything() }),
+      );
+    },
+  );
 });
