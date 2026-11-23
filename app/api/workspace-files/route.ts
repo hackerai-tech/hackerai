@@ -59,6 +59,7 @@ async function authorize(
   req: NextRequest,
   chatId: string,
   progress: { stage: Stage } = { stage: "auth" },
+  historyAccess?: Parameters<typeof assertUserCanAccessChatHistory>[1],
 ) {
   progress.stage = "auth";
   let session;
@@ -68,7 +69,7 @@ async function authorize(
     throw new AuthorizationRejection("unauthorized", 401, "unauthenticated");
   }
   progress.stage = "history_access";
-  await assertUserCanAccessChatHistory(session.userId);
+  await assertUserCanAccessChatHistory(session.userId, historyAccess);
   progress.stage = "chat";
   const chat = await getChatById({ id: chatId });
   if (!chat || chat.user_id !== session.userId || chat.deletion_started_at)
@@ -239,7 +240,12 @@ export async function GET(req: NextRequest) {
   try {
     const chatId = req.nextUrl.searchParams.get("chatId");
     if (!chatId || chatId.length > 128) return json({ enabled: false }, 400);
-    await authorize(req, chatId);
+    // Read-only capability probe: it may retry one transport failure of the
+    // history read. POST keeps the single read before any sandbox access.
+    await authorize(req, chatId, undefined, {
+      retryNetworkFailure: true,
+      signal: req.signal,
+    });
     return json({ enabled: true });
   } catch (error) {
     return failure(error);
