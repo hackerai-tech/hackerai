@@ -4418,26 +4418,40 @@ describe("file_stat receiver diagnostics", () => {
           .mock.calls.filter(([{ event }]) => event === LATE_EVENT);
       };
 
-      /** Starts the ACL fixture and fails one stat while the lookup is pending. */
-      async function failWhilePending(lookup: () => Promise<unknown>) {
+      /**
+       * Starts the ACL fixture and fails one stat while the lookup is pending.
+       * t0 is the lookup call's own clock; the stat runs without moving it.
+       */
+      async function failWhilePending(
+        lookup: () => Promise<unknown>,
+        beforeStat?: (t0: number) => Promise<void> | void,
+      ) {
         installAclDenied(lookup);
         const bridge = new DesktopSandboxBridge(buildConfig());
+        const t0 = performance.now();
         const started = bridge.start();
         await jest.advanceTimersByTimeAsync(500);
         await started;
         const invoke = await resetObservedCalls();
+        await beforeStat?.(t0);
         getPublicationHandler()({ data: statMessage("stat-acl") });
+        await jest.advanceTimersByTimeAsync(0);
         await waitFor(() => expect(fileErrors()).toHaveLength(1));
         // The immediate reply is unchanged and never waits for the follow-up.
         expect(fileErrors()).toEqual([aclStatError("pending")]);
-        expect(lateEvents()).toEqual([]);
-        return { bridge, invoke };
+        return { bridge, invoke, t0 };
       }
 
       it.each([
         {
           name: "a delayed published 0.0.71",
           settleAt: 1_500 as number | undefined,
+          outcome: "resolved_published_legacy",
+        },
+        // Inclusive bound: this settlement reports before the expiry timer.
+        {
+          name: "0.0.71 exactly at the window's end",
+          settleAt: 3_000,
           outcome: "resolved_published_legacy",
         },
         // The lookup's own settlement just past the bound does not qualify;
@@ -4463,11 +4477,20 @@ describe("file_stat receiver diagnostics", () => {
                   setTimeout(() => resolve("0.0.71"), settleAt);
               }),
           );
-          const { bridge, invoke } = await failWhilePending(lookup);
+          const { bridge, invoke, t0 } = await failWhilePending(lookup);
           try {
+            expect(lateEvents()).toEqual([]);
             // A second exact denial in the same start does not arm again.
             getPublicationHandler()({ data: statMessage("stat-acl-2") });
             await waitFor(() => expect(fileErrors()).toHaveLength(2));
+            // At exactly 3000ms only an in-window settlement has reported;
+            // expiry reports nothing before 3001ms.
+            await jest.advanceTimersByTimeAsync(t0 + 3_000 - performance.now());
+            expect(lateEvents()).toHaveLength(
+              settleAt !== undefined && settleAt <= 3_000 ? 1 : 0,
+            );
+            await jest.advanceTimersByTimeAsync(1);
+            expect(lateEvents()).toHaveLength(1);
             await jest.advanceTimersByTimeAsync(5_000);
 
             expect(lateEvents()).toEqual([
@@ -4534,6 +4557,72 @@ describe("file_stat receiver diagnostics", () => {
         } finally {
           permittedUser.mockReturnValue("user-456");
           await bridge.stop();
+          jest.useRealTimers();
+        }
+      });
+
+      it("never arms when the analytics identity changed before the ACL reply", async () => {
+        jest.useFakeTimers();
+        const permittedUser = jest.mocked(getPermittedAnalyticsUserId);
+        let bridge: DesktopSandboxBridge | undefined;
+        try {
+          // The same live connection, but another queue owner at the denial.
+          ({ bridge } = await failWhilePending(
+            () => new Promise(() => {}),
+            () => {
+              permittedUser.mockReturnValue("user-other");
+            },
+          ));
+          // Switching back cannot revive it: the arm itself failed closed.
+          permittedUser.mockReturnValue("user-456");
+          await jest.advanceTimersByTimeAsync(5_000);
+          expect(lateEvents()).toEqual([]);
+        } finally {
+          permittedUser.mockReturnValue("user-456");
+          await bridge?.stop();
+          jest.useRealTimers();
+        }
+      });
+
+      it("reports unresolved at once when the window closes between the pending read and arming", async () => {
+        jest.useFakeTimers();
+        let clock: jest.SpyInstance | undefined;
+        let bridge: DesktopSandboxBridge | undefined;
+        try {
+          ({ bridge } = await failWhilePending(
+            () => new Promise(() => {}),
+            async (t0) => {
+              await jest.advanceTimersByTimeAsync(
+                t0 + 3_000 - performance.now(),
+              );
+              // The immediate read sees exactly 3000ms; arming sees 3001ms.
+              const now = performance.now.bind(performance);
+              let reads = 0;
+              clock = jest
+                .spyOn(performance, "now")
+                .mockImplementation(() => now() + (reads++ === 0 ? 0 : 1));
+            },
+          ));
+          expect(lateEvents()).toEqual([
+            [
+              {
+                event: LATE_EVENT,
+                properties: {
+                  connectionId: "conn-123",
+                  version: 1,
+                  outcome: "unresolved",
+                },
+                dedupeKey: "conn-123",
+              },
+            ],
+          ]);
+          clock?.mockRestore();
+          clock = undefined;
+          await jest.advanceTimersByTimeAsync(5_000);
+          expect(lateEvents()).toHaveLength(1);
+        } finally {
+          clock?.mockRestore();
+          await bridge?.stop();
           jest.useRealTimers();
         }
       });

@@ -237,6 +237,15 @@ function readDiagnosticClock(): number | undefined {
   }
 }
 
+/** The analytics queue owner, read for diagnostics only; never throws. */
+function readAnalyticsOwner(): string | undefined {
+  try {
+    return getPermittedAnalyticsUserId() ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Non-negative elapsed time since a diagnostics clock read, if readable. */
 function diagnosticElapsedSince(startedAt: number): number | undefined {
   const now = readDiagnosticClock();
@@ -250,6 +259,12 @@ function diagnosticElapsedSince(startedAt: number): number | undefined {
  */
 interface NativeVersionLateObservation {
   readonly startedAt: number;
+  /**
+   * Consent-permitted analytics owner read before this start's version IPC;
+   * cleared if it changes across registration. Gates only the follow-up and
+   * is never sent, stored or put on the transport.
+   */
+  owner?: string;
   settled?: Exclude<DesktopNativeVersionLateLookup, "pending" | "unresolved">;
   /** Armed at most once, by an exact ACL denial read while still pending. */
   report?: (outcome: DesktopNativeVersionLateLookup) => void;
@@ -972,6 +987,8 @@ export class DesktopSandboxBridge {
     this.nativeSession = undefined;
     this.nativeVersionLate = undefined;
     this.clearNativeVersionLateReportTimer();
+    // Diagnostics only: the analytics owner before this start's first IPC.
+    const analyticsOwner = readAnalyticsOwner();
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -994,7 +1011,10 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    const nativeVersion = await this.lookupNativeAppVersion(generation);
+    const nativeVersion = await this.lookupNativeAppVersion(
+      generation,
+      analyticsOwner,
+    );
     this.nativeAppVersion = nativeVersion.version;
     this.nativeVersionLookup = nativeVersion.lookup;
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
@@ -1062,6 +1082,13 @@ export class DesktopSandboxBridge {
     }
 
     this.connectionId = connectionId;
+    // Diagnostics only: an analytics identity switch across registration
+    // forfeits this connection's optional late-version follow-up.
+    if (
+      this.nativeVersionLate &&
+      readAnalyticsOwner() !== this.nativeVersionLate.owner
+    )
+      this.nativeVersionLate.owner = undefined;
 
     const transportConfig = buildCentrifugoTransportConfig(centrifugoWsUrl);
     this.client = new Centrifuge(transportConfig.endpoints, {
@@ -1487,10 +1514,11 @@ export class DesktopSandboxBridge {
     call: Promise<unknown>,
     startedAt: number | undefined,
     generation: number,
+    owner: string | undefined,
   ): NativeVersionLateObservation | undefined {
     if (startedAt === undefined) return undefined;
     try {
-      const late: NativeVersionLateObservation = { startedAt };
+      const late: NativeVersionLateObservation = { startedAt, owner };
       const record = (settled: NativeVersionLateObservation["settled"]) => {
         try {
           const elapsed = diagnosticElapsedSince(startedAt);
@@ -1521,8 +1549,10 @@ export class DesktopSandboxBridge {
    * Arm this start's single follow-up for an exact authorized ACL denial whose
    * receiver field could only say pending. It reports the same IPC's in-window
    * settlement, or unresolved from one diagnostic-only timer at the window's
-   * end. Fenced to the arming generation and connection; never touches the
-   * failure reply, selection or dispatch, and any failure only omits it.
+   * end, or at once if the window already closed after that pending read.
+   * Fenced to the arming generation, connection and the analytics owner taken
+   * before this start's version IPC; never touches the failure reply,
+   * selection or dispatch, and any failure only omits it.
    */
   private armNativeVersionLateReport(
     observation: NativeVersionLateObservation,
@@ -1530,23 +1560,19 @@ export class DesktopSandboxBridge {
     try {
       const connectionId = this.connectionId;
       const generation = this.startupGeneration;
-      // The queue owner at arming; a later identity never receives this event.
-      const owner = getPermittedAnalyticsUserId();
+      const { owner } = observation;
       if (
         observation.report ||
         observation.settled ||
         observation !== this.nativeVersionLate ||
         this.isStoppingOrStopped ||
         !connectionId ||
-        !owner
+        !owner ||
+        readAnalyticsOwner() !== owner
       )
         return;
       const elapsed = diagnosticElapsedSince(observation.startedAt);
-      if (
-        elapsed === undefined ||
-        elapsed > DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS
-      )
-        return;
+      if (elapsed === undefined) return;
       let open = true;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const report = (outcome: DesktopNativeVersionLateLookup) => {
@@ -1561,7 +1587,8 @@ export class DesktopSandboxBridge {
             this.startupGeneration !== generation ||
             this.connectionId !== connectionId ||
             this.nativeVersionLate !== observation ||
-            getPermittedAnalyticsUserId() !== owner
+            observation.owner !== owner ||
+            readAnalyticsOwner() !== owner
           )
             return;
           // Queued and identity-bound, so a boot-time PostHog load cannot
@@ -1576,6 +1603,12 @@ export class DesktopSandboxBridge {
         }
       };
       observation.report = report;
+      // The pending read was inside the window but this one is past it: the
+      // window already closed unsettled, so no timer is needed.
+      if (elapsed > DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS) {
+        report("unresolved");
+        return;
+      }
       // One past the inclusive bound, so a boundary settlement reports first.
       timer = setTimeout(
         () => report("unresolved"),
@@ -1592,7 +1625,10 @@ export class DesktopSandboxBridge {
     this.nativeVersionLateTimer = undefined;
   }
 
-  private async lookupNativeAppVersion(generation: number): Promise<{
+  private async lookupNativeAppVersion(
+    generation: number,
+    owner: string | undefined,
+  ): Promise<{
     version: string;
     lookup: DesktopNativeVersionLookup;
     late?: NativeVersionLateObservation;
@@ -1615,7 +1651,12 @@ export class DesktopSandboxBridge {
         return {
           version: "unknown",
           lookup: "timeout",
-          late: this.observeLateNativeVersion(call, startedAt, generation),
+          late: this.observeLateNativeVersion(
+            call,
+            startedAt,
+            generation,
+            owner,
+          ),
         };
       // Diagnostics must not delay or prevent recovery.
       return classifyNativeVersion(version);
