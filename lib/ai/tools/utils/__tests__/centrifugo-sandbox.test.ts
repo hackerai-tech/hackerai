@@ -2328,6 +2328,85 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    // The exact shape a current bridge publishes after its 500ms lookup timed
+    // out and the installed binary's ACL denied the authorized file command.
+    const timedOutAuthorized = {
+      ...authorizedInvoke,
+      nativeVersionLookup: "timeout",
+    };
+
+    it.each<[string, string, string, boolean]>([
+      [aclDenial, "resolved_published_legacy", "authorized_ipc_denied", true],
+      // A raw version is dropped by the reader.
+      [aclDenial, "0.0.71", "authorized_ipc_denied", false],
+      // Another authorized rejection keeps its class without the late value.
+      [
+        "Desktop operation was not authorized",
+        "resolved_published_legacy",
+        "authorization_denied",
+        false,
+      ],
+    ])(
+      "projects the late version lookup for %j with %s only for %s: %s",
+      async (message, late, receiverErrorClass, projected) => {
+        const diagnostic = timedOutAuthorized;
+        const sandbox = unavailableDesktop();
+        const { pending, reply, control } = await dispatchProbe(sandbox);
+        // Another request's late evidence must not attach to this probe.
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: aclDenial,
+            receiverDiagnostic: {
+              ...timedOutAuthorized,
+              nativeVersionLateLookup: "resolved_other",
+            },
+          },
+        });
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message,
+            receiverDiagnostic: {
+              ...diagnostic,
+              nativeVersionLateLookup: late,
+            },
+          },
+        });
+        const error = await pending;
+
+        // The probe outcome and the thrown failure are unchanged.
+        expect(error).toBeInstanceOf(DesktopFileBridgeError);
+        expect(error).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: receiverErrorClass,
+            receiver_stage_version: 1,
+            receiver_stage: "native_invoke",
+            receiver_adapter: "authorized_native",
+            receiver_native_version_lookup: diagnostic.nativeVersionLookup,
+            ...(projected && { receiver_native_version_late_lookup: late }),
+          },
+        ]);
+        const logs = JSON.stringify(receiverLog.mock.calls);
+        expect(logs).not.toContain(message);
+        expect(logs).not.toContain("0.0.71");
+        expect(sandbox.supportsNativeFileRelay()).toBe(false);
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+        expect(probeRecords()).toHaveLength(1);
+      },
+    );
+
     it.each([
       ["an old producer", undefined],
       ["an unknown version", { ...receiverDiagnostic, version: 2 }],
@@ -2371,36 +2450,56 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
-    it("omits a matched receiver stage when the probe deadline won", async () => {
+    it("keeps a matched receipt's class when its ACK wait outlasts the deadline", async () => {
       const sandbox = unavailableDesktop();
-      const { pending, reply } = await dispatchProbe(sandbox);
-      // The ACK never settles, so the reply is finalized after the deadline.
+      const { pending, reply, control } = await dispatchProbe(sandbox);
+      // Received before the 3s deadline; the ACK never settles, so the bounded
+      // ACK wait finalizes the same receipt after the deadline aborted.
       reply.publish.mockReturnValueOnce(new Promise(() => {}));
       await jest.advanceTimersByTimeAsync(2500);
       reply.emit("publication", {
         data: {
           type: "file_error",
           requestId: FIXED_UUID,
-          message: "PRIVATE_NATIVE_FAILURE",
-          receiverDiagnostic,
+          message: aclDenial,
+          receiverDiagnostic: {
+            ...timedOutAuthorized,
+            nativeVersionLateLookup: "pending",
+          },
         },
       });
       await jest.advanceTimersByTimeAsync(1000);
-      await pending;
+      const error = await pending;
 
+      // The thrown failure and ACK handling are unchanged.
+      expect(error).toBeInstanceOf(DesktopFileBridgeError);
+      expect(error).toMatchObject({
+        fileFailure: "unknown",
+        message: desktopFileUnavailableMessage("unknown"),
+      });
+      expect(reply.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_response_ack",
+          requestId: FIXED_UUID,
+        }),
+      );
       expect(probeRecords()).toEqual([
         {
           ...probeRecord,
           outcome: "unavailable",
-          failure: "timeout",
+          failure: "native_error",
           file_failure: "unknown",
-          sender_phase_version: 1,
-          sender_phase: "response_received",
-          sender_file_request_id: FIXED_UUID,
-          sender_dispatch_entered: true,
-          sender_publication_started: true,
+          receiver_error_class: "authorized_ipc_denied",
+          receiver_stage_version: 1,
+          receiver_stage: "native_invoke",
+          receiver_adapter: "authorized_native",
+          receiver_native_version_lookup: "timeout",
+          receiver_native_version_late_lookup: "pending",
         },
       ]);
+      expect(JSON.stringify(receiverLog.mock.calls)).not.toContain(aclDenial);
+      expect(sandbox.supportsNativeFileRelay()).toBe(false);
+      expect(control.publish).toHaveBeenCalledTimes(1);
     });
 
     it.each([
@@ -2821,7 +2920,7 @@ describe("CentrifugoSandbox", () => {
         },
       );
 
-      it("keeps the matched response phase when dispatch completes after it", async () => {
+      it("keeps a matched response's class when dispatch completes after the deadline", async () => {
         const sandbox = probeDesktop(true);
         const pending = sandbox.confirmNativeFileRelay().catch((e) => e);
         await jest.advanceTimersByTimeAsync(0);
@@ -2838,24 +2937,22 @@ describe("CentrifugoSandbox", () => {
             message: "PRIVATE_NATIVE_FAILURE",
           },
         });
-        // Readiness arriving after the response must not move the phase back.
+        // Readiness arriving after the response must not change its outcome.
         reply.emit("publication", {
           data: { type: "operation_ready", requestId: FIXED_UUID },
         });
         await jest.advanceTimersByTimeAsync(1000);
         await pending;
 
+        // Received before the deadline, so it is that native error, not a
+        // timeout; timeout-only sender fields do not apply.
         expect(probeRecords()).toEqual([
           {
             ...probeRecord,
             outcome: "unavailable",
-            failure: "timeout",
+            failure: "native_error",
             file_failure: "unknown",
-            sender_phase_version: 1,
-            sender_phase: "response_received",
-            sender_file_request_id: FIXED_UUID,
-            sender_dispatch_entered: true,
-            sender_publication_started: true,
+            receiver_error_class: "other",
           },
         ]);
         expect(JSON.stringify(receiverLog.mock.calls)).not.toContain("PRIVATE");

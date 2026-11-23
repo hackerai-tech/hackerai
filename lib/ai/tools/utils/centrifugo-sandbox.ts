@@ -11,6 +11,7 @@ import {
   type AttachmentDownloadShellContextObservation,
 } from "./attachment-download-diagnostics";
 import {
+  AUTHORIZED_FILE_REQUEST_ACL_DENIAL,
   DesktopFileBridgeError,
   desktopFileUnavailableMessage,
   getDesktopFileFailure,
@@ -239,10 +240,7 @@ const AUTHORIZED_NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
   string,
   NativeReceiverErrorClass
 > = new Map([
-  [
-    "Command authorized_desktop_file_request not allowed by ACL",
-    "authorized_ipc_denied",
-  ],
+  [AUTHORIZED_FILE_REQUEST_ACL_DENIAL, "authorized_ipc_denied"],
   ["Invalid Desktop operation", "authorization_message_invalid"],
   ["Desktop operation type is missing", "authorized_file_request_invalid"],
   [
@@ -673,9 +671,16 @@ export class CentrifugoSandbox extends EventEmitter {
       );
       this.nativeFileRelayConfirmed = true;
     } catch (error) {
-      failure = controller.signal.aborted
-        ? "timeout"
-        : getLocalFileRequestFailure(error);
+      // A matched same-request file_error is final at receipt, even when its
+      // bounded ACK wait outlasts the deadline; only that receipt keeps its
+      // class. Anything else after the deadline remains a timeout.
+      const matchedReceipt =
+        error instanceof LocalFileRequestError &&
+        error.failure === "native_error";
+      failure =
+        controller.signal.aborted && !matchedReceipt
+          ? "timeout"
+          : getLocalFileRequestFailure(error);
       fileFailure =
         error instanceof LocalFileRequestError ? error.fileFailure : undefined;
       // Only the matched file_error's own text; unrecognized text stays "other".
@@ -709,6 +714,12 @@ export class CentrifugoSandbox extends EventEmitter {
         receiver_stage: receiverDiagnostic?.stage,
         receiver_adapter: receiverDiagnostic?.adapter,
         receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
+        // Only beside the exact authorized ACL denial: whether the receiver's
+        // own timed-out version IPC settled within its bounded window.
+        receiver_native_version_late_lookup:
+          receiverErrorClass === "authorized_ipc_denied"
+            ? receiverDiagnostic?.nativeVersionLateLookup
+            : undefined,
         // Overall-deadline failures only: where the sender was when it expired.
         ...(failure === "timeout" && {
           sender_phase_version: 1,
