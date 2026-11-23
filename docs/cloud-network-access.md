@@ -336,6 +336,52 @@ mark can be retried in the next run. An uncertain write can repeat the warning.
 Incomplete minutes include the first partial minute after initial installation.
 Wait for it to leave the evaluation window before expecting a clean run.
 
+#### Missing heartbeat
+
+A `<region> collector heartbeat missing` failure says only that no upload for
+that region was stored for any minute in the window. Compare the window from
+three places before naming a cause:
+
+1. The failed run logs `Egress collector heartbeat missing` with the region and
+   the exact settled UTC window, `windowStart` (inclusive) to `windowEnd`
+   (exclusive).
+2. In the web server's Production logs, find `egress_telemetry_received` for
+   the region. Each receipt gives the batch `minute`, its `outcome` and
+   `delayAfterMinuteEndS`. A receipt for a window minute with a large delay
+   means the batch arrived late. With no receipt, look for
+   `egress_telemetry_rejected`, `egress_telemetry_store_failed` and
+   `egress_telemetry_misconfigured`. Unparseable or oversized bodies are
+   answered without a log line.
+3. On the region's proxy host, read the collector's journal for a few minutes
+   around the window, in UTC:
+
+   ```sh
+   journalctl --utc -o short-iso -u hackerai-egress-collector.service \
+     --since '<windowStart minus 5 min, with UTC suffix>' \
+     --until '<windowEnd plus 5 min, with UTC suffix>'
+   ```
+
+   - `started` marks a new process with its saved backlog: `pending`,
+     `oldest_minute` and `oldest_age_s`. After a restart, `last_success` is
+     `unavailable`, since it is not persisted.
+   - `upload deferred` gives the HTTP status, or `status=unknown` with a
+     coarse `transport` (`timeout`, `tls`, `dns`, `refused`, `connection`,
+     `network`, `invalid`), the attempt number, the oldest pending minute and age, and
+     the last success.
+   - `upload recovered` appears once per outage, with the number of deferred
+     attempts, the outage length and the age of the batch delivered first.
+   - `journal stream ended` means the journal reader was restarted.
+
+   `systemctl status hackerai-egress-collector.service` shows restarts and
+   exit codes.
+
+Compare HTTP failures with route rejections, store failures, and edge logs.
+A transport outcome without matching receipts points to the path between
+the host and the web server. If both logs are empty, check retention and the
+collector's service state before inferring a stop. The SOCKS health monitor
+probes the traffic path independently of telemetry collection.
+These logs carry no keys, payloads, identities, addresses or destinations.
+
 To verify the monitor in Preview, upload synthetic telemetry above the Preview
 threshold, then trigger `egress-burst-alerts` manually in Preview with a
 `timestamp` two minutes after the synthetic minute. Confirm that the run

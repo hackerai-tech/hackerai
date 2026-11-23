@@ -162,8 +162,24 @@ export async function runEgressBurstAlerts(
       continue;
     }
     // Every collector uploads each minute, even with no connections.
-    if (records.every((record) => record === null))
+    if (records.every((record) => record === null)) {
       failures.push({ kind: "heartbeat", region });
+      // The exact settled window, to compare with the collector's journal
+      // and the route's receipts; the error text stays fixed for grouping.
+      const first = minutes[minutes.length - 1];
+      try {
+        logger.warn("Egress collector heartbeat missing", {
+          region,
+          firstMinute: first,
+          lastMinute: latest,
+          windowStart: new Date(first * 60_000).toISOString(),
+          windowEnd: new Date((latest + 1) * 60_000).toISOString(),
+          scheduledAt: new Date(scheduledAt).toISOString(),
+        });
+      } catch {
+        // The recorded heartbeat failure still reports the gap.
+      }
+    }
     records.forEach((record, index) => {
       if (!record) return;
       const minute = minutes[index];

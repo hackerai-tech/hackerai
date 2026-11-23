@@ -28,7 +28,7 @@ function json(body: { status?: string; error?: string }, status = 200) {
 function audit(
   level: "info" | "warn" | "error",
   event: string,
-  fields: Record<string, string> = {},
+  fields: Record<string, string | number | null> = {},
 ) {
   const entry = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -160,6 +160,19 @@ export async function POST(request: NextRequest) {
     });
     return json({ error: "batch_conflict" }, 409);
   }
+  // One receipt per stored, retried or stale region-minute, so a missing
+  // heartbeat can be told apart from a late or never-received upload.
+  const minute = parsed.data.minute;
+  const minuteStart = new Date(minute * 60_000);
+  audit("info", "egress_telemetry_received", {
+    region: telemetryRegion,
+    minute,
+    minuteStart: Number.isNaN(minuteStart.getTime())
+      ? null
+      : minuteStart.toISOString(),
+    outcome,
+    delayAfterMinuteEndS: Math.round((now - (minute + 1) * 60_000) / 1000),
+  });
   // A stale batch is acknowledged so the collector can drop it.
   return json({ status: outcome });
 }

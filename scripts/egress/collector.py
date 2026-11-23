@@ -25,6 +25,7 @@ import os
 import re
 import select
 import signal
+import socket
 import sqlite3
 import ssl
 import stat
@@ -67,6 +68,28 @@ class ConfigError(Exception):
 
 def log(message):
     print(f"hackerai-egress-collector: {message}", file=sys.stderr, flush=True)
+
+
+def utc(seconds):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+def transport_outcome(error):
+    """A fixed category for an upload without an HTTP status. Error text is
+    never logged: it can name the endpoint host or its addresses."""
+    if isinstance(error, urllib.error.URLError) and isinstance(error.reason, BaseException):
+        error = error.reason
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(error, ssl.SSLError):
+        return "tls"
+    if isinstance(error, socket.gaierror):
+        return "dns"
+    if isinstance(error, ConnectionRefusedError):
+        return "refused"
+    if isinstance(error, ConnectionError):
+        return "connection"
+    return "network" if isinstance(error, OSError) else "invalid"
 
 
 def validate_endpoint(url, allow_loopback_http=False):
@@ -473,6 +496,10 @@ class Collector:
             )
             self._add_dropped_batches(evicted)
 
+    def outbox_summary(self):
+        """(pending batches, oldest pending minute or None)."""
+        return self.db.execute("SELECT COUNT(*), MIN(minute) FROM outbox").fetchone()
+
     def next_batch(self):
         return self.db.execute("SELECT minute, body FROM outbox ORDER BY minute LIMIT 1").fetchone()
 
@@ -494,6 +521,11 @@ class Uploader:
         self.region = region
         self.key = key
         self.clock = clock
+        # Diagnostics for this process only: a restart reports the last
+        # success as unavailable rather than guessing.
+        self.last_success = None
+        self.deferred = 0
+        self.deferred_since = None
         # No environment proxies and no redirects: the signed body goes only here.
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
@@ -502,7 +534,8 @@ class Uploader:
         )
 
     def post(self, body):
-        """Returns the HTTP status, or None when the outcome is unknown."""
+        """Returns the HTTP status, or a transport_outcome category when the
+        outcome is unknown."""
         timestamp = str(int(self.clock()))
         request = urllib.request.Request(
             self.endpoint,
@@ -522,8 +555,19 @@ class Uploader:
                 return response.status
         except urllib.error.HTTPError as error:
             return error.code
-        except (urllib.error.URLError, OSError, ValueError):
-            return None
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            return transport_outcome(error)
+
+    def health(self, collector, now):
+        """Fixed fields for the outbox and the last success; no batch data."""
+        pending, oldest = collector.outbox_summary()
+        parts = [f"pending={pending}"]
+        if oldest is not None:
+            parts.append(f"oldest_minute={utc(oldest * 60)}")
+            parts.append(f"oldest_age_s={int(now - (oldest + 1) * 60)}")
+        last = "unavailable" if self.last_success is None else utc(self.last_success)
+        parts.append(f"last_success={last}")
+        return " ".join(parts)
 
     def drain(self, collector, limit=UPLOADS_PER_ROUND):
         """Uploads sealed batches oldest first. Returns False when a retry is
@@ -534,13 +578,32 @@ class Uploader:
                 return True
             minute, body = batch
             status = self.post(body)
-            if status is not None and 200 <= status < 300:
+            now = self.clock()
+            if isinstance(status, int) and 200 <= status < 300:
+                if self.deferred:
+                    # Once per outage; the oldest batch is the one just delivered.
+                    log(
+                        f"upload recovered deferred={self.deferred} "
+                        f"outage_s={int(now - self.deferred_since)} "
+                        f"{self.health(collector, now)}"
+                    )
+                    self.deferred = 0
+                    self.deferred_since = None
+                self.last_success = now
                 collector.acknowledge(minute)
             elif status in PERMANENT_REJECTIONS:
                 log(f"batch rejected status={status} minute={minute}")
                 collector.acknowledge(minute, rejected=True)
             else:
-                log(f"upload deferred status={status or 'unknown'}")
+                # At most once per backoff interval.
+                self.deferred += 1
+                if self.deferred_since is None:
+                    self.deferred_since = now
+                outcome = status if isinstance(status, int) else f"unknown transport={status}"
+                log(
+                    f"upload deferred status={outcome} attempt={self.deferred} "
+                    f"{self.health(collector, now)}"
+                )
                 return False
         return True
 
@@ -551,6 +614,12 @@ def run(config, key, state_dir):
     signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
     collector = Collector(os.path.join(state_dir, "collector.sqlite3"), config["region"], config["unit"])
     uploader = Uploader(config["endpoint"], config["region"], key)
+    log(
+        f"started region={config['region']} "
+        f"journal_cursor={'saved' if collector.cursor() else 'missing'} "
+        f"sealed_through_minute={utc(collector.sealed_through() * 60)} "
+        f"{uploader.health(collector, time.time())}"
+    )
     backoff = 0
     next_upload = 0.0
     while not stopping:

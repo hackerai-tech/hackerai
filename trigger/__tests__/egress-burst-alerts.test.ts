@@ -338,6 +338,25 @@ it("fails on a missing collector heartbeat rather than reading it as zero", asyn
   expect(error.message).toBe(
     "Egress attribution alert: us collector heartbeat missing",
   );
+  // The run log names the exact settled window that had no upload.
+  const missing = jest
+    .mocked(logger.warn)
+    .mock.calls.filter(
+      ([message]) => message === "Egress collector heartbeat missing",
+    );
+  expect(missing).toEqual([
+    [
+      "Egress collector heartbeat missing",
+      {
+        region: "us",
+        firstMinute: MINUTE - 4,
+        lastMinute: MINUTE,
+        windowStart: new Date((MINUTE - 4) * 60_000).toISOString(),
+        windowEnd: new Date((MINUTE + 1) * 60_000).toISOString(),
+        scheduledAt: at().toISOString(),
+      },
+    ],
+  ]);
   // Not deduplicated: every run fails while the condition lasts.
   await failure(runEgressBurstAlerts(at()));
 });
@@ -495,6 +514,23 @@ describe("abuse review dispatch", () => {
     const error = await failure(runEgressBurstAlerts(at()));
     expect(error.failures.map(({ kind }) => kind)).toEqual(["state"]);
     expect(trigger()).toHaveBeenCalledTimes(1);
+  });
+
+  it("still dispatches a later region when logging a missing heartbeat throws", async () => {
+    const minute = MINUTE - 1;
+    await upload("eu", minute, [count(europe, 9)]);
+    jest.mocked(logger.warn).mockImplementationOnce(() => {
+      throw new Error("log sink unavailable");
+    });
+
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.failures).toEqual([{ kind: "heartbeat", region: "us" }]);
+    expect(trigger()).toHaveBeenCalledTimes(1);
+    expect(trigger()).toHaveBeenCalledWith(
+      "egress-abuse-review",
+      { region: "eu", owner: europe.owner, minute },
+      expect.anything(),
+    );
   });
 
   it("reports a failed dispatch and retries it on the next run", async () => {
