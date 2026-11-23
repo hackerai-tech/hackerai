@@ -111,6 +111,7 @@ class MockCentrifugeClient extends EventEmitter {
 }
 
 jest.mock("centrifuge", () => ({
+  ...jest.requireActual("centrifuge"),
   Centrifuge: jest.fn(() => {
     const client = new MockCentrifugeClient();
     mockClients.push(client);
@@ -7947,6 +7948,207 @@ describe("CentrifugoSandbox", () => {
         error.mockRestore();
         event.mockRestore();
       }
+    });
+
+    describe("preconnect transport closure during a download", () => {
+      // Centrifuge SDK transportClosed, before the receiver ever connected.
+      const TRANSPORT_CLOSED = {
+        type: "transport",
+        error: { code: 2, message: "transport closed" },
+      };
+      const RETRY_MARKER =
+        "[centrifugo-download] relay transport closed before connecting on attempt";
+      let warn: jest.SpyInstance;
+      beforeEach(() => {
+        warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      });
+      afterEach(() => warn.mockRestore());
+      const downloadWarnings = () =>
+        warn.mock.calls
+          .map(([message]) => String(message))
+          .filter((message) => message.startsWith("[centrifugo-download]"));
+      const downloadCommands = (sandbox: CentrifugoSandbox) =>
+        jest
+          .mocked(sandbox.commands.run)
+          .mock.calls.filter(([command]) => command.includes("curl -fsSL"));
+
+      type Harness = ReturnType<typeof receiverSandbox>;
+      async function complete(
+        nextReceiver: Harness["nextReceiver"],
+        stdout = "",
+        exitCode = 0,
+      ) {
+        const { sub } = await nextReceiver();
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        if (stdout)
+          sub.emit("publication", {
+            data: { type: "stdout", commandId: FIXED_UUID, data: stdout },
+          });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+      }
+      // Starts the download and completes curl detection, reaching attempt 1.
+      async function beginDownload(
+        { sandbox, nextReceiver }: Harness,
+        signal?: AbortSignal,
+      ) {
+        const outcome = sandbox.files
+          .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH, signal && { signal })
+          .catch((error: unknown) => error);
+        await complete(nextReceiver, "/usr/bin/curl\n");
+        await complete(
+          nextReceiver,
+          "--retry-all-errors --retry-connrefused\n",
+        );
+        // Wrapped so the caller's await does not adopt the pending download.
+        return { outcome };
+      }
+      async function closeReceiver(
+        nextReceiver: Harness["nextReceiver"],
+        ctx: object = TRANSPORT_CLOSED,
+        connected = false,
+      ) {
+        const { client, sub } = await nextReceiver();
+        if (connected) client.emit("connected");
+        client.emit("error", ctx);
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).not.toHaveBeenCalled();
+      }
+
+      it("retries a preconnect transport closure on the same sandbox after the existing backoff", async () => {
+        const harness = receiverSandbox();
+        const { sandbox, rejections, nextReceiver } = harness;
+        const { outcome } = await beginDownload(harness);
+        await closeReceiver(nextReceiver);
+        expect(rejections).toHaveLength(1);
+        expect(rejections[0]).toMatchObject({
+          dispatched: false,
+          retryable: true,
+        });
+        await jest.advanceTimersByTimeAsync(499);
+        expect(downloadCommands(sandbox)).toHaveLength(1);
+        await jest.advanceTimersByTimeAsync(1);
+        await complete(nextReceiver);
+        // Resolves with no rejection value.
+        expect(await outcome).toBeUndefined();
+        // Retry uses the same command on the selected sandbox.
+        const [first, second] = downloadCommands(sandbox);
+        expect(second?.[0]).toBe(first[0]);
+        expect(downloadWarnings()).toEqual([`${RETRY_MARKER} 1/3, retrying`]);
+      });
+
+      it.each([
+        ["a receiver that connected first", TRANSPORT_CLOSED, true],
+        [
+          "another transport code",
+          {
+            type: "transport",
+            error: { code: 3, message: "transport closed" },
+          },
+          false,
+        ],
+        [
+          "a connect rejection with the same code",
+          {
+            type: "connect",
+            error: { code: 2, message: "transport closed" },
+          },
+          false,
+        ],
+        [
+          "the connection-limit predicate",
+          {
+            type: "transport",
+            error: { code: 2, message: "PRIVATE connection limit" },
+          },
+          false,
+        ],
+      ] as const)(
+        "keeps a retryable preconnect transport rejection terminal for %s",
+        async (_name, ctx, connected) => {
+          const harness = receiverSandbox();
+          const { sandbox, rejections, nextReceiver } = harness;
+          const { outcome } = await beginDownload(harness);
+          await closeReceiver(nextReceiver, ctx, connected);
+          await jest.advanceTimersByTimeAsync(5_000);
+          const error = await outcome;
+          // The typed retryable flag alone does not authorize a retry.
+          expect(rejections).toEqual([error]);
+          expect(error).toMatchObject({ dispatched: false, retryable: true });
+          expect(downloadCommands(sandbox)).toHaveLength(1);
+          expect(downloadWarnings()).toEqual([]);
+        },
+      );
+
+      it("does not retry a matching preconnect transport message without the receiver's receipt", async () => {
+        const harness = receiverSandbox();
+        const { sandbox } = harness;
+        const run = jest.mocked(sandbox.commands.run);
+        const forward = run.getMockImplementation()!;
+        const unproven = new LocalCommandDispatchError(
+          new Error("Centrifugo client error: transport closed"),
+          false,
+          true,
+        );
+        run.mockImplementation((command, ...rest) =>
+          command.includes("curl -fsSL")
+            ? Promise.reject(unproven)
+            : forward(command, ...rest),
+        );
+        const { outcome } = await beginDownload(harness);
+        await jest.advanceTimersByTimeAsync(5_000);
+        expect(await outcome).toBe(unproven);
+        expect(downloadCommands(sandbox)).toHaveLength(1);
+        expect(downloadWarnings()).toEqual([]);
+      });
+
+      it("stops a preconnect transport retry when the download is canceled during backoff", async () => {
+        const harness = receiverSandbox();
+        const { sandbox, nextReceiver } = harness;
+        const controller = new AbortController();
+        const reason = new Error("PRIVATE_STOP");
+        const { outcome } = await beginDownload(harness, controller.signal);
+        await closeReceiver(nextReceiver);
+        controller.abort(reason);
+        await jest.advanceTimersByTimeAsync(5_000);
+        expect(await outcome).toBe(reason);
+        expect(downloadCommands(sandbox)).toHaveLength(1);
+      });
+
+      it("keeps preconnect transport retries within the shared three-attempt cap", async () => {
+        const harness = receiverSandbox();
+        const { sandbox, rejections, nextReceiver } = harness;
+        const { outcome } = await beginDownload(harness);
+        // Attempt 1: an existing transient curl exit; attempts 2-3: closures.
+        await complete(nextReceiver, "", 28);
+        await jest.advanceTimersByTimeAsync(500);
+        await closeReceiver(nextReceiver);
+        await jest.advanceTimersByTimeAsync(1_000);
+        await closeReceiver(nextReceiver);
+        await jest.advanceTimersByTimeAsync(10_000);
+        const error = await outcome;
+        expect(downloadCommands(sandbox)).toHaveLength(3);
+        // The final attempt's own rejection, unchanged and with its receipt.
+        expect(rejections).toHaveLength(2);
+        expect(error).toBe(rejections[1]);
+        expect(error).toBeInstanceOf(LocalCommandDispatchError);
+        expect(receiverFields(error)).toEqual({
+          ...receiver("client_error", {}),
+          ...clientErrorGroup("transport", 2, "unavailable", false),
+        });
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_phase: "download_command",
+          attachment_download_attempt: 3,
+        });
+        // Exact markers: no error text, URL or destination path.
+        expect(downloadWarnings()).toEqual([
+          "[centrifugo-download] curl exit 28 on attempt 1/3, retrying",
+          `${RETRY_MARKER} 2/3, retrying`,
+        ]);
+      });
     });
   });
 
