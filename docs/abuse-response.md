@@ -563,13 +563,17 @@ days, notice counts, and action items with only a reference:
 - Active work: an automated block does not cancel runs. To cancel active
   owned work, run `scripts/abuse-response.ts retry` on the case; it resumes
   the recorded response.
-- Uncertain notice: search the abuse@ Sent folder for its Message-ID, then run
-  the internal `abuseBlockNotices:resolveNotice` from the authorized dashboard
-  with the notice ID, its current status and attempts, and
-  `confirmed_sent` or `confirmed_not_sent`. An expired sending lease can be
-  reconciled while dispatch is paused. A failed notice accepts `retry`
-  while the block is active, or `dismiss` after contacting the account
-  another way. Attempts are never reset.
+- For an uncertain notice, reconcile its exact Message-ID in the abuse@ Sent
+  folder. Use the internal `abuseBlockNotices:resolveNotice` from the
+  authorized dashboard with the notice ID, current status and attempts. Use
+  `confirmed_sent` after finding the matching Sent copy. Before recording
+  `confirmed_not_sent`, disable new claims, stop all dispatchers and mail
+  helpers for this deployment, and verify that every in-flight SMTP submission
+  has settled. A disabled switch or an expired lease leaves any open SMTP
+  submission running. Recheck Sent after the drain and confirm that Proton
+  did not accept the message. Keep the notice uncertain if acceptance is
+  unresolved. A failed notice accepts `retry` while the block is active or
+  `dismiss` after another contact method. Attempts are never reset.
 - Rollback: turn off the enforcement switch first, then dispatch. Keep the
   schema, tables and handlers deployed while any automated case, restriction
   or notice exists.
