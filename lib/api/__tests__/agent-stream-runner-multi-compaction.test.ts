@@ -21,6 +21,7 @@ import {
   MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
 } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
+import { DEEPSEEK_1017_SLUG } from "@/lib/experiments/paid-deepseek-1017";
 
 const mockStreamText = jest.fn();
 const mockLimitModelImageToolResults = jest.fn();
@@ -1954,7 +1955,10 @@ describe("createAgentStream repeated compaction", () => {
       const original = [uiMessage("initial", "Review the attached report")];
       const step = { steps: [{ toolResults: [] }], stepNumber: 1 };
 
-      const createPaidStream = async (overrides: Record<string, unknown>) => {
+      const createPaidStream = async (
+        overrides: Record<string, unknown>,
+        modelId = PAID_MODEL_ID,
+      ) => {
         const state = initAgentStreamState(original, {
           usedTokens: 100,
           maxTokens: PAID_BUDGET,
@@ -1963,7 +1967,7 @@ describe("createAgentStream repeated compaction", () => {
           "test-model",
           createTestStreamContext({
             trackedProvider: {
-              languageModel: () => ({ modelId: PAID_MODEL_ID }),
+              languageModel: () => ({ modelId }),
             },
             usageTracker: {
               setAuthoritativeModelCostForStep: jest.fn(),
@@ -1982,10 +1986,118 @@ describe("createAgentStream repeated compaction", () => {
         await finishStepWithAnnotations(
           stream,
           fileAnnotations(ANNOTATION_WORDS),
-          PAID_MODEL_ID,
+          modelId,
         );
         return { state, stream };
       };
+
+      describe("exact DeepSeek 1017 orphaned parsed-file annotations", () => {
+        // Production shape: the earlier step's parsed-file annotation with a
+        // page image is larger than the budget on its own, while the request
+        // no longer carries any original file it could belong to.
+        const createOrphanStream = async () => {
+          const created = await createPaidStream({}, DEEPSEEK_1017_SLUG);
+          await finishStepWithAnnotations(
+            created.stream,
+            fileAnnotations(PAID_BUDGET + 10_000, true),
+            DEEPSEEK_1017_SLUG,
+          );
+          // The previous provider request was well below the threshold.
+          created.state.lastStepInputTokens = 100;
+          return created;
+        };
+
+        it("admits the next request without the orphaned batch or a compaction", async () => {
+          const { state, stream } = await createOrphanStream();
+
+          const prepared = await stream.prepareStep({
+            ...step,
+            messages: stepMessages,
+          });
+
+          expect(countCanary(prepared.messages)).toBe(0);
+          expect(JSON.stringify(prepared.messages)).not.toContain(IMAGE_CANARY);
+          expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+          expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+          expect(budgetWarnings()).toHaveLength(0);
+          expect(state.finalMessages).toEqual(original);
+        });
+
+        it.each<[string, ModelMessage[]]>([
+          [
+            "a user file with a mislabeled media type",
+            [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "file",
+                    mediaType: "image/png",
+                    data: "data:application/pdf;base64,JVBERi0=",
+                  },
+                ],
+              },
+            ],
+          ],
+          [
+            "a tool output file",
+            [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: "fetch-report",
+                    toolName: "run_terminal_cmd",
+                    input: { command: "fetch report" },
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "fetch-report",
+                    toolName: "run_terminal_cmd",
+                    output: {
+                      type: "content",
+                      value: [
+                        {
+                          type: "file-data",
+                          data: "JVBERi0=",
+                          mediaType: "application/pdf",
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+          ],
+        ])(
+          "keeps the batch and the existing guard when %s may be the original",
+          async (_case, possibleOriginal) => {
+            const { stream } = await createOrphanStream();
+            mockCompactModelMessagesInRun.mockResolvedValue(null);
+
+            await expect(
+              stream.prepareStep({
+                ...step,
+                messages: [...stepMessages, ...possibleOriginal],
+              }),
+            ).rejects.toThrow(GUARD_MESSAGE);
+
+            // The rolling decision counted the batch, as the guard did.
+            expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+            const [warning] = budgetWarnings();
+            expect(warning).toMatchObject({
+              context_budget_decision_source: "rolling_check",
+              context_budget_file_annotation_count: 1,
+            });
+          },
+        );
+      });
 
       it("compacts once and sends the summary with the annotation once", async () => {
         const { state, stream } = await createPaidStream({});

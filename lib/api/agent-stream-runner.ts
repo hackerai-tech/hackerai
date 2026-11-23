@@ -23,7 +23,10 @@ import {
   getAgentModelContextFlag,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
-import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import {
   LocalConnectionLostError,
@@ -203,6 +206,7 @@ import {
 import {
   buildContextBudgetProjectionDiagnostics,
   CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
+  projectWithoutOrphanedFileAnnotations,
   type ContextBudgetDecision,
 } from "@/lib/chat/summarization/context-budget-diagnostics";
 import {
@@ -602,6 +606,24 @@ export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
   } as ModelMessage;
   return nextMessages;
 };
+
+/** Shared by the rolling estimate and the actual provider request. */
+export const projectOpenRouterFileAnnotationsForRequest = ({
+  messages,
+  annotations,
+  routeAwareContext,
+  modelId,
+  rolling = false,
+}: {
+  messages: ModelMessage[];
+  annotations: unknown[] | undefined;
+  routeAwareContext: boolean;
+  modelId: string;
+  rolling?: boolean;
+}) =>
+  routeAwareContext && modelId === DEEPSEEK_1017_SLUG
+    ? projectWithoutOrphanedFileAnnotations(messages, annotations, rolling)
+    : { messages, annotations };
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -1677,13 +1699,23 @@ export async function createAgentStream(
           effectiveModelName,
         );
 
-    const attachedFileAnnotations = openRouterFileAnnotations;
+    const requestModelId =
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    // Scan the request itself, after any provider PDF omission above.
+    // The original batch stays in `openRouterFileAnnotations` for later steps.
+    const annotationProjection = projectOpenRouterFileAnnotationsForRequest({
+      messages: messagesWithAuthorization,
+      annotations: openRouterFileAnnotations,
+      routeAwareContext,
+      modelId: requestModelId,
+    });
+    const attachedFileAnnotations = annotationProjection.annotations;
     const prepared = addPromptCacheBreakpoints(
       addOpenRouterFileAnnotationsToLastAssistantMessage(
-        messagesWithAuthorization,
+        annotationProjection.messages,
         attachedFileAnnotations,
       ),
-      ctx.trackedProvider.languageModel(effectiveModelName).modelId,
+      requestModelId,
     );
     let preparedMessageTokens: number | undefined;
     let preparedSystemTokens: number | undefined;
@@ -2495,10 +2527,19 @@ export async function createAgentStream(
           // The route-aware send guard counts parsed-file annotations attached
           // to the prepared request and the memoized tool schema estimate.
           // Count both here so compaction triggers before that guard fails.
+          const decisionProjection = projectOpenRouterFileAnnotationsForRequest(
+            {
+              messages: rollingModelMessages,
+              annotations: openRouterFileAnnotations,
+              routeAwareContext,
+              modelId: effectiveModelInfo.requestedSlug,
+              rolling: true,
+            },
+          );
           const decisionMessages = routeAwareContext
             ? addOpenRouterFileAnnotationsToLastAssistantMessage(
-                rollingModelMessages,
-                openRouterFileAnnotations,
+                decisionProjection.messages,
+                decisionProjection.annotations,
               )
             : rollingModelMessages;
           const inputTokens =
