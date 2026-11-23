@@ -182,10 +182,11 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/desktop/src-tauri -> target
-          # Shared with Linux and Windows Desktop PR builds; tag builds must not
-          # spend cache quota on refs nothing else can read.
+          # Restore the cache Desktop PR Builds saves on main pushes. This
+          # signing workflow never saves: workflow_run gets read-only cache
+          # access, and caches it wrote could poison later builds.
           shared-key: desktop-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
 
       - name: Install dependencies (Ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu')

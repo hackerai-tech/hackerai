@@ -6,6 +6,13 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
+  # The release build starts through workflow_run, which cannot write caches.
+  # Main pushes rebuild here so PR and release builds restore a warm cache.
+  push:
+    branches: [main]
+    paths:
+      - "packages/desktop/**"
+      - ".github/workflows/desktop-pr-build.yml"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +41,7 @@ jobs:
           HEAD_SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+          if [[ "$EVENT_NAME" == workflow_dispatch || "$EVENT_NAME" == push ]]; then
             echo 'desktop=true' >> "$GITHUB_OUTPUT"
           else
             git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
@@ -152,15 +159,15 @@ jobs:
           "$HOME/.cargo/bin/cargo" --version
           "$HOME/.cargo/bin/rustc" --version
 
-      # Linux and Windows restore the cache main's release build saves under
-      # the same shared key. Mac PR hosts differ from the Intel release host,
-      # so they keep a PR-scoped cache. Other PR and merge-queue saves would
-      # only evict main's caches from the repository's 10 GB quota.
+      # Only main saves. PRs and the merge queue restore main's cache; their
+      # own saves are unreadable elsewhere and would evict main's caches from
+      # the repository's 10 GB quota. Linux and Windows release builds restore
+      # the same shared key.
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/desktop/src-tauri -> target
           shared-key: desktop-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && runner.os == 'macOS') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux packaging dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
