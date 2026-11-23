@@ -487,6 +487,7 @@ type StatusCommandRejection = {
   startAckMs?: number;
   progress?: StatusWaitProgress;
   timeoutOrigin?: StatusWaitTimeoutOrigin;
+  deliveredExitProgress?: StatusProgressLabel;
 };
 
 /**
@@ -551,38 +552,39 @@ const monotonicNow = () => {
   }
 };
 
+/** Only exact bounded helper sequences count. No stderr content is retained. */
+function readStatusProgressLabel(
+  readStderr: () => unknown,
+): StatusProgressLabel {
+  try {
+    const stderr = readStderr();
+    if (typeof stderr !== "string") return "unreadable";
+    // At most four six-character frames; never match against longer output.
+    if (stderr.length > 24 || !BROWSER_DAEMON_PROGRESS_FRAMES.test(stderr))
+      return "unrecognized";
+    let letters = "";
+    for (let index = 4; index < stderr.length; index += 6)
+      letters += stderr[index];
+    return Object.hasOwn(BROWSER_DAEMON_PROGRESS_SEQUENCES, letters)
+      ? BROWSER_DAEMON_PROGRESS_SEQUENCES[
+          letters as keyof typeof BROWSER_DAEMON_PROGRESS_SEQUENCES
+        ]
+      : "unrecognized";
+  } catch {
+    return "unreadable";
+  }
+}
+
 /**
- * The opted-in helper's delivered progress before this handle's wait rejected,
- * plus coarse total elapsed from before the start request to that rejection
- * (not acknowledgement, daemon or exit time). Only an exact complete frame
- * sequence counts; output is never retained, and nothing proves undelivered
- * frames were not written. Never throws.
+ * Progress delivered before wait rejected, with coarse elapsed time from the
+ * start request. Absence does not tell us whether the helper wrote frames.
  */
 function statusWaitProgress(
   readStderr: () => unknown,
   startedAt: number | undefined,
   rejectedAt: number | undefined,
 ): StatusWaitProgress {
-  let label: StatusProgressLabel = "unreadable";
-  try {
-    const stderr = readStderr();
-    if (typeof stderr === "string") {
-      label = "unrecognized";
-      // At most four six-character frames; never match against longer output.
-      if (stderr.length <= 24 && BROWSER_DAEMON_PROGRESS_FRAMES.test(stderr)) {
-        let letters = "";
-        for (let index = 4; index < stderr.length; index += 6)
-          letters += stderr[index];
-        if (Object.hasOwn(BROWSER_DAEMON_PROGRESS_SEQUENCES, letters))
-          label =
-            BROWSER_DAEMON_PROGRESS_SEQUENCES[
-              letters as keyof typeof BROWSER_DAEMON_PROGRESS_SEQUENCES
-            ];
-      }
-    }
-  } catch {
-    label = "unreadable";
-  }
+  const label = readStatusProgressLabel(readStderr);
   const elapsed =
     typeof startedAt === "number" && typeof rejectedAt === "number"
       ? rejectedAt - startedAt
@@ -612,8 +614,8 @@ function statusWaitProgress(
  * owned socket with the wrapper's verified close of the still-current selection
  * then rejects with the existing closed state instead of the missing-socket exit.
  * Only that GET also passes observeProgress with onRejected: the helper then
- * writes fixed stderr progress frames, read only after this handle's wait
- * rejects without an exit, and that rejection's SDK timeout origin is projected.
+ * writes fixed stderr progress frames. SDK-only wait rejections and delivered
+ * helper deadline exits use separate bounded progress observations.
  */
 export async function getPrivateStreamPort(
   sandbox: Sandbox,
@@ -673,14 +675,27 @@ export async function getPrivateStreamPort(
       result = await handle.wait();
     } catch (error) {
       let progress: StatusWaitProgress | undefined;
+      let deliveredExitProgress: StatusProgressLabel | undefined;
       try {
-        // A delivered exit is authoritative; only an SDK-only rejection.
-        if (observed && !(error instanceof CommandExitError))
-          progress = statusWaitProgress(
-            () => handle.stderr,
-            startedAt,
-            monotonicNow(),
-          );
+        if (observed) {
+          if (error instanceof CommandExitError) {
+            const result = Object.getOwnPropertyDescriptor(
+              error,
+              "result",
+            )?.value;
+            if (result?.exitCode === 3) {
+              const label = readStatusProgressLabel(() => result.stderr);
+              if (label !== "unrecognized" && label !== "unreadable")
+                deliveredExitProgress = label;
+            }
+          } else {
+            progress = statusWaitProgress(
+              () => handle.stderr,
+              startedAt,
+              monotonicNow(),
+            );
+          }
+        }
       } catch {
         /* Optional progress cannot replace the SDK rejection. */
       }
@@ -700,6 +715,7 @@ export async function getPrivateStreamPort(
           }),
         ...(progress !== undefined && { progress }),
         ...(timeoutOrigin !== undefined && { timeoutOrigin }),
+        ...(deliveredExitProgress !== undefined && { deliveredExitProgress }),
       });
       throw error;
     }
@@ -1082,6 +1098,9 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // check reporting the sandbox gone mid-request); unclassified for any other
   // TimeoutError. A hint about the SDK's error family, not a cause.
   capture_sdk_wait_timeout_origin_v1?: StatusWaitTimeoutOrigin;
+  // Opted-in status wait only, with a settled helper-deadline result (exit 3).
+  // A recognized frame establishes delivery on this command.
+  capture_sdk_delivered_exit_progress_v1?: StatusProgressLabel;
   // Fresh_read only: the SDK read call or converting its result, with the SDK
   // projection only for sdk_read. Absent means unmeasured (other stages, older
   // builds, or a cleanup exception that replaced the failure), never none.
@@ -1973,6 +1992,12 @@ export async function captureBrowserFrame(
       } catch {
         /* An unreadable phase omits the group and keeps the original rejection. */
       }
+      const deliveredExitProgress =
+        stage === "stream_status" &&
+        statusRejection &&
+        statusRejection.error === error
+          ? statusRejection.deliveredExitProgress
+          : undefined;
       let freshRead: ReturnType<typeof freshReadContext> = {};
       try {
         if (stage === "fresh_read" && freshReadPhase)
@@ -1990,6 +2015,9 @@ export async function captureBrowserFrame(
           ...bridgeDiagnostic,
           ...sdkPhase,
           ...sdkProgress,
+          ...(deliveredExitProgress !== undefined && {
+            capture_sdk_delivered_exit_progress_v1: deliveredExitProgress,
+          }),
           ...freshRead,
         });
       } catch {

@@ -1348,6 +1348,40 @@ describe("GET status wait progress", () => {
     expect(progressFields(fields)).toEqual({});
   });
 
+  it.each([
+    [3, frames("ecwd"), "write_deadline"],
+    [3, "", "none_delivered"],
+    [3, "PRIVATE command stderr", undefined],
+    [4, frames("ecwd"), undefined],
+  ])(
+    "records only closed helper progress from an eligible delivered exit (%s)",
+    async (exitCode, stderr, expected) => {
+      // Supply the settled result, not the live handle's transient stderr.
+      const Exit = CommandExitError as unknown as new (
+        message: string,
+      ) => Error;
+      const exit = Object.assign(new Exit("PRIVATE exit"), {
+        result: { exitCode, stdout: "", stderr },
+      });
+      const { reads } = await rejectedGet(exit, () => frames("e"));
+
+      expect(reads).not.toHaveBeenCalled();
+      const { fields } = loggedEvent();
+      expect(fields).toMatchObject({
+        capture_stage: "stream_status",
+        capture_error_kind: "command_exit",
+        capture_command_exit_code: exitCode,
+      });
+      expect(fields.capture_sdk_delivered_exit_progress_v1).toBe(expected);
+      expect(progressFields(fields)).toEqual(
+        expected === undefined
+          ? {}
+          : { capture_sdk_delivered_exit_progress_v1: expected },
+      );
+      expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    },
+  );
+
   it("opts in only the GET status request, with the same start options", async () => {
     const { run } = await rejectedGet(timeout(), () => "");
 
@@ -1450,6 +1484,7 @@ describe("GET status wait progress", () => {
     });
     expect(fields).not.toHaveProperty("capture_sdk_wait_progress_v1");
     expect(fields).not.toHaveProperty("capture_sdk_wait_timeout_origin_v1");
+    expect(fields).not.toHaveProperty("capture_sdk_delivered_exit_progress_v1");
     expect(JSON.stringify(fields)).not.toMatch(LEAKED);
   });
 });

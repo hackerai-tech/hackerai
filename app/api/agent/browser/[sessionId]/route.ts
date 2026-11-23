@@ -172,6 +172,7 @@ const unavailableGet = (
     const {
       capture_active_other_command_v1: activeOtherCommand,
       capture_close_proof_failure_v1: closeProofFailure,
+      capture_sdk_delivered_exit_progress_v1: deliveredExitProgress,
       ...captureFields
     } = captureContext ?? {};
     const fields = {
@@ -241,9 +242,11 @@ const unavailableGet = (
     const optionalCaptureField =
       activeOtherCommand === "eval"
         ? { capture_active_other_command_v1: activeOtherCommand }
-        : closeProofFailure === undefined
-          ? {}
-          : { capture_close_proof_failure_v1: closeProofFailure };
+        : closeProofFailure !== undefined
+          ? { capture_close_proof_failure_v1: closeProofFailure }
+          : deliveredExitProgress !== undefined
+            ? { capture_sdk_delivered_exit_progress_v1: deliveredExitProgress }
+            : {};
     phLogger.info("agent_browser_preview_get_unavailable", {
       ...logFields,
       ...(stage === "capture_frame" &&
