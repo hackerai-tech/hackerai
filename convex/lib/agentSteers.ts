@@ -1,10 +1,16 @@
 import type { MutationCtx } from "../_generated/server";
-import {
-  AGENT_STEER_MAX_PENDING,
-  isAgentSteerPart,
-} from "../../lib/chat/agent-steer";
+import type { Doc } from "../_generated/dataModel";
+import { isAgentSteerPart } from "../../lib/chat/agent-steer";
 
-/** Chat deletion removes unread steers with the rest of the chat's content. */
+// Settled rows stay briefly as tombstones: a worker that was stopped can still
+// save a response after the client withdrew one of its steers.
+export const AGENT_STEER_SCAN_LIMIT = 100;
+export const AGENT_STEER_TOMBSTONE_TTL_MS = 60 * 60 * 1000;
+
+export const isOpenSteer = (row: Doc<"agent_steers">) =>
+  row.saved_at === undefined && row.withdrawn_at === undefined;
+
+/** Chat deletion removes steers with the rest of the chat's content. */
 export async function deleteAgentSteersForChat(
   ctx: MutationCtx,
   chatId: string,
@@ -12,13 +18,48 @@ export async function deleteAgentSteersForChat(
   const rows = await ctx.db
     .query("agent_steers")
     .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
-    .take(AGENT_STEER_MAX_PENDING * 2);
+    .take(AGENT_STEER_SCAN_LIMIT);
   for (const row of rows) await ctx.db.delete(row._id);
 }
 
+async function findSteerRow(
+  ctx: MutationCtx,
+  args: { chatId: string; userId: string },
+  steerId: string,
+) {
+  const row = await ctx.db
+    .query("agent_steers")
+    .withIndex("by_steer_id", (q) => q.eq("id", steerId))
+    .first();
+  return row && row.chat_id === args.chatId && row.user_id === args.userId
+    ? row
+    : null;
+}
+
 /**
- * A saved response that shows a steer retires its row in the same
- * transaction. A row that remains was never saved, so it can be requeued.
+ * Before a response is written: a steer the client already withdrew is going
+ * back to the queue, so the saved response must not also show it.
+ */
+export async function withoutWithdrawnSteers(
+  ctx: MutationCtx,
+  args: { chatId: string; userId: string; parts: unknown[] },
+): Promise<unknown[]> {
+  if (!args.parts.some(isAgentSteerPart)) return args.parts;
+  const kept: unknown[] = [];
+  for (const part of args.parts) {
+    if (isAgentSteerPart(part)) {
+      const row = await findSteerRow(ctx, args, part.data.id);
+      if (row?.withdrawn_at !== undefined) continue;
+    }
+    kept.push(part);
+  }
+  return kept;
+}
+
+/**
+ * After a response is written, in the same transaction: each steer it shows
+ * is settled as saved, so the client never withdraws and resends it. An open
+ * row therefore always means the steer is in no saved response.
  */
 export async function retireSavedSteers(
   ctx: MutationCtx,
@@ -26,11 +67,8 @@ export async function retireSavedSteers(
 ) {
   for (const part of args.parts) {
     if (!isAgentSteerPart(part)) continue;
-    const row = await ctx.db
-      .query("agent_steers")
-      .withIndex("by_steer_id", (q) => q.eq("id", part.data.id))
-      .first();
-    if (row && row.chat_id === args.chatId && row.user_id === args.userId)
-      await ctx.db.delete(row._id);
+    const row = await findSteerRow(ctx, args, part.data.id);
+    if (row && isOpenSteer(row))
+      await ctx.db.patch(row._id, { saved_at: Date.now() });
   }
 }

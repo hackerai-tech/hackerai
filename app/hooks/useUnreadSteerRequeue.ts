@@ -16,6 +16,8 @@ export type RestoredSteer = {
   text: string;
   timestamp: number;
   sentHere: boolean;
+  /** Not sent during the user's current visit to this chat. */
+  held: boolean;
 };
 const WITHDRAW_RETRY_BASE_MS = 1_000;
 
@@ -44,7 +46,7 @@ export function useUnreadSteerRequeue({
   chatId: string;
   enabled: boolean;
   runActive: boolean;
-  onRequeue: (chatId: string, steers: RestoredSteer[], hold: boolean) => void;
+  onRequeue: (chatId: string, steers: RestoredSteer[]) => void;
 }): {
   pendingSteers: PendingAgentSteer[];
   /** Queued messages must wait: unread steers go back ahead of them. */
@@ -87,17 +89,15 @@ export function useUnreadSteerRequeue({
     );
     if (!unread.length) return;
     for (const steer of unread) withdrawing.current.add(steer.id);
-    const visitStartedAt =
-      visit.current.chatId === chatId ? visit.current.startedAt : Date.now();
     void (async () => {
       setInFlight((count) => count + 1);
-      const restored: RestoredSteer[] = [];
+      const withdrawn: Array<Omit<RestoredSteer, "held">> = [];
       let failed = false;
       for (const [index, steer] of unread.entries()) {
         try {
           const result = await withdraw({ chatId, id: steer.id });
           if (result.outcome === "withdrawn")
-            restored.push({
+            withdrawn.push({
               text: result.text,
               timestamp: steer.sentAt,
               sentHere: steersSentHere.has(steer.id),
@@ -111,12 +111,16 @@ export function useUnreadSteerRequeue({
           break;
         }
       }
+      // Decide against the visit that is current now, after every await. If
+      // the user moved to another chat, nobody is here to see it: hold it.
+      const visitStartedAt =
+        visit.current.chatId === chatId ? visit.current.startedAt : Infinity;
       onRequeueRef.current(
         chatId,
-        restored,
-        restored.some(
-          (steer) => !steer.sentHere || steer.timestamp < visitStartedAt,
-        ),
+        withdrawn.map((steer) => ({
+          ...steer,
+          held: !steer.sentHere || steer.timestamp < visitStartedAt,
+        })),
       );
       if (!failed) {
         retryAttempts.current = 0;

@@ -219,6 +219,14 @@ const QueuedMessageRow = ({
                 {message.text}
               </div>
             )}
+            {message.held && !message.deliveryStatus && (
+              <div
+                className="text-xs text-muted-foreground mt-0.5"
+                role="status"
+              >
+                Unread by the Agent. Send it when you are ready.
+              </div>
+            )}
             {message.deliveryStatus && (
               <div
                 className="text-xs text-muted-foreground mt-0.5"

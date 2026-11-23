@@ -81,10 +81,10 @@ describe("message queue admission", () => {
     // Separate withdrawals can restore the later steer first.
     await act(async () => {
       result.current.requeueUnreadSteers("a", [
-        { text: "Second steer", timestamp: 200, sentHere: true },
+        { text: "Second steer", timestamp: 200, sentHere: true, held: false },
       ]);
       result.current.requeueUnreadSteers("a", [
-        { text: "First steer", timestamp: 100, sentHere: true },
+        { text: "First steer", timestamp: 100, sentHere: true, held: false },
       ]);
     });
     expect(result.current.messageQueue.map((m) => m.text)).toEqual([
@@ -95,7 +95,7 @@ describe("message queue admission", () => {
     // A tie keeps restoration order: it goes after the equal timestamp.
     await act(async () => {
       result.current.requeueUnreadSteers("a", [
-        { text: "Tied steer", timestamp: 200, sentHere: true },
+        { text: "Tied steer", timestamp: 200, sentHere: true, held: false },
       ]);
     });
     expect(result.current.messageQueue.map((m) => m.text)).toEqual([
@@ -107,10 +107,15 @@ describe("message queue admission", () => {
     // Another device's clock is not comparable: front, in restore order.
     await act(async () => {
       result.current.requeueUnreadSteers("a", [
-        { text: "Elsewhere 1", timestamp: 999_999, sentHere: false },
+        {
+          text: "Elsewhere 1",
+          timestamp: 999_999,
+          sentHere: false,
+          held: true,
+        },
       ]);
       result.current.requeueUnreadSteers("a", [
-        { text: "Elsewhere 2", timestamp: 1, sentHere: false },
+        { text: "Elsewhere 2", timestamp: 1, sentHere: false, held: true },
       ]);
     });
     expect(result.current.messageQueue.map((m) => m.text)).toEqual([
@@ -121,6 +126,8 @@ describe("message queue admission", () => {
       "Tied steer",
       "Queued after both steers",
     ]);
+    expect(result.current.messageQueue[0].held).toBe(true);
+    expect(result.current.messageQueue[2].held).toBeUndefined();
   });
 
   it("never exposes another account's queue", async () => {

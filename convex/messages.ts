@@ -3,7 +3,7 @@ import {
   createChatHistoryAccess,
   ensureChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
-import { retireSavedSteers } from "./lib/agentSteers";
+import { retireSavedSteers, withoutWithdrawnSteers } from "./lib/agentSteers";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
@@ -807,7 +807,14 @@ export const saveMessage = mutation({
               ]),
             )
           : args.fileIds;
-      const partsForSave = args.parts;
+      const partsForSave =
+        args.role === "assistant"
+          ? await withoutWithdrawnSteers(ctx, {
+              chatId: args.chatId,
+              userId: args.userId,
+              parts: args.parts,
+            })
+          : args.parts;
 
       failureStage = "find_existing_message";
       const existingMessage = await ctx.db
@@ -1534,15 +1541,21 @@ export const saveAssistantMessage = mutation({
         throw new Error("Chat not found");
       }
 
-      // Save parts as-is - fixing happens at read time in chat-processor.ts
-      const content = extractTextFromParts(args.parts);
+      // Save parts as-is - fixing happens at read time in chat-processor.ts,
+      // except a steer the client already withdrew back to its queue.
+      const parts = await withoutWithdrawnSteers(ctx, {
+        chatId: args.chatId,
+        userId: user.subject,
+        parts: args.parts,
+      });
+      const content = extractTextFromParts(parts);
 
       const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
-        parts: args.parts,
+        parts,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -1578,7 +1591,7 @@ export const saveAssistantMessage = mutation({
         await retireSavedSteers(ctx, {
           chatId: args.chatId,
           userId: user.subject,
-          parts: args.parts,
+          parts,
         });
 
       return null;

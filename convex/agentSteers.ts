@@ -8,6 +8,11 @@ import {
 import { validateServiceKey } from "./lib/utils";
 import type { Doc } from "./_generated/dataModel";
 import {
+  AGENT_STEER_SCAN_LIMIT,
+  AGENT_STEER_TOMBSTONE_TTL_MS,
+  isOpenSteer,
+} from "./lib/agentSteers";
+import {
   AGENT_STEER_MAX_PENDING,
   AGENT_STEER_MAX_TEXT_LENGTH,
   isValidAgentSteerId,
@@ -82,11 +87,20 @@ export const create = mutation({
         message: "This message was already sent.",
       });
     }
-    const pending = await ctx.db
+    const rows = await ctx.db
       .query("agent_steers")
       .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .take(AGENT_STEER_MAX_PENDING);
-    if (pending.length >= AGENT_STEER_MAX_PENDING) {
+      .take(AGENT_STEER_SCAN_LIMIT);
+    const now = Date.now();
+    for (const row of rows) {
+      const settledAt = row.saved_at ?? row.withdrawn_at;
+      if (
+        settledAt !== undefined &&
+        now - settledAt > AGENT_STEER_TOMBSTONE_TTL_MS
+      )
+        await ctx.db.delete(row._id);
+    }
+    if (rows.filter(isOpenSteer).length >= AGENT_STEER_MAX_PENDING) {
       throw new ConvexError({
         code: "STEER_LIMIT",
         message: "Wait for the Agent to read your earlier messages.",
@@ -98,7 +112,7 @@ export const create = mutation({
       user_id: userId,
       run_id: runId,
       text,
-      created_at: Date.now(),
+      created_at: now,
       sent_at: args.sentAt,
     });
     return "pending" as const;
@@ -112,7 +126,8 @@ type SteerRow = Doc<"agent_steers">;
  * or one claimed by a run that is no longer active and never acknowledged.
  */
 const isWithdrawable = (row: SteerRow, activeRunId: string | undefined) =>
-  row.claimed_at === undefined || row.run_id !== activeRunId;
+  isOpenSteer(row) &&
+  (row.claimed_at === undefined || row.run_id !== activeRunId);
 
 /** Steers no running Agent holds, oldest first. */
 export const listPending = query({
@@ -133,7 +148,7 @@ export const listPending = query({
     const rows = await ctx.db
       .query("agent_steers")
       .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .take(AGENT_STEER_MAX_PENDING);
+      .take(AGENT_STEER_SCAN_LIMIT);
     return rows
       .filter(
         (row) =>
@@ -152,8 +167,9 @@ export const listPending = query({
 
 /**
  * Take back a steer no running Agent holds, for example after its run ended.
- * This races the run's claim inside one transaction. A remaining row was never
- * saved in a response, so its text is safe to queue again.
+ * This races the run's claim inside one transaction. An open row was never
+ * saved in a response, so its text is safe to queue again; a save that
+ * arrives later drops it (`withoutWithdrawnSteers`).
  */
 export const withdraw = mutation({
   args: { chatId: v.string(), id: v.string() },
@@ -170,12 +186,10 @@ export const withdraw = mutation({
     if (!row || row.user_id !== userId || row.chat_id !== args.chatId)
       return { outcome: "not_found" as const };
     const chat = await getOwnedChat(ctx, args.chatId, userId);
-    if (
-      row.claimed_at !== undefined &&
-      chat?.active_trigger_run_id === row.run_id
-    )
+    if (!isWithdrawable(row, chat?.active_trigger_run_id))
       return { outcome: "not_found" as const };
-    await ctx.db.delete(row._id);
+    // A tombstone: a late save from a stopped worker must drop this steer.
+    await ctx.db.patch(row._id, { withdrawn_at: Date.now() });
     return { outcome: "withdrawn" as const, text: row.text };
   },
 });
@@ -202,9 +216,12 @@ export const claimForBackend = mutation({
       await ctx.db
         .query("agent_steers")
         .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
-        .take(AGENT_STEER_MAX_PENDING)
+        .take(AGENT_STEER_SCAN_LIMIT)
     ).filter(
-      (row) => row.chat_id === args.chatId && row.user_id === args.userId,
+      (row) =>
+        isOpenSteer(row) &&
+        row.chat_id === args.chatId &&
+        row.user_id === args.userId,
     );
     const now = Date.now();
     for (const row of rows)

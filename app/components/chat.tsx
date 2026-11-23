@@ -2831,12 +2831,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         !!agentLongRunId ||
         status === "streaming" ||
         status === "submitted",
-      onRequeue: (steerChatId, steers, hold) => {
-        if (!steers.length) return;
-        requeueUnreadSteers(steerChatId, steers);
-        if (hold && steerChatId === chatId)
-          hasManuallyStoppedRef.current = true;
-      },
+      onRequeue: requeueUnreadSteers,
     });
 
   // Automatic queue processing - send next queued message when ready
@@ -2863,6 +2858,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
+      !messageQueue[0].held &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&

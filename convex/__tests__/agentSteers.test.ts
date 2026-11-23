@@ -19,7 +19,7 @@ jest.mock("../lib/utils", () => ({
 }));
 
 const steers = require("../agentSteers") as typeof import("../agentSteers");
-const { deleteAgentSteersForChat, retireSavedSteers } =
+const { deleteAgentSteersForChat, retireSavedSteers, withoutWithdrawnSteers } =
   require("../lib/agentSteers") as typeof import("../lib/agentSteers");
 
 type Row = Record<string, unknown> & { _id: string };
@@ -236,5 +236,42 @@ describe("agent steers", () => {
       ],
     });
     expect(rows.agent_steers).toHaveLength(1);
+  });
+
+  it("drops a withdrawn steer from a save that arrives after Stop", async () => {
+    const { create, claim, withdraw, rows, ctx } = fixture();
+    await create("a", "use staging");
+    await claim();
+    // Stop cleared the run before its worker saved the response.
+    rows.chats[0].active_trigger_run_id = undefined;
+    expect(await withdraw("a")).toEqual({
+      outcome: "withdrawn",
+      text: "use staging",
+    });
+    const steerPart = {
+      type: "data-agent-steer",
+      id: "a",
+      data: { id: "a", text: "use staging" },
+    };
+    const saved = await withoutWithdrawnSteers(ctx as never, {
+      chatId: "chat",
+      userId: "owner",
+      parts: [{ type: "text", text: "Partial answer" }, steerPart],
+    });
+    expect(saved).toEqual([{ type: "text", text: "Partial answer" }]);
+    expect(await withdraw("a")).toEqual({ outcome: "not_found" });
+  });
+
+  it("clears settled steers after their tombstone expires", async () => {
+    const { create, withdraw, rows } = fixture();
+    const now = jest.spyOn(Date, "now").mockReturnValue(1_000);
+    await create("a");
+    rows.chats[0].active_trigger_run_id = undefined;
+    await withdraw("a");
+    rows.chats[0].active_trigger_run_id = "run-1";
+    now.mockReturnValue(1_000 + 2 * 60 * 60 * 1000);
+    await create("b");
+    now.mockRestore();
+    expect(rows.agent_steers.map((row) => row.id)).toEqual(["b"]);
   });
 });

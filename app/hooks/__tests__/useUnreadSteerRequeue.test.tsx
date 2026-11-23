@@ -70,11 +70,14 @@ describe("useUnreadSteerRequeue", () => {
     rerender({ runActive: false });
     expect(result.current.recovering).toBe(true);
     await waitFor(() => expect(onRequeue).toHaveBeenCalledTimes(1));
-    expect(onRequeue).toHaveBeenCalledWith(
-      "chat-1",
-      [{ text: "Also check X", timestamp: expect.any(Number), sentHere: true }],
-      false,
-    );
+    expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+      {
+        text: "Also check X",
+        timestamp: expect.any(Number),
+        sentHere: true,
+        held: false,
+      },
+    ]);
 
     // A stale snapshot listing the same steers must not queue them again.
     await act(async () => rerender({ runActive: false }));
@@ -90,11 +93,9 @@ describe("useUnreadSteerRequeue", () => {
     const onRequeue = jest.fn();
     render(onRequeue);
     await waitFor(() =>
-      expect(onRequeue).toHaveBeenCalledWith(
-        "chat-1",
-        [{ text: "From yesterday", timestamp: 1, sentHere: true }],
-        true,
-      ),
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+        { text: "From yesterday", timestamp: 1, sentHere: true, held: true },
+      ]),
     );
   });
 
@@ -120,11 +121,14 @@ describe("useUnreadSteerRequeue", () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     rerender({ chatId: "chat-1", runActive: false });
     await waitFor(() =>
-      expect(onRequeue).toHaveBeenCalledWith(
-        "chat-1",
-        [{ text: "From before leaving", timestamp: sentAt, sentHere: true }],
-        true,
-      ),
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+        {
+          text: "From before leaving",
+          timestamp: sentAt,
+          sentHere: true,
+          held: true,
+        },
+      ]),
     );
   });
 
@@ -140,18 +144,46 @@ describe("useUnreadSteerRequeue", () => {
     const onRequeue = jest.fn();
     render(onRequeue);
     await waitFor(() =>
-      expect(onRequeue).toHaveBeenCalledWith(
-        "chat-1",
-        [
-          {
-            text: "From my laptop",
-            timestamp: expect.any(Number),
-            sentHere: false,
-          },
-        ],
-        true,
-      ),
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+        {
+          text: "From my laptop",
+          timestamp: expect.any(Number),
+          sentHere: false,
+          held: true,
+        },
+      ]),
     );
+  });
+
+  it("holds a steer restored after the user left for another chat", async () => {
+    mockPending = [steer("late", "Also check X")];
+    let finish!: (result: { outcome: "withdrawn"; text: string }) => void;
+    mockWithdraw.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onRequeue = jest.fn();
+    const { rerender } = renderHook(
+      ({ chatId }) =>
+        useUnreadSteerRequeue({
+          chatId,
+          enabled: true,
+          runActive: false,
+          onRequeue,
+        }),
+      { initialProps: { chatId: "chat-1" } },
+    );
+    await act(async () => {});
+    // The withdrawal is still in flight when the user moves away.
+    rerender({ chatId: "chat-2" });
+    await act(async () =>
+      finish({ outcome: "withdrawn", text: "Also check X" }),
+    );
+    expect(onRequeue).toHaveBeenCalledWith("chat-1", [
+      expect.objectContaining({ text: "Also check X", held: true }),
+    ]);
   });
 
   it("retries a failed withdrawal without a new snapshot", async () => {
@@ -169,17 +201,14 @@ describe("useUnreadSteerRequeue", () => {
         jest.advanceTimersByTime(1_000);
       });
       expect(mockWithdraw).toHaveBeenCalledTimes(2);
-      expect(onRequeue).toHaveBeenLastCalledWith(
-        "chat-1",
-        [
-          {
-            text: "Also check X",
-            timestamp: expect.any(Number),
-            sentHere: true,
-          },
-        ],
-        false,
-      );
+      expect(onRequeue).toHaveBeenLastCalledWith("chat-1", [
+        {
+          text: "Also check X",
+          timestamp: expect.any(Number),
+          sentHere: true,
+          held: false,
+        },
+      ]);
     } finally {
       jest.useRealTimers();
     }
@@ -204,18 +233,14 @@ describe("useUnreadSteerRequeue", () => {
       await act(async () => {});
       // The second steer was not withdrawn ahead of the failed first one.
       expect(mockWithdraw).toHaveBeenCalledTimes(1);
-      expect(onRequeue).toHaveBeenLastCalledWith("chat-1", [], false);
+      expect(onRequeue).toHaveBeenLastCalledWith("chat-1", []);
       await act(async () => {
         jest.advanceTimersByTime(1_000);
       });
-      expect(onRequeue).toHaveBeenLastCalledWith(
-        "chat-1",
-        [
-          { text: "First", timestamp: sentAt, sentHere: true },
-          { text: "Second", timestamp: sentAt, sentHere: true },
-        ],
-        false,
-      );
+      expect(onRequeue).toHaveBeenLastCalledWith("chat-1", [
+        { text: "First", timestamp: sentAt, sentHere: true, held: false },
+        { text: "Second", timestamp: sentAt, sentHere: true, held: false },
+      ]);
     } finally {
       jest.useRealTimers();
     }

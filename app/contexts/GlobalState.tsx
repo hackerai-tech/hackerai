@@ -1221,6 +1221,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
           text: steer.text,
           timestamp: steer.timestamp,
           ...(steer.sentHere ? {} : { restoredFromElsewhere: true }),
+          ...(steer.held ? { held: true } : {}),
         });
       }
       queuesRef.current.set(key, queue);
