@@ -19,6 +19,8 @@ import {
   SharedToken,
 } from "../shared-token";
 
+const anyToken = () => true;
+
 describe("shared-token", () => {
   let mockStorage: Record<string, string>;
 
@@ -224,7 +226,7 @@ describe("shared-token", () => {
       };
       mockStorage[SHARED_TOKEN_KEY] = JSON.stringify(tokenData);
 
-      const result = getFreshSharedToken();
+      const result = getFreshSharedToken(anyToken);
 
       expect(result).toBe("fresh-token");
     });
@@ -236,13 +238,13 @@ describe("shared-token", () => {
       };
       mockStorage[SHARED_TOKEN_KEY] = JSON.stringify(tokenData);
 
-      const result = getFreshSharedToken();
+      const result = getFreshSharedToken(anyToken);
 
       expect(result).toBeNull();
     });
 
     it("should return null when no token exists", () => {
-      const result = getFreshSharedToken();
+      const result = getFreshSharedToken(anyToken);
 
       expect(result).toBeNull();
     });
@@ -250,7 +252,7 @@ describe("shared-token", () => {
     it("should return null when localStorage has invalid data", () => {
       mockStorage[SHARED_TOKEN_KEY] = "invalid json";
 
-      const result = getFreshSharedToken();
+      const result = getFreshSharedToken(anyToken);
 
       expect(result).toBeNull();
     });
@@ -378,7 +380,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue("fallback-token");
 
-      const result = await getFreshSharedTokenWithFallback(fallback);
+      const result = await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(result).toBe("fresh-token");
       expect(fallback).not.toHaveBeenCalled();
@@ -389,7 +391,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue("new-token");
 
-      const result = await getFreshSharedTokenWithFallback(fallback);
+      const result = await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(result).toBe("new-token");
       expect(fallback).toHaveBeenCalledTimes(1);
@@ -400,7 +402,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue("shared-new-token");
 
-      await getFreshSharedTokenWithFallback(fallback);
+      await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       const stored = getSharedToken();
       expect(stored?.token).toBe("shared-new-token");
@@ -411,7 +413,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue(null);
 
-      const result = await getFreshSharedTokenWithFallback(fallback);
+      const result = await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(result).toBeNull();
     });
@@ -421,7 +423,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | undefined>>()
         .mockResolvedValue(undefined);
 
-      const result = await getFreshSharedTokenWithFallback(fallback);
+      const result = await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(result).toBeNull();
     });
@@ -431,7 +433,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue(null);
 
-      await getFreshSharedTokenWithFallback(fallback);
+      await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(mockStorage[SHARED_TOKEN_KEY]).toBeUndefined();
     });
@@ -447,7 +449,7 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue("refreshed-token");
 
-      const result = await getFreshSharedTokenWithFallback(fallback);
+      const result = await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       expect(result).toBe("refreshed-token");
       expect(fallback).toHaveBeenCalledTimes(1);
@@ -464,10 +466,41 @@ describe("shared-token", () => {
         .fn<() => Promise<string | null>>()
         .mockResolvedValue("new-token");
 
-      await getFreshSharedTokenWithFallback(fallback);
+      await getFreshSharedTokenWithFallback(fallback, anyToken);
 
       const stored = getSharedToken();
       expect(stored?.token).toBe("new-token");
+    });
+
+    // The key is profile-wide: another tab may have written another account's
+    // token moments ago.
+    it("skips a fresh token the caller rejects and never shares a rejected fallback", async () => {
+      mockStorage[SHARED_TOKEN_KEY] = JSON.stringify({
+        token: "other-account-token",
+        refreshedAt: Date.now() - 1000,
+      });
+      const isAccepted = (token: string) => token === "this-account-token";
+
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValueOnce("this-account-token")
+        .mockResolvedValueOnce("stale-store-token");
+
+      expect(getFreshSharedToken(isAccepted)).toBeNull();
+      await expect(
+        getFreshSharedTokenWithFallback(fallback, isAccepted),
+      ).resolves.toBe("this-account-token");
+      expect(getSharedToken()?.token).toBe("this-account-token");
+
+      // The caller still sees (and rejects) its own result; other tabs do not.
+      mockStorage[SHARED_TOKEN_KEY] = JSON.stringify({
+        token: "other-account-token",
+        refreshedAt: Date.now() - 1000,
+      });
+      await expect(
+        getFreshSharedTokenWithFallback(fallback, isAccepted),
+      ).resolves.toBe("stale-store-token");
+      expect(getSharedToken()?.token).toBe("other-account-token");
     });
   });
 });

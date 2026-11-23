@@ -7,6 +7,7 @@ import {
 } from "@trigger.dev/sdk";
 
 import { setActiveAgentApprovalPending } from "@/lib/db/actions";
+import { ChatSDKError } from "@/lib/errors";
 import { phLogger } from "@/lib/posthog/server";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import {
@@ -96,6 +97,11 @@ const APPROVAL_AUTHORIZATION_DENIED_REASON =
   "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
 const APPROVAL_EXPIRED_REASON =
   "This approval request expired before a response arrived. The operation was not run, and this Agent run was stopped. Start a new Agent request to try again.";
+const APPROVAL_SLOT_RELEASE_FAILED_REASON =
+  "HackerAI could not finish recording the previous approval, so this operation was not run and no approval was requested. Retry the action; if it fails again, stop and start a new Agent request.";
+
+/** Delays between attempts to compare-clear one decided approval's slot. */
+const APPROVAL_SLOT_RELEASE_RETRY_DELAYS_MS = [250, 1_000];
 
 export class AgentAutoReviewEntitlementRevalidationUnavailableError extends Error {
   constructor() {
@@ -323,25 +329,70 @@ export const buildAgentToolApprovalRequester = ({
     }
     return "unavailable";
   };
-  const releaseApprovalSlot = async (approvalId: string): Promise<void> => {
-    if (!approvalSessionId) return;
-    try {
-      await setActiveAgentApprovalPending({
-        chatId,
-        pending: false,
-        expectedRunId: runId,
-        expectedApprovalSessionId: approvalSessionId,
-        expectedApprovalId: approvalId,
-      });
-    } catch (error) {
-      triggerLogger.error("[agent-approval] failed to release approval slot", {
-        chat_id: chatId,
-        run_id: runId,
-        source_run_id: source.runId,
-        approval_id: approvalId,
-        error_name: error instanceof Error ? error.name : "UnknownError",
-      });
+  // A decided approval whose slot release failed every attempt. Until a later
+  // identical release succeeds, this requester claims no new slot: the stale
+  // slot would only report "busy" until the approval deadline.
+  let unreleasedApprovalId: string | undefined;
+  /**
+   * Compare-clears this approval's slot. The write is guarded by run, Session
+   * and approval ID, so repeating the identical write after a lost response
+   * cannot clear a successor's slot; it returns "stale" instead. Any returned
+   * outcome means the slot no longer holds this approval.
+   */
+  const releaseApprovalSlot = async (approvalId: string): Promise<boolean> => {
+    if (!approvalSessionId) return true;
+    for (
+      let attempt = 1;
+      attempt <= APPROVAL_SLOT_RELEASE_RETRY_DELAYS_MS.length + 1;
+      attempt++
+    ) {
+      try {
+        const outcome = await setActiveAgentApprovalPending({
+          chatId,
+          pending: false,
+          expectedRunId: runId,
+          expectedApprovalSessionId: approvalSessionId,
+          expectedApprovalId: approvalId,
+        });
+        if (attempt > 1) {
+          triggerLogger.info(
+            "[agent-approval] approval slot release recovered",
+            {
+              chat_id: chatId,
+              run_id: runId,
+              source_run_id: source.runId,
+              approval_id: approvalId,
+              attempt,
+              outcome,
+            },
+          );
+        }
+        return true;
+      } catch (error) {
+        const errorMetadata =
+          error instanceof ChatSDKError ? error.metadata : undefined;
+        const retryDelayMs = APPROVAL_SLOT_RELEASE_RETRY_DELAYS_MS[attempt - 1];
+        triggerLogger.error(
+          "[agent-approval] failed to release approval slot",
+          {
+            chat_id: chatId,
+            run_id: runId,
+            source_run_id: source.runId,
+            approval_id: approvalId,
+            attempt,
+            will_retry: retryDelayMs !== undefined,
+            error_name: error instanceof Error ? error.name : "UnknownError",
+            cause_error_name: errorMetadata?.db_error_name,
+            outcome_unknown: errorMetadata?.db_outcome_unknown === true,
+          },
+        );
+        if (retryDelayMs === undefined) return false;
+        // Short in-process delay, not a durable wait: it also runs after Stop,
+        // when the slot must still be cleared.
+        await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+      }
     }
+    return false;
   };
 
   return async (request: AgentToolApprovalRequest) => {
@@ -640,6 +691,39 @@ export const buildAgentToolApprovalRequester = ({
           reason:
             "Approval sessions are unavailable. Please retry the Agent run.",
         };
+      }
+
+      // Retry the previous decided approval's identical guarded release before
+      // claiming. If the slot still cannot be cleared, deny now: polling a slot
+      // that only this requester can clear would wait out the whole deadline.
+      if (unreleasedApprovalId !== undefined) {
+        const staleApprovalId = unreleasedApprovalId;
+        if (await releaseApprovalSlot(staleApprovalId)) {
+          unreleasedApprovalId = undefined;
+        } else {
+          completeAutoReviewLifecycle("dismissed");
+          metadata.set("approvalStatus", "approval_slot_release_failed");
+          triggerLogger.warn(
+            "[agent-long] approval denied after slot release failed",
+            {
+              event: "agent_tool_approval_slot_release_failed",
+              service: "agent-long",
+              runId,
+              source_run_id: source.runId,
+              source_agent_id: source.agentId,
+              approvalId,
+              unreleased_approval_id: staleApprovalId,
+              tool_call_id: request.toolCallId,
+              tool_name: request.toolName,
+              operation: request.operation,
+            },
+          );
+          return {
+            approved: false,
+            approvalId,
+            reason: APPROVAL_SLOT_RELEASE_FAILED_REASON,
+          };
+        }
       }
 
       // Claiming the shared approval slot may checkpoint for longer than the
@@ -993,8 +1077,9 @@ export const buildAgentToolApprovalRequester = ({
       };
     } finally {
       completeAutoReviewLifecycle("dismissed");
-      if (approvalPendingMarked) {
-        await releaseApprovalSlot(approvalId);
+      // The queued request starts only after these bounded release attempts.
+      if (approvalPendingMarked && !(await releaseApprovalSlot(approvalId))) {
+        unreleasedApprovalId = approvalId;
       }
       releaseApproval();
     }

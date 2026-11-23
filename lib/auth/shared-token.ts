@@ -92,31 +92,35 @@ export function clearSharedToken(): void {
 }
 
 /**
- * Get fresh shared token if available.
- * Returns the token string if fresh, null otherwise.
+ * Get a fresh shared token that this tab accepts, null otherwise. The key is
+ * shared by every tab in the browser profile and is not bound to an account,
+ * so callers must reject another account's or session's token.
  */
-export function getFreshSharedToken(): string | null {
+export function getFreshSharedToken(
+  isAccepted: (token: string) => boolean,
+): string | null {
   const sharedToken = getSharedToken();
-  if (isTokenFresh(sharedToken)) {
+  if (isTokenFresh(sharedToken) && isAccepted(sharedToken!.token)) {
     return sharedToken!.token;
   }
   return null;
 }
 
 /**
- * Get fresh shared token, or execute fallback.
- * If fallback returns a token, it's stored for other tabs.
+ * Get an accepted fresh shared token, or execute fallback. An accepted
+ * fallback token is stored for other tabs; a rejected one is never shared.
  */
 export async function getFreshSharedTokenWithFallback(
   fallback: () => Promise<string | null | undefined>,
+  isAccepted: (token: string) => boolean,
 ): Promise<string | null> {
-  const freshToken = getFreshSharedToken();
+  const freshToken = getFreshSharedToken(isAccepted);
   if (freshToken) {
     return freshToken;
   }
 
   const newToken = await fallback();
-  if (newToken) {
+  if (newToken && isAccepted(newToken)) {
     setSharedToken(newToken);
   }
   return newToken ?? null;
