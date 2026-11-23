@@ -29,6 +29,10 @@ import {
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
+import {
+  CLOUD_SANDBOX_UPLOAD_ROOT,
+  isCanonicalLocalStagedAttachmentPath,
+} from "@/lib/utils/sandbox-upload-paths";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -477,17 +481,49 @@ const getAttributeFromAttachmentTag = (
 ): string | undefined =>
   new RegExp(`\\b${attribute}="([^"]+)"`, "i").exec(tag)?.[1];
 
+/**
+ * Which provider file parts an attachment annotation may replace:
+ * - `pdf_parser`: PDF parts annotated with a cloud or local staged path.
+ * - `generic_parser`: any cloud-annotated file part, or local-annotated PDFs.
+ * - `request_size`: any cloud-annotated file part only.
+ */
+type SandboxFileRecoveryScope =
+  "pdf_parser" | "generic_parser" | "request_size";
+
+/** Cloud annotations may replace any file part; local ones only PDFs. */
+type StagedAttachmentSource = "cloud" | "local";
+
+// Keep the local extension on the stager's exact annotation shape. The
+// existing cloud matcher still recognizes its historical annotations.
+const LOCAL_ATTACHMENT_TAG =
+  /^<attachment filename="[^"]+" local_path="[^"]+" staging="(?:requested_this_run|not_requested_this_run)"(?: legacy_fallback_path="[^"]+" use_legacy_fallback_only_if_primary_missing="true")? \/>$/;
+
 const collectSandboxAttachmentFilenames = (
   messages: unknown[],
-): Set<string> => {
-  const filenames = new Set<string>();
-  const collectFromText = (text: string) => {
+  scope: SandboxFileRecoveryScope,
+): Map<string, StagedAttachmentSource> => {
+  const filenames = new Map<string, StagedAttachmentSource>();
+  const collectFromText = (text: string, role: unknown) => {
     for (const match of text.matchAll(/<attachment\b[^>]*>/gi)) {
       const tag = match[0];
       const localPath = getAttributeFromAttachmentTag(tag, "local_path");
       const filename = getAttributeFromAttachmentTag(tag, "filename");
-      if (localPath?.startsWith("/home/user/upload/") && filename) {
-        filenames.add(filename);
+      if (!localPath || !filename) continue;
+      if (localPath.startsWith(`${CLOUD_SANDBOX_UPLOAD_ROOT}/`)) {
+        filenames.set(filename, "cloud");
+        continue;
+      }
+      // The local stager writes only to user messages with a known staging
+      // role. Matching the exact path shape keeps legacy, rewritten, and
+      // arbitrary local paths out of provider-part removal.
+      if (
+        scope !== "request_size" &&
+        role === "user" &&
+        LOCAL_ATTACHMENT_TAG.test(tag) &&
+        isCanonicalLocalStagedAttachmentPath(localPath, filename) &&
+        !filenames.has(filename)
+      ) {
+        filenames.set(filename, "local");
       }
     }
   };
@@ -495,7 +531,7 @@ const collectSandboxAttachmentFilenames = (
   messages.forEach((message) => {
     if (!isRecord(message)) return;
     if (typeof message.content === "string") {
-      collectFromText(message.content);
+      collectFromText(message.content, message.role);
       return;
     }
     if (!Array.isArray(message.content)) return;
@@ -505,7 +541,7 @@ const collectSandboxAttachmentFilenames = (
         part.type === "text" &&
         typeof part.text === "string"
       ) {
-        collectFromText(part.text);
+        collectFromText(part.text, message.role);
       }
     });
   });
@@ -687,7 +723,7 @@ type SandboxPdfRecoveryUnavailableReason =
 
 const createSandboxPdfRecoveryBody = (
   body: unknown,
-  removeAllFileParts = false,
+  scope: SandboxFileRecoveryScope,
 ): { body: unknown } & (
   | { changed: true }
   | { changed: false; unavailableReason: SandboxPdfRecoveryUnavailableReason }
@@ -699,7 +735,7 @@ const createSandboxPdfRecoveryBody = (
       unavailableReason: "unsupported_request_shape",
     };
   }
-  if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
+  if (collectSandboxAttachmentFilenames(body.messages, scope).size === 0) {
     return { body, changed: false, unavailableReason: "no_staged_attachments" };
   }
 
@@ -712,9 +748,10 @@ const createSandboxPdfRecoveryBody = (
 
     // The provider file part does not retain a stable attachment ID. Limit a
     // filename match to the same message and reject duplicate names there.
-    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames([
-      message,
-    ]);
+    const sandboxAttachmentFilenames = collectSandboxAttachmentFilenames(
+      [message],
+      scope,
+    );
     const filePartFilenameCounts = new Map<string, number>();
     message.content.forEach((part) => {
       if (!isFileRequestPart(part)) return;
@@ -728,11 +765,17 @@ const createSandboxPdfRecoveryBody = (
 
     const content = message.content.filter((part) => {
       const filename = getFileRequestFilename(part);
+      const source =
+        filename === undefined
+          ? undefined
+          : sandboxAttachmentFilenames.get(filename);
       const shouldRemove =
         filename !== undefined &&
-        sandboxAttachmentFilenames.has(filename) &&
+        source !== undefined &&
         filePartFilenameCounts.get(filename) === 1 &&
-        (removeAllFileParts ? isFileRequestPart(part) : isPdfRequestPart(part));
+        (scope !== "pdf_parser" && source === "cloud"
+          ? isFileRequestPart(part)
+          : isPdfRequestPart(part));
       removedFilePart ||= shouldRemove;
       return !shouldRemove;
     });
@@ -756,9 +799,10 @@ const createSandboxPdfRecoveryBody = (
   if (!isRecord(lastUserMessage)) {
     return { body, changed: false, unavailableReason: "no_user_message" };
   }
-  const recoveryInstruction = removeAllFileParts
-    ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
-    : SANDBOX_PDF_RECOVERY_INSTRUCTION;
+  const recoveryInstruction =
+    scope === "pdf_parser"
+      ? SANDBOX_PDF_RECOVERY_INSTRUCTION
+      : GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION;
   const existingContent = lastUserMessage.content;
   const content = Array.isArray(existingContent)
     ? [...existingContent, { type: "text", text: recoveryInstruction }]
@@ -946,7 +990,10 @@ const enforceOpenRouterRequestSizeLimit = (
     requestContext = getOpenRouterRequestLogContext(parsedBody);
     diagnostics = getOpenRouterRequestSizeDiagnostics(parsedBody);
 
-    const sandboxFallback = createSandboxPdfRecoveryBody(parsedBody, true);
+    const sandboxFallback = createSandboxPdfRecoveryBody(
+      parsedBody,
+      "request_size",
+    );
     let recoveryBody = sandboxFallback.changed
       ? sandboxFallback.body
       : parsedBody;
@@ -1203,7 +1250,7 @@ export const createOpenRouterPatchFetch =
     ) {
       const sandboxBody = createSandboxPdfRecoveryBody(
         parsedRequestBody,
-        parserFailure === "generic_parse",
+        parserFailure === "generic_parse" ? "generic_parser" : "pdf_parser",
       );
       if (!sandboxBody.changed) {
         logPdfParserRecovery(
@@ -1230,7 +1277,10 @@ export const createOpenRouterPatchFetch =
     }
 
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
-      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
+      const sandboxBody = createSandboxPdfRecoveryBody(
+        parsedRequestBody,
+        "pdf_parser",
+      );
       if (!sandboxBody.changed) {
         logPdfParserRecovery(
           "cloudflare-ai",
@@ -1281,7 +1331,10 @@ export const createOpenRouterPatchFetch =
       );
     }
 
-    const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
+    const sandboxBody = createSandboxPdfRecoveryBody(
+      cloudflareBody.body,
+      "pdf_parser",
+    );
     if (!sandboxBody.changed) {
       logPdfParserRecovery(
         "cloudflare-ai",

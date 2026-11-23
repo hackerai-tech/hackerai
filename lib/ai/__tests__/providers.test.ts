@@ -1,3 +1,7 @@
+jest.mock("server-only", () => ({}), { virtual: true });
+
+import type { UIMessage } from "ai";
+import { prepareLocalDesktopAttachmentsForTrigger } from "@/lib/utils/sandbox-file-utils";
 import {
   AUXILIARY_VISION_SLUG,
   DEEPSEEK_V4_FLASH_VISION_SLUG,
@@ -76,6 +80,73 @@ const createPdfParserRequest = (includeSandboxPath = true) => ({
     },
   ],
 });
+
+// Builds annotations with the real Desktop stager so recovery tests follow the
+// marker shape the app currently emits.
+const stageDesktopAttachments = (names: string[]) => {
+  const { messages, sandboxFiles } = prepareLocalDesktopAttachmentsForTrigger([
+    {
+      id: "desktop-user",
+      role: "user",
+      parts: names.map((name, index) => ({
+        type: "file",
+        storage: "local-desktop",
+        localAttachmentId: `local-${index}`,
+        localPath: `/Users/tester/Documents/${name}`,
+        name,
+        mediaType: name.endsWith(".pdf") ? "application/pdf" : "text/plain",
+      })),
+    },
+  ] as unknown as UIMessage[]);
+  const tagPart = messages[0].parts.find(
+    (part) => part.type === "text" && part.text.startsWith("<attachment "),
+  );
+  if (tagPart?.type !== "text") throw new Error("Missing staged annotation");
+  return {
+    tagText: tagPart.text,
+    stagedPaths: sandboxFiles.map((file) => file.localPath),
+  };
+};
+
+const PDF_FILE_PART = {
+  type: "file",
+  file: {
+    filename: "report.pdf",
+    file_data: "data:application/pdf;base64,JVBERi0=",
+  },
+};
+const TEXT_FILE_PART = {
+  type: "file",
+  file: {
+    filename: "notes.txt",
+    file_data: "data:text/plain;base64,bm90ZXM=",
+  },
+};
+
+const createDesktopPdfRequest = (tagText: string) => ({
+  model: "deepseek/deepseek-v4-flash-0731",
+  plugins: [{ id: "file-parser", pdf: { engine: "cloudflare-ai" } }],
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Review these attachments." },
+        PDF_FILE_PART,
+        TEXT_FILE_PART,
+        { type: "text", text: tagText },
+      ] as Array<Record<string, unknown>>,
+    },
+  ],
+});
+
+const getRequestFilenames = (request: {
+  messages: Array<{ content?: Array<{ type?: string; file?: unknown }> }>;
+}) =>
+  request.messages.flatMap((message) =>
+    (message.content ?? [])
+      .filter((part) => part.type === "file")
+      .map((part) => (part.file as { filename?: string }).filename),
+  );
 
 const parserErrorResponse = (message: string) =>
   new Response(
@@ -1481,6 +1552,253 @@ describe("OpenRouter PDF parser recovery", () => {
       expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
     },
   );
+
+  it.each(["generic_parse", "invalid_document"] as const)(
+    "recovers a Desktop-staged PDF through the sandbox after %s",
+    async (reason) => {
+      const { tagText, stagedPaths } = stageDesktopAttachments([
+        "report.pdf",
+        "notes.txt",
+      ]);
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(
+          reason === "generic_parse"
+            ? new Response(
+                JSON.stringify({ error: { message: "Failed to parse " } }),
+                {
+                  status: 400,
+                  headers: { "content-type": "application/json" },
+                },
+              )
+            : parserErrorResponse(PDF_PARSER_INVALID_DOCUMENT_ERROR),
+        )
+        .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as unknown as typeof fetch,
+      )("https://openrouter.test/chat", {
+        method: "POST",
+        body: JSON.stringify(createDesktopPdfRequest(tagText)),
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
+      // A local annotation authorizes removing only the PDF provider part.
+      expect(getRequestFilenames(sandboxRequest)).toEqual(["notes.txt"]);
+      expect(sandboxRequest.plugins).toEqual([]);
+      expect(sandboxRequest.messages[0].content).toContainEqual({
+        type: "text",
+        text: tagText,
+      });
+      expect(tagText).toContain(`local_path="${stagedPaths[0]}"`);
+      expect(JSON.stringify(sandboxRequest)).toContain(
+        reason === "generic_parse"
+          ? "inspect the files with sandbox tools"
+          : MALFORMED_PDF_USER_RESPONSE,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
+      expect(diagnostic).toMatchObject({
+        event: "openrouter_pdf_parser_recovery",
+        to_engine: "sandbox",
+        reason,
+      });
+      expect(JSON.stringify(diagnostic)).not.toMatch(
+        /report\.pdf|notes\.txt|hackerai-upload|[0-9a-f]{64}/,
+      );
+    },
+  );
+
+  type DesktopPdfRequest = ReturnType<typeof createDesktopPdfRequest>;
+  const replaceTag = (
+    request: DesktopPdfRequest,
+    edit: (text: string) => string,
+  ) => {
+    const tagPart = request.messages[0].content[3];
+    tagPart.text = edit(String(tagPart.text));
+  };
+  const stagedNamespace = (stagedPath: string) => stagedPath.split("/")[3];
+
+  it.each<
+    [
+      string,
+      (request: DesktopPdfRequest, stagedPath: string) => void,
+      "no_staged_attachments" | "no_unique_matching_file",
+    ]
+  >([
+    [
+      "an unnamespaced local path",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(stagedPath, "/tmp/hackerai-upload/report.pdf"),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "a basename that differs from the filename",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(
+            stagedPath,
+            stagedPath.replace(/report\.pdf$/, "other.pdf"),
+          ),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "an uppercase namespace",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(
+            stagedNamespace(stagedPath),
+            stagedNamespace(stagedPath).toUpperCase(),
+          ),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "a truncated namespace",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(
+            stagedNamespace(stagedPath),
+            stagedNamespace(stagedPath).slice(1),
+          ),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "a namespace that ends with a line break",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(
+            stagedNamespace(stagedPath),
+            stagedNamespace(stagedPath) + "\n",
+          ),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "an out-of-scope root",
+      (request) =>
+        replaceTag(request, (text) =>
+          text.replace("/tmp/hackerai-upload/", "/tmp/hackerai-uploads/"),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "a traversal segment",
+      (request, stagedPath) =>
+        replaceTag(request, (text) =>
+          text.replace(
+            stagedPath,
+            `/tmp/hackerai-upload/${stagedNamespace(stagedPath)}/../${stagedNamespace(stagedPath)}/report.pdf`,
+          ),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "an unknown staging role",
+      (request) =>
+        replaceTag(request, (text) =>
+          text.replace('staging="requested_this_run"', 'staging="staged"'),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "a missing staging role",
+      (request) =>
+        replaceTag(request, (text) =>
+          text.replace(' staging="requested_this_run"', ""),
+        ),
+      "no_staged_attachments",
+    ],
+    [
+      "an assistant-authored annotation",
+      (request) => {
+        const tagPart = request.messages[0].content.pop()!;
+        request.messages.unshift({ role: "assistant", content: [tagPart] });
+      },
+      "no_staged_attachments",
+    ],
+    [
+      "an annotation in a different user message",
+      (request) => {
+        const tagPart = request.messages[0].content.pop()!;
+        request.messages.unshift({ role: "user", content: [tagPart] });
+      },
+      "no_unique_matching_file",
+    ],
+    [
+      "duplicate PDF file parts",
+      (request) => request.messages[0].content.push(PDF_FILE_PART),
+      "no_unique_matching_file",
+    ],
+    [
+      "only a non-PDF local annotation",
+      (request) =>
+        replaceTag(
+          request,
+          () => stageDesktopAttachments(["notes.txt"]).tagText,
+        ),
+      "no_unique_matching_file",
+    ],
+  ])(
+    "does not use Desktop sandbox recovery for %s",
+    async (_scenario, mutate, unavailableReason) => {
+      const { tagText, stagedPaths } = stageDesktopAttachments(["report.pdf"]);
+      const request = createDesktopPdfRequest(tagText);
+      mutate(request, stagedPaths[0]);
+      const serialized = JSON.stringify(request);
+      const originalResponse = new Response(
+        JSON.stringify({ error: { message: "Failed to parse " } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+      const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", { body: serialized });
+
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
+      expect(diagnostic).toMatchObject({
+        event: "openrouter_pdf_parser_recovery_unavailable",
+        unavailable_reason: unavailableReason,
+      });
+      expect(JSON.stringify(diagnostic)).not.toMatch(
+        /report\.pdf|notes\.txt|hackerai-upload|[0-9a-f]{64}/,
+      );
+    },
+  );
+
+  it("keeps the request-size guard unchanged for Desktop-staged PDFs", async () => {
+    const { tagText } = stageDesktopAttachments(["report.pdf"]);
+    const request = createDesktopPdfRequest(tagText);
+    request.messages[0].content[1] = {
+      type: "file",
+      file: {
+        filename: "report.pdf",
+        file_data: `data:application/pdf;base64,${"a".repeat(
+          OPENROUTER_REQUEST_MAX_BYTES,
+        )}`,
+      },
+    };
+    const fetchMock = jest.fn();
+
+    const response = await createOpenRouterPatchFetch(
+      fetchMock as typeof fetch,
+    )("https://openrouter.test/chat", { body: JSON.stringify(request) });
+
+    expect(response.status).toBe(413);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("supportsMultimodalToolResults", () => {
