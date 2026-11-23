@@ -353,10 +353,10 @@ Limits:
 
 With `E2B_EGRESS_ABUSE_REVIEW_ENABLED=true`, a verified attributed egress
 burst (see [Cloud network access](cloud-network-access.md#burst-alerts)) can
-open an operator case. The review is read-only triage that informs an operator
-decision. It never sends email, restricts an account, contains a run, or
-contacts a sandbox, and its cases follow the review, hold and erasure rules in
-this runbook.
+open an operator case. The review itself is read-only triage. Only the
+separately switched [automatic enforcement](#automatic-enforcement) can
+restrict an account. The review never contains a run or contacts a sandbox,
+and its cases follow the review, hold and erasure rules in this runbook.
 
 - **What it reads.** With a recorded acquisition, only the one chat and
   Trigger run that acquired the burst's verified workspace and whose
@@ -438,6 +438,14 @@ Enable the toggle in the web app, the Agent worker, and the Convex deployment.
 Reviews are dispatched through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
 
+New cases and their sanitized `egress_review_receipts` commit together. A
+completed review with no case writes its receipt on a best-effort basis.
+Retries preserve existing cases and receipts, and cases created by older
+workers can lack a receipt. Receipts last 30 days and store the enforcement
+decision (`keep_active`, `block_applied` or `enforcement_pending`), a closed
+reason, the evidence mode and coverage state. Only `enforcement_pending` and
+`block_applied` receipts carry the case reference.
+
 To roll back reviews, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web
 app, the Agent worker, and the Convex deployment. This is separate from burst
 alerts, which keep their own toggle and continue unchanged. Acquisition links
@@ -450,6 +458,140 @@ a pilot workspace with a linked Agent run. Trigger `egress-burst-alerts` manuall
 with a `timestamp` two minutes after the synthetic minute. Confirm the monitor
 logs a `High connection volume` warning and the delayed `egress-abuse-review`
 returns a `completed` or `preserved` receipt after the run history has settled.
+
+### Automatic enforcement
+
+A block requires every one of these, in order. Anything else keeps the account
+active with a reason of `legitimate_corroborated`, `coverage_incomplete`,
+`inconclusive`, `intent_not_established` or `unlinked_history`.
+
+1. The exact, server-attributed run, read completely: finished, no subagent or
+   concurrent root, no truncation or omission, at least one user message.
+   Unlinked account activity never blocks.
+2. The existing policy's concerning, unauthorized finding with cited commands
+   against a public target.
+3. A separate structured confirmation over the same scrubbed evidence: an
+   explicit, first-person statement of harm (service disruption, unauthorized
+   access, credential or data theft, extortion), no claimed or unclear
+   authorization, citing the stating message, the command and the target.
+   The worker checks that the target is public, named in the cited message,
+   and acted on by every cited command, and that the first pass cited the
+   same commands. Each cited message must already have existed in its
+   current form before the run started. Scanning, volume, tool names, missing
+   or mismatched scope,
+   claimed impact and model confidence never establish intent.
+4. The Convex mutation `egressAbuseEnforcement:applyBlock` rechecks the burst
+   age (at most 24 hours), account, chat ownership, deletion fence, finished
+   run and subagents, and every cited message and started tool call. A proof
+   from the review worker binds the decision to this deployment and these
+   exact inputs. Convex re-reads the bounded evidence and checks its
+   fingerprint before applying a block. The mutation
+   refuses any existing case for the window, including manual, resolved or
+   erased ones, so it never acts retroactively.
+
+One transaction then creates the case (`needs_followup`, evidence hold),
+adds `abuse-late:<reference>` as a support `security_abuse` restriction,
+revokes local and Desktop access, records an `abuse_responses` row with actor
+`egress_abuse_enforcement`, and queues one notice. It cancels no run and never
+reports any process as stopped. A lost response is safe: the retry returns
+`existing_block`. A refusal or unavailable backend records the case as
+`enforcement_pending` for an operator instead.
+
+**Switches.** Defaults are off. `E2B_EGRESS_ABUSE_ENFORCEMENT_ENABLED=true`
+is required in the Agent worker and in Convex, in addition to the review
+switch. Setting it to anything else in Convex stops new blocks immediately;
+reviews and cases continue, recording `enforcement_pending`. Existing blocks
+and queued notices are unaffected. `ABUSE_BLOCK_NOTICE_DISPATCH_ENABLED=true`
+in Convex lets the dispatcher claim notices; without it notices queue and the
+summary lists them as backlog.
+
+**Credentials.** Each is distinct from every other service key and scoped to
+one module by `convex/lib/serviceFunctions.ts`:
+
+- `CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY` (Agent worker and Convex):
+  only `egressAbuseEnforcement` functions.
+- `CONVEX_ABUSE_NOTICE_DISPATCH_SERVICE_KEY` (local dispatcher and Convex):
+  only `abuseBlockNotices` functions: claim, acknowledge and the aggregate
+  summary.
+
+Service proofs bind the deployment URL; a proof for another deployment fails.
+
+**Notices.** The dispatcher runs on the abuse mailbox host:
+
+```bash
+corepack pnpm exec tsx scripts/abuse-block-notices.ts dispatch \
+  --expect-convex-url <deployment URL> --expect-workos-env test|live
+corepack pnpm exec tsx scripts/abuse-block-notices.ts summary \
+  --expect-convex-url <deployment URL>
+```
+
+`NEXT_PUBLIC_CONVEX_URL` must equal the asserted URL. Test dispatch uses
+the approved staging key. For live dispatch, verify the WorkOS key against
+the intended Production directory. Derive a 32-byte scrypt pin from the
+exact verified key and a random 16-byte salt using `N=32768`, `r=8` and
+`p=1`. Set `ABUSE_NOTICE_WORKOS_KEY_PIN` to the lowercase hex salt and pin
+separated by a colon. WorkOS keys can use the opaque `sk_` format. An
+invalid pin or a staging key fails the live assertion before any claim.
+`dispatch` also needs `ABUSE_NOTICE_BRIDGE_DIR`, the absolute
+directory of the pinned Proton Bridge
+helper exposing `imap_session()` and `smtp_session()`, and optionally `ABUSE_NOTICE_PYTHON` and
+`ABUSE_NOTICE_MAIL_HELPER`. The Bridge session must be able to send as
+`abuse@hackerai.co`.
+
+A claim succeeds only while the notice's own restriction is active and its
+case is open; a notice for a lifted block is cancelled. The dispatcher reads
+the exact account from WorkOS and sends only to its verified address. It runs
+`scripts/abuse-notices/send_block_notice.py` with `python3 -I -B`, no
+inherited environment, and one JSON object on stdin (`version`, `messageId`,
+`from`, `to`, `subject`, `text`). The helper prints one JSON object,
+`{"result": "sent" | "not_sent" | "rejected" | "uncertain"}`, and never the
+address. The helper checks Sent for the exact Message-ID, sender, recipient and text
+before and after SMTP. SMTP acceptance without a matching Sent copy, a
+crash, timeout or malformed output counts as `uncertain`. The fixed
+notice names the reference and the appeal route and contains no evidence.
+
+Notice states: `pending`, `sending` (five-minute lease), `sent`, `uncertain`,
+`failed` (`rejected`, `recipient_unavailable`, `attempts_exhausted`),
+`cancelled` and `deduplicated` (another live notice already covers the
+account). Only `not_sent` retries automatically, at most five attempts with
+backoff. An expired lease or `uncertain` result is never resent.
+
+**Summary.** `summary` prints switches, 24-hour review counts by decision,
+reason and coverage, active and lifted automated blocks from the last 30
+days, notice counts, and action items with only a reference:
+`review_block` (no operator note since the block), `review_pending_enforcement`,
+`notice_backlog`, `notice_failed` and `reconcile_uncertain_notice`.
+
+**Recovery.**
+
+- Restore access: resolve the case with `abuseCases.resolve` as for any
+  late-report case. It releases exactly the case restriction and lifts the
+  local-access block when no other security restriction remains. The user
+  issues a new local token. Pending notices are then cancelled.
+- Active work: an automated block does not cancel runs. To cancel active
+  owned work, run `scripts/abuse-response.ts retry` on the case; it resumes
+  the recorded response.
+- For an uncertain notice, reconcile its exact Message-ID in the abuse@ Sent
+  folder. Use the internal `abuseBlockNotices:resolveNotice` from the
+  authorized dashboard with the notice ID, current status and attempts. Use
+  `confirmed_sent` after finding the matching Sent copy. Before recording
+  `confirmed_not_sent`, disable new claims, stop all dispatchers and mail
+  helpers for this deployment, and verify that every in-flight SMTP submission
+  has settled. A disabled switch or an expired lease leaves any open SMTP
+  submission running. Recheck Sent after the drain and confirm that Proton
+  did not accept the message. Keep the notice uncertain if acceptance is
+  unresolved. Once reconciliation is complete, restore the previous claims
+  switch and dispatcher service state. If dispatch was active before the
+  drain, restart the dispatchers and verify that they can claim work.
+  A failed notice accepts `retry` while the block is active or `dismiss`
+  after another contact method. Attempts are never reset.
+- Rollback: turn off the enforcement switch first, then dispatch. Keep the
+  schema, tables and handlers deployed while any automated case, restriction
+  or notice exists.
+
+Verify in Preview with synthetic placeholder content only: a confirmed block,
+each refusal, duplicate retry, a lifted block's cancelled notice, an
+uncertain send and its reconciliation, and the summary while dispatch is off.
 
 ## Resolution and evidence lifecycle
 

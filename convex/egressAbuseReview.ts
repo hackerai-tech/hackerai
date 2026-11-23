@@ -4,13 +4,16 @@ import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./lib/serviceFunctions";
 import { boundedAbuseCiphertext } from "./lib/abuseResponse";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
+import { egressReviewReceiptFields } from "./lib/abuseValidators";
+import { insertReceipt } from "./lib/egressReceipts";
 
 // Read-only evidence lookups and a create-or-preserve case write for the
 // automated egress burst review. Authorized only by the dedicated review key,
 // which serviceFunctions scopes to this module. The exact-run path reads one
 // linked chat and run. Without a link, `readAccountActivity` reads a bounded
 // window of the verified account's recent Agent chats, once per case.
-// Nothing here searches message content or creates a notice or restriction.
+// Nothing here searches message content or creates a notice or restriction;
+// automated blocks use the separately keyed egressAbuseEnforcement module.
 
 const ACTOR = "egress_abuse_review";
 const MAX_SCAN = 120;
@@ -28,7 +31,7 @@ const CLOCK_SKEW_MS = 60_000;
 const REFERENCE =
   /^AB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
-const ACTIVE_SUBAGENT = new Set(["queued", "running", "finalizing"]);
+export const ACTIVE_SUBAGENT = new Set(["queued", "running", "finalizing"]);
 
 function authorize(serviceKey: string) {
   const expected = process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY;
@@ -83,7 +86,7 @@ function overlap(
   return end < burst.burstStart - CLOCK_SKEW_MS ? "disjoint" : "overlaps";
 }
 
-async function ownedChat(ctx: QueryCtx, userId: string, chatId: string) {
+export async function ownedChat(ctx: QueryCtx, userId: string, chatId: string) {
   const chat = await ctx.db
     .query("chats")
     .withIndex("by_chat_id", (q) => q.eq("id", chatId))
@@ -251,7 +254,7 @@ type Command = {
  * receipt. Never tool output, reasoning, text, or interactive input; any
  * call that cannot be read that way is counted as incomplete.
  */
-function startedCommands(row: Doc<"messages">) {
+export function startedCommands(row: Doc<"messages">) {
   const commands: Command[] = [];
   if (
     row.is_hidden ||
@@ -301,6 +304,7 @@ function startedCommands(row: Doc<"messages">) {
 
 const userMessageValidator = v.object({
   messageId: v.string(),
+  observedAt: v.optional(v.number()),
   text: v.string(),
   truncated: v.boolean(),
 });
@@ -323,6 +327,116 @@ const coverageValidator = v.object({
   runActive: v.boolean(),
 });
 
+/** Re-read the same bounded evidence at the point of enforcement. */
+export async function collectRunEvidence(
+  ctx: QueryCtx,
+  args: Burst & { userId: string; chatId: string; runId: string },
+) {
+  assertBurst(args);
+  const unavailable = (
+    reason:
+      "run_mismatch" | "subagent_overlap" | "concurrent_run" | "incomplete",
+  ) => ({
+    status: "unavailable" as const,
+    reason,
+  });
+  const run = await inspectParentRun(ctx, args);
+  if (!run || run.status !== "overlaps") return unavailable("run_mismatch");
+  if (!run.runRows.length || run.runStart === undefined)
+    return unavailable("incomplete");
+
+  // Subagents of this run share its workspace, but their commands are not
+  // stored as chat messages: abstain whenever one may have overlapped.
+  const children = await ctx.db
+    .query("subagent_runs")
+    .withIndex("by_user_chat_and_parent_run", (q) =>
+      q
+        .eq("user_id", args.userId)
+        .eq("chat_id", args.chatId)
+        .eq("parent_trigger_run_id", args.runId),
+    )
+    .take(MAX_SUBAGENT_SCAN + 1);
+  if (
+    children.length > MAX_SUBAGENT_SCAN ||
+    children.some(
+      (child) =>
+        overlap(
+          args,
+          child.started_at ?? child.created_at,
+          child.completed_at ??
+            (ACTIVE_SUBAGENT.has(child.status) ? "open" : undefined),
+        ) !== "disjoint",
+    )
+  )
+    return unavailable("subagent_overlap");
+  // Another root run active now may have shared the account's workspace.
+  // This reads run markers only, never chat content.
+  const roots = await ctx.db
+    .query("chats")
+    .withIndex("by_user_and_active_trigger_run", (q) =>
+      q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
+    )
+    .take(MAX_ACTIVE_ROOTS + 1);
+  if (roots.some((chat) => chat.active_trigger_run_id !== args.runId))
+    return unavailable("concurrent_run");
+
+  const lastRunRow = run.runRows[run.runRows.length - 1]._creationTime;
+  let laterEditedMessages = 0;
+  const users = run.rows.flatMap((row) => {
+    if (
+      row.role !== "user" ||
+      row.is_hidden === true ||
+      row._creationTime > lastRunRow
+    )
+      return [];
+    if (row.update_time > args.burstEnd + CLOCK_SKEW_MS) {
+      laterEditedMessages++;
+      return [];
+    }
+    const text = userText(row.parts);
+    return text
+      ? [
+          {
+            messageId: row.id,
+            // The current text version must have existed before the run began.
+            observedAt: Math.max(
+              row._creationTime,
+              row.update_time ?? row._creationTime,
+            ),
+            ...clip(text),
+          },
+        ]
+      : [];
+  });
+
+  const commands: Command[] = [];
+  let incompleteToolCalls = 0;
+  for (const row of run.runRows) {
+    const read = startedCommands(row);
+    commands.push(...read.commands);
+    incompleteToolCalls += read.incomplete;
+  }
+
+  const keptUsers = users.slice(-MAX_USER_MESSAGES);
+  const keptCommands = commands.slice(-MAX_COMMANDS);
+  return {
+    status: "ok" as const,
+    runStart: run.runStart,
+    runEnd: typeof run.runEnd === "number" ? run.runEnd : null,
+    userMessages: keptUsers,
+    commands: keptCommands,
+    coverage: {
+      rawReads: run.rows.length,
+      historyTruncated: run.historyTruncated,
+      userMessagesOmitted:
+        laterEditedMessages + users.length - keptUsers.length,
+      commandsOmitted: commands.length - keptCommands.length,
+      incompleteToolCalls,
+      runActive: run.active,
+    },
+  };
+}
+
 /**
  * Re-verifies the single matched run, then returns only stored user text and
  * the inputs of that run's completed terminal tool calls. No tool output,
@@ -343,97 +457,7 @@ export const readRunEvidence = query({
   ),
   handler: async (ctx, args) => {
     authorize(args.serviceKey);
-    assertBurst(args);
-    const unavailable = (
-      reason:
-        "run_mismatch" | "subagent_overlap" | "concurrent_run" | "incomplete",
-    ) => ({
-      status: "unavailable" as const,
-      reason,
-    });
-    const run = await inspectParentRun(ctx, args);
-    if (!run || run.status !== "overlaps") return unavailable("run_mismatch");
-    if (!run.runRows.length || run.runStart === undefined)
-      return unavailable("incomplete");
-
-    // Subagents of this run share its workspace, but their commands are not
-    // stored as chat messages: abstain whenever one may have overlapped.
-    const children = await ctx.db
-      .query("subagent_runs")
-      .withIndex("by_user_chat_and_parent_run", (q) =>
-        q
-          .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
-          .eq("parent_trigger_run_id", args.runId),
-      )
-      .take(MAX_SUBAGENT_SCAN + 1);
-    if (
-      children.length > MAX_SUBAGENT_SCAN ||
-      children.some(
-        (child) =>
-          overlap(
-            args,
-            child.started_at ?? child.created_at,
-            child.completed_at ??
-              (ACTIVE_SUBAGENT.has(child.status) ? "open" : undefined),
-          ) !== "disjoint",
-      )
-    )
-      return unavailable("subagent_overlap");
-    // Another root run active now may have shared the account's workspace.
-    // This reads run markers only, never chat content.
-    const roots = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_active_trigger_run", (q) =>
-        q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
-      )
-      .take(MAX_ACTIVE_ROOTS + 1);
-    if (roots.some((chat) => chat.active_trigger_run_id !== args.runId))
-      return unavailable("concurrent_run");
-
-    const lastRunRow = run.runRows[run.runRows.length - 1]._creationTime;
-    let laterEditedMessages = 0;
-    const users = run.rows.flatMap((row) => {
-      if (
-        row.role !== "user" ||
-        row.is_hidden === true ||
-        row._creationTime > lastRunRow
-      )
-        return [];
-      if (row.update_time > args.burstEnd + CLOCK_SKEW_MS) {
-        laterEditedMessages++;
-        return [];
-      }
-      const text = userText(row.parts);
-      return text ? [{ messageId: row.id, ...clip(text) }] : [];
-    });
-
-    const commands: Command[] = [];
-    let incompleteToolCalls = 0;
-    for (const row of run.runRows) {
-      const read = startedCommands(row);
-      commands.push(...read.commands);
-      incompleteToolCalls += read.incomplete;
-    }
-
-    const keptUsers = users.slice(-MAX_USER_MESSAGES);
-    const keptCommands = commands.slice(-MAX_COMMANDS);
-    return {
-      status: "ok" as const,
-      runStart: run.runStart,
-      runEnd: typeof run.runEnd === "number" ? run.runEnd : null,
-      userMessages: keptUsers,
-      commands: keptCommands,
-      coverage: {
-        rawReads: run.rows.length,
-        historyTruncated: run.historyTruncated,
-        userMessagesOmitted:
-          laterEditedMessages + users.length - keptUsers.length,
-        commandsOmitted: commands.length - keptCommands.length,
-        incompleteToolCalls,
-        runActive: run.active,
-      },
-    };
+    return collectRunEvidence(ctx, args);
   },
 });
 
@@ -729,9 +753,22 @@ export const readAccountActivity = query({
   },
 });
 
+const {
+  createdAt: _createdAt,
+  expiresAt: _expiresAt,
+  ...receiptArgs
+} = egressReviewReceiptFields;
+const {
+  digest: _digest,
+  reference: _reference,
+  caseOutcome: _caseOutcome,
+  ...caseReceiptArgs
+} = receiptArgs;
+
 /**
  * Creates the operator case once per reference. An existing case, including
- * any operator review, notes, status or erasure, is never changed.
+ * any operator review, notes, status or erasure, is never changed. The receipt
+ * is optional for workers deployed before case receipts were added.
  */
 export const recordCase = mutation({
   args: {
@@ -739,6 +776,15 @@ export const recordCase = mutation({
     reference: v.string(),
     digest: v.string(),
     ciphertext: v.string(),
+    receipt: v.optional(
+      v.object({
+        ...caseReceiptArgs,
+        decision: v.union(
+          v.literal("keep_active"),
+          v.literal("enforcement_pending"),
+        ),
+      }),
+    ),
   },
   returns: v.object({
     outcome: v.union(v.literal("created"), v.literal("existing")),
@@ -772,6 +818,43 @@ export const recordCase = mutation({
       kind: "received",
       createdAt: now,
     });
+    if (args.receipt) {
+      await insertReceipt(
+        ctx,
+        {
+          ...args.receipt,
+          digest: args.digest,
+          ...(args.receipt.decision === "enforcement_pending"
+            ? { reference: args.reference }
+            : {}),
+          caseOutcome: "created",
+        },
+        now,
+      );
+    }
     return { outcome: "created" as const };
+  },
+});
+
+/**
+ * Stores a no-case receipt for owner summaries. Accepts standalone case
+ * receipts from earlier workers during deployment.
+ */
+export const recordReceipt = mutation({
+  args: { serviceKey: v.string(), ...receiptArgs },
+  returns: v.object({
+    outcome: v.union(v.literal("created"), v.literal("existing")),
+  }),
+  handler: async (ctx, { serviceKey, ...receipt }) => {
+    authorize(serviceKey);
+    if (
+      !DIGEST.test(receipt.digest) ||
+      receipt.decision === "block_applied" ||
+      (receipt.reference !== undefined &&
+        (!REFERENCE.test(receipt.reference) ||
+          receipt.decision !== "enforcement_pending"))
+    )
+      throw new Error("Invalid review receipt");
+    return { outcome: await insertReceipt(ctx, receipt) };
   },
 });
