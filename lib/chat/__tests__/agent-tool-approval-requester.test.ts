@@ -767,6 +767,59 @@ describe("buildAgentToolApprovalRequester approval slot release recovery", () =>
     },
   );
 
+  it("withdraws a granted action when Stop arrives during release", async () => {
+    scriptReleases("fail", "ok");
+    const stop = new AbortController();
+    const { requester } = buildRequester({ signal: stop.signal });
+    const result = track(requester(request));
+    await flush();
+    const approvalId = pendingApprovalId();
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: signedDecision(approvalId, "approve"),
+    });
+    await flush();
+    expect(releaseWrites()).toHaveLength(1);
+    stop.abort();
+    await runReleaseRetries();
+    expect(result.value).toMatchObject({
+      approved: false,
+      approvalId,
+      reason: "The Agent run was stopped before the operation could start.",
+    });
+    expect(releaseWrites()).toHaveLength(2);
+  });
+
+  it.each(["ok", "fail"] as const)(
+    "honors Stop during queued release recovery (%s)",
+    async (lastWrite) => {
+      scriptReleases("fail", "fail", "fail", "fail", "fail", lastWrite);
+      const stop = new AbortController();
+      const { requester, writer } = buildRequester({ signal: stop.signal });
+      const first = track(requester(request));
+      const second = track(
+        requester({ ...request, toolCallId: "tool-call-2" }),
+      );
+      await flush();
+      mockSessionWaits[0].resolve({
+        ok: true,
+        output: signedDecision(pendingApprovalId(), "deny"),
+      });
+      await flush();
+      await runReleaseRetries();
+      expect(first.value).toMatchObject({ approved: false });
+      expect(releaseWrites()).toHaveLength(4);
+      stop.abort();
+      await runReleaseRetries();
+      expect(second.value).toMatchObject({
+        approved: false,
+        reason: "The Agent run was stopped before approval was requested.",
+      });
+      expect(approvalRequestsWritten(writer)).toBe(1);
+      expect(slotClaims()).toBe(1);
+    },
+  );
+
   it("keeps a denial and denies follow-on actions without polling while the release keeps failing", async () => {
     scriptReleases("fail", "fail", "fail", "fail", "fail", "fail");
     const { requester, writer, revalidateAfterSuspend } = buildRequester();

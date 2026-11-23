@@ -395,7 +395,27 @@ export const buildAgentToolApprovalRequester = ({
     return false;
   };
 
-  return async (request: AgentToolApprovalRequest) => {
+  const inactiveDecision = (
+    approvalId: string | undefined,
+    stoppedReason: string,
+  ) => {
+    if (signal.aborted || approvalSessionWaits.isFinished()) {
+      metadata.set("approvalStatus", "aborted");
+      return { approved: false as const, approvalId, reason: stoppedReason };
+    }
+    if (approvalSessionWaits.isSessionClosed()) {
+      metadata.set("approvalStatus", "session_closed");
+      return {
+        approved: false as const,
+        approvalId,
+        reason: APPROVAL_SESSION_CLOSED_REASON,
+      };
+    }
+  };
+
+  const decide: AgentToolApprovalRequester = async (
+    request: AgentToolApprovalRequest,
+  ) => {
     const previousApproval = approvalQueue.catch(() => {});
     let releaseApproval!: () => void;
     approvalQueue = previousApproval.then(
@@ -662,25 +682,10 @@ export const buildAgentToolApprovalRequester = ({
         };
       }
 
-      if (signal.aborted || approvalSessionWaits.isFinished()) {
-        completeAutoReviewLifecycle("dismissed");
-        metadata.set("approvalStatus", "aborted");
-        return {
-          approved: false,
-          approvalId,
-          reason: "The Agent run was stopped before approval was requested.",
-        };
-      }
-
-      if (approvalSessionWaits.isSessionClosed()) {
-        completeAutoReviewLifecycle("dismissed");
-        metadata.set("approvalStatus", "session_closed");
-        return {
-          approved: false,
-          approvalId,
-          reason: APPROVAL_SESSION_CLOSED_REASON,
-        };
-      }
+      const stoppedBeforeRequest =
+        "The Agent run was stopped before approval was requested.";
+      const inactive = inactiveDecision(approvalId, stoppedBeforeRequest);
+      if (inactive) return inactive;
 
       if (!triggerSessions) {
         completeAutoReviewLifecycle("dismissed");
@@ -698,9 +703,11 @@ export const buildAgentToolApprovalRequester = ({
       // that only this requester can clear would wait out the whole deadline.
       if (unreleasedApprovalId !== undefined) {
         const staleApprovalId = unreleasedApprovalId;
-        if (await releaseApprovalSlot(staleApprovalId)) {
-          unreleasedApprovalId = undefined;
-        } else {
+        const released = await releaseApprovalSlot(staleApprovalId);
+        if (released) unreleasedApprovalId = undefined;
+        const stopped = inactiveDecision(approvalId, stoppedBeforeRequest);
+        if (stopped) return stopped;
+        if (!released) {
           completeAutoReviewLifecycle("dismissed");
           metadata.set("approvalStatus", "approval_slot_release_failed");
           triggerLogger.warn(
@@ -1078,10 +1085,26 @@ export const buildAgentToolApprovalRequester = ({
     } finally {
       completeAutoReviewLifecycle("dismissed");
       // The queued request starts only after these bounded release attempts.
-      if (approvalPendingMarked && !(await releaseApprovalSlot(approvalId))) {
-        unreleasedApprovalId = approvalId;
+      if (approvalPendingMarked) {
+        const released = await releaseApprovalSlot(approvalId);
+        if (!released) unreleasedApprovalId = approvalId;
       }
       releaseApproval();
     }
+  };
+
+  return async (request) => {
+    const decision = await decide(request);
+    // Stop or session closure during release must take effect before a tool
+    // receives permission to start, including tools without their own signal.
+    if (decision.approved) {
+      return (
+        inactiveDecision(
+          decision.approvalId,
+          "The Agent run was stopped before the operation could start.",
+        ) ?? decision
+      );
+    }
+    return decision;
   };
 };
