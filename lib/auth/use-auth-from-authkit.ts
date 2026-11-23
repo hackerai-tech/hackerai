@@ -208,6 +208,7 @@ export function useAuthFromAuthKit(
     if (!isRecovering) return;
     let cancelled = false;
     let pending = false;
+    let refreshMismatchedToken = false;
     let timer: ReturnType<typeof setTimeout>;
     let nextAttemptAt = lastRefreshErrorAt.current + REFRESH_COOLDOWN_MS;
 
@@ -230,7 +231,12 @@ export function useAuthFromAuthKit(
       );
       try {
         // AuthKit checks JWT expiry and deduplicates concurrent wake refreshes.
-        const fetched = await getAccessToken();
+        // The SDK can keep returning an unexpired token after a failed refresh.
+        // If reconciling the session left it in place, bypass that cache on the
+        // next bounded retry.
+        const fetched = refreshMismatchedToken
+          ? await refresh()
+          : await getAccessToken();
         if (cancelled || authContextRef.current !== recovery?.context) {
           settle("context_superseded");
           return;
@@ -238,6 +244,7 @@ export function useAuthFromAuthKit(
         // Another account's, session's or organization's token counts as
         // missing, so the session check reconciles AuthKit's committed scope.
         const token = isUsableToken(fetched) ? fetched : undefined;
+        refreshMismatchedToken = !!fetched && !token;
         if (!token) await reconcileMissingToken();
         if (cancelled || authContextRef.current !== recovery?.context) {
           settle("context_superseded");
@@ -288,6 +295,7 @@ export function useAuthFromAuthKit(
     recovery,
     accessToken,
     getAccessToken,
+    refresh,
     isUsableToken,
     reconcileMissingToken,
     tokenDecisions,

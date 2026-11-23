@@ -750,6 +750,26 @@ describe("useAuthFromAuthKit", () => {
       expect(await view.result.current.fetchAccessToken()).toBe(otherAccount);
     });
 
+    it("recovers when the SDK keeps returning an old token after a failed refresh", async () => {
+      cachedToken = jwt({ ...claims, sub: "previous-user" });
+      mockGetAccessToken.mockImplementation(async () => cachedToken);
+      mockRefresh
+        .mockRejectedValueOnce(new Error("Offline"))
+        .mockImplementation(async () => {
+          cachedToken = ownToken;
+          return ownToken;
+        });
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      await act(async () => {
+        expect(await view.result.current.fetchAccessToken()).toBeNull();
+      });
+      expect(view.result.current.isLoading).toBe(true);
+      await act(async () => jest.advanceTimersByTimeAsync(20_000));
+      expect(view.result.current.isLoading).toBe(false);
+      expect(await view.result.current.fetchAccessToken()).toBe(ownToken);
+      expect(mockRefresh).toHaveBeenCalledTimes(2);
+    });
+
     it("skips another account's fresh shared-tab token and shares only this session's token", async () => {
       mockDeps.isCrossTabEnabled = () => true;
       mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify({
