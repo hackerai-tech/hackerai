@@ -47,7 +47,6 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useUnreadSteerRequeue } from "@/app/hooks/useUnreadSteerRequeue";
-import { isAgentSteerPart } from "@/lib/chat/agent-steer";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
@@ -2821,27 +2820,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
-  // The saved transcript is the record of which steers a run read.
-  const steerIdsInTranscript = useMemo(
-    () =>
-      new Set(
-        serverMessages.flatMap((message) =>
-          message.role === "assistant"
-            ? message.parts.flatMap((part) =>
-                isAgentSteerPart(part) ? [part.data.id] : [],
-              )
-            : [],
-        ),
-      ),
-    [serverMessages],
-  );
   const { pendingSteers, recovering: recoveringUnreadSteers } =
     useUnreadSteerRequeue({
       chatId,
       enabled: agentSteeringEnabled && isConvexAuthenticated,
-      isInTranscript: (steerId) => steerIdsInTranscript.has(steerId),
-      transcriptReady:
-        hasLoadedCurrentChat && paginatedMessages.status !== "LoadingFirstPage",
       // Until the chat loads, an active run is unknown; never withdraw early.
       runActive:
         !hasLoadedCurrentChat ||

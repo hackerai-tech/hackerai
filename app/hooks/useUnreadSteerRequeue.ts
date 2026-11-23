@@ -1,11 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useCommittedRef } from "./useLatestRef";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
-// Steers from an earlier visit (for example, a closed tab) come back held,
-// so reopening a chat never sends an old message without the user's action.
-const PAGE_SESSION_STARTED_AT = Date.now();
 const MAX_WITHDRAW_RETRIES = 5;
 const WITHDRAW_RETRY_BASE_MS = 1_000;
 
@@ -13,30 +10,27 @@ export type PendingAgentSteer = {
   id: string;
   text: string;
   runId: string;
-  createdAt: number;
-  claimed: boolean;
+  /** Browser send time, comparable with queued message timestamps. */
+  sentAt: number;
 };
 
 /**
- * Pending steers for this chat. Once no run is active, each is withdrawn; the
- * withdrawal races the run's claim atomically. A steer the run never claimed
- * returns to the queue. One it claimed is kept only by the saved transcript:
- * if the transcript shows it, it is dropped; otherwise it returns to the
- * queue. Claimed steers therefore wait until the transcript has loaded.
+ * Pending steers for this chat. Once no run is active, each is withdrawn and
+ * returned to the queue; the withdrawal races the run's claim atomically.
+ * Saving a response that shows a steer deletes its row, so any row still
+ * listed was never saved and is safe to queue again. Steers sent before this
+ * visit to the chat (for example, from a closed tab) come back held, so
+ * returning to a chat never sends an old message without the user's action.
  */
 export function useUnreadSteerRequeue({
   chatId,
   enabled,
   runActive,
-  isInTranscript,
-  transcriptReady,
   onRequeue,
 }: {
   chatId: string;
   enabled: boolean;
   runActive: boolean;
-  isInTranscript: (steerId: string) => boolean;
-  transcriptReady: boolean;
   onRequeue: (
     chatId: string,
     steers: Array<{ text: string; timestamp: number }>,
@@ -61,8 +55,12 @@ export function useUnreadSteerRequeue({
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  const visit = useRef({ chatId, startedAt: 0 });
   const onRequeueRef = useCommittedRef(onRequeue);
-  const isInTranscriptRef = useCommittedRef(isInTranscript);
+
+  useLayoutEffect(() => {
+    visit.current = { chatId, startedAt: Date.now() };
+  }, [chatId]);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -76,12 +74,12 @@ export function useUnreadSteerRequeue({
   useEffect(() => {
     if (!enabled || runActive || !pending?.length) return;
     const unread = pending.filter(
-      (steer) =>
-        !withdrawing.current.has(steer.id) &&
-        (transcriptReady || !steer.claimed),
+      (steer) => !withdrawing.current.has(steer.id),
     );
     if (!unread.length) return;
     for (const steer of unread) withdrawing.current.add(steer.id);
+    const visitStartedAt =
+      visit.current.chatId === chatId ? visit.current.startedAt : Date.now();
     void (async () => {
       setInFlight((count) => count + 1);
       const restored: Array<{ text: string; timestamp: number }> = [];
@@ -89,11 +87,8 @@ export function useUnreadSteerRequeue({
       for (const steer of unread) {
         try {
           const result = await withdraw({ chatId, id: steer.id });
-          if (
-            result.outcome === "withdrawn" &&
-            !isInTranscriptRef.current(steer.id)
-          )
-            restored.push({ text: result.text, timestamp: steer.createdAt });
+          if (result.outcome === "withdrawn")
+            restored.push({ text: result.text, timestamp: steer.sentAt });
         } catch {
           // Still pending; a bounded retry runs even if nothing else changes.
           withdrawing.current.delete(steer.id);
@@ -103,7 +98,7 @@ export function useUnreadSteerRequeue({
       onRequeueRef.current(
         chatId,
         restored,
-        restored.some((steer) => steer.timestamp < PAGE_SESSION_STARTED_AT),
+        restored.some((steer) => steer.timestamp < visitStartedAt),
       );
       if (!failed) {
         retryAttempts.current = 0;
@@ -122,17 +117,7 @@ export function useUnreadSteerRequeue({
       }
       setInFlight((count) => count - 1);
     })();
-  }, [
-    chatId,
-    enabled,
-    isInTranscriptRef,
-    onRequeueRef,
-    pending,
-    retryTick,
-    runActive,
-    transcriptReady,
-    withdraw,
-  ]);
+  }, [chatId, enabled, onRequeueRef, pending, retryTick, runActive, withdraw]);
 
   return {
     pendingSteers: enabled ? (pending ?? []) : [],

@@ -3,6 +3,7 @@ import {
   createChatHistoryAccess,
   ensureChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
+import { retireSavedSteers } from "./lib/agentSteers";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
@@ -964,6 +965,12 @@ export const saveMessage = mutation({
           patch.update_time = Date.now();
           failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
+          if (patch.parts && args.role === "assistant")
+            await retireSavedSteers(ctx, {
+              chatId: args.chatId,
+              userId: args.userId,
+              parts: patch.parts as unknown[],
+            });
         }
 
         return null;
@@ -1081,6 +1088,12 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+      if (args.role === "assistant")
+        await retireSavedSteers(ctx, {
+          chatId: args.chatId,
+          userId: args.userId,
+          parts: partsForSave,
+        });
 
       // Give an admitted legacy chat stable history ownership so its history
       // pages stop depending on chat status writes. Deleting chats are skipped;
@@ -1561,6 +1574,12 @@ export const saveAssistantMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+      if (args.role === "assistant")
+        await retireSavedSteers(ctx, {
+          chatId: args.chatId,
+          userId: user.subject,
+          parts: args.parts,
+        });
 
       return null;
     } catch (error) {

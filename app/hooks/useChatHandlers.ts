@@ -708,7 +708,10 @@ export const useChatHandlers = ({
    * steer (no Trigger run yet or any more, too long, or the store refused it)
    * and the caller should queue it instead.
    */
-  const steerActiveRun = async (text: string): Promise<boolean> => {
+  const steerActiveRun = async (
+    text: string,
+    sentAt = Date.now(),
+  ): Promise<boolean> => {
     const trimmed = text.trim();
     if (
       !agentSteeringEnabled ||
@@ -720,8 +723,12 @@ export const useChatHandlers = ({
       return false;
     try {
       return (
-        (await createAgentSteer({ chatId, id: uuidv4(), text: trimmed })) ===
-        "pending"
+        (await createAgentSteer({
+          chatId,
+          id: uuidv4(),
+          text: trimmed,
+          sentAt,
+        })) === "pending"
       );
     } catch (error) {
       console.warn("Could not steer the Agent run; queueing instead", error);
@@ -2018,7 +2025,8 @@ export const useChatHandlers = ({
       // Hold automatic queue delivery while this message moves into the run.
       isSendingNowRef.current = true;
       try {
-        if (await steerActiveRun(message.text)) {
+        // Keep its queue position if the run never reads it.
+        if (await steerActiveRun(message.text, message.timestamp)) {
           removeQueuedMessage(messageId);
         } else if (currentChatIdRef.current === chatId) {
           // Never fall back to stopping a run the user asked to steer.

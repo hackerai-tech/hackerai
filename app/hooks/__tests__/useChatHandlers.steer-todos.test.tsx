@@ -43,7 +43,12 @@ const mockRegenerateWithNewContent = jest.fn<
 >(async () => null);
 const mockRemoveQueuedMessage = jest.fn();
 const mockCreateAgentSteer = jest.fn<
-  (args: { chatId: string; id: string; text: string }) => Promise<string>
+  (args: {
+    chatId: string;
+    id: string;
+    text: string;
+    sentAt: number;
+  }) => Promise<string>
 >(async () => "pending");
 let mockAgentSteeringEnabled = false;
 const mockQueueMessage = jest.fn();
@@ -939,6 +944,7 @@ describe("useChatHandlers steer todo handoff", () => {
         chatId: "chat-1",
         id: expect.any(String),
         text: "Use the staging host",
+        sentAt: expect.any(Number),
       });
       expect(mockQueueMessage).not.toHaveBeenCalled();
       expect(mockStop).not.toHaveBeenCalled();
@@ -968,8 +974,9 @@ describe("useChatHandlers steer todo handoff", () => {
       ];
       const { result, isSendingNowRef } = renderSummarySteer(false);
       await act(async () => result.current.handleSendNow("queued-1"));
+      // A steer that is never read returns to its original queue position.
       expect(mockCreateAgentSteer).toHaveBeenCalledWith(
-        expect.objectContaining({ text: "Change direction" }),
+        expect.objectContaining({ text: "Change direction", sentAt: 1 }),
       );
       expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
       expect(mockStop).not.toHaveBeenCalled();

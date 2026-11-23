@@ -2335,8 +2335,9 @@ export default defineSchema({
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   // Follow-ups sent while an Agent run is working, waiting for that run's next
-  // model step. After the run, the client removes each row: dropped if the
-  // saved transcript shows it, queued otherwise. Chat deletion removes them.
+  // model step. Saving a response that shows a steer removes its row in the
+  // same transaction; after the run, the client queues any row that remains.
+  // Chat deletion removes them too.
   agent_steers: defineTable({
     id: v.string(),
     chat_id: v.string(),
@@ -2344,7 +2345,9 @@ export default defineSchema({
     run_id: v.string(),
     text: v.string(),
     created_at: v.number(),
-    /** Set when the run reads it. Cleared with the row once the run ends. */
+    /** Browser send time; orders a restored steer among queued messages. */
+    sent_at: v.optional(v.number()),
+    /** Set when the run reads it. */
     claimed_at: v.optional(v.number()),
   })
     .index("by_steer_id", ["id"])

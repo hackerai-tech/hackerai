@@ -42,7 +42,13 @@ async function getOwnedChat(
  * the client queues the message instead.
  */
 export const create = mutation({
-  args: { chatId: v.string(), id: v.string(), text: v.string() },
+  args: {
+    chatId: v.string(),
+    id: v.string(),
+    text: v.string(),
+    /** Browser time, comparable with queued messages for restore order. */
+    sentAt: v.number(),
+  },
   returns: v.union(v.literal("pending"), v.literal("no_active_run")),
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -93,6 +99,7 @@ export const create = mutation({
       run_id: runId,
       text,
       created_at: Date.now(),
+      sent_at: args.sentAt,
     });
     return "pending" as const;
   },
@@ -115,8 +122,7 @@ export const listPending = query({
       id: v.string(),
       text: v.string(),
       runId: v.string(),
-      createdAt: v.number(),
-      claimed: v.boolean(),
+      sentAt: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -139,16 +145,15 @@ export const listPending = query({
         id: row.id,
         text: row.text,
         runId: row.run_id,
-        createdAt: row.created_at,
-        claimed: row.claimed_at !== undefined,
+        sentAt: row.sent_at ?? row.created_at,
       }));
   },
 });
 
 /**
  * Take back a steer no running Agent holds, for example after its run ended.
- * This races the run's claim inside one transaction, so exactly one side gets
- * the text.
+ * This races the run's claim inside one transaction. A remaining row was never
+ * saved in a response, so its text is safe to queue again.
  */
 export const withdraw = mutation({
   args: { chatId: v.string(), id: v.string() },
@@ -178,8 +183,8 @@ export const withdraw = mutation({
 /**
  * The owning run reads steers before a model step. The run never deletes a
  * row: a claim whose response was lost returns the same steer on the next
- * step, and after the run the client keeps the saved transcript as the
- * record, removing claimed rows it shows and queueing any it does not.
+ * step. Saving the response that shows a steer retires its row
+ * (`retireSavedSteers`), and after the run the client queues any that remain.
  */
 export const claimForBackend = mutation({
   args: {

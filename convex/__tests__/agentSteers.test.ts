@@ -19,7 +19,7 @@ jest.mock("../lib/utils", () => ({
 }));
 
 const steers = require("../agentSteers") as typeof import("../agentSteers");
-const { deleteAgentSteersForChat } =
+const { deleteAgentSteersForChat, retireSavedSteers } =
   require("../lib/agentSteers") as typeof import("../lib/agentSteers");
 
 type Row = Record<string, unknown> & { _id: string };
@@ -86,7 +86,7 @@ function fixture(user = "owner") {
     },
   };
   const create = (id: string, text = `message ${id}`, chatId = "chat") =>
-    steers.create.handler(ctx as never, { chatId, id, text });
+    steers.create.handler(ctx as never, { chatId, id, text, sentAt: 1_000 });
   const claim = (runId = "run-1") =>
     steers.claimForBackend.handler(ctx as never, {
       serviceKey: "service-key",
@@ -137,7 +137,7 @@ describe("agent steers", () => {
     expect(await withdrawnFirst.claim()).toEqual([]);
   });
 
-  it("returns a steer the ended run claimed but never confirmed", async () => {
+  it("returns a steer the ended run claimed but never saved", async () => {
     const { create, claim, withdraw, rows, ctx } = fixture();
     await create("a", "also check X");
     await claim();
@@ -146,7 +146,7 @@ describe("agent steers", () => {
       chatId: "chat",
     });
     expect(pending).toEqual([
-      expect.objectContaining({ id: "a", claimed: true }),
+      expect.objectContaining({ id: "a", sentAt: 1_000 }),
     ]);
     expect(await withdraw("a")).toEqual({
       outcome: "withdrawn",
@@ -198,5 +198,43 @@ describe("agent steers", () => {
     await create("b");
     await deleteAgentSteersForChat(ctx as never, "chat");
     expect(rows.agent_steers).toEqual([]);
+  });
+
+  it("retires a steer when a saved response shows it, so it is never queued again", async () => {
+    const { create, claim, withdraw, rows, ctx } = fixture();
+    await create("a", "use staging");
+    await create("b", "also check X");
+    await claim();
+    await retireSavedSteers(ctx as never, {
+      chatId: "chat",
+      userId: "owner",
+      parts: [
+        { type: "text", text: "Switching." },
+        {
+          type: "data-agent-steer",
+          id: "a",
+          data: { id: "a", text: "use staging" },
+        },
+      ],
+    });
+    rows.chats[0].active_trigger_run_id = undefined;
+    expect(await withdraw("a")).toEqual({ outcome: "not_found" });
+    expect(await withdraw("b")).toEqual({
+      outcome: "withdrawn",
+      text: "also check X",
+    });
+  });
+
+  it("does not retire another user's steer from a saved response", async () => {
+    const { create, ctx, rows } = fixture();
+    await create("a");
+    await retireSavedSteers(ctx as never, {
+      chatId: "chat",
+      userId: "intruder",
+      parts: [
+        { type: "data-agent-steer", id: "a", data: { id: "a", text: "x" } },
+      ],
+    });
+    expect(rows.agent_steers).toHaveLength(1);
   });
 });
