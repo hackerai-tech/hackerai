@@ -2,6 +2,7 @@ import { findingEvidenceStatusSchema } from "../../findings/evidence-status";
 import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";
+import { MAX_CLOUD_BACKGROUND_PROCESSES } from "./utils/cloud-background-processes";
 
 type ModelAwareToolSchemaOptions = {
   modelName?: string;
@@ -30,10 +31,16 @@ export const RUN_TERMINAL_MAX_TIMEOUT_SECONDS = 600;
 export const createRunTerminalCmdToolSchema = ({
   approvalGated = false,
   modelName,
+  cloudBackgroundServices = false,
 }: {
   approvalGated?: boolean;
   modelName?: string;
+  /** Cloud sandboxes detach background commands with a log file. */
+  cloudBackgroundServices?: boolean;
 } = {}) => {
+  const longRunningGuidance = cloudBackgroundServices
+    ? `5. Start long-lived services (dev servers, databases, labs, listeners) with \`is_background\` true. The result returns a \`backgroundId\`, \`pid\`, and \`logPath\`; the service keeps running across turns while the cloud sandbox exists, and still-running ones are listed at the start of later turns. Check readiness in a separate call, read output from the log file with ordinary commands (e.g., \`tail -n 50 <logPath>\`), and stop a service with \`kill -- -<pid>\`. At most ${MAX_CLOUD_BACKGROUND_PROCESSES} background processes can run at once, so reuse a running service instead of starting a duplicate. Do not add \`nohup\` or a shell \`&\` yourself. For long-running commands whose completion you need (scans, builds, installs), keep \`is_background\` false; if the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`interactive\` sessions only for programs that need keyboard input; terminal sessions end when the run ends.`
+    : `5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. For a service whose output or lifecycle you need (e.g., a dev server or database), start it with \`is_background\` false and a short initial \`timeout\` (e.g., 10 seconds), use the returned session to view logs or kill it, and check readiness in a separate call. Do not use \`nohup\` or a shell \`&\` when you need a reusable session. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.`;
   const commandCompositionGuidance = approvalGated
     ? `1. Prefer one static command per tool call so a safe argv prefix can be approved and reused:
    - Do not chain commands or use shell operators such as \`&&\`, \`|\`, \`;\`, redirects, or substitutions
@@ -68,7 +75,7 @@ ${commandCompositionGuidance}
 2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file. If the file tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. A timeout or lost response may hide a completed write: inspect the file before retrying, especially before append.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
-5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. For a service whose output or lifecycle you need (e.g., a dev server or database), start it with \`is_background\` false and a short initial \`timeout\` (e.g., 10 seconds), use the returned session to view logs or kill it, and check readiness in a separate call. Do not use \`nohup\` or a shell \`&\` when you need a reusable session. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
+${longRunningGuidance}
 6. Dont include any newlines in the command.
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
@@ -104,7 +111,9 @@ ${largeOutputGuidance}
         .optional()
         .default(false)
         .describe(
-          "Run the command as a detached background process. Only meaningful when interactive=false; ignored otherwise. Detached processes return a PID but no reusable terminal session, so never pass that PID to interact_terminal_session. Use FALSE if you need output or a resumable session; TRUE only for long-running processes whose output you do not need to poll.",
+          cloudBackgroundServices
+            ? "Run the command as a detached background process that outlives this run, with stdout and stderr written to the returned logPath. Only meaningful when interactive=false; ignored otherwise. Use TRUE for long-lived services (dev servers, databases, labs, listeners); FALSE for commands whose completion you need. The returned PID is not a terminal session, so never pass it to interact_terminal_session."
+            : "Run the command as a detached background process. Only meaningful when interactive=false; ignored otherwise. Detached processes return a PID but no reusable terminal session, so never pass that PID to interact_terminal_session. Use FALSE if you need output or a resumable session; TRUE only for long-running processes whose output you do not need to poll.",
         ),
       timeout: z
         .number()

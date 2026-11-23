@@ -303,6 +303,7 @@ import {
   prepareSandboxContextForPrompt,
   writeSandboxFallbackEvent,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
+import { getCloudBackgroundInventoryReminder } from "@/lib/ai/tools/utils/cloud-background-processes";
 import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
   AGENT_LONG_HEARTBEAT_PART_TYPE,
@@ -417,6 +418,9 @@ import {
   AgentAutoReviewEntitlementRevalidationUnavailableError,
   buildAgentToolApprovalRequester,
 } from "@/lib/chat/agent-tool-approval-requester";
+
+/** Turn-start background inventory budget; a slower sandbox resume skips it. */
+const CLOUD_BACKGROUND_INVENTORY_TIMEOUT_MS = 4_000;
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 6 * 60 * 60;
 // The free concurrency lock must outlive the run cap and cleanup grace.
@@ -3413,6 +3417,22 @@ export const agentLongTask = task({
                   }),
               );
             userStopSignal.signal.throwIfAborted();
+            // Overlaps attachment upload and delays the turn by at most the
+            // timeout; ordinary turns skip it without touching the sandbox.
+            const cloudBackgroundReminderPromise =
+              getCloudBackgroundInventoryReminder({
+                sandboxManager,
+                messages: messagesForProcessing,
+                timeoutMs: CLOUD_BACKGROUND_INVENTORY_TIMEOUT_MS,
+                onOutcome: (outcome, count) =>
+                  phLogger.event("cloud_background_inventory", {
+                    userId,
+                    chat_id: chatId,
+                    trigger_run_id: ctx.run.id,
+                    outcome,
+                    running_count: count,
+                  }),
+              });
             const sandboxContext = sandboxPromptContext.sandboxContext;
             const sandboxFallbackReminder = getSandboxFallbackPromptReminder(
               sandboxPromptContext.fallbackInfo,
@@ -3520,6 +3540,15 @@ export const agentLongTask = task({
               finalMessages = appendSystemReminderToLastUserMessage(
                 finalMessages,
                 sandboxFallbackReminder,
+              );
+            }
+
+            const cloudBackgroundReminder =
+              await cloudBackgroundReminderPromise;
+            if (cloudBackgroundReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                cloudBackgroundReminder,
               );
             }
 

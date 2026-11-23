@@ -382,6 +382,30 @@ describe("agent tool schema descriptions", () => {
     expect(getInputShape(runTerminalCmdTool)).not.toHaveProperty("prefix_rule");
   });
 
+  test("cloud guidance starts services in the background instead of run-scoped sessions", () => {
+    const cloudTool = createRunTerminalCmdToolSchema({
+      cloudBackgroundServices: true,
+    });
+    const cloud = getDescription(cloudTool);
+    // Interactive and timed-out sessions are closed at run end, so a cloud
+    // dev server started that way would die between turns.
+    expect(cloud).toContain(
+      "Start long-lived services (dev servers, databases, labs, listeners) with `is_background` true",
+    );
+    expect(cloud).toContain("read output from the log file");
+    expect(cloud).toContain("stop a service with `kill -- -<pid>`");
+    expect(cloud).toContain("At most 5 background processes can run at once");
+    expect(cloud).not.toContain(
+      "start it with `is_background` false and a short initial `timeout`",
+    );
+    expect(getInputShape(cloudTool).is_background).toHaveProperty(
+      "description",
+      expect.stringContaining("written to the returned logPath"),
+    );
+    // Desktop ignores is_background today, so local wording is unchanged.
+    expect(getDescription(runTerminalCmdTool)).not.toContain("logPath");
+  });
+
   test("file approval wording is only included for approval-gated schemas", () => {
     const fullAccessTool = createFileToolSchema({ supportsView: true });
     const approvalGatedTool = createFileToolSchema({
