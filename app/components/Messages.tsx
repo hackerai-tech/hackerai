@@ -226,6 +226,8 @@ interface MessagesProps {
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   continueDisabledReason?: string;
+  /** The stopped run's own computer is connected again. */
+  stoppedComputerReconnected?: boolean;
   uploadStatus?: { message: string; isUploading: boolean } | null;
   summarizationStatus?: {
     status: "started" | "completed";
@@ -264,6 +266,7 @@ export const Messages = ({
   tempChatFileDetails,
   finishReason,
   continueDisabledReason,
+  stoppedComputerReconnected,
   uploadStatus,
   summarizationStatus,
   mode,
@@ -741,6 +744,7 @@ export const Messages = ({
       status,
       finishReason,
       continueDisabledReason,
+      stoppedComputerReconnected,
       onContinue,
     }),
     [
@@ -748,6 +752,7 @@ export const Messages = ({
       status,
       finishReason,
       continueDisabledReason,
+      stoppedComputerReconnected,
       onContinue,
     ],
   );
@@ -840,6 +845,7 @@ export const Messages = ({
               tempChatFileDetails={tempChatFileDetails}
               finishReason={finishReason}
               continueDisabledReason={continueDisabledReason}
+              stoppedComputerReconnected={stoppedComputerReconnected}
               mode={mode}
               agentRunSpendCapWarning={agentRunSpendCapWarning}
               branchedFromChatId={branchedFromChatId}
@@ -918,6 +924,7 @@ export const Messages = ({
       feedbackInputMessageId,
       finishReason,
       continueDisabledReason,
+      stoppedComputerReconnected,
       captureScrollPosition,
       getCachedUrl,
       handleBranchMessage,
@@ -977,6 +984,7 @@ export const Messages = ({
             mode={mode}
             status={status}
             continueDisabledReason={continueDisabledReason}
+            stoppedComputerReconnected={stoppedComputerReconnected}
             onContinue={onContinue}
           />
         )}

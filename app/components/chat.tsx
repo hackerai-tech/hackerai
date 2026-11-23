@@ -9,6 +9,7 @@ import {
 import {
   BROWSER_HANDOFF_ABANDONED_FINISH_REASON,
   requiresManualAgentResume,
+  stoppedComputerReconnected,
 } from "@/lib/chat/manual-agent-resume";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
@@ -3260,6 +3261,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       tempChatFileDetails={tempChatFileDetails}
                       finishReason={chatDataForCurrentChat?.finish_reason}
                       continueDisabledReason={computerSendDisabledReason}
+                      stoppedComputerReconnected={stoppedComputerReconnected({
+                        finishReason: chatDataForCurrentChat?.finish_reason,
+                        savedSandboxPreference: storedSandboxType,
+                        sandboxPreference,
+                        computerUnavailableReason: computerSendDisabledReason,
+                      })}
                       agentRunSpendCapWarning={agentRunSpendCapWarning}
                       uploadStatus={uploadStatus}
                       summarizationStatus={summarizationStatus}

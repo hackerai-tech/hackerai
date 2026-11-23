@@ -11,7 +11,12 @@ import {
   agentRunEventUuid,
   modelRecoveryAnalyticsProperties,
 } from "@/lib/analytics/agent-run-reporting";
-import { localStopAnalyticsProperties } from "@/lib/chat/local-connection-stop";
+import {
+  localRecoveryAnalyticsProperties,
+  localStopAnalyticsProperties,
+  type LocalRunRecoverySummary,
+} from "@/lib/chat/local-connection-stop";
+import { resumeAnalyticsProperties } from "@/lib/chat/manual-agent-resume";
 import {
   FREE_ASK_DEEPSEEK_1017_KEY,
   FREE_ASK_MODEL_OUTCOME_EVENT,
@@ -1449,6 +1454,10 @@ type AgentCompletionAnalyticsArgs = {
   localConnectionLostError?: unknown;
   /** Added by run reporting; only its own history contributes closed fields. */
   modelRecoveryHistory?: unknown;
+  /** Added by run reporting: outages the watched local host recovered from. */
+  localRecoverySummary?: LocalRunRecoverySummary;
+  /** Added by run reporting: the manual-resume stop this run resumed. */
+  resumeFromFinishReason?: string;
 };
 
 export function captureAgentRun({
@@ -1512,6 +1521,8 @@ export function captureAgentRun({
   providerRecoverySucceeded,
   localConnectionLostError,
   modelRecoveryHistory,
+  localRecoverySummary,
+  resumeFromFinishReason,
 }: Omit<
   AgentCompletionAnalyticsArgs,
   | "endpoint"
@@ -1824,6 +1835,11 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...localStopAnalyticsProperties(localConnectionLostError),
+      ...localRecoveryAnalyticsProperties(
+        localRecoverySummary,
+        localConnectionLostError,
+      ),
+      ...resumeAnalyticsProperties(resumeFromFinishReason),
       ...modelRecoveryAnalyticsProperties(modelRecoveryHistory, outcome),
       ...getExperimentAnalyticsProperties(experiment),
     },
@@ -2057,6 +2073,8 @@ export function captureAgentCompletionAnalytics(
     providerRecoverySucceeded: args.providerRecoverySucceeded,
     localConnectionLostError: args.localConnectionLostError,
     modelRecoveryHistory: args.modelRecoveryHistory,
+    localRecoverySummary: args.localRecoverySummary,
+    resumeFromFinishReason: args.resumeFromFinishReason,
   });
 }
 

@@ -914,6 +914,50 @@ describe("captureAgentRun", () => {
     });
   });
 
+  it("adds the local recovery outcome and resumed stop to the completed run event", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_resumed",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "pro",
+      endpoint: "/api/agent",
+      resumeFromFinishReason: "local-connection-lost",
+    });
+    reporting.setLocalRecoverySource(() => ({
+      recoveredOutages: 1,
+      maxRecoveredOutageMs: 70_000,
+    }));
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "desktop" },
+      outcome: "success",
+      hasResponseContent: true,
+      chatLogger: undefined,
+      selectedModel: "model-grok-4.6",
+      configuredModelId: "x-ai/grok-4.6",
+      finishReason: "stop",
+      triggerRunId: "run_resumed",
+      abliteratedProviderSummary: undefined,
+    });
+    const [run] = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(run.properties).toMatchObject({
+      resume_from_finish_reason: "local-connection-lost",
+      local_recovery_outcome: "recovered",
+      local_recovered_outages: 1,
+      local_recovered_max_outage_bucket: "60s_120s",
+    });
+  });
+
   it("adds no recovery history fields for a caller-supplied object", () => {
     const capture = jest.fn();
     captureAgentRun({

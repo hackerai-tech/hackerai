@@ -21,6 +21,7 @@ import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
 import { validateDownloadUrl } from "./utils/path-validation";
+import { IncompleteFileWriteError } from "./utils/incomplete-file-write";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -1800,6 +1801,13 @@ export const createFile = (
           }
         } catch (error) {
           if (context.auxiliaryVision?.isAborted?.()) throw error;
+          if (error instanceof IncompleteFileWriteError)
+            return {
+              error: error.message,
+              writeOutcome: error.writeOutcome,
+              confirmedChunks: error.confirmedChunks,
+              totalChunks: error.totalChunks,
+            };
           return {
             error: resolveToolErrorMessage(error),
           };

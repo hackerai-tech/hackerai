@@ -3,10 +3,12 @@ import { generateCentrifugoToken } from "./jwt";
 import { sandboxConnectionChannel } from "./types";
 import {
   getConnectionIdFromPresenceClient,
+  LOCAL_RUN_HOST_RECOVERY_MS,
   presenceHasConnectionId,
 } from "./presence";
 import {
   DESKTOP_SESSION_CHALLENGE,
+  isDesktopSessionEnded,
   MAX_RECONCILED_COMMANDS,
   newDesktopSessionNonce,
   parseDesktopSessionProof,
@@ -21,6 +23,7 @@ import {
   readCallbackCode,
   readClientState,
   readSocketClose,
+  type LocalRunRecoverySummary,
   type LocalStopClientState,
   type LocalStopReason,
 } from "@/lib/chat/local-connection-stop";
@@ -32,11 +35,19 @@ const PRESENCE_TIMEOUT_MS = 10_000;
 // Once the selected host is verified, an outage may recover. The window is
 // fixed at its first interruption: neither SDK retries, failed lookups nor
 // failed proofs extend it, and only fresh verification ends it.
+// Without a proven native session only the observer's own outage recovers, and
+// this short window bounds how long a CLI host's departure can go unseen.
 const OBSERVER_RECOVERY_MS = 15_000;
+// With a proven native session, readiness after any outage needs a fresh proof
+// from that same session plus reconciled commands, so the host may take as
+// long to return as the backend keeps its connection.
+const SESSION_RECOVERY_MS = LOCAL_RUN_HOST_RECOVERY_MS;
 // The SDK owns every reconnect and resubscribe; cap its jittered backoff so
 // several attempts fit in the window.
 const MAX_RETRY_DELAY_MS = 3_000;
-// Only after a proven Desktop baseline: look up and challenge again quickly.
+// Only after a proven Desktop baseline: look up and challenge again quickly,
+// then at the normal cadence once a short outage has become a long one. The
+// host's join still triggers an immediate lookup.
 const SESSION_RECOVERY_CHECK_MS = 1_000;
 const SESSION_PROOF_TIMEOUT_MS = 3_000;
 const MAX_BASELINE_ATTEMPTS = 3;
@@ -76,6 +87,11 @@ type SocketClose = ReturnType<typeof readSocketClose>;
 
 type Recovery = {
   timer: ReturnType<typeof setTimeout>;
+  windowMs: number;
+  /** False while only a completion check reopened verification. */
+  outage: boolean;
+  wallStart?: number;
+  monotonicStart?: number;
   wallDeadline?: number;
   monotonicDeadline?: number;
   /** The interrupting close, kept past the SDK's own new sockets. */
@@ -103,6 +119,7 @@ export type LocalRunConnectionWatch = DesktopDispatchGate & {
    * rejects with the loss, a monitoring stop, or the signal's reason.
    */
   confirmReady(signal?: AbortSignal): Promise<void>;
+  recoverySummary(): LocalRunRecoverySummary;
 };
 
 /** Desktop hosts only: the run's published commands, read when reconciling. */
@@ -140,6 +157,8 @@ export function watchLocalRunConnection({
   let everSubscribed = false;
   let hadPositivePresence = false;
   let lastPositivePresenceAt: number | undefined;
+  let recoveredOutages = 0;
+  let maxRecoveredOutageMs: number | undefined;
   let clientStateAtStop: LocalStopClientState | undefined;
   // Readiness is live state: any interruption clears it before its handler
   // returns, so a dispatch can never pass on an earlier verification.
@@ -227,8 +246,13 @@ export function watchLocalRunConnection({
   ) => {
     if (!dispose()) return;
     const now = monotonicNow();
+    const interrupted = recovery?.outage ? recovery : undefined;
     const error = new LocalConnectionLostError(reason, {
       connectionId,
+      ...(interrupted && {
+        recoveryWindowMs: interrupted.windowMs,
+        recoveryElapsedMs: recoveryElapsed(interrupted),
+      }),
       hadPositivePresence,
       lastPositivePresenceAgeMs:
         now === undefined || lastPositivePresenceAt === undefined
@@ -255,6 +279,37 @@ export function watchLocalRunConnection({
         { close: recovery.close },
       );
   };
+  // The larger of both clocks: only the wall clock advances while suspended.
+  const recoveryElapsed = ({ wallStart, monotonicStart }: Recovery) => {
+    const wall = wallNow();
+    const monotonic = monotonicNow();
+    const elapsed = [
+      wall !== undefined && wallStart !== undefined
+        ? wall - wallStart
+        : undefined,
+      monotonic !== undefined && monotonicStart !== undefined
+        ? monotonic - monotonicStart
+        : undefined,
+    ].filter((value): value is number => value !== undefined && value >= 0);
+    return elapsed.length > 0 ? Math.max(...elapsed) : undefined;
+  };
+  const endRecovery = () => {
+    if (!recovery) return;
+    clearTimeout(recovery.timer);
+    const { outage } = recovery;
+    const elapsed = recoveryElapsed(recovery);
+    recovery = undefined;
+    if (!outage) return;
+    recoveredOutages++;
+    if (elapsed !== undefined)
+      maxRecoveredOutageMs = Math.max(maxRecoveredOutageMs ?? 0, elapsed);
+  };
+  const sessionRecoveryCheckDelay = () => {
+    const elapsed = recovery && recoveryElapsed(recovery);
+    return elapsed !== undefined && elapsed >= OBSERVER_RECOVERY_MS
+      ? PRESENCE_INTERVAL_MS
+      : SESSION_RECOVERY_CHECK_MS;
+  };
   // Either clock passing the deadline ends it, even if its timer is late.
   const recoveryExpired = ({ wallDeadline, monotonicDeadline }: Recovery) => {
     const wall = wallNow();
@@ -273,8 +328,8 @@ export function watchLocalRunConnection({
     timer = setTimeout(() => void check(), delay);
   };
   // Invalidates the current lookup, proof and readiness. Only the first
-  // interruption of an outage starts its window.
-  const interrupt = () => {
+  // interruption of an outage starts its window; a completion check shares it.
+  const interrupt = (outage = true) => {
     generation++;
     epoch++;
     ready = false;
@@ -283,23 +338,26 @@ export function watchLocalRunConnection({
     if (!recovery) {
       const wall = wallNow();
       const monotonic = monotonicNow();
+      // Fixed with the window: a baseline is never set during recovery.
+      const windowMs = baseline ? SESSION_RECOVERY_MS : OBSERVER_RECOVERY_MS;
       recovery = {
-        timer: setTimeout(expire, OBSERVER_RECOVERY_MS),
-        wallDeadline:
-          wall === undefined ? undefined : wall + OBSERVER_RECOVERY_MS,
+        timer: setTimeout(expire, windowMs),
+        windowMs,
+        wallStart: wall,
+        monotonicStart: monotonic,
+        wallDeadline: wall === undefined ? undefined : wall + windowMs,
         monotonicDeadline:
-          monotonic === undefined
-            ? undefined
-            : monotonic + OBSERVER_RECOVERY_MS,
+          monotonic === undefined ? undefined : monotonic + windowMs,
         close: socketClose,
         hostDeparted: false,
+        outage,
       };
-    }
+    } else if (outage) recovery.outage = true;
     clearTimeout(timer);
     // A subscription that is still current is looked up again.
     if (subscribed)
       scheduleCheck(
-        baseline ? SESSION_RECOVERY_CHECK_MS : PRESENCE_INTERVAL_MS,
+        baseline ? sessionRecoveryCheckDelay() : PRESENCE_INTERVAL_MS,
       );
   };
   // Before verification any observer failure still stops the run.
@@ -420,8 +478,7 @@ export function watchLocalRunConnection({
         return;
       }
     }
-    clearTimeout(recovery.timer);
-    recovery = undefined;
+    endRecovery();
     hadPositivePresence = true;
     lastPositivePresenceAt = monotonicNow();
     // The host's subscription may have changed while this receiver's did
@@ -468,13 +525,10 @@ export function watchLocalRunConnection({
     if (recovery && baseline) {
       // Present again, but unproven: readiness waits for the session proof.
       challengeSession();
-      scheduleCheck(SESSION_RECOVERY_CHECK_MS);
+      scheduleCheck(sessionRecoveryCheckDelay());
       return;
     }
-    if (recovery) {
-      clearTimeout(recovery.timer);
-      recovery = undefined;
-    }
+    endRecovery();
     hadPositivePresence = true;
     // Unavailable now: omit the age rather than report a stale timestamp.
     lastPositivePresenceAt = monotonicNow();
@@ -566,9 +620,12 @@ export function watchLocalRunConnection({
         )
           void check();
       });
-      subscription.on("publication", (context) =>
-        acceptProof(context.data, context.info),
-      );
+      subscription.on("publication", (context) => {
+        // An intentional stop ends the run now rather than at the window.
+        if (isDesktopSessionEnded(context.data, context.info, connectionId))
+          lost("selected_host_ended");
+        else acceptProof(context.data, context.info);
+      });
     }
     subscription.on("subscribing", (context) =>
       reconnecting("subscription_reconnecting", context),
@@ -589,6 +646,11 @@ export function watchLocalRunConnection({
   })().catch(() => lost("setup_error"));
   return {
     stop,
+    recoverySummary: () =>
+      Object.freeze({
+        recoveredOutages,
+        ...(maxRecoveredOutageMs !== undefined && { maxRecoveredOutageMs }),
+      }),
     isReady: () => ready,
     waitUntilReady,
     confirmReady: (signal?: AbortSignal) => {
@@ -596,7 +658,7 @@ export function watchLocalRunConnection({
       if (signal?.aborted) return Promise.reject(signal.reason);
       // Invalidate even an unready lookup/proof: it may have started before
       // this completion boundary. interrupt preserves an existing deadline.
-      if (baseline) interrupt();
+      if (baseline) interrupt(false);
       else {
         generation++;
         epoch++;

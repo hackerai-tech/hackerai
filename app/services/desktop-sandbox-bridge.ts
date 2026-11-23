@@ -6,6 +6,7 @@ import {
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import {
   DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_ENDED,
   answerDesktopSessionChallenge,
   parseDesktopSessionChallenge,
   readDesktopSessionIdentity,
@@ -126,7 +127,10 @@ import {
   RelayOutputOverflowError,
 } from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
-import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_RUN_HOST_RECOVERY_MS,
+  LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+} from "@/lib/centrifugo/presence";
 import { normalizeSandboxPlatform } from "@/lib/ai/tools/utils/platform-utils";
 
 type RefreshTokenResult =
@@ -180,6 +184,9 @@ const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
 const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
+// An Agent run on this connection is evidenced by its session challenge or a
+// dispatched operation. Model steps between operations rarely run this long.
+const DESKTOP_RUN_ACTIVITY_WINDOW_MS = 15 * 60_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
 /** An ACL denial does not establish that a command registration is missing. */
@@ -634,6 +641,10 @@ export class DesktopSandboxBridge {
   private successfulRelayConnections = 0;
   private relayStarted = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current wait for a ready subscription began. */
+  private reconnectWaitStartedAt: number | null = null;
+  /** Last session challenge or dispatched operation for this connection. */
+  private lastRunActivityAt: number | null = null;
   private readonly relayTelemetry: DesktopRelayTelemetry;
   private readonly ackTelemetry = new DesktopAckTelemetry();
   constructor(config: DesktopBridgeConfig) {
@@ -803,11 +814,30 @@ export class DesktopSandboxBridge {
   private clearReconnectTimer(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.reconnectWaitStartedAt = null;
+  }
+
+  /**
+   * A run whose watcher proved this native session waits up to
+   * LOCAL_RUN_HOST_RECOVERY_MS for this same connection to return; a new
+   * registration can never satisfy it. Only recent run activity counts, so an
+   * idle bridge still renegotiates its transport after the shorter timeout.
+   */
+  private runMayAwaitConnection(now: number): boolean {
+    const outageStartedAt = this.reconnectWaitStartedAt;
+    const activityAt = this.lastRunActivityAt;
+    return (
+      outageStartedAt !== null &&
+      activityAt !== null &&
+      outageStartedAt - activityAt <= DESKTOP_RUN_ACTIVITY_WINDOW_MS &&
+      now - outageStartedAt < LOCAL_RUN_HOST_RECOVERY_MS
+    );
   }
 
   private watchRelayReconnect(): void {
     if (!this.relayStarted || this.reconnectTimer || this.isStoppingOrStopped)
       return;
+    this.reconnectWaitStartedAt ??= Date.now();
     // Centrifuge pins its first working transport. A fresh bridge lets its
     // WebSocket/HTTP fallback negotiation run again after a persistent outage.
     // Only a ready subscription clears this deadline, not a socket handshake.
@@ -817,10 +847,12 @@ export class DesktopSandboxBridge {
       // An executing command and its retained output belong to this connection.
       // Re-registering while the worker still awaits it abandons that output.
       // Keep the SDK reconnecting until the bounded command delivery window ends.
+      const now = Date.now();
       if (
         [...this.commandDeliveryDeadlines.values()].some(
-          (deadline) => deadline > Date.now(),
-        )
+          (deadline) => deadline > now,
+        ) ||
+        this.runMayAwaitConnection(now)
       ) {
         this.watchRelayReconnect();
         return;
@@ -884,6 +916,7 @@ export class DesktopSandboxBridge {
     this.nativeFileIpcFailure = undefined;
     this.nativeLifecycle = {};
     this.nativeSession = undefined;
+    this.lastRunActivityAt = null;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1145,6 +1178,8 @@ export class DesktopSandboxBridge {
       if (message.targetConnectionId !== this.connectionId) {
         return;
       }
+      // Any targeted operation or session challenge comes from a run.
+      this.lastRunActivityAt = Date.now();
 
       switch (message.type) {
         case "command":
@@ -3755,6 +3790,17 @@ export class DesktopSandboxBridge {
     this.connectionId = null;
 
     if (this.subscription) {
+      // A run waiting for this connection would otherwise wait out its whole
+      // recovery window. Sent before leaving; a failed send changes nothing.
+      if (connectionId) {
+        try {
+          void this.subscription
+            .publish({ type: DESKTOP_SESSION_ENDED, connectionId })
+            .catch(() => {});
+        } catch {
+          // Not subscribed: the run's own window still bounds its wait.
+        }
+      }
       try {
         this.subscription.unsubscribe();
         this.subscription.removeAllListeners();

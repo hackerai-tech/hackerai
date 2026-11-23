@@ -15,6 +15,7 @@ import {
 } from "@/lib/centrifugo/watch-local-run-connection";
 import {
   LocalConnectionLostError,
+  type LocalRunRecoverySummary,
   type LocalStopReason,
 } from "@/lib/chat/local-connection-stop";
 import type {
@@ -387,6 +388,11 @@ export class HybridSandboxManager implements SandboxManager {
       this.localMonitoringEnded = true;
       this.localAcquisitionGeneration++;
     };
+  }
+
+  /** Outages this run's watched host recovered from; content-free. */
+  getLocalRecoverySummary(): LocalRunRecoverySummary | undefined {
+    return this.localConnectionWatch?.recoverySummary();
   }
 
   /**

@@ -38,3 +38,41 @@ export function manualAgentResumeFinishReason(
     return BROWSER_HANDOFF_ABANDONED_FINISH_REASON;
   return undefined;
 }
+
+/**
+ * Content-free link from a user-resumed run to the stop it resumed. Only the
+ * closed manual-resume reasons are reported; anything else is omitted.
+ */
+export function resumeAnalyticsProperties(previousFinishReason: unknown) {
+  return typeof previousFinishReason === "string" &&
+    requiresManualAgentResume(previousFinishReason)
+    ? ({ resume_from_finish_reason: previousFinishReason } as const)
+    : undefined;
+}
+
+/**
+ * Whether the computer a lost-connection stop ran on is selected and
+ * connected again. The chat's saved environment is the stopped run's own; a
+ * different selection is not "the same computer coming back".
+ */
+export function stoppedComputerReconnected({
+  finishReason,
+  savedSandboxPreference,
+  sandboxPreference,
+  computerUnavailableReason,
+}: {
+  finishReason: string | null | undefined;
+  savedSandboxPreference: string | null | undefined;
+  sandboxPreference: string;
+  computerUnavailableReason: string | undefined;
+}): boolean {
+  const saved =
+    savedSandboxPreference === "tauri" ? "desktop" : savedSandboxPreference;
+  return (
+    finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+    !!saved &&
+    saved !== "e2b" &&
+    saved === sandboxPreference &&
+    !computerUnavailableReason
+  );
+}

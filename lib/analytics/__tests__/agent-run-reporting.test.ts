@@ -230,6 +230,34 @@ describe("Agent run reporting", () => {
     },
   );
 
+  it("adds recovered outages and the resumed stop to the fallback run event", () => {
+    const capture = jest.fn();
+    const reporter = createAgentRunReporting({
+      posthog: { capture } as unknown as PostHog,
+      runId: "run_resumed",
+      userId: "user_public",
+      chatId: "chat_1",
+      subscription: "pro",
+      endpoint: "/api/agent",
+      isAutoContinue: true,
+      resumeFromFinishReason: "local-connection-lost",
+    });
+    reporter.setLocalRecoverySource(() => ({
+      recoveredOutages: 1,
+      maxRecoveredOutageMs: 40_000,
+    }));
+    reporter.finalize({ canceled: false });
+    const run = capture.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.event === "hackerai-agent_run");
+    expect(run.properties).toMatchObject({
+      resume_from_finish_reason: "local-connection-lost",
+      local_recovery_outcome: "recovered",
+      local_recovered_outages: 1,
+      local_recovered_max_outage_bucket: "30s_60s",
+    });
+  });
+
   it("uses cancellation when no exception reached the outer catch", () => {
     const { reporter, events } = setup();
     reporter.finalize({ canceled: true });

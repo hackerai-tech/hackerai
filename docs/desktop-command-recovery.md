@@ -51,3 +51,32 @@ terminal frame, reorder controls, cancel during recovery, exhaust bounds, and
 verify duplicate starts do not execute. Native acceptance must additionally show
 real command output before an outage, completion afterward, and saved-result
 persistence after restarting the app.
+
+## Run recovery windows
+
+An Agent run recovers a host outage only within a window fixed at its first
+interruption. A host that has not proven its native session (a CLI host or an
+older Desktop binary without launch identity) cannot vouch for earlier
+commands, so its departure stops the run; only the observer's own outage may
+recover, within 15 seconds. A host that proved its session may return for the
+presence grace, 120 seconds: the backend keeps an unheard connection at least
+that long, so a longer wait could only meet a replacement. Readiness after any
+outage still requires a fresh proof from the same launch and page plus
+reconciled commands, and nothing is re-sent.
+
+Re-registering mints a connection that can never satisfy a waiting run and
+discards retained output. After a session challenge or targeted operation in
+the last 15 minutes, the Desktop bridge therefore keeps reconnecting the same
+connection for the run's window; an idle bridge still renegotiates its
+transport after 30 seconds. A terminal SDK disconnect still re-registers at
+once, and a run stopped this way waits for the user to resume it. A bridge
+stopping on purpose (sign-out, page unload, switching Desktop off) first
+publishes an end notice on its own connection, so its run stops at once; a
+force quit or crash that runs no page code is bounded by the window instead.
+The notice can only end a run, and only the relay's publisher record makes it
+authoritative.
+
+A native write larger than one relay message is sent as a truncating first
+chunk plus appends. If any chunk is unconfirmed, the result is unknown: the
+file may be truncated or partly written. The tool says so and asks for one
+complete rewrite rather than appending the remainder.

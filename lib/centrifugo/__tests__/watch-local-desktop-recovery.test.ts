@@ -16,6 +16,10 @@ import {
   LocalConnectionLostError,
   getLocalStopDiagnostic,
 } from "@/lib/chat/local-connection-stop";
+import { LOCAL_SANDBOX_PRESENCE_GRACE_MS } from "../presence";
+
+// A proven session may return for as long as the backend keeps its connection.
+const SESSION_WINDOW_MS = LOCAL_SANDBOX_PRESENCE_GRACE_MS;
 
 // Every client is the installed SDK: the run's observer, the command receiver
 // and a Desktop host built from the actual operation router, acknowledged
@@ -59,6 +63,7 @@ class Relay {
   readonly refused = new Set<string>();
   /** Centrifugo attaches the publisher's signed ClientInfo to publications. */
   publisherInfo = true;
+  presenceReplies = 0;
   private clients = 0;
 
   handle(socket: RelaySocket, { id, ...command }: Command) {
@@ -107,6 +112,7 @@ class Relay {
       const presence: Record<string, Frame> = {};
       for (const member of this.subscribers(channel))
         presence[member.client!] = member.info();
+      this.presenceReplies++;
       reply({ presence: { presence } });
     }
   }
@@ -518,6 +524,78 @@ test("a whole observer and host outage recovers the same session without a secon
   expect(run.onLost).not.toHaveBeenCalled();
 });
 
+test("a host outage longer than the observer's own window still recovers the same session without a second execution", async () => {
+  const run = await startRun();
+  const stdout: string[] = [];
+  const outcome: { result?: unknown; error?: unknown } = {};
+  const done = run.sandbox.commands
+    .run("printf once", {
+      onStdout: (data) => stdout.push(data),
+      timeoutMs: SESSION_WINDOW_MS + 60_000,
+    })
+    .then(
+      (result) => (outcome.result = result),
+      (error) => (outcome.error = error),
+    );
+  await until(() => run.host.executions.length === 1);
+  const [commandId] = run.host.executions;
+  run.host.output(commandId).append({ type: "stdout", data: "first\n" });
+  await until(() => stdout.length === 1);
+
+  // A laptop sleep or network change: the host is gone well past 15 seconds
+  // and finishes the command meanwhile, retaining its undelivered output.
+  relay.dropHost();
+  run.host.output(commandId).append({ type: "stdout", data: "second\n" });
+  run.host.output(commandId).append({ type: "exit", exitCode: 0 });
+  await until(() => !run.watch.isReady());
+  const lookups = relay.presenceReplies;
+  await jest.advanceTimersByTimeAsync(SESSION_WINDOW_MS - 30_000);
+  expect(run.onLost).not.toHaveBeenCalled();
+  expect(outcome).toEqual({});
+  // Lookups back off once the outage is long; the host's join still counts.
+  expect(relay.presenceReplies - lookups).toBeLessThan(40);
+
+  relay.refused.clear();
+  await until(() => outcome.result !== undefined || !!outcome.error);
+  await done;
+  expect(outcome.result).toMatchObject({
+    stdout: "first\nsecond\n",
+    exitCode: 0,
+  });
+  expect(run.host.executions).toEqual([commandId]);
+  expect(commandsPublished()).toBe(1);
+  await until(() => run.watch.isReady());
+  expect(run.watch.recoverySummary()).toEqual({
+    recoveredOutages: 1,
+    maxRecoveredOutageMs: expect.any(Number),
+  });
+  expect(run.watch.recoverySummary().maxRecoveredOutageMs).toBeGreaterThan(
+    SESSION_WINDOW_MS - 30_000,
+  );
+  await jest.advanceTimersByTimeAsync(SESSION_WINDOW_MS + 30_000);
+  expect(run.onLost).not.toHaveBeenCalled();
+});
+
+test("a different native session returning after a long outage still never revives the run", async () => {
+  const run = await startRun();
+  relay.dropHost();
+  await until(() => !run.watch.isReady());
+  await jest.advanceTimersByTimeAsync(60_000);
+  run.host.stop();
+  const successor = startHost({
+    startup: { ...SESSION, launchId: "d".repeat(32) },
+  });
+  stops.push(() => successor.stop());
+  relay.refused.clear();
+  await until(() => run.onLost.mock.calls.length > 0);
+  expect(run.cause()).toMatchObject({
+    reason: "desktop_session_replaced",
+    recoveryWindowMs: SESSION_WINDOW_MS,
+  });
+  expect(run.watch.isReady()).toBe(false);
+  expect(successor.executions).toEqual([]);
+});
+
 describe("a returning connection that cannot prove the same session is terminal", () => {
   // The original page is gone; a new one holds the same connection ID.
   test.each([
@@ -637,12 +715,15 @@ test("a host that never returns, or returns as a replacement connection, expires
   aborted.abort(new Error("canceled"));
   await expect(waiter).rejects.toThrow("canceled");
   // The window began with the observed leave, within one polling step.
-  await jest.advanceTimersByTimeAsync(interruptedAt + 14_900 - jest.now());
+  await jest.advanceTimersByTimeAsync(
+    interruptedAt + SESSION_WINDOW_MS - 100 - jest.now(),
+  );
   expect(run.onLost).not.toHaveBeenCalled();
   await jest.advanceTimersByTimeAsync(200);
   expect(run.cause()).toMatchObject({
     reason: "selected_host_recovery_expired",
     hadPositivePresence: true,
+    recoveryWindowMs: SESSION_WINDOW_MS,
   });
   await expect(expiring).rejects.toBeInstanceOf(LocalConnectionLostError);
   // The original session returning late cannot revive the run.
@@ -868,6 +949,8 @@ describe("completion confirmation after the model finished", () => {
     expect(relay.published("desktop_session_proof")).toHaveLength(2);
     expect(run.watch.isReady()).toBe(true);
     expect(run.onLost).not.toHaveBeenCalled();
+    // A completion check is not an outage the run recovered from.
+    expect(run.watch.recoverySummary()).toEqual({ recoveredOutages: 0 });
   });
 
   test("confirmation during recovery rejects a proof issued before the completion boundary", async () => {
@@ -904,12 +987,14 @@ describe("completion confirmation after the model finished", () => {
     relay.dropHost();
     await until(() => !run.watch.isReady());
     const interruptedAt = jest.now();
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(SESSION_WINDOW_MS - 5_000);
     const confirmed = track(run.watch.confirmReady());
     await jest.advanceTimersByTimeAsync(5_100);
     expect(confirmed.error).toBeInstanceOf(LocalConnectionLostError);
     expect(run.cause()?.reason).toBe("selected_host_recovery_expired");
-    expect(jest.now() - interruptedAt).toBeLessThanOrEqual(15_100);
+    expect(jest.now() - interruptedAt).toBeLessThanOrEqual(
+      SESSION_WINDOW_MS + 100,
+    );
     expect(run.onLost).toHaveBeenCalledTimes(1);
   });
 
@@ -954,12 +1039,14 @@ describe("completion confirmation after the model finished", () => {
         stops.push(startHost({ startup: successor }).stop);
         relay.refused.clear();
       }
-      await until(() => confirmed.done);
+      await until(() => confirmed.done, SESSION_WINDOW_MS + 5_000);
       expect(confirmed.error).toBeInstanceOf(LocalConnectionLostError);
       expect(confirmed.error).toBe(run.onLost.mock.calls[0][0]);
       expect(run.cause()?.reason).toBe(reason);
       // Confirmation shares the fixed window; it never extends an outage.
-      expect(jest.now() - interruptedAt).toBeLessThanOrEqual(15_100);
+      expect(jest.now() - interruptedAt).toBeLessThanOrEqual(
+        SESSION_WINDOW_MS + 100,
+      );
       await expect(run.watch.confirmReady()).rejects.toBe(confirmed.error);
     },
   );

@@ -1,6 +1,7 @@
 import {
   getLocalStopDiagnostic,
   LocalConnectionLostError,
+  localRecoveryAnalyticsProperties,
   localStopAnalyticsProperties,
 } from "../local-connection-stop";
 
@@ -239,4 +240,76 @@ it("ignores forged errors that were not produced by the constructor", () => {
     expect(localStopAnalyticsProperties(value)).toBeUndefined();
   }
   expect(trap).not.toHaveBeenCalled();
+});
+
+describe("recovery outcome analytics", () => {
+  const stopIn = (
+    reason: "selected_host_recovery_expired" | "desktop_session_replaced",
+    elapsed: number,
+  ) =>
+    new LocalConnectionLostError(reason, {
+      connectionId: CONNECTION,
+      recoveryWindowMs: 120_000,
+      recoveryElapsedMs: elapsed,
+    });
+
+  it("projects the window and a coarse outage bucket for a stop during recovery", () => {
+    expect(
+      localStopAnalyticsProperties(
+        stopIn("selected_host_recovery_expired", 120_004),
+      ),
+    ).toMatchObject({
+      local_stop_recovery_window_ms: 120_000,
+      local_stop_recovery_outage_bucket: "gte_120s",
+    });
+    expect(
+      localStopAnalyticsProperties(stopIn("desktop_session_replaced", 42_000)),
+    ).toMatchObject({ local_stop_recovery_outage_bucket: "30s_60s" });
+  });
+
+  it.each([
+    [
+      "an expired window",
+      stopIn("selected_host_recovery_expired", 120_000),
+      undefined,
+      { local_recovery_outcome: "expired", local_recovered_outages: 0 },
+    ],
+    [
+      "a stop inside the window",
+      stopIn("desktop_session_replaced", 9_000),
+      { recoveredOutages: 2, maxRecoveredOutageMs: 3_000 },
+      {
+        local_recovery_outcome: "stopped_in_window",
+        local_recovered_outages: 2,
+        local_recovered_max_outage_bucket: "lt_5s",
+      },
+    ],
+    [
+      "a departure that never entered a window",
+      new LocalConnectionLostError("selected_host_left", {}),
+      undefined,
+      {
+        local_recovery_outcome: "stopped_unrecoverable",
+        local_recovered_outages: 0,
+      },
+    ],
+    [
+      "a run that recovered and finished",
+      undefined,
+      { recoveredOutages: 1, maxRecoveredOutageMs: 75_000 },
+      {
+        local_recovery_outcome: "recovered",
+        local_recovered_outages: 1,
+        local_recovered_max_outage_bucket: "60s_120s",
+      },
+    ],
+  ])("classifies %s", (_name, stop, summary, expected) => {
+    expect(localRecoveryAnalyticsProperties(summary, stop)).toEqual(expected);
+  });
+
+  it("reports nothing for a run without an outage or a local stop", () => {
+    expect(
+      localRecoveryAnalyticsProperties({ recoveredOutages: 0 }, undefined),
+    ).toBeUndefined();
+  });
 });

@@ -17,6 +17,11 @@
 
 export const DESKTOP_SESSION_CHALLENGE = "desktop_session_challenge";
 export const DESKTOP_SESSION_PROOF = "desktop_session_proof";
+/**
+ * Published by a bridge that is stopping on purpose (sign-out, quit, switch
+ * off). It can only end a run sooner, never keep or revive one.
+ */
+export const DESKTOP_SESSION_ENDED = "desktop_session_ended";
 
 /** Bounds one challenge's command list; a run never has this many in flight. */
 export const MAX_RECONCILED_COMMANDS = 64;
@@ -256,4 +261,21 @@ export async function answerDesktopSessionChallenge(
       host.retainsOutput(id),
     ),
   };
+}
+
+/**
+ * Whether a publication is the selected connection's own end notice. Only the
+ * relay's record of the publisher counts as authority, as for proofs.
+ */
+export function isDesktopSessionEnded(
+  data: unknown,
+  info: unknown,
+  connectionId: string,
+): boolean {
+  const message = record(data);
+  return (
+    message?.type === DESKTOP_SESSION_ENDED &&
+    message.connectionId === connectionId &&
+    readPublisherConnectionId(info) === connectionId
+  );
 }

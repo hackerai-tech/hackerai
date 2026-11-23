@@ -3,6 +3,8 @@ export const LOCAL_CONNECTION_LOST_FINISH_REASON = "local-connection-lost";
 /** First observed cause; watcher/manager origin and phase are derived offline. */
 const LOCAL_STOP_REASONS = [
   "selected_host_left",
+  // The selected Desktop announced an intentional stop (quit, sign-out).
+  "selected_host_ended",
   "selected_presence_absent",
   "observer_reconnecting",
   "observer_disconnected",
@@ -49,6 +51,10 @@ export type LocalStopDetails = {
    */
   socketCloseCode?: number;
   socketCloseWasClean?: boolean;
+  /** Set only for a stop during a recovery window: its fixed length. */
+  recoveryWindowMs?: number;
+  /** How long that outage had lasted when the run stopped. */
+  recoveryElapsedMs?: number;
 };
 
 type LocalStopDiagnostic = Readonly<
@@ -56,6 +62,29 @@ type LocalStopDiagnostic = Readonly<
 >;
 
 const MAX_PRESENCE_AGE_MS = 86_400_000;
+
+const OUTAGE_BUCKETS = [
+  [5_000, "lt_5s"],
+  [15_000, "5s_15s"],
+  [30_000, "15s_30s"],
+  [60_000, "30s_60s"],
+  [120_000, "60s_120s"],
+] as const;
+
+/** Coarse, content-free outage length for analytics. */
+export function outageDurationBucket(ms: number) {
+  for (const [limit, bucket] of OUTAGE_BUCKETS) if (ms < limit) return bucket;
+  return "gte_120s" as const;
+}
+
+function duration(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= MAX_PRESENCE_AGE_MS
+    ? Math.round(value)
+    : undefined;
+}
 const MAX_CALLBACK_CODE = 4_999;
 const MIN_SOCKET_CLOSE_CODE = 1_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -143,6 +172,12 @@ function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
     ownData(details, "socketCloseWasClean"),
   );
   if (close) Object.assign(diagnostic, close);
+  const recoveryWindowMs = duration(ownData(details, "recoveryWindowMs"));
+  if (recoveryWindowMs !== undefined) {
+    diagnostic.recoveryWindowMs = recoveryWindowMs;
+    const elapsed = duration(ownData(details, "recoveryElapsedMs"));
+    if (elapsed !== undefined) diagnostic.recoveryElapsedMs = elapsed;
+  }
   return Object.freeze(diagnostic);
 }
 
@@ -195,6 +230,60 @@ export function localStopAnalyticsProperties(error: unknown) {
       diagnostic.socketCloseWasClean !== undefined && {
         local_stop_socket_close_code: diagnostic.socketCloseCode,
         local_stop_socket_close_was_clean: diagnostic.socketCloseWasClean,
+      }),
+    ...(diagnostic.recoveryWindowMs !== undefined && {
+      local_stop_recovery_window_ms: diagnostic.recoveryWindowMs,
+    }),
+    ...(diagnostic.recoveryElapsedMs !== undefined && {
+      local_stop_recovery_outage_bucket: outageDurationBucket(
+        diagnostic.recoveryElapsedMs,
+      ),
+    }),
+  } as const;
+}
+
+/** Content-free outcome of the outages a run recovered from. */
+export type LocalRunRecoverySummary = Readonly<{
+  recoveredOutages: number;
+  /** Longest recovered outage; absent when none was measured. */
+  maxRecoveredOutageMs?: number;
+}>;
+
+/**
+ * Whether a watched run survived its host outages. Omitted when the run had
+ * neither an outage nor a local stop. `stopped_unrecoverable` is a stop that
+ * never entered a recovery window, such as a departure before session proof.
+ */
+export function localRecoveryAnalyticsProperties(
+  summary: LocalRunRecoverySummary | undefined,
+  localStop: unknown,
+) {
+  const stop = getLocalStopDiagnostic(localStop);
+  const recovered =
+    typeof summary?.recoveredOutages === "number" &&
+    Number.isSafeInteger(summary.recoveredOutages) &&
+    summary.recoveredOutages > 0
+      ? summary.recoveredOutages
+      : 0;
+  const outcome = stop
+    ? stop.recoveryWindowMs === undefined
+      ? "stopped_unrecoverable"
+      : stop.reason.endsWith("_recovery_expired")
+        ? "expired"
+        : "stopped_in_window"
+    : recovered > 0
+      ? "recovered"
+      : undefined;
+  if (!outcome) return undefined;
+  const longest = summary?.maxRecoveredOutageMs;
+  return {
+    local_recovery_outcome: outcome,
+    local_recovered_outages: recovered,
+    ...(recovered > 0 &&
+      typeof longest === "number" &&
+      Number.isFinite(longest) &&
+      longest >= 0 && {
+        local_recovered_max_outage_bucket: outageDurationBucket(longest),
       }),
   } as const;
 }
