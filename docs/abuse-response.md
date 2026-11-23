@@ -527,10 +527,12 @@ corepack pnpm exec tsx scripts/abuse-block-notices.ts summary \
 
 `NEXT_PUBLIC_CONVEX_URL` must equal the asserted URL. Test dispatch uses
 the approved staging key. For live dispatch, verify the WorkOS key against
-the intended Production directory and pin the exact key's SHA-256 digest
-in `ABUSE_NOTICE_WORKOS_KEY_SHA256`. WorkOS keys can use the opaque `sk_`
-format. A mismatched digest or a staging key fails the live assertion before
-any claim. `dispatch` also needs `ABUSE_NOTICE_BRIDGE_DIR`, the absolute
+the intended Production directory. Derive a 32-byte scrypt pin from the
+exact verified key and a random 16-byte salt using `N=32768`, `r=8` and
+`p=1`. Set `ABUSE_NOTICE_WORKOS_KEY_PIN` to the lowercase hex salt and pin
+separated by a colon. WorkOS keys can use the opaque `sk_` format. An
+invalid pin or a staging key fails the live assertion before any claim.
+`dispatch` also needs `ABUSE_NOTICE_BRIDGE_DIR`, the absolute
 directory of the pinned Proton Bridge
 helper exposing `imap_session()` and `smtp_session()`, and optionally `ABUSE_NOTICE_PYTHON` and
 `ABUSE_NOTICE_MAIL_HELPER`. The Bridge session must be able to send as

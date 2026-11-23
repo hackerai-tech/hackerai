@@ -4,7 +4,7 @@ jest.mock("../../convex/lib/serviceFunctions", () => ({
   query: (config: unknown) => config,
   internalMutation: (config: unknown) => config,
 }));
-import { createHash } from "node:crypto";
+import { scryptSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -373,9 +373,18 @@ describe("CLI", () => {
     expect(err.join("")).not.toContain("synthetic");
   });
 
-  it("accepts an opaque Production WorkOS key only with its verified fingerprint", async () => {
+  it("accepts an opaque Production WorkOS key only with its verified pin", async () => {
     const key = "sk_opaque_synthetic_production_key";
-    const pin = createHash("sha256").update(key).digest("hex");
+    const salt = Buffer.from("4b".repeat(16), "hex");
+    const makePin = (value: string) => {
+      const derived = scryptSync(value, salt, 32, {
+        N: 32_768,
+        r: 8,
+        p: 1,
+        maxmem: 64 * 1024 * 1024,
+      });
+      return `${salt.toString("hex")}:${derived.toString("hex")}`;
+    };
     const made = factories();
     const { io: streams, out } = io();
     made.createConvex.mockReturnValue({
@@ -394,12 +403,14 @@ describe("CLI", () => {
     ];
     for (const candidate of [
       { WORKOS_API_KEY: key },
-      { WORKOS_API_KEY: key, ABUSE_NOTICE_WORKOS_KEY_SHA256: "0".repeat(64) },
+      { WORKOS_API_KEY: key, ABUSE_NOTICE_WORKOS_KEY_PIN: "0".repeat(64) },
+      {
+        WORKOS_API_KEY: key,
+        ABUSE_NOTICE_WORKOS_KEY_PIN: makePin(`${key}_other`),
+      },
       {
         WORKOS_API_KEY: env.WORKOS_API_KEY,
-        ABUSE_NOTICE_WORKOS_KEY_SHA256: createHash("sha256")
-          .update(env.WORKOS_API_KEY)
-          .digest("hex"),
+        ABUSE_NOTICE_WORKOS_KEY_PIN: makePin(env.WORKOS_API_KEY),
       },
     ]) {
       await expect(
@@ -413,7 +424,7 @@ describe("CLI", () => {
         {
           ...env,
           WORKOS_API_KEY: key,
-          ABUSE_NOTICE_WORKOS_KEY_SHA256: pin,
+          ABUSE_NOTICE_WORKOS_KEY_PIN: makePin(key),
         },
         streams,
         made,

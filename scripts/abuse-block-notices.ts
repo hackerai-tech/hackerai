@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { WorkOS } from "@workos-inc/node";
@@ -28,7 +28,7 @@ const USAGE = `Usage: tsx scripts/abuse-block-notices.ts <dispatch|summary> --ex
 
 Environment: NEXT_PUBLIC_CONVEX_URL, CONVEX_ABUSE_NOTICE_DISPATCH_SERVICE_KEY.
 dispatch also needs WORKOS_API_KEY with --expect-workos-env and ABUSE_NOTICE_BRIDGE_DIR.
-For a live assertion, ABUSE_NOTICE_WORKOS_KEY_SHA256 must pin the key verified
+For a live assertion, ABUSE_NOTICE_WORKOS_KEY_PIN must pin the key verified
 against the intended Production WorkOS directory. Optional ABUSE_NOTICE_PYTHON (default
 /usr/bin/python3) and ABUSE_NOTICE_MAIL_HELPER (default scripts/abuse-notices/send_block_notice.py).`;
 
@@ -59,6 +59,18 @@ export type CliFactories = {
     script: string;
   }) => Pick<DispatchDeps, "resolveRecipient" | "send">;
 };
+
+function matchesWorkosKeyPin(key: string, pin: string | undefined): boolean {
+  if (!pin || !/^[a-f0-9]{32}:[a-f0-9]{64}$/.test(pin)) return false;
+  const [salt, expected] = pin.split(":");
+  const actual = scryptSync(key, Buffer.from(salt, "hex"), 32, {
+    N: 32_768,
+    r: 8,
+    p: 1,
+    maxmem: 64 * 1024 * 1024,
+  });
+  return timingSafeEqual(actual, Buffer.from(expected, "hex"));
+}
 
 export async function main(
   argv: string[],
@@ -122,8 +134,7 @@ export async function main(
         ? workosKey.startsWith("sk_test_")
         : workosEnv === "live" &&
           !workosKey.startsWith("sk_test_") &&
-          createHash("sha256").update(workosKey).digest("hex") ===
-            env.ABUSE_NOTICE_WORKOS_KEY_SHA256);
+          matchesWorkosKeyPin(workosKey, env.ABUSE_NOTICE_WORKOS_KEY_PIN));
     const bridgeDir = env.ABUSE_NOTICE_BRIDGE_DIR;
     const python = env.ABUSE_NOTICE_PYTHON || "/usr/bin/python3";
     const script =
