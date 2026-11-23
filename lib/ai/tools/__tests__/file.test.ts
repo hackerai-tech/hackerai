@@ -211,6 +211,7 @@ describe("dedicated file_write executor", () => {
     });
     expect(result).toEqual({
       error: expect.stringContaining("2 of 5 chunks were confirmed"),
+      executionOutcome: "unknown",
       writeOutcome: "unknown",
       confirmedChunks: 2,
       totalChunks: 5,

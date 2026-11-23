@@ -1804,6 +1804,9 @@ export const createFile = (
           if (error instanceof IncompleteFileWriteError)
             return {
               error: error.message,
+              // Also an unknown execution outcome, so automatic provider
+              // recovery reviews it like any other uncertain tool result.
+              executionOutcome: "unknown" as const,
               writeOutcome: error.writeOutcome,
               confirmedChunks: error.confirmedChunks,
               totalChunks: error.totalChunks,

@@ -59,8 +59,10 @@ interruption. A host that has not proven its native session (a CLI host or an
 older Desktop binary without launch identity) cannot vouch for earlier
 commands, so its departure stops the run; only the observer's own outage may
 recover, within 15 seconds. A host that proved its session may return for the
-presence grace, 120 seconds: the backend keeps an unheard connection at least
-that long, so a longer wait could only meet a replacement. Readiness after any
+presence grace, 120 seconds. The backend keeps an unheard connection for at
+least 120 seconds after its last heartbeat, which can be up to one heartbeat
+interval (30 seconds) before the interruption, so a return late in the window
+can find the connection already disconnected and the run stops. Readiness after any
 outage still requires a fresh proof from the same launch and page plus
 reconciled commands, and nothing is re-sent.
 

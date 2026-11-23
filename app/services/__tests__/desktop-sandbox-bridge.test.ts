@@ -5811,6 +5811,35 @@ describe("desktop lifecycle recovery", () => {
     );
   });
 
+  it("submits the end notice before teardown and never waits past its bound", async () => {
+    let resolvePublish!: () => void;
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolvePublish = resolve)),
+    );
+    const stopping = bridge.stop();
+    await Promise.resolve();
+    // The client writes the notice only while still connected.
+    expect(mockSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(mockClient.disconnect).not.toHaveBeenCalled();
+    resolvePublish();
+    await stopping;
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+
+    // A publish that never settles cannot hold shutdown past its bound.
+    const stuck = new DesktopSandboxBridge(buildConfig());
+    await stuck.start();
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>(() => {}),
+    );
+    const startedAt = Date.now();
+    await stuck.stop();
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(2);
+  });
+
   it("finishes local shutdown while the remote disconnect stays offline", async () => {
     let resolveDisconnect!: (value: { success: boolean }) => void;
     const pending = new Promise<{ success: boolean }>((resolve) => {
@@ -6594,8 +6623,11 @@ it.each([false, true])(
       await jest.advanceTimersByTimeAsync(0);
       expect(executed).toEqual(["target", "other-chat", "newer-run"]);
       mockSubscription.publish.mockImplementation(() => new Promise(() => {}));
-      // Native execution survives a terminal relay disconnect. Stop must too.
-      await bridge.stop();
+      // Native execution survives a terminal relay disconnect. Stop must too:
+      // its wait for the session-ended notice is bounded.
+      const stopping = bridge.stop();
+      await jest.advanceTimersByTimeAsync(1_000);
+      await stopping;
       await cancelDesktopRunLocally("chat-a", `run-a-${acknowledged}`);
       expect(canceled).toEqual(["target"]);
       expect([...running.keys()]).toEqual(["other-chat", "newer-run"]);

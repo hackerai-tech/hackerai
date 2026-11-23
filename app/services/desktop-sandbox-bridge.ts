@@ -602,6 +602,9 @@ interface RendererCancelAttempts {
   output_overflow: boolean;
 }
 
+/** Bounds stop()'s wait for the session-ended notice to reach the relay. */
+const SESSION_ENDED_PUBLISH_TIMEOUT_MS = 1_000;
+
 export class DesktopSandboxBridge {
   private environmentId?: string;
 
@@ -3789,25 +3792,35 @@ export class DesktopSandboxBridge {
     const connectionId = this.connectionId;
     this.connectionId = null;
 
-    if (this.subscription) {
+    const subscription = this.subscription;
+    if (subscription) {
       // A run waiting for this connection would otherwise wait out its whole
-      // recovery window. Sent before leaving; a failed send changes nothing.
+      // recovery window. The client writes a publish only while connected, so
+      // wait (bounded) for it before teardown; a failed send changes nothing.
       if (connectionId) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          void this.subscription
-            .publish({ type: DESKTOP_SESSION_ENDED, connectionId })
-            .catch(() => {});
+          await Promise.race([
+            subscription
+              .publish({ type: DESKTOP_SESSION_ENDED, connectionId })
+              .catch(() => {}),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, SESSION_ENDED_PUBLISH_TIMEOUT_MS);
+            }),
+          ]);
         } catch {
           // Not subscribed: the run's own window still bounds its wait.
+        } finally {
+          clearTimeout(timer);
         }
       }
       try {
-        this.subscription.unsubscribe();
-        this.subscription.removeAllListeners();
+        subscription.unsubscribe();
+        subscription.removeAllListeners();
       } catch (error) {
         console.warn("[DesktopSandboxBridge] Failed to unsubscribe:", error);
       }
-      this.subscription = null;
+      if (this.subscription === subscription) this.subscription = null;
     }
 
     if (this.client) {
