@@ -4,11 +4,18 @@ import { domainToASCII } from "node:url";
 import { z } from "zod";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { sanitizeResearchText } from "@/lib/research/user-research";
+import type {
+  BlockableIntent,
+  BlockRefusal,
+  EnforcementDecision,
+  EnforcementReason,
+} from "@/lib/abuse/egress-outcomes";
 
-// Read-only triage for an attributed egress burst. It prepares an operator
-// case from stored evidence; it never sends mail, restricts an account, or
-// touches a sandbox. The model only picks enums and indices: every stored
-// sentence is fixed text chosen by the deterministic policy below.
+// Triage for an attributed egress burst. It prepares an operator case from
+// stored evidence; it never sends mail or touches a sandbox. Only the
+// separately gated policy in `egress-enforcement.ts` can lead to a block. The
+// model only picks enums and indices: every stored sentence is fixed text
+// chosen by the deterministic policy below.
 
 export const EGRESS_REVIEW_PROMPT_VERSION = "egress-abuse-review-v2";
 export const EGRESS_ACCOUNT_ACTIVITY_PROMPT_VERSION =
@@ -935,6 +942,20 @@ export type EgressReviewObservation = {
   workspaces: number;
 };
 
+/** The automated block decision stored with the case; enums and locators only. */
+export type CaseEnforcementRecord = {
+  decision: Exclude<EnforcementDecision, "keep_active">;
+  reason: EnforcementReason;
+  refusal?: BlockRefusal;
+  intentKind: BlockableIntent;
+  policyVersion: string;
+  promptVersion: string;
+  locators: {
+    commands: { messageId: string; toolCallId: string }[];
+    messages: { messageId: string }[];
+  };
+};
+
 export type EgressReviewCaseRecord = ReturnType<typeof buildCaseRecord>;
 
 /**
@@ -964,6 +985,7 @@ export function buildCaseRecord(args: {
   };
   model?: { key: string; promptVersion: string };
   accountActivity?: AccountActivityReview;
+  enforcement?: CaseEnforcementRecord;
   reviewedAt: number;
 }) {
   const { observation, accountActivity } = args;
@@ -972,8 +994,8 @@ export function buildCaseRecord(args: {
   return {
     source: EGRESS_REVIEW_ACTOR,
     // v2 adds `evidenceMode` and `accountActivity`; a v1 case has neither and
-    // read at most the one linked run.
-    version: 2,
+    // read at most the one linked run. v3 adds `enforcement`.
+    version: 3,
     reviewedAt: utc(args.reviewedAt),
     outcome: args.decision.outcome,
     reason: args.decision.reason,
@@ -1023,11 +1045,14 @@ export function buildCaseRecord(args: {
             chats: accountActivity.chats,
             caveat: ACCOUNT_ACTIVITY_CAVEAT,
           },
+    enforcement: args.enforcement ?? null,
     draft:
       args.decision.outcome === "authorization_request" &&
       args.userId &&
       // Unlinked account activity never supports a request.
-      !accountActivity
+      !accountActivity &&
+      // A confirmed block decision replaces the authorization request.
+      !args.enforcement
         ? buildAuthorizationRequestDraft({
             reference: args.reference,
             userId: args.userId,

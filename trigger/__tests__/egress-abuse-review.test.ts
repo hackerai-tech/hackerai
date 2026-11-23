@@ -26,6 +26,7 @@ import { generateText } from "ai";
 import { logger, runs } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import * as reviewFunctions from "@/convex/egressAbuseReview";
+import * as enforcementFunctions from "@/convex/egressAbuseEnforcement";
 import { database } from "@/__mocks__/abuse-database";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { createServiceConvexClient } from "@/lib/db/service-client";
@@ -48,6 +49,7 @@ import {
 
 const [first, second] = fixture.vectors;
 const REVIEW_KEY = "synthetic-egress-review-key";
+const ENFORCEMENT_KEY = "synthetic-egress-enforcement-key";
 const CHAT = "chat_review";
 const RUN = "run_parent1";
 const MINUTE_MS = 60_000;
@@ -204,7 +206,7 @@ const terminal = (toolCallId: string, command: string) => ({
 async function seedRun(
   runId = RUN,
   chatId = CHAT,
-  options: { active?: boolean; command?: string } = {},
+  options: { active?: boolean; command?: string; message?: string } = {},
 ) {
   await convex.db.insert("chats", {
     id: chatId,
@@ -216,7 +218,9 @@ async function seedRun(
     chat_id: chatId,
     user_id: first.userId,
     role: "user",
-    parts: [{ type: "text", text: "Find open ports for me." }],
+    parts: [
+      { type: "text", text: options.message ?? "Find open ports for me." },
+    ],
   });
   await convex.db.insert("messages", {
     id: `${chatId}-assistant`,
@@ -262,10 +266,14 @@ beforeEach(async () => {
   };
   fakeRedis();
   convex = reviewDatabase();
-  const call = (reference: unknown, args: unknown) =>
-    (reviewFunctions as any)[
-      getFunctionName(reference as never).split(":")[1]
-    ].handler(convex, args);
+  const modules: Record<string, any> = {
+    egressAbuseReview: reviewFunctions,
+    egressAbuseEnforcement: enforcementFunctions,
+  };
+  const call = (reference: unknown, args: unknown) => {
+    const [module, name] = getFunctionName(reference as never).split(":");
+    return modules[module][name].handler(convex, args);
+  };
   jest.mocked(createServiceConvexClient).mockReturnValue({
     query: jest.fn(call),
     mutation: jest.fn(call),
@@ -280,10 +288,15 @@ afterAll(() => {
 
 const run = (minute = MINUTE, attempt = FINAL) =>
   runEgressAbuseReview({ region: "us", owner: first.owner, minute }, attempt);
-const recordCaseCalls = () =>
+const mutationCalls = () =>
   jest
     .mocked(createServiceConvexClient)
     .mock.results.flatMap(({ value }) => value.mutation.mock.calls);
+const recordCaseCalls = () =>
+  mutationCalls().filter(
+    ([reference]: any) =>
+      getFunctionName(reference) === "egressAbuseReview:recordCase",
+  );
 
 it("is off by default without reading telemetry or evidence", async () => {
   delete process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED;
@@ -320,11 +333,14 @@ it("saves one encrypted case with an unsent draft for cited concerning activity"
     outcome: "authorization_request",
     reason: "concerning_unauthorized",
     case: "created",
+    // The confirmation pass returned nothing valid: no block.
+    enforcement: "keep_active",
+    enforcementReason: "inconclusive",
   });
   // Output, the RPC arguments and the stored row carry no raw evidence.
   const exposed = JSON.stringify([
     result,
-    recordCaseCalls(),
+    mutationCalls(),
     convex.tables.abuse_cases,
   ]);
   for (const raw of [SCAN, "203.0.113", "Find open ports", first.userId, CHAT])
@@ -521,6 +537,8 @@ describe("other root runs of the account", () => {
       outcome: "manual_review",
       reason,
       case: "created",
+      enforcement: "keep_active",
+      enforcementReason: "coverage_incomplete",
     });
     expect(generateText).not.toHaveBeenCalled();
     const record = caseRecord();
@@ -569,6 +587,8 @@ it("skips clearly corroborated legitimate work without creating a case", async (
     outcome: "no_case",
     reason: "legitimate_corroborated",
     case: "none",
+    enforcement: "keep_active",
+    enforcementReason: "legitimate_corroborated",
   });
   expect(convex.tables.abuse_cases ?? []).toHaveLength(0);
   expect(recordCaseCalls()).toHaveLength(0);
@@ -682,6 +702,8 @@ it.each([
       outcome: "manual_review",
       reason,
       case: "created",
+      enforcement: "keep_active",
+      enforcementReason: "coverage_incomplete",
     });
     expect(generateText).not.toHaveBeenCalled();
     expect(caseRecord()).toMatchObject({ draft: null, reason });
@@ -808,6 +830,8 @@ describe("without an acquisition link", () => {
       outcome: "manual_review",
       reason: "no_acquisition_link",
       case: "created",
+      enforcement: "keep_active",
+      enforcementReason: "coverage_incomplete",
     });
     expect(caseRecord().accountActivity.status).toBe("unavailable");
     expect(generateText).not.toHaveBeenCalled();
@@ -816,6 +840,9 @@ describe("without an acquisition link", () => {
   it("flags a separately corroborated concerning chat for manual review without a draft", async () => {
     await seedAccountChat("chat_recent", "Find open ports for me.", SCAN);
     classifyAs(concerning);
+    // Unlinked history never reaches the enforcement step.
+    process.env.E2B_EGRESS_ABUSE_ENFORCEMENT_ENABLED = "true";
+    process.env.CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY = ENFORCEMENT_KEY;
 
     const result = await run();
     expect(result).toEqual({
@@ -823,10 +850,12 @@ describe("without an acquisition link", () => {
       outcome: "manual_review",
       reason: "account_activity_concerning",
       case: "created",
+      enforcement: "keep_active",
+      enforcementReason: "unlinked_history",
     });
     const record = caseRecord();
     expect(record).toMatchObject({
-      version: 2,
+      version: 3,
       evidenceMode: "account_activity",
       draft: null,
       run: null,
@@ -883,6 +912,8 @@ describe("without an acquisition link", () => {
       outcome: "manual_review",
       reason: "no_acquisition_link",
       case: "created",
+      enforcement: "keep_active",
+      enforcementReason: "coverage_incomplete",
     });
     expect(caseRecord()).toMatchObject({
       draft: null,
@@ -954,5 +985,209 @@ describe("without an acquisition link", () => {
     expect(generateText).not.toHaveBeenCalled();
     expect(convex.tables.abuse_cases).toHaveLength(1);
     expect(convex.tables.abuse_cases[0].ciphertext).toBe(ciphertext);
+  });
+});
+
+describe("automatic enforcement", () => {
+  // Synthetic placeholder text stating harm against the scanned range.
+  const INTENT = "Synthetic intent: knock 203.0.113.0/24 offline for good.";
+  const confirmed = {
+    harmfulIntent: "explicit",
+    intentKind: "service_disruption",
+    voice: "own_request",
+    authorizationClaim: "none_stated",
+    messageIndices: [1],
+    commandIndices: [1],
+    targetIds: [1],
+  };
+  const classifyThenConfirm = (confirmation: Record<string, unknown>) =>
+    jest
+      .mocked(generateText)
+      .mockResolvedValueOnce({
+        output: { ...concerning, activity: "denial_of_service" },
+      } as never)
+      .mockResolvedValueOnce({ output: confirmation } as never);
+  const enable = () => {
+    process.env.E2B_EGRESS_ABUSE_ENFORCEMENT_ENABLED = "true";
+    process.env.CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY = ENFORCEMENT_KEY;
+  };
+  const restrictions = () => convex.tables.user_suspensions ?? [];
+  const receipts = () => convex.tables.egress_review_receipts ?? [];
+
+  beforeEach(async () => {
+    await seedRun(RUN, CHAT, {
+      message: INTENT,
+      command: "synthetic recorded disruptive action against 203.0.113.0/24",
+    });
+    await link();
+  });
+
+  it("blocks the exact run's account and queues one notice when confirmed", async () => {
+    enable();
+    classifyThenConfirm(confirmed);
+    const result = await run();
+    expect(result).toEqual({
+      status: "completed",
+      outcome: "authorization_request",
+      reason: "concerning_unauthorized",
+      case: "created",
+      enforcement: "block_applied",
+      enforcementReason: "harmful_intent_confirmed",
+      notice: "queued",
+    });
+    expect(restrictions()).toEqual([
+      expect.objectContaining({
+        user_id: first.userId,
+        status: "active",
+        category: "security_abuse",
+        source_id: `abuse-late:${reference}`,
+      }),
+    ]);
+    expect(convex.tables.abuse_block_notices).toEqual([
+      expect.objectContaining({ status: "pending", reference }),
+    ]);
+    expect(caseRecord()).toMatchObject({
+      outcome: "authorization_request",
+      draft: null,
+      enforcement: {
+        decision: "block_applied",
+        intentKind: "service_disruption",
+        policyVersion: "egress-enforcement-v1",
+        promptVersion: "egress-intent-confirmation-v1",
+        locators: {
+          messages: [{ messageId: `${CHAT}-user` }],
+          commands: [{ messageId: `${CHAT}-assistant`, toolCallId: "call-1" }],
+        },
+      },
+    });
+    // The second pass saw the same scrubbed evidence and asked one question.
+    const prompt = (jest.mocked(generateText).mock.calls[1][0] as any).prompt;
+    expect(prompt).toContain("You check one narrow question");
+    expect(prompt).toContain("[T1:public-ip]/24");
+    // No raw evidence in the result, any RPC, the stored record or the logs.
+    const exposed = JSON.stringify([
+      result,
+      mutationCalls(),
+      convex.tables.abuse_cases,
+      caseRecord(),
+      jest.mocked(logger.info).mock.calls,
+      jest.mocked(logger.warn).mock.calls,
+    ]);
+    for (const raw of [SCAN, "203.0.113", "knock", "masscan"])
+      expect(exposed).not.toContain(raw);
+    const logs = JSON.stringify(jest.mocked(logger.info).mock.calls);
+    for (const raw of [first.userId, CHAT, RUN])
+      expect(logs).not.toContain(raw);
+  });
+
+  it("records pending enforcement and changes nothing while the switch is off", async () => {
+    classifyThenConfirm(confirmed);
+    await expect(run()).resolves.toMatchObject({
+      enforcement: "enforcement_pending",
+      enforcementReason: "enforcement_disabled",
+      case: "created",
+    });
+    expect(restrictions()).toHaveLength(0);
+    expect(convex.tables.abuse_block_notices ?? []).toHaveLength(0);
+    expect(caseRecord()).toMatchObject({
+      draft: null,
+      enforcement: { decision: "enforcement_pending" },
+    });
+    expect(receipts()).toEqual([
+      expect.objectContaining({
+        reference,
+        decision: "enforcement_pending",
+        reason: "enforcement_disabled",
+        intentKind: "service_disruption",
+      }),
+    ]);
+  });
+
+  it.each([
+    [
+      "authorization is claimed",
+      { authorizationClaim: "claims_authorization" },
+    ],
+    ["the text is pasted", { voice: "quoted_or_pasted" }],
+    ["intent is uncertain", { harmfulIntent: "unclear" }],
+    ["the stated target is not the command's", { targetIds: [2] }],
+  ])("keeps the account active when %s", async (_label, change) => {
+    enable();
+    classifyThenConfirm({ ...confirmed, ...change });
+    await expect(run()).resolves.toMatchObject({
+      enforcement: "keep_active",
+      enforcementReason: "intent_not_established",
+    });
+    expect(restrictions()).toHaveLength(0);
+    // The operator draft remains for an unconfirmed concern.
+    expect(caseRecord().draft).toMatchObject({ status: "unsent_draft" });
+    expect(receipts()).toEqual([
+      expect.objectContaining({ decision: "keep_active" }),
+    ]);
+    expect(receipts()[0].reference).toBeUndefined();
+  });
+
+  it("returns the recorded block when a retry follows a lost response", async () => {
+    enable();
+    const client = createServiceConvexClient("https://fixture.convex.cloud");
+    const mutate = jest.mocked(client.mutation).getMockImplementation()!;
+    jest
+      .mocked(client.mutation)
+      .mockImplementationOnce(async (reference: any, args: any) => {
+        await mutate(reference, args);
+        throw new Error("response lost");
+      });
+    classifyThenConfirm(confirmed);
+    await expect(run(MINUTE, { number: 1, max: 4 })).rejects.toThrow(
+      "response lost",
+    );
+    classifyThenConfirm(confirmed);
+    await expect(run()).resolves.toMatchObject({
+      case: "existing",
+      enforcement: "block_applied",
+    });
+    expect(restrictions()).toHaveLength(1);
+    expect(convex.tables.abuse_block_notices).toHaveLength(1);
+  });
+
+  it("records pending enforcement at once when the Convex switch is off", async () => {
+    enable();
+    const client = createServiceConvexClient("https://fixture.convex.cloud");
+    const mutate = jest.mocked(client.mutation).getMockImplementation()!;
+    // The deployment's own switch is off while the worker's is still on.
+    jest
+      .mocked(client.mutation)
+      .mockImplementationOnce(async (reference: any, args: any) => {
+        process.env.E2B_EGRESS_ABUSE_ENFORCEMENT_ENABLED = "false";
+        try {
+          return await mutate(reference, args);
+        } finally {
+          process.env.E2B_EGRESS_ABUSE_ENFORCEMENT_ENABLED = "true";
+        }
+      });
+    classifyThenConfirm(confirmed);
+    await expect(run(MINUTE, { number: 1, max: 4 })).resolves.toMatchObject({
+      enforcement: "enforcement_pending",
+      enforcementReason: "enforcement_disabled",
+      case: "created",
+    });
+    expect(restrictions()).toHaveLength(0);
+  });
+
+  it("leaves a refused block to an operator as pending enforcement", async () => {
+    enable();
+    await convex.db.insert("abuse_cases", {
+      reference: "AB-ffffffff-0123-4abc-8abc-0123456789ab",
+      activeContainmentUserId: first.userId,
+    });
+    classifyThenConfirm(confirmed);
+    await expect(run()).resolves.toMatchObject({
+      enforcement: "enforcement_pending",
+      enforcementReason: "enforcement_refused",
+    });
+    expect(restrictions()).toHaveLength(0);
+    expect(receipts()).toEqual([
+      expect.objectContaining({ refusal: "competing_case", reference }),
+    ]);
   });
 });

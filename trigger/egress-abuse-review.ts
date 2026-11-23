@@ -2,6 +2,7 @@ import { context } from "@opentelemetry/api";
 import { suppressTracing } from "@opentelemetry/core";
 import { logger, runs, schemaTask } from "@trigger.dev/sdk";
 import { generateText, Output } from "ai";
+import { ConvexError } from "convex/values";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { myProvider } from "@/lib/ai/providers";
@@ -35,7 +36,26 @@ import {
   type ReviewDecision,
   type ReviewEvidence,
   type ReviewItems,
+  type CaseEnforcementRecord,
 } from "@/lib/abuse/egress-review";
+import {
+  buildIntentConfirmationPrompt,
+  decideEnforcement,
+  EGRESS_INTENT_PROMPT_VERSION,
+  egressAbuseEnforcementGate,
+  egressIntentConfirmationSchema,
+  ENFORCEMENT_POLICY_VERSION,
+  keepActiveReason,
+  type EnforcementCheck,
+} from "@/lib/abuse/egress-enforcement";
+import {
+  VERIFIED_EGRESS_BLOCK_SCOPE,
+  egressEvidenceFingerprint,
+  type BlockRefusal,
+  type EnforcementDecision,
+  type EnforcementReason,
+  type ReviewCoverageState,
+} from "@/lib/abuse/egress-outcomes";
 import {
   ATTRIBUTION_REF,
   resolveAttribution,
@@ -52,12 +72,17 @@ import {
   USER_RESEARCH_PROVIDER_OPTIONS,
 } from "@/lib/research/user-research";
 
-// Defensive, read-only triage of one verified attributed burst. It reads the
-// exact linked run's stored evidence, and either skips clearly corroborated
-// legitimate work or creates one encrypted operator case. Without a linked
-// run it attaches bounded, advisory account activity to a manual case. It never sends
-// mail, restricts, blocks, contains, or contacts a sandbox, and its payload,
-// output and logs carry only opaque references and closed enums.
+// Defensive triage of one verified attributed burst. It reads the exact linked
+// run's stored evidence, and either skips clearly corroborated legitimate work
+// or creates one encrypted operator case. Without a linked run it attaches
+// bounded, advisory account activity to a manual case. Only when the existing
+// policy finds concerning, unauthorized activity on complete exact-run
+// evidence does a second, narrow confirmation check for explicit harmful
+// intent; a confirmed decision blocks the account through the separately keyed
+// and switched enforcement mutation, or is recorded as pending enforcement.
+// Every other review keeps the account active. It never sends mail itself,
+// cancels runs or contacts a sandbox, and its payload, output and logs carry
+// only opaque references and closed enums.
 
 /** Matches the burst alert: collectors seal a minute after it ends. */
 const SETTLE_MINUTES = 2;
@@ -82,7 +107,11 @@ export type EgressAbuseReviewResult =
       status: "completed";
       outcome: ReviewDecision["outcome"];
       reason: ReviewDecision["reason"];
-      case: "created" | "none";
+      case: "created" | "existing" | "none";
+      enforcement: EnforcementDecision;
+      enforcementReason: EnforcementReason;
+      /** Set only for a block applied by this attempt. */
+      notice?: "queued" | "deduplicated";
     }
   // The window's case already existed and was left unchanged. This attempt's
   // decision was not stored, so the receipt does not report one.
@@ -233,15 +262,14 @@ function passesPrivacyGuard(prompt: string) {
 }
 
 /** Structured enums and indices only: no tools, no telemetry of content. */
-async function classifyEvidence(
+async function classifyEvidence<T = EgressReviewClassification>(
   prompt: string,
-): Promise<
-  EgressReviewClassification | "classifier_invalid" | "classifier_unavailable"
-> {
+  schema: z.ZodType<T> = egressReviewClassificationSchema as never,
+): Promise<T | "classifier_invalid" | "classifier_unavailable"> {
   try {
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-      output: Output.object({ schema: egressReviewClassificationSchema }),
+      output: Output.object({ schema }),
       providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
       experimental_telemetry: { isEnabled: false },
       temperature: 0,
@@ -249,7 +277,7 @@ async function classifyEvidence(
       maxRetries: 1,
       prompt,
     });
-    const parsed = egressReviewClassificationSchema.safeParse(result.output);
+    const parsed = schema.safeParse(result.output);
     return parsed.success ? parsed.data : "classifier_invalid";
   } catch {
     return "classifier_unavailable";
@@ -352,35 +380,108 @@ export async function runEgressAbuseReview(
   let userId: string | undefined;
   let sandboxIds: string[] | undefined;
 
+  type CaseDetails = Pick<
+    Parameters<typeof buildCaseRecord>[0],
+    | "run"
+    | "coverage"
+    | "classification"
+    | "locators"
+    | "model"
+    | "accountActivity"
+    | "enforcement"
+  >;
+  const digest = reviewDigest(caseKey);
+  const encryptRecord = (
+    decision: Exclude<ReviewDecision, { outcome: "no_case" }>,
+    details: CaseDetails,
+  ) =>
+    // Encrypted before RPC: native argument errors can echo arguments.
+    encryptAbuseEvidence(
+      reference,
+      buildCaseRecord({
+        reference,
+        observation,
+        decision,
+        userId,
+        sandboxIds,
+        reviewedAt: Date.now(),
+        ...details,
+      }),
+    );
+  /**
+   * Sanitized enums for owner summaries. A failure here never changes the
+   * review's outcome; the encrypted case remains the record.
+   */
+  const receipt = async (
+    decision: ReviewDecision,
+    details: CaseDetails,
+    enforcement: {
+      decision: Exclude<EnforcementDecision, "block_applied">;
+      reason: EnforcementReason;
+      refusal?: BlockRefusal;
+    },
+    caseOutcome: "created" | "existing" | "none",
+  ) => {
+    const { coverage: run, accountActivity: activity } = details;
+    const coverage: ReviewCoverageState = run
+      ? !run.historyTruncated &&
+        !run.userMessagesOmitted &&
+        !run.commandsOmitted &&
+        !run.incompleteToolCalls &&
+        !run.runActive
+        ? "complete"
+        : "incomplete"
+      : activity
+        ? activity.status === "read" &&
+          !activity.coverage.scanTruncated &&
+          !activity.coverage.chatsOmitted
+          ? "complete"
+          : "incomplete"
+        : "not_read";
+    try {
+      await client.mutation(api.egressAbuseReview.recordReceipt, {
+        serviceKey,
+        digest,
+        ...(enforcement.decision === "enforcement_pending"
+          ? { reference }
+          : {}),
+        decision: enforcement.decision,
+        reason: enforcement.reason,
+        reviewReason: decision.reason,
+        evidenceMode: activity
+          ? "account_activity"
+          : run
+            ? "exact_run"
+            : "none",
+        coverage,
+        caseOutcome,
+        ...(enforcement.refusal ? { refusal: enforcement.refusal } : {}),
+        ...(details.enforcement
+          ? { intentKind: details.enforcement.intentKind }
+          : {}),
+      });
+    } catch {
+      logger.warn("Egress abuse review receipt was not recorded", {
+        decision: enforcement.decision,
+      });
+    }
+  };
   const persist = async (
     decision: Exclude<ReviewDecision, { outcome: "no_case" }>,
-    details: Pick<
-      Parameters<typeof buildCaseRecord>[0],
-      | "run"
-      | "coverage"
-      | "classification"
-      | "locators"
-      | "model"
-      | "accountActivity"
-    > = {},
+    details: CaseDetails = {},
+    enforcement: {
+      decision: Exclude<EnforcementDecision, "block_applied">;
+      reason: EnforcementReason;
+      refusal?: BlockRefusal;
+    } = { decision: "keep_active", reason: keepActiveReason(decision) },
   ): Promise<EgressAbuseReviewResult> => {
-    const record = buildCaseRecord({
-      reference,
-      observation,
-      decision,
-      userId,
-      sandboxIds,
-      reviewedAt: Date.now(),
-      ...details,
-    });
-    // Encrypted before RPC: native argument errors can echo arguments.
-    const ciphertext = encryptAbuseEvidence(reference, record);
     const result = await client.mutation(api.egressAbuseReview.recordCase, {
       serviceKey,
       reference,
-      digest: reviewDigest(caseKey),
-      ciphertext,
+      digest,
+      ciphertext: encryptRecord(decision, details),
     });
+    await receipt(decision, details, enforcement, result.outcome);
     if (result.outcome === "existing")
       return { status: "preserved", case: "existing" };
     return {
@@ -388,6 +489,8 @@ export async function runEgressAbuseReview(
       outcome: decision.outcome,
       reason: decision.reason,
       case: "created",
+      enforcement: enforcement.decision,
+      enforcementReason: enforcement.reason,
     };
   };
   const manual = (
@@ -608,15 +711,28 @@ export async function runEgressAbuseReview(
     return manual(classification, { ...base, model });
 
   const decision = decideReview(classification, evidence, prepared);
-  if (decision.outcome === "no_case")
+  if (decision.outcome === "no_case") {
+    await receipt(
+      decision,
+      base,
+      { decision: "keep_active", reason: "legitimate_corroborated" },
+      "none",
+    );
     return {
       status: "completed",
       outcome: "no_case",
       reason: decision.reason,
       case: "none",
+      enforcement: "keep_active",
+      enforcementReason: "legitimate_corroborated",
     };
+  }
   const { commands, messages, ...outcome } = decision;
-  return persist(outcome, {
+  const locate = (cited: { commands: number[]; messages: number[] }) => ({
+    commands: cited.commands.map((index) => prepared.commandLocators[index]),
+    messages: cited.messages.map((index) => prepared.messageLocators[index]),
+  });
+  const details: CaseDetails = {
     ...base,
     model,
     classification: {
@@ -624,11 +740,119 @@ export async function runEgressAbuseReview(
       activity: classification.activity,
       authorization: classification.authorization,
     },
-    locators: {
-      commands: commands.map((index) => prepared.commandLocators[index]),
-      messages: messages.map((index) => prepared.messageLocators[index]),
-    },
+    locators: locate({ commands, messages }),
+  };
+  if (outcome.outcome !== "authorization_request")
+    return persist(outcome, details);
+
+  // The high-risk subset: a separate, narrow confirmation of explicit
+  // harmful intent over the same scrubbed evidence and indices.
+  const confirmationPrompt = buildIntentConfirmationPrompt(prepared);
+  let check: EnforcementCheck = { block: false, reason: "inconclusive" };
+  if (passesPrivacyGuard(confirmationPrompt)) {
+    const confirmation = await classifyEvidence(
+      confirmationPrompt,
+      egressIntentConfirmationSchema,
+    );
+    if (typeof confirmation !== "string")
+      check = decideEnforcement(confirmation, prepared, {
+        ...decision,
+        activity: classification.activity,
+      });
+  }
+  if (!check.block)
+    return persist(outcome, details, {
+      decision: "keep_active",
+      reason: check.reason,
+    });
+
+  const blockRecord = (
+    status: CaseEnforcementRecord["decision"],
+    reason: EnforcementReason,
+    refusal?: BlockRefusal,
+  ): CaseEnforcementRecord => ({
+    decision: status,
+    reason,
+    ...(refusal ? { refusal } : {}),
+    intentKind: check.intentKind,
+    policyVersion: ENFORCEMENT_POLICY_VERSION,
+    promptVersion: EGRESS_INTENT_PROMPT_VERSION,
+    locators: locate(check),
   });
+  const pendingBlock = (reason: EnforcementReason, refusal?: BlockRefusal) =>
+    persist(
+      outcome,
+      {
+        ...details,
+        enforcement: blockRecord("enforcement_pending", reason, refusal),
+      },
+      { decision: "enforcement_pending", reason, refusal },
+    );
+  if (egressAbuseEnforcementGate() !== "on")
+    return pendingBlock("enforcement_disabled");
+  const enforcementKey =
+    process.env.CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY?.trim();
+  if (
+    !enforcementKey ||
+    enforcementKey === serviceKey ||
+    enforcementKey === process.env.CONVEX_SERVICE_ROLE_KEY?.trim()
+  )
+    return pendingBlock("enforcement_unavailable");
+  const located = locate(check);
+  let applied;
+  try {
+    const inputs = {
+      reference,
+      digest,
+      ciphertext: encryptRecord(outcome, {
+        ...details,
+        enforcement: blockRecord("block_applied", "harmful_intent_confirmed"),
+      }),
+      userId: userId!,
+      chatId: run.chatId,
+      runId: run.runId,
+      ...burst,
+      policyVersion: ENFORCEMENT_POLICY_VERSION,
+      intentKind: check.intentKind,
+      messageIds: located.messages.map(({ messageId }) => messageId),
+      commands: located.commands,
+      evidenceFingerprint: await egressEvidenceFingerprint(evidence),
+    };
+    const proof = await signServiceArgs(
+      {
+        deployment: convexUrl,
+        name: VERIFIED_EGRESS_BLOCK_SCOPE,
+        type: "mutation",
+      },
+      { ...inputs, serviceKey },
+    );
+    applied = await client.mutation(api.egressAbuseEnforcement.applyBlock, {
+      ...inputs,
+      serviceKey: enforcementKey,
+      reviewProof: String(proof.serviceKey),
+    });
+  } catch (error) {
+    // A lost response may have committed: a retry returns `existing_block`,
+    // and a last-attempt fallback finds the case and preserves it.
+    if (!finalAttempt && !(error instanceof ConvexError)) throw error;
+    return pendingBlock("enforcement_unavailable");
+  }
+  if (applied.outcome === "refused") {
+    if (applied.refusal === "case_exists")
+      return { status: "preserved", case: "existing" };
+    if (applied.refusal === "enforcement_disabled")
+      return pendingBlock("enforcement_disabled");
+    return pendingBlock("enforcement_refused", applied.refusal);
+  }
+  return {
+    status: "completed",
+    outcome: outcome.outcome,
+    reason: outcome.reason,
+    case: applied.outcome === "applied" ? "created" : "existing",
+    enforcement: "block_applied",
+    enforcementReason: "harmful_intent_confirmed",
+    ...(applied.outcome === "applied" ? { notice: applied.notice } : {}),
+  };
 }
 
 export const egressAbuseReviewTask = schemaTask({
@@ -653,7 +877,13 @@ export const egressAbuseReviewTask = schemaTask({
     logger.info(
       "Egress abuse review finished",
       result.status === "completed"
-        ? { outcome: result.outcome, reason: result.reason, case: result.case }
+        ? {
+            outcome: result.outcome,
+            reason: result.reason,
+            case: result.case,
+            enforcement: result.enforcement,
+            enforcementReason: result.enforcementReason,
+          }
         : result.status === "preserved"
           ? { status: result.status, case: result.case }
           : { status: result.status },

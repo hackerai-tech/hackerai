@@ -19,6 +19,9 @@ export function database() {
             return descending ? -delta : delta;
           });
       const chain = {
+        async *[Symbol.asyncIterator]() {
+          yield* results();
+        },
         withIndex(index: string, callback: (query: any) => unknown) {
           if (table === "chats" && index === "by_user_and_updated")
             orderField = "update_time";
