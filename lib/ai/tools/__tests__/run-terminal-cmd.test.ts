@@ -2018,6 +2018,44 @@ exit 7
     ptySessionManager.forget("chat-1", result.result.session!);
   });
 
+  test("does not dispatch after readiness when a concurrent cooldown started", async () => {
+    const run = jest.fn(async (command: string) =>
+      command.includes("should-not-run")
+        ? { stdout: "ran\n", stderr: "", exitCode: 0 }
+        : { stdout: "ok\n", stderr: "", exitCode: 0 },
+    );
+    const e2b = {
+      jupyterUrl: "http://fake",
+      sandboxId: "sandbox-ready",
+      setTimeout: jest.fn(async () => undefined),
+      isRunning: jest.fn(async () => true),
+      getMetrics: jest.fn(async () => []),
+      commands: { run },
+    };
+    const { context, sandboxManager } = makeContext({ sandbox: e2b });
+    // Available before readiness; another call starts a cooldown meanwhile.
+    sandboxManager.isSandboxUnavailable
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+    Object.assign(sandboxManager, {
+      getSandboxUnavailableMessage: () =>
+        "Cloud workspace is temporarily unavailable; retry after about 60 seconds.",
+    });
+
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "echo should-not-run",
+      brief: "verify sandbox",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    })) as { result: { error?: string } };
+
+    expect(result.result.error).toContain("temporarily unavailable");
+    expect(
+      run.mock.calls.some(([command]) => command.includes("should-not-run")),
+    ).toBe(false);
+  });
+
   test("pauses terminal retries when the initial check and reconnect both fail", async () => {
     jest.useFakeTimers();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});

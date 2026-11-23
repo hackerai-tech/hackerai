@@ -689,18 +689,25 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             retryAfterMs: CLOUD_COOLDOWN_BASE_MS,
           });
 
+        // Checked before and after readiness: a concurrent call may start a
+        // cooldown while this one waits, and a stale success must not
+        // dispatch a command into that cooldown.
+        const unavailableResult = () =>
+          sandboxManager.isSandboxUnavailable()
+            ? {
+                result: {
+                  output: "",
+                  exitCode: 1,
+                  error:
+                    sandboxManager.getSandboxUnavailableMessage?.() ??
+                    LOCAL_SANDBOX_UNAVAILABLE_ERROR,
+                },
+              }
+            : undefined;
+
         // Bail early if sandbox was already marked unavailable by any tool
-        if (sandboxManager.isSandboxUnavailable()) {
-          return {
-            result: {
-              output: "",
-              exitCode: 1,
-              error:
-                sandboxManager.getSandboxUnavailableMessage?.() ??
-                LOCAL_SANDBOX_UNAVAILABLE_ERROR,
-            },
-          };
-        }
+        const blockedBeforeReadiness = unavailableResult();
+        if (blockedBeforeReadiness) return blockedBeforeReadiness;
 
         // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
@@ -832,12 +839,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             });
 
             if (!recovery.ok) return recovery.response;
+            const blockedAfterReconnect = unavailableResult();
+            if (blockedAfterReconnect) return blockedAfterReconnect;
             return await (isE2BSandbox(recovery.sandbox) && !is_background
               ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
                   executeWithLocalRelayRecovery(recovery.sandbox),
                 )
               : executeWithLocalRelayRecovery(recovery.sandbox));
           }
+          const blockedAfterReadiness = unavailableResult();
+          if (blockedAfterReadiness) return blockedAfterReadiness;
         }
 
         return await (isE2BSandbox(sandbox) && !is_background
