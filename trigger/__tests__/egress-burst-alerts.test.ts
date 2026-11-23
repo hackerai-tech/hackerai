@@ -338,6 +338,25 @@ it("fails on a missing collector heartbeat rather than reading it as zero", asyn
   expect(error.message).toBe(
     "Egress attribution alert: us collector heartbeat missing",
   );
+  // The run log names the exact settled window that had no upload.
+  const missing = jest
+    .mocked(logger.warn)
+    .mock.calls.filter(
+      ([message]) => message === "Egress collector heartbeat missing",
+    );
+  expect(missing).toEqual([
+    [
+      "Egress collector heartbeat missing",
+      {
+        region: "us",
+        firstMinute: MINUTE - 4,
+        lastMinute: MINUTE,
+        windowStart: new Date((MINUTE - 4) * 60_000).toISOString(),
+        windowEnd: new Date((MINUTE + 1) * 60_000).toISOString(),
+        scheduledAt: at().toISOString(),
+      },
+    ],
+  ]);
   // Not deduplicated: every run fails while the condition lasts.
   await failure(runEgressBurstAlerts(at()));
 });

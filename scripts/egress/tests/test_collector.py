@@ -9,6 +9,7 @@ import hmac
 import http.server
 import json
 import os
+import signal
 import sys
 import tempfile
 import threading
@@ -356,8 +357,89 @@ class UploadTest(Case):
             f"http://127.0.0.1:9{collector.ENDPOINT_PATH}", "us", TELEMETRY_KEY, True
         )
         before = each.next_batch()
-        self.assertFalse(uploader.drain(each))
+        with mock.patch.object(collector, "log") as log:
+            self.assertFalse(uploader.drain(each))
         self.assertEqual(each.next_batch(), before)
+        # A coarse category, never the error text with the endpoint address.
+        (line,), _ = log.call_args
+        self.assertIn("status=unknown transport=refused attempt=1", line)
+        self.assertNotIn("127.0.0.1", line)
+
+    def test_logs_trouble_and_recovery_with_the_backlog_age(self):
+        each = self.open()
+        each.process(entry(1, T0 + 61, event(US1)), now=T0 + 70)
+        each.seal(now=T0 + 120 + GRACE)
+        oldest = collector.utc(T0)
+        now = [T0 + 200]
+        sink = Sink([503, "drop", 200, 200, 503])
+        self.addCleanup(sink.close)
+        uploader = collector.Uploader(
+            sink.url, "us", TELEMETRY_KEY, allow_loopback_http=True, clock=lambda: now[0]
+        )
+
+        with mock.patch.object(collector, "log") as log:
+            self.assertFalse(uploader.drain(each))
+            now[0] += 5
+            self.assertFalse(uploader.drain(each))
+            now[0] += 10
+            self.assertTrue(uploader.drain(each))
+            each.seal(now=T0 + 180 + GRACE)
+            self.assertFalse(uploader.drain(each))
+        lines = [call.args[0] for call in log.call_args_list]
+
+        backlog = f"pending=2 oldest_minute={oldest}"
+        self.assertEqual(
+            lines[:3],
+            [
+                f"upload deferred status=503 attempt=1 {backlog} oldest_age_s=140 "
+                "last_success=unavailable",
+                f"upload deferred status=unknown transport=connection attempt=2 {backlog} "
+                "oldest_age_s=145 last_success=unavailable",
+                f"upload recovered deferred=2 outage_s=15 {backlog} oldest_age_s=155 "
+                "last_success=unavailable",
+            ],
+        )
+        # A later outage starts a new count and names the last success.
+        self.assertTrue(lines[3].startswith("upload deferred status=503 attempt=1 pending=1"))
+        self.assertTrue(lines[3].endswith(f"last_success={collector.utc(T0 + 215)}"))
+        self.assertEqual(len(lines), 4)
+        # Retry is unchanged: the deferred batch was resent until acknowledged.
+        self.assertEqual(len(sink.received), 5)
+        logged = "\n".join(lines)
+        for secret in (TELEMETRY_KEY.hex(), US1["owner"], US1["workspace"], "127.0.0.1"):
+            self.assertNotIn(secret, logged)
+
+
+class StartupTest(Case):
+    def test_startup_reports_the_backlog_and_no_prior_success(self):
+        state = collector.Collector(
+            os.path.join(self.tmp.name, "collector.sqlite3"), "us", UNIT, now=T0 + 1
+        )
+        state.seal(now=T0 + 60 + GRACE)
+        state.close()
+        config = {
+            "version": 1,
+            "region": "us",
+            "endpoint": f"https://app.example.test{collector.ENDPOINT_PATH}",
+            "unit": UNIT,
+        }
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            self.addCleanup(signal.signal, signum, signal.getsignal(signum))
+
+        class Stop(Exception):
+            pass
+
+        # Stops before the journal is opened or anything is uploaded.
+        with mock.patch.object(collector, "log") as log, mock.patch.object(
+            collector.subprocess, "Popen", side_effect=Stop
+        ), mock.patch.object(collector.time, "time", return_value=T0 + 90):
+            with self.assertRaises(Stop):
+                collector.run(config, TELEMETRY_KEY, self.tmp.name)
+        log.assert_called_once_with(
+            f"started region=us journal_cursor=missing "
+            f"sealed_through_minute={collector.utc(T0)} pending=1 "
+            f"oldest_minute={collector.utc(T0)} oldest_age_s=30 last_success=unavailable"
+        )
 
 
 class ConfigurationTest(Case):
