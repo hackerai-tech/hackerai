@@ -329,25 +329,31 @@ it.each([
     expect(result.exitCode).toBe(3);
     expect(result.receipt).toEqual({
       bridge_failure: [
-        5,
+        6,
         "deadline",
         phase,
         "none",
         count,
         "not_observed",
         "not_observed",
+        "not_observed",
+        0,
+        "not_observed",
       ],
     });
     expect(
       browserBridgeFailureContext({ exitCode: 3, stdout: result.output }),
     ).toEqual({
-      capture_bridge_diagnostic_version: 5,
+      capture_bridge_diagnostic_version: 6,
       capture_bridge_failure: "deadline",
       capture_bridge_phase: phase,
       capture_bridge_close_code: "none",
       capture_bridge_nonframe_message_count: count,
       capture_bridge_status_message_connected: "not_observed",
       capture_bridge_status_message_screencasting: "not_observed",
+      capture_bridge_status_message_first_screencasting: "not_observed",
+      capture_bridge_status_message_count: 0,
+      capture_bridge_status_message_latest_since_open: "not_observed",
     });
     expect(result.output.length).toBeLessThanOrEqual(128);
     expect(result.output).not.toContain("PRIVATE");
@@ -377,6 +383,66 @@ it.each([
   },
 );
 
+it("still reads a v5 status summary from an older helper without inventing v6 detail", () => {
+  // Older packets keep their own rules, including a latest false claim.
+  expect(
+    browserBridgeFailureContext({
+      exitCode: 3,
+      stdout: JSON.stringify({
+        bridge_failure: [
+          5,
+          "deadline",
+          "message_received",
+          "none",
+          16,
+          "false",
+          "false",
+        ],
+      }),
+    }),
+  ).toEqual({
+    capture_bridge_diagnostic_version: 5,
+    capture_bridge_failure: "deadline",
+    capture_bridge_phase: "message_received",
+    capture_bridge_close_code: "none",
+    capture_bridge_nonframe_message_count: 16,
+    capture_bridge_status_message_connected: "false",
+    capture_bridge_status_message_screencasting: "false",
+  });
+});
+
+/** A v6 watchdog tuple after a received message; append the remaining fields. */
+const v6 = (...detail: unknown[]) => [
+  6,
+  "deadline",
+  "message_received",
+  "none",
+  ...detail,
+];
+const notObserved = "not_observed";
+
+it("reads a coherent v6 status detail", () => {
+  expect(
+    browserBridgeFailureContext({
+      exitCode: 3,
+      stdout: JSON.stringify({
+        bridge_failure: v6(3, "true", "true", "false", 2, "lt3s"),
+      }),
+    }),
+  ).toEqual({
+    capture_bridge_diagnostic_version: 6,
+    capture_bridge_failure: "deadline",
+    capture_bridge_phase: "message_received",
+    capture_bridge_close_code: "none",
+    capture_bridge_nonframe_message_count: 3,
+    capture_bridge_status_message_connected: "true",
+    capture_bridge_status_message_screencasting: "true",
+    capture_bridge_status_message_first_screencasting: "false",
+    capture_bridge_status_message_count: 2,
+    capture_bridge_status_message_latest_since_open: "lt3s",
+  });
+});
+
 it.each(["connecting", "awaiting_frame", "message_received"] as const)(
   "still reads v3 watchdog packets from older helpers at %s",
   (phase) => {
@@ -396,14 +462,24 @@ it.each(["connecting", "awaiting_frame", "message_received"] as const)(
   },
 );
 
-/** Deliver raw daemon messages to the actual frame helper, then fire its watchdog. */
-function frameMessages(messages: string[], deadline = true) {
+/**
+ * Deliver raw daemon messages to the actual frame helper, then fire its
+ * watchdog. The helper's clock reads `openedAt` at open and `at[i]` (default
+ * `openedAt`) at message i.
+ */
+function frameMessages(
+  messages: string[],
+  deadline = true,
+  { openedAt = 0, at = [] as number[] } = {},
+) {
   const listeners = new Map<string, (value?: unknown) => void>();
   const timers = new Map<number, () => void>();
   let nextTimer = 0;
   let output = "";
   let exitCode: number | undefined;
+  let clock = 0;
   runInNewContext(BROWSER_BRIDGE_PROGRAM, {
+    Date: { now: () => clock },
     WebSocket: class {
       addEventListener(name: string, listener: (value?: unknown) => void) {
         listeners.set(name, listener);
@@ -428,8 +504,12 @@ function frameMessages(messages: string[], deadline = true) {
     },
     clearTimeout: (id: number) => timers.delete(id),
   });
+  clock = openedAt;
   listeners.get("open")!();
-  for (const data of messages) listeners.get("message")!({ data });
+  messages.forEach((data, index) => {
+    clock = at[index] ?? openedAt;
+    listeners.get("message")!({ data });
+  });
   // The 6.5s watchdog is the first timer; an outcome before it clears it.
   const watchdogPending = timers.has(1);
   if (deadline) timers.get(1)!();
@@ -518,6 +598,7 @@ it.each([
     "not_observed",
     "not_observed",
   ],
+  // The largest v6 packet: the capped count and every status field unobserved.
   [
     "exceeded the count cap",
     Array(20).fill(other),
@@ -529,25 +610,34 @@ it.each([
   "summarizes a deadline after the daemon %s without exporting message contents",
   (_case, messages, count, connected, screencasting) => {
     const result = frameMessages([...messages]);
+    // Each case sends at most one status: it is both the first and the latest.
+    const detail =
+      connected === "not_observed"
+        ? ["not_observed", 0, "not_observed"]
+        : [screencasting, 1, "lt1s"];
     expect(result.exitCode).toBe(3);
     expect(result.receipt).toEqual({
       bridge_failure: [
-        5,
+        6,
         "deadline",
         "message_received",
         "none",
         count,
         connected,
         screencasting,
+        ...detail,
       ],
     });
     expect(
       browserBridgeFailureContext({ exitCode: 3, stdout: result.output }),
     ).toMatchObject({
-      capture_bridge_diagnostic_version: 5,
+      capture_bridge_diagnostic_version: 6,
       capture_bridge_nonframe_message_count: count,
       capture_bridge_status_message_connected: connected,
       capture_bridge_status_message_screencasting: screencasting,
+      capture_bridge_status_message_first_screencasting: detail[0],
+      capture_bridge_status_message_count: detail[1],
+      capture_bridge_status_message_latest_since_open: detail[2],
     });
     expect(result.output.length).toBeLessThanOrEqual(128);
     expect(result.output).not.toMatch(
@@ -578,7 +668,7 @@ it.each([
   (messages, connected, screencasting) => {
     const result = frameMessages(messages);
     expect(result.exitCode).toBe(3);
-    expect(result.receipt.bridge_failure.slice(4)).toEqual([
+    expect(result.receipt.bridge_failure.slice(4, 7)).toEqual([
       16,
       connected,
       screencasting,
@@ -586,6 +676,43 @@ it.each([
     expect(result.output.length).toBeLessThanOrEqual(128);
   },
 );
+
+it("keeps the first screencasting claim, caps the status count and times the latest status from open", () => {
+  // Opens 2s after start. Statuses at 2.5s-3.5s after open (false, then other
+  // claims, then true); a later non-status message never moves the timing.
+  const result = frameMessages(
+    [
+      status(true, false),
+      status(true, "PRIVATE"),
+      status(true, "PRIVATE"),
+      status(true, true),
+      other,
+    ],
+    true,
+    { openedAt: 2_000, at: [4_500, 5_000, 5_200, 5_500, 7_000] },
+  );
+  expect(result.exitCode).toBe(3);
+  expect(result.receipt.bridge_failure).toEqual([
+    6,
+    "deadline",
+    "message_received",
+    "none",
+    5,
+    "true",
+    "true",
+    "false",
+    3,
+    "lt5s",
+  ]);
+  expect(
+    browserBridgeFailureContext({ exitCode: 3, stdout: result.output }),
+  ).toMatchObject({
+    capture_bridge_status_message_first_screencasting: "false",
+    capture_bridge_status_message_count: 3,
+    capture_bridge_status_message_latest_since_open: "lt5s",
+  });
+  expect(result.output).not.toContain("PRIVATE");
+});
 
 it.each([
   ["a connected status", [status(true, false), other]],
@@ -920,6 +1047,21 @@ it.each([
   [3, [5, "deadline", "connecting", "none", 1, "not_observed", "not_observed"]],
   [3, [5, "deadline", "awaiting_frame", "none", 0, "not_observed", "true"]],
   [3, [5, "deadline", "awaiting_frame", "none", 0, "false", "false"]],
+  // v6 appends a first screencasting claim, status count and latest timing.
+  [6, v6(2, "true", "true", "false", 2, "lt1s")],
+  [3, v6(2, "true", "true", "false", 2)],
+  [3, v6(16, "true", "true", "false", 4, "lt1s")],
+  [3, v6(2, "true", "true", "PRIVATE", 2, "lt1s")],
+  [3, v6(2, "true", "true", "false", 2, "lt2s")],
+  // Every status is also a non-frame message.
+  [3, v6(1, "true", "true", "false", 2, "lt1s")],
+  // No status leaves claims and timing unobserved; any status observes all.
+  [3, v6(1, notObserved, notObserved, notObserved, 0, "lt1s")],
+  [3, v6(2, "true", "true", notObserved, 2, "lt1s")],
+  // A single status is both the first and the latest claim.
+  [3, v6(1, "true", "true", "false", 1, "lt1s")],
+  // A latest strict false claim would have exited 7 before the deadline.
+  [3, v6(2, "false", "false", "true", 2, "lt1s")],
 ])(
   "keeps watchdog metadata tied to its exact exit and finite packet (%#)",
   (exitCode, tuple) => {

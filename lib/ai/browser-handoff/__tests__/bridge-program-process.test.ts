@@ -4,7 +4,10 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import type { Readable } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { BROWSER_BRIDGE_PROGRAM } from "../bridge-program";
+import {
+  BROWSER_BRIDGE_PROGRAM,
+  browserBridgeFailureContext,
+} from "../bridge-program";
 
 // Runs the generated helper as a real child with a real stdout pipe against a
 // synthetic local daemon. Frame contents are synthetic ASCII only.
@@ -159,6 +162,58 @@ it("ends a frame whose output never drains with the existing deadline exit insid
   expect(exit.elapsed).toBeGreaterThanOrEqual(6_500);
   // The server-side command budget is 8s.
   expect(exit.elapsed).toBeLessThan(8_000);
+  expect(run.stderr()).toBe("");
+}, 15_000);
+
+it("reports a false-then-true screencasting claim on the frame deadline without exporting status contents", async () => {
+  const status = (screencasting: boolean) =>
+    JSON.stringify({
+      type: "status",
+      connected: true,
+      screencasting,
+      url: "https://PRIVATE_URL.test/",
+      session: "PRIVATE_SESSION",
+    });
+  const { port } = await daemon((socket) => {
+    // Status and other non-frame messages only; the socket stays open.
+    socket.send(status(false));
+    socket.send(JSON.stringify({ type: "PRIVATE_TYPE", data: "PRIVATE" }));
+    socket.send(status(true));
+  });
+  const run = bridge(port, "frame");
+  const [output, exit] = await Promise.all([
+    readAll(run.child.stdout),
+    run.exited,
+  ]);
+  expect(exit).toMatchObject({ code: 3, signal: null });
+  expect(exit.elapsed).toBeGreaterThanOrEqual(6_500);
+  // The server-side command budget is 8s.
+  expect(exit.elapsed).toBeLessThan(8_000);
+  const tuple = JSON.parse(output).bridge_failure;
+  expect(tuple.slice(0, 9)).toEqual([
+    6,
+    "deadline",
+    "message_received",
+    "none",
+    3,
+    "true",
+    "true",
+    "false",
+    2,
+  ]);
+  // Sent on connection; local delivery latency decides the exact bucket.
+  expect(["lt1s", "lt3s", "lt5s", "ge5s"]).toContain(tuple[9]);
+  expect(
+    browserBridgeFailureContext({ exitCode: exit.code, stdout: output }),
+  ).toMatchObject({
+    capture_bridge_diagnostic_version: 6,
+    capture_bridge_status_message_screencasting: "true",
+    capture_bridge_status_message_first_screencasting: "false",
+    capture_bridge_status_message_count: 2,
+    capture_bridge_status_message_latest_since_open: tuple[9],
+  });
+  expect(output.length).toBeLessThanOrEqual(128);
+  expect(output).not.toMatch(/PRIVATE|url|session/);
   expect(run.stderr()).toBe("");
 }, 15_000);
 
