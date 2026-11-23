@@ -1767,7 +1767,11 @@ describe("OpenRouter PDF parser recovery", () => {
 
       expect(response).toBe(originalResponse);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      // Only the zero-data-retention requirement is added to the request.
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        ...request,
+        provider: { zdr: true },
+      });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
       expect(diagnostic).toMatchObject({
