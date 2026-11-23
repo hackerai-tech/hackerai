@@ -4403,6 +4403,159 @@ describe("file_stat receiver diagnostics", () => {
         jest.useRealTimers();
       }
     });
+
+    describe("pending follow-up event", () => {
+      const LATE_EVENT = "desktop_native_version_late_lookup";
+      const lateEvents = () => {
+        // Never on the unqueued path, which drops events before PostHog loads.
+        expect(
+          jest
+            .mocked(captureAuthenticatedEvent)
+            .mock.calls.filter(([event]) => event === LATE_EVENT),
+        ).toEqual([]);
+        return jest
+          .mocked(captureQueuedAuthenticatedEvent)
+          .mock.calls.filter(([{ event }]) => event === LATE_EVENT);
+      };
+
+      /** Starts the ACL fixture and fails one stat while the lookup is pending. */
+      async function failWhilePending(lookup: () => Promise<unknown>) {
+        installAclDenied(lookup);
+        const bridge = new DesktopSandboxBridge(buildConfig());
+        const started = bridge.start();
+        await jest.advanceTimersByTimeAsync(500);
+        await started;
+        const invoke = await resetObservedCalls();
+        getPublicationHandler()({ data: statMessage("stat-acl") });
+        await waitFor(() => expect(fileErrors()).toHaveLength(1));
+        // The immediate reply is unchanged and never waits for the follow-up.
+        expect(fileErrors()).toEqual([aclStatError("pending")]);
+        expect(lateEvents()).toEqual([]);
+        return { bridge, invoke };
+      }
+
+      it.each([
+        {
+          name: "a delayed published 0.0.71",
+          settleAt: 1_500 as number | undefined,
+          outcome: "resolved_published_legacy",
+        },
+        // The lookup's own settlement just past the bound does not qualify;
+        // the window's timer reports instead.
+        {
+          name: "0.0.71 just after the window",
+          settleAt: 3_001,
+          outcome: "unresolved",
+        },
+        {
+          name: "a lookup that never settles",
+          settleAt: undefined,
+          outcome: "unresolved",
+        },
+      ])(
+        "reports $outcome once for $name after the immediate reply",
+        async ({ settleAt, outcome }) => {
+          jest.useFakeTimers();
+          const lookup = jest.fn(
+            () =>
+              new Promise<unknown>((resolve) => {
+                if (settleAt !== undefined)
+                  setTimeout(() => resolve("0.0.71"), settleAt);
+              }),
+          );
+          const { bridge, invoke } = await failWhilePending(lookup);
+          try {
+            // A second exact denial in the same start does not arm again.
+            getPublicationHandler()({ data: statMessage("stat-acl-2") });
+            await waitFor(() => expect(fileErrors()).toHaveLength(2));
+            await jest.advanceTimersByTimeAsync(5_000);
+
+            expect(lateEvents()).toEqual([
+              [
+                {
+                  event: LATE_EVENT,
+                  properties: { connectionId: "conn-123", version: 1, outcome },
+                  dedupeKey: "conn-123",
+                },
+              ],
+            ]);
+            expect(JSON.stringify(lateEvents())).not.toMatch(
+              /0\.0\.7|private|authorized_desktop_file_request/i,
+            );
+            // No extra native IPC, downgrade or re-selection.
+            expect(fileIpc(invoke)).toEqual([
+              "authorized_desktop_file_request",
+              "authorized_desktop_file_request",
+            ]);
+            expect(lookup).toHaveBeenCalledTimes(1);
+          } finally {
+            await bridge.stop();
+            jest.useRealTimers();
+          }
+        },
+      );
+
+      it("drops a stopped start's armed follow-up, settled or expired", async () => {
+        jest.useFakeTimers();
+        let resolveLookup!: (value: unknown) => void;
+        const { bridge } = await failWhilePending(
+          () =>
+            new Promise((resolve) => {
+              resolveLookup = resolve;
+            }),
+        );
+        try {
+          await bridge.stop();
+          resolveLookup("0.0.71");
+          await jest.advanceTimersByTimeAsync(5_000);
+          expect(lateEvents()).toEqual([]);
+        } finally {
+          await bridge.stop();
+          jest.useRealTimers();
+        }
+      });
+
+      it("drops the follow-up when the analytics identity changes before it reports", async () => {
+        jest.useFakeTimers();
+        let resolveLookup!: (value: unknown) => void;
+        const { bridge } = await failWhilePending(
+          () =>
+            new Promise((resolve) => {
+              resolveLookup = resolve;
+            }),
+        );
+        const permittedUser = jest.mocked(getPermittedAnalyticsUserId);
+        try {
+          // Armed for user-456; another identity owns the queue at settlement.
+          permittedUser.mockReturnValue("user-other");
+          resolveLookup("0.0.71");
+          await jest.advanceTimersByTimeAsync(5_000);
+          expect(lateEvents()).toEqual([]);
+        } finally {
+          permittedUser.mockReturnValue("user-456");
+          await bridge.stop();
+          jest.useRealTimers();
+        }
+      });
+
+      it("never arms for a pending lookup beside another authorized rejection", async () => {
+        jest.useFakeTimers();
+        const started = await startWithLookup(() => new Promise(() => {}));
+        try {
+          getPublicationHandler()({ data: statMessage("stat-other") });
+          await waitFor(() => expect(fileErrors()).toHaveLength(1));
+          expect(fileErrors()[0]).toMatchObject({
+            message: "Desktop operation was not authorized",
+            receiverDiagnostic: { nativeVersionLateLookup: "pending" },
+          });
+          await jest.advanceTimersByTimeAsync(5_000);
+          expect(lateEvents()).toEqual([]);
+        } finally {
+          await started.bridge.stop();
+          jest.useRealTimers();
+        }
+      });
+    });
   });
 
   it("keeps a successful stat reply and other file errors unchanged", async () => {

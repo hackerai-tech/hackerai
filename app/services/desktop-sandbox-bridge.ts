@@ -16,9 +16,12 @@ import { OperationChannelRouter } from "@/packages/local/src/operation-channels"
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import {
   captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
 } from "@/lib/analytics/client";
 import {
+  AUTHORIZED_FILE_REQUEST_ACL_DENIAL,
   DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS,
   DesktopFileBridgeError,
   getDesktopFileFailure,
@@ -248,7 +251,15 @@ function diagnosticElapsedSince(startedAt: number): number | undefined {
 interface NativeVersionLateObservation {
   readonly startedAt: number;
   settled?: Exclude<DesktopNativeVersionLateLookup, "pending" | "unresolved">;
+  /** Armed at most once, by an exact ACL denial read while still pending. */
+  report?: (outcome: DesktopNativeVersionLateLookup) => void;
 }
+
+/**
+ * The armed pending case's single follow-up: how that same lookup IPC ended
+ * within its window, after the immediate file_error could only say pending.
+ */
+const NATIVE_VERSION_LATE_LOOKUP_EVENT = "desktop_native_version_late_lookup";
 
 /** Read once at a failure; undefined (omitted) when the clock is unusable. */
 function nativeVersionLateLookup(
@@ -693,6 +704,8 @@ export class DesktopSandboxBridge {
   // Cleared at each start; set only by a timed-out lookup of a start that
   // passed its stop guard, so a stale start cannot overwrite it.
   private nativeVersionLate: NativeVersionLateObservation | undefined;
+  // That observation's only follow-up timer; cleared at stop/start/terminate.
+  private nativeVersionLateTimer: ReturnType<typeof setTimeout> | undefined;
   private nativePlatform = "unknown";
   private nativeLifecycle: NativeLifecycleTelemetry = {};
   /** Native identity proven at startup; older binaries have none. */
@@ -912,6 +925,7 @@ export class DesktopSandboxBridge {
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();
+    this.clearNativeVersionLateReportTimer();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
@@ -957,6 +971,7 @@ export class DesktopSandboxBridge {
     this.nativeLifecycle = {};
     this.nativeSession = undefined;
     this.nativeVersionLate = undefined;
+    this.clearNativeVersionLateReportTimer();
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1482,9 +1497,12 @@ export class DesktopSandboxBridge {
           if (
             generation === this.startupGeneration &&
             elapsed !== undefined &&
-            elapsed <= DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS
-          )
+            elapsed <= DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS &&
+            settled
+          ) {
             late.settled = settled;
+            late.report?.(settled);
+          }
         } catch {
           // Diagnostics only.
         }
@@ -1497,6 +1515,81 @@ export class DesktopSandboxBridge {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Arm this start's single follow-up for an exact authorized ACL denial whose
+   * receiver field could only say pending. It reports the same IPC's in-window
+   * settlement, or unresolved from one diagnostic-only timer at the window's
+   * end. Fenced to the arming generation and connection; never touches the
+   * failure reply, selection or dispatch, and any failure only omits it.
+   */
+  private armNativeVersionLateReport(
+    observation: NativeVersionLateObservation,
+  ): void {
+    try {
+      const connectionId = this.connectionId;
+      const generation = this.startupGeneration;
+      // The queue owner at arming; a later identity never receives this event.
+      const owner = getPermittedAnalyticsUserId();
+      if (
+        observation.report ||
+        observation.settled ||
+        observation !== this.nativeVersionLate ||
+        this.isStoppingOrStopped ||
+        !connectionId ||
+        !owner
+      )
+        return;
+      const elapsed = diagnosticElapsedSince(observation.startedAt);
+      if (
+        elapsed === undefined ||
+        elapsed > DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS
+      )
+        return;
+      let open = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const report = (outcome: DesktopNativeVersionLateLookup) => {
+        if (!open) return;
+        open = false;
+        clearTimeout(timer);
+        if (this.nativeVersionLateTimer === timer)
+          this.nativeVersionLateTimer = undefined;
+        try {
+          if (
+            this.isStoppingOrStopped ||
+            this.startupGeneration !== generation ||
+            this.connectionId !== connectionId ||
+            this.nativeVersionLate !== observation ||
+            getPermittedAnalyticsUserId() !== owner
+          )
+            return;
+          // Queued and identity-bound, so a boot-time PostHog load cannot
+          // drop it; one per connection by its opaque ID.
+          captureQueuedAuthenticatedEvent({
+            event: NATIVE_VERSION_LATE_LOOKUP_EVENT,
+            properties: { connectionId, version: 1, outcome },
+            dedupeKey: connectionId,
+          });
+        } catch {
+          // Diagnostics only.
+        }
+      };
+      observation.report = report;
+      // One past the inclusive bound, so a boundary settlement reports first.
+      timer = setTimeout(
+        () => report("unresolved"),
+        DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS - elapsed + 1,
+      );
+      this.nativeVersionLateTimer = timer;
+    } catch {
+      // Diagnostics only.
+    }
+  }
+
+  private clearNativeVersionLateReportTimer(): void {
+    clearTimeout(this.nativeVersionLateTimer);
+    this.nativeVersionLateTimer = undefined;
   }
 
   private async lookupNativeAppVersion(generation: number): Promise<{
@@ -3036,12 +3129,16 @@ export class DesktopSandboxBridge {
         ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      await this.publishFileError(
-        requestId,
-        error,
-        reply,
-        fileStatReceiverDiagnostic(trace),
-      );
+      const diagnostic = fileStatReceiverDiagnostic(trace);
+      // Only the exact authorized ACL denial whose field could only say
+      // pending; the reply below neither waits for nor depends on it.
+      if (
+        diagnostic?.nativeVersionLateLookup === "pending" &&
+        trace.nativeVersionLate &&
+        this.getErrorMessage(error) === AUTHORIZED_FILE_REQUEST_ACL_DENIAL
+      )
+        this.armNativeVersionLateReport(trace.nativeVersionLate);
+      await this.publishFileError(requestId, error, reply, diagnostic);
     }
   }
 
@@ -3848,6 +3945,7 @@ export class DesktopSandboxBridge {
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();
+    this.clearNativeVersionLateReportTimer();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();

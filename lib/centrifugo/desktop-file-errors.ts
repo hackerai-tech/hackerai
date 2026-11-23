@@ -59,6 +59,13 @@ export type DesktopNativeVersionLookup =
   | "invalid"
   | "unobserved";
 
+/**
+ * Release Tauri's exact ACL denial of the authorized file command (pinned
+ * tauri src/webview/mod.rs). Compared only for equality; never logged.
+ */
+export const AUTHORIZED_FILE_REQUEST_ACL_DENIAL =
+  "Command authorized_desktop_file_request not allowed by ACL";
+
 /** Bound on the late observation, measured monotonically from the lookup call. */
 export const DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS = 3_000;
 
