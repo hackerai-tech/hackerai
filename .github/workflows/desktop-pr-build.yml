@@ -160,7 +160,7 @@ jobs:
         with:
           workspaces: packages/desktop/src-tauri -> target
           shared-key: desktop-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }} # TEMP: measure warm Linux/Windows PR builds
+          save-if: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && runner.os == 'macOS') }}
       - name: Install Linux packaging dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
