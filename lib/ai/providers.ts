@@ -1375,7 +1375,6 @@ const openrouterUs = createOpenRouter({
 type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
-export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
@@ -1387,23 +1386,17 @@ export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // image turns route the original pixels through GLM Flash and then DeepSeek
 // Vision, so the lossy description hop is paid only when both direct routes fail.
 export const AUXILIARY_VISION_SLUG = MINIMAX_M3_SLUG;
-export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
-export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
   modelName?: string,
 ):
-  | { ignore: string[] }
   | { sort: "latency"; data_collection: "deny" }
   | typeof AMAZON_BEDROCK_ONLY_ROUTING
   | undefined => {
   if (modelName === GROK_4_6_BEDROCK_MODEL_KEY) {
     return AMAZON_BEDROCK_ONLY_ROUTING;
-  }
-  if (modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG) {
-    return { ignore: ["novita"] };
   }
   if (modelSlug === GLM_5_3_FLASH_SLUG) {
     return { sort: "latency", data_collection: "deny" };
@@ -1422,26 +1415,16 @@ const buildProviderMap = (
     withOpenRouterStreamErrorContext(provider(id));
   return {
     [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
-    "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
     "ask-model-free-deepseek-v41": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
-    "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentModelSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
     // Separate internal keys use the same Grok 4.5 provider model while
     // provider reasoning options distinguish Standard from Pro vision.
     "model-grok-4.5": or(GROK_4_5_SLUG),
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
-    "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    // Redirect persisted legacy selections; never send new requests to 0731.
-    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
-    "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
     "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
-    // Keep the persisted Max compatibility key while routing new requests to
-    // Kimi K3. Renaming the key would invalidate existing stored selections.
-    "model-opus-4.6": or(KIMI_K3_SLUG),
-    "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-glm-5.3": or(GLM_5_3_SLUG),
     "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
@@ -1476,16 +1459,9 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Partial<Record<ModelName, string>> &
   Record<string, string | undefined> = {
-  "ask-model": "August 2026",
-  "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
   [GROK_4_6_BEDROCK_MODEL_KEY]: "August 2026",
-  "model-grok-4.6-pro": "August 2026",
-  "model-deepseek-v4-flash-0731": "August 2026",
-  "model-deepseek-v4-pro": "May 2025",
   "model-deepseek-v4-pro-0813": "August 2026",
-  "model-opus-4.6": "July 2026",
-  "model-glm-5.2": "June 2026",
   "model-glm-5.3-flash": "August 2026",
   "model-glm-5.3-flash-pro": "August 2026",
   "model-glm-5.3-flash-agent": "August 2026",
@@ -1503,23 +1479,16 @@ export const modelDisplayNames: Record<ModelName, string> &
   [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
   [ABLITERATION_LARGE_V2_MODEL_KEY]:
     "Abliteration abliterated-model-large-flash",
-  "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-deepseek-v41":
     "Auto, an intelligent model router built by HackerAI",
-  "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
   [GROK_4_6_BEDROCK_MODEL_KEY]: "xAI Grok 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
-  "model-grok-4.6-pro": "xAI Grok 4.6",
-  "model-deepseek-v4-flash-0731": "DeepSeek V4.1 Flash",
-  "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-  "model-opus-4.6": "Moonshot Kimi K3",
-  "model-glm-5.2": "Z.ai GLM 5.2",
   "model-glm-5.3": "Z.ai GLM 5.3",
   "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
@@ -1556,10 +1525,8 @@ export function isDeepSeekModel(modelName: string): boolean {
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
     modelName === "model-deepseek-v4-flash-vision-pro" ||
-    modelName === "model-deepseek-v4-pro" ||
     modelName === "model-deepseek-v4-pro-0813"
   );
 }
@@ -1567,24 +1534,19 @@ export function isDeepSeekModel(modelName: string): boolean {
 export function isKimiModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "model-kimi-k3" ||
-    normalized === "model-opus-4.6" ||
-    normalized.includes("moonshotai/kimi")
+    normalized === "model-kimi-k3" || normalized.includes("moonshotai/kimi")
   );
 }
 
 function isGrokModel(modelName: string): boolean {
   const normalized = modelName.toLowerCase();
   return (
-    normalized === "agent-model" ||
-    normalized === "ask-model" ||
     normalized === "fallback-agent-model" ||
     normalized === "fallback-ask-model" ||
     normalized === "model-grok-4.6" ||
     normalized === GROK_4_6_BEDROCK_MODEL_KEY ||
     normalized === "model-grok-4.5" ||
     normalized === "model-grok-4.5-pro" ||
-    normalized === "model-grok-4.6-pro" ||
     normalized.includes("x-ai/") ||
     normalized === "grok-4.5" ||
     normalized === "grok-4.6"
@@ -1603,7 +1565,6 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
     normalized === "ask-model-free" ||
-    normalized === "model-deepseek-v4-flash-0731" ||
     normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||

@@ -236,18 +236,13 @@ import {
   resolveAgentRuntimeCheckpointEnabled,
 } from "@/lib/chat/agent-runtime-checkpoint";
 import {
-  captureDeepSeekV4Pro0813ExperimentExposure,
-  evaluateDeepSeekV4Pro0813Experiment,
-  getActiveDeepSeekV4Pro0813ExperimentAssignment,
-  getDeepSeekV4Pro0813ExperimentContext,
-} from "@/lib/experiments/deepseek-v4-pro-0813";
-import {
   evaluateFlashRouting,
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
+import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
@@ -2416,25 +2411,13 @@ export const agentLongTask = task({
           subscription,
         }));
 
-      const deepSeekV4Pro0813Experiment =
-        await evaluateDeepSeekV4Pro0813Experiment({
-          posthog,
-          userId,
-          selectedModel,
-          requestId: ctx.run.id,
-        });
-      if (deepSeekV4Pro0813Experiment) {
-        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
-      }
       selectedModel = resolvePaidProAutoModel({
         userId,
         subscription,
         selectedModel,
         selectedModelOverride,
         limitRescue: Boolean(limitRescue),
-        modelPolicyActive: Boolean(
-          abliteratedExperiment || deepSeekV4Pro0813Experiment,
-        ),
+        modelPolicyActive: Boolean(abliteratedExperiment),
       });
       let requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
@@ -2447,9 +2430,7 @@ export const agentLongTask = task({
         selectedModel,
         hasImages: requestHasImages,
         limitRescue: Boolean(limitRescue),
-        modelPolicyActive: Boolean(
-          abliteratedExperiment || deepSeekV4Pro0813Experiment,
-        ),
+        modelPolicyActive: Boolean(abliteratedExperiment),
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -2830,11 +2811,6 @@ export const agentLongTask = task({
               });
             }
 
-            const activeDeepSeekV4Pro0813Experiment =
-              getActiveDeepSeekV4Pro0813ExperimentAssignment(
-                deepSeekV4Pro0813Experiment,
-                selectedModel,
-              );
             const activeFlashRoutingAssignment =
               getActiveFlashRoutingAssignment(
                 flashRoutingAssignment,
@@ -2855,19 +2831,18 @@ export const agentLongTask = task({
                 subscription,
                 requestId: assistantMessageId,
               });
-            const routingExperimentContext = activeAbliteratedExperiment
-              ? {
-                  key: activeAbliteratedExperiment.key,
-                  variant: activeAbliteratedExperiment.variant,
-                  requestId: assistantMessageId,
-                }
-              : ((activeFlashRoutingAssignment && {
-                  ...activeFlashRoutingAssignment,
-                  requestId: assistantMessageId,
-                }) ??
-                getDeepSeekV4Pro0813ExperimentContext(
-                  activeDeepSeekV4Pro0813Experiment,
-                ));
+            const routingExperimentContext:
+              ExperimentAnalyticsContext | undefined =
+              activeAbliteratedExperiment
+                ? {
+                    key: activeAbliteratedExperiment.key,
+                    variant: activeAbliteratedExperiment.variant,
+                    requestId: assistantMessageId,
+                  }
+                : activeFlashRoutingAssignment && {
+                    ...activeFlashRoutingAssignment,
+                    requestId: assistantMessageId,
+                  };
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(
@@ -4899,16 +4874,6 @@ export const agentLongTask = task({
 
             let result;
             try {
-              captureDeepSeekV4Pro0813ExperimentExposure({
-                posthog,
-                userId,
-                subscription,
-                mode,
-                selectedModelOverride,
-                selectedModel,
-                configuredModel: configuredModelId,
-                assignment: activeDeepSeekV4Pro0813Experiment,
-              });
               result = await createStream(selectedModel);
             } catch (error) {
               const shouldRecoverVisionApiError =

@@ -209,7 +209,7 @@ describe("token-bucket", () => {
           outputTokens: Number.NaN,
           cacheReadTokens: 80,
           cacheWriteTokens: 80,
-          modelName: "model-deepseek-v4-pro",
+          modelName: "model-deepseek-v4-pro-0813",
         }),
       ).toBeCloseTo(0.00000899);
       expect(
@@ -636,12 +636,6 @@ describe("token-bucket", () => {
 
     it("should use DeepSeek V4 Pro pricing ($0.435/$0.87)", () => {
       expect(
-        calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro"),
-      ).toBe(5220);
-      expect(
-        calculateTokenCost(1_000_000, "output", "model-deepseek-v4-pro"),
-      ).toBe(10440);
-      expect(
         calculateTokenCost(1_000_000, "input", "model-deepseek-v4-pro-0813"),
       ).toBe(5220);
       expect(
@@ -651,24 +645,6 @@ describe("token-bucket", () => {
           "deepseek/deepseek-v4-pro-0813",
         ),
       ).toBe(10440);
-    });
-
-    it("prices the redirected legacy registry alias as V4.1 ($0.30/$1.20)", () => {
-      expect(
-        calculateTokenCost(1_000_000, "input", "model-deepseek-v4-flash-0731"),
-      ).toBe(3600);
-      expect(
-        calculateTokenCost(1_000_000, "output", "model-deepseek-v4-flash-0731"),
-      ).toBe(14400);
-    });
-
-    it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-glm-5.2")).toBe(
-        9120,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-glm-5.2")).toBe(
-        29040,
-      );
     });
 
     it.each(["model-glm-5.3", "z-ai/glm-5.3", "z-ai/glm-5.3-20260816"])(
@@ -723,13 +699,14 @@ describe("token-bucket", () => {
       expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(15840);
     });
 
-    it.each(["model-kimi-k3", "model-opus-4.6"])(
-      "should use Kimi K3 pricing for %s ($3.00/$15.00)",
-      (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(36000);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(180000);
-      },
-    );
+    it("should use Kimi K3 pricing ($3.00/$15.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k3")).toBe(
+        36000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k3")).toBe(
+        180000,
+      );
+    });
 
     it.each([
       "deepseek/deepseek-v4-flash",
@@ -758,11 +735,8 @@ describe("token-bucket", () => {
       "x-ai/grok-4.6",
       "x-ai/grok-4.5-20260708",
       "model-grok-4.6",
-      "model-grok-4.6-pro",
       "model-grok-4.5",
       "model-grok-4.5-pro",
-      "ask-model",
-      "agent-model",
       "fallback-agent-model",
       "fallback-ask-model",
     ])("should use Grok base pricing for %s ($2.00/$6.00)", (modelName) => {
@@ -775,7 +749,7 @@ describe("token-bucket", () => {
         calculateRawModelUsageCostDollars({
           inputTokens: 199_999,
           outputTokens: 10_000,
-          modelName: "model-grok-4.6-pro",
+          modelName: "model-grok-4.6",
         }),
       ).toBeCloseTo(0.459998);
     });
@@ -789,7 +763,7 @@ describe("token-bucket", () => {
         }),
       ).toBeCloseTo(0.92);
       expect(
-        calculateTokenCost(10_000, "output", "model-grok-4.6-pro", 200_000),
+        calculateTokenCost(10_000, "output", "model-grok-4.6", 200_000),
       ).toBe(1440);
     });
 

@@ -671,12 +671,15 @@ describe("UsageTracker", () => {
           outputTokens: 100_000,
           inputTokenDetails: { cacheReadTokens: 900_000 },
         },
-        "model-deepseek-v4-pro",
+        "model-deepseek-v4-pro-0813",
       );
 
       // 100k uncached input + 900k cache reads + 100k output.
       expect(
-        tracker.computeCostDollars("model-deepseek-v4-pro", "model-grok-4.6"),
+        tracker.computeCostDollars(
+          "model-deepseek-v4-pro-0813",
+          "model-grok-4.6",
+        ),
       ).toBeCloseTo(0.1337625);
     });
 

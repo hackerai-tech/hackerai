@@ -7,7 +7,7 @@ import {
 const eligibleRequest = {
   subscription: "pro" as const,
   mode: "agent" as const,
-  selectedModel: "model-opus-4.6",
+  selectedModel: "model-kimi-k3",
   configuredModelId: "moonshotai/kimi-k3",
 };
 
@@ -15,12 +15,6 @@ describe("Kimi reasoning policy", () => {
   it("uses max reasoning as the explicit production default", () => {
     expect(KIMI_MAX_REASONING_EFFORT).toBe("max");
     expect(shouldUseMaxKimiReasoning(eligibleRequest)).toBe(true);
-    expect(
-      shouldUseMaxKimiReasoning({
-        ...eligibleRequest,
-        selectedModel: "model-kimi-k3",
-      }),
-    ).toBe(true);
   });
 
   it("limits max reasoning to paid individual Max Agent requests served by Kimi", () => {
