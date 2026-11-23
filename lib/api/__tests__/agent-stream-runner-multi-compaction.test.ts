@@ -23,6 +23,7 @@ import {
 } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import { DEEPSEEK_1017_SLUG } from "@/lib/experiments/paid-deepseek-1017";
+import { INFERENCE_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/inference";
 
 const mockStreamText = jest.fn();
 const mockLimitModelImageToolResults = jest.fn();
@@ -32,15 +33,10 @@ const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
 const mockHistoryFlag = jest.fn(async () => false);
-const mockAbliterationConfigured = jest.fn(() => false);
 const mockAppendAssistantDelta = jest.fn();
 const mockPruneToolOutputs = jest.fn((messages: UIMessage[]) => ({
   messages,
   prunedCount: 0,
-}));
-jest.mock("@/lib/ai/abliteration", () => ({
-  ...jest.requireActual("@/lib/ai/abliteration"),
-  isAbliterationConfigured: () => mockAbliterationConfigured(),
 }));
 const mockLoadHistory = jest.fn();
 const mockSaveHistory = jest.fn();
@@ -81,7 +77,8 @@ jest.mock("ai", () => ({
     })),
   ),
   stepCountIs: jest.fn(() => () => false),
-  streamText: mockStreamText,
+  // Lazy: platform authorization imports this module before the mocks exist.
+  streamText: (...args: unknown[]) => mockStreamText(...args),
   generateText: (...args: unknown[]) => mockSummaryGenerateText(...args),
   wrapLanguageModel: jest.fn(({ model }) => model),
 }));
@@ -238,7 +235,7 @@ describe("resolveAgentModelForImageToolResults", () => {
         "model-grok-4.6",
         "model-deepseek-v4.1-flash-1017-pro",
         "model-kimi-k3",
-        "model-abliterated",
+        "model-inference-cyber",
       ]) {
         expect(
           resolveAgentModelForImageToolResults(
@@ -1250,7 +1247,7 @@ describe("createAgentStream repeated compaction", () => {
   it.each([
     { mode: "agent", modelName: "test-model", authorized: true },
     { mode: "agent", modelName: "test-model", authorized: false },
-    { mode: "agent", modelName: "model-abliterated", authorized: true },
+    { mode: "agent", modelName: "model-inference-cyber", authorized: true },
     { mode: "ask", modelName: "test-model", authorized: true },
   ])(
     "preserves history and authorization on recovery: $mode/$modelName/authorized=$authorized",
@@ -1367,7 +1364,7 @@ describe("createAgentStream repeated compaction", () => {
           expect(retryText).toContain(
             "LATE HANDOFF: preserve this new update.",
           );
-          if (authorized && modelName !== "model-abliterated") {
+          if (authorized && modelName !== "model-inference-cyber") {
             expect(retryText).toContain(PLATFORM_AUTHORIZATION_ANNOTATION);
           } else {
             expect(retryText).not.toContain("<platform_authorization>");
@@ -1435,12 +1432,11 @@ describe("createAgentStream repeated compaction", () => {
       const ids: Record<string, string> = {
         "model-deepseek-v4.1-flash-1017-pro":
           "deepseek/deepseek-v4.1-flash-1017",
-        "model-abliterated": "abliterated-model-large-flash",
-        "model-abliterated-large-v2": "abliterated-model-large-flash",
+        "model-inference-cyber": "deepseek-v4.1-flash-1017-cyber",
         "model-grok-4.6": "x-ai/grok-4.6",
       };
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         createTestStreamContext({
           agentModelContextEnabled: enabled,
           selectedModelOverride: selection,
@@ -1463,10 +1459,11 @@ describe("createAgentStream repeated compaction", () => {
           messages: [{ role: "user", content: text }],
         });
         expect(prepared.model.modelId).toBe(
-          stepNumber < 3 ? "abliterated-model-large-flash" : ids[baseline],
+          stepNumber < 3 ? "deepseek-v4.1-flash-1017-cyber" : ids[baseline],
         );
+        // Inference's verified 1.04M window, less output, halved.
         if (enabled && stepNumber < 3)
-          expect(state.ctxUsage.maxTokens).toBe(508_288);
+          expect(state.ctxUsage.maxTokens).toBe(504_000);
       }
     },
   );
@@ -1642,12 +1639,9 @@ describe("createAgentStream repeated compaction", () => {
     });
     state.lastStepInputTokens = 100;
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "test-model",
       createTestStreamContext({
         agentModelContextEnabled: true,
-        trackedProvider: {
-          languageModel: () => ({ modelId: "abliterated-model" }),
-        },
         systemPromptTokens: 100,
         usageTracker: {},
         summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
@@ -1694,12 +1688,9 @@ describe("createAgentStream repeated compaction", () => {
         mockCompactModelMessagesInRun.mockResolvedValue(null);
       }
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "test-model",
         createTestStreamContext({
           agentModelContextEnabled: true,
-          trackedProvider: {
-            languageModel: () => ({ modelId: "abliterated-model" }),
-          },
           systemPromptTokens: 20_000,
           usageTracker: {},
           summarizationTracker: {
@@ -2418,7 +2409,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it.each([
     ["x-ai/grok-4.6", 234_000],
-    ["abliterated-model", MAX_TOKENS_PAID],
+    ["custom/unverified-model", MAX_TOKENS_PAID],
   ])(
     "compacts long history before switching to %s with a %i budget",
     async (smallerModel, smallerBudget) => {
@@ -2698,9 +2689,8 @@ describe("createAgentStream repeated compaction", () => {
   it.each(["ask", "agent"] as const)(
     "passes the original moderation signal into %s compaction instead of continuation eligibility",
     async (mode) => {
-      mockAbliterationConfigured.mockReturnValue(true);
       mockHistoryFlag.mockResolvedValue(true);
-      try {
+      {
         for (const platformAuthorized of [false, true]) {
           const state = initAgentStreamState(
             [uiMessage("initial", "Continue")],
@@ -2723,21 +2713,21 @@ describe("createAgentStream repeated compaction", () => {
             }) as any,
             state,
           );
-          // Paid Agent Auto compacts with the expanded 480K summarizer.
-          expect(await state.compactionPolicy!.resolve()).toMatchObject({
-            model: !platformAuthorized
-              ? "model-glm-5.3-flash"
-              : mode === "agent"
-                ? "model-abliterated-large-v2"
-                : "model-abliterated",
-          });
+          const assignment = await state.compactionPolicy!.resolve();
+          expect(assignment).toMatchObject({ model: "model-glm-5.3-flash" });
           expect(phLogger.event).not.toHaveBeenCalledWith(
             "compaction_model_started",
             expect.anything(),
           );
+          state.compactionPolicy!.start(assignment, "durable");
+          expect(phLogger.event).toHaveBeenLastCalledWith(
+            "compaction_model_started",
+            expect.objectContaining({
+              compaction_moderation_selected: platformAuthorized,
+            }),
+          );
+          jest.mocked(phLogger.event).mockClear();
         }
-      } finally {
-        mockAbliterationConfigured.mockReturnValue(false);
       }
     },
   );
@@ -3735,7 +3725,7 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("repairs legacy oversized Abliteration batches in initial and later requests and records counts", async () => {
+  it("repairs legacy oversized Inference batches in initial and later requests and records counts", async () => {
     const calls = Array.from({ length: 148 }, (_, i) => ({
       type: "tool-call" as const,
       toolCallId: `call-${i}`,
@@ -3758,7 +3748,7 @@ describe("createAgentStream repeated compaction", () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce(legacy);
     const recordProviderRequestDiagnostics = jest.fn();
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
@@ -3950,26 +3940,15 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 1, false],
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, false],
-    ["ask", "pro", "model-deepseek-v4-flash-0731", 3, false],
-    ["ask", "free", "ask-model-free-glm", 3, false],
-    ["agent", "free", "model-glm-5.3-flash-agent", 3, false],
-    ["ask", "free", "ask-model-free-glm", 3, true],
-    ["agent", "free", "model-glm-5.3-flash-agent", 3, true],
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, true],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "free", "ask-model-free-glm", 3],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3],
   ] as const)(
-    "routes %s %s through direct treatment then %s after %i steps, inference=%s",
-    async (
-      mode,
-      subscription,
-      baselineModel,
-      generationStepLimit,
-      inferenceCyberEnabled,
-    ) => {
-      const expectedTreatment = inferenceCyberEnabled
-        ? "model-inference-cyber"
-        : "model-abliterated";
+    "routes %s %s through direct treatment then %s after %i steps",
+    async (mode, subscription, baselineModel, generationStepLimit) => {
+      const expectedTreatment = "model-inference-cyber";
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -3977,7 +3956,7 @@ describe("createAgentStream repeated compaction", () => {
         { usedTokens: 1_000, maxTokens: 128_000 },
       );
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         createTestStreamContext({
           mode,
           subscription,
@@ -3989,7 +3968,6 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedStepRouting: {
             baselineModel,
             generationStepLimit,
-            inferenceCyberEnabled,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -4049,7 +4027,7 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each(["ask", "agent"] as const)(
-    "annotates only downstream %s calls after an actual unmoderated Abliteration step",
+    "annotates only downstream %s calls after an actual unmoderated Inference step",
     async (mode) => {
       const uiMessages = [
         uiMessage("old", "Earlier scope"),
@@ -4078,7 +4056,7 @@ describe("createAgentStream repeated compaction", () => {
         },
       });
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         context as any,
         state,
       )) as any;
@@ -4096,7 +4074,7 @@ describe("createAgentStream repeated compaction", () => {
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
       await stream.onStepFinish({
-        response: { modelId: "abliterated-model", messages: [] },
+        response: { modelId: "deepseek-v4.1-flash-1017-cyber", messages: [] },
         text: "",
         finishReason: "tool-calls",
         toolCalls: [{ toolName: "lookup", toolCallId: "one", input: {} }],
@@ -4138,7 +4116,7 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([1, 3] as const)(
-    "sends %i unannotated Abliteration steps then annotated baseline in a real SDK tool loop",
+    "sends %i unannotated Inference steps then annotated baseline in a real SDK tool loop",
     async (generationStepLimit) => {
       const sdk = jest.requireActual("ai");
       const { WritableStream } = await import("node:stream/web");
@@ -4169,7 +4147,7 @@ describe("createAgentStream repeated compaction", () => {
           finishReason: { unified: reason, raw: reason },
           usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
         });
-        const first = makeModel("abliterated-model", [
+        const first = makeModel("deepseek-v4.1-flash-1017-cyber", [
           {
             type: "tool-call",
             toolCallId: "one",
@@ -4191,12 +4169,12 @@ describe("createAgentStream repeated compaction", () => {
         );
         const diagnostics = jest.fn();
         const stream = await createAgentStream(
-          "model-abliterated",
+          "model-inference-cyber",
           createTestStreamContext({
             platformAuthorized: false,
             trackedProvider: {
               languageModel: (name: string) =>
-                name === "model-abliterated" ? first : baseline,
+                name === "model-inference-cyber" ? first : baseline,
             },
             abliteratedStepRouting: {
               baselineModel: "model-deepseek-v4-flash-0731",
@@ -4259,21 +4237,21 @@ describe("createAgentStream repeated compaction", () => {
   it.each([
     {
       name: "empty response",
-      responseModel: "abliterated-model",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
       text: " ",
       finishReason: "stop",
       toolCalls: [],
     },
     {
       name: "filtered response",
-      responseModel: "abliterated-model",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
       text: "partial",
       finishReason: "content-filter",
       toolCalls: [],
     },
     {
       name: "failed response",
-      responseModel: "abliterated-model",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
       text: "partial",
       finishReason: "error",
       toolCalls: [],
@@ -4287,14 +4265,14 @@ describe("createAgentStream repeated compaction", () => {
     },
     {
       name: "invalid tool call",
-      responseModel: "abliterated-model",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
       text: "",
       finishReason: "tool-calls",
       toolCalls: [{ toolName: "lookup", invalid: true }],
     },
     {
       name: "unknown tool call",
-      responseModel: "abliterated-model",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
       text: "",
       finishReason: "tool-calls",
       toolCalls: [{ toolName: "unknown" }],
@@ -4307,7 +4285,7 @@ describe("createAgentStream repeated compaction", () => {
         maxTokens: 128_000,
       });
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         createTestStreamContext({
           platformAuthorized: false,
           trackedProvider: {
@@ -4351,7 +4329,7 @@ describe("createAgentStream repeated compaction", () => {
       { usedTokens: 1_000, maxTokens: 128_000 },
     );
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
         platformAuthorized: false,
         trackedProvider: {
@@ -4408,27 +4386,33 @@ describe("createAgentStream repeated compaction", () => {
       source: "attachments",
       message: {
         role: "user",
-        content: Array.from({ length: 9 }, () => ({
-          type: "image",
-          image: "https://example.test/image.png",
-        })),
+        content: Array.from(
+          { length: INFERENCE_MAX_IMAGES_PER_REQUEST + 1 },
+          () => ({
+            type: "image",
+            image: "https://example.test/image.png",
+          }),
+        ),
       },
     },
     {
       source: "persisted tool images",
       message: {
         role: "tool",
-        content: Array.from({ length: 5 }, (_, index) => ({
-          type: "tool-result",
-          toolCallId: `view-${index}`,
-          toolName: "file",
-          output: {
-            type: "content",
-            value: [
-              { type: "image-data", data: "test", mediaType: "image/png" },
-            ],
-          },
-        })),
+        content: Array.from(
+          { length: INFERENCE_MAX_IMAGES_PER_REQUEST + 1 },
+          (_, index) => ({
+            type: "tool-result",
+            toolCallId: `view-${index}`,
+            toolName: "file",
+            output: {
+              type: "content",
+              value: [
+                { type: "image-data", data: "test", mediaType: "image/png" },
+              ],
+            },
+          }),
+        ),
       },
     },
   ])(
@@ -4438,7 +4422,7 @@ describe("createAgentStream repeated compaction", () => {
         .requireMock("ai")
         .convertToModelMessages.mockResolvedValueOnce([message]);
       const stream = (await createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         createTestStreamContext({
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
@@ -4455,7 +4439,7 @@ describe("createAgentStream repeated compaction", () => {
           maxTokens: 128_000,
         }),
       )) as any;
-      expect(stream.model.modelId).toBe("model-abliterated");
+      expect(stream.model.modelId).toBe("model-inference-cyber");
       expect(JSON.stringify(stream.messages)).toContain("image_description");
       expect(JSON.stringify(stream.messages)).not.toContain(
         '"type":"image-data"',
@@ -4577,26 +4561,24 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("preserves native images when the expanded-context alias executes Flash", async () => {
-    const text = " ordinary".repeat(190_000);
+  it("preserves native images within the Inference per-request budget", async () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
       {
         role: "user",
-        content: [
-          { type: "text", text },
-          { type: "image", image: "https://example.test/image.png" },
-        ],
+        content: Array.from(
+          { length: INFERENCE_MAX_IMAGES_PER_REQUEST },
+          (_, i) => ({
+            type: "image",
+            image: `https://example.test/${i}.png`,
+          }),
+        ),
       },
     ]);
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
-        agentModelContextEnabled: true,
-        selectedModelOverride: "hackerai-max",
         trackedProvider: {
-          languageModel: () => ({
-            modelId: "abliterated-model-large-flash",
-          }),
+          languageModel: (name: string) => ({ modelId: name }),
         },
         abliteratedStepRouting: {
           baselineModel: "model-glm-5.3",
@@ -4605,12 +4587,12 @@ describe("createAgentStream repeated compaction", () => {
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
       }) as any,
-      initAgentStreamState([uiMessage("initial", text)], {
-        usedTokens: 190_100,
-        maxTokens: 200_000,
+      initAgentStreamState([uiMessage("initial", "Inspect images")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
       }),
     )) as any;
-    expect(stream.model.modelId).toBe("abliterated-model-large-flash");
+    expect(stream.model.modelId).toBe("model-inference-cyber");
     expect(JSON.stringify(stream.messages)).not.toContain("image_description");
     expect(JSON.stringify(stream.messages)).toContain('"type":"image"');
     expect(mockDescribeImage).not.toHaveBeenCalled();
@@ -4620,16 +4602,19 @@ describe("createAgentStream repeated compaction", () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
       {
         role: "user",
-        content: Array.from({ length: 5 }, (_, i) => ({
-          type: "image",
-          image: `https://example.test/${i}.png`,
-        })),
+        content: Array.from(
+          { length: INFERENCE_MAX_IMAGES_PER_REQUEST + 1 },
+          (_, i) => ({
+            type: "image",
+            image: `https://example.test/${i}.png`,
+          }),
+        ),
       },
     ]);
     mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
     await expect(
       createAgentStream(
-        "model-abliterated",
+        "model-inference-cyber",
         createTestStreamContext({
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
@@ -4652,7 +4637,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it("propagates first-step OCR failure instead of retrying the prepare-step fallback", async () => {
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
@@ -4677,10 +4662,13 @@ describe("createAgentStream repeated compaction", () => {
         messages: [
           {
             role: "user",
-            content: Array.from({ length: 5 }, (_, i) => ({
-              type: "image",
-              image: `https://example.test/${i}.png`,
-            })),
+            content: Array.from(
+              { length: INFERENCE_MAX_IMAGES_PER_REQUEST + 1 },
+              (_, i) => ({
+                type: "image",
+                image: `https://example.test/${i}.png`,
+              }),
+            ),
           },
         ],
       }),
@@ -4692,10 +4680,13 @@ describe("createAgentStream repeated compaction", () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
       {
         role: "user",
-        content: Array.from({ length: 5 }, (_, i) => ({
-          type: "image",
-          image: `https://example.test/${i}.png`,
-        })),
+        content: Array.from(
+          { length: INFERENCE_MAX_IMAGES_PER_REQUEST + 1 },
+          (_, i) => ({
+            type: "image",
+            image: `https://example.test/${i}.png`,
+          }),
+        ),
       },
     ]);
     const stream = (await createAgentStream(
@@ -4718,7 +4709,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it("describes persisted tool images and uses baseline after the third step", async () => {
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
@@ -4738,7 +4729,7 @@ describe("createAgentStream repeated compaction", () => {
     )) as any;
     const attachments = {
       role: "user",
-      content: Array.from({ length: 4 }, () => ({
+      content: Array.from({ length: INFERENCE_MAX_IMAGES_PER_REQUEST }, () => ({
         type: "image",
         image: "https://example.test/image.png",
       })),
@@ -4750,7 +4741,7 @@ describe("createAgentStream repeated compaction", () => {
         messages,
       });
     expect((await prepare([attachments], 0)).model.modelId).toBe(
-      "model-abliterated",
+      "model-inference-cyber",
     );
     const prepared = await prepare(
       [
@@ -4774,7 +4765,7 @@ describe("createAgentStream repeated compaction", () => {
       ],
       0,
     );
-    expect(prepared.model.modelId).toBe("model-abliterated");
+    expect(prepared.model.modelId).toBe("model-inference-cyber");
     expect(JSON.stringify(prepared.messages)).toContain("image_description");
     expect(JSON.stringify(prepared.messages)).not.toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
@@ -4787,7 +4778,7 @@ describe("createAgentStream repeated compaction", () => {
             stepNumber,
           )
         ).model.modelId,
-      ).toBe("model-abliterated");
+      ).toBe("model-inference-cyber");
     }
     expect(
       (await prepare([{ role: "user", content: "Compacted context" }], 3)).model
@@ -4804,7 +4795,7 @@ describe("createAgentStream repeated compaction", () => {
     state.agentStepCount = 3;
 
     const stream = (await createAgentStream(
-      "model-abliterated",
+      "model-inference-cyber",
       createTestStreamContext({
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),

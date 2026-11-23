@@ -36,7 +36,7 @@ import {
   createAgentRunReporting,
   agentFailureSignalContext,
 } from "@/lib/analytics/agent-run-reporting";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import {
   getLocalStopDiagnostic,
   LocalConnectionLostError,
@@ -3695,7 +3695,7 @@ export const agentLongTask = task({
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
             const retrySelectionModel =
               abliteratedExperiment &&
-              isAbliterationModel(abliteratedExperiment.modelKey)
+              isInferenceCyberModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -3705,7 +3705,7 @@ export const agentLongTask = task({
             const fallbackModel =
               !(mode === "agent" && selectedModelOverride === "hackerai-max") &&
               abliteratedExperiment &&
-              isAbliterationModel(abliteratedExperiment.modelKey)
+              isInferenceCyberModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : (getMaxAgentFirstRecoveryModel({
                     mode,
@@ -4365,10 +4365,8 @@ export const agentLongTask = task({
               },
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment &&
-                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                isInferenceCyberModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
-                    inferenceCyberEnabled:
-                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,

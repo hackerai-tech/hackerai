@@ -4,11 +4,6 @@ import {
   DEEPSEEK_1017_SLUG,
   DEEPSEEK_1017_CANONICAL_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
-import {
-  ABLITERATION_LARGE_V2_MODEL_KEY,
-  ABLITERATION_MODEL_KEY,
-  isAbliterationModel,
-} from "@/lib/ai/abliteration";
 /**
  * Chat Stream Helpers
  *
@@ -959,16 +954,10 @@ export function getRetryFallbackModel(
   // Durable Agent runs first try Grok on Bedrock (getMaxAgentFirstRecoveryModel).
   if (mode === "agent" && selectedModelOverride === "hackerai-max")
     return DEEPSEEK_1017_MODEL_KEY;
-  if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
-    return "model-deepseek-v4-pro-0813";
-  }
   if (
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === "ask-model-free-glm"
   ) {
-    return "model-deepseek-v4-flash-vision";
-  }
-  if (modelName === ABLITERATION_MODEL_KEY) {
     return "model-deepseek-v4-flash-vision";
   }
   if (
@@ -1015,7 +1004,7 @@ export function shouldRetryAbliterationError(
 ): boolean {
   return (
     assignment?.variant === "test" &&
-    isAbliterationModel(failedModel) &&
+    isInferenceCyberModel(failedModel) &&
     !abortSignal.aborted
   );
 }
@@ -1199,20 +1188,6 @@ export function buildProviderOptions(
             : "high",
       },
     } as Record<"inference", { reasoningEffort: "max" | "high" }>;
-  }
-  // Large Flash maps xhigh to high, so Max must request the literal max mode.
-  if (isAbliterationModel(modelName)) {
-    return {
-      abliteration: {
-        reasoningEffort:
-          options.selectedModelOverride === "hackerai-max" ? "max" : "high",
-        ...buildPromptCacheOptions(modelName ?? "", options.cacheSessionId)
-          .abliteration,
-      },
-    } as Record<
-      "abliteration",
-      { reasoningEffort: "max" | "high"; prompt_cache_key?: string }
-    >;
   }
   const modelId =
     options.requestedModelSlug ??

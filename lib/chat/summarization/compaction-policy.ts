@@ -6,11 +6,7 @@ import {
   isInferenceConfigured,
   isInferenceCyberModel,
 } from "@/lib/ai/inference";
-import {
-  ABLITERATION_MODEL_KEY,
-  ABLITERATION_LARGE_V2_MODEL_KEY,
-  isAbliterationConfigured,
-} from "@/lib/ai/abliteration";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
@@ -23,12 +19,9 @@ import type { AgentContextPolicy } from "@/lib/ai/agent-context-budget";
 import { getSafeProviderErrorCode } from "@/lib/ai/inference-request-recovery";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
-export const MODERATION_COMPACTION_FLAG_KEY =
-  "moderation_compaction_recovery_v2";
-export const MODERATION_COMPACTION_POLICY_VERSION =
-  "moderation_glm53_abliteration_recovery_v2";
 export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
-export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
+/** Inference summaries recover on DeepSeek V4.1 Flash before GLM. */
+export const INFERENCE_COMPACTION_FALLBACK_MODEL = DEEPSEEK_1017_MODEL_KEY;
 // Keep per-model policy labels so compaction monitoring cannot mix cohorts.
 export const MAX_CONTEXT_COMPACTION_POLICY_VERSION = "max_large_v2_context_v1";
 export const PRO_CONTEXT_COMPACTION_POLICY_VERSION = "pro_large_v2_context_v1";
@@ -48,9 +41,8 @@ export const INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION =
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
   | typeof INFERENCE_CYBER_MODEL_KEY
-  | typeof COMPACTION_PRIMARY_MODEL
   | typeof COMPACTION_FALLBACK_MODEL
-  | typeof ABLITERATION_LARGE_V2_MODEL_KEY;
+  | typeof INFERENCE_COMPACTION_FALLBACK_MODEL;
 export type CompactionSelection = {
   model: CompactionModel;
   fallbackModel?: CompactionModel;
@@ -60,7 +52,6 @@ export type CompactionSelection = {
     | typeof INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION
     | typeof INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION
     | typeof COMPACTION_POLICY_VERSION
-    | typeof MODERATION_COMPACTION_POLICY_VERSION
     | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION
     | typeof PRO_CONTEXT_COMPACTION_POLICY_VERSION
     | typeof PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
@@ -136,10 +127,6 @@ export class CompactionModelPolicy {
           (this.context.expandedAgentContext ? "expanded" : "baseline"));
     const paidContext = policy === "paid_480k";
     const expandedAgentContext = policy !== "baseline";
-    const configured = isAbliterationConfigured();
-    const abliterationModel = expandedAgentContext
-      ? ABLITERATION_LARGE_V2_MODEL_KEY
-      : COMPACTION_PRIMARY_MODEL;
     // Share the deployed generation rollout's rollback control. Compaction
     // applies to every plan and does not change chat-generation eligibility.
     if (
@@ -156,9 +143,7 @@ export class CompactionModelPolicy {
     ) {
       return {
         model: INFERENCE_CYBER_MODEL_KEY,
-        fallbackModel: configured
-          ? abliterationModel
-          : COMPACTION_FALLBACK_MODEL,
+        fallbackModel: INFERENCE_COMPACTION_FALLBACK_MODEL,
         policy: paidContext
           ? INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
           : expandedAgentContext
@@ -170,31 +155,16 @@ export class CompactionModelPolicy {
         ...(expandedAgentContext && { expandedAgentContext: true }),
       };
     }
-    const flagEnabled = await getPostHogBooleanFlagDecisionForUser(
-      MODERATION_COMPACTION_FLAG_KEY,
-      this.context.userId,
-      { subscription_tier: this.context.subscription },
-      { sendFeatureFlagEvents: false },
-    );
-    const useAbliteration =
-      configured && (flagEnabled !== true || this.context.platformAuthorized);
     return {
-      model: useAbliteration ? abliterationModel : COMPACTION_FALLBACK_MODEL,
-      fallbackModel: useAbliteration
-        ? COMPACTION_FALLBACK_MODEL
-        : flagEnabled === true && configured
-          ? abliterationModel
-          : undefined,
+      model: COMPACTION_FALLBACK_MODEL,
       policy: paidContext
         ? PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
         : expandedAgentContext
           ? this.context.selectedModel === "hackerai-pro"
             ? PRO_CONTEXT_COMPACTION_POLICY_VERSION
             : MAX_CONTEXT_COMPACTION_POLICY_VERSION
-          : flagEnabled === true
-            ? MODERATION_COMPACTION_POLICY_VERSION
-            : COMPACTION_POLICY_VERSION,
-      flagEnabled,
+          : COMPACTION_POLICY_VERSION,
+      flagEnabled: false,
       ...(expandedAgentContext && { expandedAgentContext: true }),
     };
   }
@@ -205,14 +175,9 @@ export class CompactionModelPolicy {
       compaction_policy: assignment.policy,
       compaction_flag_key: isInferenceCyberModel(assignment.model)
         ? INFERENCE_CYBER_FLAG
-        : MODERATION_COMPACTION_FLAG_KEY,
+        : null,
       compaction_flag_enabled: assignment.flagEnabled,
       compaction_moderation_selected: this.context.platformAuthorized,
-      compaction_moderation_routed:
-        assignment.flagEnabled === true &&
-        this.context.platformAuthorized &&
-        (assignment.model === COMPACTION_PRIMARY_MODEL ||
-          assignment.model === ABLITERATION_LARGE_V2_MODEL_KEY),
       compaction_run_id: this.context.runId,
       compaction_id: randomUUID(),
       chat_id: this.context.chatId,

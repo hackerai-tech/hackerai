@@ -25,7 +25,7 @@ import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { inference, INFERENCE_CYBER_MODEL_ID } from "@/lib/ai/inference";
 
 it("bounds expanded Pro input for its real transparent fallback chain", () => {
   const fallbackModelIds = getFallbackSlugs(DEEPSEEK_1017_MODEL_KEY, "agent", {
@@ -86,16 +86,11 @@ describe("transport recovery provider exclusions", () => {
     });
   });
 
-  it("does not change normal routing or send OpenRouter options to direct providers", () => {
+  it("does not change normal routing", () => {
     expect(
       buildProviderOptions(true, "user", "model-glm-5.3-flash", "agent")
         .openrouter.provider,
     ).toEqual({ sort: "latency", data_collection: "deny" });
-    expect(
-      buildProviderOptions(true, "user", "model-abliterated", "agent", {
-        ignoredProviderSlugs: ["together"],
-      }),
-    ).toEqual({ abliteration: { reasoningEffort: "high" } });
   });
 });
 
@@ -123,46 +118,13 @@ const HIGH_REASONING_ROUTES = [
   "fallback-ask-model",
 ] as const;
 
-describe("Abliteration reasoning by selected tier", () => {
-  const selections = [
+describe("Inference reasoning by selected tier", () => {
+  it.each([
     ["hackerai-max", "max"],
-    ["hackerai-pro", "high"],
+    ["hackerai-pro", "max"],
     ["hackerai-standard", "high"],
     [undefined, "high"],
-  ] as const;
-
-  it.each(selections)(
-    "uses %s selection effort %s in Ask and Agent for all provider aliases",
-    (selection, effort) => {
-      for (const mode of ["ask", "agent"] as const) {
-        for (const model of [
-          "model-abliterated",
-          "model-abliterated-large-v2",
-          "abliterated-model",
-          "abliterated-model-large-v2",
-          "abliterated-model-large-flash",
-        ]) {
-          expect(
-            buildProviderOptions(true, "private-user", model, mode, {
-              selectedModelOverride: selection,
-              // OpenRouter overrides and routing must not leak to this provider.
-              reasoningOverride: { enabled: true, effort: "xhigh" },
-              hasPdfAttachments: true,
-              cacheSessionId: "private-session",
-              ignoredProviderSlugs: ["together"],
-            }),
-          ).toEqual({
-            abliteration: {
-              reasoningEffort: effort,
-              prompt_cache_key: "private-session",
-            },
-          });
-        }
-      }
-    },
-  );
-
-  it.each(selections)(
+  ] as const)(
     "serializes %s selection as reasoning_effort=%s through the installed SDK",
     async (selection, effort) => {
       const {
@@ -172,7 +134,7 @@ describe("Abliteration reasoning by selected tier", () => {
         new Response(
           JSON.stringify({
             id: "synthetic-response",
-            model: "abliterated-model-large-flash",
+            model: INFERENCE_CYBER_MODEL_ID,
             choices: [
               {
                 index: 0,
@@ -189,31 +151,32 @@ describe("Abliteration reasoning by selected tier", () => {
           { headers: { "Content-Type": "application/json" } },
         ),
       );
-      const provider = createOpenAICompatible({
-        name: "abliteration",
-        baseURL: "https://abliteration.example.test/v1",
-        apiKey: "synthetic-test-key",
-        fetch: fetchMock,
-      });
-      await provider("abliterated-model-large-flash").doGenerate({
-        prompt: [{ role: "user", content: [{ type: "text", text: "2+3" }] }],
-        providerOptions: buildProviderOptions(
-          true,
-          "private-user",
-          "model-abliterated",
-          "agent",
-          {
-            selectedModelOverride: selection,
-          },
-        ),
-      });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body).toEqual({
-        model: "abliterated-model-large-flash",
-        messages: [{ role: "user", content: "2+3" }],
-        reasoning_effort: effort,
-      });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchMock;
+      try {
+        await inference(INFERENCE_CYBER_MODEL_ID).doGenerate({
+          prompt: [{ role: "user", content: [{ type: "text", text: "2+3" }] }],
+          providerOptions: buildProviderOptions(
+            true,
+            "private-user",
+            "model-inference-cyber",
+            "agent",
+            {
+              requestedModelSlug: INFERENCE_CYBER_MODEL_ID,
+              selectedModelOverride: selection,
+            },
+          ),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+        expect(body).toEqual({
+          model: INFERENCE_CYBER_MODEL_ID,
+          messages: [{ role: "user", content: "2+3" }],
+          reasoning_effort: effort,
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     },
   );
 });
@@ -391,55 +354,6 @@ describe("buildProviderOptions fallback chain", () => {
           responseModel: "deepseek/deepseek-v4.1-flash-20260910",
         }),
       ).toBe("model-deepseek-v4-flash-vision");
-    },
-  );
-
-  it("isolates Abliteration from OpenRouter and retries through the standard route", () => {
-    expect(
-      buildProviderOptions(true, "private-user", "model-abliterated", "agent", {
-        hasPdfAttachments: true,
-      }),
-    ).toEqual({ abliteration: { reasoningEffort: "high" } });
-    expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
-      "model-deepseek-v4-flash-vision",
-    );
-    expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
-      "model-deepseek-v4-flash-vision",
-    );
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-abliterated",
-        responseModel: "abliterated-model-large-flash",
-      }),
-    ).toBe("model-abliterated");
-    expect(
-      buildProviderOptions(
-        true,
-        "private-user",
-        "model-abliterated-large-v2",
-        "agent",
-      ),
-    ).toEqual({ abliteration: { reasoningEffort: "high" } });
-    expect(getRetryFallbackModel("model-abliterated-large-v2", "agent")).toBe(
-      "model-deepseek-v4-pro-0813",
-    );
-    expect(
-      resolveServedModelForCostAccounting({
-        modelName: "model-abliterated-large-v2",
-        responseModel: "abliterated-model-large-flash",
-      }),
-    ).toBe("model-abliterated-large-v2");
-  });
-
-  it.each([
-    ["model-abliterated", "abliterated-model"],
-    ["model-abliterated-large-v2", "abliterated-model-large-v2"],
-  ])(
-    "preserves old provider attribution for in-flight %s responses",
-    (modelName, responseModel) => {
-      expect(
-        resolveServedModelForCostAccounting({ modelName, responseModel }),
-      ).toBe(responseModel);
     },
   );
 
@@ -1204,20 +1118,18 @@ describe("getRetryFallbackModel", () => {
 });
 
 describe("shouldRetryAbliterationError", () => {
-  it.each([
-    "model-abliterated",
-    "model-abliterated-large-v2",
-    "abliterated-model",
-    "abliterated-model-large-v2",
-  ])("allows every failure of active treatment %s", (model) => {
-    expect(
-      shouldRetryAbliterationError(
-        { variant: "test" },
-        model,
-        new AbortController().signal,
-      ),
-    ).toBe(true);
-  });
+  it.each(["model-inference-cyber", "deepseek-v4.1-flash-1017-cyber"])(
+    "allows every failure of active treatment %s",
+    (model) => {
+      expect(
+        shouldRetryAbliterationError(
+          { variant: "test" },
+          model,
+          new AbortController().signal,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("does not recover a later OpenRouter step under the treatment assignment", () => {
     expect(
@@ -1235,7 +1147,7 @@ describe("shouldRetryAbliterationError", () => {
     expect(
       shouldRetryAbliterationError(
         { variant: "test" },
-        "model-abliterated",
+        "model-inference-cyber",
         controller.signal,
       ),
     ).toBe(false);
@@ -1247,7 +1159,7 @@ describe("shouldRetryAbliterationError", () => {
       expect(
         shouldRetryAbliterationError(
           assignment,
-          "model-abliterated",
+          "model-inference-cyber",
           new AbortController().signal,
         ),
       ).toBe(false);
@@ -1488,7 +1400,7 @@ describe("Agent Max explicit provider recovery", () => {
     ["Grok with images", "model-grok-4.6", true],
     ["legacy GLM", "model-glm-5.3", false],
     ["DeepSeek control", snapshot, false],
-    ["Abliteration", "model-abliterated", false],
+    ["Inference", "model-inference-cyber", false],
   ] as const)(
     "recovers %s on DeepSeek 1017, never GLM first",
     (_name, model, hasImageInputs) => {
@@ -1685,7 +1597,7 @@ it.each([
       const options = buildProviderOptions(
         true,
         "synthetic-user",
-        "model-abliterated",
+        "model-inference-cyber",
         mode,
         {
           requestedModelSlug: "deepseek-v4.1-flash-1017-cyber",
@@ -1704,10 +1616,10 @@ it.each([
 it("prices the Inference Cyber served identity", () => {
   expect(
     resolveServedModelForCostAccounting({
-      modelName: "model-abliterated",
+      modelName: "model-inference-cyber",
       responseModel: "deepseek-v4.1-flash-1017-cyber",
     }),
-  ).toBe("deepseek-v4.1-flash-1017-cyber");
+  ).toBe("model-inference-cyber");
 });
 
 describe("Max Agent Grok recovery on Amazon Bedrock", () => {
@@ -1778,6 +1690,7 @@ describe("Max Agent Grok recovery on Amazon Bedrock", () => {
       only: ["amazon-bedrock"],
       allow_fallbacks: false,
       ignore: ["xai"],
+      zdr: true,
     });
     expect(body.reasoning).toEqual({ enabled: true, effort: "high" });
     expect(body).not.toHaveProperty("models");

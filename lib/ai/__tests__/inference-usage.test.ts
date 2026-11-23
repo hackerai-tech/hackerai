@@ -2,7 +2,7 @@ import { generateText, streamText } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { TextDecoderStream, WritableStream } from "node:stream/web";
 import { deserialize, serialize } from "node:v8";
-import { abliteration } from "../abliteration";
+import { inference, INFERENCE_CYBER_MODEL_ID } from "../inference";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { generateSummaryText } from "@/lib/chat/summarization/helpers";
 
@@ -137,11 +137,11 @@ function streamedCompletion(model: string) {
   );
 }
 
-describe.each([
-  ["abliterated-model", 0.00088],
-  ["abliterated-model-large-v2", 0.00184],
-  ["abliterated-model-large-flash", 0.00068],
-] as const)("%s usage accounting through the installed SDK", (model, cost) => {
+// Inference pricing: 200 uncached input, 800 cache-read and 200 output tokens.
+const model = INFERENCE_CYBER_MODEL_ID;
+const cost = (200 * 0.3 + 800 * 0.007 + 200 * 1) / 1_000_000;
+
+describe("Inference usage accounting through the installed SDK", () => {
   it.each([false, true])(
     "counts input, cache reads, and reasoning once (stream=%s)",
     async (stream) => {
@@ -150,7 +150,7 @@ describe.each([
       );
       const tracker = new UsageTracker();
       const options = {
-        model: abliteration(model),
+        model: inference(model),
         prompt: "Synthetic request",
       };
       const result = stream ? streamText(options) : await generateText(options);
@@ -176,7 +176,7 @@ describe.each([
     fetchMock.mockResolvedValueOnce(streamedCompletion(model));
     const tracker = new UsageTracker();
     const direct = streamText({
-      model: abliteration(model),
+      model: inference(model),
       prompt: "Synthetic request",
       onStepFinish: ({ usage, response }) => {
         tracker.accumulateStep(usage, response.modelId);
@@ -187,7 +187,7 @@ describe.each([
     fetchMock.mockResolvedValueOnce(completion(model));
     const summary = await generateSummaryText(
       [],
-      abliteration(model),
+      inference(model),
       "ask",
       "Synthetic system prompt",
       false,
@@ -248,51 +248,51 @@ describe.each([
     expect(record.costDollars).toBeCloseTo(cost * 2 + 0.003, 8);
     expect(tracker.providerCost).toBeCloseTo(0.002, 8);
   });
+});
 
-  it("settles non-BYOK OpenRouter usage at its charged cost", async () => {
-    const openRouter = createOpenRouter({ apiKey: "synthetic-test-key" });
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          id: "gen-non-byok",
-          created: 1,
-          model: "deepseek/deepseek-v4.1-flash-1017",
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content: "Continuation" },
-              finish_reason: "stop",
-            },
-          ],
-          usage: {
-            ...wireUsage,
-            cost: 0.0015,
-            is_byok: false,
-            cost_details: { upstream_inference_cost: 0.0012 },
+it("settles non-BYOK OpenRouter usage at its charged cost", async () => {
+  const openRouter = createOpenRouter({ apiKey: "synthetic-test-key" });
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        id: "gen-non-byok",
+        created: 1,
+        model: "deepseek/deepseek-v4.1-flash-1017",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Continuation" },
+            finish_reason: "stop",
           },
-        }),
-        { headers: { "content-type": "application/json" } },
-      ),
-    );
+        ],
+        usage: {
+          ...wireUsage,
+          cost: 0.0015,
+          is_byok: false,
+          cost_details: { upstream_inference_cost: 0.0012 },
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    ),
+  );
 
-    const completion = await generateText({
-      model: openRouter("deepseek/deepseek-v4.1-flash-1017"),
-      prompt: "Synthetic non-BYOK request",
-    });
-    expect(completion.usage.raw).toMatchObject({
-      cost: 0.0015,
-      is_byok: false,
-      cost_details: { upstream_inference_cost: 0.0012 },
-    });
-    const tracker = new UsageTracker();
-    tracker.accumulateStep(completion.usage, completion.response.modelId);
-
-    expect(
-      tracker.createUsageCostRecord({
-        selectedModel: "deepseek/deepseek-v4.1-flash-1017",
-        configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
-        rateLimitInfo: { remaining: 1000, limit: 1000, resetTime: new Date() },
-      }).modelCostDollars,
-    ).toBeCloseTo(0.0015, 8);
+  const completion = await generateText({
+    model: openRouter("deepseek/deepseek-v4.1-flash-1017"),
+    prompt: "Synthetic non-BYOK request",
   });
+  expect(completion.usage.raw).toMatchObject({
+    cost: 0.0015,
+    is_byok: false,
+    cost_details: { upstream_inference_cost: 0.0012 },
+  });
+  const tracker = new UsageTracker();
+  tracker.accumulateStep(completion.usage, completion.response.modelId);
+
+  expect(
+    tracker.createUsageCostRecord({
+      selectedModel: "deepseek/deepseek-v4.1-flash-1017",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      rateLimitInfo: { remaining: 1000, limit: 1000, resetTime: new Date() },
+    }).modelCostDollars,
+  ).toBeCloseTo(0.0015, 8);
 });

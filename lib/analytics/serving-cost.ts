@@ -1,5 +1,4 @@
 import { v5 as uuidv5 } from "uuid";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { isInferenceCyberModel } from "@/lib/ai/inference";
 import type { UsageLogPersistence } from "@/lib/db/actions";
 
@@ -7,16 +6,12 @@ import type { UsageLogPersistence } from "@/lib/db/actions";
  * Model-serving providers with separate invoices. Every other model route is
  * served through OpenRouter. Keep this list bounded: it becomes analytics keys.
  */
-export type ServingProvider = "inference" | "abliteration" | "openrouter";
+export type ServingProvider = "inference" | "openrouter";
 
 export const servingProviderForModel = (
   modelName: string | undefined,
 ): ServingProvider =>
-  isInferenceCyberModel(modelName)
-    ? "inference"
-    : isAbliterationModel(modelName)
-      ? "abliteration"
-      : "openrouter";
+  isInferenceCyberModel(modelName) ? "inference" : "openrouter";
 
 /** Measured/estimated model spend by provider, rather than final response model. */
 export const servingProviderCostProperties = (
@@ -24,7 +19,6 @@ export const servingProviderCostProperties = (
 ) => {
   const totals: Record<ServingProvider, number> = {
     inference: 0,
-    abliteration: 0,
     openrouter: 0,
   };
   for (const step of steps) {
@@ -32,7 +26,6 @@ export const servingProviderCostProperties = (
   }
   return {
     usage_inference_model_cost_dollars: totals.inference,
-    usage_abliteration_model_cost_dollars: totals.abliteration,
     usage_openrouter_model_cost_dollars: totals.openrouter,
   };
 };

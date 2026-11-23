@@ -62,12 +62,6 @@ const subprocessors: Subprocessor[] = [
     dataCategories: MODEL_REQUEST_DATA,
   },
   {
-    name: "Abliteration.ai",
-    purpose:
-      "Serves abliterated models directly, without OpenRouter, and handles some fallback requests",
-    dataCategories: MODEL_REQUEST_DATA,
-  },
-  {
     name: "OpenAI",
     purpose: "Content moderation",
     dataCategories: "Message content",
@@ -293,35 +287,34 @@ function TrustContent() {
               </p>
               <p>
                 Some security-tuned models are served directly by Inference.net,
-                and abliterated models are served directly by Abliteration.ai,
                 without passing through OpenRouter. See the{" "}
                 <InlineLink href="https://inference.net/privacy-policy/">
                   Inference.net privacy policy
-                </InlineLink>{" "}
-                and{" "}
-                <InlineLink href="https://abliteration.ai/privacy-policy">
-                  Abliteration.ai privacy policy
                 </InlineLink>
                 .
               </p>
               <p>
                 More than one provider can process a request. If a model fails
                 or is unavailable, HackerAI may use a fallback on a different
-                route; for example, Inference.net can fall back to
-                Abliteration.ai. Uploaded images and browser screenshots may
-                also be processed by a separate image model. The selected model
-                does not identify every company that may receive relevant task
-                content.
+                route. Uploaded images and browser screenshots may also be
+                processed by a separate image model. The selected model does not
+                identify every company that may receive relevant task content.
               </p>
               <p>
                 When the agent searches the web or opens a URL, Perplexity
                 processes search queries and Jina AI retrieves page content.
-                OpenAI screens message content for moderation.
+                OpenAI screens message content for moderation. PDF attachments
+                may be converted to text by a document parser, such as Mistral
+                OCR or Cloudflare, through OpenRouter.
               </p>
               <p>
-                Each provider processes data under its own terms. Retention and
-                model training policies vary by provider, so we do not make a
-                blanket no-training or zero-retention guarantee. Refer to the
+                Model requests sent through OpenRouter may use only endpoints on
+                OpenRouter&apos;s zero data retention list, and Inference.net
+                has confirmed in writing that it does not retain prompts or
+                completions for our account. This covers the AI model providers
+                only: web search, page retrieval, moderation, and document
+                parsing follow those providers&apos; own terms, and HackerAI
+                stores your chats so you can return to them. Refer to the
                 provider policies linked above.
               </p>
             </Section>

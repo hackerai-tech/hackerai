@@ -1,4 +1,3 @@
-import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { convertToModelMessagesWithSteers } from "@/lib/chat/agent-steer-model-messages";
 import { splitProviderToolCallBatches } from "@/lib/chat/provider-tool-call-batches";
 import {
@@ -862,13 +861,7 @@ export const generateSummaryText = async (
     compactedModelMessages,
     { maxInputTokens: summaryInputMaxTokens },
   );
-  // Stored assistant turns can contain more calls than Abliteration accepts.
-  // Repair only the outgoing projection, preserving every paired call/result.
-  const summaryModelMessages = isAbliterationModel(
-    getLanguageModelIdentifier(languageModel),
-  )
-    ? splitProviderToolCallBatches(boundedModelMessages).messages
-    : boundedModelMessages;
+  const summaryModelMessages = boundedModelMessages;
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
   if (sourceModelMessages.length > 0 && summaryModelMessages.length === 0) {

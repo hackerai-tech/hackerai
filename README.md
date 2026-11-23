@@ -26,7 +26,7 @@ You'll need the following accounts:
 **Required:**
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
-- [OpenAI](https://platform.openai.com/) - Identifies security requests that should use [abliteration.ai](https://abliteration.ai/) models
+- [OpenAI](https://platform.openai.com/) - Identifies security requests that should use the [Inference.net](https://inference.net/) security model
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage
@@ -35,7 +35,7 @@ You'll need the following accounts:
 
 **Optional:**
 
-- [abliteration.ai](https://abliteration.ai/) - AI models for security requests that standard models may refuse
+- [Inference.net](https://inference.net/) - Security-tuned model for requests that standard models may refuse
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -76,10 +76,11 @@ built-in TypeScript 6 check.
 pnpm run setup
 ```
 
-To use abliteration.ai for eligible security requests, create an API key in the
-[abliteration.ai console](https://abliteration.ai/console) and set
-`ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
-optional key, HackerAI continues using its standard models.
+To use the Inference.net security model for eligible security requests, set
+`INFERENCE_API_KEY` in `.env.local`, Vercel, and Trigger.dev and enable the
+`inference_cyber_v1` PostHog flag. Without both, those requests use the selected
+model with HackerAI's usual authorization context. Every model provider must
+use zero data retention.
 
 ### Start the development server
 
@@ -110,7 +111,7 @@ To use the agent locally:
    `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and
    `E2B_API_KEY`. Cloud Agent execution uses E2B.
    Add any optional keys you use
-   (`ABLITERATION_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
+   (`INFERENCE_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:
 
    ```bash

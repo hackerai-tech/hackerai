@@ -154,7 +154,7 @@ it("reports known incurred cost across providers without changing billable cost"
   tracker.prepareModelRetry();
   tracker.accumulateStep(
     { inputTokens: 10, outputTokens: 1, raw: { cost: 0.25 } },
-    "abliterated-model-large-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
   );
   tracker.accumulateSummarization({
     inputTokens: 5,
@@ -171,8 +171,7 @@ it("reports known incurred cost across providers without changing billable cost"
     usage_measurement_version: 2,
     usage_discarded_retry_cost_dollars: 2.5,
     usage_inference_model_cost_dollars: 0.5,
-    usage_abliteration_model_cost_dollars: 0.25,
-    usage_openrouter_model_cost_dollars: 2.125,
+    usage_openrouter_model_cost_dollars: 2.375,
     usage_trigger_run_cost_dollars: 0.0625,
     usage_known_incurred_cost_dollars: 2.5 + 0.25 + 0.125 + 0.0625,
   });

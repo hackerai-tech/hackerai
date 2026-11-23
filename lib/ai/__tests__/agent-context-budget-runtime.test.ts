@@ -25,10 +25,6 @@ const mockFallbackSlugs = jest.fn((): string[] => []);
 const mockFlag = jest.fn(async () => false);
 
 jest.mock("server-only", () => ({}));
-jest.mock("@/lib/ai/abliteration", () => ({
-  ...jest.requireActual("@/lib/ai/abliteration"),
-  isAbliterationConfigured: () => false,
-}));
 jest.mock("@/lib/db/model-history", () => ({
   ModelHistoryTimeoutError: jest.requireActual("@/lib/db/model-history")
     .ModelHistoryTimeoutError,

@@ -177,17 +177,6 @@ describe("enrichOpenRouterStreamError", () => {
 describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {
     expect(
-      (myProvider.languageModel("model-abliterated") as { modelId: string })
-        .modelId,
-    ).toBe("abliterated-model-large-flash");
-    expect(
-      (
-        myProvider.languageModel("model-abliterated-large-v2") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("abliterated-model-large-flash");
-    expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4.1-flash-1017");
@@ -748,6 +737,42 @@ describe("makeOpenRouterToolChoiceCompatibleWithXaiReasoning", () => {
 });
 
 describe("OpenRouter request normalization", () => {
+  it("requires zero data retention without dropping caller routing", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockImplementation(async () => new Response("ok", { status: 200 }));
+    const patchedFetch = createOpenRouterPatchFetch(
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "z-ai/glm-5.3-flash",
+        models: ["z-ai/glm-5.3"],
+        provider: { sort: "latency", data_collection: "deny" },
+        messages: [{ role: "user", content: "synthetic" }],
+      }),
+    });
+    await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "x-ai/grok-4.6",
+        messages: [{ role: "user", content: "synthetic" }],
+      }),
+    });
+
+    const [routed, unrouted] = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse(init.body).provider,
+    );
+    expect(routed).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+      zdr: true,
+    });
+    expect(unrouted).toEqual({ zdr: true });
+  });
+
   it("allows a request exactly at the complete serialized byte limit", async () => {
     const fetchMock = jest
       .fn()
@@ -1364,7 +1389,10 @@ describe("OpenRouter PDF parser recovery", () => {
 
       expect(response).toBe(originalResponse);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        ...request,
+        provider: { zdr: true },
+      });
       expect(JSON.stringify(request)).toBe(serialized);
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
@@ -1424,6 +1452,7 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const sandboxRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(sandboxRequest.plugins).toEqual([]);
+    expect(sandboxRequest.provider.zdr).toBe(true);
     const remainingFiles = sandboxRequest.messages.flatMap(
       (message: { content?: Array<{ type?: string; file?: unknown }> }) =>
         (message.content ?? []).filter((part) => part.type === "file"),
@@ -1727,7 +1756,11 @@ describe("OpenRouter PDF parser recovery", () => {
 
       expect(response).toBe(originalResponse);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      // Only the zero-data-retention requirement is added to the request.
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        ...request,
+        provider: { zdr: true },
+      });
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
       expect(diagnostic).toMatchObject({
