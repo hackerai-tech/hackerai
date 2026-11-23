@@ -201,8 +201,18 @@ describe("ChatInputToolbar", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
+    // A chat with messages keeps its environment; no picker in the toolbar.
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
+    expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
+
+    rerender(
+      <ChatInputToolbar
+        {...defaultProps}
+        chatMode="agent"
+        showSandboxSelector
+      />,
+    );
     const desktopSandbox = within(
       screen.getByTestId("chat-input-desktop-sandbox"),
     ).getByTestId("sandbox-selector");

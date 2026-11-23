@@ -145,7 +145,6 @@ export const AttachmentButton = ({
           sideOffset={8}
           collisionPadding={12}
           className={mobile ? "w-60 rounded-2xl p-2" : "w-72 rounded-xl p-1"}
-          data-chat-input-agent-menu
           onCloseAutoFocus={(event) => {
             if (!focusComposerOnCloseRef.current) return;
             focusComposerOnCloseRef.current = false;

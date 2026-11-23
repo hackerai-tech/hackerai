@@ -30,8 +30,8 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   goalControl?: React.ReactNode;
   goalMenu?: AttachmentButtonProps["goalMenu"];
   onAttachClick: AttachmentButtonProps["onAttachClick"];
-  /** Confirm before moving a chat that already has messages elsewhere. */
-  confirmEnvironmentChange?: boolean;
+  /** The environment is chosen only before a chat's first message. */
+  showSandboxSelector?: boolean;
 }
 
 export function ChatInputToolbar({
@@ -41,7 +41,7 @@ export function ChatInputToolbar({
   goalMenu,
   onAttachClick,
   attachmentsDisabled = false,
-  confirmEnvironmentChange = false,
+  showSandboxSelector = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -129,17 +129,18 @@ export function ChatInputToolbar({
                 >
                   <AgentPermissionSelector analyticsSurface="chat_input" />
                 </div>
-                <div
-                  className="hidden min-w-16 max-w-max flex-1 md:block"
-                  data-testid="chat-input-desktop-sandbox"
-                >
-                  <SandboxSelector
-                    value={sandboxPreference}
-                    onChange={setSandboxPreference}
-                    confirmEnvironmentChange={confirmEnvironmentChange}
-                    size="toolbar"
-                  />
-                </div>
+                {showSandboxSelector ? (
+                  <div
+                    className="hidden min-w-16 max-w-max flex-1 md:block"
+                    data-testid="chat-input-desktop-sandbox"
+                  >
+                    <SandboxSelector
+                      value={sandboxPreference}
+                      onChange={setSandboxPreference}
+                      size="toolbar"
+                    />
+                  </div>
+                ) : null}
               </>
             ) : null}
             {goalControl}
