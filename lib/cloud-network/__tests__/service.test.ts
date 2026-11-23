@@ -1087,8 +1087,16 @@ describe("managed egress pilot", () => {
       configure(overrides);
       const log = jest.spyOn(console, "error").mockImplementation(() => {});
       try {
-        await expect(createInEmptyInventory("us-east-1")).rejects.toThrow(
+        const error = await createInEmptyInventory("us-east-1").catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toContain(
           "Cloud sandbox is temporarily unavailable",
+        );
+        // Typed so the per-run acquisition budget disables cloud tools.
+        expect((error as { errorKind?: unknown }).errorKind).toBe(
+          "egress_configuration",
         );
         expect(startWorkspaceCreation).not.toHaveBeenCalled();
         expect(Sandbox.list).not.toHaveBeenCalled();

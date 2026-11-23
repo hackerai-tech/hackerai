@@ -2331,3 +2331,52 @@ describe("Agent connection interruption", () => {
     stop();
   });
 });
+
+describe("HybridSandboxManager cached cloud re-check", () => {
+  it("keeps a concurrent switch to the local sandbox instead of reacquiring cloud", async () => {
+    const guard = jest.requireMock(
+      "../cloud-workspace-guard",
+    ) as typeof import("../cloud-workspace-guard");
+    let releaseCheck!: () => void;
+    const check = jest
+      .spyOn(guard, "assertCloudWorkspaceAvailable")
+      .mockImplementationOnce(
+        () => new Promise<void>((resolve) => (releaseCheck = resolve)),
+      );
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+    const internals = manager as unknown as {
+      sandbox: unknown;
+      isLocal: boolean;
+      localSelection: unknown;
+      localAcquisitionGeneration: number;
+    };
+    const cloudAcquire = jest
+      .spyOn(manager as any, "acquireCloudSandbox")
+      .mockRejectedValue(new Error("cloud must not be reacquired"));
+    internals.sandbox = { sandboxId: "cloud-1" };
+    try {
+      const pending = manager.getSandbox();
+      // A concurrent call selects the Desktop sandbox during the cached check.
+      const local = { kind: "selected-desktop" };
+      internals.isLocal = true;
+      internals.sandbox = local;
+      internals.localSelection = {
+        generation: internals.localAcquisitionGeneration,
+        promise: Promise.resolve({ sandbox: local }),
+      };
+      releaseCheck();
+
+      await expect(pending).resolves.toEqual({ sandbox: local });
+      expect(cloudAcquire).not.toHaveBeenCalled();
+    } finally {
+      check.mockRestore();
+    }
+  });
+});

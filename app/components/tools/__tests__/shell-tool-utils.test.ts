@@ -8,6 +8,7 @@ import {
   type ShellToolOutput,
 } from "../shell-tool-utils";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { describeCloudUnavailability } from "@/lib/ai/tools/utils/cloud-unavailability-message";
 import type { SidebarTerminal } from "@/types";
 
 describe("terminal shell tool display helpers", () => {
@@ -220,6 +221,17 @@ describe("terminal shell tool display helpers", () => {
     [
       "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
       "Sandbox is unavailable after repeated health check failures. Try again in a moment, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+    ],
+    [
+      describeCloudUnavailability({ kind: "cooldown", retryAfterMs: 59_200 }),
+      "The cloud workspace is temporarily unavailable. Your workspace is preserved. The next sandbox tool call after about 60 seconds will try to reconnect automatically.",
+    ],
+    [
+      describeCloudUnavailability({
+        kind: "disabled",
+        reason: "workspace_recovery_required",
+      }),
+      "Your cloud workspace needs recovery before it can be used, so cloud tools are unavailable for the rest of this request. Your workspace is preserved.",
     ],
     [
       "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
