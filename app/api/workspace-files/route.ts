@@ -201,6 +201,8 @@ function describeFailure(error: unknown, stage: Stage): Rejection {
   }
   if (error instanceof WorkspaceFileError)
     return {
+      // Allow-listed by unreadableListDiagnostics; present only for list unreadable_path.
+      ...error.diagnostics,
       reason: "workspace_file_error",
       stage,
       error_code: WORKSPACE_ERROR_CODES.has(error.code) ? error.code : "other",

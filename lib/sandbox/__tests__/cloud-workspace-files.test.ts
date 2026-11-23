@@ -98,6 +98,34 @@ it("withholds bytes if recovery or deletion fences the workspace during the read
     ),
   ).rejects.toThrow("fenced");
 });
+it("labels unreadable cloud list failures with the cloud reader only for list", async () => {
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      error: "unreadable_path",
+      phase: "directory",
+      category: "permission",
+    }),
+  });
+  const failure = (action: string) =>
+    accessCloudWorkspaceFiles(
+      "owner",
+      "us-east-1",
+      input({ action, sandboxId: "sandbox" }),
+    ).catch((error) => error);
+  expect(await failure("list")).toMatchObject({
+    code: "unreadable_path",
+    status: 400,
+    diagnostics: {
+      reader: "cloud",
+      reader_phase: "directory",
+      os_error_category: "permission",
+    },
+  });
+  const resume = await failure("resume");
+  expect(resume).toMatchObject({ code: "unreadable_path", status: 400 });
+  expect(resume.diagnostics).toBeUndefined();
+});
 it("reads without changing a running Agent's sandbox timeout", async () => {
   await accessCloudWorkspaceFiles(
     "owner",

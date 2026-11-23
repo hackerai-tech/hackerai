@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { resolveEnvironmentConnection } from "./environment";
 import { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import {
+  unreadableListDiagnostics,
   workspaceReaderCommand,
   WorkspaceFileError,
   type WorkspaceRequest,
@@ -137,6 +138,8 @@ export async function accessLocalWorkspaceFiles(
       ];
       throw new WorkspaceFileError(
         allowed.includes(parsed.error) ? parsed.error : "workspace_unavailable",
+        undefined,
+        unreadableListDiagnostics("local", input.action, parsed),
       );
     }
     const validated = (
