@@ -161,6 +161,7 @@ it.each([
       saveMessage,
       summarizationTracker: {
         processMessageForSave: (message: UIMessage) => message,
+        withSteerParts: (message: UIMessage) => message,
       },
       configuredModelId: "primary-model",
       mode: "agent",
