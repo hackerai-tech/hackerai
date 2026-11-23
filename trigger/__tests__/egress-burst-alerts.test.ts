@@ -516,6 +516,23 @@ describe("abuse review dispatch", () => {
     expect(trigger()).toHaveBeenCalledTimes(1);
   });
 
+  it("still dispatches a later region when logging a missing heartbeat throws", async () => {
+    const minute = MINUTE - 1;
+    await upload("eu", minute, [count(europe, 9)]);
+    jest.mocked(logger.warn).mockImplementationOnce(() => {
+      throw new Error("log sink unavailable");
+    });
+
+    const error = await failure(runEgressBurstAlerts(at()));
+    expect(error.failures).toEqual([{ kind: "heartbeat", region: "us" }]);
+    expect(trigger()).toHaveBeenCalledTimes(1);
+    expect(trigger()).toHaveBeenCalledWith(
+      "egress-abuse-review",
+      { region: "eu", owner: europe.owner, minute },
+      expect.anything(),
+    );
+  });
+
   it("reports a failed dispatch and retries it on the next run", async () => {
     await upload("us", MINUTE, [count(first, 9)]);
     trigger().mockRejectedValueOnce(new Error("trigger unavailable"));
