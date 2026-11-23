@@ -40,6 +40,8 @@ jest.mock("@/lib/suspensions", () => ({
   assertUserCanMakeCostIncurringRequest: jest.fn(),
   assertUserCanAccessChatHistory: jest.fn(),
 }));
+// Lets the history-guard tests below load the real shared guard.
+jest.mock("server-only", () => ({}), { virtual: true });
 
 jest.mock("next/server", () => ({
   NextResponse: {
@@ -50,10 +52,15 @@ jest.mock("next/server", () => ({
     }),
   },
 }));
-const makeRequest = (url: string, body?: unknown) =>
+const makeRequest = (
+  url: string,
+  body?: unknown,
+  signal = new AbortController().signal,
+) =>
   ({
     nextUrl: new URL(url),
     headers: new Headers({ origin: "https://preview.example" }),
+    signal,
     text: async () => JSON.stringify(body),
   }) as unknown as NextRequest;
 const request = (values = {}) =>
@@ -426,5 +433,148 @@ describe("POST rejection diagnostics", () => {
     const response = await POST(rawRequest("{"));
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid_request" });
+  });
+});
+
+describe("history guard transport failures", () => {
+  // Runs the real shared guard; only the Convex query boundary is replaced.
+  const query = jest.fn();
+  const block = {
+    category: "dispute_fraudulent",
+    source: "stripe",
+    source_id: "dp_1",
+  };
+  const fetchFailed = () => new TypeError("fetch failed");
+  const probe = (signal?: AbortSignal) =>
+    GET(
+      makeRequest(
+        "https://preview.example/api/workspace-files?chatId=chat",
+        undefined,
+        signal,
+      ),
+    );
+  const expectNoDownstreamAccess = () => {
+    expect(getChatById).not.toHaveBeenCalled();
+    expect(getPostHogBooleanFlagDecisionForUser).not.toHaveBeenCalled();
+    expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+    expect(accessLocalWorkspaceFiles).not.toHaveBeenCalled();
+  };
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "info").mockImplementation(() => {});
+    jest
+      .mocked(assertUserCanAccessChatHistory)
+      .mockImplementation(
+        jest.requireActual("@/lib/suspensions").assertUserCanAccessChatHistory,
+      );
+    jest.mocked(getConvexClient).mockReturnValue({ query } as any);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("enables the probe only after one transient read is retried clear", async () => {
+    query.mockRejectedValueOnce(fetchFailed()).mockResolvedValueOnce(null);
+    const response = await probe();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: true });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1][1]).toEqual({
+      serviceKey: "test",
+      userId: "owner",
+    });
+    const retryOrder = query.mock.invocationCallOrder[1];
+    expect(
+      jest.mocked(getChatById).mock.invocationCallOrder[0],
+    ).toBeGreaterThan(retryOrder);
+    expect(
+      jest.mocked(getPostHogBooleanFlagDecisionForUser).mock
+        .invocationCallOrder[0],
+    ).toBeGreaterThan(retryOrder);
+  });
+
+  it("keeps a block returned by the retry as a denial", async () => {
+    query.mockRejectedValueOnce(fetchFailed()).mockResolvedValueOnce(block);
+    const response = await probe();
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "forbidden" });
+    expect(query).toHaveBeenCalledTimes(2);
+    expectNoDownstreamAccess();
+  });
+
+  it("fails closed after two transient reads", async () => {
+    query
+      .mockRejectedValueOnce(fetchFailed())
+      .mockRejectedValueOnce(fetchFailed())
+      .mockResolvedValueOnce(null);
+    const response = await probe();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "workspace_unavailable" });
+    expect(query).toHaveBeenCalledTimes(2);
+    expectNoDownstreamAccess();
+  });
+
+  it("starts no retry after the request is aborted", async () => {
+    // Abort delivered while the first read is in flight.
+    const inFlight = new AbortController();
+    query.mockImplementationOnce(async () => {
+      inFlight.abort();
+      throw fetchFailed();
+    });
+    expect((await probe(inFlight.signal)).status).toBe(503);
+    expect(query).toHaveBeenCalledTimes(1);
+
+    // Abort delivered during the retry backoff.
+    query.mockClear();
+    const backoff = new AbortController();
+    warn.mockImplementation((line: string) => {
+      if (line.includes('"event":"history_access_gate_read_retry"'))
+        queueMicrotask(() => backoff.abort());
+    });
+    query.mockRejectedValueOnce(fetchFailed()).mockResolvedValueOnce(null);
+    expect((await probe(backoff.signal)).status).toBe(503);
+    expect(query).toHaveBeenCalledTimes(1);
+    expectNoDownstreamAccess();
+  });
+
+  it.each([
+    ["an application denial", block, 403, "forbidden"],
+    [
+      "a non-native fetch error",
+      new Error("fetch failed"),
+      503,
+      "workspace_unavailable",
+    ],
+    [
+      "an unknown TypeError",
+      new TypeError("parser failure"),
+      503,
+      "workspace_unavailable",
+    ],
+  ])("does not retry %s", async (_name, outcome, status, error) => {
+    if (outcome instanceof Error) query.mockRejectedValueOnce(outcome);
+    else query.mockResolvedValueOnce(outcome);
+    query.mockResolvedValueOnce(null);
+    const response = await probe();
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
+    expect(query).toHaveBeenCalledTimes(1);
+    expectNoDownstreamAccess();
+  });
+
+  it("keeps POST on a single history read", async () => {
+    query.mockRejectedValueOnce(fetchFailed()).mockResolvedValueOnce(null);
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "workspace_unavailable" });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(warn.mock.calls.at(-1)?.[0]))).toEqual({
+      event: "workspace_files_request_rejected",
+      status: 503,
+      action: "list",
+      reason: "unexpected_error",
+      stage: "history_access",
+      error_name: "TypeError",
+    });
+    expectNoDownstreamAccess();
   });
 });
