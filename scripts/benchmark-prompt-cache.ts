@@ -215,11 +215,16 @@ async function main() {
         variant === "treatment" || scenario === "model-mode"
           ? buildPromptCacheOptions(modelId, sessionId)
           : baselineCacheOptions(modelId, sessionId, scope);
+      // This standalone client bypasses the app transport, so require
+      // zero data retention here too.
       const providerOptions = {
         openrouter: {
-          provider: providerOnly
-            ? { only: [providerOnly], allow_fallbacks: false }
-            : getOpenRouterProviderRoutingForModel(modelId),
+          provider: {
+            ...(providerOnly
+              ? { only: [providerOnly], allow_fallbacks: false }
+              : getOpenRouterProviderRoutingForModel(modelId)),
+            zdr: true,
+          },
           ...("openrouter" in cacheOptions ? cacheOptions.openrouter : {}),
         },
       };
