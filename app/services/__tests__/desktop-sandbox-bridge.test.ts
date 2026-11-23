@@ -5845,27 +5845,52 @@ describe("desktop lifecycle recovery", () => {
     let resolvePublish!: () => void;
     const bridge = new DesktopSandboxBridge(buildConfig());
     await bridge.start();
+    // The old connection's lifecycle handlers, to replay its teardown events.
+    const oldClientHandlers = new Map(
+      mockClient.on.mock.calls.map(([event, handler]) => [event, handler]),
+    );
+    const oldSubscriptionHandlers = new Map(
+      mockSubscription.on.mock.calls.map(([event, handler]) => [
+        event,
+        handler,
+      ]),
+    );
     mockSubscription.publish.mockImplementationOnce(
       () => new Promise<void>((resolve) => (resolvePublish = resolve)),
     );
     const stopping = bridge.stop();
     await Promise.resolve();
 
-    // A restart while the notice is pending creates its own client.
+    // A restart while the notice is pending creates its own connection.
+    const restartedSubscription = {
+      ...mockSubscription,
+      on: jest.fn(),
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
+      removeAllListeners: jest.fn(),
+      publish: jest.fn().mockResolvedValue(undefined),
+    };
     const restarted = {
       ...mockClient,
       connect: jest.fn(),
       disconnect: jest.fn(),
       on: jest.fn(),
       ready: jest.fn().mockResolvedValue(undefined),
+      newSubscription: jest.fn().mockReturnValue(restartedSubscription),
     };
     jest.mocked(Centrifuge).mockImplementationOnce(() => restarted as never);
     await bridge.start();
+    const connectionAfterRestart = bridge.getConnectionId();
     resolvePublish();
     await stopping;
+    // The old connection's teardown events arrive after the restart.
+    oldSubscriptionHandlers.get("unsubscribed")?.({ code: 0, reason: "" });
+    oldClientHandlers.get("disconnected")?.({ code: 0, reason: "" });
 
     expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
     expect(restarted.disconnect).not.toHaveBeenCalled();
+    expect(restartedSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(bridge.getConnectionId()).toBe(connectionAfterRestart);
     await bridge.stop();
     expect(restarted.disconnect).toHaveBeenCalledTimes(1);
   });

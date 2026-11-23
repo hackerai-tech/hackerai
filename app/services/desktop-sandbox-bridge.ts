@@ -1114,7 +1114,8 @@ export class DesktopSandboxBridge {
       this.relayUnavailableAt = null;
     });
     client.on("disconnected", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      // A client replaced by a restart must not tear down its successor.
+      if (this.isStoppingOrStopped || this.client !== client) return;
       this.logRelayState("disconnected", {
         code: ctx.code,
         reason: ctx.reason,
@@ -1155,7 +1156,8 @@ export class DesktopSandboxBridge {
       });
     });
     subscription.on("unsubscribed", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       this.logRelayState("disconnected", {
         source: "subscription",
         code: ctx.code,
