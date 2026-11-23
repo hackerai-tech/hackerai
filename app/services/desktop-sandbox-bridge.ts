@@ -19,12 +19,14 @@ import {
   getIdentifiedAnalyticsUserId,
 } from "@/lib/analytics/client";
 import {
+  DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS,
   DesktopFileBridgeError,
   getDesktopFileFailure,
   type DesktopFileFailure,
   type DesktopFileReceiverAdapter,
   type DesktopFileReceiverDiagnostic,
   type DesktopFileReceiverStage,
+  type DesktopNativeVersionLateLookup,
   type DesktopNativeVersionLookup,
 } from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
@@ -204,6 +206,63 @@ function usesPublishedLegacyDesktopCommands(version: string): boolean {
 /** Distinguishes the 500ms deadline from a native lookup resolving undefined. */
 const NATIVE_VERSION_LOOKUP_TIMED_OUT = Symbol("native version lookup timeout");
 
+/**
+ * Only the native package version, never the fixed browser user agent or
+ * arbitrary error text.
+ */
+function classifyNativeVersion(value: unknown): {
+  version: string;
+  lookup: "resolved_published_legacy" | "resolved_other" | "invalid";
+} {
+  if (typeof value === "string" && /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(value))
+    return {
+      version: value,
+      lookup: usesPublishedLegacyDesktopCommands(value)
+        ? "resolved_published_legacy"
+        : "resolved_other",
+    };
+  return { version: "unknown", lookup: "invalid" };
+}
+
+/** Monotonic diagnostics clock. A missing or failing clock only omits evidence. */
+function readDiagnosticClock(): number | undefined {
+  try {
+    const now = performance.now();
+    return Number.isFinite(now) ? now : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Non-negative elapsed time since a diagnostics clock read, if readable. */
+function diagnosticElapsedSince(startedAt: number): number | undefined {
+  const now = readDiagnosticClock();
+  if (now === undefined || now < startedAt) return undefined;
+  return now - startedAt;
+}
+
+/**
+ * One start generation's own version IPC after its 500ms deadline. Written
+ * only by that IPC's settlement inside the window; holds no raw version.
+ */
+interface NativeVersionLateObservation {
+  readonly startedAt: number;
+  settled?: Exclude<DesktopNativeVersionLateLookup, "pending" | "unresolved">;
+}
+
+/** Read once at a failure; undefined (omitted) when the clock is unusable. */
+function nativeVersionLateLookup(
+  observation: NativeVersionLateObservation,
+): DesktopNativeVersionLateLookup | undefined {
+  if (observation.settled) return observation.settled;
+  const elapsed = diagnosticElapsedSince(observation.startedAt);
+  if (elapsed === undefined) return undefined;
+  // Inclusive, like settlement: a response at the boundary could still count.
+  return elapsed <= DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS
+    ? "pending"
+    : "unresolved";
+}
+
 const NATIVE_PREVIOUS_EXITS = new Set(["clean", "unclean", "none", "unknown"]);
 const NATIVE_WEB_PROCESS_TERMINATIONS = new Set([
   "none",
@@ -268,21 +327,31 @@ interface FileStatReceiverTrace {
   stage?: DesktopFileReceiverStage;
   adapter?: DesktopFileReceiverAdapter;
   nativeVersionLookup?: DesktopNativeVersionLookup;
+  /** Captured with nativeVersionLookup from the same start. */
+  nativeVersionLate?: NativeVersionLateObservation;
 }
 
 function fileStatReceiverDiagnostic(
   trace: FileStatReceiverTrace,
 ): DesktopFileReceiverDiagnostic | undefined {
-  return trace.stage && trace.adapter
-    ? {
-        version: 1,
-        stage: trace.stage,
-        adapter: trace.adapter,
-        ...(trace.nativeVersionLookup && {
-          nativeVersionLookup: trace.nativeVersionLookup,
-        }),
-      }
-    : undefined;
+  if (!trace.stage || !trace.adapter) return undefined;
+  // Read once, at the failure; only the timed-out authorized invoke reports it.
+  const late =
+    trace.stage === "native_invoke" &&
+    trace.adapter === "authorized_native" &&
+    trace.nativeVersionLookup === "timeout" &&
+    trace.nativeVersionLate
+      ? nativeVersionLateLookup(trace.nativeVersionLate)
+      : undefined;
+  return {
+    version: 1,
+    stage: trace.stage,
+    adapter: trace.adapter,
+    ...(trace.nativeVersionLookup && {
+      nativeVersionLookup: trace.nativeVersionLookup,
+    }),
+    ...(late && { nativeVersionLateLookup: late }),
+  };
 }
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -621,6 +690,9 @@ export class DesktopSandboxBridge {
   private nativeAppVersion = "unknown";
   // Always assigned together with nativeAppVersion.
   private nativeVersionLookup: DesktopNativeVersionLookup = "unobserved";
+  // Cleared at each start; set only by a timed-out lookup of a start that
+  // passed its stop guard, so a stale start cannot overwrite it.
+  private nativeVersionLate: NativeVersionLateObservation | undefined;
   private nativePlatform = "unknown";
   private nativeLifecycle: NativeLifecycleTelemetry = {};
   /** Native identity proven at startup; older binaries have none. */
@@ -884,6 +956,7 @@ export class DesktopSandboxBridge {
     this.nativeFileIpcFailure = undefined;
     this.nativeLifecycle = {};
     this.nativeSession = undefined;
+    this.nativeVersionLate = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -906,10 +979,12 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    const nativeVersion = await this.lookupNativeAppVersion();
+    const nativeVersion = await this.lookupNativeAppVersion(generation);
     this.nativeAppVersion = nativeVersion.version;
     this.nativeVersionLookup = nativeVersion.lookup;
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    // Only a start that is still current may publish its late observation.
+    this.nativeVersionLate = nativeVersion.late;
     const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const platform =
@@ -1367,6 +1442,7 @@ export class DesktopSandboxBridge {
     const { invoke } = await import("@tauri-apps/api/core");
     trace.stage = "native_invoke";
     trace.nativeVersionLookup = this.nativeVersionLookup;
+    trace.nativeVersionLate = this.nativeVersionLate;
     if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
       trace.adapter = "published_legacy_native";
       return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
@@ -1386,15 +1462,55 @@ export class DesktopSandboxBridge {
     }
   }
 
-  private async lookupNativeAppVersion(): Promise<{
+  /**
+   * Observation only, of the same timed-out IPC: no new IPC, timer or wait,
+   * and selection never reads it. A settlement after the window or after a
+   * newer start records nothing; only the closed class is kept. Any failure
+   * here omits the observation and never reaches the lookup or a rejection.
+   */
+  private observeLateNativeVersion(
+    call: Promise<unknown>,
+    startedAt: number | undefined,
+    generation: number,
+  ): NativeVersionLateObservation | undefined {
+    if (startedAt === undefined) return undefined;
+    try {
+      const late: NativeVersionLateObservation = { startedAt };
+      const record = (settled: NativeVersionLateObservation["settled"]) => {
+        try {
+          const elapsed = diagnosticElapsedSince(startedAt);
+          if (
+            generation === this.startupGeneration &&
+            elapsed !== undefined &&
+            elapsed <= DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS
+          )
+            late.settled = settled;
+        } catch {
+          // Diagnostics only.
+        }
+      };
+      void Promise.resolve(call).then(
+        (value) => record(classifyNativeVersion(value).lookup),
+        () => record("rejected"),
+      );
+      return late;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async lookupNativeAppVersion(generation: number): Promise<{
     version: string;
     lookup: DesktopNativeVersionLookup;
+    late?: NativeVersionLateObservation;
   }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      const startedAt = readDiagnosticClock();
+      const call = invoke<unknown>("plugin:app|version");
       const version = await Promise.race([
-        invoke<unknown>("plugin:app|version"),
+        call,
         new Promise<typeof NATIVE_VERSION_LOOKUP_TIMED_OUT>((resolve) => {
           timer = setTimeout(
             () => resolve(NATIVE_VERSION_LOOKUP_TIMED_OUT),
@@ -1403,20 +1519,13 @@ export class DesktopSandboxBridge {
         }),
       ]);
       if (version === NATIVE_VERSION_LOOKUP_TIMED_OUT)
-        return { version: "unknown", lookup: "timeout" };
-      // Only the native package version, never the fixed browser user agent or
-      // arbitrary error text. Diagnostics must not delay or prevent recovery.
-      if (
-        typeof version === "string" &&
-        /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)
-      )
         return {
-          version,
-          lookup: usesPublishedLegacyDesktopCommands(version)
-            ? "resolved_published_legacy"
-            : "resolved_other",
+          version: "unknown",
+          lookup: "timeout",
+          late: this.observeLateNativeVersion(call, startedAt, generation),
         };
-      return { version: "unknown", lookup: "invalid" };
+      // Diagnostics must not delay or prevent recovery.
+      return classifyNativeVersion(version);
     } catch {
       return { version: "unknown", lookup: "rejected" };
     } finally {

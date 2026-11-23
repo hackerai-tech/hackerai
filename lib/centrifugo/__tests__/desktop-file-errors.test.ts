@@ -123,6 +123,104 @@ describe("readDesktopFileReceiverDiagnostic", () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  describe("late native version lookup", () => {
+    const withoutLookup = {
+      version: 1,
+      stage: "native_invoke",
+      adapter: "authorized_native",
+    };
+    const timedOutAuthorized = {
+      ...withoutLookup,
+      nativeVersionLookup: "timeout",
+    };
+
+    it.each([
+      "resolved_published_legacy",
+      "resolved_other",
+      "invalid",
+      "rejected",
+      "pending",
+      "unresolved",
+    ])("keeps %s beside a timed-out authorized invoke", (late) => {
+      expect(
+        readDesktopFileReceiverDiagnostic({
+          receiverDiagnostic: {
+            ...timedOutAuthorized,
+            nativeVersionLateLookup: late,
+          },
+        }),
+      ).toEqual({ ...timedOutAuthorized, nativeVersionLateLookup: late });
+    });
+
+    it.each<[string, Record<string, unknown>, unknown]>([
+      ["a raw native version", timedOutAuthorized, "0.0.71"],
+      ["an arbitrary string", timedOutAuthorized, "PRIVATE_PATH"],
+      ["an initial-lookup-only value", timedOutAuthorized, "timeout"],
+      ["a prototype key", timedOutAuthorized, "toString"],
+      ["a non-string", timedOutAuthorized, 1],
+      [
+        "a lookup that met its deadline",
+        { ...timedOutAuthorized, nativeVersionLookup: "resolved_other" },
+        "resolved_published_legacy",
+      ],
+      ["an old sender's group", withoutLookup, "resolved_published_legacy"],
+      [
+        "an unusable initial lookup",
+        { ...timedOutAuthorized, nativeVersionLookup: "0.0.71" },
+        "resolved_published_legacy",
+      ],
+      [
+        "the published legacy adapter",
+        { ...timedOutAuthorized, adapter: "published_legacy_native" },
+        "resolved_published_legacy",
+      ],
+      [
+        "the compatibility adapter",
+        { ...timedOutAuthorized, adapter: "compatibility_native" },
+        "resolved_published_legacy",
+      ],
+      [
+        "a later stage",
+        { ...timedOutAuthorized, stage: "stat_reply_validation" },
+        "resolved_published_legacy",
+      ],
+    ])("omits it from %s and keeps the rest", (_name, diagnostic, late) => {
+      const parsed = readDesktopFileReceiverDiagnostic({
+        receiverDiagnostic: { ...diagnostic, nativeVersionLateLookup: late },
+      });
+
+      expect(parsed).toBeDefined();
+      expect(parsed).toEqual(
+        readDesktopFileReceiverDiagnostic({ receiverDiagnostic: diagnostic }),
+      );
+      expect(parsed).not.toHaveProperty("nativeVersionLateLookup");
+      expect(JSON.stringify(parsed)).not.toMatch(/PRIVATE|0\.0\.71/);
+    });
+
+    it("never reads an accessor or inherited late lookup", () => {
+      const getter = jest.fn(() => "resolved_published_legacy");
+      const accessor = { ...timedOutAuthorized };
+      Object.defineProperty(accessor, "nativeVersionLateLookup", {
+        enumerable: true,
+        get: getter,
+      });
+      const inherited = Object.assign(
+        Object.create({
+          nativeVersionLateLookup: "resolved_published_legacy",
+        }) as object,
+        timedOutAuthorized,
+      );
+
+      expect(
+        readDesktopFileReceiverDiagnostic({ receiverDiagnostic: accessor }),
+      ).toEqual(timedOutAuthorized);
+      expect(
+        readDesktopFileReceiverDiagnostic({ receiverDiagnostic: inherited }),
+      ).toEqual(timedOutAuthorized);
+      expect(getter).not.toHaveBeenCalled();
+    });
+  });
+
   it("still rejects an invalid group even with a valid lookup", () => {
     expect(
       readDesktopFileReceiverDiagnostic({

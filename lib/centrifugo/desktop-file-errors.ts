@@ -59,13 +59,46 @@ export type DesktopNativeVersionLookup =
   | "invalid"
   | "unobserved";
 
+/** Bound on the late observation, measured monotonically from the lookup call. */
+export const DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS = 3_000;
+
+/**
+ * How that same timed-out lookup IPC settled within
+ * DESKTOP_NATIVE_VERSION_LATE_WINDOW_MS of its start, for the same start
+ * generation. Observation only: the 500ms deadline's selection is unchanged.
+ * - pending: unsettled when the failure was read, while the window was open.
+ * - unresolved: no settlement inside the window, including a later one.
+ */
+export type DesktopNativeVersionLateLookup =
+  | "resolved_published_legacy"
+  | "resolved_other"
+  | "invalid"
+  | "rejected"
+  | "pending"
+  | "unresolved";
+
 export interface DesktopFileReceiverDiagnostic {
   version: 1;
   stage: DesktopFileReceiverStage;
   adapter: DesktopFileReceiverAdapter;
   /** Optional within version 1; older readers drop it, older senders omit it. */
   nativeVersionLookup?: DesktopNativeVersionLookup;
+  /**
+   * Optional within version 1, only beside a timed-out lookup at the
+   * authorized native invoke boundary; dropped everywhere else.
+   */
+  nativeVersionLateLookup?: DesktopNativeVersionLateLookup;
 }
+
+const NATIVE_VERSION_LATE_LOOKUPS: ReadonlySet<unknown> =
+  new Set<DesktopNativeVersionLateLookup>([
+    "resolved_published_legacy",
+    "resolved_other",
+    "invalid",
+    "rejected",
+    "pending",
+    "unresolved",
+  ]);
 
 const NATIVE_VERSION_LOOKUPS: ReadonlySet<unknown> =
   new Set<DesktopNativeVersionLookup>([
@@ -121,7 +154,8 @@ function ownDataValue(value: unknown, key: string): unknown {
  * Read a file_error's optional receiver diagnostic as a fresh closed copy.
  * Accessors, inherited or unknown values and inconsistent groups are ignored,
  * and reading can never throw into the original failure. An unusable optional
- * version lookup is omitted without discarding a valid stage and adapter.
+ * version lookup, or a late lookup outside its exact timed-out authorized
+ * invoke, is omitted without discarding a valid stage and adapter.
  */
 export function readDesktopFileReceiverDiagnostic(
   fileError: unknown,
@@ -137,12 +171,21 @@ export function readDesktopFileReceiverDiagnostic(
     if (allowed && !allowed.has(adapter as DesktopFileReceiverAdapter))
       return undefined;
     const nativeVersionLookup = ownDataValue(diagnostic, "nativeVersionLookup");
+    const lateLookup =
+      nativeVersionLookup === "timeout" &&
+      stage === "native_invoke" &&
+      adapter === "authorized_native"
+        ? ownDataValue(diagnostic, "nativeVersionLateLookup")
+        : undefined;
     return {
       version: 1,
       stage: stage as DesktopFileReceiverStage,
       adapter: adapter as DesktopFileReceiverAdapter,
       ...(NATIVE_VERSION_LOOKUPS.has(nativeVersionLookup) && {
         nativeVersionLookup: nativeVersionLookup as DesktopNativeVersionLookup,
+      }),
+      ...(NATIVE_VERSION_LATE_LOOKUPS.has(lateLookup) && {
+        nativeVersionLateLookup: lateLookup as DesktopNativeVersionLateLookup,
       }),
     };
   } catch {

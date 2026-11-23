@@ -709,6 +709,12 @@ export class CentrifugoSandbox extends EventEmitter {
         receiver_stage: receiverDiagnostic?.stage,
         receiver_adapter: receiverDiagnostic?.adapter,
         receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
+        // Only beside the exact authorized ACL denial: whether the receiver's
+        // own timed-out version IPC settled within its bounded window.
+        receiver_native_version_late_lookup:
+          receiverErrorClass === "authorized_ipc_denied"
+            ? receiverDiagnostic?.nativeVersionLateLookup
+            : undefined,
         // Overall-deadline failures only: where the sender was when it expired.
         ...(failure === "timeout" && {
           sender_phase_version: 1,

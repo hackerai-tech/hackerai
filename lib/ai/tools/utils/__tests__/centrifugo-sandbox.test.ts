@@ -2328,6 +2328,85 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    // The exact shape a current bridge publishes after its 500ms lookup timed
+    // out and the installed binary's ACL denied the authorized file command.
+    const timedOutAuthorized = {
+      ...authorizedInvoke,
+      nativeVersionLookup: "timeout",
+    };
+
+    it.each<[string, string, string, boolean]>([
+      [aclDenial, "resolved_published_legacy", "authorized_ipc_denied", true],
+      // A raw version is dropped by the reader.
+      [aclDenial, "0.0.71", "authorized_ipc_denied", false],
+      // Another authorized rejection keeps its class without the late value.
+      [
+        "Desktop operation was not authorized",
+        "resolved_published_legacy",
+        "authorization_denied",
+        false,
+      ],
+    ])(
+      "projects the late version lookup for %j with %s only for %s: %s",
+      async (message, late, receiverErrorClass, projected) => {
+        const diagnostic = timedOutAuthorized;
+        const sandbox = unavailableDesktop();
+        const { pending, reply, control } = await dispatchProbe(sandbox);
+        // Another request's late evidence must not attach to this probe.
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: aclDenial,
+            receiverDiagnostic: {
+              ...timedOutAuthorized,
+              nativeVersionLateLookup: "resolved_other",
+            },
+          },
+        });
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message,
+            receiverDiagnostic: {
+              ...diagnostic,
+              nativeVersionLateLookup: late,
+            },
+          },
+        });
+        const error = await pending;
+
+        // The probe outcome and the thrown failure are unchanged.
+        expect(error).toBeInstanceOf(DesktopFileBridgeError);
+        expect(error).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: receiverErrorClass,
+            receiver_stage_version: 1,
+            receiver_stage: "native_invoke",
+            receiver_adapter: "authorized_native",
+            receiver_native_version_lookup: diagnostic.nativeVersionLookup,
+            ...(projected && { receiver_native_version_late_lookup: late }),
+          },
+        ]);
+        const logs = JSON.stringify(receiverLog.mock.calls);
+        expect(logs).not.toContain(message);
+        expect(logs).not.toContain("0.0.71");
+        expect(sandbox.supportsNativeFileRelay()).toBe(false);
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+        expect(probeRecords()).toHaveLength(1);
+      },
+    );
+
     it.each([
       ["an old producer", undefined],
       ["an unknown version", { ...receiverDiagnostic, version: 2 }],
