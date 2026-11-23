@@ -2325,6 +2325,35 @@ exit 7
         command.includes("setsid nohup"),
       );
 
+    test("keeps execution provenance and the handle when the started notice cannot stream", async () => {
+      const sandbox = makeCloudSandbox(
+        "HACKERAI_BG started 778 1700000000000\n",
+      );
+      const { context } = makeContext({ sandbox });
+      // The terminal stream fails after the launcher already started it.
+      (context.writer as { write: (part: unknown) => void }).write = () => {
+        throw new Error("stream closed");
+      };
+
+      const started = (await runTool(createRunTerminalCmd(context), {
+        command: "python3 -m http.server 8000",
+        is_background: true,
+        interactive: false,
+      })) as { result: Record<string, unknown> };
+
+      expect(started.result).toMatchObject({
+        status: "running",
+        backgroundId: expect.stringMatching(/^bg-[a-f0-9]{8}$/),
+        pid: 778,
+        executionEnvironment: "cloud",
+      });
+      expect(context.backgroundProcessTracker.addProcess).toHaveBeenCalledWith(
+        778,
+        "python3 -m http.server 8000",
+        [started.result.logPath],
+      );
+    });
+
     test("detaches services from the command deadline while foreground commands keep it", async () => {
       // E2B kills a command at its timeoutMs deadline even with
       // background: true, so a 10-minute deadline killed every dev server.

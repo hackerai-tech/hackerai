@@ -939,7 +939,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }
           const { process } = started;
           const output = formatCloudBackgroundStarted(process);
-          await writeTerminal(`${output}\n`);
+          // The service is already running: a failed stream write must not
+          // drop its handle, or a retry could start a duplicate.
+          await writeTerminal(`${output}\n`).catch(() => {});
           backgroundProcessTracker.addProcess(process.pid, command, [
             ...BackgroundProcessTracker.extractOutputFiles(command),
             process.logPath,
@@ -997,21 +999,26 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               sandboxInstance,
             );
 
-          if (is_background && isE2BSandbox(sandboxInstance)) {
-            return startCloudBackground(
-              sandboxInstance,
-              buildEffectiveCommand(),
-              agentBrowserEnv,
-              createTerminalWriter,
-            );
-          }
-
           const provenance = terminalExecutionProvenance(
             getAgentApprovalSandboxIdentity(sandboxInstance),
             isCentrifugoSandbox(sandboxInstance)
               ? sandboxInstance.getWorkingDirectory?.()
               : buildSandboxCommandOptions(sandboxInstance).cwd,
           );
+
+          if (is_background && isE2BSandbox(sandboxInstance)) {
+            // Detached results keep the same execution-location contract.
+            const detached = await startCloudBackground(
+              sandboxInstance,
+              buildEffectiveCommand(),
+              agentBrowserEnv,
+              createTerminalWriter,
+            );
+            return {
+              ...detached,
+              result: { ...detached.result, ...provenance },
+            };
+          }
           return new Promise<TerminalCommandResult>((resolve, reject) => {
             let resolved = false;
             let execution: any = null;
