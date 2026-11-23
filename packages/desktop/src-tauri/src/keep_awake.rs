@@ -381,6 +381,11 @@ mod platform {
     //! automatic idle suspend: an explicit Sleep request and the lid switch
     //! still sleep. Its child exits when this app's PID exits, which ends the
     //! inhibitor even after a crash.
+    //!
+    //! Known gap: GNOME's own automatic suspend (gsd-power) consults GNOME
+    //! session inhibitors, not logind's `idle` lock, so on GNOME with
+    //! automatic suspend enabled the computer can still idle-suspend. Covering
+    //! it needs a GNOME session `idle` inhibitor (tracked in HAC-268).
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
@@ -441,9 +446,28 @@ mod platform {
         }
 
         fn still_held(&mut self) -> bool {
-            self.0
-                .as_mut()
-                .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+            let Some(pid) = self
+                .0
+                .as_ref()
+                .and_then(|child| libc::id_t::try_from(child.id()).ok())
+            else {
+                return false;
+            };
+            // Probe without reaping (WNOWAIT): the unreaped leader keeps its
+            // process group ID reserved until `stop` signals it and waits.
+            // SAFETY: `info` is a valid out-parameter for this direct child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let status = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            // With WNOHANG, `si_pid` stays 0 while the helper is still running.
+            // SAFETY: reading the pid field that waitid filled in.
+            status == 0 && unsafe { info.si_pid() } == 0
         }
 
         fn release(&mut self) {
@@ -455,8 +479,9 @@ mod platform {
 
     fn stop(child: &mut Child) {
         if let Ok(group) = libc::pid_t::try_from(child.id()) {
-            // SAFETY: the group this lock created; its leader is unreaped
-            // until the wait below, so the group ID cannot have been reused.
+            // SAFETY: the group this lock created. Its leader is never reaped
+            // before this point (`still_held` probes with WNOWAIT), so the
+            // group ID cannot have been reused until the wait below.
             unsafe { libc::killpg(group, libc::SIGTERM) };
         }
         let _ = child.wait();
