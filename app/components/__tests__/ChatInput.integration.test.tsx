@@ -71,6 +71,7 @@ jest.mock("@/app/contexts/GlobalState", () => {
 const mockUseQuery = jest.fn(() => undefined);
 const mockReadGeneratedTextAttachment = jest.fn();
 const mockHandleRemoveFile = jest.fn();
+const mockHandleRetryFile = jest.fn();
 const mockFetch = jest.fn();
 
 const setNavigatorOnline = (isOnline: boolean) => {
@@ -113,6 +114,7 @@ jest.mock("@/app/hooks/useFileUpload", () => ({
     fileInputRef: { current: null },
     handleFileUploadEvent: jest.fn(),
     handleRemoveFile: mockHandleRemoveFile,
+    handleRetryFile: mockHandleRetryFile,
     handleUpdateGeneratedTextFile: jest.fn(),
     handleAttachClick: jest.fn(),
     handlePasteEvent: jest.fn(),
@@ -313,6 +315,89 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Keyboard and draft edge cases", () => {
+    it.each([
+      { draft: "", retryable: false, recovery: "remove" },
+      { draft: "Keep this draft", retryable: true, recovery: "retry" },
+    ])(
+      "blocks Send after a failed upload and allows sending after $recovery",
+      async ({ draft, retryable, recovery }) => {
+        mockIsMobile = retryable;
+        const file = new File(["report"], "report.txt", { type: "text/plain" });
+        const failed: UploadedFileState = {
+          file,
+          storage: "s3",
+          uploading: false,
+          uploaded: false,
+          error: "Upload failed",
+          retryable,
+        };
+        const recoveredFiles: UploadedFileState[] =
+          recovery === "retry"
+            ? [
+                {
+                  file,
+                  storage: "s3",
+                  uploading: false,
+                  uploaded: true,
+                  fileId: "file_recovered",
+                },
+              ]
+            : [];
+        render(
+          <TestWrapper>
+            <UploadedFilesSetter files={[failed]} label="Fail upload" />
+            <UploadedFilesSetter
+              files={recoveredFiles}
+              label="Recover attachment"
+            />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+
+        const composer = await screen.findByTestId("chat-input");
+        fireEvent.change(composer, { target: { value: draft } });
+        fireEvent.click(screen.getByRole("button", { name: "Fail upload" }));
+        const send = screen.getByRole("button", { name: "Send message" });
+        expect(send).toBeDisabled();
+        const guidance = retryable
+          ? "Retry or remove failed attachments to send."
+          : "Remove failed attachments to send.";
+        expect(screen.getByText(guidance)).toBeVisible();
+        expect(composer).toHaveAccessibleDescription(guidance);
+        fireEvent.click(send);
+        fireEvent.keyDown(composer, { key: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(composer).toHaveValue(draft);
+
+        if (retryable) {
+          fireEvent.click(
+            screen.getByRole("button", { name: "Retry upload of report.txt" }),
+          );
+          expect(mockHandleRetryFile).toHaveBeenCalledWith(0);
+        } else {
+          fireEvent.click(screen.getByRole("button", { name: "Remove file" }));
+          expect(mockHandleRemoveFile).toHaveBeenCalledWith(0);
+        }
+        fireEvent.click(
+          screen.getByRole("button", { name: "Recover attachment" }),
+        );
+        expect(screen.queryByText(guidance)).not.toBeInTheDocument();
+        if (!draft) {
+          expect(send).toBeDisabled();
+          fireEvent.change(composer, {
+            target: { value: "Send without file" },
+          });
+        }
+        expect(send).toBeEnabled();
+        fireEvent.keyDown(composer, { key: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
     it.each(["insertText", "deleteContentBackward"])(
       "preserves a burst of native %s edits without exceeding React's update depth",
       async (inputType) => {

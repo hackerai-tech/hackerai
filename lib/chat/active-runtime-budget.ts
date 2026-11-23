@@ -68,7 +68,7 @@ export function createActiveRuntimeBudget({
   onExceeded: () => void;
 }): ActiveRuntimeBudget {
   let elapsedBeforeSegmentMs = Math.max(0, initialElapsedMs);
-  let segmentStartedAt = Date.now();
+  let segmentStartedAt = performance.now();
   let paused = false;
   let disposed = false;
   let exceeded = false;
@@ -76,9 +76,7 @@ export function createActiveRuntimeBudget({
 
   const getElapsedTimeMs = () =>
     elapsedBeforeSegmentMs +
-    (paused || disposed || exceeded
-      ? 0
-      : Math.max(0, Date.now() - segmentStartedAt));
+    (paused || disposed || exceeded ? 0 : performance.now() - segmentStartedAt);
 
   const clearTimer = () => {
     if (timeoutId === undefined) return;
@@ -109,7 +107,7 @@ export function createActiveRuntimeBudget({
 
   const resume = () => {
     if (disposed || !paused || exceeded) return;
-    segmentStartedAt = Date.now();
+    segmentStartedAt = performance.now();
     paused = false;
     schedule();
   };

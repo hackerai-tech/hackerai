@@ -52,6 +52,33 @@ describe("createActiveRuntimeBudget", () => {
     expect(onExceeded).toHaveBeenCalledTimes(1);
     budget.dispose();
   });
+
+  it.each([-30_000, 90_000])(
+    "preserves the active time budget across a %i ms wall-clock change",
+    (wallClockChangeMs) => {
+      const onExceeded = jest.fn();
+      const budget = createActiveRuntimeBudget({
+        maxDurationMs: 1_000,
+        initialElapsedMs: 100,
+        onExceeded,
+      });
+
+      jest.advanceTimersByTime(300);
+      jest.setSystemTime(Date.now() + wallClockChangeMs);
+      budget.pause();
+      expect(budget.getElapsedTimeMs()).toBe(400);
+
+      jest.advanceTimersByTime(10_000);
+      budget.resume();
+      jest.advanceTimersByTime(599);
+      expect(onExceeded).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(1);
+      jest.advanceTimersByTime(1_000);
+      expect(onExceeded).toHaveBeenCalledTimes(1);
+      expect(budget.getElapsedTimeMs()).toBe(1_000);
+    },
+  );
 });
 
 describe("createRuntimeSettlementWatchdog", () => {
