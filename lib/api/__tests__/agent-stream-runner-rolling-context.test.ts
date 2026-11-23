@@ -2,7 +2,7 @@ import type { ModelMessage } from "ai";
 import {
   addOpenRouterFileAnnotationsToLastAssistantMessage,
   getOpenRouterFileAnnotations,
-  getOpenRouterFileAnnotationsForRequest,
+  projectOpenRouterFileAnnotationsForRequest,
 } from "@/lib/api/agent-stream-runner";
 import {
   CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS,
@@ -116,13 +116,13 @@ describe("route-scoped orphaned parsed-file annotations", () => {
     annotations: unknown[] | undefined,
     overrides: { routeAwareContext?: boolean; modelId?: string } = {},
   ) =>
-    getOpenRouterFileAnnotationsForRequest({
+    projectOpenRouterFileAnnotationsForRequest({
       messages,
       annotations,
       routeAwareContext: true,
       modelId: DEEPSEEK_1017_SLUG,
       ...overrides,
-    });
+    }).annotations;
 
   it("attaches nothing when every entry is a parsed file and no original can be sent", () => {
     const messages = withoutOriginal();
@@ -147,6 +147,57 @@ describe("route-scoped orphaned parsed-file annotations", () => {
     expect(selected).toEqual([citation]);
     expect(selected?.[0]).toBe(citation);
     expect(annotations).toEqual([file, citation]);
+  });
+
+  it("cleans previously attached request annotations without touching replay history", () => {
+    const stored = [fileAnnotation("a.pdf"), citation];
+    const otherProviderOptions = {
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    };
+    const cached = {
+      ...assistant("Continuing."),
+      providerOptions: {
+        ...otherProviderOptions,
+        openrouter: { annotations: stored, keep: "option" },
+      },
+    } as ModelMessage;
+    const messages = [user("summary"), cached, user("continue")];
+
+    const projected = projectOpenRouterFileAnnotationsForRequest({
+      messages,
+      annotations: undefined,
+      routeAwareContext: true,
+      modelId: DEEPSEEK_1017_SLUG,
+    });
+
+    expect(projected.messages[1].providerOptions).toEqual({
+      ...otherProviderOptions,
+      openrouter: { annotations: [citation], keep: "option" },
+    });
+    expect(messages[1]).toBe(cached);
+    expect(messages[1].providerOptions?.openrouter?.annotations).toBe(stored);
+  });
+
+  it("keeps the early estimate conservative when preparation may cross the scan bound", () => {
+    const annotations = [fileAnnotation("large.pdf")];
+    const messages = Array.from(
+      { length: CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES - 2 },
+      () => user("turn"),
+    );
+    const input = {
+      messages,
+      annotations,
+      routeAwareContext: true,
+      modelId: DEEPSEEK_1017_SLUG,
+    };
+
+    expect(
+      projectOpenRouterFileAnnotationsForRequest({ ...input, rolling: true })
+        .annotations,
+    ).toBe(annotations);
+    expect(
+      projectOpenRouterFileAnnotationsForRequest(input).annotations,
+    ).toBeUndefined();
   });
 
   // Each case adds one possible original (or uncertainty) to the history above.

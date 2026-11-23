@@ -321,15 +321,21 @@ const NON_FILE_TOOL_CONTENT_TYPES = new Set<unknown>([
  * with one part budget across user parts, tool results and tool content.
  * Assistant content is skipped: the provider sends no file from it.
  */
-const provesNoWireFile = (messages: readonly ModelMessage[]): boolean => {
+const provesNoWireFile = (
+  messages: readonly ModelMessage[],
+  rolling: boolean,
+): boolean => {
   const messageCount = finiteCount(messages.length);
   if (
     messageCount === undefined ||
-    messageCount > CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES
+    messageCount > CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES - (rolling ? 3 : 0)
   ) {
     return false;
   }
-  let remainingParts = CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS;
+  // Preparation may append notes, a recovery nudge and a parent reminder.
+  // A notes refresh and platform authorization can each add one text part.
+  let remainingParts =
+    CONTEXT_BUDGET_PREPARED_PDF_MAX_USER_PARTS - (rolling ? 2 : 0);
   const takeParts = (value: unknown): readonly unknown[] | undefined => {
     if (!Array.isArray(value)) return undefined;
     const length = finiteCount(value.length);
@@ -396,40 +402,78 @@ const provesNoWireFile = (messages: readonly ModelMessage[]): boolean => {
   return true;
 };
 
-/**
- * Returns the batch without `type: "file"` entries only when a complete scan
- * proves the request can send no wire file part. Any possible original file,
- * unknown annotation or message shape, or an exceeded bound returns the input
- * batch unchanged. Other entries keep their identity; an emptied batch becomes
- * `undefined`. Never mutates its inputs or throws.
- */
-export function omitFileAnnotationsWithoutPossibleOriginal(
-  preparedMessages: readonly ModelMessage[],
-  annotations: unknown[] | undefined,
-): unknown[] | undefined {
-  try {
-    if (!Array.isArray(annotations)) return annotations;
-    const annotationCount = finiteCount(annotations.length);
-    if (
-      annotationCount === undefined ||
-      annotationCount === 0 ||
-      annotationCount > CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS
-    ) {
+const omitFileAnnotations = (annotations: unknown[]): unknown[] | undefined => {
+  if (annotations.length > CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS) {
+    return annotations;
+  }
+  const retained: unknown[] = [];
+  for (const annotation of annotations) {
+    if (!isRecord(annotation) || typeof annotation.type !== "string") {
       return annotations;
     }
-    const retained: unknown[] = [];
-    for (let a = 0; a < annotationCount; a++) {
-      const annotation: unknown = annotations[a];
-      if (!isRecord(annotation) || typeof annotation.type !== "string") {
-        return annotations;
-      }
-      if (annotation.type !== "file") retained.push(annotation);
+    if (annotation.type !== "file") retained.push(annotation);
+  }
+  if (retained.length === annotations.length) return annotations;
+  return retained.length > 0 ? retained : undefined;
+};
+
+const assistantOpenRouterOptions = (message: ModelMessage | undefined) =>
+  message?.role === "assistant"
+    ? message.providerOptions?.openrouter
+    : undefined;
+
+/** Clean the request copy only when we can rule out an original wire file. */
+export function projectWithoutOrphanedFileAnnotations(
+  messages: ModelMessage[],
+  annotations: unknown[] | undefined,
+  rolling: boolean,
+): { messages: ModelMessage[]; annotations: unknown[] | undefined } {
+  const original = { messages, annotations };
+  try {
+    if (
+      messages.length > CONTEXT_BUDGET_PREPARED_PDF_MAX_MESSAGES ||
+      (!annotations?.length &&
+        !messages.some((message) =>
+          Array.isArray(assistantOpenRouterOptions(message)?.annotations),
+        )) ||
+      !provesNoWireFile(messages, rolling)
+    ) {
+      return original;
     }
-    if (retained.length === annotationCount) return annotations;
-    if (!provesNoWireFile(preparedMessages)) return annotations;
-    return retained.length > 0 ? retained : undefined;
+
+    let remainingAnnotations =
+      CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS -
+      (annotations?.length ?? 0);
+    if (remainingAnnotations < 0) return original;
+
+    let projected = messages;
+    for (const [index, message] of messages.entries()) {
+      const openrouter = assistantOpenRouterOptions(message);
+      const stored = openrouter?.annotations;
+      if (!openrouter || !Array.isArray(stored)) continue;
+      remainingAnnotations -= stored.length;
+      if (remainingAnnotations < 0) return original;
+      const retained = omitFileAnnotations(stored);
+      if (retained === stored) continue;
+      const { annotations: _annotations, ...otherOptions } = openrouter;
+      if (projected === messages) projected = [...messages];
+      projected[index] = {
+        ...message,
+        providerOptions: {
+          ...message.providerOptions,
+          openrouter: {
+            ...otherOptions,
+            ...(retained && { annotations: retained }),
+          },
+        },
+      } as ModelMessage;
+    }
+    return {
+      messages: projected,
+      annotations: annotations && omitFileAnnotations(annotations),
+    };
   } catch {
-    return annotations;
+    return original;
   }
 }
 

@@ -206,7 +206,7 @@ import {
 import {
   buildContextBudgetProjectionDiagnostics,
   CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
-  omitFileAnnotationsWithoutPossibleOriginal,
+  projectWithoutOrphanedFileAnnotations,
   type ContextBudgetDecision,
 } from "@/lib/chat/summarization/context-budget-diagnostics";
 import {
@@ -607,31 +607,23 @@ export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
   return nextMessages;
 };
 
-/**
- * The one annotation batch the runner attaches to a request. Shared by the
- * rolling compaction estimate and the prepared request/send guard.
- *
- * Only route-aware Agent on the exact DeepSeek 1017 snapshot drops parsed-file
- * entries, and only when a complete bounded scan proves `messages` can send no
- * file part (user or tool output) they could belong to. Without the original
- * file those entries were not observed to give this model any document
- * content, yet their embedded page images can exceed the local budget. Every
- * other route, and any possible original or uncertain scan, keeps the batch.
- */
-export const getOpenRouterFileAnnotationsForRequest = ({
+/** Shared by the rolling estimate and the actual provider request. */
+export const projectOpenRouterFileAnnotationsForRequest = ({
   messages,
   annotations,
   routeAwareContext,
   modelId,
+  rolling = false,
 }: {
-  messages: readonly ModelMessage[];
+  messages: ModelMessage[];
   annotations: unknown[] | undefined;
   routeAwareContext: boolean;
   modelId: string;
-}): unknown[] | undefined =>
+  rolling?: boolean;
+}) =>
   routeAwareContext && modelId === DEEPSEEK_1017_SLUG
-    ? omitFileAnnotationsWithoutPossibleOriginal(messages, annotations)
-    : annotations;
+    ? projectWithoutOrphanedFileAnnotations(messages, annotations, rolling)
+    : { messages, annotations };
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -1711,15 +1703,16 @@ export async function createAgentStream(
       ctx.trackedProvider.languageModel(effectiveModelName).modelId;
     // Scan the request itself, after any provider PDF omission above.
     // The original batch stays in `openRouterFileAnnotations` for later steps.
-    const attachedFileAnnotations = getOpenRouterFileAnnotationsForRequest({
+    const annotationProjection = projectOpenRouterFileAnnotationsForRequest({
       messages: messagesWithAuthorization,
       annotations: openRouterFileAnnotations,
       routeAwareContext,
       modelId: requestModelId,
     });
+    const attachedFileAnnotations = annotationProjection.annotations;
     const prepared = addPromptCacheBreakpoints(
       addOpenRouterFileAnnotationsToLastAssistantMessage(
-        messagesWithAuthorization,
+        annotationProjection.messages,
         attachedFileAnnotations,
       ),
       requestModelId,
@@ -2534,18 +2527,19 @@ export async function createAgentStream(
           // The route-aware send guard counts parsed-file annotations attached
           // to the prepared request and the memoized tool schema estimate.
           // Count both here so compaction triggers before that guard fails.
-          // Same batch policy as the guard. Preparation never adds file parts,
-          // so within the scan bounds this keeps a batch whenever the guard
-          // would; it may keep one the guard drops (conservative).
+          const decisionProjection = projectOpenRouterFileAnnotationsForRequest(
+            {
+              messages: rollingModelMessages,
+              annotations: openRouterFileAnnotations,
+              routeAwareContext,
+              modelId: effectiveModelInfo.requestedSlug,
+              rolling: true,
+            },
+          );
           const decisionMessages = routeAwareContext
             ? addOpenRouterFileAnnotationsToLastAssistantMessage(
-                rollingModelMessages,
-                getOpenRouterFileAnnotationsForRequest({
-                  messages: rollingModelMessages,
-                  annotations: openRouterFileAnnotations,
-                  routeAwareContext,
-                  modelId: effectiveModelInfo.requestedSlug,
-                }),
+                decisionProjection.messages,
+                decisionProjection.annotations,
               )
             : rollingModelMessages;
           const inputTokens =
