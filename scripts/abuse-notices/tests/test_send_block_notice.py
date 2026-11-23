@@ -76,19 +76,22 @@ def smtp_session():
 
 
 class SendBlockNoticeTest(unittest.TestCase):
-    def run_helper(self, scenario, message=MESSAGE):
-        with tempfile.TemporaryDirectory() as directory:
-            log = Path(directory) / "sent.json"
-            (Path(directory) / "bridge.py").write_text(
-                textwrap.dedent(BRIDGE.format(scenario=scenario, log=str(log)))
-            )
-            completed = subprocess.run(
-                [sys.executable, "-I", "-B", str(HELPER), "--bridge-dir", directory],
-                input=json.dumps(message).encode(),
-                capture_output=True,
-                timeout=30,
-            )
-            submitted = json.loads(log.read_text()) if log.exists() else None
+    def run_helper(self, scenario, message=MESSAGE, *, directory=None):
+        if directory is None:
+            with tempfile.TemporaryDirectory() as fresh:
+                return self.run_helper(scenario, message, directory=fresh)
+        log = Path(directory) / "sent.json"
+        log.unlink(missing_ok=True)
+        (Path(directory) / "bridge.py").write_text(
+            textwrap.dedent(BRIDGE.format(scenario=scenario, log=str(log)))
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", str(HELPER), "--bridge-dir", directory],
+            input=json.dumps(message).encode(),
+            capture_output=True,
+            timeout=30,
+        )
+        submitted = json.loads(log.read_text()) if log.exists() else None
         output = completed.stdout.decode() + completed.stderr.decode()
         self.assertNotIn(ADDRESS, output)
         return json.loads(completed.stdout), submitted
@@ -99,6 +102,21 @@ class SendBlockNoticeTest(unittest.TestCase):
         self.assertEqual(submitted["id"], MESSAGE["messageId"])
         self.assertEqual(submitted["from"], "abuse@hackerai.co")
         self.assertEqual(submitted["to"], ADDRESS)
+
+    def test_preexisting_sent_copies_never_transmit_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, submitted = self.run_helper("ok", directory=directory)
+            self.assertEqual(first, {"result": "sent"})
+            self.assertIsNotNone(submitted)
+
+            for notice, expected in (
+                (MESSAGE, "sent"),
+                ({**MESSAGE, "text": "Different synthetic body."}, "uncertain"),
+            ):
+                with self.subTest(expected=expected):
+                    result, submitted = self.run_helper("ok", notice, directory=directory)
+                    self.assertEqual(result, {"result": expected})
+                    self.assertIsNone(submitted)
 
     def test_failure_after_acceptance_is_still_sent(self):
         self.assertEqual(self.run_helper("close_failed")[0], {"result": "sent"})
