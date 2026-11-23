@@ -3728,13 +3728,18 @@ describe.each([true, false])(
       if (throws) expect(failure).toBe(thrown[0]);
       else
         expect(failure).toEqual(new BrowserPreviewUnavailable("disconnected"));
+      // The helper opens and receives synchronously here, so timing is lt1s.
       expect(observe.mock.calls[0][0]).toMatchObject({
         capture_command_exit_code: throws ? 3 : "none",
-        capture_bridge_diagnostic_version: 5,
+        capture_bridge_diagnostic_version: 6,
         capture_bridge_failure: "deadline",
         capture_bridge_status_message_connected: "true",
         capture_bridge_status_message_screencasting: "false",
+        capture_bridge_status_message_first_screencasting: "false",
+        capture_bridge_status_message_count: 1,
+        capture_bridge_status_message_latest_since_open: "lt1s",
       });
+      expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
     });
 
     it("returns the frame after a connected claim", async () => {
