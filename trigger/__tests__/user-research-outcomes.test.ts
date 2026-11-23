@@ -45,7 +45,7 @@ const parent = pmUserResearch as unknown as {
 // Routes one research call through the installed SDK with an in-memory model
 // whose final step stops without text (for length by default), so
 // result.output throws.
-const useNoOutputModel = (
+const useNoOutputModelOnce = (
   finishReason: "length" | "content-filter" = "length",
   refusalText?: string,
 ) => {
@@ -75,6 +75,14 @@ const useNoOutputModel = (
   (myProvider.languageModel as jest.Mock).mockReturnValueOnce(model);
   return model;
 };
+// The xAI route and its Bedrock fallback both return the same response.
+const useNoOutputModel = (
+  finishReason: "length" | "content-filter" = "length",
+  refusalText?: string,
+) => [
+  useNoOutputModelOnce(finishReason, refusalText),
+  useNoOutputModelOnce(finishReason, refusalText),
+];
 const workerPayload = {
   analysisId: "4e84e3cf-f26b-47f2-a3ba-0e9bb9fdf8a0",
   userId: "user-1",
@@ -263,14 +271,22 @@ it("reports a profile with no structured output and fails without saving it", as
       messages: [{ role: "user", text: "Synthetic question about a lab" }],
       truncated: false,
     });
-  const model = useNoOutputModel();
+  const [xaiModel, bedrockModel] = useNoOutputModel();
 
   const run = child.run(workerPayload, taskOptions);
 
   await expect(run).rejects.toThrow(NoOutputGeneratedError);
-  expect(model.doGenerateCalls).toHaveLength(1);
+  expect(xaiModel.doGenerateCalls).toHaveLength(1);
+  expect(bedrockModel.doGenerateCalls).toHaveLength(1);
+  expect(myProvider.languageModel).toHaveBeenNthCalledWith(
+    2,
+    "model-grok-4.6-bedrock",
+  );
   expect(mockMutation).not.toHaveBeenCalled();
-  expect(phLogger.event).toHaveBeenCalledTimes(1);
+  expect(phLogger.event).toHaveBeenCalledTimes(2);
+  expect((phLogger.event as jest.Mock).mock.calls[1][1]).toMatchObject({
+    configured_model_key: "model-grok-4.6-bedrock",
+  });
   const [name, fields] = (phLogger.event as jest.Mock).mock.calls[0];
   expect(name).toBe("user_research_structured_output_failed");
   expect(fields).toEqual({
@@ -288,7 +304,7 @@ it("reports a profile with no structured output and fails without saving it", as
     trigger_deployment_version: "20261114.1",
   });
   expect(JSON.stringify(fields)).not.toMatch(/user-1|U01|Synthetic question/);
-  expect(phLogger.flush).toHaveBeenCalledTimes(1);
+  expect(phLogger.flush).toHaveBeenCalledTimes(2);
 });
 
 it("reports a synthesis with no structured output and keeps the run failed", async () => {
@@ -307,12 +323,13 @@ it("reports a synthesis with no structured output and keeps the run failed", asy
       },
     },
   ]);
-  const model = useNoOutputModel();
+  const [xaiModel, bedrockModel] = useNoOutputModel();
 
   await expect(parent.run(parentPayload, taskOptions)).rejects.toThrow(
     "User research analysis failed",
   );
-  expect(model.doGenerateCalls).toHaveLength(1);
+  expect(xaiModel.doGenerateCalls).toHaveLength(1);
+  expect(bedrockModel.doGenerateCalls).toHaveLength(1);
   expect(phLogger.event).toHaveBeenCalledWith(
     "user_research_structured_output_failed",
     expect.objectContaining({
@@ -501,6 +518,46 @@ describe("model content-filter exclusions", () => {
     expect(phLogger.event).toHaveBeenCalledWith(
       "user_research_structured_output_failed",
       expect.objectContaining({ finish_reason: "content-filter" }),
+    );
+  });
+
+  it("saves a profile from Bedrock when xAI's content filter refuses it", async () => {
+    mockProfileEvidence();
+    useNoOutputModelOnce("content-filter");
+    (generateText as jest.Mock).mockResolvedValueOnce({
+      output: {
+        ...profile,
+        userTypes: [
+          { type: "bug_bounty_hunter", evidenceCount: 1, confidence: "low" },
+        ],
+      },
+      usage: {},
+    });
+
+    await expect(child.run(workerPayload, taskOptions)).resolves.toMatchObject({
+      status: "completed",
+      pseudonym: "U01",
+    });
+    expect(myProvider.languageModel).toHaveBeenNthCalledWith(
+      2,
+      "model-grok-4.6-bedrock",
+    );
+    // Bedrock keeps zero data retention and never falls back to another host.
+    expect(
+      (generateText as jest.Mock).mock.calls[1][0].providerOptions.openrouter
+        .provider,
+    ).toEqual({
+      zdr: true,
+      only: ["amazon-bedrock"],
+      allow_fallbacks: false,
+    });
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pseudonym: "U01", profile: expect.anything() }),
+    );
+    expect(triggerLogger.warn).toHaveBeenCalledWith(
+      "User research retrying on Amazon Bedrock",
+      { operation: "profile", contentFilter: true },
     );
   });
 

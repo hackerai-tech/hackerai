@@ -4,6 +4,10 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { GROK_4_6_SLUG, myProvider } from "@/lib/ai/providers";
+import {
+  AMAZON_BEDROCK_ONLY_ROUTING,
+  GROK_4_6_BEDROCK_MODEL_KEY,
+} from "@/lib/ai/grok-bedrock";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
   assertResearchPromptIsSafe,
@@ -34,10 +38,52 @@ import {
 import {
   isResearchContentFilterRefusal,
   readResearchStructuredOutput,
+  type ResearchModelKey,
   type ResearchStructuredOutputOperation,
 } from "@/lib/research/structured-output-diagnostics";
 
 const MAX_MESSAGES_PER_CHAT = 80;
+
+type ResearchModelRoute = {
+  modelKey: ResearchModelKey;
+  providerOptions: Parameters<typeof generateText>[0]["providerOptions"];
+};
+
+const XAI_RESEARCH_ROUTE: ResearchModelRoute = {
+  modelKey: USER_RESEARCH_MODEL_KEY,
+  providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+};
+
+// Same Grok 4.6 model on Amazon Bedrock, which can answer requests xAI's
+// content filter withholds. Zero data retention stays required.
+const BEDROCK_RESEARCH_ROUTE: ResearchModelRoute = {
+  modelKey: GROK_4_6_BEDROCK_MODEL_KEY,
+  providerOptions: {
+    openrouter: {
+      ...USER_RESEARCH_PROVIDER_OPTIONS.openrouter,
+      provider: {
+        ...USER_RESEARCH_PROVIDER_OPTIONS.openrouter.provider,
+        ...AMAZON_BEDROCK_ONLY_ROUTING,
+      },
+    },
+  },
+};
+
+/** Try xAI first; any refusal or failure gets one attempt on Bedrock. */
+const generateWithBedrockFallback = async <T>(
+  operation: ResearchStructuredOutputOperation,
+  generate: (route: ResearchModelRoute) => Promise<T>,
+): Promise<T> => {
+  try {
+    return await generate(XAI_RESEARCH_ROUTE);
+  } catch (error) {
+    triggerLogger.warn("User research retrying on Amazon Bedrock", {
+      operation,
+      contentFilter: isResearchContentFilterRefusal(error),
+    });
+    return generate(BEDROCK_RESEARCH_ROUTE);
+  }
+};
 const PROFILE_MAX_ATTEMPTS = 2;
 const GENERIC_RUN_FAILURE =
   "Analysis failed before a privacy-safe cohort report was produced";
@@ -212,11 +258,11 @@ export const analyzeUserResearchProfile = schemaTask({
       chats: evidence,
     });
     assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("profile"));
-    const generateProfile = async () => {
+    const generateProfile = async (route: ResearchModelRoute) => {
       const result = await generateText({
-        model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
+        model: myProvider.languageModel(route.modelKey),
         output: Output.object({ schema: researchUserProfileSchema }),
-        providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+        providerOptions: route.providerOptions,
         temperature: 0,
         maxOutputTokens: 6_000,
         maxRetries: 1,
@@ -226,13 +272,14 @@ export const analyzeUserResearchProfile = schemaTask({
         output: await readResearchStructuredOutput(result, {
           operation: "profile",
           ctx,
+          modelKey: route.modelKey,
         }),
         usage: result.usage,
       };
     };
     let generated: Awaited<ReturnType<typeof generateProfile>>;
     try {
-      generated = await generateProfile();
+      generated = await generateWithBedrockFallback("profile", generateProfile);
     } catch (error) {
       // A refusal can clear on a fresh attempt, so let Trigger retry it. On
       // the final attempt, report an explicit exclusion so the cohort keeps
@@ -473,11 +520,11 @@ export const pmUserResearch = schemaTask({
         profiles: profilesWithBasis,
       });
       assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("synthesis"));
-      const generateSynthesis = async () => {
+      const generateSynthesis = async (route: ResearchModelRoute) => {
         const result = await generateText({
-          model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
+          model: myProvider.languageModel(route.modelKey),
           output: Output.object({ schema: cohortSynthesisSchema }),
-          providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+          providerOptions: route.providerOptions,
           temperature: 0,
           maxOutputTokens: 8_000,
           maxRetries: 1,
@@ -487,13 +534,17 @@ export const pmUserResearch = schemaTask({
           output: await readResearchStructuredOutput(result, {
             operation: "synthesis",
             ctx,
+            modelKey: route.modelKey,
           }),
           usage: result.usage,
         };
       };
       let generated: Awaited<ReturnType<typeof generateSynthesis>>;
       try {
-        generated = await generateSynthesis();
+        generated = await generateWithBedrockFallback(
+          "synthesis",
+          generateSynthesis,
+        );
       } catch (error) {
         if (isResearchContentFilterRefusal(error)) {
           throw new ResearchRunFailure(

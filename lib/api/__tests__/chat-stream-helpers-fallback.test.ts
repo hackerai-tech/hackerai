@@ -1956,3 +1956,77 @@ it("prices the Inference Cyber served identity", () => {
     }),
   ).toBe("deepseek-v4.1-flash-1017-cyber");
 });
+
+describe("Max Agent Grok recovery on Amazon Bedrock", () => {
+  it("sends the registered Bedrock route to OpenRouter's US endpoint with a Bedrock-only pin", async () => {
+    const {
+      Response,
+    } = require("next/dist/compiled/@edge-runtime/primitives/fetch");
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("data: [DONE]\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const originalFetch = globalThis.fetch;
+    const originalResponse = globalThis.Response;
+    const originalApiKey = process.env.OPENROUTER_API_KEY;
+    // The registry's response wrapper needs a Response global in this env.
+    globalThis.Response = Response;
+    const originalTextDecoderStream = globalThis.TextDecoderStream;
+    globalThis.TextDecoderStream = require("node:stream/web").TextDecoderStream;
+    process.env.OPENROUTER_API_KEY = "test-only";
+    // The provider registry captures fetch when it loads.
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      let providers!: typeof import("@/lib/ai/providers");
+      let helpers!: typeof import("@/lib/api/chat-stream-helpers");
+      jest.isolateModules(() => {
+        providers = require("@/lib/ai/providers");
+        helpers = require("@/lib/api/chat-stream-helpers");
+      });
+      const { getMaxAgentFirstRecoveryModel } =
+        require("@/lib/chat/agent-long-provider-retry") as typeof import("@/lib/chat/agent-long-provider-retry");
+      const retryModel = getMaxAgentFirstRecoveryModel({
+        mode: "agent",
+        selectedModelOverride: "hackerai-max",
+        baselineModel: "model-grok-4.6",
+      })!;
+      const languageModel = providers.myProvider.languageModel(retryModel);
+      await languageModel.doStream({
+        prompt: [
+          { role: "user", content: [{ type: "text", text: "Say hello" }] },
+        ],
+        providerOptions: helpers.buildProviderOptions(
+          true,
+          "user-1",
+          retryModel,
+          "agent",
+          {
+            selectedModelOverride: "hackerai-max",
+            requestedModelSlug: languageModel.modelId,
+            ignoredProviderSlugs: ["xai"],
+          },
+        ),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      globalThis.Response = originalResponse;
+      globalThis.TextDecoderStream = originalTextDecoderStream;
+      process.env.OPENROUTER_API_KEY = originalApiKey;
+    }
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(
+      "https://us.openrouter.ai/api/v1/chat/completions",
+    );
+    const body = JSON.parse(String(init?.body));
+    expect(body.model).toBe("x-ai/grok-4.6");
+    expect(body.provider).toEqual({
+      only: ["amazon-bedrock"],
+      allow_fallbacks: false,
+      ignore: ["xai"],
+    });
+    expect(body.reasoning).toEqual({ enabled: true, effort: "high" });
+    expect(body).not.toHaveProperty("models");
+  });
+});

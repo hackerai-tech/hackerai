@@ -5,6 +5,7 @@ import {
 } from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import type { ToolResultCycle } from "@/lib/chat/tool-loop-observer";
 import type { SubscriptionTier } from "@/types";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
@@ -180,11 +181,32 @@ const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
- * Return the next bounded app-side recovery after a stream disconnect.
- * Max recovers on DeepSeek 1017 and keeps the rest of that response there,
- * so a second, context-checked attempt never returns to a model that refused
- * or dropped it. Existing Pro recovery remains DeepSeek Pro -> GLM -> Kimi.
- * Counts are attempts started.
+ * First recovery for a durable Max Agent run: Grok 4.6 on Amazon Bedrock
+ * before DeepSeek 1017, since Bedrock can answer requests xAI refuses. The
+ * inline chat handler has only one retry, so it keeps the DeepSeek fallback.
+ */
+export const getMaxAgentFirstRecoveryModel = ({
+  mode,
+  selectedModelOverride,
+  baselineModel,
+}: {
+  mode: string;
+  selectedModelOverride?: string;
+  baselineModel: string;
+}): typeof GROK_4_6_BEDROCK_MODEL_KEY | undefined =>
+  mode === "agent" &&
+  selectedModelOverride === "hackerai-max" &&
+  baselineModel === "model-grok-4.6"
+    ? GROK_4_6_BEDROCK_MODEL_KEY
+    : undefined;
+
+/**
+ * Return the next bounded app-side recovery after a failed recovery attempt.
+ * Max Grok recovers on Bedrock first; when that attempt also fails, a
+ * context-checked DeepSeek 1017 attempt follows. A first DeepSeek recovery
+ * may likewise be followed by one more DeepSeek attempt, so recovery never
+ * returns to a model that refused or dropped the response. Existing Pro
+ * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
  */
 export const getNextProviderDisconnectRetryModel = ({
   originalModel,
@@ -207,11 +229,15 @@ export const getNextProviderDisconnectRetryModel = ({
   | typeof DEEPSEEK_1017_MODEL_KEY
   | undefined => {
   if (selectedModelOverride === "hackerai-max") {
-    // Only the first DeepSeek recovery may be followed by one more attempt.
-    // An unknown continuation size cannot be admitted.
+    // Only the first Bedrock or DeepSeek recovery may be followed by one more
+    // attempt. Bedrock is never a later attempt, so its failure needs no count
+    // (a content-filter retry records no disconnect attempt). An unknown
+    // continuation size cannot be admitted.
+    const isFirstRecovery =
+      failedModel === GROK_4_6_BEDROCK_MODEL_KEY ||
+      (completedRetryCount === 1 && failedModel === DEEPSEEK_1017_MODEL_KEY);
     if (
-      completedRetryCount !== 1 ||
-      failedModel !== DEEPSEEK_1017_MODEL_KEY ||
+      !isFirstRecovery ||
       requiredContextTokens === undefined ||
       !Number.isFinite(requiredContextTokens) ||
       requiredContextTokens < 0

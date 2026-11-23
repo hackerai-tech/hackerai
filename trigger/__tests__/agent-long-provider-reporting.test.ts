@@ -12,7 +12,10 @@ import {
 } from "@/lib/api/provider-terminal-error";
 import { getRetryFallbackModel } from "@/lib/api/chat-stream-helpers";
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
-import { prepareProviderDisconnectContinuation } from "@/lib/chat/agent-long-provider-retry";
+import {
+  getMaxAgentFirstRecoveryModel,
+  prepareProviderDisconnectContinuation,
+} from "@/lib/chat/agent-long-provider-retry";
 import { UsageTracker } from "@/lib/usage-tracker";
 import type { UIMessage } from "ai";
 
@@ -50,11 +53,13 @@ function startMaxRun({ failFirstCapture = false } = {}) {
     providerError: unknown;
     streamFinishReason?: string;
   } = { providerError: undefined, streamFinishReason: "content-filter" };
-  const retryModel = getRetryFallbackModel(
-    "model-grok-4.6",
-    "agent",
-    "hackerai-max",
-  );
+  // Same first-recovery selection as agent-long.
+  const retryModel =
+    getMaxAgentFirstRecoveryModel({
+      mode: "agent",
+      selectedModelOverride: "hackerai-max",
+      baselineModel: "model-grok-4.6",
+    }) ?? getRetryFallbackModel("model-grok-4.6", "agent", "hackerai-max");
   reporting.recordModelRecovery({
     reason: "content_filter",
     retryModel,
@@ -82,7 +87,7 @@ function startMaxRun({ failFirstCapture = false } = {}) {
       chatLogger: undefined,
       selectedModel: "model-grok-4.6",
       configuredModelId: "x-ai/grok-4.6",
-      responseModel: "deepseek/deepseek-v4.1-flash-20261017",
+      responseModel: "x-ai/grok-4.6",
       fallbackServed: true,
       triggerRunId: RUN_ID,
       abliteratedProviderSummary: undefined,
@@ -104,7 +109,7 @@ const refusalCause = {
   initial_provider_failure_model: "x-ai/grok-4.6",
   initial_provider_failure_status_code: 403,
   model_recovery_attempts: 1,
-  model_recovery_models: ["model-deepseek-v4.1-flash-1017-pro"],
+  model_recovery_models: ["model-grok-4.6-bedrock"],
   model_recovery_reasons: ["content_filter"],
 };
 
@@ -112,11 +117,11 @@ it.each([
   ["normal completion capture", false],
   ["run-finally fallback after a failed capture", true],
 ])(
-  "retains Grok refusal -> DeepSeek recovery -> local stop through %s",
+  "retains Grok refusal -> Bedrock recovery -> local stop through %s",
   (_name, failFirstCapture) => {
     const { reporting, metadata, retryModel, finishRecoveryLeg, runEvents } =
       startMaxRun({ failFirstCapture });
-    expect(retryModel).toBe("model-deepseek-v4.1-flash-1017-pro");
+    expect(retryModel).toBe("model-grok-4.6-bedrock");
     reporting.recordLocalStop(
       new LocalConnectionLostError("selected_host_left"),
     );
@@ -151,7 +156,7 @@ it.each([
       agentLocalStopReason: "selected_host_left",
       agentRecoverySucceeded: false,
       agentRecoveryAttempts: 1,
-      agentRecoveryModel: "model-deepseek-v4.1-flash-1017-pro",
+      agentRecoveryModel: "model-grok-4.6-bedrock",
       agentRecoveryReason: "content_filter",
       agentProviderFailureCategory: "content_blocked",
       agentProviderFailureModel: "x-ai/grok-4.6",
@@ -160,7 +165,7 @@ it.each([
   },
 );
 
-it("keeps a successful DeepSeek recovery successful with its refusal cause", () => {
+it("keeps a successful Bedrock recovery successful with its refusal cause", () => {
   const { reporting, metadata, finishRecoveryLeg, runEvents } = startMaxRun();
   finishRecoveryLeg({
     outcome: "success",
@@ -237,7 +242,7 @@ it("keeps executed refusal-leg tools in the transcript without billing the refus
   const checkpoint = prepareProviderDisconnectContinuation(refusedLeg);
   usage.prepareModelRetry({ isLoopRecovery: false });
 
-  // The executed tool is preserved so DeepSeek does not repeat it; the
+  // The executed tool is preserved so the recovery leg does not repeat it; the
   // refused step's text is not replayed.
   expect(checkpoint?.preservedCompletedToolCount).toBe(1);
   expect(JSON.stringify(checkpoint?.messages)).not.toContain("refused text");
