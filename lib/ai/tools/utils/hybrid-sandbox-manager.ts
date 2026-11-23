@@ -25,6 +25,7 @@ import type {
   SandboxManager,
   SandboxType,
   SubscriptionTier,
+  SandboxHealthCheckToken,
 } from "@/types";
 import {
   CentrifugoSandbox,
@@ -102,9 +103,9 @@ export interface SandboxFallbackInfo {
  * - Reconnect-required errors when the selected computer is unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
-// Match DefaultSandboxManager: stop retries in this Agent run after the
-// initial readiness check and one reconnect both fail. E2B reset remains
-// connection-only and never kills the shared per-user sandbox.
+// Match DefaultSandboxManager: after the initial readiness check and one
+// reconnect both fail, cloud tools cool down and a local sandbox stops for this
+// run. E2B reset remains connection-only and never kills the shared sandbox.
 const MAX_SANDBOX_HEALTH_FAILURES = 2;
 export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
@@ -485,6 +486,8 @@ export class HybridSandboxManager implements SandboxManager {
   private persistedQuarantinedConnectionIds = new Set<string>();
   private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
+  // Advances on every recorded health failure; see beginHealthCheck.
+  private healthEpoch = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private localSelection: {
@@ -522,10 +525,17 @@ export class HybridSandboxManager implements SandboxManager {
       "e2b";
   }
 
+  beginHealthCheck(): SandboxHealthCheckToken {
+    return {
+      epoch: this.healthEpoch,
+      generation: this.acquisitionBudget.readinessGeneration(),
+    };
+  }
+
   recordHealthFailure(): boolean {
+    this.healthEpoch++;
     this.healthFailureCount++;
     if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
-      // Mark as unavailable regardless of sandbox type.
       // Don't auto-fallback from local to E2B — the user explicitly chose local
       // and switching environments mid-conversation loses files, network context,
       // and tools the agent was working with.
@@ -533,19 +543,39 @@ export class HybridSandboxManager implements SandboxManager {
         console.warn(
           `[${this.userID}] Local sandbox health failures exceeded threshold, marking unavailable`,
         );
+        this.sandboxUnavailable = true;
+      } else {
+        this.healthFailureCount = 0;
+        this.acquisitionBudget.recordReadinessFailure({
+          userId: this.userID,
+          chatId: this.chatId,
+          ...this.cloudSandboxContext,
+        });
+        return true;
       }
-      this.sandboxUnavailable = true;
     }
     return this.sandboxUnavailable;
   }
 
-  resetHealthFailures(): void {
+  resetHealthFailures(token?: SandboxHealthCheckToken): void {
+    // A check that began before a newer failure must not erase it.
+    if (token && token.epoch !== this.healthEpoch) return;
     this.healthFailureCount = 0;
     this.sandboxUnavailable = false;
+    if (!this.isLocal)
+      this.acquisitionBudget.recordReadinessSuccess(token?.generation);
   }
 
   isSandboxUnavailable(): boolean {
-    return this.sandboxUnavailable;
+    return (
+      this.sandboxUnavailable ||
+      (!this.isLocal && this.acquisitionBudget.isBlocked())
+    );
+  }
+
+  getSandboxUnavailableMessage(): string | undefined {
+    if (this.sandboxUnavailable || this.isLocal) return undefined;
+    return this.acquisitionBudget.blockedMessage();
   }
 
   async quarantineLocalConnection(
@@ -1158,15 +1188,20 @@ export class HybridSandboxManager implements SandboxManager {
 
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     if (this.cloudAcquisition) return this.cloudAcquisition;
+    // A cooldown's re-probe must reconnect rather than reuse the unready client.
+    if (
+      !this.isLocal &&
+      this.sandbox &&
+      this.acquisitionBudget.blocksCachedSandbox()
+    )
+      this.sandbox = null;
     if (!this.isLocal && this.sandbox) {
+      const cached = this.sandbox;
       let reacquire = false;
-      if (isE2BSandbox(this.sandbox)) {
+      if (isE2BSandbox(cached)) {
         try {
-          await assertCloudWorkspaceAvailable(
-            this.userID,
-            this.sandbox.sandboxId,
-          );
-          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          await assertCloudWorkspaceAvailable(this.userID, cached.sandboxId);
+          await refreshE2BSandboxLeaseBestEffort(cached, {
             source: "hybrid_manager_cache",
           });
         } catch (error) {
@@ -1174,7 +1209,18 @@ export class HybridSandboxManager implements SandboxManager {
           reacquire = true;
         }
       }
-      if (!reacquire) return { sandbox: this.sandbox };
+      // A concurrent call may have replaced the client, switched transport, or
+      // started a cooldown during the awaits; re-evaluate instead of returning
+      // a cleared or stale cache.
+      // A switch to the local transport goes back through getSandbox so the
+      // selected Desktop connection is kept rather than replaced by cloud.
+      if (this.isLocal) return this.getSandbox();
+      if (
+        this.sandbox !== cached ||
+        this.acquisitionBudget.blocksCachedSandbox()
+      )
+        return this.getCloudSandbox();
+      if (!reacquire) return { sandbox: cached };
       this.sandbox = null;
     }
 

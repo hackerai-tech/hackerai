@@ -12,6 +12,7 @@ import {
   isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
+  getMaxAgentFirstRecoveryModel,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
@@ -1170,6 +1171,51 @@ describe("Agent Max final recovery admission", () => {
           }),
         ).toBe(expected);
       }
+    },
+  );
+  it("recovers Max Agent Grok on Bedrock before DeepSeek", () => {
+    expect(
+      getMaxAgentFirstRecoveryModel({
+        mode: "agent",
+        selectedModelOverride: "hackerai-max",
+        baselineModel: "model-grok-4.6",
+      }),
+    ).toBe("model-grok-4.6-bedrock");
+    for (const [mode, selectedModelOverride, baselineModel] of [
+      ["ask", "hackerai-max", "model-grok-4.6"],
+      ["agent", "hackerai-pro", "model-grok-4.6"],
+      ["agent", "hackerai-max", "model-glm-5.3"],
+    ]) {
+      expect(
+        getMaxAgentFirstRecoveryModel({
+          mode,
+          selectedModelOverride,
+          baselineModel,
+        }),
+      ).toBeUndefined();
+    }
+  });
+  // A content-filter retry records no disconnect attempt, so Bedrock's
+  // failure hands off to DeepSeek whichever count it reports.
+  it.each([
+    [0, 256_000, deepSeek],
+    [1, 256_000, deepSeek],
+    [1, 256_001, undefined],
+    [1, undefined, undefined],
+  ])(
+    "hands a failed Bedrock recovery to DeepSeek within its capacity (count=%s, %s tokens)",
+    (completedRetryCount, requiredContextTokens, expected) => {
+      expect(
+        getNextProviderDisconnectRetryModel({
+          originalModel: "model-grok-4.6",
+          failedModel: "model-grok-4.6-bedrock",
+          completedRetryCount,
+          selectedModelOverride: "hackerai-max",
+          agentModelContextEnabled: false,
+          subscription: "ultra",
+          requiredContextTokens,
+        }),
+      ).toBe(expected);
     },
   );
   it.each([

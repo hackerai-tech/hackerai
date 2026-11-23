@@ -1023,6 +1023,56 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each([
+    ["step", 449, 1, undefined],
+    ["usage", 12, 0, 91],
+  ] as const)(
+    "wraps up at the run's %s limit from cumulative steps and budget pressure",
+    async (kind, completedBeforeStream, stepNumber, pressure) => {
+      const onExposed = jest.fn();
+      const checkpoint = createAgentRuntimeCheckpoint({
+        enabled: false,
+        getElapsedTimeMs: () => 0,
+        onExposed: jest.fn(),
+        limitWrapUp: { enabled: true, onExposed },
+      });
+      let budgetPressure: number | undefined;
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      // A retried stream resumes after steps completed by earlier streams.
+      state.agentStepCount = completedBeforeStream;
+      const context = createTestStreamContext({
+        runtimeCheckpoint: checkpoint,
+        budgetMonitor: { getStopPressurePercent: () => budgetPressure },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        context as any,
+        state,
+      )) as any;
+      const step = { steps: [], stepNumber: 0, messages: stream.messages };
+      expect((await stream.prepareStep(step)).system).not.toContain(
+        "<agent_limit_wrapup>",
+      );
+      budgetPressure = pressure;
+      const prepared = await stream.prepareStep({ ...step, stepNumber });
+      expect(prepared.system).toContain(`close to its ${kind} limit`);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(onExposed).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger_kind: kind }),
+      );
+      expect(
+        (await stream.prepareStep({ ...step, stepNumber: stepNumber + 1 }))
+          .system,
+      ).not.toContain("<agent_limit_wrapup>");
+      expect(onExposed).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
     let version: string | undefined;
     const manager = {

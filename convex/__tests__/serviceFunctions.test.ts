@@ -168,6 +168,52 @@ describe("service registration boundary", () => {
     );
   });
 
+  it("limits the enforcement and notice dispatcher keys to their own modules", async () => {
+    const enforcementSecret = "synthetic-enforcement-credential";
+    const dispatchSecret = "synthetic-dispatch-credential";
+    process.env.CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY = enforcementSecret;
+    process.env.CONVEX_ABUSE_NOTICE_DISPATCH_SERVICE_KEY = dispatchSecret;
+    const registered = (mutation as any)({
+      args: { serviceKey: v.string() },
+      returns: v.null(),
+      handler: async () => null,
+    });
+    const invoke = async (name: string, serviceKey: string) => {
+      const signed = await signServiceArgs(
+        { deployment, name, type: "mutation" },
+        { serviceKey },
+      );
+      return registered.handler(context(name), signed);
+    };
+    const block = "egressAbuseEnforcement:applyBlock";
+    const claim = "abuseBlockNotices:claim";
+    await expect(invoke(block, enforcementSecret)).resolves.toBeNull();
+    await expect(invoke(claim, dispatchSecret)).resolves.toBeNull();
+    for (const [name, wrong] of [
+      [block, egressReviewSecret],
+      [block, dispatchSecret],
+      [block, secret],
+      [claim, enforcementSecret],
+      [claim, secret],
+      ["abuseResponse:apply", enforcementSecret],
+      ["abuseCases:resolve", dispatchSecret],
+      ["egressAbuseReview:recordCase", enforcementSecret],
+    ])
+      await expect(invoke(name, wrong)).rejects.toThrow(unauthorized);
+    // A proof for one deployment is refused by another.
+    const elsewhere = await signServiceArgs(
+      {
+        deployment: "https://other.convex.cloud",
+        name: claim,
+        type: "mutation",
+      },
+      { serviceKey: dispatchSecret },
+    );
+    await expect(registered.handler(context(claim), elsewhere)).rejects.toThrow(
+      unauthorized,
+    );
+  });
+
   it("signs internal child calls again for their own destination and arguments", async () => {
     const runMutation = jest.fn(async () => null);
     const ctx = serviceContext({ runMutation } as any);

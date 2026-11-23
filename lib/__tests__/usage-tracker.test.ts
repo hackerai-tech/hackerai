@@ -1118,6 +1118,49 @@ describe("UsageTracker", () => {
       expect(usage.costSource).toBe("provider");
     });
 
+    it("discards only a refused recovery leg, keeping the disconnected leg before it billed", () => {
+      // xAI streamed work, then disconnected; its usage continues on Bedrock.
+      // Its reported total differs from input + output and must survive.
+      tracker.accumulateStep({
+        inputTokens: 1_000,
+        outputTokens: 200,
+        totalTokens: 1_250,
+        raw: { cost: 0.02 },
+      });
+      tracker.providerCost += 0.05;
+      tracker.nonModelCost = 0.05;
+      tracker.beginModelLeg();
+      // Bedrock compacted, ran one step (corrected later), then was refused.
+      tracker.accumulateSummarization({
+        inputTokens: 300,
+        outputTokens: 30,
+        cost: 0.003,
+      });
+      const bedrockStep = tracker.accumulateStep({
+        inputTokens: 2_000,
+        outputTokens: 0,
+        inputTokenDetails: { cacheReadTokens: 500 },
+        raw: { cost: 0.01 },
+      });
+      tracker.setAuthoritativeModelCostForStep(bedrockStep, 0.04);
+      tracker.discardModelLeg();
+      // DeepSeek completes the response.
+      tracker.accumulateStep({
+        inputTokens: 1_500,
+        outputTokens: 100,
+        raw: { cost: 0.001 },
+      });
+
+      expect(tracker.inputTokens).toBe(1_000 + 300 + 1_500);
+      expect(tracker.outputTokens).toBe(200 + 30 + 100);
+      expect(tracker.totalTokens).toBe(1_250 + 330 + 1_600);
+      expect(tracker.cacheReadTokens).toBe(0);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.021);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(
+        0.02 + 0.003 + 0.001 + 0.05,
+      );
+    });
+
     it("keeps non-model spend after fallback reset and bills fallback authoritative metadata cost", () => {
       tracker.accumulateStep({
         inputTokens: 500_000,

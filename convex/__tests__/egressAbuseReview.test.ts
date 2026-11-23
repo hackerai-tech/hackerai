@@ -273,6 +273,7 @@ describe("readRunEvidence", () => {
     expect(result.userMessages).toEqual([
       {
         messageId: "m-user-1",
+        observedAt: expect.any(Number),
         text: "Please test my staging host.",
         truncated: false,
       },

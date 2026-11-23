@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   mkdtempSync,
   realpathSync,
   mkdirSync,
@@ -10,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  unreadableListDiagnostics,
   WORKSPACE_READER_PYTHON,
   workspaceReaderCommand,
   workspaceRequest,
@@ -107,8 +109,100 @@ describe("workspace reader filesystem boundary", () => {
     const linked = join(fixture, "linked");
     symlinkSync(root, linked);
     root = linked;
-    expect(read({})).toEqual({ error: "unreadable_path" });
+    expect(read({})).toEqual({
+      error: "unreadable_path",
+      phase: "root",
+      category: "not_directory_or_symlink",
+    });
   });
+
+  it("labels the list phase that hit a file where a directory was expected", () => {
+    writeFileSync(join(root, "report.txt"), "fixture");
+    const notDirectory = {
+      error: "unreadable_path",
+      category: "not_directory_or_symlink",
+    };
+    expect(read({ path: "report.txt" })).toEqual({
+      ...notDirectory,
+      phase: "directory",
+    });
+    // Non-list actions keep the original reader body.
+    expect(read({ action: "download", path: "report.txt/x" })).toEqual({
+      error: "unreadable_path",
+    });
+    root = join(root, "report.txt");
+    expect(read({})).toEqual({ ...notDirectory, phase: "root" });
+  });
+
+  // Root bypasses directory search permission, so this cannot fail there.
+  (process.getuid?.() === 0 ? it.skip : it)(
+    "labels a per-entry stat permission failure separately from opening the folder",
+    () => {
+      mkdirSync(join(root, "locked"));
+      writeFileSync(join(root, "locked", "report.txt"), "fixture");
+      chmodSync(join(root, "locked"), 0o444);
+      try {
+        expect(read({ path: "locked" })).toEqual({
+          error: "unreadable_path",
+          phase: "entry_stat",
+          category: "permission",
+        });
+      } finally {
+        chmodSync(join(root, "locked"), 0o755);
+      }
+    },
+  );
+
+  it.each([
+    [
+      "allow-listed reader labels",
+      "list",
+      {
+        error: "unreadable_path",
+        phase: "enumerate",
+        category: "io",
+      },
+      { reader: "local", reader_phase: "enumerate", os_error_category: "io" },
+    ],
+    [
+      "an older reader without labels",
+      "list",
+      { error: "unreadable_path" },
+      { reader: "local" },
+    ],
+    [
+      "unexpected label values and fields",
+      "list",
+      {
+        error: "unreadable_path",
+        phase: "/home/user/private",
+        category: 13,
+        errno: 13,
+        message: "Permission denied: '/home/user/private'",
+      },
+      { reader: "local" },
+    ],
+    [
+      "another error code",
+      "list",
+      { error: "not_found", phase: "root", category: "permission" },
+      undefined,
+    ],
+    [
+      "a status request listed by the reader",
+      "status",
+      { error: "unreadable_path", phase: "root", category: "permission" },
+      undefined,
+    ],
+    ["non-object output", "list", "unreadable_path", undefined],
+  ] as const)(
+    "keeps only closed list diagnostics for %s",
+    (_case, action, output, expected) => {
+      expect(unreadableListDiagnostics("local", action, output)).toEqual(
+        expected,
+      );
+    },
+  );
 
   it("downloads larger files in revision-pinned chunks and rejects changes between chunks", () => {
     const bytes = Buffer.alloc(3 * 1024 * 1024, 42);

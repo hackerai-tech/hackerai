@@ -390,6 +390,30 @@ describe("POST rejection diagnostics", () => {
     );
   });
 
+  it("adds adapter list diagnostics to the log without changing the public error", async () => {
+    jest.mocked(accessCloudWorkspaceFiles).mockRejectedValueOnce(
+      new WorkspaceFileError("unreadable_path", 400, {
+        reader: "cloud",
+        reader_phase: "entry_stat",
+        os_error_category: "permission",
+      }),
+    );
+    await expectRejection(
+      POST(sensitive({ path: `${MARKER}/reports` })),
+      400,
+      "unreadable_path",
+      {
+        reason: "workspace_file_error",
+        stage: "workspace",
+        action: "list",
+        error_code: "unreadable_path",
+        reader: "cloud",
+        reader_phase: "entry_stat",
+        os_error_category: "permission",
+      },
+    );
+  });
+
   it("does not log successful requests", async () => {
     expect((await POST(sensitive())).status).toBe(200);
     expect(warn).not.toHaveBeenCalled();

@@ -9,11 +9,12 @@ import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
+import PostHogClient from "@/app/posthog";
 const capture = jest.fn();
 const shutdown = jest.fn();
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
-  default: () => ({ capture, shutdown }),
+  default: jest.fn(() => ({ capture, shutdown })),
 }));
 jest.mock("@/lib/auth/get-user-id", () => ({ getUserIDAndPro: jest.fn() }));
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
@@ -687,6 +688,121 @@ test("discards a draft if Goal achievement is persisted during prediction", asyn
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
   expect(mutation).not.toHaveBeenCalled();
 });
+
+const requestId = "iad1::qa123-1794060000000-abcdef123456";
+const postDiagnostics = () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const error = jest.spyOn(console, "error").mockImplementation(() => {});
+  return {
+    warn,
+    error,
+    restore: () => {
+      warn.mockRestore();
+      error.mockRestore();
+      jest.useRealTimers();
+    },
+  };
+};
+
+test("records one pending POST stage before maxDuration, then keeps the provider fallback", async () => {
+  const { warn, error, restore } = postDiagnostics();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  jest.mocked(generateNextActions).mockImplementationOnce(async () => {
+    await gate;
+    throw new Error("PRIVATE provider detail");
+  });
+  const pending = POST(request());
+  try {
+    await jest.advanceTimersByTimeAsync(16_999);
+    expect(warn).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+      event: "next_actions_post_slow_request",
+      diagnostic_version: 1,
+      stage: "generate",
+      elapsed_ms: 17_000,
+      request_aborted: false,
+      request_id: requestId,
+    });
+    release();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+      "provider_unavailable",
+    );
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+      /PRIVATE|owner|answer|Synthetic/,
+    );
+  } finally {
+    release();
+    await pending;
+    restore();
+  }
+});
+
+test("a fast provider fallback clears the pending timer and logs nothing", async () => {
+  const { warn, error, restore } = postDiagnostics();
+  try {
+    jest
+      .mocked(generateNextActions)
+      .mockRejectedValueOnce(new Error("PRIVATE provider detail"));
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+      "provider_unavailable",
+    );
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  } finally {
+    restore();
+  }
+});
+
+test.each(["setup", "register_after"] as const)(
+  "an escaping %s failure is rethrown unchanged with one stage-only receipt",
+  async (stage) => {
+    const { warn, error, restore } = postDiagnostics();
+    const failure = new TypeError("PRIVATE_ESCAPE owner answer");
+    const thrower = () => {
+      throw failure;
+    };
+    const req = request();
+    if (stage === "setup") {
+      // A malformed platform header is omitted rather than echoed.
+      req.headers.set("x-vercel-id", "PRIVATE_HEADER owner");
+      jest.mocked(PostHogClient).mockImplementationOnce(thrower);
+    } else jest.mocked(after).mockImplementationOnce(thrower);
+    try {
+      await expect(POST(req)).rejects.toBe(failure);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(error.mock.calls[0][0])).toEqual({
+        event: "next_actions_post_unhandled_error",
+        diagnostic_version: 1,
+        stage,
+        elapsed_ms: 0,
+        request_aborted: false,
+        ...(stage === "register_after" && { request_id: requestId }),
+      });
+      expect(JSON.stringify(error.mock.calls)).not.toMatch(
+        /PRIVATE|owner|answer|TypeError/,
+      );
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  },
+);
 
 test.each(["authenticate", "read_request", "consume"] as const)(
   "records one pending DELETE %s stage before the platform deadline, then clears the timer",

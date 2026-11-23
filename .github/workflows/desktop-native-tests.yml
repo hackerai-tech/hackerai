@@ -33,9 +33,11 @@ jobs:
         with:
           toolchain: stable
           cache: false
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/desktop/src-tauri -> target
+          # PRs restore main's cache; their own saves would only evict it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install native dependencies
         run: |
           bash .github/scripts/prefer-ubuntu-apt-mirror.sh
@@ -61,9 +63,11 @@ jobs:
         with:
           toolchain: stable
           cache: false
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/desktop/src-tauri -> target
+          # PRs restore main's cache; their own saves would only evict it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test Windows installer handoff, native activity fence and restart receipts
         working-directory: packages/desktop/src-tauri
         run: cargo test --locked --lib update_safety
@@ -76,6 +80,9 @@ jobs:
       - name: Test native text file reads within the UTF-8 byte cap
         working-directory: packages/desktop/src-tauri
         run: cargo test --locked --lib file_read_tests
+      - name: Test streamed command Job ownership, stop confirmation and background survival
+        working-directory: packages/desktop/src-tauri
+        run: cargo test --locked --lib -- stream_lifecycle windows_stream_job
       # Reuse the tested executable for source-pinned Windows VM diagnostics.
       # This is a test harness, not a Desktop installer or updater artifact.
       - name: Retain Windows native test executable

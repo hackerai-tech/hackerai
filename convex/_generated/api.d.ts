@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as abuseBlockNotices from "../abuseBlockNotices.js";
 import type * as abuseCases from "../abuseCases.js";
 import type * as abuseIntake from "../abuseIntake.js";
 import type * as abuseNotificationActions from "../abuseNotificationActions.js";
@@ -27,6 +28,7 @@ import type * as cloudNetworkValidators from "../cloudNetworkValidators.js";
 import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as deletions from "../deletions.js";
+import type * as egressAbuseEnforcement from "../egressAbuseEnforcement.js";
 import type * as egressAbuseReview from "../egressAbuseReview.js";
 import type * as engagementScopeValidators from "../engagementScopeValidators.js";
 import type * as engagementScopes from "../engagementScopes.js";
@@ -56,6 +58,7 @@ import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
 import type * as lib_browserHandoffState from "../lib/browserHandoffState.js";
 import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js";
 import type * as lib_chatHistoryAccess from "../lib/chatHistoryAccess.js";
+import type * as lib_egressReceipts from "../lib/egressReceipts.js";
 import type * as lib_extraUsageBundleCap from "../lib/extraUsageBundleCap.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
@@ -120,6 +123,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  abuseBlockNotices: typeof abuseBlockNotices;
   abuseCases: typeof abuseCases;
   abuseIntake: typeof abuseIntake;
   abuseNotificationActions: typeof abuseNotificationActions;
@@ -139,6 +143,7 @@ declare const fullApi: ApiFromModules<{
   constants: typeof constants;
   crons: typeof crons;
   deletions: typeof deletions;
+  egressAbuseEnforcement: typeof egressAbuseEnforcement;
   egressAbuseReview: typeof egressAbuseReview;
   engagementScopeValidators: typeof engagementScopeValidators;
   engagementScopes: typeof engagementScopes;
@@ -168,6 +173,7 @@ declare const fullApi: ApiFromModules<{
   "lib/browserHandoffState": typeof lib_browserHandoffState;
   "lib/chatAccessSuspensions": typeof lib_chatAccessSuspensions;
   "lib/chatHistoryAccess": typeof lib_chatHistoryAccess;
+  "lib/egressReceipts": typeof lib_egressReceipts;
   "lib/extraUsageBundleCap": typeof lib_extraUsageBundleCap;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;

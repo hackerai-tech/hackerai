@@ -24,6 +24,8 @@ import {
   abuseCaseFields,
   abuseEventFields,
   abuseResponseFields,
+  blockNoticeFields,
+  egressReviewReceiptFields,
 } from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
@@ -258,6 +260,19 @@ export default defineSchema({
   abuse_responses: defineTable(abuseResponseFields).index("by_caseId", [
     "caseId",
   ]),
+  // One fixed account notice per automated block; never a recipient address.
+  abuse_block_notices: defineTable(blockNoticeFields)
+    .index("by_caseId", ["caseId"])
+    .index("by_status_and_nextAttemptAt", ["status", "nextAttemptAt"])
+    .index("by_userId_and_status", ["userId", "status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"])
+    .index("by_createdAt", ["createdAt"]),
+  // Sanitized enums per automated egress review, for owner summaries.
+  egress_review_receipts: defineTable(egressReviewReceiptFields)
+    .index("by_digest", ["digest"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_decision_and_createdAt", ["decision", "createdAt"])
+    .index("by_expiresAt", ["expiresAt"]),
   abuse_rate_limits: defineTable({
     bucket: v.string(),
     count: v.number(),

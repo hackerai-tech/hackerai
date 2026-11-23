@@ -26,6 +26,7 @@ function visit(node: ts.Node) {
           "agentLongMaxDurationMs",
           "activeGoal",
           "runtimeBudget",
+          "[runtimeCheckpointEnabled, limitWrapUpEnabled]",
           "runtimeCheckpoint",
         ].includes(name)
       )
@@ -42,7 +43,7 @@ function visit(node: ts.Node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
-if (!claim || statements.size !== 4)
+if (!claim || statements.size !== 5)
   throw new Error("Worker goal/runtime setup not found");
 const body = ts.transpileModule(
   `return (async () => {
@@ -50,6 +51,7 @@ const body = ts.transpileModule(
     ${statements.get("activeGoal")}
     ${claim}
     ${statements.get("runtimeBudget")}
+    ${statements.get("[runtimeCheckpointEnabled, limitWrapUpEnabled]")}
     ${statements.get("runtimeCheckpoint")}
     return { agentLongMaxDurationMs, runtimeBudget, runtimeCheckpoint };
   })();`,
@@ -62,11 +64,16 @@ async function setup({
   isAutomaticContinuation = false,
   claimed = true,
   enabled = true,
+  wrapUpEnabled = null as boolean | null,
   maxDurationMs = 1000,
 } = {}) {
   const exposed = jest.fn();
   const abort = jest.fn();
-  const decision = jest.fn(async () => enabled);
+  const flags: Record<string, boolean | null> = {
+    "agent-runtime-checkpoint-v1": enabled,
+    "agent-limit-wrapup-v1": wrapUpEnabled,
+  };
+  const decision = jest.fn(async (flagKey: string) => flags[flagKey] ?? null);
   const mutation = jest.fn(async () =>
     claimed ? { generation: 2, state: "running" } : null,
   );
@@ -86,6 +93,7 @@ async function setup({
     resolveAgentRuntimeCheckpointEnabled,
     getPostHogBooleanFlagDecisionForUser: decision,
     AGENT_RUNTIME_CHECKPOINT_FLAG: "agent-runtime-checkpoint-v1",
+    AGENT_LIMIT_WRAPUP_FLAG: "agent-limit-wrapup-v1",
     getAgentLongMaxDurationMs: () => maxDurationMs,
     // Keep the former cap available so restoring it fails the duration assertion.
     GOAL_SLICE_MS: 20 * 60 * 1000,
@@ -109,6 +117,12 @@ async function setup({
   );
   return { ...result, exposed, abort, decision, mutation };
 }
+
+const nearLimits = {
+  completedSteps: 450,
+  maxSteps: 500,
+  budgetUsedPercent: 95,
+};
 
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
@@ -138,6 +152,7 @@ it.each([
       goal: true,
       isAutoContinue,
       isAutomaticContinuation,
+      wrapUpEnabled: true,
     });
     try {
       expect(run.mutation).toHaveBeenCalledWith(
@@ -145,7 +160,7 @@ it.each([
         expect.objectContaining({ generation: 2, runId: "run-test" }),
       );
       jest.advanceTimersByTime(900);
-      expect(run.runtimeCheckpoint?.takeNotice()).toBeUndefined();
+      expect(run.runtimeCheckpoint?.takeNotice(nearLimits)).toBeUndefined();
       run.runtimeCheckpoint?.recordExposure();
       expect(run.decision).not.toHaveBeenCalled();
       expect(run.exposed).not.toHaveBeenCalled();
@@ -168,7 +183,10 @@ it.each([false, true])(
     });
     try {
       expect(run.mutation).not.toHaveBeenCalled();
-      expect(run.decision).toHaveBeenCalledTimes(1);
+      expect(run.decision.mock.calls.map(([flagKey]) => flagKey)).toEqual([
+        "agent-runtime-checkpoint-v1",
+        "agent-limit-wrapup-v1",
+      ]);
       jest.advanceTimersByTime(899);
       expect(run.runtimeCheckpoint.takeNotice()).toBeUndefined();
       jest.advanceTimersByTime(1);
@@ -205,4 +223,44 @@ it("does not start runtime or checkpoint setup when the goal claim is rejected",
   expect(run.decision).not.toHaveBeenCalled();
   expect(run.exposed).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
+});
+
+it.each([null, false])(
+  "keeps limit wrap-up silent when its assignment is %s",
+  async (wrapUpEnabled) => {
+    const run = await setup({ enabled: false, wrapUpEnabled });
+    try {
+      expect(run.runtimeCheckpoint.takeNotice(nearLimits)).toBeUndefined();
+      run.runtimeCheckpoint.recordExposure();
+      expect(run.exposed).not.toHaveBeenCalled();
+    } finally {
+      run.runtimeBudget.dispose();
+    }
+  },
+);
+
+it("wraps up an assigned ordinary Agent run and reports content-free exposure", async () => {
+  const run = await setup({ enabled: false, wrapUpEnabled: true });
+  try {
+    expect(run.runtimeCheckpoint.takeNotice(nearLimits)).toContain(
+      "<agent_limit_wrapup>",
+    );
+    expect(run.exposed).not.toHaveBeenCalled();
+    run.runtimeCheckpoint.recordExposure();
+    expect(run.exposed).toHaveBeenCalledTimes(1);
+    expect(run.exposed).toHaveBeenCalledWith("agent_limit_wrapup_exposed", {
+      userId: "user-test",
+      trigger_run_id: "run-test",
+      chat_id: "chat-test",
+      flag_key: "agent-limit-wrapup-v1",
+      "$feature/agent-limit-wrapup-v1": true,
+      subscription_tier: "pro",
+      trigger_kind: "usage",
+      step_count_bucket: "450+",
+      budget_pct_bucket: "95-99",
+      $process_person_profile: false,
+    });
+  } finally {
+    run.runtimeBudget.dispose();
+  }
 });

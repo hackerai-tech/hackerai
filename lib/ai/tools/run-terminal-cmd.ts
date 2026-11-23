@@ -13,6 +13,12 @@ import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
+import {
+  formatCloudBackgroundCapReached,
+  formatCloudBackgroundStarted,
+  newCloudBackgroundId,
+  startCloudBackgroundProcess,
+} from "./utils/cloud-background-processes";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
@@ -65,11 +71,14 @@ import {
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
 import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
+  createRunTerminalCmdToolSchema,
+  MAX_CLOUD_BACKGROUND_PROCESSES,
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
-  createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import { CLOUD_COOLDOWN_BASE_MS } from "./utils/cloud-acquisition-budget";
+import { describeCloudUnavailability } from "./utils/cloud-unavailability-message";
 import {
   collectAgentAutoReviewTerminalInspection,
   getAgentAutoReviewInspectionKind,
@@ -84,6 +93,8 @@ import {
   terminalSandboxInstance,
 } from "./utils/terminal-execution-record";
 import type { AnySandbox } from "@/types";
+import type { Sandbox } from "@e2b/code-interpreter";
+import { phLogger } from "@/lib/posthog/server";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -93,6 +104,12 @@ const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+// A local sandbox stays unavailable for the run; cloud managers report a
+// cooldown or a disabled reason instead and never suggest deleting the workspace.
+const LOCAL_SANDBOX_UNAVAILABLE_ERROR =
+  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.";
+const READINESS_RECONNECT_FAILED =
+  "The sandbox did not respond to its readiness check or to a reconnect. ";
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
@@ -245,6 +262,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
     modelName: context.getCurrentModelName?.() ?? context.modelName,
+    // Guidance follows the selected sandbox. Execution checks the acquired
+    // sandbox, so a local-to-cloud fallback still detaches cloud services.
+    // Benchmark harnesses build tools before attaching a sandbox manager.
+    cloudBackgroundServices:
+      sandboxManager?.getEffectivePreference?.() === "e2b",
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
@@ -674,21 +696,37 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }
         };
 
+        const cloudUnavailableError = () =>
+          sandboxManager.getSandboxUnavailableMessage?.() ??
+          describeCloudUnavailability({
+            kind: "cooldown",
+            retryAfterMs: CLOUD_COOLDOWN_BASE_MS,
+          });
+
+        // Checked before and after readiness: a concurrent call may start a
+        // cooldown while this one waits, and a stale success must not
+        // dispatch a command into that cooldown.
+        const unavailableResult = () =>
+          sandboxManager.isSandboxUnavailable()
+            ? {
+                result: {
+                  output: "",
+                  exitCode: 1,
+                  error:
+                    sandboxManager.getSandboxUnavailableMessage?.() ??
+                    LOCAL_SANDBOX_UNAVAILABLE_ERROR,
+                },
+              }
+            : undefined;
+
         // Bail early if sandbox was already marked unavailable by any tool
-        if (sandboxManager.isSandboxUnavailable()) {
-          return {
-            result: {
-              output: "",
-              exitCode: 1,
-              error:
-                "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
-            },
-          };
-        }
+        const blockedBeforeReadiness = unavailableResult();
+        if (blockedBeforeReadiness) return blockedBeforeReadiness;
 
         // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
         if (isCloudSandbox(sandbox)) {
+          const initialHealthCheck = sandboxManager.beginHealthCheck?.();
           try {
             await waitForSandboxReady(
               sandbox,
@@ -697,7 +735,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               context.onSandboxResourceMetrics,
               "initial",
             );
-            sandboxManager.resetHealthFailures();
+            sandboxManager.resetHealthFailures(initialHealthCheck);
           } catch (healthError) {
             // If aborted, don't retry - propagate the abort
             if (
@@ -725,8 +763,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 result: {
                   output: "",
                   exitCode: 1,
-                  error:
-                    "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                  error: READINESS_RECONNECT_FAILED + cloudUnavailableError(),
                 },
               };
             }
@@ -750,6 +787,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 await getApprovedExecutionSandbox();
 
               // Verify the reconnected sandbox is ready
+              const reconnectHealthCheck = sandboxManager.beginHealthCheck?.();
               try {
                 await waitForSandboxReady(
                   reconnectedSandbox,
@@ -758,7 +796,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   context.onSandboxResourceMetrics,
                   "reconnect",
                 );
-                sandboxManager.resetHealthFailures();
+                sandboxManager.resetHealthFailures(reconnectHealthCheck);
               } catch (reconnectedHealthError) {
                 if (
                   reconnectedHealthError instanceof DOMException &&
@@ -792,7 +830,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       output: "",
                       exitCode: 1,
                       error: unavailable
-                        ? "Sandbox is unavailable after the initial health check and reconnect both failed. Do NOT retry terminal or sandbox commands in this run. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support."
+                        ? READINESS_RECONNECT_FAILED + cloudUnavailableError()
                         : "Sandbox reconnection failed. The sandbox environment is not responding.",
                     },
                   },
@@ -815,12 +853,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             });
 
             if (!recovery.ok) return recovery.response;
+            const blockedAfterReconnect = unavailableResult();
+            if (blockedAfterReconnect) return blockedAfterReconnect;
             return await (isE2BSandbox(recovery.sandbox) && !is_background
               ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
                   executeWithLocalRelayRecovery(recovery.sandbox),
                 )
               : executeWithLocalRelayRecovery(recovery.sandbox));
           }
+          const blockedAfterReadiness = unavailableResult();
+          if (blockedAfterReadiness) return blockedAfterReadiness;
         }
 
         return await (isE2BSandbox(sandbox) && !is_background
@@ -828,6 +870,93 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               executeWithLocalRelayRecovery(sandbox),
             )
           : executeWithLocalRelayRecovery(sandbox));
+
+        /**
+         * Cloud services must outlive E2B's per-command deadline, which kills
+         * background commands too. Detach them with a log file instead.
+         */
+        async function startCloudBackground(
+          sandboxInstance: Sandbox,
+          effectiveCommand: string,
+          envs: Record<string, string> | undefined,
+          writeTerminal: (output: string) => Promise<void>,
+        ): Promise<TerminalCommandResult> {
+          if (abortSignal?.aborted) {
+            return {
+              result: {
+                output: "",
+                exitCode: 130,
+                error: "Command execution aborted by user",
+              },
+            };
+          }
+          // One ID per tool call keeps launcher retries idempotent.
+          const backgroundId = newCloudBackgroundId();
+          const capture = (
+            outcome: "started" | "cap_reached" | "failed",
+            runningCount: number | null,
+          ) =>
+            phLogger.event("cloud_background_process_start", {
+              userId: context.userID,
+              chat_id: chatId,
+              trigger_run_id: context.triggerRunId,
+              outcome,
+              running_count: runningCount,
+              cap: MAX_CLOUD_BACKGROUND_PROCESSES,
+            });
+          let started: Awaited<ReturnType<typeof startCloudBackgroundProcess>>;
+          try {
+            started = await retryWithBackoff(
+              () =>
+                startCloudBackgroundProcess(sandboxInstance, {
+                  command: effectiveCommand,
+                  label: command,
+                  envs,
+                  signal: abortSignal,
+                  id: backgroundId,
+                }),
+              { maxRetries: 3, signal: abortSignal, logger: () => {} },
+            );
+          } catch (error) {
+            capture("failed", null);
+            const message = error instanceof Error ? error.message : "unknown";
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error: `Failed to start the background process: ${message}`,
+              },
+            };
+          }
+          capture(
+            started.kind,
+            started.kind === "cap_reached" ? started.running.length : null,
+          );
+          if (started.kind === "cap_reached") {
+            const error = formatCloudBackgroundCapReached(started.running);
+            await writeTerminal(`${error}\n`);
+            return { result: { output: "", exitCode: 1, error } };
+          }
+          const { process } = started;
+          const output = formatCloudBackgroundStarted(process);
+          // The service is already running: a failed stream write must not
+          // drop its handle, or a retry could start a duplicate.
+          await writeTerminal(`${output}\n`).catch(() => {});
+          backgroundProcessTracker.addProcess(process.pid, command, [
+            ...BackgroundProcessTracker.extractOutputFiles(command),
+            process.logPath,
+          ]);
+          return {
+            result: {
+              status: "running",
+              backgroundId: process.id,
+              pid: process.pid,
+              logPath: process.logPath,
+              resumable: false,
+              output,
+            },
+          };
+        }
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           const agentBrowserEnv = isE2BSandbox(sandboxInstance)
@@ -855,12 +984,41 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             writer.write(part);
           };
 
+          // Augment PATH for local sandboxes so user-installed tools
+          // (e.g. ~/go/bin/waybackurls) are found without full paths.
+          const buildEffectiveCommand = () =>
+            augmentCommandPath(
+              withBrowserGatePath(
+                context.browserSessions &&
+                  isE2BSandbox(sandboxInstance) &&
+                  detectAgentBrowserUsage(command)
+                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                  : command,
+                agentBrowserEnv,
+              ),
+              sandboxInstance,
+            );
+
           const provenance = terminalExecutionProvenance(
             getAgentApprovalSandboxIdentity(sandboxInstance),
             isCentrifugoSandbox(sandboxInstance)
               ? sandboxInstance.getWorkingDirectory?.()
               : buildSandboxCommandOptions(sandboxInstance).cwd,
           );
+
+          if (is_background && isE2BSandbox(sandboxInstance)) {
+            // Detached results keep the same execution-location contract.
+            const detached = await startCloudBackground(
+              sandboxInstance,
+              buildEffectiveCommand(),
+              agentBrowserEnv,
+              createTerminalWriter,
+            );
+            return {
+              ...detached,
+              result: { ...detached.result, ...provenance },
+            };
+          }
           return new Promise<TerminalCommandResult>((resolve, reject) => {
             let resolved = false;
             let execution: any = null;
@@ -1227,19 +1385,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return false;
             };
 
-            // Augment PATH for local sandboxes so user-installed tools
-            // (e.g. ~/go/bin/waybackurls) are found without full paths.
-            const effectiveCommand = augmentCommandPath(
-              withBrowserGatePath(
-                context.browserSessions &&
-                  isE2BSandbox(sandboxInstance) &&
-                  detectAgentBrowserUsage(command)
-                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
-                  : command,
-                agentBrowserEnv,
-              ),
-              sandboxInstance,
-            );
+            const effectiveCommand = buildEffectiveCommand();
 
             const retryOptions = {
               // Retry local commands only with explicit pre-publication evidence.

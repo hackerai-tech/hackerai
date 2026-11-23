@@ -64,12 +64,86 @@ redis.call('INCR', KEYS[2])
 redis.call('EXPIRE', KEYS[2], 3600, 'NX')
 return 1`;
 
+const VERCEL_REQUEST_ID =
+  /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/;
+/** Only an opaque, well-formed platform request ID; never other headers. */
+const vercelRequestIdField = (req: NextRequest) => {
+  const requestId = req.headers.get("x-vercel-id");
+  return requestId && VERCEL_REQUEST_ID.test(requestId)
+    ? { request_id: requestId }
+    : {};
+};
+
+type PostStage =
+  | "setup"
+  | "authenticate"
+  | "read_request"
+  | "eligibility"
+  | "generate"
+  | "finalize"
+  | "persist"
+  | "register_after";
+// Between the 15s generation deadline and the 20s maxDuration termination,
+// which can bypass finally.
+const POST_PENDING_WARNING_MS = 17_000;
+const POST_DIAGNOSTIC_EVENTS = {
+  warn: "next_actions_post_slow_request",
+  error: "next_actions_post_unhandled_error",
+} as const;
+
+const logPostDiagnostic = (
+  level: keyof typeof POST_DIAGNOSTIC_EVENTS,
+  req: NextRequest,
+  stage: PostStage,
+  startedAt: number,
+) => {
+  try {
+    // Closed fields only: never error messages/types, bodies or identities.
+    console[level](
+      JSON.stringify({
+        event: POST_DIAGNOSTIC_EVENTS[level],
+        diagnostic_version: 1,
+        stage,
+        elapsed_ms: Math.min(Math.max(0, Date.now() - startedAt), 60_000),
+        request_aborted: req.signal.aborted,
+        ...vercelRequestIdField(req),
+      }),
+    );
+  } catch {
+    /* Diagnostics cannot change optional prediction behavior. */
+  }
+};
+
+/**
+ * Attribute the rare POST failures that escape the empty-response contract,
+ * and requests still pending near hard termination, to a closed stage.
+ */
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
+  const progress: { stage: PostStage } = { stage: "setup" };
+  const pendingTimer = setTimeout(
+    () => logPostDiagnostic("warn", req, progress.stage, startedAt),
+    POST_PENDING_WARNING_MS,
+  );
+  pendingTimer.unref?.();
+  try {
+    return await handlePost(req, progress);
+  } catch (error) {
+    logPostDiagnostic("error", req, progress.stage, startedAt);
+    throw error;
+  } finally {
+    clearTimeout(pendingTimer);
+  }
+}
+
+async function handlePost(req: NextRequest, progress: { stage: PostStage }) {
   const posthog = PostHogClient();
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(15_000)]);
   try {
+    progress.stage = "authenticate";
     const { userId, subscription, analyticsAccountCohort } =
       await getUserIDAndPro(req);
+    progress.stage = "read_request";
     const raw = await req.text();
     if (raw.length > 512) return empty(400, "invalid_request");
     let body: unknown;
@@ -82,6 +156,7 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) return empty(400, "invalid_request");
     const { chatId, messageId } = parsed.data;
     if (!posthog) return empty(200, "analytics_unavailable");
+    progress.stage = "eligibility";
     const assignment = await getPostHogFlagWithoutExposure(
       posthog,
       NEXT_ACTIONS_FLAG,
@@ -225,6 +300,7 @@ export async function POST(req: NextRequest) {
     const started = Date.now();
     const batchId = crypto.randomUUID();
     let result;
+    progress.stage = "generate";
     try {
       result = await generateNextActions(sources, signal);
     } catch {
@@ -280,6 +356,7 @@ export async function POST(req: NextRequest) {
         models: result.modelIds,
       },
     });
+    progress.stage = "finalize";
     signal.throwIfAborted();
     const latest = await convex.query(api.chats.getChatById, {
       serviceKey,
@@ -318,6 +395,7 @@ export async function POST(req: NextRequest) {
         result.unavailable ? "provider_unavailable" : "prediction_empty",
       );
     if (await goalAchieved()) return empty(200, "goal_complete");
+    progress.stage = "persist";
     const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
       serviceKey,
       userId,
@@ -351,7 +429,10 @@ export async function POST(req: NextRequest) {
   } finally {
     // Keep event delivery in the request lifetime without delaying the draft.
     // The 15s request budget leaves room inside maxDuration for this flush.
-    if (posthog) after(() => posthog.shutdown(4_000).catch(() => {}));
+    if (posthog) {
+      progress.stage = "register_after";
+      after(() => posthog.shutdown(4_000).catch(() => {}));
+    }
   }
 }
 
@@ -366,7 +447,6 @@ export async function DELETE(req: NextRequest) {
   // boundary once beforehand, without delaying or retrying the request.
   const slowTimer = setTimeout(() => {
     try {
-      const requestId = req.headers.get("x-vercel-id");
       console.warn(
         JSON.stringify({
           event: "next_actions_delete_slow_request",
@@ -375,12 +455,7 @@ export async function DELETE(req: NextRequest) {
           elapsed_ms: Math.max(0, Date.now() - startedAt),
           warning_threshold_ms: 10_000,
           request_aborted: req.signal.aborted,
-          ...(requestId &&
-          /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
-            requestId,
-          )
-            ? { request_id: requestId }
-            : {}),
+          ...vercelRequestIdField(req),
         }),
       );
     } catch {

@@ -18,6 +18,7 @@ import {
   isUserStoppedToolError,
   LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT,
 } from "@/lib/chat/tool-abort-utils";
+import { CLOUD_UNAVAILABLE_AGENT_GUIDANCE } from "@/lib/ai/tools/utils/cloud-unavailability-message";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -377,6 +378,16 @@ const AGENT_ONLY_TERMINAL_MESSAGE_REPLACEMENTS = new Map([
   ],
 ]);
 
+const stripCloudUnavailableGuidance = (output: string): string => {
+  const trimmed = output.trimEnd();
+  const guidance = CLOUD_UNAVAILABLE_AGENT_GUIDANCE.find((suffix) =>
+    trimmed.endsWith(suffix),
+  );
+  return guidance
+    ? trimmed.slice(0, -guidance.length) + output.slice(trimmed.length)
+    : output;
+};
+
 /**
  * Removes platform-authored recovery guidance before terminal output is shown
  * in the Computer sidebar. The persisted/model-facing tool result is unchanged.
@@ -407,7 +418,7 @@ export function stripAgentOnlyTerminalGuidance(output: string): string {
     userFacingOutput = userFacingOutput.replace(suffix, "");
   }
 
-  return userFacingOutput;
+  return stripCloudUnavailableGuidance(userFacingOutput);
 }
 
 // ---------------------------------------------------------------------------

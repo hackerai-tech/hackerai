@@ -44,6 +44,9 @@ export type E2BErrorKind =
   | "not_found"
   | "template"
   | "invalid_argument"
+  // Set by the acquisition wrapper, never by getE2BErrorKind: invalid managed
+  // egress configuration that a retry in the same run cannot fix.
+  | "egress_configuration"
   | "timeout"
   | "rate_limit"
   | "disk_space"

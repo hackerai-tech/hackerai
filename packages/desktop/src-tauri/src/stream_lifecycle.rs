@@ -17,6 +17,14 @@
 //! (`setsid`, `setpgid`, daemonizing) are outside any owner's reach, and abrupt
 //! native death runs no cleanup at all.
 //!
+//! On Windows the owned tree is instead the members of the command's private
+//! Job Object (`windows_stream_job`): the shell, joined before it can run, and
+//! the processes members create. Every stop terminates that Job and confirms
+//! it empty, even after the shell itself exited, and never signals a PID. A
+//! process a separate service starts for the command, such as through WMI, is
+//! never a member and outside any owner's reach. A normal exit only closes the
+//! Job handle.
+//!
 //! Admission fails closed: once any owner cannot confirm its group stopped,
 //! members may still be running, so no further streamed command starts in this
 //! native process. The fence keeps the closed origin of the path that set it
@@ -47,7 +55,7 @@ use crate::update_safety::UpdateGate;
 /// Bounds a new document's wait for the previous document's cleanup.
 const PRIOR_CLEANUP_WAIT: Duration = Duration::from_secs(10);
 /// Bounds reaping after the process group was signaled.
-const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bounds an explicit cancellation's wait for its owner.
 const CANCEL_WAIT: Duration = Duration::from_secs(15);
 
@@ -55,6 +63,106 @@ pub(crate) const PAGE_REPLACED: &str = "Desktop page was replaced before this co
 pub(crate) const PRIOR_CLEANUP_UNRESOLVED: &str =
     "Desktop is still stopping commands from a previous page. Retry shortly.";
 pub(crate) const STOP_UNCONFIRMED: &str = "Desktop could not confirm an earlier command stopped. New commands are blocked for this session. Close and reopen Desktop before running more commands.";
+/// A created shell was never proven to run inside its tree, and its cleanup
+/// confirmed it never ran.
+const UNPROVEN_LAUNCH: &str =
+    "Failed to spawn: Desktop could not start the command under its stop control";
+
+// What an owner stops besides its shell: on Windows the command's private
+// Job Object.
+#[cfg(windows)]
+use crate::windows_stream_job::{StreamJob as OwnedTree, Unproven};
+
+/// Elsewhere the shell's own process group, reached through its PID only
+/// while the shell is unreaped.
+#[cfg(not(windows))]
+struct OwnedTree;
+
+/// Elsewhere a spawn either fails or starts its tracked tree.
+#[cfg(not(windows))]
+pub(crate) enum Unproven {}
+
+#[cfg(not(windows))]
+impl Unproven {
+    fn may_have_run(&self) -> bool {
+        match *self {}
+    }
+
+    async fn clean_up(self) -> bool {
+        match self {}
+    }
+}
+
+/// Why `spawn_owned` started no tracked command.
+pub(crate) enum SpawnFailure {
+    /// No process was created.
+    NotStarted(String),
+    /// A shell was created but not proven to run inside its tree; it must be
+    /// cleaned up before the launch is rejected.
+    // Only the Windows Job path constructs one.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Unproven(Unproven),
+}
+
+/// Spawn `cmd` with the tree its owner stops established before it can run.
+#[cfg(not(windows))]
+fn spawn_owned(cmd: &mut Command) -> Result<(Child, OwnedTree), SpawnFailure> {
+    cmd.spawn()
+        .map(|child| (child, OwnedTree))
+        .map_err(|e| SpawnFailure::NotStarted(format!("Failed to spawn: {}", e)))
+}
+
+#[cfg(windows)]
+fn spawn_owned(cmd: &mut Command) -> Result<(Child, OwnedTree), SpawnFailure> {
+    crate::windows_stream_job::spawn(cmd)
+}
+
+/// The tree stop a stop request or failed delivery runs beside its leader
+/// wait, or None once the Unix shell was reaped and no live PID remains.
+#[cfg(not(windows))]
+fn stop_tree(
+    _tree: &OwnedTree,
+    child: &Child,
+) -> Option<impl Future<Output = Result<(), Option<TreeStopFailure>>>> {
+    child
+        .id()
+        .map(crate::platform::cancel_process_tree_observed)
+}
+
+/// On Windows always the Job's stop, even after its shell was reaped, which
+/// reports no closed taskkill failure.
+#[cfg(windows)]
+fn stop_tree<'a>(
+    job: &'a OwnedTree,
+    _child: &Child,
+) -> Option<impl Future<Output = Result<(), Option<TreeStopFailure>>> + 'a> {
+    Some(async move { job.terminate().await.then_some(()).ok_or(None) })
+}
+
+/// An owner's own cleanup after a timeout or process error.
+#[cfg(not(windows))]
+async fn graceful_kill_owned(child: &mut Child, _tree: &OwnedTree) -> GracefulKill {
+    crate::platform::graceful_kill_observed(child).await
+}
+
+/// On Windows the Job's stop beside the same bounded leader wait, never
+/// taskkill or a PID, so it reports no taskkill failure.
+#[cfg(windows)]
+async fn graceful_kill_owned(child: &mut Child, job: &OwnedTree) -> GracefulKill {
+    let (tree_stopped, waited) = tokio::join!(
+        job.terminate(),
+        tokio::time::timeout(REAP_TIMEOUT, child.wait())
+    );
+    GracefulKill {
+        tree_stopped,
+        leader: match waited {
+            Ok(Ok(_)) => LeaderWait::Reaped,
+            Ok(Err(_)) => LeaderWait::Failed,
+            Err(_) => LeaderWait::TimedOut,
+        },
+        taskkill: None,
+    }
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
@@ -522,6 +630,7 @@ pub(crate) enum Launch {
 /// The only handle allowed to signal or reap a launched command.
 pub(crate) struct OwnedCommand {
     pub(crate) child: Child,
+    tree: OwnedTree,
     stop: watch::Receiver<Option<StopRequestSource>>,
     completion: Completion,
     // Shared with this owner's registration; only this owner publishes to it.
@@ -695,7 +804,7 @@ impl StreamLifecycle {
         cmd: &mut Command,
     ) -> Result<Launch, String> {
         let deadline = tokio::time::Instant::now() + PRIOR_CLEANUP_WAIT;
-        loop {
+        let (unproven, completion, phase) = loop {
             let pending: Vec<Cleanup> = {
                 let mut state = self.state();
                 if state.canceled.contains(command_id) {
@@ -718,32 +827,32 @@ impl StreamLifecycle {
                     if state.running.contains_key(command_id) {
                         return Err("Command is already running".to_string());
                     }
-                    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
-                    state.next_serial += 1;
-                    let serial = state.next_serial;
-                    let (stop, stop_requested) = watch::channel(None);
-                    let (outcome, cleanup) = watch::channel(None);
-                    let phase = OwnerPhase::default();
-                    state.running.insert(
-                        command_id.to_string(),
-                        Running {
-                            serial,
-                            generation: current,
-                            stop,
-                            cleanup,
-                            phase: phase.clone(),
-                        },
-                    );
+                    let (child, tree) = match spawn_owned(cmd) {
+                        Ok(spawned) => spawned,
+                        Err(SpawnFailure::NotStarted(message)) => return Err(message),
+                        Err(SpawnFailure::Unproven(unproven)) => {
+                            // A shell that may have run untracked fences
+                            // admission under the lock that rejected it, so
+                            // no later launch is admitted while it is cleaned
+                            // up. One that never ran cannot need the fence.
+                            if unproven.may_have_run() {
+                                state
+                                    .fence
+                                    .get_or_insert(FenceOrigin::OwnerProcessError.into());
+                            }
+                            // A created shell is registered like any other
+                            // under this same lock, so cancellation, page
+                            // invalidation and app exit wait for its cleanup.
+                            let (_, completion, phase) = self.register(&mut state, command_id);
+                            break (unproven, completion, phase);
+                        }
+                    };
+                    let (stop, completion, phase) = self.register(&mut state, command_id);
                     return Ok(Launch::Started(OwnedCommand {
                         child,
-                        stop: stop_requested,
-                        completion: Completion {
-                            lifecycle: self.clone(),
-                            command_id: command_id.to_string(),
-                            serial,
-                            outcome,
-                            unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing.into()),
-                        },
+                        tree,
+                        stop,
+                        completion,
                         phase,
                     }));
                 }
@@ -756,7 +865,78 @@ impl StreamLifecycle {
                 Ok(false) => return Err(STOP_UNCONFIRMED.to_string()),
                 Ok(true) => {}
             }
+        };
+        self.reject_unproven(unproven, completion, phase).await
+    }
+
+    /// Register a created shell's owner in the current generation. Called
+    /// under the state lock that admitted it, so no cancellation or
+    /// invalidation can miss it. Until its owner records a final outcome, a
+    /// released registration is unconfirmed with a missing outcome.
+    fn register(
+        self: &Arc<Self>,
+        state: &mut State,
+        command_id: &str,
+    ) -> (
+        watch::Receiver<Option<StopRequestSource>>,
+        Completion,
+        OwnerPhase,
+    ) {
+        state.next_serial += 1;
+        let serial = state.next_serial;
+        let (stop, stop_requested) = watch::channel(None);
+        let (outcome, cleanup) = watch::channel(None);
+        let phase = OwnerPhase::default();
+        state.running.insert(
+            command_id.to_string(),
+            Running {
+                serial,
+                generation: state.generation,
+                stop,
+                cleanup,
+                phase: phase.clone(),
+            },
+        );
+        let completion = Completion {
+            lifecycle: self.clone(),
+            command_id: command_id.to_string(),
+            serial,
+            outcome,
+            unconfirmed: Some(FenceOrigin::OwnerOutcomeMissing.into()),
+        };
+        (stop_requested, completion, phase)
+    }
+
+    /// Stop and reap a registered shell that was never proven to run inside
+    /// its tree, then release its registration and reject its launch. Every
+    /// stop request already waits on that release. Only a cleanup that
+    /// confirmed the stop and reap of a shell that never ran outside its Job
+    /// releases it confirmed; anything else records an owner's process error,
+    /// which fences admission and updates. If this future is dropped first,
+    /// the registration keeps its missing outcome, which fences as well.
+    async fn reject_unproven(
+        &self,
+        unproven: Unproven,
+        mut completion: Completion,
+        phase: OwnerPhase,
+    ) -> Result<Launch, String> {
+        let may_have_run = unproven.may_have_run();
+        if may_have_run {
+            // Admission was fenced under the launch lock; updates are fenced
+            // only after it was released, as every owner's release orders them.
+            self.update_gate.block_for_unconfirmed_command();
         }
+        phase.publish(OwnerPhase::OWNER_CLEANUP);
+        let confirmed = unproven.clean_up().await && !may_have_run;
+        completion.unconfirmed = unless_confirmed(confirmed, FenceOrigin::OwnerProcessError);
+        // Releases the registration and publishes its outcome to any waiter.
+        drop(completion);
+        let message = if confirmed {
+            UNPROVEN_LAUNCH
+        } else {
+            STOP_UNCONFIRMED
+        };
+        Err(message.to_string())
     }
 
     /// Record a tombstone and ask the owner, if running, to stop. True only when
@@ -831,8 +1011,11 @@ pub(crate) async fn run(
     timeout: Duration,
     on_event: &Channel<StreamEvent>,
 ) {
+    // A normal exit drops `tree` without stopping anything: on Windows this
+    // only closes the Job handle, so intentional background jobs keep running.
     let OwnedCommand {
         mut child,
+        tree,
         mut stop,
         mut completion,
         phase,
@@ -860,7 +1043,7 @@ pub(crate) async fn run(
         }
         Ended::ProcessError(e) => {
             phase.publish(OwnerPhase::OWNER_CLEANUP);
-            let confirmed = crate::platform::graceful_kill(&mut child).await;
+            let confirmed = graceful_kill_owned(&mut child, &tree).await.confirmed();
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Process error: {}", e),
@@ -869,7 +1052,7 @@ pub(crate) async fn run(
         }
         Ended::TimedOut => {
             phase.publish(OwnerPhase::OWNER_CLEANUP);
-            let killed = crate::platform::graceful_kill_observed(&mut child).await;
+            let killed = graceful_kill_owned(&mut child, &tree).await;
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Command timed out after {}ms", timeout.as_millis()),
@@ -877,7 +1060,7 @@ pub(crate) async fn run(
             Fence::owner_timeout(killed)
         }
         Ended::StopRequested(source) => {
-            let (fence, status) = terminate_owned(&mut child, Some(&phase)).await;
+            let (fence, status) = terminate_owned(&mut child, &tree, Some(&phase)).await;
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(match status {
                 Some(status) => StreamEvent::Exit {
@@ -893,7 +1076,7 @@ pub(crate) async fn run(
         // The receiver is gone: stop producing output nobody can deliver.
         Ended::DeliveryFailed => {
             phase.publish(OwnerPhase::OWNER_CLEANUP);
-            let confirmed = terminate_owned(&mut child, None).await.0.is_none();
+            let confirmed = terminate_owned(&mut child, &tree, None).await.0.is_none();
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             unless_confirmed(confirmed, FenceOrigin::OwnerDeliveryFailed)
         }
@@ -988,13 +1171,13 @@ async fn stream_until_exit(
 /// `phase`, a stop request's cleanup publishes which checks are outstanding.
 async fn terminate_owned(
     child: &mut Child,
+    tree: &OwnedTree,
     phase: Option<&OwnerPhase>,
 ) -> (Option<Fence>, Option<ExitStatus>) {
-    let Some(pid) = child.id() else {
+    let Some(tree) = stop_tree(tree, child) else {
         // Already reaped by this owner; no live PID remains to signal.
         return (None, child.try_wait().ok().flatten());
     };
-    let tree = crate::platform::cancel_process_tree_observed(pid);
     let leader = tokio::time::timeout(REAP_TIMEOUT, child.wait());
     if let Some(phase) = phase {
         phase.publish(
@@ -1653,6 +1836,52 @@ mod tests {
         );
     }
 
+    /// A test-owned temporary directory, removed on drop.
+    pub(super) struct Scratch(std::path::PathBuf);
+    impl Scratch {
+        pub(super) fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "hackerai-stream-lifecycle-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        pub(super) fn path(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub(super) fn collecting_channel() -> (Channel<StreamEvent>, Arc<Mutex<Vec<String>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                sink.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        (channel, events)
+    }
+
+    pub(super) fn started(launch: Result<Launch, String>) -> OwnedCommand {
+        match launch.expect("launch should be admitted") {
+            Launch::Started(owned) => owned,
+            Launch::Canceled => panic!("launch was unexpectedly canceled"),
+        }
+    }
+
+    /// A private gate, so a test's unknown outcome cannot fence the
+    /// process-wide updater used by other tests.
+    pub(super) fn private_gate() -> &'static UpdateGate {
+        Box::leak(Box::new(UpdateGate::default()))
+    }
+
     /// Yield until `phase` reads `expected`, so a spawned check can run.
     pub(super) async fn reaches(phase: &OwnerPhase, expected: CancelWaitOwnerPhase) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1707,30 +1936,11 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod unix_tests {
+    use super::tests::{collecting_channel, private_gate, started, Scratch};
     use super::*;
     use crate::platform;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Instant;
-
-    struct Scratch(PathBuf);
-    impl Scratch {
-        fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "hackerai-stream-lifecycle-{}",
-                uuid::Uuid::new_v4().simple()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn quoted(path: &Path) -> String {
         format!("'{}'", path.display())
@@ -1765,25 +1975,6 @@ mod unix_tests {
     fn process_alive(pid: libc::pid_t) -> bool {
         let result = unsafe { libc::kill(pid, 0) };
         result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-    }
-
-    fn collecting_channel() -> (Channel<StreamEvent>, Arc<Mutex<Vec<String>>>) {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = events.clone();
-        let channel = Channel::new(move |body| {
-            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
-                sink.lock().unwrap().push(json);
-            }
-            Ok(())
-        });
-        (channel, events)
-    }
-
-    fn started(launch: Result<Launch, String>) -> OwnedCommand {
-        match launch.expect("launch should be admitted") {
-            Launch::Started(owned) => owned,
-            Launch::Canceled => panic!("launch was unexpectedly canceled"),
-        }
     }
 
     /// A long-running tree: a backgrounded descendant whose PID is recorded,
@@ -1849,10 +2040,11 @@ mod unix_tests {
         // that could not confirm its cleanup would.
         let OwnedCommand {
             mut child,
+            tree,
             completion,
             ..
         } = owned;
-        assert_eq!(terminate_owned(&mut child, None).await.0, None);
+        assert_eq!(terminate_owned(&mut child, &tree, None).await.0, None);
         assert!(!group_alive(leader));
         assert!(!process_alive(descendant));
         assert_eq!(lifecycle.fence_origin_receipt(), None);
@@ -1885,19 +2077,16 @@ mod unix_tests {
         assert!(gate.install().is_err(), "updates must stay fenced too");
     }
 
-    fn private_gate() -> &'static UpdateGate {
-        Box::leak(Box::new(UpdateGate::default()))
-    }
-
     /// Stop the test-owned tree exactly, then release ownership with `fence`
     /// as `run`'s recorded final outcome, or confirmed when None.
     async fn release_with(owned: OwnedCommand, fence: Option<Fence>) {
         let OwnedCommand {
             mut child,
+            tree,
             mut completion,
             ..
         } = owned;
-        assert_eq!(terminate_owned(&mut child, None).await.0, None);
+        assert_eq!(terminate_owned(&mut child, &tree, None).await.0, None);
         completion.unconfirmed = fence;
     }
 
@@ -2972,5 +3161,373 @@ mod unix_tests {
 
         // Clean up exactly the job this test started.
         assert_eq!(unsafe { libc::kill(background, libc::SIGKILL) }, 0);
+    }
+}
+
+/// Real Windows processes under each command's Job. Fixtures use fixed
+/// System32 `cmd.exe` and Windows PowerShell, never the user's shell, and each
+/// case has its own lifecycle, update gate and scratch directory.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::tests::{collecting_channel, private_gate, started, Scratch};
+    use super::*;
+    use base64::Engine;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::time::Instant;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+
+    /// WaitForSingleObject's `WAIT_OBJECT_0`: the process exited.
+    const EXITED: u32 = 0;
+    /// Its `WAIT_TIMEOUT`: the process was still running at the deadline.
+    const RUNNING: u32 = 0x102;
+
+    fn system32(name: &str) -> PathBuf {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+            .join("System32")
+            .join(name)
+    }
+
+    fn powershell() -> PathBuf {
+        system32("WindowsPowerShell\\v1.0\\powershell.exe")
+    }
+
+    /// `script` as `-EncodedCommand` takes it, which needs no quoting.
+    fn encoded(script: &str) -> String {
+        let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        base64::engine::general_purpose::STANDARD.encode(utf16le)
+    }
+
+    fn literal(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "''"))
+    }
+
+    /// The only output an announcing descendant ever writes, on its stdout.
+    const ANNOUNCEMENT: &str = "descendant ready\r\n";
+
+    /// A descendant that records its own PID, optionally reports on its
+    /// stdout, then outlives any test that does not stop it. It sleeps through
+    /// .NET rather than `Start-Sleep`, whose module load can report progress
+    /// on stderr, so the announcement is its only output on either stream.
+    fn sleeper(pid_file: &Path, announce: bool) -> String {
+        let announce = if announce {
+            "[Console]::Out.WriteLine('descendant ready'); "
+        } else {
+            ""
+        };
+        format!(
+            "[IO.File]::WriteAllText({}, \"$PID`n\"); {announce}\
+             [Threading.Thread]::Sleep(120000)",
+            literal(pid_file)
+        )
+    }
+
+    fn piped(mut cmd: Command) -> Command {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// The released failure's shape: `cmd` starts a PowerShell descendant
+    /// that inherits its output pipes, then exits at once, leaving only that
+    /// descendant holding the stream open.
+    fn orphaning_launcher(pid_file: &Path) -> Command {
+        let mut cmd = Command::new(system32("cmd.exe"));
+        cmd.raw_arg(format!(
+            "/D /C start \"\" /b \"{}\" -NoProfile -NonInteractive -EncodedCommand {}",
+            powershell().display(),
+            encoded(&sleeper(pid_file, true))
+        ));
+        piped(cmd)
+    }
+
+    /// A launcher that starts the same descendant without its pipes, as an
+    /// intentional background job, then exits.
+    fn detaching_launcher(pid_file: &Path) -> Command {
+        let start = format!(
+            "Start-Process -FilePath {} -WindowStyle Hidden -ArgumentList \
+             '-NoProfile','-NonInteractive','-EncodedCommand','{}'",
+            literal(&powershell()),
+            encoded(&sleeper(pid_file, false))
+        );
+        let script = encoded(&start);
+        let mut cmd = Command::new(powershell());
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            script.as_str(),
+        ]);
+        piped(cmd)
+    }
+
+    fn exiting() -> Command {
+        let mut cmd = Command::new(system32("cmd.exe"));
+        cmd.raw_arg("/D /C exit 0");
+        piped(cmd)
+    }
+
+    /// A handle pinning the process `pid` names now. Not yet proven to be a
+    /// fixture, so dropping it only closes it and never terminates anything.
+    fn pin(pid: u32) -> OwnedHandle {
+        let access = PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
+        let handle =
+            unsafe { OpenProcess(access, false, pid) }.expect("the fixture must be running");
+        // SAFETY: a successful call returns a new process handle owned here.
+        unsafe { OwnedHandle::from_raw_handle(handle.0) }
+    }
+
+    /// A test-owned handle to a fixture process, independent of the
+    /// implementation's Job. Built only from a pinned handle proven a member
+    /// of the test command's private Job, so dropping it, which terminates
+    /// exactly that process if it still runs, can never reach another process.
+    struct Fixture(OwnedHandle);
+
+    impl Fixture {
+        /// Panics, closing `pinned` without terminating it, unless the pinned
+        /// process is a member of `owned`'s Job.
+        fn member_of(owned: &OwnedCommand, pinned: OwnedHandle) -> Self {
+            assert!(
+                owned.tree.contains(HANDLE(pinned.as_raw_handle())),
+                "the descendant is outside its command's Job"
+            );
+            Self(pinned)
+        }
+
+        fn handle(&self) -> HANDLE {
+            HANDLE(self.0.as_raw_handle())
+        }
+
+        /// `EXITED` once the process exited within `timeout`, else `RUNNING`.
+        fn wait(&self, timeout: Duration) -> u32 {
+            // SAFETY: the handle is open with SYNCHRONIZE access.
+            unsafe { WaitForSingleObject(self.handle(), timeout.as_millis() as u32) }.0
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            // SAFETY: the handle is open with PROCESS_TERMINATE access.
+            let _ = unsafe { TerminateProcess(self.handle(), 1) };
+        }
+    }
+
+    async fn recorded_pid(path: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if content.ends_with('\n') {
+                    return content.trim().parse().unwrap();
+                }
+            }
+            assert!(Instant::now() < deadline, "the descendant never started");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The descendant's own handle, proven a live member of `owned`'s Job. The
+    /// handle is opened first and pins its PID, so a recycled PID could not
+    /// pass the membership check, and only then may it terminate anything.
+    async fn tracked_descendant(owned: &OwnedCommand, pid_file: &Path) -> Fixture {
+        let descendant = Fixture::member_of(owned, pin(recorded_pid(pid_file).await));
+        assert_eq!(descendant.wait(Duration::ZERO), RUNNING);
+        descendant
+    }
+
+    /// Wait, without reaping it, for the shell `child` still owns to exit.
+    fn wait_for_launcher_exit(child: &Child) {
+        let process = HANDLE(child.raw_handle().expect("the shell is unreaped"));
+        // SAFETY: `child` keeps its process handle open until it is reaped.
+        let waited = unsafe { WaitForSingleObject(process, 60_000) }.0;
+        assert_eq!(waited, EXITED, "the launcher never exited");
+    }
+
+    /// Confirmed cleanup leaves admission open: the next command runs.
+    async fn next_command_runs(lifecycle: &Arc<StreamLifecycle>) {
+        let mut cmd = exiting();
+        let owned = started(lifecycle.launch(lifecycle.admit(), "next", &mut cmd).await);
+        let (channel, events) = collecting_channel();
+        run(owned, None, Duration::from_secs(60), &channel).await;
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some(r#"{"type":"exit","exitCode":0}"#)
+        );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Stop {
+        CancelIpc,
+        DocumentInvalidation,
+        Timeout,
+        DeliveryFailed,
+    }
+
+    /// The released bug: once the launcher exited, its stop could not reach
+    /// the descendant still holding the stream, and the next command was
+    /// fenced. Every owner stop now ends it through the command's Job.
+    #[tokio::test]
+    async fn stream_lifecycle_windows_every_stop_ends_descendants_of_an_exited_launcher() {
+        for stop in [
+            Stop::CancelIpc,
+            Stop::DocumentInvalidation,
+            Stop::Timeout,
+            Stop::DeliveryFailed,
+        ] {
+            let scratch = Scratch::new();
+            let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+            let pid_file = scratch.path("descendant");
+            let mut cmd = orphaning_launcher(&pid_file);
+            let owned = started(
+                lifecycle
+                    .launch(lifecycle.admit(), "orphaning", &mut cmd)
+                    .await,
+            );
+            let descendant = tracked_descendant(&owned, &pid_file).await;
+            wait_for_launcher_exit(&owned.child);
+
+            let (channel, events) = collecting_channel();
+            match stop {
+                Stop::CancelIpc => {
+                    let owner = tokio::spawn(async move {
+                        run(owned, None, Duration::from_secs(120), &channel).await
+                    });
+                    assert!(lifecycle.cancel("orphaning").await);
+                    owner.await.unwrap();
+                    // Still the exit event, never the unconfirmed error.
+                    let last = events.lock().unwrap().last().cloned().unwrap_or_default();
+                    assert!(last.starts_with(r#"{"type":"exit""#), "{last}");
+                }
+                Stop::DocumentInvalidation => {
+                    let owner = tokio::spawn(async move {
+                        run(owned, None, Duration::from_secs(120), &channel).await
+                    });
+                    let (_, cleanups) = lifecycle.invalidate();
+                    assert_eq!(cleanups.len(), 1);
+                    assert!(resolved(cleanups).await);
+                    owner.await.unwrap();
+                }
+                Stop::Timeout => {
+                    run(owned, None, Duration::from_millis(500), &channel).await;
+                    assert_eq!(
+                        events.lock().unwrap().last().map(String::as_str),
+                        Some(r#"{"type":"error","message":"Command timed out after 500ms"}"#)
+                    );
+                }
+                // The descendant's own output is the first delivery to fail.
+                Stop::DeliveryFailed => {
+                    let rejected = Arc::new(Mutex::new(Vec::new()));
+                    let sink = rejected.clone();
+                    let closed: Channel<StreamEvent> = Channel::new(move |body| {
+                        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                            sink.lock().unwrap().push(json);
+                        }
+                        Err(std::io::Error::other("receiver closed").into())
+                    });
+                    run(owned, None, Duration::from_secs(120), &closed).await;
+                    // The owner stopped at its first failed delivery, which
+                    // was the descendant's own output: never a timeout's
+                    // error event. Pipe reads may split the line.
+                    let rejected = rejected.lock().unwrap().clone();
+                    assert_eq!(rejected.len(), 1, "{rejected:?}");
+                    let event: serde_json::Value = serde_json::from_str(&rejected[0]).unwrap();
+                    assert_eq!(event["type"], "stdout", "{event}");
+                    let data = event["data"].as_str().unwrap_or_default();
+                    assert!(
+                        !data.is_empty() && ANNOUNCEMENT.starts_with(data),
+                        "{event}"
+                    );
+                }
+            }
+            assert_eq!(
+                descendant.wait(Duration::from_secs(10)),
+                EXITED,
+                "{stop:?}: the descendant outlived its stop"
+            );
+            assert_eq!(lifecycle.fence_receipts(), None, "{stop:?}");
+            assert!(lifecycle.state().running.is_empty(), "{stop:?}");
+            next_command_runs(&lifecycle).await;
+        }
+    }
+
+    /// A stop that finds the shell and every member already exited confirms
+    /// at once: the empty Job is never a false fence, by a stop request's
+    /// cleanup or an owner's own cleanup after a timeout or process error.
+    #[tokio::test]
+    async fn stream_lifecycle_windows_stop_after_natural_exit_confirms_the_empty_job() {
+        let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+        for stop_request in [true, false] {
+            let mut cmd = exiting();
+            let owned = started(
+                lifecycle
+                    .launch(lifecycle.admit(), "exited", &mut cmd)
+                    .await,
+            );
+            wait_for_launcher_exit(&owned.child);
+            // The Job's count can lag its last member's exit.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while owned.tree.active() != Some(0) {
+                assert!(Instant::now() < deadline, "the Job never emptied");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let OwnedCommand {
+                mut child,
+                tree,
+                mut completion,
+                ..
+            } = owned;
+            completion.unconfirmed = if stop_request {
+                let (fence, status) = terminate_owned(&mut child, &tree, None).await;
+                // The shell's own exit, not a stop's.
+                assert_eq!(status.and_then(|status| status.code()), Some(0));
+                fence
+            } else {
+                Fence::owner_timeout(graceful_kill_owned(&mut child, &tree).await)
+            };
+            assert_eq!(completion.unconfirmed, None, "stop request: {stop_request}");
+        }
+        assert_eq!(lifecycle.fence_receipts(), None);
+        next_command_runs(&lifecycle).await;
+    }
+
+    #[tokio::test]
+    async fn stream_lifecycle_windows_normal_completion_keeps_an_intentional_background_job() {
+        let scratch = Scratch::new();
+        let lifecycle = Arc::new(StreamLifecycle::with_update_gate(private_gate()));
+        let pid_file = scratch.path("background");
+        let mut cmd = detaching_launcher(&pid_file);
+        let owned = started(
+            lifecycle
+                .launch(lifecycle.admit(), "detached", &mut cmd)
+                .await,
+        );
+        // A member of the command's Job, like any descendant.
+        let background = tracked_descendant(&owned, &pid_file).await;
+        let (channel, events) = collecting_channel();
+        run(owned, None, Duration::from_secs(60), &channel).await;
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some(r#"{"type":"exit","exitCode":0}"#)
+        );
+        assert!(lifecycle.state().running.is_empty());
+        assert_eq!(lifecycle.fence_receipts(), None);
+        // Ownership ended with the shell; closing its Job handle stopped
+        // nothing, and later page replacement does not reach the job either.
+        assert_eq!(
+            background.wait(Duration::from_millis(200)),
+            RUNNING,
+            "normal completion killed the job"
+        );
+        let (_, cleanups) = lifecycle.invalidate();
+        assert!(cleanups.is_empty());
+        assert_eq!(background.wait(Duration::ZERO), RUNNING);
+        // Dropping `background` ends exactly the job this test started.
     }
 }

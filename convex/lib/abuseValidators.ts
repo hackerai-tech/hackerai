@@ -1,4 +1,14 @@
 import { v } from "convex/values";
+import {
+  BLOCK_REFUSALS,
+  BLOCKABLE_INTENTS,
+  ENFORCEMENT_DECISIONS,
+  ENFORCEMENT_REASONS,
+  EVIDENCE_MODES,
+  NOTICE_RESULTS,
+  REVIEW_COVERAGE,
+  REVIEW_REASONS,
+} from "../../lib/abuse/egress-outcomes";
 
 export const abuseStatus = v.union(
   v.literal("new"),
@@ -194,3 +204,72 @@ export const abuseResponseSummary = v.object({
   inProgress: v.boolean(),
   outstanding: v.array(v.string()),
 });
+
+// Automated egress enforcement. Closed vocabularies only; never evidence text,
+// recipients or model payloads.
+const literals = <T extends string>(values: readonly T[]) =>
+  v.union(...values.map((value) => v.literal(value)));
+export const enforcementDecision = literals(ENFORCEMENT_DECISIONS);
+export const enforcementReason = literals(ENFORCEMENT_REASONS);
+export const reviewReason = literals(REVIEW_REASONS);
+export const blockableIntent = literals(BLOCKABLE_INTENTS);
+export const blockRefusal = literals(BLOCK_REFUSALS);
+export const noticeResult = literals(NOTICE_RESULTS);
+export const egressReviewReceiptFields = {
+  /** The review case digest; one receipt per case window, first write wins. */
+  digest: v.string(),
+  /** Stored only when the receipt is an action an owner must follow up. */
+  reference: v.optional(v.string()),
+  decision: enforcementDecision,
+  reason: enforcementReason,
+  reviewReason,
+  evidenceMode: literals(EVIDENCE_MODES),
+  coverage: literals(REVIEW_COVERAGE),
+  caseOutcome: v.union(
+    v.literal("created"),
+    v.literal("existing"),
+    v.literal("none"),
+  ),
+  refusal: v.optional(blockRefusal),
+  intentKind: v.optional(blockableIntent),
+  createdAt: v.number(),
+  expiresAt: v.number(),
+};
+export const blockNoticeStatus = v.union(
+  v.literal("pending"),
+  v.literal("sending"),
+  v.literal("sent"),
+  // Possibly accepted; reconciled by an operator, never resent automatically.
+  v.literal("uncertain"),
+  v.literal("failed"),
+  // The block was lifted or replaced before any send attempt.
+  v.literal("cancelled"),
+  // Another notice already covers this account's active block.
+  v.literal("deduplicated"),
+);
+export const blockNoticeFailure = v.union(
+  v.literal("rejected"),
+  v.literal("recipient_unavailable"),
+  v.literal("attempts_exhausted"),
+  v.literal("restriction_inactive"),
+);
+export const blockNoticeFields = {
+  caseId: v.id("abuse_cases"),
+  reference: v.string(),
+  userId: v.string(),
+  suspensionId: v.id("user_suspensions"),
+  /** The case revision the block wrote; a later operator note clears review. */
+  blockRevision: v.number(),
+  templateVersion: v.string(),
+  messageId: v.string(),
+  status: blockNoticeStatus,
+  failure: v.optional(blockNoticeFailure),
+  attempts: v.number(),
+  nextAttemptAt: v.number(),
+  leaseToken: v.optional(v.string()),
+  leaseExpiresAt: v.optional(v.number()),
+  blockedAt: v.number(),
+  sentAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+};

@@ -123,6 +123,56 @@ it.each(["status", "resume"])(
   },
 );
 
+it("labels an unreadable Local list root as the local reader only for list", async () => {
+  const fixture = realpathSync(
+    mkdtempSync(join(tmpdir(), "local-workspace-unreadable-")),
+  );
+  const root = join(fixture, "project.txt");
+  try {
+    writeFileSync(root, "not a folder");
+    run.mockImplementation(async (command: string) => ({
+      exitCode: 0,
+      stdout: execFileSync("sh", ["-c", command], {
+        encoding: "utf8",
+        cwd: fixture,
+      }),
+    }));
+    const failure = (action: string) =>
+      accessLocalWorkspaceFiles(
+        "owner",
+        "environment:machine",
+        input({ action, sandboxId: "session" }),
+        root,
+      ).catch((error) => error);
+    expect(await failure("list")).toMatchObject({
+      code: "unreadable_path",
+      status: 400,
+      diagnostics: {
+        reader: "local",
+        reader_phase: "root",
+        os_error_category: "not_directory_or_symlink",
+      },
+    });
+    query
+      .mockResolvedValueOnce("desktop-environment:machine")
+      .mockResolvedValueOnce([
+        {
+          connectionId: "session",
+          environmentId: "machine",
+          isDesktop: true,
+          name: "Test Mac",
+          osInfo: { platform: "darwin" },
+        },
+      ]);
+    const status = await failure("status");
+    expect(status).toMatchObject({ code: "unreadable_path", status: 400 });
+    expect(status.diagnostics).toBeUndefined();
+    expect(close).toHaveBeenCalledTimes(2);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 it.each(["list", "status", "resume", "preview", "download"])(
   "rejects incomplete %s results instead of reporting an empty workspace",
   async (action) => {

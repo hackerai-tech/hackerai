@@ -19,6 +19,9 @@ export function database() {
             return descending ? -delta : delta;
           });
       const chain = {
+        async *[Symbol.asyncIterator]() {
+          yield* results();
+        },
         withIndex(index: string, callback: (query: any) => unknown) {
           if (table === "chats" && index === "by_user_and_updated")
             orderField = "update_time";
@@ -106,6 +109,14 @@ export function database() {
         if (value === undefined) delete row[key];
         else row[key] = value;
       }
+    },
+    async replace(id: string, value: Record<string, unknown>) {
+      const row = await db.get(id);
+      if (!row) throw new Error("missing");
+      for (const key of Object.keys(row)) {
+        if (key !== "_id" && key !== "_creationTime") delete row[key];
+      }
+      Object.assign(row, value);
     },
     async delete(id: string) {
       for (const rows of Object.values(tables)) {

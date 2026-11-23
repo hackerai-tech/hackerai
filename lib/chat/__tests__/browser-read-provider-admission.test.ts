@@ -187,6 +187,10 @@ const agentFinalContinuation = compile(
   agent,
   declaration(agent, "nextContinuation").initializer!,
 );
+const agentBedrockRecoveryFailed = compile(
+  agent,
+  declaration(agent, "bedrockRecoveryFailed").initializer!,
+);
 const isTerminalProviderStreamError = compile(
   agent,
   declaration(agent, "isTerminalProviderStreamError").initializer!,
@@ -675,22 +679,46 @@ describe("Agent final Pro/Max disconnect continuation", () => {
     } as UIMessage,
   ];
   const continuation = (
-    errors: { streamError?: unknown; providerError?: unknown },
+    errors: {
+      streamError?: unknown;
+      providerError?: unknown;
+      streamFinishReason?: string;
+    },
     overrides: Record<string, unknown> = {},
-  ) =>
-    agentFinalContinuation({
+  ) => {
+    const state = {
+      providerError: errors.providerError,
+      streamFinishReason: errors.streamFinishReason,
+    };
+    const retryAssistantParts = retryMessages()[0].parts;
+    const bedrockRecoveryFailed = agentBedrockRecoveryFailed({
+      retryModel: "model-deepseek-v4.1-flash-1017-pro",
+      GROK_4_6_BEDROCK_MODEL_KEY: "model-grok-4.6-bedrock",
+      isTerminalProviderStreamError,
+      isTerminalEmptyAssistantResponse,
+      state,
+      retryAssistantParts,
+      retryContentBlocked: isProviderContentFilterFinishReason(
+        state.streamFinishReason,
+      ),
+      ...overrides,
+    });
+    return agentFinalContinuation({
       isTrustedBrowserHandoffReadFailure,
       isTerminalProviderStreamError,
       isRetriableProviderStreamDisconnectError,
       hasUncertainProviderToolOutcome,
       prepareProviderDisconnectContinuation,
       streamError: errors.streamError,
-      state: { providerError: errors.providerError },
+      state,
       normalizedRetryMessages: retryMessages(),
+      retryAssistantParts,
+      bedrockRecoveryFailed,
       retryAborted: false,
       selectedModelOverride: "hackerai-max",
       ...overrides,
     }) as ReturnType<typeof prepareProviderDisconnectContinuation>;
+  };
 
   it.each(["hackerai-max", undefined])(
     "admits a genuine disconnect but not a local read (override %s)",
@@ -715,6 +743,35 @@ describe("Agent final Pro/Max disconnect continuation", () => {
       ).toBeUndefined();
     },
   );
+
+  it("hands a refused or failed Bedrock leg to the next attempt, never a local read", () => {
+    const bedrock = { retryModel: "model-grok-4.6-bedrock" };
+    // A content filter is not a disconnect, so only the Bedrock leg admits it.
+    expect(
+      continuation({ streamFinishReason: "content-filter" }, bedrock)
+        ?.preservedCompletedToolCount,
+    ).toBe(1);
+    expect(
+      continuation({ streamFinishReason: "content-filter" }),
+    ).toBeUndefined();
+    expect(
+      continuation(
+        {
+          providerError: new Error("Bad request"),
+          streamFinishReason: "error",
+        },
+        bedrock,
+      )?.preservedCompletedToolCount,
+    ).toBe(1);
+    for (const failure of [local, wrappedLocal])
+      expect(continuation({ providerError: failure }, bedrock)).toBeUndefined();
+    expect(
+      continuation(
+        { streamFinishReason: "content-filter" },
+        { ...bedrock, retryAborted: true },
+      ),
+    ).toBeUndefined();
+  });
 
   it("keeps Stop terminal for a genuine disconnect", () => {
     expect(

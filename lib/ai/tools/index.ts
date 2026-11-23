@@ -157,6 +157,9 @@ export const createTools = (
   let sandboxBootInfo: SandboxBootInfo | null = null;
   let lastE2BSandbox: Sandbox | null = null;
   let runLeaseHeartbeat: E2BSandboxLeaseHeartbeat | null = null;
+  // Set by run-end cleanup. A slow acquisition that publishes afterwards (for
+  // example the turn-start background inventory) must not keep a lease alive.
+  let runLeaseClosed = false;
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
@@ -194,7 +197,11 @@ export const createTools = (
     const provider = getCloudSandboxProviderForInstance(newSandbox);
     if (isE2BSandbox(newSandbox)) {
       lastE2BSandbox = newSandbox;
-      if (runtimePolicy.keepE2BLeaseAliveForRun && !runLeaseHeartbeat) {
+      if (runLeaseClosed) {
+        // Let the late client's sandbox auto-pause instead of holding the
+        // acquisition lease; the run has already released its own.
+        void releaseE2BSandboxIdleLeaseBestEffort(newSandbox);
+      } else if (runtimePolicy.keepE2BLeaseAliveForRun && !runLeaseHeartbeat) {
         runLeaseHeartbeat = startE2BSandboxLeaseHeartbeat(
           () => lastE2BSandbox,
           "run_heartbeat",
@@ -515,6 +522,7 @@ export const createTools = (
   };
 
   const stopE2BSandboxRunLeaseHeartbeat = async (): Promise<void> => {
+    runLeaseClosed = true;
     const heartbeat = runLeaseHeartbeat;
     runLeaseHeartbeat = null;
     await heartbeat?.stop();

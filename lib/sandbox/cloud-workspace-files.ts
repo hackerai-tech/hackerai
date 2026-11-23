@@ -9,6 +9,7 @@ import {
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import {
+  unreadableListDiagnostics,
   workspaceReaderCommand,
   WorkspaceFileError,
   type WorkspaceRequest,
@@ -129,6 +130,7 @@ export async function accessCloudWorkspaceFiles(
     throw new WorkspaceFileError(
       known.has(code) ? code : "workspace_unavailable",
       code === "not_found" ? 404 : 400,
+      unreadableListDiagnostics("cloud", input.action, parsed),
     );
   }
   // Recheck the recovery/deletion fence before returning any file bytes.

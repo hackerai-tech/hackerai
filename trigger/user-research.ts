@@ -4,6 +4,10 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { GROK_4_6_SLUG, myProvider } from "@/lib/ai/providers";
+import {
+  AMAZON_BEDROCK_ONLY_ROUTING,
+  GROK_4_6_BEDROCK_MODEL_KEY,
+} from "@/lib/ai/grok-bedrock";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
   assertResearchPromptIsSafe,
@@ -17,6 +21,8 @@ import {
   researchUserProfileSchema,
   sanitizeResearchComparisonGroups,
   sanitizeResearchText,
+  formatResearchRunFailure,
+  withContentFilterLimitation,
   USER_RESEARCH_MODEL_KEY,
   USER_RESEARCH_MIN_COHORT_SIZE,
   USER_RESEARCH_MIN_USERS_PER_COMPARISON_GROUP,
@@ -25,14 +31,73 @@ import {
   type ResearchBasis,
   type ResearchCohortReport,
   type ResearchCoverage,
+  type ResearchExclusionReason,
   type ResearchPromptSecretCategory,
+  type ResearchRunFailureReason,
 } from "@/lib/research/user-research";
 import {
+  isResearchContentFilterRefusal,
   readResearchStructuredOutput,
+  type ResearchModelKey,
   type ResearchStructuredOutputOperation,
 } from "@/lib/research/structured-output-diagnostics";
 
 const MAX_MESSAGES_PER_CHAT = 80;
+
+type ResearchModelRoute = {
+  modelKey: ResearchModelKey;
+  providerOptions: Parameters<typeof generateText>[0]["providerOptions"];
+};
+
+const XAI_RESEARCH_ROUTE: ResearchModelRoute = {
+  modelKey: USER_RESEARCH_MODEL_KEY,
+  providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
+};
+
+// Same Grok 4.6 model on Amazon Bedrock, which can answer requests xAI's
+// content filter withholds. Zero data retention stays required.
+const BEDROCK_RESEARCH_ROUTE: ResearchModelRoute = {
+  modelKey: GROK_4_6_BEDROCK_MODEL_KEY,
+  providerOptions: {
+    openrouter: {
+      ...USER_RESEARCH_PROVIDER_OPTIONS.openrouter,
+      provider: {
+        ...USER_RESEARCH_PROVIDER_OPTIONS.openrouter.provider,
+        ...AMAZON_BEDROCK_ONLY_ROUTING,
+      },
+    },
+  },
+};
+
+/** Try xAI first; any refusal or failure gets one attempt on Bedrock. */
+const generateWithBedrockFallback = async <T>(
+  operation: ResearchStructuredOutputOperation,
+  generate: (route: ResearchModelRoute) => Promise<T>,
+): Promise<T> => {
+  try {
+    return await generate(XAI_RESEARCH_ROUTE);
+  } catch (error) {
+    triggerLogger.warn("User research retrying on Amazon Bedrock", {
+      operation,
+      contentFilter: isResearchContentFilterRefusal(error),
+    });
+    return generate(BEDROCK_RESEARCH_ROUTE);
+  }
+};
+const PROFILE_MAX_ATTEMPTS = 2;
+const GENERIC_RUN_FAILURE =
+  "Analysis failed before a privacy-safe cohort report was produced";
+
+/** A cohort failure with a closed reason and a count-only restricted detail. */
+class ResearchRunFailure extends Error {
+  constructor(
+    readonly reason: ResearchRunFailureReason,
+    readonly detail: string,
+  ) {
+    super(detail);
+    this.name = "ResearchRunFailure";
+  }
+}
 
 const workerPayloadSchema = z
   .object({
@@ -111,7 +176,7 @@ export const analyzeUserResearchProfile = schemaTask({
   id: "analyze-user-research-profile",
   schema: workerPayloadSchema,
   maxDuration: 5 * 60,
-  retry: { maxAttempts: 2 },
+  retry: { maxAttempts: PROFILE_MAX_ATTEMPTS },
   machine: { preset: "small-1x" },
   run: async (payload, { ctx }) => {
     const { client, serviceKey } = getResearchClient();
@@ -193,23 +258,51 @@ export const analyzeUserResearchProfile = schemaTask({
       chats: evidence,
     });
     assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("profile"));
-    const result = await generateText({
-      model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-      output: Output.object({ schema: researchUserProfileSchema }),
-      providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
-      temperature: 0,
-      maxOutputTokens: 6_000,
-      maxRetries: 1,
-      prompt,
-    });
+    const generateProfile = async (route: ResearchModelRoute) => {
+      const result = await generateText({
+        model: myProvider.languageModel(route.modelKey),
+        output: Output.object({ schema: researchUserProfileSchema }),
+        providerOptions: route.providerOptions,
+        temperature: 0,
+        maxOutputTokens: 6_000,
+        maxRetries: 1,
+        prompt,
+      });
+      return {
+        output: await readResearchStructuredOutput(result, {
+          operation: "profile",
+          ctx,
+          modelKey: route.modelKey,
+        }),
+        usage: result.usage,
+      };
+    };
+    let generated: Awaited<ReturnType<typeof generateProfile>>;
+    try {
+      generated = await generateWithBedrockFallback("profile", generateProfile);
+    } catch (error) {
+      // A refusal can clear on a fresh attempt, so let Trigger retry it. On
+      // the final attempt, report an explicit exclusion so the cohort keeps
+      // the reason instead of an anonymous task failure.
+      if (
+        isResearchContentFilterRefusal(error) &&
+        ctx.attempt.number >= PROFILE_MAX_ATTEMPTS
+      ) {
+        return {
+          status: "skipped" as const,
+          reason: "model_content_filter" as const,
+          pseudonym: payload.pseudonym,
+          chatsReviewed: 0,
+          messagesReviewed: 0,
+        };
+      }
+      throw error;
+    }
     const profile = normalizeResearchUserProfile(
-      await readResearchStructuredOutput(result, {
-        operation: "profile",
-        ctx,
-      }),
+      generated.output,
       coverage.chatsReviewed,
     );
-    const usage = usageForStorage(result.usage);
+    const usage = usageForStorage(generated.usage);
 
     await client.mutation(api.userResearch.saveUserProfile, {
       serviceKey,
@@ -320,31 +413,52 @@ export const pmUserResearch = schemaTask({
           },
         })),
       );
-      const failedPseudonyms = batchResult.runs.flatMap((run, index) =>
-        run.ok ? [] : [members[index]?.pseudonym ?? `U${index + 1}`],
-      );
-      const skippedProfiles = batchResult.runs.filter(
-        (run) => run.ok && run.output.status === "skipped",
-      ).length;
-      if (failedPseudonyms.length > 0) {
-        console.warn("Some user research profiles failed", {
-          analysisId,
-          failedPseudonyms,
-        });
-      }
-
+      // A stored profile is analyzed even if its task later failed or was
+      // retried, so each user is either analyzed or excluded, never both.
+      // A missing batch entry is a failed profile, never a silent omission.
       const profiles = await client.query(api.userResearch.listProfiles, {
         serviceKey,
         analysisId,
       });
-      if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
-        throw new Error(
-          "No users had enough evidence for privacy-safe synthesis",
-        );
-      }
       const availablePseudonyms = new Set(
         profiles.map((profile) => profile.pseudonym),
       );
+      const excludedMembers = members.flatMap((member, index) => {
+        if (availablePseudonyms.has(member.pseudonym)) return [];
+        const run = batchResult.runs[index];
+        const reason: ResearchExclusionReason | undefined = !run?.ok
+          ? "profile_failed"
+          : run.output.status !== "skipped"
+            ? undefined
+            : run.output.reason === "model_content_filter"
+              ? "model_content_filter"
+              : "no_eligible_evidence";
+        return reason ? [{ ...member, reason }] : [];
+      });
+      const countExcluded = (reason: ResearchExclusionReason) =>
+        excludedMembers.filter((member) => member.reason === reason).length;
+      const blockedProfiles = countExcluded("model_content_filter");
+      const skippedProfiles = countExcluded("no_eligible_evidence");
+      // Content-filter exclusions stay inside the stored failure count, so the
+      // persisted report keeps its existing coverage shape.
+      const failedProfiles = countExcluded("profile_failed") + blockedProfiles;
+      const exclusionDetail = `${blockedProfiles} refused by the model content filter, ${skippedProfiles} without eligible evidence, ${failedProfiles - blockedProfiles} failed`;
+      if (excludedMembers.length > 0) {
+        console.warn("Some user research profiles were excluded", {
+          analysisId,
+          excluded: excludedMembers.map(({ pseudonym, reason }) => ({
+            pseudonym,
+            reason,
+          })),
+        });
+      }
+
+      if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
+        throw new ResearchRunFailure(
+          "no_analyzable_profiles",
+          `No users could be analyzed (${exclusionDetail})`,
+        );
+      }
       const comparisonGroupsForPrompt = comparisonGroups?.map((group) => ({
         label: group.label,
         pseudonyms: group.userIds
@@ -361,8 +475,9 @@ export const pmUserResearch = schemaTask({
             USER_RESEARCH_MIN_USERS_PER_COMPARISON_GROUP,
         )
       ) {
-        throw new Error(
-          "Fewer than three users remained in a comparison group for privacy-safe synthesis",
+        throw new ResearchRunFailure(
+          "comparison_group_below_minimum",
+          `Fewer than three users remained in a comparison group for privacy-safe synthesis (${exclusionDetail})`,
         );
       }
 
@@ -405,21 +520,44 @@ export const pmUserResearch = schemaTask({
         profiles: profilesWithBasis,
       });
       assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("synthesis"));
-      const result = await generateText({
-        model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
-        output: Output.object({ schema: cohortSynthesisSchema }),
-        providerOptions: USER_RESEARCH_PROVIDER_OPTIONS,
-        temperature: 0,
-        maxOutputTokens: 8_000,
-        maxRetries: 1,
-        prompt,
-      });
-      const synthesis = normalizeCohortSynthesis(
-        await readResearchStructuredOutput(result, {
-          operation: "synthesis",
-          ctx,
-        }),
-        profiles.length,
+      const generateSynthesis = async (route: ResearchModelRoute) => {
+        const result = await generateText({
+          model: myProvider.languageModel(route.modelKey),
+          output: Output.object({ schema: cohortSynthesisSchema }),
+          providerOptions: route.providerOptions,
+          temperature: 0,
+          maxOutputTokens: 8_000,
+          maxRetries: 1,
+          prompt,
+        });
+        return {
+          output: await readResearchStructuredOutput(result, {
+            operation: "synthesis",
+            ctx,
+            modelKey: route.modelKey,
+          }),
+          usage: result.usage,
+        };
+      };
+      let generated: Awaited<ReturnType<typeof generateSynthesis>>;
+      try {
+        generated = await generateWithBedrockFallback(
+          "synthesis",
+          generateSynthesis,
+        );
+      } catch (error) {
+        if (isResearchContentFilterRefusal(error)) {
+          throw new ResearchRunFailure(
+            "synthesis_blocked_by_content_filter",
+            "The model content filter refused the cohort synthesis",
+          );
+        }
+        throw error;
+      }
+      const synthesis = withContentFilterLimitation(
+        normalizeCohortSynthesis(generated.output, profiles.length),
+        blockedProfiles,
+        payload.userIds.length,
       );
       const report: ResearchCohortReport = {
         ...synthesis,
@@ -427,7 +565,7 @@ export const pmUserResearch = schemaTask({
         coverage: {
           usersRequested: payload.userIds.length,
           usersAnalyzed: profiles.length,
-          profilesFailed: failedPseudonyms.length,
+          profilesFailed: failedProfiles,
           profilesSkipped: skippedProfiles,
           chatsReviewed: profiles.reduce(
             (count, profile) => count + profile.coverage.chatsReviewed,
@@ -446,7 +584,7 @@ export const pmUserResearch = schemaTask({
         report,
         model: GROK_4_6_SLUG,
         promptVersion: USER_RESEARCH_PROMPT_VERSION,
-        ...usageForStorage(result.usage),
+        ...usageForStorage(generated.usage),
       });
 
       return {
@@ -454,25 +592,29 @@ export const pmUserResearch = schemaTask({
         status: "completed" as const,
         userIds: payload.userIds,
         ...(comparisonGroups ? { comparisonGroups } : {}),
-        failedProfiles: failedPseudonyms.length,
+        failedProfiles,
         skippedProfiles,
+        blockedProfiles,
+        excludedUsers: excludedMembers.map(({ userId, reason }) => ({
+          userId,
+          reason,
+        })),
         usersAnalyzed: profiles.length,
         report,
       };
     } catch (error) {
+      const failure = error instanceof ResearchRunFailure ? error : undefined;
       console.error("User research run failed", {
         analysisId,
         errorType: error instanceof Error ? error.name : "unknown",
+        ...(failure ? { reason: failure.reason } : {}),
       });
       await client.mutation(api.userResearch.failRun, {
         serviceKey,
         analysisId,
-        error:
-          "Analysis failed before a privacy-safe cohort report was produced",
+        error: failure?.detail ?? GENERIC_RUN_FAILURE,
       });
-      throw new Error(
-        "User research analysis failed. Review the restricted Trigger run for diagnostics.",
-      );
+      throw new Error(formatResearchRunFailure(failure?.reason));
     }
   },
 });

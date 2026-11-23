@@ -1806,10 +1806,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /hasCandidate:\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
-      /const nextContinuation\s*=\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
+      /const retryAssistantParts\s*=\s*normalizedRetryMessages\.findLast\(/,
+    );
+    // Only a retriable disconnect or a failed Max Bedrock leg continues.
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*\(\(isTerminalProviderStreamError\(state\) &&[\s\S]{0,200}\|\|\s*bedrockRecoveryFailed\) &&\s*!hasUncertainProviderToolOutcome\(\s*retryAssistantParts/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+    );
+    // Only the refused Bedrock leg is unbilled before DeepSeek continues;
+    // earlier legs and disconnects keep the usage they incurred.
+    expect(taskSrc).toMatch(
+      /usageTracker\.beginModelLeg\(\);\s*if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = await createStream\(/,
+    );
+    expect(taskSrc).toMatch(
+      /if \(retryContentBlocked\) \{\s*usageTracker\.discardModelLeg\(\);\s*\}\s*streamError = undefined;\s*resetAgentStreamStateForRetry\(state\);/,
     );
     expect(taskSrc).toMatch(
       /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,

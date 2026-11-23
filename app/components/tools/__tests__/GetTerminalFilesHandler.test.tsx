@@ -39,4 +39,26 @@ describe("GetTerminalFilesHandler", () => {
     expect(screen.getByText("server.zip")).toBeInTheDocument();
     expect(screen.queryByText("client.zip")).not.toBeInTheDocument();
   });
+
+  it("renders a stored failed delivery whose requested list holds a compaction marker", () => {
+    render(
+      <GetTerminalFilesHandler
+        status="ready"
+        part={{
+          toolCallId: "call-2",
+          state: "output-error",
+          errorText: "upload failed",
+          input: {
+            brief: "Deliver reports",
+            files: [
+              "/home/user/report.zip",
+              { truncated: true, remaining: 5 } as unknown as string,
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/report\.zip/)).toBeInTheDocument();
+  });
 });

@@ -67,7 +67,13 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    primary/secondary target, confidence, unknowns, and experiments. User IDs are
    ordinary cohort-selection output and must not be hidden or replaced with
    pseudonyms. Detailed profiles remain in restricted Convex records and are not
-   returned through Trigger.
+   returned through Trigger. List `excludedUsers` separately from the analyzed
+   users, each with its reason: `model_content_filter` means the analysis
+   model refused to read that user's conversations, `no_eligible_evidence`
+   means no usable chats were in the window, and `profile_failed` means the
+   profile task errored. Findings cover only the analyzed users. When
+   `blockedProfiles` is nonzero, keep the report's content-filter unknown next
+   to the findings, because refused users may differ from analyzed users.
 7. Update an optional Linear issue only when asked. Copy aggregate findings,
    cohort IDs, coverage, confidence, unknowns, and experiments. Never copy raw
    evidence, customer message content, secrets, or restricted profile records.
@@ -184,7 +190,10 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
   explicit survey reasons or a controlled experiment before making causal
   claims.
 - Comparison synthesis fails closed if fewer than three readable profiles
-  remain in any group. Grok 4.6 receives only pseudonyms and sanitized group
+  remain in any group. A failed run may return a closed `reason`:
+  `no_analyzable_profiles`, `comparison_group_below_minimum` or
+  `synthesis_blocked_by_content_filter`. Report it as given; content-filter
+  exclusions count toward the group minimum. Grok 4.6 receives only pseudonyms and sanitized group
   labels, never the internal ID-to-group mapping.
 - Say `unknown` when the evidence does not establish context. Never infer a
   company or occupation from an email address.

@@ -30,6 +30,9 @@ const PROTECTED_TOOLS = new Set([
   "delete_note",
   "create_vulnerability_report",
   "update_vulnerability_report",
+  // Delivery receipts are the model's record of what the user received and
+  // resolve inline sandbox: links after reload. Each file adds a small receipt.
+  "get_terminal_files",
 ]);
 
 const TOOL_TYPE_PREFIX = "tool-";
@@ -124,6 +127,79 @@ const fileMutationOutcome = (output: any, explicitFailure: boolean): string => {
     return "outcome success";
   }
   return "outcome unknown";
+};
+
+type FileDeliveryOutput = {
+  files?: unknown;
+  fileUrls?: unknown;
+  failedFiles?: unknown;
+  deliveryReceipts?: unknown;
+};
+
+const asFileDeliveryOutput = (output: unknown): FileDeliveryOutput | null =>
+  output && typeof output === "object" && !Array.isArray(output)
+    ? (output as FileDeliveryOutput)
+    : null;
+
+const deliveryEntries = (value: unknown): Array<Record<string, unknown>> =>
+  Array.isArray(value)
+    ? value.filter(
+        (entry): entry is Record<string, unknown> =>
+          !!entry && typeof entry === "object",
+      )
+    : [];
+
+const deliveryPath = (entry: Record<string, unknown>): string =>
+  typeof entry.path === "string"
+    ? entry.path.replace(/[\r\n]+/g, " ").slice(0, 512)
+    : "unknown";
+
+/**
+ * Lists every delivered and failed path from a get_terminal_files result so a
+ * compacted record still says exactly which files the user received.
+ */
+const summarizeFileDelivery = (output: unknown): string => {
+  const delivery = asFileDeliveryOutput(output);
+  if (!delivery) return "[Files: no delivery result; treat as not delivered]";
+  const delivered = [
+    ...deliveryEntries(delivery.files),
+    // Legacy messages stored successful deliveries as fileUrls.
+    ...deliveryEntries(delivery.fileUrls),
+  ].map(deliveryPath);
+  const failed = deliveryEntries(delivery.failedFiles).map(deliveryPath);
+  const total = delivered.length + failed.length;
+  const parts = [
+    `delivered ${delivered.length} of ${total} file(s)${
+      delivered.length ? `: ${delivered.join(", ")}` : ""
+    }`,
+    failed.length && `failed ${failed.length}: ${failed.join(", ")}`,
+  ].filter(Boolean);
+  return `[Files: ${parts.join("; ")}]`;
+};
+
+/** Keeps the fields the file card and inline sandbox links read after reload. */
+const compactFileDeliveryForStorage = (output: unknown): unknown => {
+  const delivery = asFileDeliveryOutput(output);
+  if (!delivery) return compactToolInputForStorage(output);
+  return {
+    result: summarizeFileDelivery(delivery),
+    files: deliveryEntries(delivery.files).map(({ path }) => ({ path })),
+    failedFiles: deliveryEntries(delivery.failedFiles).map(
+      ({ path, reason }) => ({
+        path,
+        ...(typeof reason === "string" && {
+          reason: truncateStorageString(reason, 200),
+        }),
+      }),
+    ),
+    deliveryReceipts: deliveryEntries(delivery.deliveryReceipts),
+    ...(Array.isArray(delivery.fileUrls) && {
+      fileUrls: deliveryEntries(delivery.fileUrls).map(({ path }) => ({
+        path,
+      })),
+    }),
+    __hackeraiStorageCompacted: true,
+  };
 };
 
 /**
@@ -248,10 +324,8 @@ const buildPlaceholderFromParts = (
       return `[Search: '${query}']`;
     }
 
-    case "get_terminal_files": {
-      const n = Array.isArray(output) ? output.length : "?";
-      return `[Files: retrieved ${n} files]`;
-    }
+    case "get_terminal_files":
+      return summarizeFileDelivery(output);
 
     case "open_url": {
       const url = input?.url ?? "unknown";
@@ -382,6 +456,32 @@ const compactToolInputForStorage = (value: unknown, depth = 0): unknown => {
   return compacted;
 };
 
+/**
+ * The file card reads `input.files` as path strings, so storage compaction
+ * keeps that list complete and string-only instead of appending a marker.
+ */
+const compactToolPartInputForStorage = (
+  toolName: string | null,
+  input: unknown,
+): unknown => {
+  if (
+    toolName !== "get_terminal_files" ||
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    !Array.isArray((input as { files?: unknown }).files)
+  ) {
+    return compactToolInputForStorage(input);
+  }
+  const { files, ...rest } = input as { files: unknown[] };
+  return {
+    ...(compactToolInputForStorage(rest) as Record<string, unknown>),
+    files: files
+      .filter((path): path is string => typeof path === "string")
+      .map((path) => truncateStorageString(path, 512)),
+  };
+};
+
 const compactNoteForStorage = (value: unknown): unknown => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return compactToolInputForStorage(value);
@@ -433,6 +533,9 @@ const compactProtectedToolOutputForStorage = (
   toolName: string,
   output: unknown,
 ): unknown => {
+  if (toolName === "get_terminal_files") {
+    return compactFileDeliveryForStorage(output);
+  }
   if (
     toolName !== "list_notes" ||
     !output ||
@@ -470,7 +573,7 @@ const compactToolPartForStorage = (
 
   return {
     ...part,
-    input: compactToolInputForStorage(part.input),
+    input: compactToolPartInputForStorage(toolName, part.input),
     output: PROTECTED_TOOLS.has(toolName)
       ? compactProtectedToolOutputForStorage(toolName, part.output)
       : isCompactPlaceholderOutput(part.output)
@@ -721,7 +824,10 @@ const compactNonCompletedPartForStorage = (
   if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
     return {
       ...toolPart,
-      input: compactToolInputForStorage(toolPart.input),
+      input: compactToolPartInputForStorage(
+        toolPart.type.slice(TOOL_TYPE_PREFIX.length),
+        toolPart.input,
+      ),
     } as UIMessage["parts"][number];
   }
 

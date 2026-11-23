@@ -99,6 +99,8 @@ type ModelStepCost = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Model steps only: the total added to totalTokens, which may differ from input + output. */
+  totalTokens?: number;
   modelName?: string;
 };
 
@@ -171,6 +173,8 @@ export class UsageTracker {
   private discardedModelSteps: ModelStepCost[] = [];
   private modelCallsStarted = 0;
   private retryResets = 0;
+  /** First model step of the current leg, set by beginModelLeg(). */
+  private modelLegStartStep?: number;
 
   recordModelCall(): void {
     this.modelCallsStarted++;
@@ -214,6 +218,7 @@ export class UsageTracker {
   }: { isLoopRecovery?: boolean } = {}) {
     if (isLoopRecovery) return;
 
+    this.modelLegStartStep = undefined;
     this.discardedModelSteps.push(...this.modelStepCosts);
     this.retryResets++;
     this.providerCost -= this.modelProviderCost;
@@ -228,6 +233,37 @@ export class UsageTracker {
     this.modelStepCosts = [];
   }
 
+  /** Starts a model leg whose usage discardModelLeg() can remove on its own. */
+  beginModelLeg(): void {
+    this.modelLegStartStep = this.modelStepCosts.length;
+  }
+
+  /**
+   * Discards only the current model leg's usage: the steps recorded since
+   * beginModelLeg(). Earlier legs, summarization and non-model costs stay
+   * billed. Without a started leg, every model step is discarded.
+   */
+  discardModelLeg(): void {
+    const discarded = this.modelStepCosts.splice(this.modelLegStartStep ?? 0);
+    this.modelLegStartStep = undefined;
+    this.discardedModelSteps.push(...discarded);
+    this.retryResets++;
+    for (const step of discarded) {
+      const cost = step.authoritativeCost ?? step.rawCost;
+      if (isPositiveFiniteNumber(cost)) {
+        this.providerCost -= cost;
+        this.modelProviderCost -= cost;
+      }
+      this.inputTokens -= step.inputTokens;
+      this.outputTokens -= step.outputTokens;
+      this.cacheReadTokens -= step.cacheReadTokens;
+      this.cacheWriteTokens -= step.cacheWriteTokens;
+      this.totalTokens -=
+        step.totalTokens ?? step.inputTokens + step.outputTokens;
+    }
+    this.lastStepInputTokens = 0;
+  }
+
   accumulateStep(usage: StepUsage, modelName?: string): number {
     const receipt = normalizeTokenReceipt({
       inputTokens: usage.inputTokens,
@@ -238,11 +274,12 @@ export class UsageTracker {
     if (receipt.cacheTelemetryReported) {
       this.modelCacheTelemetryObserved = true;
     }
-    this.inputTokens += receipt.inputTokens;
-    this.outputTokens += receipt.outputTokens;
-    this.totalTokens += isValidTokenCount(usage.totalTokens)
+    const stepTotalTokens = isValidTokenCount(usage.totalTokens)
       ? usage.totalTokens
       : receipt.inputTokens + receipt.outputTokens;
+    this.inputTokens += receipt.inputTokens;
+    this.outputTokens += receipt.outputTokens;
+    this.totalTokens += stepTotalTokens;
     this.lastStepInputTokens = receipt.inputTokens;
     this.cacheReadTokens += receipt.cacheReadTokens;
     this.cacheWriteTokens += receipt.cacheWriteTokens;
@@ -271,6 +308,7 @@ export class UsageTracker {
         outputTokens: receipt.outputTokens,
         cacheReadTokens: receipt.cacheReadTokens,
         cacheWriteTokens: receipt.cacheWriteTokens,
+        totalTokens: stepTotalTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {

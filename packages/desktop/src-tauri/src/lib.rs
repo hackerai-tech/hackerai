@@ -9,6 +9,7 @@ mod file_acl_tests;
 #[cfg(test)]
 mod file_read_tests;
 mod file_save;
+mod keep_awake;
 mod lifecycle_diagnostics;
 mod notifications;
 mod platform;
@@ -20,6 +21,8 @@ mod update_safety;
 mod update_safety_tests;
 #[cfg(test)]
 mod updater_tests;
+#[cfg(windows)]
+mod windows_stream_job;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -1215,6 +1218,10 @@ where
         read_timing,
     )
     .await?;
+    // Only server-approved Agent work keeps this computer awake.
+    if let Some(keep_awake) = window.try_state::<keep_awake::KeepAwake>() {
+        keep_awake.touch();
+    }
     Ok(message)
 }
 
@@ -1837,6 +1844,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_stop_request_source == Some(serde_json::Value::Bool(true));
     let include_stream_fence_darwin_stop =
         include_stream_fence_darwin_stop == Some(serde_json::Value::Bool(true));
+    let keep_awake = window.try_state::<keep_awake::KeepAwake>();
+    let _awake = keep_awake.as_deref().map(keep_awake::KeepAwake::activity);
     execute_stream_command(
         &state,
         admission,
@@ -1901,6 +1910,9 @@ fn stop_native_work_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         if !stream_lifecycle::resolved_blocking(&cleanups, EXIT_STREAM_CLEANUP_WAIT) {
             log::warn!("Desktop could not confirm streamed commands stopped before exit");
         }
+    }
+    if let Some(keep_awake) = app.try_state::<keep_awake::KeepAwake>() {
+        keep_awake.shutdown();
     }
     if let Some(diagnostics) = app.try_state::<lifecycle_diagnostics::LifecycleDiagnostics>() {
         diagnostics.record_clean_exit();
@@ -4869,6 +4881,7 @@ pub fn run() {
             app.manage(lifecycle_diagnostics::LifecycleDiagnostics::start(
                 app.path().app_data_dir().ok(),
             ));
+            app.manage(keep_awake::KeepAwake::start());
             #[cfg(target_os = "linux")]
             watch_linux_web_process(app);
             notifications::init(app.handle());

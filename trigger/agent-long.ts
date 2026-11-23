@@ -95,6 +95,7 @@ import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import {
   AGENT_PROVIDER_IDLE_TIMEOUT_MS,
   AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
@@ -229,6 +230,7 @@ import {
   getPostHogBooleanFlagDecisionForUser,
 } from "@/lib/posthog/server";
 import {
+  AGENT_LIMIT_WRAPUP_FLAG,
   AGENT_RUNTIME_CHECKPOINT_FLAG,
   createAgentRuntimeCheckpoint,
   resolveAgentRuntimeCheckpointEnabled,
@@ -303,6 +305,7 @@ import {
   prepareSandboxContextForPrompt,
   writeSandboxFallbackEvent,
 } from "@/lib/ai/tools/utils/sandbox-fallback";
+import { getCloudBackgroundInventoryReminder } from "@/lib/ai/tools/utils/cloud-background-processes";
 import {
   AGENT_LONG_HEARTBEAT_INTERVAL_MS,
   AGENT_LONG_HEARTBEAT_PART_TYPE,
@@ -342,6 +345,7 @@ import {
   isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   prepareAgentFinishContinuation,
+  getMaxAgentFirstRecoveryModel,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   type ProviderDisconnectContinuationRejection,
@@ -417,6 +421,9 @@ import {
   AgentAutoReviewEntitlementRevalidationUnavailableError,
   buildAgentToolApprovalRequester,
 } from "@/lib/chat/agent-tool-approval-requester";
+
+/** Turn-start background inventory budget; a slower sandbox resume skips it. */
+const CLOUD_BACKGROUND_INVENTORY_TIMEOUT_MS = 4_000;
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 6 * 60 * 60;
 // The free concurrency lock must outlive the run cap and cleanup grace.
@@ -2536,21 +2543,28 @@ export const agentLongTask = task({
         },
       });
       activeRuntimeBudget = runtimeBudget;
-      // Claimed goals checkpoint progress and continue across runs. Do not add
-      // time-pressure prompts to initial, resumed, or automatic goal runs.
+      // Claimed goals checkpoint progress and continue across runs, including
+      // past step limits. Do not add time- or limit-pressure prompts to
+      // initial, resumed, or automatic goal runs.
+      const [runtimeCheckpointEnabled, limitWrapUpEnabled] = activeGoal
+        ? [false, false]
+        : await Promise.all(
+            [AGENT_RUNTIME_CHECKPOINT_FLAG, AGENT_LIMIT_WRAPUP_FLAG].map(
+              (flagKey) =>
+                resolveAgentRuntimeCheckpointEnabled({
+                  signal: userStopSignal.signal,
+                  loadDecision: () =>
+                    getPostHogBooleanFlagDecisionForUser(
+                      flagKey,
+                      userId,
+                      undefined,
+                      { sendFeatureFlagEvents: false },
+                    ),
+                }),
+            ),
+          );
       const runtimeCheckpoint = createAgentRuntimeCheckpoint({
-        enabled:
-          !activeGoal &&
-          (await resolveAgentRuntimeCheckpointEnabled({
-            signal: userStopSignal.signal,
-            loadDecision: () =>
-              getPostHogBooleanFlagDecisionForUser(
-                AGENT_RUNTIME_CHECKPOINT_FLAG,
-                userId,
-                undefined,
-                { sendFeatureFlagEvents: false },
-              ),
-          })),
+        enabled: runtimeCheckpointEnabled,
         maxDurationMs: agentLongMaxDurationMs,
         getElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
         onExposed: (timing) =>
@@ -2563,6 +2577,20 @@ export const agentLongTask = task({
             ...timing,
             $process_person_profile: false,
           }),
+        limitWrapUp: {
+          enabled: limitWrapUpEnabled,
+          onExposed: (exposure) =>
+            phLogger.event("agent_limit_wrapup_exposed", {
+              userId,
+              trigger_run_id: ctx.run.id,
+              chat_id: chatId,
+              flag_key: AGENT_LIMIT_WRAPUP_FLAG,
+              [`$feature/${AGENT_LIMIT_WRAPUP_FLAG}`]: true,
+              subscription_tier: subscription,
+              ...exposure,
+              $process_person_profile: false,
+            }),
+        },
       });
       userStopSignal.signal.throwIfAborted();
       runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
@@ -3420,6 +3448,22 @@ export const agentLongTask = task({
                   }),
               );
             userStopSignal.signal.throwIfAborted();
+            // Overlaps attachment upload and delays the turn by at most the
+            // timeout; ordinary turns skip it without touching the sandbox.
+            const cloudBackgroundReminderPromise =
+              getCloudBackgroundInventoryReminder({
+                sandboxManager,
+                messages: messagesForProcessing,
+                timeoutMs: CLOUD_BACKGROUND_INVENTORY_TIMEOUT_MS,
+                onOutcome: (outcome, count) =>
+                  phLogger.event("cloud_background_inventory", {
+                    userId,
+                    chat_id: chatId,
+                    trigger_run_id: ctx.run.id,
+                    outcome,
+                    running_count: count,
+                  }),
+              });
             const sandboxContext = sandboxPromptContext.sandboxContext;
             const sandboxFallbackReminder = getSandboxFallbackPromptReminder(
               sandboxPromptContext.fallbackInfo,
@@ -3527,6 +3571,15 @@ export const agentLongTask = task({
               finalMessages = appendSystemReminderToLastUserMessage(
                 finalMessages,
                 sandboxFallbackReminder,
+              );
+            }
+
+            const cloudBackgroundReminder =
+              await cloudBackgroundReminderPromise;
+            if (cloudBackgroundReminder) {
+              finalMessages = appendSystemReminderToLastUserMessage(
+                finalMessages,
+                cloudBackgroundReminder,
               );
             }
 
@@ -3679,11 +3732,16 @@ export const agentLongTask = task({
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(
+                : (getMaxAgentFirstRecoveryModel({
+                    mode,
+                    selectedModelOverride,
+                    baselineModel: maxBaselineModel ?? selectedModel,
+                  }) ??
+                  getRetryFallbackModel(
                     maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
-                  );
+                  ));
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -5143,8 +5201,8 @@ export const agentLongTask = task({
                                 loopRecoveryMessages ?? finishedMessages,
                               omittedCount: 0,
                             };
-                      // A Max refusal recovers on DeepSeek for the rest of
-                      // this response, never by retrying the refusing model.
+                      // A Max refusal recovers on another provider (Grok on
+                      // Bedrock, then DeepSeek), never the refusing endpoint.
                       const maxProviderRefusal =
                         providerContentBlocked &&
                         mode === "agent" &&
@@ -5662,6 +5720,8 @@ export const agentLongTask = task({
                           }
                         }
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        // A later refusal of this leg discards only its usage.
+                        usageTracker.beginModelLeg();
                         if (userStopSignal.signal.aborted) {
                           isAborted = true;
                           break primaryProviderRecovery;
@@ -5735,20 +5795,36 @@ export const agentLongTask = task({
                                         message.role !== "assistant" ||
                                         (message.parts?.length ?? 0) > 0,
                                     );
+                                  const retryAssistantParts =
+                                    normalizedRetryMessages.findLast(
+                                      (message) => message.role === "assistant",
+                                    )?.parts ?? [];
+                                  const retryContentBlocked =
+                                    isProviderContentFilterFinishReason(
+                                      state.streamFinishReason,
+                                    );
+                                  // Max Grok on Bedrock hands any failure to
+                                  // DeepSeek, not only retriable disconnects.
+                                  const bedrockRecoveryFailed =
+                                    retryModel === GROK_4_6_BEDROCK_MODEL_KEY &&
+                                    (isTerminalProviderStreamError(state) ||
+                                      retryContentBlocked ||
+                                      isTerminalEmptyAssistantResponse(
+                                        retryAssistantParts,
+                                        state.streamFinishReason,
+                                      ));
                                   const nextContinuation =
                                     !isTrustedBrowserHandoffReadFailure(
                                       streamError,
                                       state.providerError,
                                     ) &&
-                                    isTerminalProviderStreamError(state) &&
-                                    isRetriableProviderStreamDisconnectError(
-                                      state.providerError,
-                                    ) &&
+                                    ((isTerminalProviderStreamError(state) &&
+                                      isRetriableProviderStreamDisconnectError(
+                                        state.providerError,
+                                      )) ||
+                                      bedrockRecoveryFailed) &&
                                     !hasUncertainProviderToolOutcome(
-                                      normalizedRetryMessages.findLast(
-                                        (message) =>
-                                          message.role === "assistant",
-                                      )?.parts ?? [],
+                                      retryAssistantParts,
                                     ) &&
                                     !retryAborted
                                       ? prepareProviderDisconnectContinuation(
@@ -5838,9 +5914,18 @@ export const agentLongTask = task({
                                       continuation: nextContinuation,
                                     });
                                     recordModelRecovery(
-                                      "provider_disconnect_continuation",
+                                      retryContentBlocked
+                                        ? "content_filter"
+                                        : "provider_disconnect_continuation",
                                       finalRetryModel,
                                     );
+                                    // A refused Bedrock leg follows the
+                                    // refusal billing policy: only its own
+                                    // model usage is discarded. Earlier legs
+                                    // and disconnects stay billed.
+                                    if (retryContentBlocked) {
+                                      usageTracker.discardModelLeg();
+                                    }
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;

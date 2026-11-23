@@ -6,6 +6,13 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
+  # The release build starts through workflow_run, which cannot write caches.
+  # Main pushes rebuild here so PR and release builds restore a warm cache.
+  push:
+    branches: [main]
+    paths:
+      - "packages/desktop/**"
+      - ".github/workflows/desktop-pr-build.yml"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +41,7 @@ jobs:
           HEAD_SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+          if [[ "$EVENT_NAME" == workflow_dispatch || "$EVENT_NAME" == push ]]; then
             echo 'desktop=true' >> "$GITHUB_OUTPUT"
           else
             git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
@@ -61,12 +68,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The Rust target selects the output architecture on this Intel host.
-          - platform: macos-15-intel
+          # Apple Silicon compiles both Mac targets much faster than the Intel
+          # pool. Release builds stay on Intel (desktop-build.yml) so a
+          # shortage of ARM runners cannot block a release.
+          - platform: macos-15
             target: aarch64-apple-darwin
             name: macOS-arm64
             bundles: app,dmg
-          - platform: macos-15-intel
+          - platform: macos-15
             target: x86_64-apple-darwin
             name: macOS-x64
             bundles: app,dmg
@@ -96,15 +105,16 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
+          cache: pnpm
       - name: Install Rust stable (Linux, Windows)
-        if: matrix.platform != 'macos-15-intel'
+        if: runner.os != 'macOS'
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           cache: false
       - name: Install Rust stable (macOS - pinned rustup-init)
-        if: matrix.platform == 'macos-15-intel'
+        if: runner.os == 'macOS'
         shell: bash
         env:
           RUSTUP_VERSION: 1.29.0
@@ -149,10 +159,15 @@ jobs:
           "$HOME/.cargo/bin/cargo" --version
           "$HOME/.cargo/bin/rustc" --version
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Only main saves. PRs and the merge queue restore main's cache; their
+      # own saves are unreadable elsewhere and would evict main's caches from
+      # the repository's 10 GB quota. Linux and Windows release builds restore
+      # the same shared key.
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/desktop/src-tauri -> target
-          key: desktop-pr-${{ matrix.target }}
+          shared-key: desktop-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux packaging dependencies
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
