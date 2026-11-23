@@ -369,7 +369,6 @@ class UploadTest(Case):
         each = self.open()
         each.process(entry(1, T0 + 61, event(US1)), now=T0 + 70)
         each.seal(now=T0 + 120 + GRACE)
-        oldest = collector.utc(T0)
         now = [T0 + 200]
         sink = Sink([503, "drop", 200, 200, 503])
         self.addCleanup(sink.close)
@@ -387,7 +386,7 @@ class UploadTest(Case):
             self.assertFalse(uploader.drain(each))
         lines = [call.args[0] for call in log.call_args_list]
 
-        backlog = f"pending=2 oldest_minute={oldest}"
+        backlog = "pending=2 oldest_minute=2027-01-15T08:00:00Z"
         self.assertEqual(
             lines[:3],
             [
@@ -401,7 +400,7 @@ class UploadTest(Case):
         )
         # A later outage starts a new count and names the last success.
         self.assertTrue(lines[3].startswith("upload deferred status=503 attempt=1 pending=1"))
-        self.assertTrue(lines[3].endswith(f"last_success={collector.utc(T0 + 215)}"))
+        self.assertTrue(lines[3].endswith("last_success=2027-01-15T08:03:35Z"))
         self.assertEqual(len(lines), 4)
         # Retry is unchanged: the deferred batch was resent until acknowledged.
         self.assertEqual(len(sink.received), 5)
@@ -436,9 +435,9 @@ class StartupTest(Case):
             with self.assertRaises(Stop):
                 collector.run(config, TELEMETRY_KEY, self.tmp.name)
         log.assert_called_once_with(
-            f"started region=us journal_cursor=missing "
-            f"sealed_through_minute={collector.utc(T0)} pending=1 "
-            f"oldest_minute={collector.utc(T0)} oldest_age_s=30 last_success=unavailable"
+            "started region=us journal_cursor=missing "
+            "sealed_through_minute=2027-01-15T08:00:00Z pending=1 "
+            "oldest_minute=2027-01-15T08:00:00Z oldest_age_s=30 last_success=unavailable"
         )
 
 

@@ -357,7 +357,8 @@ three places before naming a cause:
 
    ```sh
    journalctl --utc -o short-iso -u hackerai-egress-collector.service \
-     --since '<windowStart minus 5 min>' --until '<windowEnd plus 5 min>'
+     --since '<windowStart minus 5 min, with UTC suffix>' \
+     --until '<windowEnd plus 5 min, with UTC suffix>'
    ```
 
    - `started` marks a new process with its saved backlog: `pending`,
@@ -365,7 +366,7 @@ three places before naming a cause:
      `unavailable`, since it is not persisted.
    - `upload deferred` gives the HTTP status, or `status=unknown` with a
      coarse `transport` (`timeout`, `tls`, `dns`, `refused`, `connection`,
-     `network`), the attempt number, the oldest pending minute and age, and
+     `network`, `invalid`), the attempt number, the oldest pending minute and age, and
      the last success.
    - `upload recovered` appears once per outage, with the number of deferred
      attempts, the outage length and the age of the batch delivered first.
@@ -374,11 +375,11 @@ three places before naming a cause:
    `systemctl status hackerai-egress-collector.service` shows restarts and
    exit codes.
 
-Deferred uploads with an HTTP status should match route rejections or store
-failures. A transport outcome without matching receipts points to the path
-between the host and the web server. No collector lines and no receipts mean
-the collector was not running or not sealing minutes. The SOCKS health monitor
-uses a different path, so a healthy probe does not rule out any of these.
+Compare HTTP failures with route rejections, store failures, and edge logs.
+A transport outcome without matching receipts points to the path between
+the host and the web server. If both logs are empty, check retention and the
+collector's service state before inferring a stop. The SOCKS health monitor
+probes the traffic path independently of telemetry collection.
 These logs carry no keys, payloads, identities, addresses or destinations.
 
 To verify the monitor in Preview, upload synthetic telemetry above the Preview
