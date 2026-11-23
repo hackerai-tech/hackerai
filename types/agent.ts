@@ -11,7 +11,10 @@ import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox"
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
-import type { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
+import type {
+  LocalConnectionLostError,
+  LocalRunRecoverySummary,
+} from "@/lib/chat/local-connection-stop";
 
 // Union type for cloud providers and local CentrifugoSandbox.
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -48,6 +51,8 @@ export interface SandboxManager {
    * LocalConnectionLostError on loss, or with the signal's reason.
    */
   confirmLocalConnection?(signal?: AbortSignal): Promise<void>;
+  /** Content-free summary of the watched local host's recovered outages. */
+  getLocalRecoverySummary?(): LocalRunRecoverySummary | undefined;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;

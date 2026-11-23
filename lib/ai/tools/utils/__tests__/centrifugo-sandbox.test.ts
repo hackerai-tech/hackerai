@@ -3,6 +3,7 @@ import {
   recordAttachmentDownloadFailure,
 } from "../attachment-download-diagnostics";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import { IncompleteFileWriteError } from "../incomplete-file-write";
 import { phLogger } from "@/lib/posthog/server";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 /**
@@ -5709,6 +5710,50 @@ describe("CentrifugoSandbox", () => {
           "base64",
         ).toString("utf8"),
       ).toBe(content);
+    });
+    it("reports an interrupted chunked write as unknown with chunks confirmed, never as written", async () => {
+      const sandbox = createDesktopSandbox();
+      const content = "x".repeat(110 * 1024);
+      const settled = sandbox.files.write("C:\\repo\\large.txt", content).then(
+        () => ({ written: true }),
+        (error: unknown) => ({ error }),
+      );
+
+      await jest.advanceTimersByTimeAsync(0);
+      const firstSub = mockSubscriptions[0];
+      firstSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const firstRequest = (firstSub.publish as jest.Mock).mock.calls[0][0];
+      expect(firstRequest.type).toBe("file_write");
+      firstSub.emit("publication", {
+        data: { type: "file_ok", requestId: firstRequest.requestId },
+      });
+
+      // The connection drops before the second chunk is confirmed.
+      await jest.advanceTimersByTimeAsync(0);
+      const secondSub = mockSubscriptions[1];
+      secondSub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect((secondSub.publish as jest.Mock).mock.calls[0][0].type).toBe(
+        "file_append",
+      );
+      secondSub.emit("unsubscribed", { code: 3000, reason: "lost" });
+      await jest.advanceTimersByTimeAsync(130_000);
+
+      const outcome = await settled;
+      expect(outcome).not.toHaveProperty("written");
+      const { error } = outcome as { error: IncompleteFileWriteError };
+      expect(error).toBeInstanceOf(IncompleteFileWriteError);
+      expect(error).toMatchObject({
+        writeOutcome: "unknown",
+        confirmedChunks: 1,
+        totalChunks: 4,
+      });
+      expect(error.message).toContain("1 of 4 chunks were confirmed");
+      expect(error.message).toContain("do not append the missing part");
+      expect(error.message).toContain("rewrite the whole file");
+      // The remaining chunk is never sent after the interruption.
+      expect(mockSubscriptions).toHaveLength(2);
     });
   });
 

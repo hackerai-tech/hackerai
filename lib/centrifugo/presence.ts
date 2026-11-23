@@ -13,6 +13,16 @@ type PresenceResultLike = {
 // missed heartbeats before backend cleanup can make the connection terminal.
 export const LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS = 30_000;
 export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 120_000;
+/**
+ * How long an Agent run waits for a Desktop host that proved its native
+ * session to return on the same connection, and how long that host's bridge
+ * keeps the connection instead of registering a new one. It matches the
+ * presence grace. The backend keeps an unheard connection for at least that
+ * long after its last heartbeat, which can be up to one heartbeat interval
+ * before the interruption, so a late return can find it already disconnected.
+ * Most relay outages that outlast a few seconds end within it.
+ */
+export const LOCAL_RUN_HOST_RECOVERY_MS = LOCAL_SANDBOX_PRESENCE_GRACE_MS;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null

@@ -53,6 +53,7 @@ import {
   type PublishedDesktopCommand,
 } from "@/lib/centrifugo/desktop-session";
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
+import { IncompleteFileWriteError } from "./incomplete-file-write";
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
 
@@ -3007,26 +3008,34 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     // This avoids per-chunk relay probes without reusing stale mounts on a later
     // operation or replacement connection, or redirecting an append mid-write.
     const nativePaths = new Map<string, string>();
-    for (
-      let offset = 0;
-      offset < encodedContent.length;
-      offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
-    ) {
-      await this.runFileRequest<FileOkMessage>(
-        {
-          type: offset === 0 ? firstChunkType : "file_append",
-          path: rawPath,
-          content: encodedContent.slice(
-            offset,
-            offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
-          ),
-          isBase64: true,
-        },
-        new Set(["file_ok"]),
-        120000,
-        signal,
-        nativePaths,
-      );
+    const chunkSize = CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS;
+    const totalChunks = Math.ceil(encodedContent.length / chunkSize);
+    for (let index = 0; index < totalChunks; index++) {
+      const offset = index * chunkSize;
+      try {
+        await this.runFileRequest<FileOkMessage>(
+          {
+            type: index === 0 ? firstChunkType : "file_append",
+            path: rawPath,
+            content: encodedContent.slice(offset, offset + chunkSize),
+            isBase64: true,
+          },
+          new Set(["file_ok"]),
+          120000,
+          signal,
+          nativePaths,
+        );
+      } catch (error) {
+        // A single message either applied or did not; a sequence that stopped
+        // partway has an unknown result on disk, even at its first chunk.
+        if (totalChunks === 1) throw error;
+        throw new IncompleteFileWriteError(
+          index,
+          totalChunks,
+          firstChunkType === "file_write" ? "write" : "append",
+          { cause: error },
+        );
+      }
     }
   }
 

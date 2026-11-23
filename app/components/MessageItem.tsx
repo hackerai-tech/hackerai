@@ -68,6 +68,8 @@ interface MessageItemProps {
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   continueDisabledReason?: string;
+  /** The stopped run's own computer is connected again. */
+  stoppedComputerReconnected?: boolean;
   mode?: ChatMode;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
@@ -119,6 +121,8 @@ function areMessageItemPropsEqual(
   if (prev.lastUserMessageIndex !== next.lastUserMessageIndex) return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.continueDisabledReason !== next.continueDisabledReason) return false;
+  if (prev.stoppedComputerReconnected !== next.stoppedComputerReconnected)
+    return false;
   if (prev.onContinue !== next.onContinue) return false;
   if (prev.mode !== next.mode) return false;
   if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
@@ -196,6 +200,7 @@ export const MessageItem = memo(function MessageItem({
   tempChatFileDetails,
   finishReason,
   continueDisabledReason,
+  stoppedComputerReconnected,
   mode,
   branchedFromChatId,
   branchedFromChatTitle,
@@ -739,6 +744,7 @@ export const MessageItem = memo(function MessageItem({
                   : "conversation"
               }
               continueDisabledReason={continueDisabledReason}
+              stoppedComputerReconnected={stoppedComputerReconnected}
               status={status}
               mode={mode}
               agentRunSpendCapPremiumContinuationAllowed={

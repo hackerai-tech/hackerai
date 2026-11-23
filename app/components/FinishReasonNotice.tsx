@@ -51,6 +51,11 @@ const LAST_SAVED_STEP_COPY: Record<LastSavedStep, string> = {
 interface FinishReasonNoticeProps {
   finishReason?: string;
   continueDisabledReason?: string;
+  /**
+   * The computer this run stopped on is selected and connected again. Resume
+   * stays a user action; a lost connection never continues automatically.
+   */
+  stoppedComputerReconnected?: boolean;
   status?: ChatStatus;
   mode?: ChatMode;
   lastSavedStep?: LastSavedStep;
@@ -66,6 +71,7 @@ export const FinishReasonNotice = ({
   mode,
   onContinue,
   continueDisabledReason,
+  stoppedComputerReconnected,
   status,
   lastSavedStep = "conversation",
 }: FinishReasonNoticeProps) => {
@@ -100,11 +106,19 @@ export const FinishReasonNotice = ({
       continueDisabledReason ||
       (mode === "ask" ? "Switch to Agent to resume." : undefined);
     const resuming = pending || status === "submitted";
+    const computerBack =
+      finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+      stoppedComputerReconnected === true &&
+      !disabledReason;
     return (
       <div className="mt-2 w-full" role="status" aria-live="polite">
         <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0 flex-1 basis-60">
-            <p className="font-medium text-foreground">{copy.reason}</p>
+            <p className="font-medium text-foreground">
+              {computerBack
+                ? "Your computer is back. Resume to continue this run."
+                : copy.reason}
+            </p>
             <p className="mt-0.5 text-sm">
               {LAST_SAVED_STEP_COPY[lastSavedStep]} Only work still visible
               after reload is confirmed saved. {copy.detail}

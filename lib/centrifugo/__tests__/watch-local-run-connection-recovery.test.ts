@@ -317,6 +317,8 @@ test("a reconnected subscription alone never restores readiness", async () => {
   await jest.advanceTimersByTimeAsync(1);
   expect(cause()).toEqual({
     reason: "observer_recovery_expired",
+    recoveryWindowMs: 15_000,
+    recoveryElapsedMs: 15_000,
     connectionId: SELECTED,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: expect.any(Number),

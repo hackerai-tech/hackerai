@@ -368,6 +368,24 @@ describe("getNextProviderDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it("treats an interrupted Desktop file write as unsafe to retry", () => {
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-file",
+          state: "output-available",
+          output: {
+            error: "File write did not complete: 2 of 5 chunks were confirmed",
+            executionOutcome: "unknown",
+            writeOutcome: "unknown",
+            confirmedChunks: 2,
+            totalChunks: 5,
+          },
+        },
+      ]),
+    ).toBe(true);
+  });
+
   it("treats a completed terminal result with unknown execution as unsafe to retry", () => {
     expect(
       hasUncertainProviderToolOutcome([

@@ -6,6 +6,7 @@ import {
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import {
   DESKTOP_SESSION_CHALLENGE,
+  DESKTOP_SESSION_ENDED,
   answerDesktopSessionChallenge,
   parseDesktopSessionChallenge,
   readDesktopSessionIdentity,
@@ -131,7 +132,10 @@ import {
   RelayOutputOverflowError,
 } from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
-import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_RUN_HOST_RECOVERY_MS,
+  LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+} from "@/lib/centrifugo/presence";
 import { normalizeSandboxPlatform } from "@/lib/ai/tools/utils/platform-utils";
 
 type RefreshTokenResult =
@@ -185,6 +189,9 @@ const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
 const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
+// An Agent run on this connection is evidenced by its session challenge or a
+// dispatched operation. Model steps between operations rarely run this long.
+const DESKTOP_RUN_ACTIVITY_WINDOW_MS = 15 * 60_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
 /** An ACL denial does not establish that a command registration is missing. */
@@ -690,6 +697,9 @@ interface RendererCancelAttempts {
   output_overflow: boolean;
 }
 
+/** Bounds stop()'s wait for the session-ended notice to reach the relay. */
+const SESSION_ENDED_PUBLISH_TIMEOUT_MS = 1_000;
+
 export class DesktopSandboxBridge {
   private environmentId?: string;
 
@@ -734,6 +744,10 @@ export class DesktopSandboxBridge {
   private successfulRelayConnections = 0;
   private relayStarted = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the current wait for a ready subscription began. */
+  private reconnectWaitStartedAt: number | null = null;
+  /** Last session challenge or dispatched operation for this connection. */
+  private lastRunActivityAt: number | null = null;
   private readonly relayTelemetry: DesktopRelayTelemetry;
   private readonly ackTelemetry = new DesktopAckTelemetry();
   constructor(config: DesktopBridgeConfig) {
@@ -903,11 +917,30 @@ export class DesktopSandboxBridge {
   private clearReconnectTimer(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.reconnectWaitStartedAt = null;
+  }
+
+  /**
+   * A run whose watcher proved this native session waits up to
+   * LOCAL_RUN_HOST_RECOVERY_MS for this same connection to return; a new
+   * registration can never satisfy it. Only recent run activity counts, so an
+   * idle bridge still renegotiates its transport after the shorter timeout.
+   */
+  private runMayAwaitConnection(now: number): boolean {
+    const outageStartedAt = this.reconnectWaitStartedAt;
+    const activityAt = this.lastRunActivityAt;
+    return (
+      outageStartedAt !== null &&
+      activityAt !== null &&
+      outageStartedAt - activityAt <= DESKTOP_RUN_ACTIVITY_WINDOW_MS &&
+      now - outageStartedAt < LOCAL_RUN_HOST_RECOVERY_MS
+    );
   }
 
   private watchRelayReconnect(): void {
     if (!this.relayStarted || this.reconnectTimer || this.isStoppingOrStopped)
       return;
+    this.reconnectWaitStartedAt ??= Date.now();
     // Centrifuge pins its first working transport. A fresh bridge lets its
     // WebSocket/HTTP fallback negotiation run again after a persistent outage.
     // Only a ready subscription clears this deadline, not a socket handshake.
@@ -917,10 +950,12 @@ export class DesktopSandboxBridge {
       // An executing command and its retained output belong to this connection.
       // Re-registering while the worker still awaits it abandons that output.
       // Keep the SDK reconnecting until the bounded command delivery window ends.
+      const now = Date.now();
       if (
         [...this.commandDeliveryDeadlines.values()].some(
-          (deadline) => deadline > Date.now(),
-        )
+          (deadline) => deadline > now,
+        ) ||
+        this.runMayAwaitConnection(now)
       ) {
         this.watchRelayReconnect();
         return;
@@ -985,6 +1020,7 @@ export class DesktopSandboxBridge {
     this.nativeFileIpcFailure = undefined;
     this.nativeLifecycle = {};
     this.nativeSession = undefined;
+    this.lastRunActivityAt = null;
     this.nativeVersionLate = undefined;
     this.clearNativeVersionLateReportTimer();
     // Diagnostics only: the analytics owner before this start's first IPC.
@@ -1195,7 +1231,8 @@ export class DesktopSandboxBridge {
       this.relayUnavailableAt = null;
     });
     client.on("disconnected", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      // A client replaced by a restart must not tear down its successor.
+      if (this.isStoppingOrStopped || this.client !== client) return;
       this.logRelayState("disconnected", {
         code: ctx.code,
         reason: ctx.reason,
@@ -1213,7 +1250,8 @@ export class DesktopSandboxBridge {
     });
 
     subscription.on("subscribing", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
@@ -1226,7 +1264,8 @@ export class DesktopSandboxBridge {
       });
     });
     subscription.on("subscribed", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       this.clearReconnectTimer();
       this.config.onConnectionState?.("connected");
       this.logRelayState("connected", {
@@ -1236,7 +1275,8 @@ export class DesktopSandboxBridge {
       });
     });
     subscription.on("unsubscribed", (ctx) => {
-      if (this.isStoppingOrStopped) return;
+      if (this.isStoppingOrStopped || this.subscription !== subscription)
+        return;
       this.logRelayState("disconnected", {
         source: "subscription",
         code: ctx.code,
@@ -1262,6 +1302,8 @@ export class DesktopSandboxBridge {
       if (message.targetConnectionId !== this.connectionId) {
         return;
       }
+      // Any targeted operation or session challenge comes from a run.
+      this.lastRunActivityAt = Date.now();
 
       switch (message.type) {
         case "command":
@@ -4002,26 +4044,50 @@ export class DesktopSandboxBridge {
     const connectionId = this.connectionId;
     this.connectionId = null;
 
-    if (this.subscription) {
+    // Captured before the bounded wait below: a restart during that wait owns
+    // the new client and subscription, which this stop must not tear down.
+    const client = this.client;
+    const subscription = this.subscription;
+    if (subscription) {
+      // A run waiting for this connection would otherwise wait out its whole
+      // recovery window. The client writes a publish only while connected, so
+      // wait (bounded) for it before teardown; a failed send changes nothing.
+      if (connectionId) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            subscription
+              .publish({ type: DESKTOP_SESSION_ENDED, connectionId })
+              .catch(() => {}),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, SESSION_ENDED_PUBLISH_TIMEOUT_MS);
+            }),
+          ]);
+        } catch {
+          // Not subscribed: the run's own window still bounds its wait.
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       try {
-        this.subscription.unsubscribe();
-        this.subscription.removeAllListeners();
+        subscription.unsubscribe();
+        subscription.removeAllListeners();
       } catch (error) {
         console.warn("[DesktopSandboxBridge] Failed to unsubscribe:", error);
       }
-      this.subscription = null;
+      if (this.subscription === subscription) this.subscription = null;
     }
 
-    if (this.client) {
+    if (client) {
       try {
-        this.client.disconnect();
+        client.disconnect();
       } catch (error) {
         console.warn(
           "[DesktopSandboxBridge] Failed to disconnect client:",
           error,
         );
       }
-      this.client = null;
+      if (this.client === client) this.client = null;
     }
 
     // Convex queues mutations while offline. Local cleanup and recovery must

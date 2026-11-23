@@ -181,7 +181,8 @@ test.each([
     "observer_disconnected",
     3501,
     "disconnected",
-    {},
+    // The same teardown's resubscribe opened a window the stop ended at once.
+    { recoveryWindowMs: 15_000, recoveryElapsedMs: 0 },
   ],
   [
     "a server unsubscribe",
@@ -281,6 +282,8 @@ test("an outage outlasting the window stops once with the interrupting close", a
   await jest.advanceTimersByTimeAsync(100);
   expect(getLocalStopDiagnostic(watcher.onLost.mock.calls[0][0])).toEqual({
     reason: "observer_recovery_expired",
+    recoveryWindowMs: 15_000,
+    recoveryElapsedMs: 15_000,
     connectionId: SELECTED,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: 15_000,
@@ -352,5 +355,7 @@ test("a close during initial setup is not the run's socket close", async () => {
     lastPositivePresenceAgeMs: 0,
     callbackCode: 3501,
     clientState: "disconnected",
+    recoveryWindowMs: 15_000,
+    recoveryElapsedMs: 0,
   });
 });

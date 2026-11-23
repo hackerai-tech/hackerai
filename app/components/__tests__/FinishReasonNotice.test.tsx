@@ -86,6 +86,7 @@ function DataStreamSetter({
 interface RenderNoticeProps {
   finishReason?: string;
   continueDisabledReason?: string;
+  stoppedComputerReconnected?: boolean;
   mode?: ChatMode;
   lastSavedStep?: "request" | "agent-progress" | "conversation";
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
@@ -195,6 +196,52 @@ describe("FinishReasonNotice", () => {
     expect(onContinue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces the stopped computer's return without resuming on its own", () => {
+    const onContinue = jest.fn();
+    const props = {
+      finishReason: "local-connection-lost",
+      mode: "agent" as const,
+      onContinue,
+    };
+    const view = renderNotice({
+      ...props,
+      continueDisabledReason:
+        "Reconnect your computer or choose another environment",
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(/lost connection/i);
+    expect(screen.getByRole("status")).not.toHaveTextContent(
+      /computer is back/i,
+    );
+
+    view.rerender(
+      <DataStreamProvider>
+        <FinishReasonNotice {...props} stoppedComputerReconnected />
+      </DataStreamProvider>,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Your computer is back. Resume to continue this run.",
+    );
+    // What the stop may have interrupted is still stated.
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "A command that was running may not have finished.",
+    );
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("never announces a returning computer for another manual stop", () => {
+    renderNotice({
+      finishReason: "browser-handoff-abandoned",
+      mode: "agent",
+      stoppedComputerReconnected: true,
+      onContinue: jest.fn(),
+    });
+    expect(screen.getByRole("status")).not.toHaveTextContent(
+      /computer is back/i,
+    );
   });
 
   it("explains an abandoned browser handoff without a transcript Resume when the Goal owns it", () => {

@@ -105,6 +105,15 @@ describe("bounded goal continuation dispatch", () => {
       }),
     );
   });
+  it("does not let an automatic successor inherit a user resume", async () => {
+    await run({
+      ...payload,
+      resumeFromFinishReason: "local-connection-lost",
+    } as AgentLongPayload);
+    const successor = (tasks.trigger as jest.Mock).mock.calls[0][1];
+    expect(successor.isAutomaticContinuation).toBe(true);
+    expect(successor.resumeFromFinishReason).toBeUndefined();
+  });
   it("reopens the existing approval protocol instead of bypassing approvals", async () => {
     await expect(
       run({ ...payload, agentPermissionMode: "ask_approval" }),

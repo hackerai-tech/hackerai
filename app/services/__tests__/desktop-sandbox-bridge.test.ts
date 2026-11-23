@@ -5,6 +5,7 @@ jest.mock("@/lib/analytics/diagnostic-sampling", () => ({
 import { cancelDesktopRunLocally } from "../desktop-command-cancellation";
 import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
+import { Centrifuge } from "centrifuge";
 import {
   CentrifugoMessageReassembler,
   isCentrifugoTransportFragment,
@@ -5008,7 +5009,10 @@ describe("forwardChunk", () => {
         undefined,
         undefined,
       ]);
-      expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      // The first chunk and the stop's end notice; never the queued chunk.
+      expect(
+        mockSubscription.publish.mock.calls.map(([message]) => message.type),
+      ).toEqual(["stdout", "desktop_session_ended"]);
       expect(errorSpy).not.toHaveBeenCalledWith(
         "[DesktopSandboxBridge] Failed to publish result:",
         expect.anything(),
@@ -5498,7 +5502,12 @@ describe("forwardChunk", () => {
         finishCommand();
         await jest.advanceTimersByTimeAsync(0);
         expect(bridge.getConnectionId()).toBe("new-connection");
-        expect(mockSubscription.publish).toHaveBeenCalledTimes(attempts);
+        // Only the stopped connection's end notice followed; no old output.
+        expect(mockSubscription.publish).toHaveBeenCalledTimes(attempts + 1);
+        expect(mockSubscription.publish).toHaveBeenLastCalledWith({
+          type: "desktop_session_ended",
+          connectionId: "conn-123",
+        });
         expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
           "desktop_stream_command_settled",
           expect.objectContaining({
@@ -6171,6 +6180,81 @@ describe("desktop lifecycle recovery", () => {
     }
   });
 
+  // A run's watcher challenges the session when it attaches. After that, the
+  // run waits for this same connection; a new registration would end it.
+  const challengeFromRun = () =>
+    getPublicationHandler()({
+      data: {
+        type: "desktop_session_challenge",
+        nonce: "a".repeat(32),
+        targetConnectionId: "conn-123",
+        commandIds: [],
+      },
+    });
+
+  it("keeps the same connection while a recently active run may wait for it", async () => {
+    jest.useFakeTimers();
+    const onTerminated = jest.fn();
+    const config = buildConfig({ onTerminated });
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      await bridge.start();
+      challengeFromRun();
+      await jest.advanceTimersByTimeAsync(60_000);
+      getSubscriptionHandler("subscribing")({ code: 1, reason: "offline" });
+      // Well past the idle 30-second renegotiation, within the run's window.
+      await jest.advanceTimersByTimeAsync(90_000);
+      expect(onTerminated).not.toHaveBeenCalled();
+      expect(bridge.getConnectionId()).toBe("conn-123");
+      getSubscriptionHandler("subscribed")({
+        recovered: true,
+        wasRecovering: true,
+      });
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(onTerminated).not.toHaveBeenCalled();
+      expect(bridge.getConnectionId()).toBe("conn-123");
+      expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it("re-registers once the run's recovery window has passed", async () => {
+    jest.useFakeTimers();
+    const onTerminated = jest.fn();
+    const bridge = new DesktopSandboxBridge(buildConfig({ onTerminated }));
+    try {
+      await bridge.start();
+      challengeFromRun();
+      getClientHandler("connecting")({ code: 1, reason: "offline" });
+      await jest.advanceTimersByTimeAsync(119_999);
+      expect(onTerminated).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(onTerminated).toHaveBeenCalledWith("transport_disconnected");
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it("renegotiates after 30 seconds when the last run activity is stale", async () => {
+    jest.useFakeTimers();
+    const onTerminated = jest.fn();
+    const bridge = new DesktopSandboxBridge(buildConfig({ onTerminated }));
+    try {
+      await bridge.start();
+      challengeFromRun();
+      await jest.advanceTimersByTimeAsync(16 * 60_000);
+      getClientHandler("connecting")({ code: 1, reason: "offline" });
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(onTerminated).toHaveBeenCalledWith("transport_disconnected");
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
   it.each(["recovered", "stopped"])(
     "cancels stuck-relay recovery when %s",
     async (outcome) => {
@@ -6197,6 +6281,113 @@ describe("desktop lifecycle recovery", () => {
       }
     },
   );
+
+  it("announces an intentional stop on its own connection before leaving", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    await bridge.stop();
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "desktop_session_ended",
+      connectionId: "conn-123",
+    });
+    const announced = mockSubscription.publish.mock.invocationCallOrder.at(-1)!;
+    expect(announced).toBeLessThan(
+      mockSubscription.unsubscribe.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("submits the end notice before teardown and never waits past its bound", async () => {
+    let resolvePublish!: () => void;
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolvePublish = resolve)),
+    );
+    const stopping = bridge.stop();
+    await Promise.resolve();
+    // The client writes the notice only while still connected.
+    expect(mockSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(mockClient.disconnect).not.toHaveBeenCalled();
+    resolvePublish();
+    await stopping;
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+
+    // A publish that never settles cannot hold shutdown past its bound.
+    const stuck = new DesktopSandboxBridge(buildConfig());
+    await stuck.start();
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>(() => {}),
+    );
+    const startedAt = Date.now();
+    await stuck.stop();
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a client started during the pending end notice connected", async () => {
+    let resolvePublish!: () => void;
+    const onConnectionState = jest.fn();
+    const bridge = new DesktopSandboxBridge(buildConfig({ onConnectionState }));
+    await bridge.start();
+    // The old connection's lifecycle handlers, to replay its teardown events.
+    const oldClientHandlers = new Map(
+      mockClient.on.mock.calls.map(([event, handler]) => [event, handler]),
+    );
+    const oldSubscriptionHandlers = new Map(
+      mockSubscription.on.mock.calls.map(([event, handler]) => [
+        event,
+        handler,
+      ]),
+    );
+    mockSubscription.publish.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolvePublish = resolve)),
+    );
+    const stopping = bridge.stop();
+    await Promise.resolve();
+
+    // A restart while the notice is pending creates its own connection.
+    const restartedSubscription = {
+      ...mockSubscription,
+      on: jest.fn(),
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
+      removeAllListeners: jest.fn(),
+      publish: jest.fn().mockResolvedValue(undefined),
+    };
+    const restarted = {
+      ...mockClient,
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      on: jest.fn(),
+      ready: jest.fn().mockResolvedValue(undefined),
+      newSubscription: jest.fn().mockReturnValue(restartedSubscription),
+    };
+    jest.mocked(Centrifuge).mockImplementationOnce(() => restarted as never);
+    await bridge.start();
+    const connectionAfterRestart = bridge.getConnectionId();
+    resolvePublish();
+    await stopping;
+    // The old connection's late events arrive after the restart.
+    onConnectionState.mockClear();
+    oldSubscriptionHandlers.get("subscribing")?.({ code: 0, reason: "" });
+    oldSubscriptionHandlers.get("subscribed")?.({
+      recovered: false,
+      wasRecovering: false,
+    });
+    oldSubscriptionHandlers.get("unsubscribed")?.({ code: 0, reason: "" });
+    oldClientHandlers.get("disconnected")?.({ code: 0, reason: "" });
+
+    // They cannot report state or reset timers for the replacement.
+    expect(onConnectionState).not.toHaveBeenCalled();
+
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+    expect(restarted.disconnect).not.toHaveBeenCalled();
+    expect(restartedSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(bridge.getConnectionId()).toBe(connectionAfterRestart);
+    await bridge.stop();
+    expect(restarted.disconnect).toHaveBeenCalledTimes(1);
+  });
 
   it("finishes local shutdown while the remote disconnect stays offline", async () => {
     let resolveDisconnect!: (value: { success: boolean }) => void;
@@ -6981,8 +7172,11 @@ it.each([false, true])(
       await jest.advanceTimersByTimeAsync(0);
       expect(executed).toEqual(["target", "other-chat", "newer-run"]);
       mockSubscription.publish.mockImplementation(() => new Promise(() => {}));
-      // Native execution survives a terminal relay disconnect. Stop must too.
-      await bridge.stop();
+      // Native execution survives a terminal relay disconnect. Stop must too:
+      // its wait for the session-ended notice is bounded.
+      const stopping = bridge.stop();
+      await jest.advanceTimersByTimeAsync(1_000);
+      await stopping;
       await cancelDesktopRunLocally("chat-a", `run-a-${acknowledged}`);
       expect(canceled).toEqual(["target"]);
       expect([...running.keys()]).toEqual(["other-chat", "newer-run"]);

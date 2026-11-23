@@ -1413,6 +1413,12 @@ export const createAgentTriggerPost = ({
         requestRegionClass,
         isAutoContinue,
         isAutomaticContinuation,
+        // Content-free analytics link: the user resumed a saved manual stop.
+        ...(isAutoContinue &&
+          !isAutomaticContinuation &&
+          requiresManualAgentResume(existingChat?.finish_reason) && {
+            resumeFromFinishReason: existingChat.finish_reason,
+          }),
         regenerate,
         limitRescue,
         isNewChat,

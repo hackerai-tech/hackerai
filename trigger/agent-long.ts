@@ -1630,6 +1630,8 @@ export type AgentLongPayload = {
   requestRegionClass?: RequestRegionClass;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
+  /** A user-initiated run resuming this saved manual-resume stop. */
+  resumeFromFinishReason?: string;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -1804,6 +1806,7 @@ export const agentLongTask = task({
       userLocation,
       isAutoContinue,
       isAutomaticContinuation,
+      resumeFromFinishReason,
       regenerate,
       isNewChat,
       limitRescue,
@@ -2058,6 +2061,7 @@ export const agentLongTask = task({
       subscription,
       endpoint,
       isAutoContinue: !!isAutoContinue,
+      resumeFromFinishReason,
       getFailureSignalContext: (error) =>
         agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
       setRunMetadata: (key, value) => {
@@ -3402,6 +3406,9 @@ export const agentLongTask = task({
                     : new LocalConnectionLostError(),
                 );
               },
+            );
+            runReporting.setLocalRecoverySource(() =>
+              sandboxManager.getLocalRecoverySummary?.(),
             );
 
             const sendFileMetadataToStream = (

@@ -56,6 +56,8 @@ export const agentGoalDispatch = task({
         limitRescue: undefined,
         requestTiming: undefined,
         approvalSessionId: undefined,
+        // Only the user's own resume request carries this; successors do not.
+        resumeFromFinishReason: undefined,
       };
       const permission = payload.agentPermissionMode ?? "full_access";
       const tags = [

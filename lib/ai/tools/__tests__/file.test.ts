@@ -1,3 +1,4 @@
+import { IncompleteFileWriteError } from "../utils/incomplete-file-write";
 jest.mock("../utils/sandbox-file-uploader", () => ({
   getSandboxUploadedFileUrl: jest.fn(),
   uploadSandboxFileToConvex: jest.fn(),
@@ -192,6 +193,32 @@ describe("dedicated file_write executor", () => {
       text: "complete content",
     });
     expect(result).toEqual({ error: "connection lost after dispatch" });
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("returns an unknown outcome with rewrite guidance for an interrupted chunked write", async () => {
+    const { sandbox, commandRun } = makeNativeDesktopSandbox();
+    sandbox.files.write.mockRejectedValueOnce(
+      new IncompleteFileWriteError(2, 5, "write", {
+        cause: new Error("connection lost"),
+      }),
+    );
+    const result = await runTool(createFileWrite(makeContext(sandbox)), {
+      action: "write",
+      path: "C:\\repo\\large.txt",
+      text: "complete content",
+    });
+    expect(result).toEqual({
+      error: expect.stringContaining("2 of 5 chunks were confirmed"),
+      executionOutcome: "unknown",
+      writeOutcome: "unknown",
+      confirmedChunks: 2,
+      totalChunks: 5,
+    });
+    expect((result as { error: string }).error).toContain(
+      "rewrite the whole file",
+    );
     expect(sandbox.files.write).toHaveBeenCalledTimes(1);
     expect(commandRun).not.toHaveBeenCalled();
   });

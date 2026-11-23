@@ -10,8 +10,11 @@ import { knownIncurredCostLowerBound } from "@/lib/analytics/serving-cost";
 import {
   getLocalStopDiagnostic,
   LOCAL_CONNECTION_LOST_FINISH_REASON,
+  localRecoveryAnalyticsProperties,
   localStopAnalyticsProperties,
+  type LocalRunRecoverySummary,
 } from "@/lib/chat/local-connection-stop";
+import { resumeAnalyticsProperties } from "@/lib/chat/manual-agent-resume";
 import { BROWSER_HANDOFF_ABANDONED_FINISH_REASON } from "@/lib/ai/browser-handoff/constants";
 
 type RunEvent =
@@ -245,6 +248,8 @@ export function createAgentRunReporting(context: {
   subscription: string;
   endpoint: string;
   isAutoContinue?: boolean;
+  /** The saved manual-resume stop this user-initiated run resumes. */
+  resumeFromFinishReason?: string;
   getFailureSignalContext?: (
     error: unknown,
   ) => FailureSignalContext | undefined;
@@ -270,6 +275,15 @@ export function createAgentRunReporting(context: {
   let terminalStepLimitReached: boolean | undefined;
   // Holds only a constructed LocalConnectionLostError from the first abort.
   let localStop: object | undefined;
+  let readLocalRecovery:
+    (() => LocalRunRecoverySummary | undefined) | undefined;
+  const localRecoverySummary = () => {
+    try {
+      return readLocalRecovery?.();
+    } catch {
+      return undefined;
+    }
+  };
   // Run-scoped: stream state resets before each retry and must not erase
   // which provider failure started recovery.
   let recoveryAttempts = 0;
@@ -347,6 +361,10 @@ export function createAgentRunReporting(context: {
      * failure or terminal outcome (e.g. during error cleanup) did not end this
      * run and cannot attach a cause to that earlier result.
      */
+    /** Read when the run reports; recovered outages never stop a run. */
+    setLocalRecoverySource(read: () => LocalRunRecoverySummary | undefined) {
+      readLocalRecovery = read;
+    },
     recordLocalStop(firstAbortReason: unknown) {
       if (localStop || failure || terminalOutcome) return;
       if (getLocalStopDiagnostic(firstAbortReason))
@@ -464,10 +482,16 @@ export function createAgentRunReporting(context: {
           );
       }
       const modelRecoveryHistory = recoveryHistory();
+      const localRecovery = localRecoverySummary();
+      const resumeFromFinishReason = context.resumeFromFinishReason;
       once(
         "hackerai-agent_run",
         capture,
-        agentModelContextVariant || localStop || modelRecoveryHistory
+        agentModelContextVariant ||
+          localStop ||
+          modelRecoveryHistory ||
+          localRecovery ||
+          resumeFromFinishReason
           ? {
               ...args,
               ...(agentModelContextVariant && {
@@ -476,6 +500,8 @@ export function createAgentRunReporting(context: {
               }),
               ...(localStop && { localConnectionLostError: localStop }),
               ...(modelRecoveryHistory && { modelRecoveryHistory }),
+              ...(localRecovery && { localRecoverySummary: localRecovery }),
+              ...(resumeFromFinishReason && { resumeFromFinishReason }),
             }
           : args,
       );
@@ -624,6 +650,11 @@ export function createAgentRunReporting(context: {
                 ...properties,
                 ...(event === "hackerai-agent_run" && {
                   ...localStopAnalyticsProperties(localStop),
+                  ...localRecoveryAnalyticsProperties(
+                    localRecoverySummary(),
+                    localStop,
+                  ),
+                  ...resumeAnalyticsProperties(context.resumeFromFinishReason),
                   ...modelRecoveryProperties,
                 }),
                 ...(event === "hackerai-usage_cost"

@@ -4,6 +4,7 @@ import {
   type DesktopSessionReconciliation,
 } from "../watch-local-run-connection";
 import { getLocalStopDiagnostic } from "@/lib/chat/local-connection-stop";
+import { LOCAL_SANDBOX_PRESENCE_GRACE_MS } from "../presence";
 
 const mockSubscription = Object.assign(new EventEmitter(), {
   presence: jest.fn(),
@@ -291,6 +292,8 @@ test.each([
     await jest.advanceTimersByTimeAsync(1);
     expect(cause()).toEqual({
       reason: "observer_recovery_expired",
+      recoveryWindowMs: 15_000,
+      recoveryElapsedMs: 15_000,
       connectionId: SELECTED,
       hadPositivePresence: true,
       lastPositivePresenceAgeMs: interruptedAt + 15_000,
@@ -749,6 +752,8 @@ describe("an observer interruption after the host was verified", () => {
       await jest.advanceTimersByTimeAsync(1);
       expect(cause()).toEqual({
         reason: "observer_recovery_expired",
+        recoveryWindowMs: 15_000,
+        recoveryElapsedMs: 15_000,
         connectionId: SELECTED,
         hadPositivePresence: true,
         lastPositivePresenceAgeMs: 15_000,
@@ -888,6 +893,8 @@ describe("an observer interruption after the host was verified", () => {
     await jest.advanceTimersByTimeAsync(15_000);
     expect(cause()).toEqual({
       reason: "observer_recovery_expired",
+      recoveryWindowMs: 15_000,
+      recoveryElapsedMs: 15_000,
       connectionId: SELECTED,
       hadPositivePresence: true,
       lastPositivePresenceAgeMs: 15_000,
@@ -1100,7 +1107,7 @@ describe("a Desktop session proof", () => {
     expect(controller.isReady()).toBe(false);
     // Lookups keep finding no host until the fixed window ends.
     mockSubscription.presence.mockResolvedValue({ clients: {} });
-    await jest.advanceTimersByTimeAsync(15_000);
+    await jest.advanceTimersByTimeAsync(LOCAL_SANDBOX_PRESENCE_GRACE_MS);
     expect(cause()?.reason).toBe("selected_host_recovery_expired");
   });
 
@@ -1120,6 +1127,34 @@ describe("a Desktop session proof", () => {
       expect(cause()?.reason).toBe("selected_host_left");
     },
   );
+
+  test("an intentional stop announced by the selected host ends the run at once, even with grace", async () => {
+    const { controller, cause, onLost } = await start({
+      publishedCommands: () => [],
+    });
+    const [baseline] = challenges();
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce),
+      info: fromHost,
+    });
+    const ended = { type: "desktop_session_ended", connectionId: SELECTED };
+    // Only the relay's record of the selected publisher counts.
+    mockSubscription.emit("publication", {
+      data: ended,
+      info: { connInfo: { connectionId: "other" } },
+    });
+    mockSubscription.emit("publication", { data: ended, info: undefined });
+    mockSubscription.emit("publication", {
+      data: { ...ended, connectionId: "other" },
+      info: fromHost,
+    });
+    expect(onLost).not.toHaveBeenCalled();
+    expect(controller.isReady()).toBe(true);
+
+    mockSubscription.emit("leave", { info: fromHost });
+    mockSubscription.emit("publication", { data: ended, info: fromHost });
+    expect(cause()?.reason).toBe("selected_host_ended");
+  });
 
   test("an uncertain execution latches a loss that rejects readiness, but never relabels an earlier stop", async () => {
     const { controller, cause } = await start({ publishedCommands: () => [] });

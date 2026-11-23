@@ -21,6 +21,7 @@ import { logger } from "@/lib/logger";
 import { phLogger } from "@/lib/posthog/server";
 import { validateImageBytes } from "@/lib/utils/image-validation";
 import { validateDownloadUrl } from "./utils/path-validation";
+import { IncompleteFileWriteError } from "./utils/incomplete-file-write";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -1800,6 +1801,16 @@ export const createFile = (
           }
         } catch (error) {
           if (context.auxiliaryVision?.isAborted?.()) throw error;
+          if (error instanceof IncompleteFileWriteError)
+            return {
+              error: error.message,
+              // Also an unknown execution outcome, so automatic provider
+              // recovery reviews it like any other uncertain tool result.
+              executionOutcome: "unknown" as const,
+              writeOutcome: error.writeOutcome,
+              confirmedChunks: error.confirmedChunks,
+              totalChunks: error.totalChunks,
+            };
           return {
             error: resolveToolErrorMessage(error),
           };
