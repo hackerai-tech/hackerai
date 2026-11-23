@@ -1190,21 +1190,30 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [queueKey, setMessageQueue],
   );
 
-  // Unread steers return ahead of later queued messages. They were already
-  // accepted, so the queue limit never drops them.
+  // Unread steers return in send order: ahead of anything queued after them,
+  // even when separate withdrawals restore them out of order. They were
+  // already accepted, so the queue limit never drops them.
   const requeueUnreadSteers = useCallback(
     (chatId: string, steers: Array<{ text: string; timestamp: number }>) => {
       if (!steers.length) return;
       // Withdrawal is async; target the steers' own chat, not the open one.
       const key = JSON.stringify([user?.id ?? null, chatId]);
-      queuesRef.current.set(key, [
-        ...steers.map((steer) => ({
+      const queue = [...(queuesRef.current.get(key) ?? [])];
+      for (const steer of steers) {
+        // Never ahead of a message whose delivery already started.
+        const firstMovable =
+          queue.findLastIndex((message) => message.deliveryStatus) + 1;
+        const later = queue.findIndex(
+          (message, index) =>
+            index >= firstMovable && message.timestamp > steer.timestamp,
+        );
+        queue.splice(later === -1 ? queue.length : later, 0, {
           id: uuidv4(),
           text: steer.text,
           timestamp: steer.timestamp,
-        })),
-        ...(queuesRef.current.get(key) ?? []),
-      ]);
+        });
+      }
+      queuesRef.current.set(key, queue);
       refreshQueues((version) => version + 1);
     },
     [user?.id],

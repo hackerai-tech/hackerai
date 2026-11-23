@@ -17,23 +17,17 @@ export function createRunSteerInbox({
   runId: string;
   onError?: (error: unknown) => void;
 }) {
-  const client = () => getConvexClient(AbortSignal.timeout(CLAIM_TIMEOUT_MS));
-  const args = (deliveredIds: string[]) => ({
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-    userId,
-    chatId,
-    runId,
-    deliveredIds,
-  });
   return createAgentSteerInbox({
-    claim: (deliveredIds) =>
-      client().mutation(api.agentSteers.claimForBackend, args(deliveredIds)),
-    acknowledge: async (deliveredIds) => {
-      await client().mutation(
-        api.agentSteers.acknowledgeForBackend,
-        args(deliveredIds),
-      );
-    },
+    claim: () =>
+      getConvexClient(AbortSignal.timeout(CLAIM_TIMEOUT_MS)).mutation(
+        api.agentSteers.claimForBackend,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          userId,
+          chatId,
+          runId,
+        },
+      ),
     onError,
   });
 }

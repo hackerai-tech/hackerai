@@ -87,45 +87,27 @@ function fixture(user = "owner") {
   };
   const create = (id: string, text = `message ${id}`, chatId = "chat") =>
     steers.create.handler(ctx as never, { chatId, id, text });
-  const runArgs = (runId: string, deliveredIds: string[]) => ({
-    serviceKey: "service-key",
-    userId: "owner",
-    chatId: "chat",
-    runId,
-    deliveredIds,
-  });
-  const claim = (runId = "run-1", deliveredIds: string[] = []) =>
-    steers.claimForBackend.handler(ctx as never, runArgs(runId, deliveredIds));
-  const acknowledge = (runId: string, deliveredIds: string[]) =>
-    steers.acknowledgeForBackend.handler(
-      ctx as never,
-      runArgs(runId, deliveredIds),
-    );
+  const claim = (runId = "run-1") =>
+    steers.claimForBackend.handler(ctx as never, {
+      serviceKey: "service-key",
+      userId: "owner",
+      chatId: "chat",
+      runId,
+    });
   const withdraw = (id: string) =>
     steers.withdraw.handler(ctx as never, { chatId: "chat", id });
-  return { rows, ctx, create, claim, acknowledge, withdraw };
+  return { rows, ctx, create, claim, withdraw };
 }
 
 describe("agent steers", () => {
-  it("keeps returning a claimed steer until the run confirms receipt", async () => {
+  it("returns a claimed steer again so a lost response cannot lose it", async () => {
     const { create, claim, rows } = fixture();
     expect(await create("a", "  check the login form first  ")).toBe("pending");
     const steer = { id: "a", text: "check the login form first" };
     expect(await claim()).toEqual([steer]);
-    // The first response was lost: the next step's claim recovers it.
     expect(await claim()).toEqual([steer]);
-    expect(await claim("run-1", ["a"])).toEqual([]);
-    expect(rows.agent_steers).toEqual([]);
-  });
-
-  it("drops steers a finishing run confirms without claiming new ones", async () => {
-    const { create, claim, acknowledge, rows } = fixture();
-    await create("a");
-    await claim();
-    await create("b");
-    await acknowledge("run-1", ["a"]);
-    expect(rows.agent_steers.map((row) => row.id)).toEqual(["b"]);
-    expect(rows.agent_steers[0].claimed_at).toBeUndefined();
+    expect(rows.agent_steers).toHaveLength(1);
+    expect(rows.agent_steers[0].claimed_at).toEqual(expect.any(Number));
   });
 
   it("does not hand a steer to a run that is not the chat's active run", async () => {

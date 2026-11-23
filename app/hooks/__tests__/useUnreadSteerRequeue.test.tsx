@@ -25,28 +25,37 @@ jest.mock("convex/react", () => ({
 const { useUnreadSteerRequeue } =
   require("../useUnreadSteerRequeue") as typeof import("../useUnreadSteerRequeue");
 
-const steer = (id: string, text: string, createdAt = Date.now()) => ({
-  id,
-  text,
-  runId: "run-1",
-  createdAt,
-  claimed: false,
-});
+const steer = (
+  id: string,
+  text: string,
+  createdAt = Date.now(),
+  claimed = false,
+) => ({ id, text, runId: "run-1", createdAt, claimed });
 
 const render = (
   onRequeue: jest.Mock,
-  options: { runActive?: boolean; inTranscript?: string[] } = {},
+  options: {
+    runActive?: boolean;
+    inTranscript?: string[];
+    transcriptReady?: boolean;
+  } = {},
 ) =>
   renderHook(
-    ({ runActive }) =>
+    ({ runActive, transcriptReady }) =>
       useUnreadSteerRequeue({
         chatId: "chat-1",
         enabled: true,
         runActive,
+        transcriptReady,
         isInTranscript: (id) => options.inTranscript?.includes(id) ?? false,
         onRequeue,
       }),
-    { initialProps: { runActive: options.runActive ?? false } },
+    {
+      initialProps: {
+        runActive: options.runActive ?? false,
+        transcriptReady: options.transcriptReady ?? true,
+      },
+    },
   );
 
 describe("useUnreadSteerRequeue", () => {
@@ -69,7 +78,7 @@ describe("useUnreadSteerRequeue", () => {
     expect(mockWithdraw).not.toHaveBeenCalled();
     expect(result.current.recovering).toBe(false);
 
-    rerender({ runActive: false });
+    rerender({ runActive: false, transcriptReady: true });
     expect(result.current.recovering).toBe(true);
     await waitFor(() => expect(onRequeue).toHaveBeenCalledTimes(1));
     expect(onRequeue).toHaveBeenCalledWith(
@@ -79,8 +88,31 @@ describe("useUnreadSteerRequeue", () => {
     );
 
     // A stale snapshot listing the same steers must not queue them again.
-    await act(async () => rerender({ runActive: false }));
+    await act(async () =>
+      rerender({ runActive: false, transcriptReady: true }),
+    );
     expect(mockWithdraw).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the saved transcript before deciding a claimed steer was unread", async () => {
+    mockPending = [steer("claimed", "Use staging", Date.now(), true)];
+    mockWithdraw.mockResolvedValue({
+      outcome: "withdrawn",
+      text: "Use staging",
+    });
+    const onRequeue = jest.fn();
+    const { result, rerender } = render(onRequeue, {
+      transcriptReady: false,
+      inTranscript: ["claimed"],
+    });
+    await act(async () => {});
+    expect(mockWithdraw).not.toHaveBeenCalled();
+    expect(result.current.recovering).toBe(true);
+
+    rerender({ runActive: false, transcriptReady: true });
+    await waitFor(() =>
+      expect(onRequeue).toHaveBeenCalledWith("chat-1", [], false),
+    );
   });
 
   it("drops a steer the transcript already shows instead of sending it twice", async () => {

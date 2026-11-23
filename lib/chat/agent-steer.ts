@@ -132,65 +132,40 @@ export type AgentSteerInbox = {
   claim(): Promise<AgentSteer[]>;
   /** Every steer this run has read, in the order it read them. */
   delivered(): AgentSteer[];
-  /** Confirm receipt so the store can drop them. Never throws. */
-  acknowledge(): Promise<void>;
 };
 
 /**
  * One inbox per run keeps read steers across provider retries, which replay
- * them like browser handoff notes. Each claim confirms the steers already
- * received, and the store keeps returning a claimed steer until then, so a
- * lost response cannot lose it. An unavailable store must not fail a step:
- * unread steers stay pending, and the client queues them after the run.
+ * them like browser handoff notes. The store returns every steer the run has
+ * claimed, so one from a lost response arrives on the next claim. An
+ * unavailable store must not fail a step: unread steers stay pending, and the
+ * client queues them after the run.
  */
 export function createAgentSteerInbox({
   claim,
-  acknowledge,
   onError,
 }: {
-  claim: (deliveredIds: string[]) => Promise<AgentSteer[]>;
-  acknowledge: (deliveredIds: string[]) => Promise<void>;
+  claim: () => Promise<AgentSteer[]>;
   onError?: (error: unknown) => void;
 }): AgentSteerInbox {
   const delivered: AgentSteer[] = [];
-  let unacknowledged: string[] = [];
-  const report = (error: unknown) => {
-    try {
-      onError?.(error);
-    } catch {
-      // Reporting must not turn an unavailable inbox into a failed step.
-    }
-  };
   return {
     async claim() {
-      const confirming = unacknowledged;
       try {
-        const claimed = (await claim(confirming)).filter(
+        const claimed = (await claim()).filter(
           (steer) => !delivered.some((existing) => existing.id === steer.id),
         );
-        unacknowledged = [
-          ...unacknowledged.filter((id) => !confirming.includes(id)),
-          ...claimed.map((steer) => steer.id),
-        ];
         delivered.push(...claimed);
         return claimed;
       } catch (error) {
-        report(error);
+        try {
+          onError?.(error);
+        } catch {
+          // Reporting must not turn an unavailable inbox into a failed step.
+        }
         return [];
       }
     },
     delivered: () => [...delivered],
-    async acknowledge() {
-      const confirming = unacknowledged;
-      if (!confirming.length) return;
-      try {
-        await acknowledge(confirming);
-        unacknowledged = unacknowledged.filter(
-          (id) => !confirming.includes(id),
-        );
-      } catch (error) {
-        report(error);
-      }
-    },
   };
 }

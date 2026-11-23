@@ -1001,11 +1001,32 @@ describe("useChatHandlers steer todo handoff", () => {
         { id: "queued-1", text: "Change direction", files: [], timestamp: 1 },
       ];
       const { result } = renderSummarySteer(false);
+      const releaseVersion = result.current.sendNowReleaseVersion;
       await act(async () => result.current.handleSendNow("queued-1"));
+      // Automatic delivery rechecks once the hold is released.
+      expect(result.current.sendNowReleaseVersion).toBeGreaterThan(
+        releaseVersion,
+      );
       expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
       expect(mockStop).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
       expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
+    it("leaves Ask mode's Send Now on its existing path", async () => {
+      const toastError = jest.spyOn(toast, "error");
+      mockChatMode = "ask";
+      mockMessageQueue = [
+        { id: "queued-1", text: "Change direction", files: [], timestamp: 1 },
+      ];
+      const { result } = renderSummarySteer(false);
+      await act(async () => result.current.handleSendNow("queued-1"));
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(toastError).not.toHaveBeenCalledWith(
+        "Could not steer the Agent run",
+        expect.anything(),
+      );
+      toastError.mockRestore();
     });
 
     it("never steers when the rollout is off, even with Cmd/Ctrl+Enter", async () => {

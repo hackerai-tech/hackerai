@@ -18,23 +18,25 @@ export type PendingAgentSteer = {
 };
 
 /**
- * Pending steers for this chat. Once no run is active, unread steers are
- * withdrawn and returned to the front of the queue; the withdrawal races the
- * run's claim atomically, so each steer is either read or queued, never both.
- * A steer already shown in the transcript was read by a run that ended before
- * confirming it, so it is dropped rather than sent twice.
+ * Pending steers for this chat. Once no run is active, each is withdrawn; the
+ * withdrawal races the run's claim atomically. A steer the run never claimed
+ * returns to the queue. One it claimed is kept only by the saved transcript:
+ * if the transcript shows it, it is dropped; otherwise it returns to the
+ * queue. Claimed steers therefore wait until the transcript has loaded.
  */
 export function useUnreadSteerRequeue({
   chatId,
   enabled,
   runActive,
   isInTranscript,
+  transcriptReady,
   onRequeue,
 }: {
   chatId: string;
   enabled: boolean;
   runActive: boolean;
   isInTranscript: (steerId: string) => boolean;
+  transcriptReady: boolean;
   onRequeue: (
     chatId: string,
     steers: Array<{ text: string; timestamp: number }>,
@@ -67,7 +69,9 @@ export function useUnreadSteerRequeue({
   useEffect(() => {
     if (!enabled || runActive || !pending?.length) return;
     const unread = pending.filter(
-      (steer) => !withdrawing.current.has(steer.id),
+      (steer) =>
+        !withdrawing.current.has(steer.id) &&
+        (transcriptReady || !steer.claimed),
     );
     if (!unread.length) return;
     for (const steer of unread) withdrawing.current.add(steer.id);
@@ -117,6 +121,7 @@ export function useUnreadSteerRequeue({
     pending,
     retryTick,
     runActive,
+    transcriptReady,
     withdraw,
   ]);
 

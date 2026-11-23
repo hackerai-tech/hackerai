@@ -175,59 +175,32 @@ export const withdraw = mutation({
   },
 });
 
-async function deleteAcknowledged(
-  ctx: MutationCtx,
-  rows: SteerRow[],
-  deliveredIds: string[],
-) {
-  const delivered = new Set(deliveredIds);
-  const remaining: SteerRow[] = [];
-  for (const row of rows) {
-    if (delivered.has(row.id)) await ctx.db.delete(row._id);
-    else remaining.push(row);
-  }
-  return remaining;
-}
-
-async function getRunRows(
-  ctx: MutationCtx,
-  args: { userId: string; chatId: string; runId: string },
-) {
-  const rows = await ctx.db
-    .query("agent_steers")
-    .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
-    .take(AGENT_STEER_MAX_PENDING * 2);
-  return rows.filter(
-    (row) => row.chat_id === args.chatId && row.user_id === args.userId,
-  );
-}
-
-const backendRunArgs = {
-  serviceKey: v.string(),
-  userId: v.string(),
-  chatId: v.string(),
-  runId: v.string(),
-  /** Steers this run already received; their rows are removed. */
-  deliveredIds: v.array(v.string()),
-};
-
 /**
- * The owning run reads steers before a model step. A claimed row stays until
- * the run acknowledges it, so a claim whose response was lost returns the
- * same steer again on the next step instead of losing it.
+ * The owning run reads steers before a model step. The run never deletes a
+ * row: a claim whose response was lost returns the same steer on the next
+ * step, and after the run the client keeps the saved transcript as the
+ * record, removing claimed rows it shows and queueing any it does not.
  */
 export const claimForBackend = mutation({
-  args: backendRunArgs,
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    runId: v.string(),
+  },
   returns: v.array(v.object({ id: v.string(), text: v.string() })),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const rows = await deleteAcknowledged(
-      ctx,
-      await getRunRows(ctx, args),
-      args.deliveredIds,
-    );
     const chat = await getOwnedChat(ctx, args.chatId, args.userId);
     if (!chat || chat.active_trigger_run_id !== args.runId) return [];
+    const rows = (
+      await ctx.db
+        .query("agent_steers")
+        .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
+        .take(AGENT_STEER_MAX_PENDING)
+    ).filter(
+      (row) => row.chat_id === args.chatId && row.user_id === args.userId,
+    );
     const now = Date.now();
     for (const row of rows)
       if (row.claimed_at === undefined)
@@ -235,20 +208,5 @@ export const claimForBackend = mutation({
     return rows
       .sort((a, b) => a.created_at - b.created_at)
       .map((row) => ({ id: row.id, text: row.text }));
-  },
-});
-
-/** A finishing run confirms the steers it received without claiming more. */
-export const acknowledgeForBackend = mutation({
-  args: backendRunArgs,
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-    await deleteAcknowledged(
-      ctx,
-      await getRunRows(ctx, args),
-      args.deliveredIds,
-    );
-    return null;
   },
 });

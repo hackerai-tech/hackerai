@@ -2001,6 +2001,7 @@ export const useChatHandlers = ({
       );
     if (
       agentSteeringEnabled &&
+      chatModeRef.current === "agent" &&
       !isSendingNowRef.current &&
       !retryAction &&
       !goalActive &&
@@ -2022,6 +2023,8 @@ export const useChatHandlers = ({
         return;
       } finally {
         isSendingNowRef.current = false;
+        // The ref held automatic delivery; ask the queue to check again.
+        setSendNowReleaseVersion((version) => version + 1);
       }
     }
     if (isSummarizingRef.current) {
@@ -2161,6 +2164,8 @@ export const useChatHandlers = ({
 
   return {
     hasPendingSummarySteer: summarySteer?.chatId === chatId,
+    /** Changes when Send Now releases the queue hold. */
+    sendNowReleaseVersion,
     handleSubmit,
     handleStop,
     handleRegenerate,

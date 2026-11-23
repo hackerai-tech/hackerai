@@ -2781,6 +2781,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleSendNow,
     handleContinue,
     hasPendingSummarySteer,
+    sendNowReleaseVersion,
   } = useChatHandlers({
     chatId,
     messages,
@@ -2820,10 +2821,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
+  // The saved transcript is the record of which steers a run read.
   const steerIdsInTranscript = useMemo(
     () =>
       new Set(
-        messages.flatMap((message) =>
+        serverMessages.flatMap((message) =>
           message.role === "assistant"
             ? message.parts.flatMap((part) =>
                 isAgentSteerPart(part) ? [part.data.id] : [],
@@ -2831,13 +2833,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             : [],
         ),
       ),
-    [messages],
+    [serverMessages],
   );
   const { pendingSteers, recovering: recoveringUnreadSteers } =
     useUnreadSteerRequeue({
       chatId,
       enabled: agentSteeringEnabled && isConvexAuthenticated,
       isInTranscript: (steerId) => steerIdsInTranscript.has(steerId),
+      transcriptReady:
+        hasLoadedCurrentChat && paginatedMessages.status !== "LoadingFirstPage",
       // Until the chat loads, an active run is unknown; never withdraw early.
       runActive:
         !hasLoadedCurrentChat ||
@@ -2921,6 +2925,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     status,
     recoveringUnreadSteers,
+    sendNowReleaseVersion,
     hasPendingSummarySteer,
     hasPendingUserWait,
     persistedGoal?.state,

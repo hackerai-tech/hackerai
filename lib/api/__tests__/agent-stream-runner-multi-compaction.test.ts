@@ -2893,7 +2893,7 @@ describe("createAgentStream repeated compaction", () => {
     });
     const steer = { id: "steer-1", text: "Use the staging host" };
     const claim = jest
-      .fn<Promise<Array<{ id: string; text: string }>>, [string[]]>()
+      .fn<Promise<Array<{ id: string; text: string }>>, []>()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([steer])
       .mockResolvedValue([]);
@@ -2902,10 +2902,7 @@ describe("createAgentStream repeated compaction", () => {
     const stream = (await createAgentStream(
       "test-model",
       createTestStreamContext({
-        steerInbox: createAgentSteerInbox({
-          claim,
-          acknowledge: async () => {},
-        }),
+        steerInbox: createAgentSteerInbox({ claim }),
         writer,
         usageTracker: {},
         summarizationTracker: {
@@ -2981,10 +2978,7 @@ describe("createAgentStream repeated compaction", () => {
       "test-model",
       createTestStreamContext({
         abortController: controller,
-        steerInbox: createAgentSteerInbox({
-          claim,
-          acknowledge: async () => {},
-        }),
+        steerInbox: createAgentSteerInbox({ claim }),
         usageTracker: {},
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
       }) as any,
