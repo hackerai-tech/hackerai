@@ -64,7 +64,14 @@ export function useUnreadSteerRequeue({
   const onRequeueRef = useCommittedRef(onRequeue);
   const isInTranscriptRef = useCommittedRef(isInTranscript);
 
-  useEffect(() => () => clearTimeout(retryTimer.current), []);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(retryTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!enabled || runActive || !pending?.length) return;
@@ -101,6 +108,8 @@ export function useUnreadSteerRequeue({
       if (!failed) {
         retryAttempts.current = 0;
         setGaveUp(false);
+      } else if (!mounted.current) {
+        // A withdrawal that failed after unmount must not leave a timer.
       } else if (retryAttempts.current < MAX_WITHDRAW_RETRIES) {
         const delay = WITHDRAW_RETRY_BASE_MS * 2 ** retryAttempts.current++;
         clearTimeout(retryTimer.current);

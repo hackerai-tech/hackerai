@@ -1239,11 +1239,15 @@ export const useChatHandlers = ({
         queueBehavior,
         agentSteeringEnabled && isAlternateSubmit(e),
       );
+      // A steer that cannot join the run is only queued. It must never turn
+      // into the stop-and-send that summarization applies to other follow-ups.
+      let steerFellBackToQueue = false;
       if (followUpBehavior === "steer") {
         // Attachments cannot join a running step. Queue them rather than
         // cancelling work the user did not ask to stop.
         if (validFiles.length > 0) {
           followUpBehavior = "queue";
+          steerFellBackToQueue = true;
         } else {
           const steered = await steerActiveRun(input);
           if (steered) {
@@ -1258,10 +1262,12 @@ export const useChatHandlers = ({
           }
           if (currentChatIdRef.current !== chatId) return false;
           followUpBehavior = "queue";
+          steerFellBackToQueue = true;
         }
       }
 
-      const deferForSummary = wasSummarizing || isSummarizingRef.current;
+      const deferForSummary =
+        !steerFellBackToQueue && (wasSummarizing || isSummarizingRef.current);
       if (deferForSummary || followUpBehavior === "queue") {
         // During compaction, accept the draft now and steer as soon as the
         // summary settles. Ordinary queue mode waits for the full response.

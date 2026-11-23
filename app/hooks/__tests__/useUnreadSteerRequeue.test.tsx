@@ -169,4 +169,31 @@ describe("useUnreadSteerRequeue", () => {
       jest.useRealTimers();
     }
   });
+
+  it("schedules no retry for a withdrawal that fails after unmount", async () => {
+    jest.useFakeTimers();
+    try {
+      mockPending = [steer("late", "Also check X")];
+      let reject!: (error: Error) => void;
+      mockWithdraw.mockImplementationOnce(
+        () =>
+          new Promise((_, rejectWithdrawal) => {
+            reject = rejectWithdrawal;
+          }),
+      );
+      const { unmount } = render(jest.fn());
+      await act(async () => {});
+      expect(mockWithdraw).toHaveBeenCalledTimes(1);
+      unmount();
+      const setTimeoutSpy = jest.spyOn(global, "setTimeout");
+      await act(async () => reject(new Error("offline")));
+      expect(setTimeoutSpy).not.toHaveBeenCalledWith(
+        expect.any(Function),
+        1_000,
+      );
+      setTimeoutSpy.mockRestore();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

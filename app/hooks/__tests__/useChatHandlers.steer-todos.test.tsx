@@ -995,6 +995,30 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
+    it("only queues attachments sent during summarization", async () => {
+      mockUploadedFiles = [
+        {
+          file: new File(["scan"], "scan.txt"),
+          uploaded: true,
+          fileId: "scan-file",
+        },
+      ];
+      const { result, rerender } = renderSummarySteer(true);
+      expect(await submit(result)).toBe(true);
+      expect(mockQueueMessage).toHaveBeenCalledTimes(1);
+      expect(result.current.hasPendingSummarySteer).toBe(false);
+      await act(async () => {
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+      });
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
     it("keeps a queued message queued when the run refuses the steer", async () => {
       mockCreateAgentSteer.mockResolvedValueOnce("no_active_run");
       mockMessageQueue = [
