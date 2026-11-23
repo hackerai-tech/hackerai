@@ -8,18 +8,34 @@ export const AGENT_STEER_SCAN_LIMIT = 100;
 export const AGENT_STEER_TOMBSTONE_TTL_MS = 60 * 60 * 1000;
 
 export const isOpenSteer = (row: Doc<"agent_steers">) =>
-  row.saved_at === undefined && row.withdrawn_at === undefined;
+  row.settled_at === undefined;
 
-/** Chat deletion removes steers with the rest of the chat's content. */
+export async function settleSteer(
+  ctx: MutationCtx,
+  row: Doc<"agent_steers">,
+  as: "saved" | "withdrawn",
+) {
+  const now = Date.now();
+  await ctx.db.patch(row._id, {
+    [as === "saved" ? "saved_at" : "withdrawn_at"]: now,
+    settled_at: now,
+  });
+}
+
+/**
+ * Chat deletion removes steers with the rest of the chat's content. True
+ * when the batch was full, so the caller deletes again before the chat row.
+ */
 export async function deleteAgentSteersForChat(
   ctx: MutationCtx,
   chatId: string,
-) {
+): Promise<boolean> {
   const rows = await ctx.db
     .query("agent_steers")
     .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
     .take(AGENT_STEER_SCAN_LIMIT);
   for (const row of rows) await ctx.db.delete(row._id);
+  return rows.length === AGENT_STEER_SCAN_LIMIT;
 }
 
 async function findSteerRow(
@@ -68,7 +84,6 @@ export async function retireSavedSteers(
   for (const part of args.parts) {
     if (!isAgentSteerPart(part)) continue;
     const row = await findSteerRow(ctx, args, part.data.id);
-    if (row && isOpenSteer(row))
-      await ctx.db.patch(row._id, { saved_at: Date.now() });
+    if (row && isOpenSteer(row)) await settleSteer(ctx, row, "saved");
   }
 }

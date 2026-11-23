@@ -11,6 +11,7 @@ import {
   AGENT_STEER_SCAN_LIMIT,
   AGENT_STEER_TOMBSTONE_TTL_MS,
   isOpenSteer,
+  settleSteer,
 } from "./lib/agentSteers";
 import {
   AGENT_STEER_MAX_PENDING,
@@ -87,20 +88,22 @@ export const create = mutation({
         message: "This message was already sent.",
       });
     }
-    const rows = await ctx.db
-      .query("agent_steers")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .take(AGENT_STEER_SCAN_LIMIT);
     const now = Date.now();
-    for (const row of rows) {
-      const settledAt = row.saved_at ?? row.withdrawn_at;
-      if (
-        settledAt !== undefined &&
-        now - settledAt > AGENT_STEER_TOMBSTONE_TTL_MS
+    // Tombstone cleanup reads only expired settled rows.
+    const expired = await ctx.db
+      .query("agent_steers")
+      .withIndex("by_chat_and_settled", (q) =>
+        q
+          .eq("chat_id", args.chatId)
+          .gte("settled_at", 0)
+          .lt("settled_at", now - AGENT_STEER_TOMBSTONE_TTL_MS),
       )
-        await ctx.db.delete(row._id);
-    }
-    if (rows.filter(isOpenSteer).length >= AGENT_STEER_MAX_PENDING) {
+      .take(AGENT_STEER_SCAN_LIMIT);
+    for (const row of expired) await ctx.db.delete(row._id);
+    if (
+      (await openSteersForChat(ctx, args.chatId)).length >=
+      AGENT_STEER_MAX_PENDING
+    ) {
       throw new ConvexError({
         code: "STEER_LIMIT",
         message: "Wait for the Agent to read your earlier messages.",
@@ -120,6 +123,15 @@ export const create = mutation({
 });
 
 type SteerRow = Doc<"agent_steers">;
+
+/** Open steers come straight from the index, never behind tombstones. */
+const openSteersForChat = (ctx: QueryCtx | MutationCtx, chatId: string) =>
+  ctx.db
+    .query("agent_steers")
+    .withIndex("by_chat_and_settled", (q) =>
+      q.eq("chat_id", chatId).eq("settled_at", undefined),
+    )
+    .take(AGENT_STEER_MAX_PENDING);
 
 /**
  * The client may take back a steer nobody holds: one the run has not claimed,
@@ -145,10 +157,7 @@ export const listPending = query({
     if (!identity) return [];
     const chat = await getOwnedChat(ctx, args.chatId, identity.subject);
     if (!chat) return [];
-    const rows = await ctx.db
-      .query("agent_steers")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .take(AGENT_STEER_SCAN_LIMIT);
+    const rows = await openSteersForChat(ctx, args.chatId);
     return rows
       .filter(
         (row) =>
@@ -189,7 +198,7 @@ export const withdraw = mutation({
     if (!isWithdrawable(row, chat?.active_trigger_run_id))
       return { outcome: "not_found" as const };
     // A tombstone: a late save from a stopped worker must drop this steer.
-    await ctx.db.patch(row._id, { withdrawn_at: Date.now() });
+    await settleSteer(ctx, row, "withdrawn");
     return { outcome: "withdrawn" as const, text: row.text };
   },
 });
@@ -215,13 +224,12 @@ export const claimForBackend = mutation({
     const rows = (
       await ctx.db
         .query("agent_steers")
-        .withIndex("by_run_id", (q) => q.eq("run_id", args.runId))
-        .take(AGENT_STEER_SCAN_LIMIT)
+        .withIndex("by_run_and_settled", (q) =>
+          q.eq("run_id", args.runId).eq("settled_at", undefined),
+        )
+        .take(AGENT_STEER_MAX_PENDING)
     ).filter(
-      (row) =>
-        isOpenSteer(row) &&
-        row.chat_id === args.chatId &&
-        row.user_id === args.userId,
+      (row) => row.chat_id === args.chatId && row.user_id === args.userId,
     );
     const now = Date.now();
     for (const row of rows)

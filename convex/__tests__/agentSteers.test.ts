@@ -55,17 +55,33 @@ function fixture(user = "owner") {
           }) => void,
         ) => {
           const equals: Record<string, unknown> = {};
+          const ranges: Array<(row: Row) => boolean> = [];
+          // Like Convex, a range only matches rows that have the field.
+          const inRange =
+            (field: string, test: (value: number) => boolean) => (row: Row) =>
+              typeof row[field] === "number" && test(row[field] as number);
           const q = {
             eq(field: string, value: unknown) {
               equals[field] = value;
               return q;
             },
+            gte(field: string, value: number) {
+              ranges.push(inRange(field, (current) => current >= value));
+              return q;
+            },
+            lt(field: string, value: number) {
+              ranges.push(inRange(field, (current) => current < value));
+              return q;
+            },
           };
-          build(q);
+          build(q as never);
+          const matches = () =>
+            select(table, equals).filter((row) =>
+              ranges.every((range) => range(row)),
+            );
           return {
-            first: async () => select(table, equals)[0] ?? null,
-            take: async (count: number) =>
-              select(table, equals).slice(0, count),
+            first: async () => matches()[0] ?? null,
+            take: async (count: number) => matches().slice(0, count),
           };
         },
       }),
@@ -273,5 +289,50 @@ describe("agent steers", () => {
     await create("b");
     now.mockRestore();
     expect(rows.agent_steers.map((row) => row.id)).toEqual(["b"]);
+  });
+
+  it("finds open steers behind a full window of recent settled rows", async () => {
+    const { create, claim, rows, ctx } = fixture();
+    const now = Date.now();
+    for (let index = 0; index < 100; index++)
+      rows.agent_steers.push({
+        _id: `settled-${index}`,
+        id: `settled-${index}`,
+        chat_id: "chat",
+        user_id: "owner",
+        run_id: "run-1",
+        text: "earlier",
+        created_at: now,
+        saved_at: now,
+        settled_at: now,
+      });
+    expect(await create("open", "use staging")).toBe("pending");
+    expect(
+      await steers.listPending.handler(ctx as never, { chatId: "chat" }),
+    ).toEqual([expect.objectContaining({ id: "open" })]);
+    expect(await claim()).toEqual([{ id: "open", text: "use staging" }]);
+    for (let index = 1; index < 10; index++) await create(`more-${index}`);
+    await expect(create("overflow")).rejects.toThrow(
+      "Wait for the Agent to read your earlier messages.",
+    );
+  });
+
+  it("reports a full deletion batch so the chat is deleted only after its steers", async () => {
+    const { create, ctx, rows } = fixture();
+    for (let index = 0; index < 100; index++)
+      rows.agent_steers.push({
+        _id: `old-${index}`,
+        id: `old-${index}`,
+        chat_id: "chat",
+        user_id: "owner",
+        run_id: "run-1",
+        text: "x",
+        created_at: 0,
+        settled_at: Date.now(),
+      });
+    await create("last");
+    expect(await deleteAgentSteersForChat(ctx as never, "chat")).toBe(true);
+    expect(await deleteAgentSteersForChat(ctx as never, "chat")).toBe(false);
+    expect(rows.agent_steers).toEqual([]);
   });
 });

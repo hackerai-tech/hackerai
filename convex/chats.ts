@@ -417,7 +417,10 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
     .unique();
   if (goal) await ctx.db.delete(goal._id);
-  await deleteAgentSteersForChat(ctx, chat.id);
+  if (await deleteAgentSteersForChat(ctx, chat.id)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
+  }
 
   if (
     (await deleteFindingHuntsForChatBatch(ctx, chat.user_id, chat.id)) ||
@@ -501,7 +504,10 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
     .unique();
   if (goal) await ctx.db.delete(goal._id);
-  await deleteAgentSteersForChat(ctx, chat.id);
+  if (await deleteAgentSteersForChat(ctx, chat.id)) {
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
 
   if (
     (await deleteFindingHuntsForChatBatch(ctx, chat.user_id, chat.id)) ||

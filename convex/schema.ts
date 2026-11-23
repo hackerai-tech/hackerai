@@ -2353,10 +2353,14 @@ export default defineSchema({
     saved_at: v.optional(v.number()),
     /** Settled: returned to the client's queue; later saves drop it. */
     withdrawn_at: v.optional(v.number()),
+    /** Set with either settlement; open steers have none, so indexes find
+     * them directly instead of filtering past tombstones. */
+    settled_at: v.optional(v.number()),
   })
     .index("by_steer_id", ["id"])
     .index("by_chat_id", ["chat_id"])
-    .index("by_run_id", ["run_id"]),
+    .index("by_chat_and_settled", ["chat_id", "settled_at"])
+    .index("by_run_and_settled", ["run_id", "settled_at"]),
 
   processed_webhooks: defineTable({
     event_id: v.string(),
