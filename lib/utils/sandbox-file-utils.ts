@@ -25,6 +25,10 @@ import {
   sampleAttachmentFailureMetrics,
 } from "./sandbox-upload-readiness";
 import { probeSandboxUploadWrite } from "./sandbox-upload-diagnostics";
+import {
+  CLOUD_SANDBOX_UPLOAD_ROOT,
+  LOCAL_SANDBOX_UPLOAD_ROOT,
+} from "./sandbox-upload-paths";
 import { reserveCloudUploadFallbackPath } from "./cloud-upload-path-recovery";
 import { resolveCloudAttachmentDnsPin } from "./cloud-attachment-dns";
 import { abortableDelay as delay } from "./abortable-delay";
@@ -500,16 +504,13 @@ const runSandboxCommand = async (
   throw new Error("Sandbox command failed without returning a result");
 };
 
-/**
- * E2B uses /home/user/upload; any local connection uses /tmp/hackerai-upload
- * since the host machine may not have /home/user (e.g. macOS in dangerous mode).
- */
+/** E2B uses the cloud upload root; any local connection uses the local root. */
 export const getUploadBasePath = (
   sandboxPreference: SandboxPreference | undefined,
 ): string =>
   sandboxPreference === "e2b" || !sandboxPreference
-    ? "/home/user/upload"
-    : "/tmp/hackerai-upload";
+    ? CLOUD_SANDBOX_UPLOAD_ROOT
+    : LOCAL_SANDBOX_UPLOAD_ROOT;
 
 const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1208,8 +1209,8 @@ const shellQuote = (value: string): string =>
   `'${value.replace(/'/g, "'\\''")}'`;
 
 const UPLOAD_PATH_FALLBACK_PREFIXES = [
-  "/tmp/hackerai-upload/",
-  "/home/user/upload/",
+  `${LOCAL_SANDBOX_UPLOAD_ROOT}/`,
+  `${CLOUD_SANDBOX_UPLOAD_ROOT}/`,
 ];
 
 const UPLOAD_PATH_FALLBACK_ERROR_PATTERN =
