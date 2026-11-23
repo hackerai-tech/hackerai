@@ -5684,6 +5684,8 @@ export const agentLongTask = task({
                           }
                         }
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        // A later refusal of this leg discards only its usage.
+                        usageTracker.beginModelLeg();
                         if (userStopSignal.signal.aborted) {
                           isAborted = true;
                           break primaryProviderRecovery;
@@ -5882,12 +5884,11 @@ export const agentLongTask = task({
                                       finalRetryModel,
                                     );
                                     // A refused Bedrock leg follows the
-                                    // refusal billing policy: its model usage
-                                    // is not billed. Disconnects keep usage.
+                                    // refusal billing policy: only its own
+                                    // model usage is discarded. Earlier legs
+                                    // and disconnects stay billed.
                                     if (retryContentBlocked) {
-                                      usageTracker.prepareModelRetry({
-                                        isLoopRecovery: loopTriggeredRetry,
-                                      });
+                                      usageTracker.discardModelLeg();
                                     }
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);

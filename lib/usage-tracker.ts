@@ -171,6 +171,8 @@ export class UsageTracker {
   private discardedModelSteps: ModelStepCost[] = [];
   private modelCallsStarted = 0;
   private retryResets = 0;
+  /** First model step of the current leg, set by beginModelLeg(). */
+  private modelLegStartStep?: number;
 
   recordModelCall(): void {
     this.modelCallsStarted++;
@@ -214,6 +216,7 @@ export class UsageTracker {
   }: { isLoopRecovery?: boolean } = {}) {
     if (isLoopRecovery) return;
 
+    this.modelLegStartStep = undefined;
     this.discardedModelSteps.push(...this.modelStepCosts);
     this.retryResets++;
     this.providerCost -= this.modelProviderCost;
@@ -226,6 +229,36 @@ export class UsageTracker {
     this.cacheWriteTokens = this.summarizationCacheWriteTokens;
     this.modelCacheTelemetryObserved = false;
     this.modelStepCosts = [];
+  }
+
+  /** Starts a model leg whose usage discardModelLeg() can remove on its own. */
+  beginModelLeg(): void {
+    this.modelLegStartStep = this.modelStepCosts.length;
+  }
+
+  /**
+   * Discards only the current model leg's usage: the steps recorded since
+   * beginModelLeg(). Earlier legs, summarization and non-model costs stay
+   * billed. Without a started leg, every model step is discarded.
+   */
+  discardModelLeg(): void {
+    const discarded = this.modelStepCosts.splice(this.modelLegStartStep ?? 0);
+    this.modelLegStartStep = undefined;
+    this.discardedModelSteps.push(...discarded);
+    this.retryResets++;
+    for (const step of discarded) {
+      const cost = step.authoritativeCost ?? step.rawCost;
+      if (isPositiveFiniteNumber(cost)) {
+        this.providerCost -= cost;
+        this.modelProviderCost -= cost;
+      }
+      this.inputTokens -= step.inputTokens;
+      this.outputTokens -= step.outputTokens;
+      this.cacheReadTokens -= step.cacheReadTokens;
+      this.cacheWriteTokens -= step.cacheWriteTokens;
+    }
+    this.totalTokens = this.inputTokens + this.outputTokens;
+    this.lastStepInputTokens = 0;
   }
 
   accumulateStep(usage: StepUsage, modelName?: string): number {
