@@ -37,6 +37,27 @@ automatically provider stalls. Partially visible text elements may include
 updates below the viewport. Backgrounding breaks the gap interval. Navigation or
 process termination can truncate/lose a sample; the telemetry is not a ledger.
 
+Use these fields when reporting a gap in progress.
+
+- **Measurement** — the event class, value and sample, such as assistant text
+  and `max_visible_text_gap_ms` for one `sample_id`.
+- **Same-run evidence** — any tool or client observation covering the gap.
+  Use the run ID where available and establish the request and interval when
+  correlating by chat ID alone. Tool logs establish execution activity.
+- **Inference** — what the combined evidence supports. Mark activity visible
+  to the original client as `unknown` unless an observation covers that
+  activity in the original client during the gap.
+- **Current UI** — before proposing a progress change, reproduce the case and
+  record what the running interface shows. A reproduction describes the
+  tested interface.
+
+For example, report a four-minute assistant-text gap with **visible tool
+activity** if a same-run client observation shows the terminal row updating
+during that interval. If the only matching evidence is a
+`terminal_call_finished` record showing a call spanning the interval, report
+**tool activity, original client visibility unknown**. With only the text
+sample, both tool activity and original client visibility are unknown.
+
 `chat_browser_responsiveness` uses stable 10% sampling of identified users.
 It aggregates textarea input-to-frame delay, frame gaps during scrolling,
 Long Tasks, and Event Timing entry counts/durations for at most one minute, flushing on

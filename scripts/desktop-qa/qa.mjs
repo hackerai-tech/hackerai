@@ -16,7 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
-import { connect } from "node:net";
+import { connect, createServer as createNetServer } from "node:net";
 import { arch, hostname, loadavg, platform, release } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -239,6 +239,181 @@ export async function health(config) {
     return { frontend: "unreachable", ...services };
   }
 }
+// Early origin readiness, before any build: no executable, environment,
+// session, provider request or launch record. Evidence lists are copied by the
+// operator from the Development configuration; membership is exact.
+const ORIGIN_LIST_LIMIT = 64;
+const CALLBACK_PATH = /^(?:\/[A-Za-z0-9_~-][A-Za-z0-9._~-]{0,63}){1,8}\/?$/;
+function planUrl(value, form) {
+  const invalid = `Invalid ${form}; use a canonical, credential-free HTTP(S) value without wildcard, query or fragment`;
+  let parsed;
+  try {
+    check(
+      typeof value === "string" &&
+        value.length <= 2048 &&
+        !/[*?#@\s]/.test(value),
+      invalid,
+    );
+    parsed = new URL(value);
+  } catch {
+    throw new QaError(invalid);
+  }
+  const canonical =
+    form === "callback URL"
+      ? parsed.href === value
+      : [parsed.origin, `${parsed.origin}/`].includes(value) &&
+        (form === "frontend origin" || parsed.origin === value);
+  check(
+    ["http:", "https:"].includes(parsed.protocol) &&
+      parsed.port !== "0" &&
+      canonical,
+    invalid,
+  );
+  return parsed;
+}
+function evidenceList(value, parse) {
+  if (value === undefined) return undefined; // Not verified: never inferred.
+  check(
+    Array.isArray(value) && value.length <= ORIGIN_LIST_LIMIT,
+    `Evidence lists must be arrays of at most ${ORIGIN_LIST_LIMIT} entries; omit a list you did not verify`,
+  );
+  return value.map(parse);
+}
+function validateOriginPlan(input) {
+  keys(input, [
+    "frontend",
+    "callbackPaths",
+    "developmentCallbackUrls",
+    "developmentUploadOrigins",
+  ]);
+  const frontend = planUrl(input.frontend, "frontend origin").origin;
+  check(
+    loopback(frontend),
+    "Origin doctor requires a loopback frontend (localhost, 127.0.0.1 or [::1])",
+  );
+  check(
+    Array.isArray(input.callbackPaths) &&
+      input.callbackPaths.length > 0 &&
+      input.callbackPaths.length <= ORIGIN_LIST_LIMIT,
+    "List one or more desired callback paths",
+  );
+  return {
+    frontend,
+    callbacks: input.callbackPaths.map((path) => {
+      check(
+        typeof path === "string" &&
+          CALLBACK_PATH.test(path) &&
+          new URL(path, frontend).pathname === path,
+        "Invalid callback path; use an absolute path without dot segments, query or fragment",
+      );
+      return `${frontend}${path}`;
+    }),
+    callbackEvidence: evidenceList(input.developmentCallbackUrls, (value) => {
+      const parsed = planUrl(value, "callback URL");
+      check(
+        loopback(parsed.href),
+        "Callback evidence lists only Development loopback URLs",
+      );
+      return parsed.href;
+    }),
+    uploadEvidence: evidenceList(
+      input.developmentUploadOrigins,
+      (value) => planUrl(value, "upload origin").origin,
+    ),
+  };
+}
+/**
+ * Point-in-time: a short exclusive bind and close on the host and port that
+ * `serve` passes to next start. Only EADDRINUSE means occupied.
+ */
+export function probePort(origin, create = createNetServer) {
+  const target = new URL(origin);
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
+  return new Promise((done) => {
+    const server = create((socket) => socket.destroy());
+    let settled = false;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.close(() => done(state));
+    };
+    const timer = setTimeout(() => finish("unverified"), 2000);
+    server.once("error", (error) =>
+      finish(error?.code === "EADDRINUSE" ? "occupied" : "unverified"),
+    );
+    server.once("listening", () => finish("available"));
+    server.listen({
+      host: target.hostname.replace(/^\[|\]$/g, ""),
+      port,
+      exclusive: true,
+    });
+  });
+}
+async function readOriginPlan(path) {
+  const limit = 64 * 1024;
+  const file = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const info = await file.stat();
+    check(
+      info.isFile() && info.size <= limit,
+      "Use an origin plan file of at most 64 KiB",
+    );
+    const chunks = [];
+    for await (const chunk of file.createReadStream({
+      end: limit,
+      autoClose: false,
+    })) {
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks);
+    check(bytes.length <= limit, "Use an origin plan file of at most 64 KiB");
+    return validateOriginPlan(JSON.parse(bytes.toString("utf8")));
+  } finally {
+    await file.close();
+  }
+}
+async function doctorOrigin(file, portProbe) {
+  const plan = await readOriginPlan(file);
+  const statuses = {
+    port: await portProbe(plan.frontend),
+    callback: !plan.callbackEvidence
+      ? "unverified"
+      : plan.callbacks.every((value) => plan.callbackEvidence.includes(value))
+        ? "allowed"
+        : "missing",
+    "upload-origin": !plan.uploadEvidence
+      ? "unverified"
+      : plan.uploadEvidence.includes(plan.frontend)
+        ? "allowed"
+        : "rejected",
+  };
+  const values = Object.values(statuses);
+  const state = values.every((value) =>
+    ["available", "allowed"].includes(value),
+  )
+    ? "READY"
+    : values.some((value) =>
+          ["occupied", "missing", "rejected"].includes(value),
+        )
+      ? "BLOCKED"
+      : "UNVERIFIED";
+  // Fixed statuses and the selected origin only: never lists, paths or errors.
+  console.log(
+    [
+      `doctor origin: ${state}`,
+      `origin: ${plan.frontend}`,
+      ...Object.entries(statuses).map(([name, value]) => `${name}: ${value}`),
+      "- membership is relative to the operator-verified Development lists in the plan; no provider was contacted",
+      "- port availability is point-in-time; another process can bind it before serve",
+    ].join("\n"),
+  );
+  return state === "READY" ? 0 : 2;
+}
+
 async function writeJson(path, data) {
   const temp = `${path}.tmp`;
   await writeFile(temp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
@@ -692,19 +867,24 @@ export async function record(dir, runId, runStatus, transport) {
 const readConfig = async (file) =>
   validateConfig(JSON.parse(await readFile(file, "utf8")));
 /**
- * Returns a process exit code: preflight native returns 2 when BLOCKED.
+ * Returns a process exit code: preflight native and doctor origin return 2
+ * unless READY.
  * Invalid input and other command failures throw (exit 1 from the CLI).
  * The injected verifiers let tests control concurrent build and service changes.
  */
 export async function main(
   args,
   root = ROOT,
-  { verify = verifyTargets, verifyExecutable = verifyApp } = {},
+  {
+    verify = verifyTargets,
+    verifyExecutable = verifyApp,
+    portProbe = probePort,
+  } = {},
 ) {
   const [action, session, configFile, ...rest] = args;
   if (action === "help" || !action) {
     console.log(
-      "desktop:qa preflight web\ndesktop:qa preflight windows-vm\ndesktop:qa preflight native <config.json> <case>\ndesktop:qa record-result <config.json> <case> <pass|fail|blocked> <fingerprint>\ndesktop:qa verify <config.json>\ndesktop:qa doctor <config.json>\ndesktop:qa start <session> <config.json>\ndesktop:qa serve <session> <config.json>\ndesktop:qa status <session>\ndesktop:qa stop <session>\ndesktop:qa record <session> <run_id> <starting|running|completed|canceled|failed|unknown> <desktop|local|cloud|unknown>",
+      "desktop:qa preflight web\ndesktop:qa preflight windows-vm\ndesktop:qa preflight native <config.json> <case>\ndesktop:qa record-result <config.json> <case> <pass|fail|blocked> <fingerprint>\ndesktop:qa verify <config.json>\ndesktop:qa doctor origin <plan.json>\ndesktop:qa doctor <config.json>\ndesktop:qa start <session> <config.json>\ndesktop:qa serve <session> <config.json>\ndesktop:qa status <session>\ndesktop:qa stop <session>\ndesktop:qa record <session> <run_id> <starting|running|completed|canceled|failed|unknown> <desktop|local|cloud|unknown>",
     );
     return 0;
   }
@@ -762,6 +942,13 @@ export async function main(
       `Recorded operator-observed ${outcome.toUpperCase()} for case ${name}.`,
     );
     return 0;
+  }
+  if (action === "doctor" && session === "origin") {
+    check(
+      configFile && rest.length === 0,
+      "Usage: desktop:qa doctor origin <plan.json>",
+    );
+    return doctorOrigin(configFile, portProbe);
   }
   if (["verify", "doctor", "start", "serve"].includes(action)) {
     const config = validateConfig(

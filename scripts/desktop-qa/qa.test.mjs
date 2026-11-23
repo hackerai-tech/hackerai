@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
@@ -24,6 +25,7 @@ import {
   supervise,
   record,
   main,
+  probePort,
 } from "./qa.mjs";
 import { TargetVerificationError } from "./verify-targets.mjs";
 
@@ -981,4 +983,210 @@ test("reuse config accepts only SHA-256 revisions and a synthetic profile slug",
     assert.throws(() =>
       validateConfig({ ...config(), reuse: { ...reuse, ...change } }),
     );
+});
+
+/** Runs `doctor origin` with no app, launch record or service verification. */
+async function originDoctor(t, options = {}) {
+  const root = await temp(t);
+  const plans = await temp(t);
+  const file = join(plans, "plan.json");
+  const out = [];
+  t.mock.method(console, "log", (line) => out.push(String(line)));
+  const fetched = [];
+  t.mock.method(globalThis, "fetch", (url) => {
+    fetched.push(String(url));
+    return Promise.reject(new Error("unexpected network access"));
+  });
+  const fx = {
+    root,
+    fetched,
+    verifyCalls: 0,
+    async run(plan) {
+      out.length = 0;
+      await writeFile(file, JSON.stringify(plan));
+      const code = await main(["doctor", "origin", file], root, {
+        verify: async () => {
+          fx.verifyCalls++;
+        },
+        ...options,
+      });
+      const text = out.join("\n");
+      const statuses = Object.fromEntries(
+        text
+          .split("\n")
+          .slice(0, 5)
+          .map((line) => line.split(": ")),
+      );
+      return { code, text, statuses };
+    },
+  };
+  return fx;
+}
+const failingServer = (code) => {
+  const server = new EventEmitter();
+  server.listen = () =>
+    queueMicrotask(() =>
+      server.emit("error", Object.assign(new Error("DO_NOT_PRINT"), { code })),
+    );
+  server.close = (done) => done();
+  return server;
+};
+
+test("doctor origin requires exact callback and upload membership and touches no app or service", async (t) => {
+  const fx = await originDoctor(t);
+  const port = await closedPort();
+  const frontend = `http://127.0.0.1:${port}`;
+  const plan = {
+    frontend,
+    callbackPaths: ["/callback", "/desktop-callback"],
+    developmentCallbackUrls: [
+      `${frontend}/callback`,
+      `${frontend}/desktop-callback`,
+      "http://localhost:3000/DO_NOT_PRINT",
+    ],
+    developmentUploadOrigins: ["https://do-not-print.example.test", frontend],
+  };
+  const ready = await fx.run(plan);
+  assert.equal(ready.code, 0);
+  assert.deepEqual(ready.statuses, {
+    "doctor origin": "READY",
+    origin: frontend,
+    port: "available",
+    callback: "allowed",
+    "upload-origin": "allowed",
+  });
+  assert.match(
+    ready.text,
+    /relative to the operator-verified.*\n.*point-in-time/,
+  );
+  assert.doesNotMatch(ready.text, /callback\/|DO_NOT_PRINT|do-not-print/i);
+
+  // Scheme, host, port and path must each match exactly.
+  for (const near of [
+    `http://localhost:${port}`,
+    `https://127.0.0.1:${port}`,
+    "http://127.0.0.1:1",
+  ]) {
+    const result = await fx.run({
+      ...plan,
+      developmentCallbackUrls: [`${near}/callback`, `${near}/desktop-callback`],
+      developmentUploadOrigins: [near],
+    });
+    assert.equal(result.code, 2);
+    assert.equal(result.statuses["doctor origin"], "BLOCKED");
+    assert.equal(result.statuses.callback, "missing");
+    assert.equal(result.statuses["upload-origin"], "rejected");
+  }
+  for (const path of ["/callback/", "/Callback", "/auth/callback"]) {
+    const result = await fx.run({
+      ...plan,
+      developmentCallbackUrls: [
+        `${frontend}${path}`,
+        `${frontend}/desktop-callback`,
+      ],
+    });
+    assert.equal(result.statuses.callback, "missing");
+    assert.equal(result.statuses["upload-origin"], "allowed");
+  }
+  // A complete empty list is negative evidence; an omitted list is unknown.
+  const empty = await fx.run({
+    ...plan,
+    developmentCallbackUrls: [],
+    developmentUploadOrigins: [],
+  });
+  assert.equal(empty.statuses.callback, "missing");
+  assert.equal(empty.statuses["upload-origin"], "rejected");
+  const unknown = await fx.run({ frontend, callbackPaths: ["/callback"] });
+  assert.equal(unknown.code, 2);
+  assert.equal(unknown.statuses["doctor origin"], "UNVERIFIED");
+  assert.equal(unknown.statuses.callback, "unverified");
+  assert.equal(unknown.statuses["upload-origin"], "unverified");
+
+  assert.equal(fx.verifyCalls, 0);
+  assert.deepEqual(fx.fetched, []);
+  assert.deepEqual(await readdir(fx.root), []);
+});
+
+test("doctor origin reports an occupied port without stopping its owner and keeps other bind errors unverified", async (t) => {
+  const port = await listen(t);
+  const frontend = `http://127.0.0.1:${port}`;
+  const fx = await originDoctor(t);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const occupied = await fx.run({ frontend, callbackPaths: ["/callback"] });
+    assert.equal(occupied.code, 2);
+    assert.equal(occupied.statuses["doctor origin"], "BLOCKED");
+    assert.equal(occupied.statuses.port, "occupied");
+  }
+
+  assert.equal(
+    await probePort(frontend, () => failingServer("EADDRINUSE")),
+    "occupied",
+  );
+  const denied = await originDoctor(t, {
+    portProbe: (origin) => probePort(origin, () => failingServer("EACCES")),
+  });
+  const result = await denied.run({
+    frontend,
+    callbackPaths: ["/callback"],
+    developmentCallbackUrls: [`${frontend}/callback`],
+    developmentUploadOrigins: [frontend],
+  });
+  assert.equal(result.statuses.port, "unverified");
+  assert.equal(result.statuses["doctor origin"], "UNVERIFIED");
+  assert.doesNotMatch(result.text, /DO_NOT_PRINT|EACCES/);
+});
+
+test("doctor origin rejects credentials, hosted, inexact or unsafe plans before binding and without echoing input", async (t) => {
+  let probes = 0;
+  const fx = await originDoctor(t, {
+    portProbe: async () => {
+      probes++;
+      return "available";
+    },
+  });
+  const base = {
+    frontend: "http://127.0.0.1:3100",
+    callbackPaths: ["/callback"],
+  };
+  for (const change of [
+    { frontend: "http://qa:DO_NOT_PRINT@127.0.0.1:3100" },
+    { frontend: "http://127.0.0.1:3100/?token=DO_NOT_PRINT" },
+    { frontend: "http://127.0.0.1:3100/DO_NOT_PRINT" },
+    { frontend: "https://hackerai.co" },
+    { frontend: "http://127.0.0.1:0" },
+    { callbackPaths: [] },
+    { callbackPaths: ["callback"] },
+    { callbackPaths: ["/callback?code=DO_NOT_PRINT"] },
+    { callbackPaths: ["/DO_NOT_PRINT/../callback"] },
+    {
+      developmentCallbackUrls: [
+        "http://qa:DO_NOT_PRINT@127.0.0.1:3100/callback",
+      ],
+    },
+    { developmentCallbackUrls: ["https://do-not-print.example.test/callback"] },
+    { developmentCallbackUrls: ["http://LOCALHOST:3100/callback"] },
+    { developmentCallbackUrls: "http://127.0.0.1:3100/callback" },
+    { developmentUploadOrigins: ["http://127.0.0.1:3100/DO_NOT_PRINT"] },
+    { developmentUploadOrigins: ["http://*:3100"] },
+    { developmentUploadOrigins: Array(65).fill("http://127.0.0.1:3100") },
+    { uploadToken: "DO_NOT_PRINT" },
+  ])
+    await assert.rejects(fx.run({ ...base, ...change }), (error) => {
+      assert.doesNotMatch(error.message, /DO_NOT_PRINT|do-not-print/i);
+      return true;
+    });
+  await assert.rejects(
+    fx.run({
+      ...base,
+      developmentCallbackUrls: Array(64).fill(
+        `${base.frontend}/${"a".repeat(1200)}`,
+      ),
+    }),
+    /at most 64 KiB/,
+  );
+  assert.equal(probes, 0);
+  await assert.rejects(
+    main(["doctor", "origin"], fx.root),
+    /Usage: desktop:qa doctor origin/,
+  );
 });
