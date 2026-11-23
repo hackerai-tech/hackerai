@@ -14,7 +14,6 @@ import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import {
-  MAX_CLOUD_BACKGROUND_PROCESSES,
   formatCloudBackgroundCapReached,
   formatCloudBackgroundStarted,
   newCloudBackgroundId,
@@ -72,9 +71,10 @@ import {
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
 import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
+  createRunTerminalCmdToolSchema,
+  MAX_CLOUD_BACKGROUND_PROCESSES,
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
-  createRunTerminalCmdToolSchema,
 } from "./schemas";
 import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
 import {

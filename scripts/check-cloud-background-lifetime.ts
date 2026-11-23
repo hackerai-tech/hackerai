@@ -12,8 +12,8 @@
  * (defaults to 45, above the 30-second launcher deadline).
  */
 import { Sandbox } from "@e2b/code-interpreter";
+import { MAX_CLOUD_BACKGROUND_PROCESSES } from "../lib/ai/tools/schemas";
 import {
-  MAX_CLOUD_BACKGROUND_PROCESSES,
   listCloudBackgroundProcesses,
   startCloudBackgroundProcess,
 } from "../lib/ai/tools/utils/cloud-background-processes";

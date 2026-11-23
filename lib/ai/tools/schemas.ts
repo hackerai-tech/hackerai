@@ -2,7 +2,10 @@ import { findingEvidenceStatusSchema } from "../../findings/evidence-status";
 import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";
-import { MAX_CLOUD_BACKGROUND_PROCESSES } from "./utils/cloud-background-processes";
+
+/** Cloud sandboxes have 4 vCPU / 4 GiB shared by every chat; keep services few.
+ * Defined here so this schema-only catalog stays free of runtime imports. */
+export const MAX_CLOUD_BACKGROUND_PROCESSES = 5;
 
 type ModelAwareToolSchemaOptions = {
   modelName?: string;

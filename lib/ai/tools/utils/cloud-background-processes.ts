@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 import type { SandboxManager } from "@/types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { isE2BSandbox } from "./sandbox-types";
+import { MAX_CLOUD_BACKGROUND_PROCESSES } from "../schemas";
 
 /**
  * Cloud (E2B) background processes.
@@ -21,8 +22,6 @@ import { isE2BSandbox } from "./sandbox-types";
  * subagent sharing the user's sandbox sees the same processes.
  */
 export const CLOUD_BACKGROUND_DIRECTORY = "/tmp/hackerai-background";
-/** Sandboxes have 4 vCPU / 4 GiB shared by every chat; keep services few. */
-export const MAX_CLOUD_BACKGROUND_PROCESSES = 5;
 /** The launcher returns as soon as the detached process records its PID. */
 const LAUNCH_TIMEOUT_MS = 30_000;
 const INVENTORY_TIMEOUT_MS = 10_000;
