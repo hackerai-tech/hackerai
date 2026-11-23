@@ -438,10 +438,12 @@ Enable the toggle in the web app, the Agent worker, and the Convex deployment.
 Reviews are dispatched through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
 
-Every review records one sanitized receipt per case window in
-`egress_review_receipts` for 30 days: the enforcement decision
-(`keep_active`, `block_applied` or `enforcement_pending`), a closed reason,
-the evidence mode and coverage state. Only `enforcement_pending` and
+New cases and their sanitized `egress_review_receipts` commit together. A
+completed review with no case writes its receipt on a best-effort basis.
+Retries preserve existing cases and receipts, and cases created by older
+workers can lack a receipt. Receipts last 30 days and store the enforcement
+decision (`keep_active`, `block_applied` or `enforcement_pending`), a closed
+reason, the evidence mode and coverage state. Only `enforcement_pending` and
 `block_applied` receipts carry the case reference.
 
 To roll back reviews, set `E2B_EGRESS_ABUSE_REVIEW_ENABLED=false` in the web

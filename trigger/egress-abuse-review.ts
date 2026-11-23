@@ -408,11 +408,7 @@ export async function runEgressAbuseReview(
         ...details,
       }),
     );
-  /**
-   * Sanitized enums for owner summaries. A failure here never changes the
-   * review's outcome; the encrypted case remains the record.
-   */
-  const receipt = async (
+  const buildReceipt = (
     decision: ReviewDecision,
     details: CaseDetails,
     enforcement: {
@@ -420,7 +416,6 @@ export async function runEgressAbuseReview(
       reason: EnforcementReason;
       refusal?: BlockRefusal;
     },
-    caseOutcome: "created" | "existing" | "none",
   ) => {
     const { coverage: run, accountActivity: activity } = details;
     const coverage: ReviewCoverageState = run
@@ -439,33 +434,17 @@ export async function runEgressAbuseReview(
           ? "complete"
           : "incomplete"
         : "not_read";
-    try {
-      await client.mutation(api.egressAbuseReview.recordReceipt, {
-        serviceKey,
-        digest,
-        ...(enforcement.decision === "enforcement_pending"
-          ? { reference }
-          : {}),
-        decision: enforcement.decision,
-        reason: enforcement.reason,
-        reviewReason: decision.reason,
-        evidenceMode: activity
-          ? "account_activity"
-          : run
-            ? "exact_run"
-            : "none",
-        coverage,
-        caseOutcome,
-        ...(enforcement.refusal ? { refusal: enforcement.refusal } : {}),
-        ...(details.enforcement
-          ? { intentKind: details.enforcement.intentKind }
-          : {}),
-      });
-    } catch {
-      logger.warn("Egress abuse review receipt was not recorded", {
-        decision: enforcement.decision,
-      });
-    }
+    return {
+      decision: enforcement.decision,
+      reason: enforcement.reason,
+      reviewReason: decision.reason,
+      evidenceMode: activity ? "account_activity" : run ? "exact_run" : "none",
+      coverage,
+      ...(enforcement.refusal ? { refusal: enforcement.refusal } : {}),
+      ...(details.enforcement
+        ? { intentKind: details.enforcement.intentKind }
+        : {}),
+    } as const;
   };
   const persist = async (
     decision: Exclude<ReviewDecision, { outcome: "no_case" }>,
@@ -481,10 +460,10 @@ export async function runEgressAbuseReview(
       reference,
       digest,
       ciphertext: encryptRecord(decision, details),
+      receipt: buildReceipt(decision, details, enforcement),
     });
     if (result.outcome === "existing")
       return { status: "preserved", case: "existing" };
-    await receipt(decision, details, enforcement, "created");
     return {
       status: "completed",
       outcome: decision.outcome,
@@ -720,12 +699,21 @@ export async function runEgressAbuseReview(
 
   const decision = decideReview(classification, evidence, prepared);
   if (decision.outcome === "no_case") {
-    await receipt(
-      decision,
-      base,
-      { decision: "keep_active", reason: "legitimate_corroborated" },
-      "none",
-    );
+    try {
+      await client.mutation(api.egressAbuseReview.recordReceipt, {
+        serviceKey,
+        digest,
+        ...buildReceipt(decision, base, {
+          decision: "keep_active",
+          reason: "legitimate_corroborated",
+        }),
+        caseOutcome: "none",
+      });
+    } catch {
+      logger.warn("Egress abuse review receipt was not recorded", {
+        decision: "keep_active",
+      });
+    }
     return {
       status: "completed",
       outcome: "no_case",

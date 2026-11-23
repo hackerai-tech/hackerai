@@ -753,9 +753,22 @@ export const readAccountActivity = query({
   },
 });
 
+const {
+  createdAt: _createdAt,
+  expiresAt: _expiresAt,
+  ...receiptArgs
+} = egressReviewReceiptFields;
+const {
+  digest: _digest,
+  reference: _reference,
+  caseOutcome: _caseOutcome,
+  ...caseReceiptArgs
+} = receiptArgs;
+
 /**
  * Creates the operator case once per reference. An existing case, including
- * any operator review, notes, status or erasure, is never changed.
+ * any operator review, notes, status or erasure, is never changed. The receipt
+ * is optional for workers deployed before case receipts were added.
  */
 export const recordCase = mutation({
   args: {
@@ -763,6 +776,15 @@ export const recordCase = mutation({
     reference: v.string(),
     digest: v.string(),
     ciphertext: v.string(),
+    receipt: v.optional(
+      v.object({
+        ...caseReceiptArgs,
+        decision: v.union(
+          v.literal("keep_active"),
+          v.literal("enforcement_pending"),
+        ),
+      }),
+    ),
   },
   returns: v.object({
     outcome: v.union(v.literal("created"), v.literal("existing")),
@@ -796,20 +818,27 @@ export const recordCase = mutation({
       kind: "received",
       createdAt: now,
     });
+    if (args.receipt) {
+      await insertReceipt(
+        ctx,
+        {
+          ...args.receipt,
+          digest: args.digest,
+          ...(args.receipt.decision === "enforcement_pending"
+            ? { reference: args.reference }
+            : {}),
+          caseOutcome: "created",
+        },
+        now,
+      );
+    }
     return { outcome: "created" as const };
   },
 });
 
-const {
-  createdAt: _createdAt,
-  expiresAt: _expiresAt,
-  ...receiptArgs
-} = egressReviewReceiptFields;
-
 /**
- * Sanitized enums of one review for aggregate owner summaries. Only a review
- * that leaves an action carries its case reference. A block's receipt is
- * written by the block transaction itself, never here.
+ * Stores a no-case receipt for owner summaries. Accepts standalone case
+ * receipts from earlier workers during deployment.
  */
 export const recordReceipt = mutation({
   args: { serviceKey: v.string(), ...receiptArgs },

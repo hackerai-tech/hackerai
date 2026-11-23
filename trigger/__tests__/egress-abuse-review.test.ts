@@ -1110,7 +1110,14 @@ describe("automatic enforcement", () => {
     expect(generateText).not.toHaveBeenCalled();
   });
 
-  it("records pending enforcement and changes nothing while the switch is off", async () => {
+  it("records a pending case and its owner-summary receipt together", async () => {
+    const client = createServiceConvexClient("https://fixture.convex.cloud");
+    const mutate = jest.mocked(client.mutation).getMockImplementation()!;
+    jest.mocked(client.mutation).mockImplementation(async (fn, args) => {
+      if (getFunctionName(fn) === "egressAbuseReview:recordReceipt")
+        throw new Error("standalone receipt request failed");
+      return mutate(fn, args);
+    });
     classifyThenConfirm(confirmed);
     await expect(run()).resolves.toMatchObject({
       enforcement: "enforcement_pending",
