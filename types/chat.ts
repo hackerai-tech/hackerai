@@ -630,6 +630,8 @@ export interface ExtraUsageConfig {
 
 export interface QueuedMessage {
   deliveryStatus?: "sending" | "failed" | "active";
+  /** An unread steer sent from another device; its clock is not comparable. */
+  restoredFromElsewhere?: boolean;
   firstAttemptAt?: number;
   id: string;
   text: string;

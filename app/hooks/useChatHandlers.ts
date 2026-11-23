@@ -63,6 +63,7 @@ import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_STEER_MAX_TEXT_LENGTH } from "@/lib/chat/agent-steer";
+import { rememberSteerSentHere } from "@/app/hooks/useUnreadSteerRequeue";
 import {
   isAlternateSubmit,
   resolveFollowUpBehavior,
@@ -721,14 +722,13 @@ export const useChatHandlers = ({
       trimmed.length > AGENT_STEER_MAX_TEXT_LENGTH
     )
       return false;
+    const id = uuidv4();
+    // Before the write: the run can end and recovery start while it is pending.
+    rememberSteerSentHere(id);
     try {
       return (
-        (await createAgentSteer({
-          chatId,
-          id: uuidv4(),
-          text: trimmed,
-          sentAt,
-        })) === "pending"
+        (await createAgentSteer({ chatId, id, text: trimmed, sentAt })) ===
+        "pending"
       );
     } catch (error) {
       console.warn("Could not steer the Agent run; queueing instead", error);

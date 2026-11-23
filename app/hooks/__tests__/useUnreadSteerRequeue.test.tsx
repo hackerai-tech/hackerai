@@ -21,16 +21,19 @@ jest.mock("convex/react", () => ({
   useMutation: () => mockWithdraw,
 }));
 
-const { useUnreadSteerRequeue } =
+const { useUnreadSteerRequeue, rememberSteerSentHere } =
   require("../useUnreadSteerRequeue") as typeof import("../useUnreadSteerRequeue");
 
-// Sent during this visit unless a test says otherwise.
-const steer = (id: string, text: string, sentAt = Date.now() + 1_000) => ({
-  id,
-  text,
-  runId: "run-1",
-  sentAt,
-});
+// Sent from this tab during this visit unless a test says otherwise.
+const steer = (
+  id: string,
+  text: string,
+  sentAt = Date.now() + 1_000,
+  sentHere = true,
+) => {
+  if (sentHere) rememberSteerSentHere(id);
+  return { id, text, runId: "run-1", sentAt };
+};
 
 const render = (onRequeue: jest.Mock, options: { runActive?: boolean } = {}) =>
   renderHook(
@@ -69,7 +72,7 @@ describe("useUnreadSteerRequeue", () => {
     await waitFor(() => expect(onRequeue).toHaveBeenCalledTimes(1));
     expect(onRequeue).toHaveBeenCalledWith(
       "chat-1",
-      [{ text: "Also check X", timestamp: expect.any(Number) }],
+      [{ text: "Also check X", timestamp: expect.any(Number), sentHere: true }],
       false,
     );
 
@@ -89,7 +92,7 @@ describe("useUnreadSteerRequeue", () => {
     await waitFor(() =>
       expect(onRequeue).toHaveBeenCalledWith(
         "chat-1",
-        [{ text: "From yesterday", timestamp: 1 }],
+        [{ text: "From yesterday", timestamp: 1, sentHere: true }],
         true,
       ),
     );
@@ -119,7 +122,33 @@ describe("useUnreadSteerRequeue", () => {
     await waitFor(() =>
       expect(onRequeue).toHaveBeenCalledWith(
         "chat-1",
-        [{ text: "From before leaving", timestamp: sentAt }],
+        [{ text: "From before leaving", timestamp: sentAt, sentHere: true }],
+        true,
+      ),
+    );
+  });
+
+  it("holds a steer sent from another device whatever its clock says", async () => {
+    // A device with a fast clock: comparing times would call it this visit's.
+    mockPending = [
+      steer("elsewhere", "From my laptop", Date.now() + 3_600_000, false),
+    ];
+    mockWithdraw.mockResolvedValue({
+      outcome: "withdrawn",
+      text: "From my laptop",
+    });
+    const onRequeue = jest.fn();
+    render(onRequeue);
+    await waitFor(() =>
+      expect(onRequeue).toHaveBeenCalledWith(
+        "chat-1",
+        [
+          {
+            text: "From my laptop",
+            timestamp: expect.any(Number),
+            sentHere: false,
+          },
+        ],
         true,
       ),
     );
@@ -142,7 +171,13 @@ describe("useUnreadSteerRequeue", () => {
       expect(mockWithdraw).toHaveBeenCalledTimes(2);
       expect(onRequeue).toHaveBeenLastCalledWith(
         "chat-1",
-        [{ text: "Also check X", timestamp: expect.any(Number) }],
+        [
+          {
+            text: "Also check X",
+            timestamp: expect.any(Number),
+            sentHere: true,
+          },
+        ],
         false,
       );
     } finally {
@@ -176,8 +211,8 @@ describe("useUnreadSteerRequeue", () => {
       expect(onRequeue).toHaveBeenLastCalledWith(
         "chat-1",
         [
-          { text: "First", timestamp: sentAt },
-          { text: "Second", timestamp: sentAt },
+          { text: "First", timestamp: sentAt, sentHere: true },
+          { text: "Second", timestamp: sentAt, sentHere: true },
         ],
         false,
       );

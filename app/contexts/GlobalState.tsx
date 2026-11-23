@@ -39,6 +39,7 @@ import {
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { useFollowUpBehavior } from "@/app/hooks/useFollowUpBehavior";
+import type { RestoredSteer } from "@/app/hooks/useUnreadSteerRequeue";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
@@ -134,10 +135,7 @@ interface GlobalStateType {
   queueChatId: string | null;
   selectMessageQueue: (chatId: string) => void;
   queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
-  requeueUnreadSteers: (
-    chatId: string,
-    steers: Array<{ text: string; timestamp: number }>,
-  ) => void;
+  requeueUnreadSteers: (chatId: string, steers: RestoredSteer[]) => void;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
@@ -1191,10 +1189,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   // Unread steers return in send order: ahead of anything queued after them,
-  // even when separate withdrawals restore them out of order. They were
-  // already accepted, so the queue limit never drops them.
+  // even when separate withdrawals restore them out of order. Only this
+  // browser's clock is comparable with its queue, so a steer sent elsewhere
+  // goes to the front, after earlier ones from elsewhere. They were already
+  // accepted, so the queue limit never drops them.
   const requeueUnreadSteers = useCallback(
-    (chatId: string, steers: Array<{ text: string; timestamp: number }>) => {
+    (chatId: string, steers: RestoredSteer[]) => {
       if (!steers.length) return;
       // Withdrawal is async; target the steers' own chat, not the open one.
       const key = JSON.stringify([user?.id ?? null, chatId]);
@@ -1203,14 +1203,24 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         // Never ahead of a message whose delivery already started.
         const firstMovable =
           queue.findLastIndex((message) => message.deliveryStatus) + 1;
-        const later = queue.findIndex(
-          (message, index) =>
-            index >= firstMovable && message.timestamp > steer.timestamp,
-        );
-        queue.splice(later === -1 ? queue.length : later, 0, {
+        let index: number;
+        if (steer.sentHere) {
+          const later = queue.findIndex(
+            (message, position) =>
+              position >= firstMovable &&
+              !message.restoredFromElsewhere &&
+              message.timestamp > steer.timestamp,
+          );
+          index = later === -1 ? queue.length : later;
+        } else {
+          index = firstMovable;
+          while (queue[index]?.restoredFromElsewhere) index++;
+        }
+        queue.splice(index, 0, {
           id: uuidv4(),
           text: steer.text,
           timestamp: steer.timestamp,
+          ...(steer.sentHere ? {} : { restoredFromElsewhere: true }),
         });
       }
       queuesRef.current.set(key, queue);

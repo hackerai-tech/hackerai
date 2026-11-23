@@ -4,6 +4,19 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
 const MAX_WITHDRAW_RETRIES = 5;
+
+// Steers this tab sent. Their send times use this browser's clock, so only
+// they can be ordered against the local queue or this visit's start.
+const steersSentHere = new Set<string>();
+export const rememberSteerSentHere = (steerId: string) => {
+  steersSentHere.add(steerId);
+};
+
+export type RestoredSteer = {
+  text: string;
+  timestamp: number;
+  sentHere: boolean;
+};
 const WITHDRAW_RETRY_BASE_MS = 1_000;
 
 export type PendingAgentSteer = {
@@ -19,8 +32,8 @@ export type PendingAgentSteer = {
  * returned to the queue; the withdrawal races the run's claim atomically.
  * Saving a response that shows a steer deletes its row, so any row still
  * listed was never saved and is safe to queue again. Steers sent before this
- * visit to the chat (for example, from a closed tab) come back held, so
- * returning to a chat never sends an old message without the user's action.
+ * visit to the chat, or from another tab or device, come back held, so a
+ * returning user never has an old message sent without their action.
  */
 export function useUnreadSteerRequeue({
   chatId,
@@ -31,11 +44,7 @@ export function useUnreadSteerRequeue({
   chatId: string;
   enabled: boolean;
   runActive: boolean;
-  onRequeue: (
-    chatId: string,
-    steers: Array<{ text: string; timestamp: number }>,
-    hold: boolean,
-  ) => void;
+  onRequeue: (chatId: string, steers: RestoredSteer[], hold: boolean) => void;
 }): {
   pendingSteers: PendingAgentSteer[];
   /** Queued messages must wait: unread steers go back ahead of them. */
@@ -82,13 +91,17 @@ export function useUnreadSteerRequeue({
       visit.current.chatId === chatId ? visit.current.startedAt : Date.now();
     void (async () => {
       setInFlight((count) => count + 1);
-      const restored: Array<{ text: string; timestamp: number }> = [];
+      const restored: RestoredSteer[] = [];
       let failed = false;
       for (const [index, steer] of unread.entries()) {
         try {
           const result = await withdraw({ chatId, id: steer.id });
           if (result.outcome === "withdrawn")
-            restored.push({ text: result.text, timestamp: steer.sentAt });
+            restored.push({
+              text: result.text,
+              timestamp: steer.sentAt,
+              sentHere: steersSentHere.has(steer.id),
+            });
         } catch {
           // Still pending; a bounded retry runs even if nothing else changes.
           // Later steers wait too, so none is restored ahead of this one.
@@ -101,7 +114,9 @@ export function useUnreadSteerRequeue({
       onRequeueRef.current(
         chatId,
         restored,
-        restored.some((steer) => steer.timestamp < visitStartedAt),
+        restored.some(
+          (steer) => !steer.sentHere || steer.timestamp < visitStartedAt,
+        ),
       );
       if (!failed) {
         retryAttempts.current = 0;

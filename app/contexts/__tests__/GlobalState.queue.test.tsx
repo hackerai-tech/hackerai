@@ -81,10 +81,10 @@ describe("message queue admission", () => {
     // Separate withdrawals can restore the later steer first.
     await act(async () => {
       result.current.requeueUnreadSteers("a", [
-        { text: "Second steer", timestamp: 200 },
+        { text: "Second steer", timestamp: 200, sentHere: true },
       ]);
       result.current.requeueUnreadSteers("a", [
-        { text: "First steer", timestamp: 100 },
+        { text: "First steer", timestamp: 100, sentHere: true },
       ]);
     });
     expect(result.current.messageQueue.map((m) => m.text)).toEqual([
@@ -95,10 +95,27 @@ describe("message queue admission", () => {
     // A tie keeps restoration order: it goes after the equal timestamp.
     await act(async () => {
       result.current.requeueUnreadSteers("a", [
-        { text: "Tied steer", timestamp: 200 },
+        { text: "Tied steer", timestamp: 200, sentHere: true },
       ]);
     });
     expect(result.current.messageQueue.map((m) => m.text)).toEqual([
+      "First steer",
+      "Second steer",
+      "Tied steer",
+      "Queued after both steers",
+    ]);
+    // Another device's clock is not comparable: front, in restore order.
+    await act(async () => {
+      result.current.requeueUnreadSteers("a", [
+        { text: "Elsewhere 1", timestamp: 999_999, sentHere: false },
+      ]);
+      result.current.requeueUnreadSteers("a", [
+        { text: "Elsewhere 2", timestamp: 1, sentHere: false },
+      ]);
+    });
+    expect(result.current.messageQueue.map((m) => m.text)).toEqual([
+      "Elsewhere 1",
+      "Elsewhere 2",
       "First steer",
       "Second steer",
       "Tied steer",
