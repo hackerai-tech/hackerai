@@ -99,6 +99,8 @@ type ModelStepCost = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Model steps only: the total added to totalTokens, which may differ from input + output. */
+  totalTokens?: number;
   modelName?: string;
 };
 
@@ -256,8 +258,9 @@ export class UsageTracker {
       this.outputTokens -= step.outputTokens;
       this.cacheReadTokens -= step.cacheReadTokens;
       this.cacheWriteTokens -= step.cacheWriteTokens;
+      this.totalTokens -=
+        step.totalTokens ?? step.inputTokens + step.outputTokens;
     }
-    this.totalTokens = this.inputTokens + this.outputTokens;
     this.lastStepInputTokens = 0;
   }
 
@@ -271,11 +274,12 @@ export class UsageTracker {
     if (receipt.cacheTelemetryReported) {
       this.modelCacheTelemetryObserved = true;
     }
-    this.inputTokens += receipt.inputTokens;
-    this.outputTokens += receipt.outputTokens;
-    this.totalTokens += isValidTokenCount(usage.totalTokens)
+    const stepTotalTokens = isValidTokenCount(usage.totalTokens)
       ? usage.totalTokens
       : receipt.inputTokens + receipt.outputTokens;
+    this.inputTokens += receipt.inputTokens;
+    this.outputTokens += receipt.outputTokens;
+    this.totalTokens += stepTotalTokens;
     this.lastStepInputTokens = receipt.inputTokens;
     this.cacheReadTokens += receipt.cacheReadTokens;
     this.cacheWriteTokens += receipt.cacheWriteTokens;
@@ -304,6 +308,7 @@ export class UsageTracker {
         outputTokens: receipt.outputTokens,
         cacheReadTokens: receipt.cacheReadTokens,
         cacheWriteTokens: receipt.cacheWriteTokens,
+        totalTokens: stepTotalTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
