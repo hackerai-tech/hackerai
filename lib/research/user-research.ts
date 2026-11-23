@@ -29,6 +29,61 @@ export const researchSamplingModeSchema = z.enum([
   "pre_event",
 ]);
 
+// Why a requested user has no profile in the cohort report.
+export const researchExclusionReasonSchema = z.enum([
+  "model_content_filter",
+  "no_eligible_evidence",
+  "profile_failed",
+]);
+export type ResearchExclusionReason = z.infer<
+  typeof researchExclusionReasonSchema
+>;
+
+// Cohort-run failure reasons the PM gateway may return. Trigger error text is
+// otherwise never reflected, so only these closed codes cross that boundary.
+export const RESEARCH_RUN_FAILURE_REASONS = [
+  "no_analyzable_profiles",
+  "comparison_group_below_minimum",
+  "synthesis_blocked_by_content_filter",
+] as const;
+export type ResearchRunFailureReason =
+  (typeof RESEARCH_RUN_FAILURE_REASONS)[number];
+
+export const formatResearchRunFailure = (reason?: ResearchRunFailureReason) =>
+  reason
+    ? `User research analysis failed [${reason}]. Review the restricted Trigger run for diagnostics.`
+    : "User research analysis failed. Review the restricted Trigger run for diagnostics.";
+
+export const parseResearchRunFailureReason = (
+  message: unknown,
+): ResearchRunFailureReason | undefined => {
+  if (typeof message !== "string") return undefined;
+  const code = /^User research analysis failed \[([a-z_]+)\]\./.exec(
+    message,
+  )?.[1];
+  return RESEARCH_RUN_FAILURE_REASONS.find((reason) => reason === code);
+};
+
+const MAX_UNKNOWNS = 8;
+
+/**
+ * Content-filter exclusions are not random: the refused conversations are
+ * likely the most offense-heavy. Record that in the report itself so the
+ * finding cannot be read as covering the whole requested cohort.
+ */
+export const withContentFilterLimitation = <T extends { unknowns: string[] }>(
+  synthesis: T,
+  blockedUsers: number,
+  usersRequested: number,
+): T => {
+  if (blockedUsers === 0) return synthesis;
+  const limitation = `${blockedUsers} of ${usersRequested} requested users were not analyzed because the model's content filter refused their conversations. Their work may differ from analyzed users, so these findings can under-represent them.`;
+  return {
+    ...synthesis,
+    unknowns: [limitation, ...synthesis.unknowns].slice(0, MAX_UNKNOWNS),
+  };
+};
+
 const evidenceAnchorSchema = z.object({
   userId: z.string().trim().min(1).max(200),
   anchorAt: z.number().int().positive(),
@@ -403,8 +458,21 @@ export const pmUserResearchResultSchema = z
       .min(USER_RESEARCH_MIN_COMPARISON_GROUPS)
       .max(USER_RESEARCH_MAX_COMPARISON_GROUPS)
       .optional(),
+    // Includes blockedProfiles, matching report.coverage.profilesFailed.
     failedProfiles: z.number().int().min(0).max(20),
     skippedProfiles: z.number().int().min(0).max(20).optional(),
+    // Optional for results created before content-filter exclusions were
+    // reported separately.
+    blockedProfiles: z.number().int().min(0).max(20).optional(),
+    excludedUsers: z
+      .array(
+        z.object({
+          userId: z.string().trim().min(1).max(200),
+          reason: researchExclusionReasonSchema,
+        }),
+      )
+      .max(USER_RESEARCH_MAX_COHORT_SIZE)
+      .optional(),
     usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
     report: researchCohortReportSchema,
   })

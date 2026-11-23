@@ -33,6 +33,15 @@ const ALLOWED_GATEWAY_ERROR_CODES = new Set([
   "research_run_failed",
   "research_run_status_failed",
 ]);
+// Mirrors RESEARCH_RUN_FAILURE_REASONS in lib/research/user-research.ts.
+const RUN_FAILURE_MESSAGES = {
+  no_analyzable_profiles:
+    "no requested user could be analyzed; check excluded users and evidence windows",
+  comparison_group_below_minimum:
+    "a comparison group fell below three analyzable users after exclusions",
+  synthesis_blocked_by_content_filter:
+    "the model content filter refused the cohort synthesis",
+};
 const ISSUE_MESSAGES = {
   invalid_type: "has an invalid type",
   too_small: "is below the allowed minimum",
@@ -516,10 +525,14 @@ export async function runResearch(
     const status = await request(statusUrl, key);
     if (args.statusPath) return status;
     if (status.status === "completed") return status.result;
-    if (status.status === "failed")
+    if (status.status === "failed") {
+      const reason = Object.hasOwn(RUN_FAILURE_MESSAGES, status.reason)
+        ? `: ${RUN_FAILURE_MESSAGES[status.reason]}`
+        : "";
       throw new ResearchRunnerError(
-        "Research run failed without a shareable report",
+        `Research run failed without a shareable report${reason}`,
       );
+    }
     if (now() >= deadline) break;
     await sleep(POLL_INTERVAL_MS);
   } while (now() < deadline);
