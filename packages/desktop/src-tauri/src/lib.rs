@@ -21,6 +21,8 @@ mod update_safety;
 mod update_safety_tests;
 #[cfg(test)]
 mod updater_tests;
+#[cfg(windows)]
+mod windows_stream_job;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
