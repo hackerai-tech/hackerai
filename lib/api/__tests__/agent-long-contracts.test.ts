@@ -1806,7 +1806,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /hasCandidate:\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
-      /const nextContinuation\s*=\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
+      /const retryAssistantParts\s*=\s*normalizedRetryMessages\.findLast\(/,
+    );
+    // Only a retriable disconnect or a failed Max Bedrock leg continues.
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*\(\(isTerminalProviderStreamError\(state\) &&[\s\S]{0,200}\|\|\s*bedrockRecoveryFailed\) &&\s*!hasUncertainProviderToolOutcome\(\s*retryAssistantParts/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
