@@ -2,10 +2,13 @@ import type { MutationCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
 import { isAgentSteerPart } from "../../lib/chat/agent-steer";
 
-// Settled rows stay briefly as tombstones: a worker that was stopped can still
-// save a response after the client withdrew one of its steers.
 export const AGENT_STEER_SCAN_LIMIT = 100;
-export const AGENT_STEER_TOMBSTONE_TTL_MS = 60 * 60 * 1000;
+// Settled rows stay as tombstones: a worker that was stopped can still save a
+// response after the client withdrew one of its steers. A stopped run cannot
+// resume, so such a save can only come from a worker still inside the Agent
+// run cap (6 hours of runtime, trigger/agent-long.ts) or its 2-minute cleanup.
+// Outlive both, so no save can arrive after its tombstone is gone.
+export const AGENT_STEER_TOMBSTONE_TTL_MS = 7 * 60 * 60 * 1000;
 
 export const isOpenSteer = (row: Doc<"agent_steers">) =>
   row.settled_at === undefined;

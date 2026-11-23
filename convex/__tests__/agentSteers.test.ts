@@ -285,10 +285,14 @@ describe("agent steers", () => {
     rows.chats[0].active_trigger_run_id = undefined;
     await withdraw("a");
     rows.chats[0].active_trigger_run_id = "run-1";
-    now.mockReturnValue(1_000 + 2 * 60 * 60 * 1000);
+    // Still kept within the Agent run cap, so a late save is still dropped.
+    now.mockReturnValue(1_000 + 6 * 60 * 60 * 1000);
     await create("b");
+    expect(rows.agent_steers.map((row) => row.id)).toEqual(["a", "b"]);
+    now.mockReturnValue(1_000 + 8 * 60 * 60 * 1000);
+    await create("c");
     now.mockRestore();
-    expect(rows.agent_steers.map((row) => row.id)).toEqual(["b"]);
+    expect(rows.agent_steers.map((row) => row.id)).toEqual(["b", "c"]);
   });
 
   it("finds open steers behind a full window of recent settled rows", async () => {
