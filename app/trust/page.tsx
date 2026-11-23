@@ -162,8 +162,11 @@ const InlineLink = ({
 }) => (
   <a
     href={href}
-    target="_blank"
-    rel="noopener noreferrer"
+    // In-page section links stay in the current tab.
+    {...(!href.startsWith("#") && {
+      target: "_blank",
+      rel: "noopener noreferrer",
+    })}
     className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
   >
     {children}
