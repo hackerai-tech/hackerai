@@ -208,6 +208,51 @@ describe("findings link", () => {
   });
 });
 
+it("separates the latest run's new findings from ones seen again and keeps both links", () => {
+  const finished = (findingSummary?: {
+    newCount: number;
+    repeatCount: number;
+  }): AgentSchedule => ({
+    ...paused,
+    findingCount: 2,
+    runs: [
+      {
+        id: "run",
+        chatId: "chat-9",
+        hasTask: true,
+        status: "finished",
+        detail: null,
+        createdAt: Date.now(),
+        findingSummary,
+      },
+    ],
+  });
+  const view = render(
+    <ScheduleRow {...rowProps(finished({ newCount: 1, repeatCount: 1 }))} />,
+  );
+  expect(screen.getByText("1 new finding").parentElement).toHaveTextContent(
+    /^1 new finding · 1 seen again$/,
+  );
+  expect(
+    screen.getByRole("link", { name: "2 findings from Lab check" }),
+  ).toHaveAttribute("href", "/findings?schedule=schedule");
+  expect(screen.getByRole("link", { name: "Open result" })).toHaveAttribute(
+    "href",
+    "/c/chat-9",
+  );
+
+  view.rerender(
+    <ScheduleRow {...rowProps(finished({ newCount: 2, repeatCount: 0 }))} />,
+  );
+  expect(screen.getByText("2 new findings").parentElement).toHaveTextContent(
+    /^2 new findings$/,
+  );
+  for (const summary of [undefined, { newCount: 0, repeatCount: 0 }]) {
+    view.rerender(<ScheduleRow {...rowProps(finished(summary))} />);
+    expect(screen.queryByText(/new finding|seen again/)).toBeNull();
+  }
+});
+
 it("keeps resuming an interrupted run in its task apart from resuming the schedule", () => {
   const props = rowProps({
     ...paused,

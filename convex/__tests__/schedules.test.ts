@@ -37,6 +37,7 @@ function store() {
     schedule_runs: [],
     chats: [],
     finding_sources: [],
+    schedule_finding_observations: [],
     user_deletion_fences: [],
   };
   const db: any = {

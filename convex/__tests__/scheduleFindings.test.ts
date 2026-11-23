@@ -427,6 +427,39 @@ const deleteTask = async (w: any, task: Task) => {
 };
 
 describe("findings repeated across runs of one schedule", () => {
+  it("reports new and repeated findings separately in a completed run", async () => {
+    const w = await world();
+    const { list } = await import("../schedules");
+    const scheduleId = await w.schedule();
+    const first = await w.scheduledTask(scheduleId);
+    const latest = await w.scheduledTask(scheduleId);
+    await w.saveFirst(first);
+    await w.save(latest);
+    await w.save(latest);
+    await w.saveFirst(latest, {
+      report: report({
+        title: "Synthetic fixture missing a review label",
+        endpoint: "/fixture-review-label",
+      }),
+    });
+    await w.db.patch(latest.runId!, { status: "finished" });
+
+    const listForOwner = () =>
+      (list as any).handler(w.ctx, { serviceKey: "service", userId: "user-1" });
+    expect((await listForOwner())[0].runs[0]).toMatchObject({
+      chatId: latest.chatId,
+      findingSummary: { newCount: 1, repeatCount: 1 },
+    });
+
+    const newerObservation = w
+      .runRecords()
+      .find((r) => r.run_id === latest.runId)!;
+    await w.db.patch(newerObservation._id, { first_report: undefined });
+    expect((await listForOwner())[0].runs[0]).not.toHaveProperty(
+      "findingSummary",
+    );
+  });
+
   it("keeps one saved finding and counts each reporting run once", async () => {
     const w = await world();
     const scheduleId = await w.schedule();

@@ -6,6 +6,8 @@ export type ScheduleRun = {
   status: string;
   detail: string | null;
   createdAt: number;
+  /** Known saved findings for the latest completed task. */
+  findingSummary?: { newCount: number; repeatCount: number };
 };
 export type AgentSchedule = {
   id: string;

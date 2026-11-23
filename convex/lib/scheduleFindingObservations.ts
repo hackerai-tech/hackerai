@@ -1,5 +1,5 @@
 import type { Doc } from "../_generated/dataModel";
-import type { MutationCtx } from "./serviceFunctions";
+import type { MutationCtx, QueryCtx } from "./serviceFunctions";
 
 export const MAX_SCHEDULE_OBSERVATIONS = 20;
 // Rows are small. One mutation removes at most this many, then reports that
@@ -7,6 +7,7 @@ export const MAX_SCHEDULE_OBSERVATIONS = 20;
 const OBSERVATION_DELETE_BATCH = 100;
 // Scrubbing rewrites a full report per row, so that batch is much smaller.
 const OBSERVATION_SCRUB_BATCH = 10;
+const RUN_SUMMARY_LIMIT = 50;
 
 type ScheduleOrigin = NonNullable<Doc<"chats">["schedule_origin"]>;
 type WriteCtx = Pick<MutationCtx, "db">;
@@ -52,6 +53,7 @@ export async function insertFirstScheduleObservation(
     run_id: origin.runId,
     chat_id: finding.chat_id,
     observed_at: observedAt,
+    first_report: true,
   });
 }
 
@@ -88,6 +90,7 @@ export async function recordScheduleObservation(
     run_id: origin.runId,
     chat_id: chat.id,
     observed_at: now,
+    first_report: false,
   });
   const retained = finding.schedule_observations ?? [];
   // The report itself is unchanged, so its revision (`updated_at`) is too.
@@ -105,6 +108,33 @@ export async function recordScheduleObservation(
       (finding.schedule_observation_count ?? retained.length) + 1,
   });
   return true;
+}
+
+/** Summarize saved reports for a visible run without reading report bodies. */
+export async function summarizeScheduleRunFindings(
+  ctx: Pick<QueryCtx, "db">,
+  run: Pick<Doc<"schedule_runs">, "_id" | "user_id" | "chat_id">,
+) {
+  const observations = await ctx.db
+    .query("schedule_finding_observations")
+    .withIndex("by_user_and_chat", (q) =>
+      q.eq("user_id", run.user_id).eq("chat_id", run.chat_id),
+    )
+    .take(RUN_SUMMARY_LIMIT + 1);
+  if (observations.length > RUN_SUMMARY_LIMIT) return undefined;
+
+  let newCount = 0;
+  let repeatCount = 0;
+  for (const observation of observations) {
+    if (
+      observation.run_id !== run._id ||
+      observation.first_report === undefined
+    )
+      return undefined;
+    if (observation.first_report) newCount++;
+    else repeatCount++;
+  }
+  return newCount + repeatCount ? { newCount, repeatCount } : undefined;
 }
 
 /**

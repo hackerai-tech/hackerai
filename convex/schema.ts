@@ -928,6 +928,8 @@ export default defineSchema({
     run_id: v.id("schedule_runs"),
     chat_id: v.string(),
     observed_at: v.number(),
+    // Older observations predate the run summary.
+    first_report: v.optional(v.boolean()),
   })
     .index("by_finding_and_run", ["finding_id", "run_id"])
     // Also the owner range used by account deletion.

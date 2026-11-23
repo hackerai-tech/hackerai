@@ -21,7 +21,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { Fragment, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -124,6 +124,21 @@ function findingsLabel(schedule: AgentSchedule) {
   if (schedule.findingCountTruncated) return `${count}+ findings`;
   return count === 1 ? "1 finding" : `${count} findings`;
 }
+// The latest finished task's distinct findings, split by whether an earlier
+// task already saved them. Unknown or zero counts show nothing.
+function runFindingParts(run: ScheduleRun | undefined) {
+  const summary = run?.findingSummary;
+  if (!summary) return [];
+  const parts: string[] = [];
+  if (summary.newCount > 0)
+    parts.push(
+      summary.newCount === 1
+        ? "1 new finding"
+        : `${summary.newCount} new findings`,
+    );
+  if (summary.repeatCount > 0) parts.push(`${summary.repeatCount} seen again`);
+  return parts;
+}
 function RunStatus({ run }: { run: ScheduleRun }) {
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -199,6 +214,7 @@ export function ScheduleRow({
   const canToggle = schedule.enabled || (!completed && enabled);
   const unavailable = computerUnavailable && Boolean(execution);
   const findings = findingsLabel(schedule);
+  const runFindings = runFindingParts(latest);
   const ExecutionIcon = !execution
     ? Cloud
     : isDesktopPreference(execution.preference)
@@ -345,6 +361,17 @@ export function ScheduleRow({
                     {formatRunDate(latest.createdAt)}
                   </time>
                 </span>
+                {runFindings.length > 0 && (
+                  // Each count stays whole when a narrow column wraps.
+                  <span className="mt-0.5 block tabular-nums text-muted-foreground">
+                    {runFindings.map((part, index) => (
+                      <Fragment key={part}>
+                        {index > 0 && " · "}
+                        <span className="whitespace-nowrap">{part}</span>
+                      </Fragment>
+                    ))}
+                  </span>
+                )}
                 {latest.detail && (
                   <span className="mt-0.5 block break-words text-muted-foreground">
                     {latest.detail}

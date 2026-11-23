@@ -11,6 +11,7 @@ import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { scheduleDefinition, scheduleRunStatus } from "./scheduleValidators";
 import { countScheduleFindings } from "./lib/scheduleFindings";
+import { summarizeScheduleRunFindings } from "./lib/scheduleFindingObservations";
 import {
   MAX_SCHEDULES,
   nextScheduledTime,
@@ -97,6 +98,9 @@ export const list = query({
           status: v.string(),
           detail: v.union(v.string(), v.null()),
           createdAt: v.number(),
+          findingSummary: v.optional(
+            v.object({ newCount: v.number(), repeatCount: v.number() }),
+          ),
         }),
       ),
     }),
@@ -123,13 +127,22 @@ export const list = query({
               .withIndex("by_schedule_id", (q) => q.eq("schedule_id", s._id))
               .order("desc")
               .take(5)
-          ).map(async (r) => ({
-            id: r._id,
-            chatId: r.chat_id,
-            ...(await runState(ctx, r)),
-            detail: r.detail ?? null,
-            createdAt: r.created_at,
-          })),
+          ).map(async (r, index) => {
+            const state = await runState(ctx, r);
+            // The overview displays a summary for the latest completed task.
+            const findingSummary =
+              index === 0 && state.status === "finished" && state.hasTask
+                ? await summarizeScheduleRunFindings(ctx, r)
+                : undefined;
+            return {
+              id: r._id,
+              chatId: r.chat_id,
+              ...state,
+              detail: r.detail ?? null,
+              createdAt: r.created_at,
+              ...(findingSummary ? { findingSummary } : {}),
+            };
+          }),
         ),
       })),
     );
