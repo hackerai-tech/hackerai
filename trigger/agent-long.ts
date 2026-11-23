@@ -1825,10 +1825,8 @@ export const agentLongTask = task({
     const assistantMessageId = ctx.run.id;
     const mode = "agent" as const;
 
-    // Capture task start time here, before any async setup, so the
-    // elapsedTimeExceeds stop condition counts from task launch rather
-    // than stream launch. Without this, slow setup (>2 min) could push
-    // the soft stop past the plan-specific runtime cap.
+    // Count setup toward the runtime cap using the same clock as the active budget.
+    const taskStartMonotonicMs = performance.now();
     const taskStartTime = Date.now();
     const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
     const runTimingTracker = new AgentRunTimingTracker();
@@ -2526,7 +2524,7 @@ export const agentLongTask = task({
       };
       const runtimeBudget = createActiveRuntimeBudget({
         maxDurationMs: agentLongMaxDurationMs,
-        initialElapsedMs: Date.now() - taskStartTime,
+        initialElapsedMs: performance.now() - taskStartMonotonicMs,
         onExceeded: () => {
           markAgentLongDurationExceeded();
           runtimeSettlementWatchdog?.arm();

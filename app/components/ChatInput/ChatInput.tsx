@@ -7,7 +7,14 @@ import {
 import { useQuestionAnswers } from "./useQuestionAnswers";
 import { UserInputQuestionPanel } from "./UserInputQuestionPanel";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
@@ -1072,6 +1079,19 @@ const ChatInputContent = ({
         ? "Goal mode is unavailable. Exit goal mode to send a normal message."
         : "Checking goal availability…"
       : undefined;
+  const attachmentFailureDescriptionId = useId();
+  const attachmentFailureMessage =
+    !isWaitingForReply && uploadedFiles.some((file) => file.error)
+      ? uploadedFiles.some(
+          (file) =>
+            file.error &&
+            file.retryable &&
+            !file.generatedTextAttachment &&
+            !file.generatedSource,
+        )
+        ? "Retry or remove failed attachments to send."
+        : "Remove failed attachments to send."
+      : undefined;
   const effectiveSendDisabledReason =
     (submissionPending ? "Sending message…" : undefined) ??
     (uploadedFiles.some((file) => file.removing)
@@ -1090,7 +1110,8 @@ const ChatInputContent = ({
       : undefined) ??
     (user && !pendingUserWait
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
-      : undefined);
+      : undefined) ??
+    attachmentFailureMessage;
 
   useEffect(() => {
     // A no-op setter after every edit leaves synchronous work pending during
@@ -1795,7 +1816,9 @@ const ChatInputContent = ({
               describedBy={
                 isWaitingForReply && !hasQuestionPanel
                   ? WAITING_FOR_REPLY_DESCRIPTION_ID
-                  : undefined
+                  : attachmentFailureMessage
+                    ? attachmentFailureDescriptionId
+                    : undefined
               }
               isReplyingToAgent={isWaitingForReply}
               onCommandKeyDown={(e) => {
@@ -1825,6 +1848,18 @@ const ChatInputContent = ({
                 setComposerFocused(false);
               }}
             />
+            <p
+              id={attachmentFailureDescriptionId}
+              aria-live="polite"
+              aria-atomic="true"
+              className={
+                attachmentFailureMessage
+                  ? "px-4 text-xs text-destructive"
+                  : "sr-only"
+              }
+            >
+              {attachmentFailureMessage}
+            </p>
             <ChatInputToolbar
               contextMeter={
                 // A composer mid-transition must not show another chat's data.
