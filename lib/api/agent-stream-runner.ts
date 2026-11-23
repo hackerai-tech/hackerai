@@ -23,7 +23,10 @@ import {
   getAgentModelContextFlag,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
-import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import {
   LocalConnectionLostError,
@@ -203,6 +206,7 @@ import {
 import {
   buildContextBudgetProjectionDiagnostics,
   CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
+  omitFileAnnotationsWithoutPossibleOriginal,
   type ContextBudgetDecision,
 } from "@/lib/chat/summarization/context-budget-diagnostics";
 import {
@@ -602,6 +606,32 @@ export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
   } as ModelMessage;
   return nextMessages;
 };
+
+/**
+ * The one annotation batch the runner attaches to a request. Shared by the
+ * rolling compaction estimate and the prepared request/send guard.
+ *
+ * Only route-aware Agent on the exact DeepSeek 1017 snapshot drops parsed-file
+ * entries, and only when a complete bounded scan proves `messages` can send no
+ * file part (user or tool output) they could belong to. Without the original
+ * file those entries were not observed to give this model any document
+ * content, yet their embedded page images can exceed the local budget. Every
+ * other route, and any possible original or uncertain scan, keeps the batch.
+ */
+export const getOpenRouterFileAnnotationsForRequest = ({
+  messages,
+  annotations,
+  routeAwareContext,
+  modelId,
+}: {
+  messages: readonly ModelMessage[];
+  annotations: unknown[] | undefined;
+  routeAwareContext: boolean;
+  modelId: string;
+}): unknown[] | undefined =>
+  routeAwareContext && modelId === DEEPSEEK_1017_SLUG
+    ? omitFileAnnotationsWithoutPossibleOriginal(messages, annotations)
+    : annotations;
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -1677,13 +1707,22 @@ export async function createAgentStream(
           effectiveModelName,
         );
 
-    const attachedFileAnnotations = openRouterFileAnnotations;
+    const requestModelId =
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    // Scan the request itself, after any provider PDF omission above.
+    // The original batch stays in `openRouterFileAnnotations` for later steps.
+    const attachedFileAnnotations = getOpenRouterFileAnnotationsForRequest({
+      messages: messagesWithAuthorization,
+      annotations: openRouterFileAnnotations,
+      routeAwareContext,
+      modelId: requestModelId,
+    });
     const prepared = addPromptCacheBreakpoints(
       addOpenRouterFileAnnotationsToLastAssistantMessage(
         messagesWithAuthorization,
         attachedFileAnnotations,
       ),
-      ctx.trackedProvider.languageModel(effectiveModelName).modelId,
+      requestModelId,
     );
     let preparedMessageTokens: number | undefined;
     let preparedSystemTokens: number | undefined;
@@ -2495,10 +2534,18 @@ export async function createAgentStream(
           // The route-aware send guard counts parsed-file annotations attached
           // to the prepared request and the memoized tool schema estimate.
           // Count both here so compaction triggers before that guard fails.
+          // Same batch policy as the guard. Preparation never adds file parts,
+          // so within the scan bounds this keeps a batch whenever the guard
+          // would; it may keep one the guard drops (conservative).
           const decisionMessages = routeAwareContext
             ? addOpenRouterFileAnnotationsToLastAssistantMessage(
                 rollingModelMessages,
-                openRouterFileAnnotations,
+                getOpenRouterFileAnnotationsForRequest({
+                  messages: rollingModelMessages,
+                  annotations: openRouterFileAnnotations,
+                  routeAwareContext,
+                  modelId: effectiveModelInfo.requestedSlug,
+                }),
               )
             : rollingModelMessages;
           const inputTokens =
