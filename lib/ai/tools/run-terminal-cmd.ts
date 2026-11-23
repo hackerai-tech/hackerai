@@ -705,6 +705,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
         if (isCloudSandbox(sandbox)) {
+          const initialHealthCheck = sandboxManager.beginHealthCheck?.();
           try {
             await waitForSandboxReady(
               sandbox,
@@ -713,7 +714,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               context.onSandboxResourceMetrics,
               "initial",
             );
-            sandboxManager.resetHealthFailures();
+            sandboxManager.resetHealthFailures(initialHealthCheck);
           } catch (healthError) {
             // If aborted, don't retry - propagate the abort
             if (
@@ -765,6 +766,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 await getApprovedExecutionSandbox();
 
               // Verify the reconnected sandbox is ready
+              const reconnectHealthCheck = sandboxManager.beginHealthCheck?.();
               try {
                 await waitForSandboxReady(
                   reconnectedSandbox,
@@ -773,7 +775,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   context.onSandboxResourceMetrics,
                   "reconnect",
                 );
-                sandboxManager.resetHealthFailures();
+                sandboxManager.resetHealthFailures(reconnectHealthCheck);
               } catch (reconnectedHealthError) {
                 if (
                   reconnectedHealthError instanceof DOMException &&

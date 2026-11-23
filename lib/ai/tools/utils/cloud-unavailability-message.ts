@@ -32,7 +32,8 @@ const DISABLED_MESSAGES: Record<
   },
   account_restricted: {
     user: "Cloud sandbox access is restricted for this account, so cloud tools are unavailable for the rest of this request.",
-    agent: " Do not retry cloud tools in this run.",
+    agent:
+      " Do not retry cloud tools in this run; tell the user to contact HackerAI support if they believe this is a mistake.",
   },
   workspace_recovery_required: {
     user: "Your cloud workspace needs recovery before it can be used, so cloud tools are unavailable for the rest of this request. Your workspace is preserved.",

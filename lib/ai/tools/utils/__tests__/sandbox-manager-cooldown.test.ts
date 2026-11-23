@@ -86,4 +86,19 @@ describe("DefaultSandboxManager readiness cooldown", () => {
 
     await expect(pending).rejects.toThrow("temporarily unavailable");
   });
+  it("keeps failures recorded while a stale health check was waiting", () => {
+    const manager = new DefaultSandboxManager(
+      "user-1",
+      jest.fn(),
+      sandbox("sandbox-1"),
+    );
+
+    const staleCheck = manager.beginHealthCheck();
+    // A concurrent call records the first readiness failure meanwhile.
+    expect(manager.recordHealthFailure()).toBe(false);
+    manager.resetHealthFailures(staleCheck);
+    // The stale success did not reset the count: one more failure cools down.
+    expect(manager.recordHealthFailure()).toBe(true);
+    expect(manager.isSandboxUnavailable()).toBe(true);
+  });
 });

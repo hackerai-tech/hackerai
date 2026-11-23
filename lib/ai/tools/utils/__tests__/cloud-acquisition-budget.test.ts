@@ -293,6 +293,18 @@ describe("cloud acquisition cooldown", () => {
     return budget.run(fail, context).catch((error) => error);
   };
 
+  it("ignores a readiness success whose check began before a newer cooldown", () => {
+    const budget = new CloudAcquisitionBudget(() => 0.5);
+    const before = budget.readinessGeneration();
+    // Another call's readiness failure starts a cooldown during this wait.
+    budget.recordReadinessFailure(context);
+    budget.recordReadinessSuccess(before);
+    expect(budget.isBlocked()).toBe(true);
+    // A check that began after the cooldown may still end it early.
+    budget.recordReadinessSuccess(budget.readinessGeneration());
+    expect(budget.isBlocked()).toBe(false);
+  });
+
   it("cools down after one typed provider timeout but keeps one other transient failure retryable", async () => {
     const timedOut = new CloudAcquisitionBudget(() => 0.5);
     await timedOut

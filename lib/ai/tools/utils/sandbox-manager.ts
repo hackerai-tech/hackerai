@@ -5,6 +5,7 @@ import type {
   SandboxInfo,
   SandboxManager,
   SandboxType,
+  SandboxHealthCheckToken,
 } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import {
@@ -37,6 +38,8 @@ const MAX_SANDBOX_HEALTH_FAILURES = 2;
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
+  // Advances on every recorded health failure; see beginHealthCheck.
+  private healthEpoch = 0;
   private activeCloudProvider: CloudSandboxProvider;
   private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
@@ -57,7 +60,15 @@ export class DefaultSandboxManager implements SandboxManager {
       "e2b";
   }
 
+  beginHealthCheck(): SandboxHealthCheckToken {
+    return {
+      epoch: this.healthEpoch,
+      generation: this.acquisitionBudget.readinessGeneration(),
+    };
+  }
+
   recordHealthFailure(): boolean {
+    this.healthEpoch++;
     this.healthFailureCount++;
     if (this.healthFailureCount < MAX_SANDBOX_HEALTH_FAILURES) return false;
     this.healthFailureCount = 0;
@@ -68,9 +79,11 @@ export class DefaultSandboxManager implements SandboxManager {
     return true;
   }
 
-  resetHealthFailures(): void {
+  resetHealthFailures(token?: SandboxHealthCheckToken): void {
+    // A check that began before a newer failure must not erase it.
+    if (token && token.epoch !== this.healthEpoch) return;
     this.healthFailureCount = 0;
-    this.acquisitionBudget.recordReadinessSuccess();
+    this.acquisitionBudget.recordReadinessSuccess(token?.generation);
   }
 
   isSandboxUnavailable(): boolean {

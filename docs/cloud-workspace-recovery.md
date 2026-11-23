@@ -17,9 +17,10 @@ including store errors and a pinned region or phase mismatch, are treated as
 transient: retrying is safe because the guards run again, and a
 customer-confirmed recovery can complete during the run. They stop re-probing
 at the per-run re-probe limit. Failures a retry cannot fix (authorization,
-account restrictions, invalid region or managed-egress configuration, and a
-provider-confirmed missing pinned workspace) disable cloud tools for the rest
-of the run. Agent guidance for any of these must point to the customer recovery
+account restrictions, invalid region or managed-egress configuration, a
+provider-confirmed missing pinned workspace, and provider identity validation
+that does not match the pinned workspace) disable cloud tools for the rest of
+the run. Agent guidance for any of these must point to the customer recovery
 flow or support, never to deleting the workspace.
 
 A record with `recoveryPending` can permit execution in its pinned E2B workspace,

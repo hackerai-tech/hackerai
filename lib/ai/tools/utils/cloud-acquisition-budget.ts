@@ -152,6 +152,9 @@ export class CloudAcquisitionBudget {
   private availability: Availability = { kind: "available" };
   private cooldowns = 0;
   private reprobes = 0;
+  // Advances whenever cloud tools stop being available, so a readiness check
+  // can tell whether a cooldown started while it was waiting.
+  private generation = 0;
 
   constructor(private readonly random: () => number = Math.random) {}
 
@@ -171,8 +174,18 @@ export class CloudAcquisitionBudget {
     return state && describeCloudUnavailability(state);
   }
 
-  /** The sandbox answered a readiness check; end a readiness cooldown early. */
-  recordReadinessSuccess(): void {
+  /** Snapshot before a readiness wait; pass it to `recordReadinessSuccess`. */
+  readinessGeneration(): number {
+    return this.generation;
+  }
+
+  /**
+   * The sandbox answered a readiness check; end a readiness cooldown early.
+   * A success whose check began before a newer cooldown cannot clear it.
+   */
+  recordReadinessSuccess(sinceGeneration?: number): void {
+    if (sinceGeneration !== undefined && sinceGeneration !== this.generation)
+      return;
     if (this.availability.kind === "cooldown")
       this.availability = { kind: "available" };
   }
@@ -398,6 +411,7 @@ export class CloudAcquisitionBudget {
     telemetry: CloudAvailabilityTelemetry,
     failure: { source: FailureSource; error?: unknown },
   ): CloudUnavailability {
+    this.generation++;
     this.failures = 0;
     this.failedWaitMs = 0;
     if (this.reprobes >= MAX_CLOUD_REPROBES)
@@ -430,6 +444,7 @@ export class CloudAcquisitionBudget {
     reason: CloudDisabledReason,
     error?: unknown,
   ): CloudUnavailability {
+    this.generation++;
     this.availability = { kind: "disabled", reason };
     this.report("cloud_sandbox_disabled_for_run", telemetry, {
       disabled_reason: reason,

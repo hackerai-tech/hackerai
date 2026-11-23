@@ -24,6 +24,7 @@ import type {
   SandboxManager,
   SandboxType,
   SubscriptionTier,
+  SandboxHealthCheckToken,
 } from "@/types";
 import {
   CentrifugoSandbox,
@@ -479,6 +480,8 @@ export class HybridSandboxManager implements SandboxManager {
   private persistedQuarantinedConnectionIds = new Set<string>();
   private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
+  // Advances on every recorded health failure; see beginHealthCheck.
+  private healthEpoch = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private localSelection: {
@@ -516,7 +519,15 @@ export class HybridSandboxManager implements SandboxManager {
       "e2b";
   }
 
+  beginHealthCheck(): SandboxHealthCheckToken {
+    return {
+      epoch: this.healthEpoch,
+      generation: this.acquisitionBudget.readinessGeneration(),
+    };
+  }
+
   recordHealthFailure(): boolean {
+    this.healthEpoch++;
     this.healthFailureCount++;
     if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
       // Don't auto-fallback from local to E2B — the user explicitly chose local
@@ -540,10 +551,13 @@ export class HybridSandboxManager implements SandboxManager {
     return this.sandboxUnavailable;
   }
 
-  resetHealthFailures(): void {
+  resetHealthFailures(token?: SandboxHealthCheckToken): void {
+    // A check that began before a newer failure must not erase it.
+    if (token && token.epoch !== this.healthEpoch) return;
     this.healthFailureCount = 0;
     this.sandboxUnavailable = false;
-    if (!this.isLocal) this.acquisitionBudget.recordReadinessSuccess();
+    if (!this.isLocal)
+      this.acquisitionBudget.recordReadinessSuccess(token?.generation);
   }
 
   isSandboxUnavailable(): boolean {
@@ -1192,8 +1206,10 @@ export class HybridSandboxManager implements SandboxManager {
       // A concurrent call may have replaced the client, switched transport, or
       // started a cooldown during the awaits; re-evaluate instead of returning
       // a cleared or stale cache.
+      // A switch to the local transport goes back through getSandbox so the
+      // selected Desktop connection is kept rather than replaced by cloud.
+      if (this.isLocal) return this.getSandbox();
       if (
-        this.isLocal ||
         this.sandbox !== cached ||
         this.acquisitionBudget.blocksCachedSandbox()
       )
