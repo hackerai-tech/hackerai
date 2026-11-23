@@ -446,3 +446,64 @@ describe("createAgentCompactionReporter", () => {
     expect(sent).toEqual([0]);
   });
 });
+
+describe("SummarizationTracker steers", () => {
+  const steer = { id: "steer-1", text: "Use the staging host instead" };
+  const response = (id: string) => ({
+    id,
+    role: "assistant",
+    parts: [
+      { type: "step-start" },
+      {
+        type: "tool-run_terminal_cmd",
+        toolCallId: "call-1",
+        state: "output-available",
+      },
+      { type: "step-start" },
+      { type: "text", text: "Switching to staging." },
+    ],
+  });
+
+  it("saves a steer between the tool call it followed and the next step", () => {
+    const tracker = new SummarizationTracker();
+    tracker.recordSteer(steer, "call-1");
+
+    const saved = tracker.processMessageForSave(response("primary"));
+
+    expect(saved.parts.map((part: { type: string }) => part.type)).toEqual([
+      "step-start",
+      "tool-run_terminal_cmd",
+      "data-agent-steer",
+      "step-start",
+      "text",
+    ]);
+    expect(saved.parts[2]).toMatchObject({ data: steer });
+  });
+
+  it("keeps a steer on the first saved response when a retry saves another", () => {
+    const tracker = new SummarizationTracker();
+    tracker.recordSteer(steer, "call-1");
+
+    tracker.processMessageForSave(response("primary"));
+    const resaved = tracker.processMessageForSave(response("primary"));
+    const retry = tracker.processMessageForSave(response("retry"));
+
+    const steerCount = (message: { parts: Array<{ type: string }> }) =>
+      message.parts.filter((part) => part.type === "data-agent-steer").length;
+    expect(steerCount(resaved)).toBe(1);
+    expect(steerCount(retry)).toBe(0);
+  });
+
+  it("puts a steer before the output when its anchor is not in the response", () => {
+    const tracker = new SummarizationTracker();
+    tracker.recordSteer(steer, "call-from-a-discarded-attempt");
+
+    const saved = tracker.processMessageForSave({
+      id: "retry",
+      role: "assistant",
+      parts: [{ type: "step-start" }, { type: "text", text: "On staging." }],
+    });
+
+    expect(saved.parts[0]).toMatchObject({ type: "data-agent-steer" });
+  });
+});

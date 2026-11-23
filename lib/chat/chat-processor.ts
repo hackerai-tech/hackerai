@@ -26,6 +26,7 @@ import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provide
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { CONTEXT_USAGE_PART_TYPE } from "@/lib/chat/context-pressure";
+import { isAgentSteerPart } from "@/lib/chat/agent-steer";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -738,6 +739,8 @@ export async function processChatMessages({
         if (part.type?.startsWith("tool-")) return true;
         // File parts are valid content
         if (part.type === "file") return !!part.url || !!part.fileId;
+        // A steer the run read is the user's message, even before any output.
+        if (isAgentSteerPart(part)) return true;
         // reasoning and step-start alone are NOT sufficient for assistant messages
         return false;
       });

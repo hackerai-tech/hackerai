@@ -1,4 +1,5 @@
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { convertToModelMessagesWithSteers } from "@/lib/chat/agent-steer-model-messages";
 import { splitProviderToolCallBatches } from "@/lib/chat/provider-tool-call-batches";
 import {
   getStructuredCompactionPrompt,
@@ -7,7 +8,6 @@ import {
 import {
   UIMessage,
   generateText,
-  convertToModelMessages,
   LanguageModel,
   ToolSet,
   ModelMessage,
@@ -852,7 +852,7 @@ export const generateSummaryText = async (
 
   const sourceModelMessages =
     modelMessages ??
-    (await convertToModelMessages(messagesToSummarize, {
+    (await convertToModelMessagesWithSteers(messagesToSummarize, {
       tools: tools ? createPromptSerializationTools(tools) : undefined,
     }));
   const compactedModelMessages = compactModelMessagesForSummarization(

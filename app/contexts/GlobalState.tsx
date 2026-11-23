@@ -38,6 +38,7 @@ import {
   type DesktopBridgeStatus,
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import { useFollowUpBehavior } from "@/app/hooks/useFollowUpBehavior";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
@@ -133,6 +134,10 @@ interface GlobalStateType {
   queueChatId: string | null;
   selectMessageQueue: (chatId: string) => void;
   queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
+  requeueUnreadSteers: (
+    chatId: string,
+    steers: Array<{ text: string; timestamp: number }>,
+  ) => void;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
@@ -144,9 +149,11 @@ interface GlobalStateType {
   ) => void;
   clearQueue: () => void;
 
-  // Queue behavior preference
+  // What sending does while an Agent run is working
   queueBehavior: QueueBehavior;
   setQueueBehavior: (behavior: QueueBehavior) => void;
+  /** Mid-run steering rollout; off keeps queue and stop-and-send only. */
+  agentSteeringEnabled: boolean;
 
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
@@ -527,15 +534,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setEditingQueuedMessageId(null);
   }, []);
 
-  // Queue behavior preference (persisted to localStorage)
-  const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
-    if (typeof window === "undefined") return "queue";
-    const saved = localStorage.getItem("queue-behavior");
-    if (saved === "queue" || saved === "stop-and-send") {
-      return saved;
-    }
-    return "queue"; // Default: queue after current message completes
-  });
+  const { queueBehavior, setQueueBehavior, agentSteeringEnabled } =
+    useFollowUpBehavior(user?.id);
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
@@ -606,13 +606,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     (!automaticEntitlementRefreshNeeded ||
       entitlementApiResolvedUserId === user?.id ||
       tokenFreeAutomaticRefreshExhausted);
-
-  // Persist queue behavior to localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("queue-behavior", queueBehavior);
-    }
-  }, [queueBehavior]);
 
   // Paid Agent tier ids are resolved to providers server-side.
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
@@ -1197,6 +1190,26 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [queueKey, setMessageQueue],
   );
 
+  // Unread steers return ahead of later queued messages. They were already
+  // accepted, so the queue limit never drops them.
+  const requeueUnreadSteers = useCallback(
+    (chatId: string, steers: Array<{ text: string; timestamp: number }>) => {
+      if (!steers.length) return;
+      // Withdrawal is async; target the steers' own chat, not the open one.
+      const key = JSON.stringify([user?.id ?? null, chatId]);
+      queuesRef.current.set(key, [
+        ...steers.map((steer) => ({
+          id: uuidv4(),
+          text: steer.text,
+          timestamp: steer.timestamp,
+        })),
+        ...(queuesRef.current.get(key) ?? []),
+      ]);
+      refreshQueues((version) => version + 1);
+    },
+    [user?.id],
+  );
+
   const removeQueuedMessage = useCallback(
     (id: string) => {
       setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
@@ -1448,6 +1461,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     selectMessageQueue,
     queueMessage,
     updateQueuedMessage,
+    requeueUnreadSteers,
     editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
@@ -1455,7 +1469,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     clearQueue,
 
     queueBehavior,
-    setQueueBehavior: setQueueBehaviorState,
+    setQueueBehavior,
+    agentSteeringEnabled,
 
     sandboxPreference,
     setSandboxPreference,

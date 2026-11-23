@@ -2334,6 +2334,21 @@ export default defineSchema({
     .index("by_parent_run", ["parent_trigger_run_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
+  // Follow-ups sent while an Agent run is working, waiting for that run's next
+  // model step. Rows are removed when the run reads them, when the user
+  // withdraws them, or with the chat; the transcript keeps the delivered text.
+  agent_steers: defineTable({
+    id: v.string(),
+    chat_id: v.string(),
+    user_id: v.string(),
+    run_id: v.string(),
+    text: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_steer_id", ["id"])
+    .index("by_chat_id", ["chat_id"])
+    .index("by_run_id", ["run_id"]),
+
   processed_webhooks: defineTable({
     event_id: v.string(),
     // Fraud source IDs let support resolution fence an in-flight delivery.

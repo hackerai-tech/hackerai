@@ -53,6 +53,7 @@ import {
   findSummarizationInsertIndex,
 } from "@/lib/utils/stream-writer-utils";
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
+import { insertAgentSteerParts, type AgentSteer } from "@/lib/chat/agent-steer";
 import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
@@ -527,6 +528,12 @@ export class SummarizationTracker {
   }> = [];
   private contextPressure:
     { id: string; data: ContextPressureSnapshot } | undefined;
+  private steers: Array<{
+    steer: AgentSteer;
+    afterToolCallId?: string;
+    /** The first saved response that showed it; a retry's new message skips it. */
+    messageId?: string;
+  }> = [];
 
   /**
    * @param onCompactionRecorded Called synchronously with this tracker's
@@ -552,6 +559,14 @@ export class SummarizationTracker {
    */
   clearContextPressure(): void {
     this.contextPressure = undefined;
+  }
+
+  /**
+   * Record a steer the run read before a step, after the tool call it followed.
+   * Saved responses show it there; retries keep it ahead of their output.
+   */
+  recordSteer(steer: AgentSteer, afterToolCallId?: string): void {
+    this.steers.push({ steer, afterToolCallId });
   }
 
   /**
@@ -597,12 +612,20 @@ export class SummarizationTracker {
    * and replace any streamed context snapshot with this attempt's latest one.
    * Returns the original message unchanged when neither applies.
    */
-  processMessageForSave<T extends { role: string; parts: any[] }>(
+  processMessageForSave<T extends { id?: string; role: string; parts: any[] }>(
     message: T,
   ): T {
     if (message.role !== "assistant") return message;
     const response = withoutContextUsageParts(message);
-    const saved = this.withSummarizationParts(response);
+    const steers = this.steers.filter(
+      (record) =>
+        record.messageId === undefined || record.messageId === message.id,
+    );
+    for (const record of steers) record.messageId ??= message.id;
+    const saved = insertAgentSteerParts(
+      this.withSummarizationParts(response),
+      steers,
+    );
     // A diagnostics snapshot never makes a response without its own content
     // eligible for persistence.
     return response.parts?.some(

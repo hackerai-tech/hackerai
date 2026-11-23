@@ -637,7 +637,8 @@ export interface QueuedMessage {
   timestamp: number;
 }
 
-export type QueueBehavior = "queue" | "stop-and-send";
+/** What sending does while an Agent run is working. */
+export type QueueBehavior = "steer" | "queue" | "stop-and-send";
 
 /**
  * Persisted sandbox selection: legacy `e2b` means any managed cloud sandbox,

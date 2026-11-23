@@ -42,6 +42,10 @@ const mockRegenerateWithNewContent = jest.fn<
   () => Promise<null | { goalGeneration: number }>
 >(async () => null);
 const mockRemoveQueuedMessage = jest.fn();
+const mockCreateAgentSteer = jest.fn<
+  (args: { chatId: string; id: string; text: string }) => Promise<string>
+>(async () => "pending");
+let mockAgentSteeringEnabled = false;
 const mockQueueMessage = jest.fn();
 const mockSendMessage = jest.fn(async () => undefined);
 const mockStop = jest.fn();
@@ -72,6 +76,7 @@ let mockCurrentTodos: unknown = todos;
 jest.mock("@/convex/_generated/api", () => ({
   api: {
     chatStreams: { cancelStreamFromClient: "cancelStreamFromClient" },
+    agentSteers: { create: "createAgentSteer" },
     messages: {
       deleteLastAssistantMessage: "deleteLastAssistantMessage",
       regenerateWithNewContent: "regenerateWithNewContent",
@@ -91,6 +96,8 @@ jest.mock("convex/react", () => ({
         return mockDeleteLastAssistantMessage;
       case "regenerateWithNewContent":
         return mockRegenerateWithNewContent;
+      case "createAgentSteer":
+        return mockCreateAgentSteer;
       default:
         throw new Error(`Unexpected mutation: ${mutation}`);
     }
@@ -116,6 +123,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     })),
     removeQueuedMessage: mockRemoveQueuedMessage,
     queueBehavior: mockQueueBehavior,
+    agentSteeringEnabled: mockAgentSteeringEnabled,
     sandboxPreference: mockSandboxPreference,
     agentPermissionMode: mockAgentPermissionMode,
     selectedModel: "hackerai-standard",
@@ -179,6 +187,8 @@ describe("useChatHandlers steer todo handoff", () => {
     mockChatMode = "agent";
     mockAgentPermissionMode = "full_access";
     mockQueueBehavior = "queue";
+    mockAgentSteeringEnabled = false;
+    mockCreateAgentSteer.mockResolvedValue("pending");
     mockQueuedDeliveryStatus = undefined;
     mockMessageQueue = [
       { id: "queued-1", text: "Change direction", files: [], timestamp: 123 },
@@ -899,6 +909,83 @@ describe("useChatHandlers steer todo handoff", () => {
       );
     },
   );
+
+  describe("mid-run steering", () => {
+    beforeEach(() => {
+      mockAgentSteeringEnabled = true;
+      mockQueueBehavior = "steer";
+      mockInput = "Use the staging host";
+      mockMessageQueue = [];
+    });
+
+    const submit = async (
+      result: { current: ReturnType<typeof useChatHandlers> },
+      event: Record<string, unknown> = {},
+    ) => {
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+          ...event,
+        } as any);
+      });
+      return accepted;
+    };
+
+    it("sends Enter into the running Agent without stopping or queueing", async () => {
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result)).toBe(true);
+      expect(mockCreateAgentSteer).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        id: expect.any(String),
+        text: "Use the staging host",
+      });
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).toHaveBeenCalledTimes(1);
+    });
+
+    it("queues with Cmd/Ctrl+Enter instead of steering", async () => {
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result, { metaKey: true })).toBe(true);
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+    });
+
+    it("queues the message when the run ended before it could steer", async () => {
+      mockCreateAgentSteer.mockResolvedValueOnce("no_active_run");
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result)).toBe(true);
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+      expect(mockStop).not.toHaveBeenCalled();
+    });
+
+    it("moves a queued message into the running Agent from its Steer button", async () => {
+      mockMessageQueue = [
+        { id: "queued-1", text: "Change direction", files: [], timestamp: 1 },
+      ];
+      const { result, isSendingNowRef } = renderSummarySteer(false);
+      await act(async () => result.current.handleSendNow("queued-1"));
+      expect(mockCreateAgentSteer).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "Change direction" }),
+      );
+      expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(isSendingNowRef.current).toBe(false);
+    });
+
+    it("never steers when the rollout is off, even with Cmd/Ctrl+Enter", async () => {
+      mockAgentSteeringEnabled = false;
+      mockQueueBehavior = "queue";
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result, { metaKey: true })).toBe(true);
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+    });
+  });
 
   it("keeps the draft when queue admission fails after rendering available capacity", async () => {
     mockInput = "Keep my draft";

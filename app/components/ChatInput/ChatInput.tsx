@@ -31,6 +31,7 @@ import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
+import type { PendingAgentSteer } from "@/app/hooks/useUnreadSteerRequeue";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   isTauriEnvironment,
@@ -116,6 +117,8 @@ interface ChatInputProps {
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
+  /** Steers waiting for the running Agent's next step. */
+  pendingSteers?: PendingAgentSteer[];
   status: ChatStatus;
   isCentered?: boolean;
   landingAppearance?: boolean;
@@ -320,6 +323,7 @@ const ChatInputContent = ({
   onStop,
   onReconnect,
   onSendNow,
+  pendingSteers = [],
   status,
   isCentered = false,
   landingAppearance = false,
@@ -357,6 +361,7 @@ const ChatInputContent = ({
     removeQueuedMessage,
     queueBehavior,
     setQueueBehavior,
+    agentSteeringEnabled,
     sandboxPreference,
     setSandboxPreference,
     selectedModel,
@@ -1567,18 +1572,21 @@ const ChatInputContent = ({
             >
               <TodoPanel status={status} />
 
-              {messageQueue.length > 0 && !isWaitingForReply && (
-                <QueuedMessagesPanel
-                  messages={messageQueue}
-                  onSendNow={onSendNow}
-                  onEdit={updateQueuedMessage}
-                  onEditingMessageChange={setEditingQueuedMessageId}
-                  onDelete={removeQueuedMessage}
-                  isStreaming={status === "streaming"}
-                  queueBehavior={queueBehavior}
-                  onQueueBehaviorChange={setQueueBehavior}
-                />
-              )}
+              {(messageQueue.length > 0 || pendingSteers.length > 0) &&
+                !isWaitingForReply && (
+                  <QueuedMessagesPanel
+                    messages={messageQueue}
+                    pendingSteers={pendingSteers}
+                    agentSteeringEnabled={agentSteeringEnabled}
+                    onSendNow={onSendNow}
+                    onEdit={updateQueuedMessage}
+                    onEditingMessageChange={setEditingQueuedMessageId}
+                    onDelete={removeQueuedMessage}
+                    isStreaming={status === "streaming"}
+                    queueBehavior={queueBehavior}
+                    onQueueBehaviorChange={setQueueBehavior}
+                  />
+                )}
 
               {isWaitingForReply && !hasQuestionPanel && (
                 <WaitingForReplyBanner

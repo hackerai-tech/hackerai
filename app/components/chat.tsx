@@ -46,6 +46,7 @@ import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
+import { useUnreadSteerRequeue } from "@/app/hooks/useUnreadSteerRequeue";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
@@ -637,6 +638,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
+    agentSteeringEnabled,
+    requeueUnreadSteers,
   } = useGlobalState();
   const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
     useState(false);
@@ -2816,6 +2819,21 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
+  const pendingSteers = useUnreadSteerRequeue({
+    chatId,
+    enabled: agentSteeringEnabled && isConvexAuthenticated,
+    runActive:
+      !!activeTriggerRunId ||
+      !!agentLongRunId ||
+      status === "streaming" ||
+      status === "submitted",
+    onRequeue: (steerChatId, steers, hold) => {
+      if (!steers.length) return;
+      requeueUnreadSteers(steerChatId, steers);
+      if (hold && steerChatId === chatId) hasManuallyStoppedRef.current = true;
+    },
+  });
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
@@ -3343,6 +3361,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     }
 
                     onSubmit={handleSubmit}
+                    pendingSteers={pendingSteers}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}

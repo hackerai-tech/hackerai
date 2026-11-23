@@ -3,12 +3,17 @@ import {
   INFERENCE_MAX_IMAGES_PER_REQUEST,
   isInferenceCyberModel,
 } from "@/lib/ai/inference";
+import { convertToModelMessagesWithSteers } from "@/lib/chat/agent-steer-model-messages";
 import {
   shouldDeferInferenceRejectionToSizeRecovery,
   withInferenceFallback,
 } from "@/lib/ai/inference-fallback";
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
+import {
+  createAgentSteerPart,
+  type AgentSteerInbox,
+} from "@/lib/chat/agent-steer";
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
 import {
   getAgentContextBudget,
@@ -79,7 +84,6 @@ import {
  */
 
 import {
-  convertToModelMessages,
   asSchema,
   streamText,
   type LanguageModel,
@@ -851,6 +855,8 @@ export type AgentStreamContext = {
   browserHandoffGoalObjective?: string;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
+  /** Follow-ups the user sent to this run, read before each model step. */
+  steerInbox?: AgentSteerInbox;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
@@ -1857,7 +1863,10 @@ export async function createAgentStream(
     // This retry bypasses prepareStep and prepareProviderMessages. Re-read
     // private handoff instructions after lossy summarization, then apply the
     // same trusted annotation policy at the provider boundary.
-    const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+    const handoffNotes = [
+      ...((await ctx.getBrowserHandoffNotes?.()) ?? []),
+      ...(ctx.steerInbox?.delivered() ?? []),
+    ];
     rejectedRequestRecoveryMessages = projectHandoffNotes(
       [
         { role: "user", content: summaryText },
@@ -2016,7 +2025,7 @@ export async function createAgentStream(
   const initialSerializationStartedAt = Date.now();
   let initialSerializedMessages: ModelMessage[];
   try {
-    initialSerializedMessages = await convertToModelMessages(
+    initialSerializedMessages = await convertToModelMessagesWithSteers(
       state.finalMessages,
       {
         tools: promptSerializationTools,
@@ -2135,7 +2144,7 @@ export async function createAgentStream(
         ),
         tools: schemas,
       });
-      sourceModelMessages = await convertToModelMessages(
+      sourceModelMessages = await convertToModelMessagesWithSteers(
         state.sourceUiMessages ?? state.finalMessages,
         { tools: promptSerializationTools },
       );
@@ -2274,6 +2283,27 @@ export async function createAgentStream(
     });
 
   const projectHandoffNotes = createBrowserHandoffNoteProjector();
+  // A stopped run leaves new steers unread so the client can queue them.
+  const readSteers = async (steps: unknown) => {
+    const inbox = ctx.steerInbox;
+    if (!inbox) return [];
+    if (!abortSignal.aborted) {
+      const claimed = await inbox.claim();
+      const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+      const afterToolCallId = (
+        lastStep as { toolCalls?: Array<{ toolCallId?: string }> } | undefined
+      )?.toolCalls?.at(-1)?.toolCallId;
+      for (const steer of claimed) {
+        ctx.summarizationTracker.recordSteer(steer, afterToolCallId);
+        try {
+          ctx.writer.write(createAgentSteerPart(steer));
+        } catch {
+          // The saved response still shows the steer if the live stream is gone.
+        }
+      }
+    }
+    return inbox.delivered();
+  };
   let preparedRuntimeCheckpoint = false;
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
@@ -2378,7 +2408,11 @@ export async function createAgentStream(
       await ctx.checkBudgetBeforeStep?.();
       // Saved handoff notes can change the user's instructions. If the read
       // fails, retry/fail this step rather than act with silently missing context.
-      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      // Steers are user messages too, replayed at the step where they were read.
+      const handoffNotes = [
+        ...((await ctx.getBrowserHandoffNotes?.()) ?? []),
+        ...(await readSteers(steps)),
+      ];
       const withHandoffNotes = (
         messages: ModelMessage[],
         compactedPrefixLength?: number,
@@ -2466,7 +2500,7 @@ export async function createAgentStream(
           if (ctx.mode === "agent") {
             const previousSourceDigests = initialSourceDigests;
             initialSourceDigests = sourceMessageDigests(
-              await convertToModelMessages(state.finalMessages, {
+              await convertToModelMessagesWithSteers(state.finalMessages, {
                 tools: promptSerializationTools,
               }),
             );
@@ -2627,7 +2661,7 @@ export async function createAgentStream(
               state.finalMessages = result.summarizedMessages;
               if (ctx.mode === "agent")
                 initialSourceDigests = sourceMessageDigests(
-                  await convertToModelMessages(state.finalMessages, {
+                  await convertToModelMessagesWithSteers(state.finalMessages, {
                     tools: promptSerializationTools,
                   }),
                 );
@@ -2654,10 +2688,11 @@ export async function createAgentStream(
               const summarySerializationStartedAt = Date.now();
               let summarizedModelMessages: ModelMessage[];
               try {
-                summarizedModelMessages = await convertToModelMessages(
-                  result.summarizedMessages,
-                  { tools: promptSerializationTools },
-                );
+                summarizedModelMessages =
+                  await convertToModelMessagesWithSteers(
+                    result.summarizedMessages,
+                    { tools: promptSerializationTools },
+                  );
               } finally {
                 ctx.onStartupPhaseDuration?.(
                   "message_serialization",
@@ -2685,7 +2720,7 @@ export async function createAgentStream(
               // checkpoint from the old source must no longer be replayed.
               state.providerRecoveryContext = undefined;
               if (historyEnabled) {
-                sourceModelMessages = await convertToModelMessages(
+                sourceModelMessages = await convertToModelMessagesWithSteers(
                   result.summarizedMessages,
                   { tools: promptSerializationTools },
                 );
