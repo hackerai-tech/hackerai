@@ -157,7 +157,7 @@ const ChatInputLoadingState = ({
     role="status"
   >
     <div className="mx-auto w-full min-w-0 max-w-full sm:max-w-[768px]">
-      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto md:bg-background">
+      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto">
         {topNotice}
       </div>
       <div
@@ -1512,9 +1512,10 @@ const ChatInputContent = ({
           />
         )}
         {/* Panels keep their content height and scroll as a stack instead of
-            shrinking beneath the next panel. Reserve the input or approval card. */}
+            shrinking beneath the next panel. Reserve the input or approval card.
+            No fill here: each panel paints its own, so inset gutters stay clear. */}
         <div
-          className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink flex-col overflow-y-auto [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
           {workspaceRecovery?.scope === workspaceRecoveryScope && (
