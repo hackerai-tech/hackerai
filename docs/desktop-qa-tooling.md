@@ -29,6 +29,44 @@ The required **Desktop PR builds** check reports on every PR targeting `main`. U
 platform builds while still completing the gate; a failed applicable package
 blocks the gate. **Run workflow** can build any branch manually as well.
 
+## Check the frontend origin before building
+
+Choose the loopback frontend origin before building the native QA app. Write a
+plan under `.artifacts/desktop-qa/` and run the origin doctor. It needs no app
+executable, environment, launch record or session, and contacts no provider.
+
+```json
+{
+  "frontend": "http://127.0.0.1:3100",
+  "callbackPaths": ["/callback"],
+  "developmentCallbackUrls": ["http://127.0.0.1:3100/callback"],
+  "developmentUploadOrigins": ["http://127.0.0.1:3100"]
+}
+```
+
+```bash
+corepack pnpm desktop:qa doctor origin .artifacts/desktop-qa/origin-plan.json
+```
+
+`callbackPaths` lists the auth callback paths the build needs. The optional
+lists are the complete loopback callback URLs and upload origins you verified in
+the Development configuration, copied in canonical form without wildcards,
+queries or credentials. Omit a list you did not verify; an empty list means none
+are registered. The doctor prints only the selected origin and fixed statuses:
+
+- `port`: `available` after a short exclusive bind and close on the host and
+  port `serve` would use, `occupied` if that address is in use, or `unverified`
+  for any other result.
+- `callback`: `allowed` only if each `frontend` plus path exactly matches a
+  listed scheme, host, port and path; otherwise `missing`.
+- `upload-origin`: `allowed` for an exact origin match; otherwise `rejected`.
+
+An omitted list reports `unverified`. Exit status is `0` for READY, `2` for
+BLOCKED (any negative status) or UNVERIFIED, and `1` for invalid input, which is
+never echoed. Membership is only as current as the lists you supplied, and port
+availability is point-in-time. `localhost`, `127.0.0.1` and `[::1]` are distinct
+origins; build, serve and register the same one.
+
 ## Prepare a launch record
 
 Create `.artifacts/desktop-qa/config.json` in the task's worktree. It contains
@@ -234,7 +272,7 @@ The local frontend check sends a bounded, unauthenticated HEAD request without
 following redirects or recording response bodies/headers. Backend and relay
 checks only establish a local TCP listener; worker readiness, auth, native bridge
 connectivity and actual run routing still need acceptance evidence. The `health` report leaves external origins unprobed; the separate target
-verifier performs bounded read-only requests without redirects. Control-plane tokens are removed from launched child environments. `doctor`, `start` and
+verifier performs bounded read-only requests without redirects. Control-plane tokens are removed from launched child environments. `doctor <config.json>`, `start` and
 `serve` require target verification and reject mismatches before launching.
 Verification does not prove the native frontend, the worker's runtime backend
 configuration, or the route used by an actual Agent run; retain that acceptance check. Diagnose application errors through authorized
@@ -262,8 +300,8 @@ instead of increasing test timeouts or retrying the full suite repeatedly.
 
 Run `corepack pnpm test:desktop-qa` for containment/hash checks, environment and
 credential rejection, bounded health probes, output privacy, process ownership,
-shutdown escalation, preflight ordering, and result reuse. Tests use disposable
-local processes and listeners.
+shutdown escalation, preflight ordering, origin planning and result reuse.
+Tests use disposable local processes and listeners.
 For manual native validation, launch a verified QA build, inspect the exact
 window with Computer Use, record the actual transport/run, stop the session and
 confirm the QA process exits while unrelated apps/services remain running.
