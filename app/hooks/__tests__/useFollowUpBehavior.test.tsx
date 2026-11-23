@@ -19,7 +19,9 @@ const settle = async (result: {
       expect.anything(),
     ),
   );
-  await act(async () => {});
+  // A macrotask runs only after the mocked response's promise chain, including
+  // the availability state update, has finished.
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
   return result.current;
 };
 
