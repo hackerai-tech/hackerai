@@ -10,6 +10,11 @@ import {
 } from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
 import { withOpenRouterStreamErrorContext } from "./openrouter-stream-error-context";
+import {
+  AMAZON_BEDROCK_ONLY_ROUTING,
+  GROK_4_6_BEDROCK_MODEL_KEY,
+  OPENROUTER_US_BASE_URL,
+} from "./grok-bedrock";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
   recordOpenRouterBodyFailureContext,
@@ -1308,6 +1313,12 @@ const openrouter = createOpenRouter({
   headers: openrouterAttributionHeaders,
 });
 
+const openrouterUs = createOpenRouter({
+  baseURL: OPENROUTER_US_BASE_URL,
+  fetch: openrouterPatchFetch,
+  headers: openrouterAttributionHeaders,
+});
+
 type OpenRouterInstance = typeof openrouter;
 
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
@@ -1329,10 +1340,15 @@ export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
+  modelName?: string,
 ):
   | { ignore: string[] }
   | { sort: "latency"; data_collection: "deny" }
+  | typeof AMAZON_BEDROCK_ONLY_ROUTING
   | undefined => {
+  if (modelName === GROK_4_6_BEDROCK_MODEL_KEY) {
+    return AMAZON_BEDROCK_ONLY_ROUTING;
+  }
   if (modelSlug === DEEPSEEK_V4_FLASH_PREVIOUS_SLUG) {
     return { ignore: ["novita"] };
   }
@@ -1394,6 +1410,9 @@ const baseProviders: ReturnType<typeof buildProviderMap> &
   Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {
   [INFERENCE_CYBER_MODEL_KEY]: inference(INFERENCE_CYBER_MODEL_ID),
   ...buildProviderMap(openrouter),
+  [GROK_4_6_BEDROCK_MODEL_KEY]: withOpenRouterStreamErrorContext(
+    openrouterUs(GROK_4_6_SLUG),
+  ),
   [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
   [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
     ABLITERATION_LARGE_FLASH_MODEL_ID,
@@ -1407,6 +1426,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "ask-model": "August 2026",
   "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
+  [GROK_4_6_BEDROCK_MODEL_KEY]: "August 2026",
   "model-grok-4.6-pro": "August 2026",
   "model-deepseek-v4-flash-0731": "August 2026",
   "model-deepseek-v4-pro": "May 2025",
@@ -1438,6 +1458,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
+  [GROK_4_6_BEDROCK_MODEL_KEY]: "xAI Grok 4.6",
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-grok-4.6-pro": "xAI Grok 4.6",
@@ -1507,6 +1528,7 @@ function isGrokModel(modelName: string): boolean {
     normalized === "fallback-agent-model" ||
     normalized === "fallback-ask-model" ||
     normalized === "model-grok-4.6" ||
+    normalized === GROK_4_6_BEDROCK_MODEL_KEY ||
     normalized === "model-grok-4.5" ||
     normalized === "model-grok-4.5-pro" ||
     normalized === "model-grok-4.6-pro" ||

@@ -95,6 +95,7 @@ import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import {
   AGENT_PROVIDER_IDLE_TIMEOUT_MS,
   AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
@@ -344,6 +345,7 @@ import {
   isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   prepareAgentFinishContinuation,
+  getMaxAgentFirstRecoveryModel,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   type ProviderDisconnectContinuationRejection,
@@ -3723,11 +3725,16 @@ export const agentLongTask = task({
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(
+                : (getMaxAgentFirstRecoveryModel({
+                    mode,
+                    selectedModelOverride,
+                    baselineModel: maxBaselineModel ?? selectedModel,
+                  }) ??
+                  getRetryFallbackModel(
                     maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
-                  );
+                  ));
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -5187,8 +5194,8 @@ export const agentLongTask = task({
                                 loopRecoveryMessages ?? finishedMessages,
                               omittedCount: 0,
                             };
-                      // A Max refusal recovers on DeepSeek for the rest of
-                      // this response, never by retrying the refusing model.
+                      // A Max refusal recovers on another provider (Grok on
+                      // Bedrock, then DeepSeek), never the refusing endpoint.
                       const maxProviderRefusal =
                         providerContentBlocked &&
                         mode === "agent" &&
@@ -5706,6 +5713,8 @@ export const agentLongTask = task({
                           }
                         }
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        // A later refusal of this leg discards only its usage.
+                        usageTracker.beginModelLeg();
                         if (userStopSignal.signal.aborted) {
                           isAborted = true;
                           break primaryProviderRecovery;
@@ -5779,20 +5788,36 @@ export const agentLongTask = task({
                                         message.role !== "assistant" ||
                                         (message.parts?.length ?? 0) > 0,
                                     );
+                                  const retryAssistantParts =
+                                    normalizedRetryMessages.findLast(
+                                      (message) => message.role === "assistant",
+                                    )?.parts ?? [];
+                                  const retryContentBlocked =
+                                    isProviderContentFilterFinishReason(
+                                      state.streamFinishReason,
+                                    );
+                                  // Max Grok on Bedrock hands any failure to
+                                  // DeepSeek, not only retriable disconnects.
+                                  const bedrockRecoveryFailed =
+                                    retryModel === GROK_4_6_BEDROCK_MODEL_KEY &&
+                                    (isTerminalProviderStreamError(state) ||
+                                      retryContentBlocked ||
+                                      isTerminalEmptyAssistantResponse(
+                                        retryAssistantParts,
+                                        state.streamFinishReason,
+                                      ));
                                   const nextContinuation =
                                     !isTrustedBrowserHandoffReadFailure(
                                       streamError,
                                       state.providerError,
                                     ) &&
-                                    isTerminalProviderStreamError(state) &&
-                                    isRetriableProviderStreamDisconnectError(
-                                      state.providerError,
-                                    ) &&
+                                    ((isTerminalProviderStreamError(state) &&
+                                      isRetriableProviderStreamDisconnectError(
+                                        state.providerError,
+                                      )) ||
+                                      bedrockRecoveryFailed) &&
                                     !hasUncertainProviderToolOutcome(
-                                      normalizedRetryMessages.findLast(
-                                        (message) =>
-                                          message.role === "assistant",
-                                      )?.parts ?? [],
+                                      retryAssistantParts,
                                     ) &&
                                     !retryAborted
                                       ? prepareProviderDisconnectContinuation(
@@ -5882,9 +5907,18 @@ export const agentLongTask = task({
                                       continuation: nextContinuation,
                                     });
                                     recordModelRecovery(
-                                      "provider_disconnect_continuation",
+                                      retryContentBlocked
+                                        ? "content_filter"
+                                        : "provider_disconnect_continuation",
                                       finalRetryModel,
                                     );
+                                    // A refused Bedrock leg follows the
+                                    // refusal billing policy: only its own
+                                    // model usage is discarded. Earlier legs
+                                    // and disconnects stay billed.
+                                    if (retryContentBlocked) {
+                                      usageTracker.discardModelLeg();
+                                    }
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;

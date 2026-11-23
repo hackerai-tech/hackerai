@@ -953,6 +953,7 @@ export function getRetryFallbackModel(
 ): ModelName {
   // Every Max Agent route, including Grok text, recovers on DeepSeek 1017 with
   // its own literal max reasoning rather than a lower-reasoning GLM attempt.
+  // Durable Agent runs first try Grok on Bedrock (getMaxAgentFirstRecoveryModel).
   if (mode === "agent" && selectedModelOverride === "hackerai-max")
     return DEEPSEEK_1017_MODEL_KEY;
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
@@ -1282,7 +1283,7 @@ export function buildProviderOptions(
     (options.selectedModelOverride === "hackerai-standard" ||
       options.selectedModelOverride === "hackerai-pro");
   const baseProviderRouting = modelId
-    ? getOpenRouterProviderRoutingForModel(modelId)
+    ? getOpenRouterProviderRoutingForModel(modelId, modelName)
     : undefined;
   const providerRouting = options.ignoredProviderSlugs?.length
     ? {

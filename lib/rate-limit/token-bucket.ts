@@ -19,6 +19,7 @@ import {
   ABLITERATION_LARGE_FLASH_PRICING,
 } from "@/lib/ai/abliteration";
 import { randomUUID } from "node:crypto";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import { limitPaidBucket } from "./paid-bucket";
 import { ChatSDKError } from "@/lib/errors";
 import type {
@@ -167,6 +168,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Grok 4.6 shares the $2/$6 base rate, with a 2x tier from 200k prompt
   // tokens handled by getModelPricing when the input size is available.
   "model-grok-4.6": GROK_4_6_BASE_PRICING,
+  [GROK_4_6_BEDROCK_MODEL_KEY]: GROK_4_6_BASE_PRICING,
   "model-grok-4.6-pro": GROK_4_6_BASE_PRICING,
   "model-grok-4.5": GROK_4_6_BASE_PRICING,
   "model-grok-4.5-pro": GROK_4_6_BASE_PRICING,
@@ -223,6 +225,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
 
 const GROK_4_6_MODEL_IDS = new Set([
   "model-grok-4.6",
+  GROK_4_6_BEDROCK_MODEL_KEY,
   "model-grok-4.6-pro",
   "ask-model",
   "agent-model",

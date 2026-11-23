@@ -1,6 +1,11 @@
 import { NoObjectGeneratedError, NoOutputGeneratedError } from "ai";
 import { phLogger } from "@/lib/posthog/server";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import { USER_RESEARCH_MODEL_KEY } from "@/lib/research/user-research";
+
+/** Routing keys a research call may use: xAI, then Bedrock on failure. */
+export type ResearchModelKey =
+  typeof USER_RESEARCH_MODEL_KEY | typeof GROK_4_6_BEDROCK_MODEL_KEY;
 
 const STRUCTURED_OUTPUT_FAILED_EVENT = "user_research_structured_output_failed";
 
@@ -86,6 +91,7 @@ function buildDiagnosticFields(
   result: StructuredOutputResult<unknown>,
   operation: ResearchStructuredOutputOperation,
   ctx: ResearchTaskContext,
+  modelKey: ResearchModelKey,
 ) {
   const finishReason = readSafely(() => result.finishReason);
   const usage = readSafely(() => result.usage) as
@@ -111,9 +117,13 @@ function buildDiagnosticFields(
     reasoning_tokens: tokenCount(
       readSafely(() => usage?.outputTokenDetails?.reasoningTokens),
     ),
-    // The configured routing key, not the provider or model that served the
-    // request. OpenRouter's generation record is the source for that.
-    configured_model_key: USER_RESEARCH_MODEL_KEY,
+    // The configured routing key (xAI or its Bedrock fallback), not the
+    // provider or model that served the request. OpenRouter's generation
+    // record is the source for that.
+    configured_model_key:
+      modelKey === GROK_4_6_BEDROCK_MODEL_KEY
+        ? GROK_4_6_BEDROCK_MODEL_KEY
+        : USER_RESEARCH_MODEL_KEY,
     openrouter_generation_id: matching(
       readSafely(() => result.response.id),
       OPENROUTER_GENERATION_ID_PATTERN,
@@ -158,12 +168,13 @@ async function reportStructuredOutputFailure(
   result: StructuredOutputResult<unknown>,
   operation: ResearchStructuredOutputOperation,
   ctx: ResearchTaskContext,
+  modelKey: ResearchModelKey,
 ) {
   try {
     // System event: no userId, so no user or cohort identity is attached.
     phLogger.event(
       STRUCTURED_OUTPUT_FAILED_EVENT,
-      buildDiagnosticFields(result, operation, ctx),
+      buildDiagnosticFields(result, operation, ctx, modelKey),
     );
     await flushWithinBound();
   } catch {
@@ -183,9 +194,11 @@ export async function readResearchStructuredOutput<OUTPUT>(
   {
     operation,
     ctx,
+    modelKey = USER_RESEARCH_MODEL_KEY,
   }: {
     operation: ResearchStructuredOutputOperation;
     ctx: ResearchTaskContext;
+    modelKey?: ResearchModelKey;
   },
 ): Promise<OUTPUT> {
   let output: OUTPUT;
@@ -197,14 +210,14 @@ export async function readResearchStructuredOutput<OUTPUT>(
     if (readSafely(() => NoOutputGeneratedError.isInstance(error)) !== true) {
       throw error;
     }
-    await reportStructuredOutputFailure(result, operation, ctx);
+    await reportStructuredOutputFailure(result, operation, ctx, modelKey);
     if (readSafely(() => result.finishReason) === "content-filter") {
       throw new ResearchContentFilterError({ cause: error });
     }
     throw error;
   }
   if (readSafely(() => result.finishReason) === "content-filter") {
-    await reportStructuredOutputFailure(result, operation, ctx);
+    await reportStructuredOutputFailure(result, operation, ctx, modelKey);
     throw new ResearchContentFilterError();
   }
   return output;
