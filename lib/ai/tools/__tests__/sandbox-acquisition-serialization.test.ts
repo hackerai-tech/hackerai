@@ -5,6 +5,15 @@ const mockIsE2BSandbox = jest.fn();
 const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
 const mockNetworkQuery = jest.fn();
+const mockStartLeaseHeartbeat = jest.fn(() => ({ stop: async () => {} }));
+const mockReleaseIdleLease = jest.fn(async () => true);
+jest.mock("../utils/e2b-lease", () => ({
+  ...jest.requireActual("../utils/e2b-lease"),
+  startE2BSandboxLeaseHeartbeat: (...args: unknown[]) =>
+    (mockStartLeaseHeartbeat as (...a: unknown[]) => unknown)(...args),
+  releaseE2BSandboxIdleLeaseBestEffort: (...args: unknown[]) =>
+    (mockReleaseIdleLease as (...a: unknown[]) => unknown)(...args),
+}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
     query: mockNetworkQuery,
@@ -236,6 +245,66 @@ describe("sandbox acquisition serialization", () => {
     expect(mockResetSandbox.mock.invocationCallOrder[0]).toBeGreaterThan(
       mockGetSandboxWithFallbackGuard.mock.invocationCallOrder[0],
     );
+  });
+
+  it("never keeps a lease alive for a sandbox published after run-end cleanup", async () => {
+    mockIsE2BSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
+    );
+    const args: Parameters<typeof createTools> = [
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+    ];
+    args[8] = "e2b";
+    args[9] = "service-key";
+    args[20] = "run-1";
+    args[22] = { keepE2BLeaseAliveForRun: true };
+    const { stopE2BSandboxRunLeaseHeartbeat } = createTools(...args);
+    await stopE2BSandboxRunLeaseHeartbeat();
+
+    // A slow acquisition (e.g. the turn-start inventory) lands after cleanup.
+    const late = { provider: "e2b", sandboxId: "late" };
+    mockTrackSandboxUsage?.(late);
+
+    expect(mockStartLeaseHeartbeat).not.toHaveBeenCalled();
+    expect(mockReleaseIdleLease).toHaveBeenCalledWith(late);
+  });
+
+  it("closes the run lease before a pending heartbeat stop settles", async () => {
+    mockIsE2BSandbox.mockImplementation(
+      (sandbox: { provider?: string } | null) => sandbox?.provider === "e2b",
+    );
+    let finishStop!: () => void;
+    mockStartLeaseHeartbeat.mockImplementationOnce(() => ({
+      stop: () => new Promise<void>((resolve) => (finishStop = resolve)),
+    }));
+    const args: Parameters<typeof createTools> = [
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+    ];
+    args[8] = "e2b";
+    args[9] = "service-key";
+    args[20] = "run-1";
+    args[22] = { keepE2BLeaseAliveForRun: true };
+    const { stopE2BSandboxRunLeaseHeartbeat } = createTools(...args);
+    mockTrackSandboxUsage?.({ provider: "e2b", sandboxId: "first" });
+    expect(mockStartLeaseHeartbeat).toHaveBeenCalledTimes(1);
+
+    const cleanup = stopE2BSandboxRunLeaseHeartbeat();
+    // A late client publishes while the heartbeat stop is still pending.
+    const late = { provider: "e2b", sandboxId: "late" };
+    mockTrackSandboxUsage?.(late);
+    expect(mockStartLeaseHeartbeat).toHaveBeenCalledTimes(1);
+    expect(mockReleaseIdleLease).toHaveBeenCalledWith(late);
+
+    finishStop();
+    await cleanup;
   });
 
   it("accounts for E2B runtime", async () => {
