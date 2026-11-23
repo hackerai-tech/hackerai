@@ -84,15 +84,18 @@ export function useUnreadSteerRequeue({
       setInFlight((count) => count + 1);
       const restored: Array<{ text: string; timestamp: number }> = [];
       let failed = false;
-      for (const steer of unread) {
+      for (const [index, steer] of unread.entries()) {
         try {
           const result = await withdraw({ chatId, id: steer.id });
           if (result.outcome === "withdrawn")
             restored.push({ text: result.text, timestamp: steer.sentAt });
         } catch {
           // Still pending; a bounded retry runs even if nothing else changes.
-          withdrawing.current.delete(steer.id);
+          // Later steers wait too, so none is restored ahead of this one.
+          for (const remaining of unread.slice(index))
+            withdrawing.current.delete(remaining.id);
           failed = true;
+          break;
         }
       }
       onRequeueRef.current(

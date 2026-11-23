@@ -92,6 +92,18 @@ describe("message queue admission", () => {
       "Second steer",
       "Queued after both steers",
     ]);
+    // A tie keeps restoration order: it goes after the equal timestamp.
+    await act(async () => {
+      result.current.requeueUnreadSteers("a", [
+        { text: "Tied steer", timestamp: 200 },
+      ]);
+    });
+    expect(result.current.messageQueue.map((m) => m.text)).toEqual([
+      "First steer",
+      "Second steer",
+      "Tied steer",
+      "Queued after both steers",
+    ]);
   });
 
   it("never exposes another account's queue", async () => {

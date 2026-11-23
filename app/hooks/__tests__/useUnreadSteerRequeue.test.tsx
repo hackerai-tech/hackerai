@@ -150,6 +150,42 @@ describe("useUnreadSteerRequeue", () => {
     }
   });
 
+  it("keeps send order for tied steers when the first withdrawal fails", async () => {
+    jest.useFakeTimers();
+    try {
+      const sentAt = Date.now() + 1_000;
+      mockPending = [
+        steer("first", "First", sentAt),
+        steer("second", "Second", sentAt),
+      ];
+      mockWithdraw
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockImplementation(async ({ id }) => ({
+          outcome: "withdrawn",
+          text: id === "first" ? "First" : "Second",
+        }));
+      const onRequeue = jest.fn();
+      render(onRequeue);
+      await act(async () => {});
+      // The second steer was not withdrawn ahead of the failed first one.
+      expect(mockWithdraw).toHaveBeenCalledTimes(1);
+      expect(onRequeue).toHaveBeenLastCalledWith("chat-1", [], false);
+      await act(async () => {
+        jest.advanceTimersByTime(1_000);
+      });
+      expect(onRequeue).toHaveBeenLastCalledWith(
+        "chat-1",
+        [
+          { text: "First", timestamp: sentAt },
+          { text: "Second", timestamp: sentAt },
+        ],
+        false,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("schedules no retry for a withdrawal that fails after unmount", async () => {
     jest.useFakeTimers();
     try {
