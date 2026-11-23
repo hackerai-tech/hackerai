@@ -2395,9 +2395,19 @@ export async function createAgentStream(
       // Its system override applies to this request only, so the one-shot notice
       // is neither replayed on every step nor stored in compacted chat history.
       const runtime = await runtimePrompt();
+      const localGenerationStepIndex =
+        Number.isInteger(stepNumber) && stepNumber >= 0
+          ? stepNumber
+          : steps.length;
+      const generationStepIndex =
+        generationStepOffset + localGenerationStepIndex;
       const checkpointNotice =
         ctx.mode === "agent" && !abortSignal.aborted
-          ? ctx.runtimeCheckpoint?.takeNotice()
+          ? ctx.runtimeCheckpoint?.takeNotice({
+              completedSteps: generationStepIndex,
+              maxSteps: configuredMaxSteps,
+              budgetUsedPercent: ctx.budgetMonitor?.getStopPressurePercent(),
+            })
           : undefined;
       preparedRuntimeCheckpoint = !!checkpointNotice;
       const nextRuntimeSection = runtime + (checkpointNotice ?? "");
@@ -2409,12 +2419,6 @@ export async function createAgentStream(
       runtimePromptTokens = safeCountTokens(runtimeSection);
       preparedToolCycleRecovery = undefined;
       preparedToolFailureRecovery = undefined;
-      const localGenerationStepIndex =
-        Number.isInteger(stepNumber) && stepNumber >= 0
-          ? stepNumber
-          : steps.length;
-      const generationStepIndex =
-        generationStepOffset + localGenerationStepIndex;
       contextBudgetStepIndex = generationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
       if (
