@@ -26,6 +26,7 @@ import { myProvider } from "@/lib/ai/providers";
 import { phLogger } from "@/lib/posthog/server";
 import { analyzeUserResearchProfile, pmUserResearch } from "../user-research";
 import { pmUserResearchResultSchema } from "@/lib/research/user-research";
+import { ResearchContentFilterError } from "@/lib/research/structured-output-diagnostics";
 
 const actualAi = jest.requireActual<typeof import("ai")>("ai");
 const ctx = {
@@ -42,12 +43,15 @@ const parent = pmUserResearch as unknown as {
   run: (payload: object, options: object) => Promise<any>;
 };
 // Routes one research call through the installed SDK with an in-memory model
-// whose final step stops for length without text, so result.output throws.
-const useNoOutputModel = () => {
+// whose final step stops without text (for length by default), so
+// result.output throws.
+const useNoOutputModel = (
+  finishReason: "length" | "content-filter" = "length",
+) => {
   const model = new MockLanguageModelV3({
     doGenerate: {
       content: [],
-      finishReason: { unified: "length", raw: "length" },
+      finishReason: { unified: finishReason, raw: finishReason },
       usage: {
         inputTokens: {
           total: 900,
@@ -442,6 +446,177 @@ describe("prompt privacy guard diagnostics", () => {
         error:
           "Analysis failed before a privacy-safe cohort report was produced",
       }),
+    );
+  });
+});
+
+describe("model content-filter exclusions", () => {
+  const mockProfileEvidence = () =>
+    mockQuery
+      .mockResolvedValueOnce([
+        { chatId: "chat-1", updatedAt: 1, mode: "ask", truncated: false },
+      ])
+      .mockResolvedValueOnce({
+        messages: [{ role: "user", text: "Synthetic question about a lab" }],
+        truncated: false,
+      });
+  const storedProfile = (pseudonym: string) => ({
+    pseudonym,
+    profile,
+    coverage: {
+      chatsReviewed: 1,
+      messagesReviewed: 2,
+      askChats: 1,
+      agentChats: 0,
+    },
+  });
+
+  it("lets Trigger retry a refused profile before the final attempt", async () => {
+    mockProfileEvidence();
+    useNoOutputModel("content-filter");
+
+    await expect(child.run(workerPayload, taskOptions)).rejects.toThrow(
+      ResearchContentFilterError,
+    );
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it("reports a profile refused on the final attempt as an explicit exclusion", async () => {
+    mockProfileEvidence();
+    useNoOutputModel("content-filter");
+
+    await expect(
+      child.run(workerPayload, {
+        ctx: { ...ctx, attempt: { number: 2 } },
+      }),
+    ).resolves.toEqual({
+      status: "skipped",
+      reason: "model_content_filter",
+      pseudonym: "U01",
+      chatsReviewed: 0,
+      messagesReviewed: 0,
+    });
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "user_research_structured_output_failed",
+      expect.objectContaining({ finish_reason: "content-filter" }),
+    );
+  });
+
+  it("keeps other users' findings and names each excluded user with its reason", async () => {
+    child.batchTriggerAndWait.mockResolvedValue({
+      runs: [
+        { ok: true, output: { status: "completed" } },
+        {
+          ok: true,
+          output: { status: "skipped", reason: "model_content_filter" },
+        },
+        {
+          ok: true,
+          output: { status: "skipped", reason: "no_eligible_evidence" },
+        },
+        { ok: false, error: { message: "fetch failed" } },
+      ],
+    });
+    mockQuery.mockResolvedValue([storedProfile("U01")]);
+    (generateText as jest.Mock).mockResolvedValue({
+      output: { ...synthesis, unknowns: ["Model-reported gap"] },
+      usage: {},
+    });
+
+    const result = await parent.run(
+      { ...parentPayload, userIds: ["user-1", "user-2", "user-3", "user-4"] },
+      taskOptions,
+    );
+
+    expect(result).toMatchObject({
+      usersAnalyzed: 1,
+      failedProfiles: 2,
+      skippedProfiles: 1,
+      blockedProfiles: 1,
+      excludedUsers: [
+        { userId: "user-2", reason: "model_content_filter" },
+        { userId: "user-3", reason: "no_eligible_evidence" },
+        { userId: "user-4", reason: "profile_failed" },
+      ],
+      report: {
+        coverage: {
+          usersRequested: 4,
+          usersAnalyzed: 1,
+          profilesFailed: 2,
+          profilesSkipped: 1,
+        },
+      },
+    });
+    expect(result.report.unknowns[0]).toMatch(
+      /^1 of 4 requested users were not analyzed because the model's content filter refused/,
+    );
+    expect(result.report.unknowns).toContain("Model-reported gap");
+    expect(pmUserResearchResultSchema.safeParse(result).success).toBe(true);
+    expect(mockMutation).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ report: result.report }),
+    );
+  });
+
+  it("names content-filter exclusions when a comparison group falls below the minimum", async () => {
+    child.batchTriggerAndWait.mockResolvedValue({
+      runs: [
+        { ok: true, output: { status: "completed" } },
+        { ok: true, output: { status: "completed" } },
+        {
+          ok: true,
+          output: { status: "skipped", reason: "model_content_filter" },
+        },
+        { ok: true, output: { status: "completed" } },
+        { ok: true, output: { status: "completed" } },
+        { ok: true, output: { status: "completed" } },
+      ],
+    });
+    mockQuery.mockResolvedValue(
+      ["U01", "U02", "U04", "U05", "U06"].map(storedProfile),
+    );
+
+    await expect(
+      parent.run(
+        {
+          ...parentPayload,
+          userIds: ["user-1", "user-2", "user-3", "user-4", "user-5", "user-6"],
+          comparisonGroups: [
+            { label: "A", userIds: ["user-1", "user-2", "user-3"] },
+            { label: "B", userIds: ["user-4", "user-5", "user-6"] },
+          ],
+        },
+        taskOptions,
+      ),
+    ).rejects.toThrow(
+      "User research analysis failed [comparison_group_below_minimum].",
+    );
+    expect(generateText).not.toHaveBeenCalled();
+    expect(mockMutation.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({
+        error: expect.stringContaining(
+          "1 refused by the model content filter, 0 without eligible evidence, 0 failed",
+        ),
+      }),
+    );
+  });
+
+  it("fails with a closed reason when the synthesis itself is refused", async () => {
+    child.batchTriggerAndWait.mockResolvedValue({
+      runs: [{ ok: true, output: { status: "completed" } }],
+    });
+    mockQuery.mockResolvedValue([storedProfile("U01")]);
+    useNoOutputModel("content-filter");
+
+    await expect(
+      parent.run({ ...parentPayload, userIds: ["user-1"] }, taskOptions),
+    ).rejects.toThrow(
+      "User research analysis failed [synthesis_blocked_by_content_filter].",
+    );
+    const mutationArgs = mockMutation.mock.calls.map(([, args]) => args);
+    expect(mutationArgs).not.toContainEqual(
+      expect.objectContaining({ report: expect.anything() }),
     );
   });
 });

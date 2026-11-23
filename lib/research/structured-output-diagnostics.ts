@@ -21,6 +21,14 @@ const TRIGGER_DEPLOYMENT_VERSION_PATTERN = /^20\d{6}\.\d{1,6}$/;
 
 export type ResearchStructuredOutputOperation = "profile" | "synthesis";
 
+/** The model's content filter withheld structured output for this request. */
+export class ResearchContentFilterError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super("The model content filter withheld research output", options);
+    this.name = "ResearchContentFilterError";
+  }
+}
+
 /** The subset of Trigger's task context used for run correlation. */
 export type ResearchTaskContext = {
   run: { id: string };
@@ -137,8 +145,9 @@ async function flushWithinBound() {
 
 /**
  * Reads `result.output` and, only when the SDK getter reports that no output was
- * generated, publishes a privacy-safe diagnostic before rethrowing the original
- * error unchanged.
+ * generated, publishes a privacy-safe diagnostic. A content-filter finish is
+ * rethrown as ResearchContentFilterError (original as `cause`); every other
+ * error is rethrown unchanged.
  */
 export async function readResearchStructuredOutput<OUTPUT>(
   result: StructuredOutputResult<OUTPUT>,
@@ -153,18 +162,23 @@ export async function readResearchStructuredOutput<OUTPUT>(
   try {
     return result.output;
   } catch (error) {
+    // Metadata and even SDK error-marker access are best effort. Never
+    // replace the original output failure with a diagnostic exception.
+    if (readSafely(() => NoOutputGeneratedError.isInstance(error)) !== true) {
+      throw error;
+    }
     try {
-      if (NoOutputGeneratedError.isInstance(error)) {
-        // System event: no userId, so no user or cohort identity is attached.
-        phLogger.event(
-          STRUCTURED_OUTPUT_FAILED_EVENT,
-          buildDiagnosticFields(result, operation, ctx),
-        );
-        await flushWithinBound();
-      }
+      // System event: no userId, so no user or cohort identity is attached.
+      phLogger.event(
+        STRUCTURED_OUTPUT_FAILED_EVENT,
+        buildDiagnosticFields(result, operation, ctx),
+      );
+      await flushWithinBound();
     } catch {
-      // Metadata and even SDK error-marker access are best effort. Never
-      // replace the original output failure with a diagnostic exception.
+      // Diagnostics are best effort.
+    }
+    if (readSafely(() => result.finishReason) === "content-filter") {
+      throw new ResearchContentFilterError({ cause: error });
     }
     throw error;
   }

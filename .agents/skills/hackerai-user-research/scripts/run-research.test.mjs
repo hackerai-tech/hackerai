@@ -698,3 +698,26 @@ test("cohort validation explains the exact selection failure without reflecting 
   );
   assert.equal(calls, 0);
 });
+
+test("a failed run names only an allow-listed reason", async (t) => {
+  for (const [reason, expected] of [
+    [
+      "synthesis_blocked_by_content_filter",
+      /: the model content filter refused the cohort synthesis$/,
+    ],
+    ["provider secret diagnostic", /without a shareable report$/],
+  ]) {
+    const f = await requestFixture(t);
+    await assert.rejects(
+      runResearch(parseArgs(["--payload", f.payloadPath]), {
+        ...quiet,
+        key: "synthetic-secret",
+        request: async (url, key, init) =>
+          init?.method === "POST"
+            ? { runId: "run_failed" }
+            : { runId: "run_failed", status: "failed", reason },
+      }),
+      expected,
+    );
+  }
+});
