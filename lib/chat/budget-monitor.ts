@@ -113,6 +113,7 @@ export function captureBudgetSnapshot(args: {
 export class BudgetMonitor {
   private highestThresholdEmitted: number;
   private hasEmittedAgentRunSpendCap = false;
+  private lastUsedPercent: number | undefined;
 
   constructor(
     private readonly snapshot: BudgetSnapshot,
@@ -178,6 +179,7 @@ export class BudgetMonitor {
       usedSinceStartPoints;
     const usedPercent =
       (projectedUsedPoints / snapshot.monthlyLimitPoints) * 100;
+    this.lastUsedPercent = usedPercent;
 
     let abortDetails: BudgetAbortDetails | null = null;
 
@@ -250,6 +252,28 @@ export class BudgetMonitor {
       : { type: "continue" };
   }
 
+  /**
+   * Projected usage percent after the latest checked step, only when reaching
+   * 100% would stop this run. Extra usage that can absorb overflow continues
+   * the run, so it reports no stop pressure.
+   */
+  getStopPressurePercent(): number | undefined {
+    return this.extraUsageCanAbsorbOverflow()
+      ? undefined
+      : this.lastUsedPercent;
+  }
+
+  private extraUsageCanAbsorbOverflow(): boolean {
+    const remaining = this.snapshot.extraUsageMonthlyRemainingAtStart;
+    return (
+      this.snapshot.extraUsageOverflowAllowed !== false &&
+      this.snapshot.extraUsageEnabledAtStart &&
+      (this.snapshot.extraUsageAutoReload ||
+        this.snapshot.extraUsageBalanceAtStart > 0) &&
+      (remaining === undefined || remaining > 0)
+    );
+  }
+
   private buildAbortDetails(args: {
     capReason: LimitCapReason;
     overflowDollars: number;
@@ -261,13 +285,7 @@ export class BudgetMonitor {
       this.snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
     const extraUsageMonthlyRemainingDollars =
       this.snapshot.extraUsageMonthlyRemainingAtStart;
-    const extraUsageAvailable =
-      this.snapshot.extraUsageOverflowAllowed !== false &&
-      this.snapshot.extraUsageEnabledAtStart &&
-      (this.snapshot.extraUsageAutoReload ||
-        this.snapshot.extraUsageBalanceAtStart > 0) &&
-      (extraUsageMonthlyRemainingDollars === undefined ||
-        extraUsageMonthlyRemainingDollars > 0);
+    const extraUsageAvailable = this.extraUsageCanAbsorbOverflow();
 
     return {
       capReason: args.capReason,

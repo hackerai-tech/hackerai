@@ -229,6 +229,7 @@ import {
   getPostHogBooleanFlagDecisionForUser,
 } from "@/lib/posthog/server";
 import {
+  AGENT_LIMIT_WRAPUP_FLAG,
   AGENT_RUNTIME_CHECKPOINT_FLAG,
   createAgentRuntimeCheckpoint,
   resolveAgentRuntimeCheckpointEnabled,
@@ -2532,21 +2533,28 @@ export const agentLongTask = task({
         },
       });
       activeRuntimeBudget = runtimeBudget;
-      // Claimed goals checkpoint progress and continue across runs. Do not add
-      // time-pressure prompts to initial, resumed, or automatic goal runs.
+      // Claimed goals checkpoint progress and continue across runs, including
+      // past step limits. Do not add time- or limit-pressure prompts to
+      // initial, resumed, or automatic goal runs.
+      const [runtimeCheckpointEnabled, limitWrapUpEnabled] = activeGoal
+        ? [false, false]
+        : await Promise.all(
+            [AGENT_RUNTIME_CHECKPOINT_FLAG, AGENT_LIMIT_WRAPUP_FLAG].map(
+              (flagKey) =>
+                resolveAgentRuntimeCheckpointEnabled({
+                  signal: userStopSignal.signal,
+                  loadDecision: () =>
+                    getPostHogBooleanFlagDecisionForUser(
+                      flagKey,
+                      userId,
+                      undefined,
+                      { sendFeatureFlagEvents: false },
+                    ),
+                }),
+            ),
+          );
       const runtimeCheckpoint = createAgentRuntimeCheckpoint({
-        enabled:
-          !activeGoal &&
-          (await resolveAgentRuntimeCheckpointEnabled({
-            signal: userStopSignal.signal,
-            loadDecision: () =>
-              getPostHogBooleanFlagDecisionForUser(
-                AGENT_RUNTIME_CHECKPOINT_FLAG,
-                userId,
-                undefined,
-                { sendFeatureFlagEvents: false },
-              ),
-          })),
+        enabled: runtimeCheckpointEnabled,
         maxDurationMs: agentLongMaxDurationMs,
         getElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
         onExposed: (timing) =>
@@ -2559,6 +2567,20 @@ export const agentLongTask = task({
             ...timing,
             $process_person_profile: false,
           }),
+        limitWrapUp: {
+          enabled: limitWrapUpEnabled,
+          onExposed: (exposure) =>
+            phLogger.event("agent_limit_wrapup_exposed", {
+              userId,
+              trigger_run_id: ctx.run.id,
+              chat_id: chatId,
+              flag_key: AGENT_LIMIT_WRAPUP_FLAG,
+              [`$feature/${AGENT_LIMIT_WRAPUP_FLAG}`]: true,
+              subscription_tier: subscription,
+              ...exposure,
+              $process_person_profile: false,
+            }),
+        },
       });
       userStopSignal.signal.throwIfAborted();
       runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
