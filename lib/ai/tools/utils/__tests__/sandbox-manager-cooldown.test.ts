@@ -15,6 +15,7 @@ jest.mock("../sandbox", () => ({
 
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
+import { assertCloudWorkspaceAvailable } from "../cloud-workspace-guard";
 import { DefaultSandboxManager } from "../sandbox-manager";
 
 const sandbox = (id: string) => ({ sandboxId: id }) as unknown as Sandbox;
@@ -63,5 +64,26 @@ describe("DefaultSandboxManager readiness cooldown", () => {
       jest.mocked(ensureCloudSandboxConnection).mock.calls[0][0].initialSandbox,
     ).toBeNull();
     expect(manager.getSandboxUnavailableMessage()).toBeUndefined();
+  });
+  it("rejects a cached call whose checks finish after a concurrent cooldown starts", async () => {
+    let releaseCheck!: () => void;
+    jest
+      .mocked(assertCloudWorkspaceAvailable)
+      .mockImplementationOnce(
+        () => new Promise<void>((resolve) => (releaseCheck = resolve)),
+      );
+    const manager = new DefaultSandboxManager(
+      "user-1",
+      jest.fn(),
+      sandbox("sandbox-1"),
+    );
+
+    const pending = manager.getSandbox();
+    // A concurrent readiness failure starts a cooldown during the await.
+    manager.recordHealthFailure();
+    manager.recordHealthFailure();
+    releaseCheck();
+
+    await expect(pending).rejects.toThrow("temporarily unavailable");
   });
 });

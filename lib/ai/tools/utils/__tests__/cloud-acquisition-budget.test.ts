@@ -293,6 +293,26 @@ describe("cloud acquisition cooldown", () => {
     return budget.run(fail, context).catch((error) => error);
   };
 
+  it("cools down after one typed provider timeout but keeps one other transient failure retryable", async () => {
+    const timedOut = new CloudAcquisitionBudget(() => 0.5);
+    await timedOut
+      .run(async () => {
+        throw e2bFailure("timeout", {
+          e2b_workspace_identity_operation: "get_info",
+        });
+      }, context)
+      .catch(() => undefined);
+    expect(timedOut.isBlocked()).toBe(true);
+
+    const busy = new CloudAcquisitionBudget(() => 0.5);
+    await busy
+      .run(async () => {
+        throw e2bFailure("sandbox", { e2b_http_status: 503 });
+      }, context)
+      .catch(() => undefined);
+    expect(busy.isBlocked()).toBe(false);
+  });
+
   it("cools down after a transient failure and restores cloud tools when a re-probe succeeds", async () => {
     const budget = new CloudAcquisitionBudget(() => 0.5);
     const spent = await spendBudget(budget);
@@ -432,11 +452,18 @@ describe("cloud acquisition cooldown", () => {
       undefined,
     ],
     [
-      "workspace guard store error",
+      // Store errors and pinned region/phase mismatches share this guard
+      // error; guards re-run on every re-probe, so it is retryable.
+      "workspace guard error (store or pinned mismatch)",
       Object.assign(new Error("needs recovery"), {
         name: "CloudWorkspaceUnavailableError",
       }),
       undefined,
+    ],
+    [
+      "invalid managed-egress configuration",
+      e2bFailure("egress_configuration"),
+      "configuration",
     ],
     ["network", new TypeError("fetch failed"), undefined],
   ])("classifies %s", (_label, error, expected) => {

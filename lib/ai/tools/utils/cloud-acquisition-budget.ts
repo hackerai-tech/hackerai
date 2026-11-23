@@ -108,10 +108,19 @@ export function classifyPermanentCloudFailure(
     (identity === "get_info" && (errorKind === "not_found" || status === 404))
   )
     return "workspace_recovery_required";
-  if (errorKind === "template" || errorKind === "invalid_argument")
+  if (
+    errorKind === "template" ||
+    errorKind === "invalid_argument" ||
+    errorKind === "egress_configuration"
+  )
     return "configuration";
   return undefined;
 }
+
+const isTypedProviderTimeout = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.name === "E2BAcquisitionError" &&
+  (error as { errorKind?: unknown }).errorKind === "timeout";
 
 export type CloudAvailabilityTelemetry = {
   userId: string;
@@ -278,6 +287,14 @@ export class CloudAcquisitionBudget {
         } catch {
           /* A closed stream cannot extend the deadline. */
         }
+      }
+      // A provider request timeout (e.g. pinned getInfo) spends the episode
+      // just like this budget's own deadline: cool down after one timeout.
+      if (isTypedProviderTimeout(error)) {
+        this.failedWaitMs = Math.max(
+          this.failedWaitMs,
+          CLOUD_ACQUISITION_DEADLINE_MS,
+        );
       }
       const permanent = classifyPermanentCloudFailure(error);
       // A re-probe gets one attempt; its failure starts the next cooldown.

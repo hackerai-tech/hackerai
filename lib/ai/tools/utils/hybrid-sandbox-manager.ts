@@ -1176,14 +1176,12 @@ export class HybridSandboxManager implements SandboxManager {
     )
       this.sandbox = null;
     if (!this.isLocal && this.sandbox) {
+      const cached = this.sandbox;
       let reacquire = false;
-      if (isE2BSandbox(this.sandbox)) {
+      if (isE2BSandbox(cached)) {
         try {
-          await assertCloudWorkspaceAvailable(
-            this.userID,
-            this.sandbox.sandboxId,
-          );
-          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          await assertCloudWorkspaceAvailable(this.userID, cached.sandboxId);
+          await refreshE2BSandboxLeaseBestEffort(cached, {
             source: "hybrid_manager_cache",
           });
         } catch (error) {
@@ -1191,7 +1189,16 @@ export class HybridSandboxManager implements SandboxManager {
           reacquire = true;
         }
       }
-      if (!reacquire) return { sandbox: this.sandbox };
+      // A concurrent call may have replaced the client, switched transport, or
+      // started a cooldown during the awaits; re-evaluate instead of returning
+      // a cleared or stale cache.
+      if (
+        this.isLocal ||
+        this.sandbox !== cached ||
+        this.acquisitionBudget.blocksCachedSandbox()
+      )
+        return this.getCloudSandbox();
+      if (!reacquire) return { sandbox: cached };
       this.sandbox = null;
     }
 

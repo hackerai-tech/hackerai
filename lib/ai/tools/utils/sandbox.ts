@@ -18,6 +18,7 @@ import { readNetworkSettings } from "@/lib/cloud-network/service";
 import { DEFAULT_NETWORK_POLICY } from "@/lib/cloud-network/policy";
 import {
   desiredE2BNetwork,
+  ManagedEgressUnavailableError,
   managedEgressForCluster,
   resolveManagedEgress,
 } from "@/lib/cloud-network/managed-egress";
@@ -684,21 +685,23 @@ export const ensureSandboxConnection = async (
     );
 
     if (error instanceof E2BRegionUnavailableError) throw error;
+    // Invalid managed-egress configuration is a deploy problem a retry cannot
+    // fix. Keep the generic message but a typed kind for the acquisition budget.
+    const errorKind =
+      error instanceof ManagedEgressUnavailableError
+        ? "egress_configuration"
+        : getE2BErrorKind(error);
 
     // Surface specific error messages for known E2B errors
     const userMessage = getUserFacingE2BErrorMessage(error);
     if (userMessage) {
-      throw new E2BAcquisitionError(
-        userMessage,
-        diagnostics,
-        getE2BErrorKind(error),
-      );
+      throw new E2BAcquisitionError(userMessage, diagnostics, errorKind);
     }
 
     throw new E2BAcquisitionError(
       "Cloud sandbox is temporarily unavailable. Please retry shortly.",
       diagnostics,
-      getE2BErrorKind(error),
+      errorKind,
     );
   }
 };
