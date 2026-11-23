@@ -1815,6 +1815,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
+    // A refused Bedrock leg is not billed before DeepSeek continues; a
+    // disconnect keeps the usage it already incurred.
+    expect(taskSrc).toMatch(
+      /if \(retryContentBlocked\) \{\s*usageTracker\.prepareModelRetry\(\{\s*isLoopRecovery: loopTriggeredRetry,\s*\}\);\s*\}\s*streamError = undefined;\s*resetAgentStreamStateForRetry\(state\);/,
+    );
     expect(taskSrc).toMatch(
       /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,
     );

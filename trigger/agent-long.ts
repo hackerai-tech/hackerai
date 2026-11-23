@@ -5881,6 +5881,14 @@ export const agentLongTask = task({
                                         : "provider_disconnect_continuation",
                                       finalRetryModel,
                                     );
+                                    // A refused Bedrock leg follows the
+                                    // refusal billing policy: its model usage
+                                    // is not billed. Disconnects keep usage.
+                                    if (retryContentBlocked) {
+                                      usageTracker.prepareModelRetry({
+                                        isLoopRecovery: loopTriggeredRetry,
+                                      });
+                                    }
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;
