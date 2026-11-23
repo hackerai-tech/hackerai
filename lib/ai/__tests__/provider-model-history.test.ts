@@ -72,9 +72,9 @@ const consume = async (model: LanguageModel) => {
   return parts;
 };
 
-it("keeps the first Abliteration call and the reported continuation model/provider in a real SDK tool loop", async () => {
+it("keeps the first Inference call and the reported continuation model/provider in a real SDK tool loop", async () => {
   const builder = createWideEventBuilder("chat", "/api/agent").setModel(
-    "model-abliterated",
+    "model-inference-cyber",
   );
   const observe = (model: LanguageModel, configured: string, step: number) =>
     withProviderModelHistory(model, {
@@ -84,14 +84,14 @@ it("keeps the first Abliteration call and the reported continuation model/provid
     });
   const first = observe(
     makeModel(
-      "abliteration.chat",
-      "abliterated-model",
+      "inference.chat",
+      "deepseek-v4.1-flash-1017-cyber",
       jest.fn(async () =>
         response(
           [
             {
               type: "response-metadata",
-              modelId: "abliterated-model",
+              modelId: "deepseek-v4.1-flash-1017-cyber",
               id: "ab-id",
             },
             {
@@ -106,7 +106,7 @@ it("keeps the first Abliteration call and the reported continuation model/provid
         ),
       ),
     ),
-    "model-abliterated",
+    "model-inference-cyber",
     1,
   );
   const last = observe(
@@ -173,10 +173,10 @@ it("keeps the first Abliteration call and the reported continuation model/provid
     expect.objectContaining({
       call_index: 1,
       generation_step: 1,
-      configured: "model-abliterated",
-      requested: "abliterated-model",
-      actual: "abliterated-model",
-      provider: "abliteration.chat",
+      configured: "model-inference-cyber",
+      requested: "deepseek-v4.1-flash-1017-cyber",
+      actual: "deepseek-v4.1-flash-1017-cyber",
+      provider: "inference.chat",
       response_id: "ab-id",
       outcome: "completed",
       finish_reason: "tool-calls",
@@ -217,7 +217,7 @@ it("records failed attempts before the successful retry without guessing a respo
     .mockRejectedValueOnce(failure)
     .mockResolvedValueOnce(response([finish()]));
   const model = withProviderModelHistory(
-    makeModel("abliteration.chat", "requested", doStream),
+    makeModel("inference.chat", "requested", doStream),
     {
       configured: "configured",
       generationStep: 1,

@@ -8,9 +8,8 @@ support still determine whether one occurs.
 ## Request invariants
 
 Shared Ask/Agent requests use an opaque affinity key derived from chat, mode and
-the actual requested model slug. OpenRouter receives `session_id`; direct
-Abliteration receives `prompt_cache_key` under the adapter's `abliteration`
-provider-options namespace. Direct Inference Cyber keeps its existing automatic
+the actual requested model slug. OpenRouter receives `session_id`. Direct
+Inference Cyber keeps its existing automatic
 caching behavior; no unverified affinity option is sent. Delegated agents use their own subagent ID and mode,
 so siblings and parents do not compete for a routing identity. Continuations and
 retries retain it; model promotion gets a separate key. The existing key format
@@ -55,7 +54,7 @@ and cache-usage parsing. It reports no live savings and needs no service access.
 and makes six short
 synthetic calls: cold start plus two tool-result continuations in each arm. Use
 `--pairs 2` for twelve calls with reversed order in the second pair. Other models
-can be selected by their actual provider slug, including `abliterated-model-large-flash`.
+can be selected by their OpenRouter slug.
 Only the model API credential is loaded from this checkout or the environment.
 The runner never executes tools, loads customer chats or connects to Convex.
 It checks that each model returns the latest synthetic tool-result marker.
@@ -95,8 +94,6 @@ delegated child continuation and image-model promotion separately.
 
 - [OpenRouter caching and session affinity](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
   describes automatic-cache models, sticky routing and Z.AI session affinity.
-- [Abliteration caching](https://docs.abliteration.ai/capabilities/prompt-caching)
-  documents its separate affinity field and best-effort retention.
 - [Hermes cache planning](https://github.com/NousResearch/hermes-agent/blob/main/agent/prompt_caching.py)
   uses bounded rolling breakpoints, request-local decoration and provider-specific
   handling of tool-result markers.

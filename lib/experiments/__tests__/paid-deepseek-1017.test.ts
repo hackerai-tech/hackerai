@@ -93,8 +93,7 @@ describe("paid 1017 routing", () => {
         DEEPSEEK_1017_MODEL_KEY,
         "model-grok-4.6",
         "model-kimi-k3",
-        "model-abliterated",
-        "model-abliterated-large-v2",
+        "model-inference-cyber",
       ]) {
         expect(
           resolveAgentModelForImageToolResults(
@@ -191,7 +190,7 @@ describe("paid 1017 routing", () => {
     { selectedModelOverride: "hackerai-standard" as const },
     { selectedModelOverride: "hackerai-max" as const },
     { selectedModel: "model-glm-5.3" },
-    { selectedModel: "model-abliterated" },
+    { selectedModel: "model-inference-cyber" },
     { selectedModel: "model-deepseek-v4-pro-0813" },
   ])("preserves excluded requests %j", (overrides) => {
     const request = { ...base, ...overrides };

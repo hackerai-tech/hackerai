@@ -1,4 +1,4 @@
-import { createAbliterationMediaRecovery } from "../abliteration-media-recovery";
+import { withStreamErrorParts } from "@/lib/ai/stream-error-parts";
 import { WritableStream as NodeWritableStream } from "node:stream/web";
 import {
   createUIMessageStream,
@@ -78,15 +78,13 @@ async function runRecovery(
   const output = createUIMessageStream({
     execute: ({ writer }) => {
       const result = streamText({
-        model: createAbliterationMediaRecovery(
-          async (messages) => messages,
-          new AbortController().signal,
-        )(primary),
+        // The Inference adapter applies this wrapper to its registered model.
+        model: withStreamErrorParts(primary),
         maxRetries: 0,
         messages: preparePlatformAuthorizationForModel(
           userMessages,
           true,
-          "model-abliterated",
+          "model-inference-cyber",
         ),
         onError: ({ error }) => {
           primaryError = error;
@@ -145,11 +143,11 @@ it.each([400, 401, 402, 403, 404, 413, 415, 429, 500, 503])(
   "hides HTTP %s and streams the baseline answer with legacy authorization",
   async (statusCode) => {
     const error = Object.assign(
-      new Error("Abliteration insufficient balance / provider error"),
+      new Error("Inference insufficient balance / provider error"),
       { statusCode },
     );
     const primary = new MockLanguageModelV3({
-      modelId: "abliterated-model",
+      modelId: "deepseek-v4.1-flash-1017-cyber",
       doStream: async () => {
         throw error;
       },
@@ -171,7 +169,7 @@ it.each(["in-band", "socket"])(
   async (kind) => {
     const error = new Error("Provider stream failed");
     const primary = new MockLanguageModelV3({
-      modelId: "abliterated-model",
+      modelId: "deepseek-v4.1-flash-1017-cyber",
       doStream: async () => {
         const parts: StreamPart[] = [
           { type: "text-start", id: "partial" },
@@ -204,7 +202,7 @@ it.each(["in-band", "socket"])(
 
 it("does not hide an OpenRouter failure or retry it again", async () => {
   const primary = new MockLanguageModelV3({
-    modelId: "abliterated-model",
+    modelId: "deepseek-v4.1-flash-1017-cyber",
     doStream: async () => {
       throw new Error("No balance");
     },
@@ -218,7 +216,7 @@ it("does not hide an OpenRouter failure or retry it again", async () => {
 
 it("leaves successful treatment streaming unchanged", async () => {
   const primary = new MockLanguageModelV3({
-    modelId: "abliterated-model",
+    modelId: "deepseek-v4.1-flash-1017-cyber",
     doStream: async () => response(successfulParts),
   });
   const { chunks, fallback } = await runRecovery(primary);

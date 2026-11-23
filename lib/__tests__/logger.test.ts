@@ -3,14 +3,14 @@ import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history"
 
 it("retains chronological provider history and live outcomes across stream restarts", () => {
   const builder = createWideEventBuilder("chat", "/api/agent").setModel(
-    "model-abliterated",
+    "model-inference-cyber",
   );
   const entry: ProviderModelHistoryEntry = {
     timestamp: "2026-09-16T16:57:49.280Z",
     generation_step: 1,
-    configured: "model-abliterated",
-    requested: "abliterated-model",
-    provider: "abliteration.chat",
+    configured: "model-inference-cyber",
+    requested: "deepseek-v4.1-flash-1017-cyber",
+    provider: "inference.chat",
     outcome: "pending",
   };
   builder.recordProviderModelCall(entry);

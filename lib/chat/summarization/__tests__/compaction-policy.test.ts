@@ -1,14 +1,8 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-const mockConfigured = jest.fn(() => true);
 const mockInferenceConfigured = jest.fn(() => false);
 const mockFlag = jest.fn<() => Promise<boolean | null>>();
 const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
-jest.mock("@/lib/ai/abliteration", () => ({
-  ABLITERATION_MODEL_KEY: "model-abliterated",
-  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
-  isAbliterationConfigured: mockConfigured,
-}));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: mockEvent },
   getPostHogBooleanFlagDecisionForUser: mockFlag,
@@ -24,6 +18,7 @@ const {
   COMPACTION_POLICY_VERSION,
   hasStructuredCompactionSummary,
 } = require("../compaction-policy") as typeof import("../compaction-policy");
+const DEEPSEEK_1017 = "model-deepseek-v4.1-flash-1017-pro";
 const context = {
   userId: "test-user",
   runId: "run-test",
@@ -34,18 +29,20 @@ const context = {
   platformAuthorized: false,
   onDiscardedUsage: jest.fn(),
 };
+const enableInference = () => {
+  mockInferenceConfigured.mockReturnValue(true);
+  mockFlag.mockResolvedValue(true);
+};
 describe("compaction model assignment and telemetry", () => {
   beforeEach(() => {
-    mockConfigured.mockReturnValue(true);
     mockInferenceConfigured.mockReturnValue(false);
     mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
-    "uses Inference first for %s compaction in Ask and Agent",
+    "uses Inference first with DeepSeek recovery for %s compaction in Ask and Agent",
     async (subscription) => {
-      mockInferenceConfigured.mockReturnValue(true);
-      mockFlag.mockResolvedValue(true);
+      enableInference();
       for (const mode of ["ask", "agent"] as const) {
         const policy = new CompactionModelPolicy({
           ...context,
@@ -55,8 +52,9 @@ describe("compaction model assignment and telemetry", () => {
         const assignment = await policy.resolve();
         expect(assignment).toMatchObject({
           model: "model-inference-cyber",
-          fallbackModel: "model-abliterated",
+          fallbackModel: DEEPSEEK_1017,
           policy: "inference_abliteration_fallback_v1",
+          flagEnabled: true,
         });
         expect(await policy.resolve()).toBe(assignment);
         policy.start(assignment, "durable");
@@ -66,7 +64,6 @@ describe("compaction model assignment and telemetry", () => {
             assigned_model: "model-inference-cyber",
             compaction_flag_key: "inference_cyber_v1",
             compaction_flag_enabled: true,
-            compaction_moderation_routed: false,
           }),
         );
       }
@@ -76,10 +73,9 @@ describe("compaction model assignment and telemetry", () => {
     ["hackerai-pro", "pro_inference_context_v1"],
     ["hackerai-max", "max_inference_context_v1"],
   ] as const)(
-    "retains %s expanded context and Abliteration recovery",
+    "retains %s expanded context and DeepSeek recovery",
     async (selectedModel, policy) => {
-      mockInferenceConfigured.mockReturnValue(true);
-      mockFlag.mockResolvedValue(true);
+      enableInference();
       expect(
         await new CompactionModelPolicy({
           ...context,
@@ -88,37 +84,59 @@ describe("compaction model assignment and telemetry", () => {
         }).resolve(),
       ).toMatchObject({
         model: "model-inference-cyber",
-        fallbackModel: "model-abliterated-large-v2",
+        fallbackModel: DEEPSEEK_1017,
         expandedAgentContext: true,
         policy,
       });
     },
   );
   it.each([false, null])(
-    "restores the previous policy when Inference flag is %s",
+    "uses GLM without a fallback when the Inference flag is %s",
     async (flag) => {
       mockInferenceConfigured.mockReturnValue(true);
-      mockFlag.mockResolvedValueOnce(flag).mockResolvedValueOnce(false);
-      expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
-        model: "model-abliterated",
+      mockFlag.mockResolvedValue(flag);
+      const assignment = await new CompactionModelPolicy(context).resolve();
+      expect(assignment).toMatchObject({
+        model: "model-glm-5.3-flash",
         policy: COMPACTION_POLICY_VERSION,
+        flagEnabled: false,
       });
+      expect(assignment.fallbackModel).toBeUndefined();
     },
   );
-  it("does not require the fallback credential to use Inference", async () => {
-    mockInferenceConfigured.mockReturnValue(true);
-    mockConfigured.mockReturnValue(false);
-    mockFlag.mockResolvedValue(true);
-    expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
-      model: "model-inference-cyber",
-      fallbackModel: "model-glm-5.3-flash",
-    });
+  it("uses GLM for every authorization context without a flag lookup when Inference is not configured", async () => {
+    for (const platformAuthorized of [false, true]) {
+      const policy = new CompactionModelPolicy({
+        ...context,
+        platformAuthorized,
+      });
+      const assignment = await policy.resolve();
+      expect(assignment).toMatchObject({
+        model: "model-glm-5.3-flash",
+        policy: COMPACTION_POLICY_VERSION,
+        flagEnabled: false,
+      });
+      expect(assignment.fallbackModel).toBeUndefined();
+      expect(mockEvent).not.toHaveBeenCalled();
+      policy.start(assignment, "durable");
+      expect(mockEvent).toHaveBeenLastCalledWith(
+        "compaction_model_started",
+        expect.objectContaining({
+          assigned_model: "model-glm-5.3-flash",
+          compaction_flag_key: null,
+          compaction_flag_enabled: false,
+          compaction_moderation_selected: platformAuthorized,
+        }),
+      );
+      mockEvent.mockClear();
+    }
+    expect(mockFlag).not.toHaveBeenCalled();
   });
   it("records safe provider rejection facts without response content", async () => {
     const policy = new CompactionModelPolicy(context);
     const attempt = policy.start(await policy.resolve(), "run_scoped");
     attempt.attempt(
-      "model-abliterated-large-v2",
+      "model-inference-cyber",
       "error",
       1907,
       undefined,
@@ -145,25 +163,26 @@ describe("compaction model assignment and telemetry", () => {
     );
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
-    "uses Abliteration for %s and emits policy telemetry only at compaction",
+    "records Inference recovery for %s and emits policy telemetry only at compaction",
     async (subscription) => {
+      enableInference();
       const experiment = new CompactionModelPolicy({
         ...context,
         subscription,
       });
       const assignment = await experiment.resolve();
       expect(await experiment.resolve()).toBe(assignment);
-      expect(assignment).toMatchObject({ model: "model-abliterated" });
+      expect(assignment).toMatchObject({ model: "model-inference-cyber" });
       expect(mockEvent).not.toHaveBeenCalled();
       const first = experiment.start(assignment!, "durable");
       first.attempt(assignment!.model, "error", 3);
-      first.attempt("model-glm-5.3-flash", "completed", 4, {
+      first.attempt(DEEPSEEK_1017, "completed", 4, {
         inputTokens: 0,
         inputTokensReported: true,
         outputTokens: 0,
         cost: 0,
       });
-      first.finish("completed", "model-glm-5.3-flash");
+      first.finish("completed", DEEPSEEK_1017);
       const second = experiment.start(assignment!, "run_scoped");
       second.attempt(assignment!.model, "aborted", 2);
       second.finish("aborted");
@@ -176,7 +195,7 @@ describe("compaction model assignment and telemetry", () => {
         ([event]) => event === "compaction_model_finished",
       );
       expect(outcomes[0][1]).toMatchObject({
-        compaction_policy: COMPACTION_POLICY_VERSION,
+        compaction_policy: "inference_abliteration_fallback_v1",
         subscription_tier: subscription,
         primary_success: false,
         fallback_used: true,
@@ -220,9 +239,9 @@ describe("compaction model assignment and telemetry", () => {
         expandedAgentContext: true,
       });
       const assignment = await policy.resolve();
-      expect(assignment.model).toBe("model-abliterated-large-v2");
+      expect(assignment.model).toBe("model-glm-5.3-flash");
       const telemetry = policy.start(assignment, "run_scoped");
-      telemetry.finish("completed", "model-abliterated-large-v2");
+      telemetry.finish("completed", "model-glm-5.3-flash");
       expect(mockEvent).toHaveBeenCalledWith(
         "compaction_model_finished",
         expect.objectContaining({
@@ -233,7 +252,7 @@ describe("compaction model assignment and telemetry", () => {
     },
   );
   it.each([
-    [false, "model-abliterated-large-v2", "paid_480k_large_v2_context_v1"],
+    [false, "model-glm-5.3-flash", "paid_480k_large_v2_context_v1"],
     [true, "model-inference-cyber", "paid_480k_inference_context_v1"],
   ] as const)(
     "gives paid 480K runs expanded summaries in their own cohort (inference=%s)",
@@ -273,7 +292,7 @@ describe("compaction model assignment and telemetry", () => {
       agentContextPolicy: "baseline",
     }).resolve();
     expect(baseline).toMatchObject({
-      model: "model-abliterated",
+      model: "model-glm-5.3-flash",
       policy: COMPACTION_POLICY_VERSION,
     });
     expect(baseline.expandedAgentContext).toBeUndefined();
@@ -292,13 +311,6 @@ describe("compaction model assignment and telemetry", () => {
       }).resolve(),
     ).toMatchObject({ policy: "pro_large_v2_context_v1" });
   });
-  it("starts with GLM when Abliteration credentials are missing", async () => {
-    mockConfigured.mockReturnValue(false);
-    expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
-      model: "model-glm-5.3-flash",
-    });
-    expect(mockEvent).not.toHaveBeenCalled();
-  });
   it.each(["agent", "ask"] as const)(
     "expands only Agent Max compaction, mode=%s",
     async (mode) => {
@@ -307,125 +319,22 @@ describe("compaction model assignment and telemetry", () => {
         mode,
         expandedAgentContext: true,
       }).resolve();
-      expect(assignment.model).toBe(
-        mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
-      );
       expect(assignment.expandedAgentContext).toBe(
         mode === "agent" ? true : undefined,
       );
     },
   );
-  it("preserves moderation-based selection with the larger Max fallback", async () => {
-    mockFlag.mockResolvedValue(true);
-    expect(
-      await new CompactionModelPolicy({
-        ...context,
-        expandedAgentContext: true,
-      }).resolve(),
-    ).toMatchObject({
-      model: "model-glm-5.3-flash",
-      fallbackModel: "model-abliterated-large-v2",
-      expandedAgentContext: true,
-    });
-  });
-  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
-    "uses the moderation decision for %s in Ask and Agent",
-    async (subscription) => {
-      mockFlag.mockResolvedValue(true);
-      for (const mode of ["ask", "agent"] as const) {
-        for (const platformAuthorized of [false, true]) {
-          const policy = new CompactionModelPolicy({
-            ...context,
-            subscription,
-            mode,
-            platformAuthorized,
-          });
-          const assignment = await policy.resolve();
-          expect(assignment).toMatchObject({
-            model: platformAuthorized
-              ? "model-abliterated"
-              : "model-glm-5.3-flash",
-            fallbackModel: platformAuthorized
-              ? "model-glm-5.3-flash"
-              : "model-abliterated",
-            policy: "moderation_glm53_abliteration_recovery_v2",
-            flagEnabled: true,
-          });
-          expect(mockEvent).not.toHaveBeenCalled();
-          policy.start(assignment, "durable");
-          expect(mockEvent).toHaveBeenLastCalledWith(
-            "compaction_model_started",
-            expect.objectContaining({
-              compaction_flag_enabled: true,
-              compaction_moderation_routed: platformAuthorized,
-              assigned_model: assignment.model,
-            }),
-          );
-          mockEvent.mockClear();
-        }
-      }
-    },
-  );
-  it("retains control and records unknown when flag evaluation is unavailable", async () => {
-    mockFlag.mockResolvedValue(null);
-    const policy = new CompactionModelPolicy(context);
-    const assignment = await policy.resolve();
-    expect(assignment).toMatchObject({
-      model: "model-abliterated",
-      flagEnabled: null,
-      policy: COMPACTION_POLICY_VERSION,
-    });
-    policy.start(assignment, "durable");
-    expect(mockEvent).toHaveBeenLastCalledWith(
-      "compaction_model_started",
-      expect.objectContaining({ compaction_flag_enabled: null }),
-    );
-  });
-  it.each([
-    [false, true],
-    [true, false],
-  ])(
-    "does not report moderation routing for flag=%s configured=%s",
-    async (flagEnabled, configured) => {
-      mockFlag.mockResolvedValue(flagEnabled);
-      mockConfigured.mockReturnValue(configured);
-      const policy = new CompactionModelPolicy({
-        ...context,
-        platformAuthorized: true,
-      });
-      policy.start(await policy.resolve(), "durable");
-      expect(mockEvent).toHaveBeenLastCalledWith(
-        "compaction_model_started",
-        expect.objectContaining({
-          compaction_moderation_selected: true,
-          compaction_moderation_routed: false,
-        }),
-      );
-    },
-  );
-  it("keeps GLM without an Abliteration fallback when credentials are absent", async () => {
-    mockFlag.mockResolvedValue(true);
-    mockConfigured.mockReturnValue(false);
-    for (const platformAuthorized of [false, true]) {
-      const assignment = await new CompactionModelPolicy({
-        ...context,
-        platformAuthorized,
-      }).resolve();
-      expect(assignment.model).toBe("model-glm-5.3-flash");
-      expect(assignment.fallbackModel).toBeUndefined();
-    }
-  });
   it("evaluates once across repeated compactions even if the remote flag changes", async () => {
-    mockFlag.mockResolvedValue(true);
+    enableInference();
     const policy = new CompactionModelPolicy(context);
     const first = await policy.resolve();
     mockFlag.mockResolvedValue(false);
     expect(await policy.resolve()).toBe(first);
     expect(mockFlag).toHaveBeenCalledTimes(1);
     expect(mockFlag).toHaveBeenCalledWith(
-      "moderation_compaction_recovery_v2",
+      "inference_cyber_v1",
       "test-user",
-      { subscription_tier: "pro" },
+      { subscription: "pro", subscription_tier: "pro" },
       { sendFeatureFlagEvents: false },
     );
   });

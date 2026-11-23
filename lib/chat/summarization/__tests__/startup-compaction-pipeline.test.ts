@@ -38,12 +38,12 @@ jest.doMock("@/lib/ai/providers", () => ({
   KIMI_K3_SLUG: "synthetic-fallback",
   myProvider: { languageModel: (name: string) => models.get(name) },
 }));
-jest.doMock("@/lib/ai/abliteration", () => ({
-  ABLITERATION_MODEL_KEY: "model-abliterated",
-  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
-  isAbliterationModel: (name: string) =>
-    name === "model-abliterated" || name === "model-abliterated-large-v2",
-  isAbliterationConfigured: () => true,
+const mockInferenceConfigured = jest.fn(() => false);
+jest.doMock("@/lib/ai/inference", () => ({
+  ...jest.requireActual<typeof import("@/lib/ai/inference")>(
+    "@/lib/ai/inference",
+  ),
+  isInferenceConfigured: () => mockInferenceConfigured(),
 }));
 const mockFlag = jest.fn<() => Promise<boolean | null>>();
 const recordEvent = jest.fn();
@@ -57,6 +57,13 @@ const { AGENT_SUMMARIZATION_PROMPT, ASK_SUMMARIZATION_PROMPT } =
   require("../prompts") as typeof import("../prompts");
 const { checkAndSummarizeIfNeeded, compactModelMessagesInRun } =
   require("../index") as typeof import("../index");
+
+const DEEPSEEK_1017 = "model-deepseek-v4.1-flash-1017-pro";
+const INFERENCE = "model-inference-cyber";
+const enableInference = () => {
+  mockInferenceConfigured.mockReturnValue(true);
+  mockFlag.mockResolvedValue(true);
+};
 
 const jsonCheckpoint = (mode: "ask" | "agent", body: string) =>
   JSON.stringify(
@@ -127,6 +134,7 @@ describe("startup compaction through the real AI SDK", () => {
     });
 
   beforeEach(() => {
+    mockInferenceConfigured.mockReturnValue(false);
     mockFlag.mockResolvedValue(false);
     saveSummary.mockClear();
     recordEvent.mockClear();
@@ -162,17 +170,18 @@ describe("startup compaction through the real AI SDK", () => {
     ["free", "ask"],
     ["pro", "ask"],
   ] as const)(
-    "persists GLM fallback after an Abliteration error for %s %s",
+    "persists a DeepSeek checkpoint after an Inference error for %s %s",
     async (subscription, mode) => {
-      const abliteration = new MockLanguageModelV3({
-        modelId: "synthetic-abliteration",
+      enableInference();
+      const inference = new MockLanguageModelV3({
+        modelId: "synthetic-inference",
         doGenerate: async () => {
           throw new Error("Synthetic provider failure");
         },
       });
-      models.set("model-abliterated", abliteration);
-      const glm = new MockLanguageModelV3({
-        modelId: "synthetic-glm",
+      models.set(INFERENCE, inference);
+      const deepSeek = new MockLanguageModelV3({
+        modelId: "synthetic-deepseek",
         doGenerate: async () => ({
           ...summary(),
           content: [
@@ -188,7 +197,7 @@ describe("startup compaction through the real AI SDK", () => {
           ],
         }),
       });
-      models.set("model-glm-5.3-flash", glm);
+      models.set(DEEPSEEK_1017, deepSeek);
       const result = await checkAndSummarizeIfNeeded({
         uiMessages: messages,
         subscription,
@@ -216,18 +225,21 @@ describe("startup compaction through the real AI SDK", () => {
         },
       });
       expect(result.needsSummarization).toBe(true);
-      expect(abliteration.doGenerateCalls).toHaveLength(1);
-      expect(glm.doGenerateCalls).toHaveLength(1);
-      expect(fallback.doGenerateCalls).toHaveLength(0);
-      expect(glm.doGenerateCalls[0].providerOptions?.openrouter).toMatchObject({
-        provider: { sort: "throughput", data_collection: "deny" },
+      expect(inference.doGenerateCalls).toHaveLength(1);
+      expect(inference.doGenerateCalls[0].providerOptions).toEqual({
+        inference: { reasoningEffort: "low" },
       });
-      expect(
-        glm.doGenerateCalls[0].providerOptions?.openrouter?.provider,
-      ).not.toHaveProperty("ignore");
-      expect(
-        glm.doGenerateCalls[0].providerOptions?.openrouter?.provider,
-      ).not.toHaveProperty("order");
+      expect(deepSeek.doGenerateCalls).toHaveLength(1);
+      expect(primary.doGenerateCalls).toHaveLength(0);
+      expect(fallback.doGenerateCalls).toHaveLength(0);
+      const recoveryProvider =
+        deepSeek.doGenerateCalls[0].providerOptions?.openrouter?.provider;
+      expect(recoveryProvider).toMatchObject({
+        sort: "throughput",
+        data_collection: "deny",
+      });
+      expect(recoveryProvider).not.toHaveProperty("ignore");
+      expect(recoveryProvider).not.toHaveProperty("order");
       expect(saveSummary).toHaveBeenCalledTimes(1);
     },
   );
@@ -251,120 +263,56 @@ describe("startup compaction through the real AI SDK", () => {
     expect(saveSummary).toHaveBeenCalledTimes(1);
   });
   it.each([
-    ["free", "ask"],
-    ["free", "agent"],
-    ["pro", "ask"],
-    ["pro", "agent"],
-  ] as const)(
-    "executes moderation-gated compaction through the SDK for %s %s",
-    async (subscription, mode) => {
-      mockFlag.mockResolvedValue(true);
-      const checkpoint = (
-        mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT
-      )
-        .match(/^## .+$/gm)!
-        .join("\nSynthetic authorized fixture.test scope; pending check C.\n");
-      const valid = () => ({
-        ...summary(),
-        content: [{ type: "text" as const, text: checkpoint }],
-      });
-      let refuse = false;
-      const glm = new MockLanguageModelV3({
-        modelId: "synthetic-glm",
-        doGenerate: async () =>
-          refuse
-            ? {
-                ...summary(),
-                content: [{ type: "text", text: "I cannot summarize this" }],
-              }
-            : {
-                ...summary(),
-                content: [
-                  {
-                    type: "text",
-                    text: jsonCheckpoint(
-                      mode,
-                      "Synthetic authorized fixture.test scope; pending check C.",
-                    ),
-                  },
-                ],
-              },
-      });
-      const abliteration = new MockLanguageModelV3({
-        modelId: "synthetic-abliteration",
-        doGenerate: async () => valid(),
-      });
-      models.set("model-glm-5.3-flash", glm);
-      models.set("model-abliterated", abliteration);
-      const discardedUsage = jest.fn();
-      const compact = (platformAuthorized: boolean) =>
-        checkAndSummarizeIfNeeded({
-          uiMessages: messages,
-          subscription,
-          languageModel: primary,
-          mode,
-          writer,
-          chatId: "synthetic-moderation-policy",
-          startupCompaction: {},
-          compactionPolicy: new CompactionModelPolicy({
-            userId: "synthetic",
-            runId: "synthetic",
-            chatId: "synthetic-moderation-policy",
-            subscription,
-            mode,
-            baselineModel: "agent-model",
-            platformAuthorized,
-            onDiscardedUsage: discardedUsage,
-          }),
-          providerPromptPressure: {
-            reason: "serialized_message_bytes",
-            reasons: ["serialized_message_bytes"],
-            toolResultCount: 0,
-            messageCount: 120,
-            summarizationMaxTokensOverride: 128000,
-          },
-        });
-      const ordinary = await compact(false);
-      expect(ordinary.needsSummarization).toBe(true);
-      expect(ordinary.summaryText).toContain("pending check C");
-      expect(glm.doGenerateCalls).toHaveLength(1);
-      expect(abliteration.doGenerateCalls).toHaveLength(0);
-      expect((await compact(true)).needsSummarization).toBe(true);
-      expect(glm.doGenerateCalls).toHaveLength(1);
-      expect(abliteration.doGenerateCalls).toHaveLength(1);
-      refuse = true;
-      expect((await compact(false)).needsSummarization).toBe(true);
-      expect(glm.doGenerateCalls).toHaveLength(2);
-      expect(abliteration.doGenerateCalls).toHaveLength(2);
-      expect(discardedUsage).toHaveBeenCalledWith(
-        expect.objectContaining({ inputTokens: 100, outputTokens: 20 }),
-      );
-      expect(fallback.doGenerateCalls).toHaveLength(0);
-      expect(saveSummary).toHaveBeenCalledTimes(3);
+    {
+      mode: "ask",
+      expandedAgentContext: false,
+      inference: true,
+      timeout: false,
     },
-  );
-
-  it.each([
-    { mode: "ask", expandedAgentContext: false, flagEnabled: true },
-    { mode: "agent", expandedAgentContext: false, flagEnabled: true },
-    { mode: "agent", expandedAgentContext: true, flagEnabled: false },
-    { mode: "agent", expandedAgentContext: true, flagEnabled: null },
+    {
+      mode: "agent",
+      expandedAgentContext: false,
+      inference: true,
+      timeout: false,
+    },
+    {
+      mode: "agent",
+      expandedAgentContext: true,
+      inference: true,
+      timeout: false,
+    },
+    {
+      mode: "agent",
+      expandedAgentContext: true,
+      inference: true,
+      timeout: true,
+    },
+    {
+      mode: "agent",
+      expandedAgentContext: true,
+      inference: false,
+      timeout: false,
+    },
   ] as const)(
-    "sends enforced JSON and a reasoning-plus-text budget over the $mode adapter (expanded=$expandedAgentContext, flag=$flagEnabled)",
-    async ({ mode, expandedAgentContext, flagEnabled }) => {
-      mockFlag.mockResolvedValue(flagEnabled);
+    "sends enforced JSON and a reasoning-plus-text budget over the $mode adapter (expanded=$expandedAgentContext, inference=$inference, timeout=$timeout)",
+    async ({ mode, expandedAgentContext, inference, timeout }) => {
+      if (inference) enableInference();
       const large = new MockLanguageModelV3({
         doGenerate: async () => {
-          throw flagEnabled === null
-            ? new DOMException("Synthetic Large v2 timeout", "TimeoutError")
-            : new Error("Synthetic Large v2 provider failure");
+          throw timeout
+            ? new DOMException("Synthetic Inference timeout", "TimeoutError")
+            : new Error("Synthetic Inference provider failure");
         },
       });
-      models.set("model-abliterated-large-v2", large);
-      const recoveryKey = expandedAgentContext
-        ? "model-deepseek-v4.1-flash-1017-pro"
+      models.set(INFERENCE, large);
+      // Inference recovers on DeepSeek first; the beforeEach DeepSeek times out,
+      // so ordinary Inference summaries reach structured GLM. Without Inference,
+      // expanded summaries start on structured GLM.
+      const deepSeekRecovery = inference && expandedAgentContext;
+      const recoveryKey = deepSeekRecovery
+        ? DEEPSEEK_1017
         : "model-glm-5.3-flash";
-      const recoverySlug = expandedAgentContext
+      const recoverySlug = deepSeekRecovery
         ? "deepseek/deepseek-v4.1-flash-1017"
         : "z-ai/glm-5.3-flash";
       const EdgeResponse =
@@ -441,14 +389,14 @@ describe("startup compaction through the real AI SDK", () => {
       expect(discarded).not.toHaveBeenCalled();
       expect(saveSummary).toHaveBeenCalledTimes(1);
       expect(payloads).toHaveLength(1);
-      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
+      expect(large.doGenerateCalls).toHaveLength(inference ? 1 : 0);
       expect(payloads[0]).toMatchObject({
         model: recoverySlug,
         max_tokens: 16384,
         reasoning: { enabled: true, effort: "low" },
         provider: {
           require_parameters: true,
-          ...(!expandedAgentContext && {
+          ...(!deepSeekRecovery && {
             order: ["baseten"],
             ignore: ["modal"],
           }),
@@ -469,24 +417,24 @@ describe("startup compaction through the real AI SDK", () => {
           },
         },
       });
-      if (expandedAgentContext) {
+      if (deepSeekRecovery) {
         expect(payloads[0].provider).not.toHaveProperty("order");
         expect(payloads[0]).not.toHaveProperty("models");
-        expect(recordEvent).toHaveBeenCalledWith(
-          "compaction_model_finished",
-          expect.objectContaining({
-            served_model: recoveryKey,
-            attempt_count: 2,
-          }),
-        );
       }
+      expect(recordEvent).toHaveBeenCalledWith(
+        "compaction_model_finished",
+        expect.objectContaining({
+          served_model: recoveryKey,
+          attempt_count: deepSeekRecovery ? 2 : inference ? 3 : 1,
+        }),
+      );
       expect(
         payloads[0].response_format.json_schema.schema.required,
       ).toHaveLength(mode === "agent" ? 10 : 7);
       expect(payloads[0].messages.at(-1).content).toContain(
         "Return only a JSON object",
       );
-      if (expandedAgentContext) {
+      if (deepSeekRecovery) {
         large.doGenerate = async () => ({
           ...summary(),
           content: [{ type: "reasoning", text: "Synthetic private reasoning" }],
@@ -552,25 +500,46 @@ describe("startup compaction through the real AI SDK", () => {
   );
 
   it.each([
-    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 74_000 },
-    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 76_000 },
-    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 90_000 },
-    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 121_000 },
     {
-      modelKey: "model-abliterated-large-v2",
+      modelKey: "model-glm-5.3-flash",
+      expandedAgentContext: true,
+      deadline: 75_000,
+      completionMs: 74_000,
+    },
+    {
+      modelKey: "model-glm-5.3-flash",
+      expandedAgentContext: true,
+      deadline: 75_000,
+      completionMs: 76_000,
+    },
+    {
+      modelKey: INFERENCE,
+      expandedAgentContext: false,
+      deadline: 120_000,
+      completionMs: 90_000,
+    },
+    {
+      modelKey: INFERENCE,
+      expandedAgentContext: false,
+      deadline: 120_000,
+      completionMs: 121_000,
+    },
+    {
+      modelKey: INFERENCE,
+      expandedAgentContext: true,
       deadline: 120_000,
       completionMs: 119_000,
     },
     {
-      modelKey: "model-abliterated-large-v2",
+      modelKey: INFERENCE,
+      expandedAgentContext: true,
       deadline: 120_000,
       completionMs: 121_000,
     },
   ])(
-    "lets $modelKey finish within $deadline ms and recovers beyond it (completion=$completionMs)",
-    async ({ modelKey, deadline, completionMs }) => {
+    "lets $modelKey finish within $deadline ms and recovers beyond it (expanded=$expandedAgentContext, completion=$completionMs)",
+    async ({ modelKey, expandedAgentContext, deadline, completionMs }) => {
       const isGlm = modelKey === "model-glm-5.3-flash";
-      const expandedAgentContext = modelKey === "model-abliterated-large-v2";
       jest.useFakeTimers();
       // Node's native AbortSignal.timeout bypasses Jest's clock. Preserve its
       // contract while allowing the real SDK's deadline to advance virtually.
@@ -586,7 +555,7 @@ describe("startup compaction through the real AI SDK", () => {
           return controller.signal;
         });
       try {
-        mockFlag.mockResolvedValue(isGlm);
+        if (!isGlm) enableInference();
         const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
           "\nScope fixture.test only; PID 73142 still running.\n",
         );
@@ -625,14 +594,8 @@ describe("startup compaction through the real AI SDK", () => {
           doGenerate: async () => valid(expandedAgentContext),
         });
         models.set(modelKey, timedModel);
-        models.set(
-          isGlm
-            ? "model-abliterated"
-            : expandedAgentContext
-              ? "model-deepseek-v4.1-flash-1017-pro"
-              : "model-glm-5.3-flash",
-          recovery,
-        );
+        // Both expanded GLM and Inference recover on DeepSeek V4.1 Flash.
+        models.set(DEEPSEEK_1017, recovery);
         const pending = checkAndSummarizeIfNeeded({
           uiMessages: messages,
           subscription: "pro",
@@ -706,13 +669,16 @@ describe("startup compaction through the real AI SDK", () => {
   )(
     "rejects $kind output without saving it or losing usage (expanded=$expandedAgentContext)",
     async ({ kind, expandedAgentContext }) => {
-      mockFlag.mockResolvedValue(!expandedAgentContext);
+      // Structured GLM is the expanded primary without Inference, and the final
+      // recovery after Inference and DeepSeek for ordinary Inference summaries.
+      const inference = !expandedAgentContext;
+      if (inference) enableInference();
       const large = new MockLanguageModelV3({
         doGenerate: async () => {
-          throw new Error("Synthetic Large v2 failure");
+          throw new Error("Synthetic Inference failure");
         },
       });
-      models.set("model-abliterated-large-v2", large);
+      models.set(INFERENCE, large);
       const original = JSON.stringify(messages);
       const fields = JSON.parse(
         jsonCheckpoint("agent", "Synthetic private incomplete checkpoint"),
@@ -753,19 +719,22 @@ describe("startup compaction through the real AI SDK", () => {
           response: { id: "gen-fixture", modelId: "fixture-model" },
         }),
       });
-      const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
-        "\nScope fixture.test.\n",
-      );
       models.set("model-glm-5.3-flash", glm);
-      models.set(
-        "model-abliterated",
-        new MockLanguageModelV3({
-          doGenerate: async () => ({
-            ...summary(),
-            content: [{ type: "text", text: checkpoint }],
+      if (!inference)
+        models.set(
+          DEEPSEEK_1017,
+          new MockLanguageModelV3({
+            doGenerate: async () => ({
+              ...summary(),
+              content: [
+                {
+                  type: "text",
+                  text: jsonCheckpoint("agent", "Scope fixture.test."),
+                },
+              ],
+            }),
           }),
-        }),
-      );
+        );
       const discarded = jest.fn();
       const result = await checkAndSummarizeIfNeeded({
         uiMessages: messages,
@@ -793,7 +762,7 @@ describe("startup compaction through the real AI SDK", () => {
           summarizationMaxTokensOverride: 128000,
         },
       });
-      expect(result.needsSummarization).toBe(!expandedAgentContext);
+      expect(result.needsSummarization).toBe(!inference);
       expect(discarded).toHaveBeenCalledTimes(1);
       expect(recordEvent).toHaveBeenCalledWith(
         "compaction_model_attempt_finished",
@@ -829,60 +798,69 @@ describe("startup compaction through the real AI SDK", () => {
           properties.structured_summary_failure_kind,
         ]),
       ).toEqual([
-        ...(expandedAgentContext
+        ...(inference
           ? [
-              ["model-abliterated-large-v2", undefined, undefined],
-              ["model-deepseek-v4.1-flash-1017-pro", undefined, undefined],
+              [INFERENCE, undefined, undefined],
+              [DEEPSEEK_1017, undefined, undefined],
             ]
           : []),
         ["model-glm-5.3-flash", subtype && 1, subtype],
-        ...(expandedAgentContext
-          ? []
-          : [["model-abliterated", undefined, undefined]]),
+        ...(inference ? [] : [[DEEPSEEK_1017, undefined, undefined]]),
       ]);
       expect(JSON.stringify(recordEvent.mock.calls)).not.toMatch(
         /Synthetic private reasoning|Never send to analytics|Current State/,
       );
-      expect(saveSummary).toHaveBeenCalledTimes(expandedAgentContext ? 0 : 1);
+      expect(saveSummary).toHaveBeenCalledTimes(inference ? 0 : 1);
       expect(JSON.stringify(messages)).toBe(original);
-      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
+      expect(large.doGenerateCalls).toHaveLength(inference ? 1 : 0);
       expect(glm.doGenerateCalls).toHaveLength(1);
       expect(JSON.stringify(saveSummary.mock.calls)).not.toContain(
         "Synthetic private",
       );
-      if (!expandedAgentContext)
+      if (!inference)
         expect(result.summaryText).toContain("Scope fixture.test.");
     },
   );
 
   it.each([400, 403, 503])(
-    "recovers a non-retryable cheaper-provider HTTP %s through Abliteration",
+    "recovers non-retryable Inference and DeepSeek HTTP %s through GLM",
     async (statusCode) => {
-      mockFlag.mockResolvedValue(true);
-      const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
-        "\nScope fixture.test only; session 73142 still running; check C pending.\n",
-      );
+      enableInference();
+      const reject = async (): Promise<never> => {
+        throw new APICallError({
+          message: "Synthetic provider rejection",
+          url: "https://synthetic.invalid",
+          requestBodyValues: {},
+          statusCode,
+          isRetryable: false,
+        });
+      };
+      const inference = new MockLanguageModelV3({
+        modelId: "synthetic-inference",
+        doGenerate: reject,
+      });
+      const deepSeek = new MockLanguageModelV3({
+        modelId: "synthetic-deepseek",
+        doGenerate: reject,
+      });
       const glm = new MockLanguageModelV3({
         modelId: "synthetic-glm",
-        doGenerate: async () => {
-          throw new APICallError({
-            message: "Synthetic provider rejection",
-            url: "https://synthetic.invalid",
-            requestBodyValues: {},
-            statusCode,
-            isRetryable: false,
-          });
-        },
-      });
-      const abliteration = new MockLanguageModelV3({
-        modelId: "synthetic-abliteration",
         doGenerate: async () => ({
           ...summary(),
-          content: [{ type: "text", text: checkpoint }],
+          content: [
+            {
+              type: "text",
+              text: jsonCheckpoint(
+                "agent",
+                "Scope fixture.test only; session 73142 still running; check C pending.",
+              ),
+            },
+          ],
         }),
       });
+      models.set(INFERENCE, inference);
+      models.set(DEEPSEEK_1017, deepSeek);
       models.set("model-glm-5.3-flash", glm);
-      models.set("model-abliterated", abliteration);
       const original = JSON.stringify(messages);
       const discarded = jest.fn();
       const result = await checkAndSummarizeIfNeeded({
@@ -914,10 +892,12 @@ describe("startup compaction through the real AI SDK", () => {
       expect(result.summaryText).toContain(
         "session 73142 still running; check C pending",
       );
+      expect(inference.doGenerateCalls).toHaveLength(1);
+      expect(deepSeek.doGenerateCalls).toHaveLength(1);
       expect(glm.doGenerateCalls).toHaveLength(1);
-      expect(abliteration.doGenerateCalls).toHaveLength(1);
-      expect(abliteration.doGenerateCalls[0].prompt.slice(0, -1)).toEqual(
-        glm.doGenerateCalls[0].prompt.slice(0, -1),
+      // Structured GLM appends its JSON instruction to the same history.
+      expect(glm.doGenerateCalls[0].prompt.slice(0, -1)).toEqual(
+        deepSeek.doGenerateCalls[0].prompt.slice(0, -1),
       );
       expect(saveSummary).toHaveBeenCalledTimes(1);
       expect(discarded).not.toHaveBeenCalled(); // The rejected call returned no usage.

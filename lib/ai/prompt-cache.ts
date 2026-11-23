@@ -1,4 +1,3 @@
-import { isAbliterationModel } from "./abliteration";
 import { isInferenceCyberModel } from "./inference";
 import type { ModelMessage } from "ai";
 
@@ -6,7 +5,6 @@ type PromptCacheOptions = {
   openrouter?: {
     session_id?: string;
   };
-  abliteration?: { prompt_cache_key: string };
 };
 
 /** Cache hints only: never change model, reasoning, fallback, or privacy policy. */
@@ -17,9 +15,6 @@ export function buildPromptCacheOptions(
   // No verified cache-affinity option for the direct Inference adapter.
   // In particular, never leak OpenRouter routing hints to this endpoint.
   if (isInferenceCyberModel(requestedModelSlug)) return {};
-  if (isAbliterationModel(requestedModelSlug)) {
-    return sessionId ? { abliteration: { prompt_cache_key: sessionId } } : {};
-  }
 
   return {
     openrouter: {

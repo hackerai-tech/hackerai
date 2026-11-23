@@ -51,9 +51,7 @@ it.each([
   { modelId: "custom/unknown" },
   { modelId: "constructor" },
   { modelId: "__proto__" },
-  { modelId: "abliterated-model" },
   { fallbackModelIds: ["custom/unknown"] },
-  { fallbackModelIds: ["abliterated-model"] },
 ])("uses the 276k baseline when expansion is unavailable: %j", (override) => {
   expect(getAgentContextBudget({ ...route, ...override })).toBe(276_000);
 });
@@ -72,20 +70,13 @@ it.each(["free", "pro"] as const)(
   },
 );
 
-it("uses the exact 1M Large v2 capacity rather than the base model limit", () => {
-  const budget = getAgentContextBudget({
-    ...route,
-    modelId: "abliterated-model-large-v2",
-  });
-  expect(budget).toBe(484_000);
-  expect(getSummarizationThresholdTokens(budget)).toBe(464_000);
-});
-
-it("uses Flash's verified capacity only when context expansion is enabled", () => {
-  const flash = { ...route, modelId: "abliterated-model-large-flash" };
-  expect(getAgentContextBudget(flash)).toBe(508_288);
-  expect(getAgentContextBudget({ ...flash, enabled: false })).toBe(276_000);
-  expect(getAgentContextBudget({ ...flash, mode: "ask" })).toBe(276_000);
+it("uses the exact Inference capacity rather than the OpenRouter DeepSeek limit", () => {
+  const inference = { ...route, modelId: "deepseek-v4.1-flash-1017-cyber" };
+  const budget = getAgentContextBudget(inference);
+  expect(budget).toBe(504_000);
+  expect(getSummarizationThresholdTokens(budget)).toBe(484_000);
+  expect(getAgentContextBudget({ ...inference, enabled: false })).toBe(276_000);
+  expect(getAgentContextBudget({ ...inference, mode: "ask" })).toBe(276_000);
 });
 
 it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(

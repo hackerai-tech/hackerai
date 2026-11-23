@@ -125,7 +125,7 @@ it("correlates provider errors and final outcomes to distinct Agent runs in one 
         Object.assign(new Error("Invalid provider request"), {
           statusCode: 400,
         }),
-        { mode: "agent", model: "model-abliterated" },
+        { mode: "agent", model: "model-inference-cyber" },
       );
       chatLogger.emitSuccess({
         finishReason: "stop",
@@ -166,15 +166,15 @@ it("emits the complete model history in the final request event", () => {
         isNewChat: true,
         notesEnabled: false,
       },
-      "model-abliterated",
+      "model-inference-cyber",
     );
     const first = {
       timestamp: "2026-09-16T16:57:49.280Z",
       generation_step: 1,
-      configured: "model-abliterated",
-      requested: "abliterated-model",
-      actual: "abliterated-model",
-      provider: "abliteration.chat",
+      configured: "model-inference-cyber",
+      requested: "deepseek-v4.1-flash-1017-cyber",
+      actual: "deepseek-v4.1-flash-1017-cyber",
+      provider: "inference.chat",
       outcome: "pending",
     };
     chatLogger.recordProviderModelCall(first);
@@ -203,8 +203,8 @@ it("emits the complete model history in the final request event", () => {
     expect(event.model.history).toEqual([
       expect.objectContaining({
         call_index: 1,
-        provider: "abliteration.chat",
-        actual: "abliterated-model",
+        provider: "inference.chat",
+        actual: "deepseek-v4.1-flash-1017-cyber",
         outcome: "completed",
       }),
       expect.objectContaining({
@@ -1318,8 +1318,8 @@ describe("captureAgentCompletionAnalytics", () => {
         mode,
         subscription: "pro",
         outcome: "success",
-        selectedModel: "model-abliterated",
-        configuredModelId: "abliterated-model",
+        selectedModel: "model-inference-cyber",
+        configuredModelId: "deepseek-v4.1-flash-1017-cyber",
         responseModel: "deepseek/deepseek-v4-flash-0731",
         fallbackServed: true,
         sandboxInfo: null,
@@ -1376,8 +1376,8 @@ describe("captureAgentCompletionAnalytics", () => {
         mode,
         subscription: "pro",
         outcome: "success",
-        selectedModel: "model-abliterated",
-        configuredModelId: "abliterated-model",
+        selectedModel: "model-inference-cyber",
+        configuredModelId: "deepseek-v4.1-flash-1017-cyber",
         responseModel: "deepseek/deepseek-v4-flash-0731",
         fallbackServed: true,
         sandboxInfo: { type: "e2b" },
@@ -1440,8 +1440,8 @@ describe("captureAgentCompletionAnalytics", () => {
         subscription: "free",
         outcome: "aborted",
         abortSource: "request_cancel",
-        selectedModel: "model-abliterated",
-        configuredModelId: "abliterated-model-large-flash",
+        selectedModel: "model-inference-cyber",
+        configuredModelId: "deepseek-v4.1-flash-1017-cyber",
         responseModel: "z-ai/glm-5.3-flash",
         fallbackServed: true,
         sandboxInfo: null,
@@ -3616,7 +3616,7 @@ it.each(["ask", "agent"] as const)(
         sandboxInfo: null,
         chatLogger: undefined,
         abliteratedProviderSummary: undefined,
-        selectedModel: "model-abliterated",
+        selectedModel: "model-inference-cyber",
         experiment: {
           key: "abliterated_free_three_steps_default_v1",
           variant: "test",

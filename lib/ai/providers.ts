@@ -20,12 +20,6 @@ import {
   recordOpenRouterBodyFailureContext,
   type OpenRouterBodyFailurePhase,
 } from "@/lib/utils/openrouter-stream-error-context";
-import {
-  abliteration,
-  ABLITERATION_LARGE_FLASH_MODEL_ID,
-  ABLITERATION_LARGE_V2_MODEL_KEY,
-  ABLITERATION_MODEL_KEY,
-} from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
@@ -291,6 +285,27 @@ export const sanitizeOpenRouterEncryptedReasoning = (
       ...(messagesResult?.changed ? { messages: messagesResult.value } : {}),
       ...(inputResult?.changed ? { input: inputResult.value } : {}),
     },
+    changed: true,
+  };
+};
+
+/**
+ * Every OpenRouter generation may use only zero-data-retention endpoints. It is
+ * enforced at this shared transport so no caller's routing options can drop it.
+ */
+export const requireOpenRouterZeroDataRetention = (
+  body: unknown,
+): { body: unknown; changed: boolean } => {
+  if (
+    !isRecord(body) ||
+    (body.model === undefined && body.models === undefined)
+  ) {
+    return { body, changed: false };
+  }
+  const provider = isRecord(body.provider) ? body.provider : {};
+  if (provider.zdr === true) return { body, changed: false };
+  return {
+    body: { ...body, provider: { ...provider, zdr: true } },
     changed: true,
   };
 };
@@ -1200,16 +1215,21 @@ export const createOpenRouterPatchFetch =
           makeOpenRouterToolChoiceCompatibleWithXaiReasoning(
             reasoningPatched.body,
           );
-        parsedRequestBody = xaiCompatible.body;
+        // Recovery retries rebuild their bodies from this parsed request.
+        const zdrRequired = requireOpenRouterZeroDataRetention(
+          xaiCompatible.body,
+        );
+        parsedRequestBody = zdrRequired.body;
         if (
           kimiNormalized.changed ||
           kimiPatched.changed ||
           reasoningPatched.changed ||
-          xaiCompatible.changed
+          xaiCompatible.changed ||
+          zdrRequired.changed
         ) {
           nextInit = {
             ...nextInit,
-            body: JSON.stringify(xaiCompatible.body),
+            body: JSON.stringify(zdrRequired.body),
           };
         }
       } catch {
@@ -1449,10 +1469,6 @@ const baseProviders: ReturnType<typeof buildProviderMap> &
   [GROK_4_6_BEDROCK_MODEL_KEY]: withOpenRouterStreamErrorContext(
     openrouterUs(GROK_4_6_SLUG),
   ),
-  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
-  [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
-    ABLITERATION_LARGE_FLASH_MODEL_ID,
-  ),
 };
 
 export type ModelName = keyof typeof baseProviders;
@@ -1476,9 +1492,6 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
   [INFERENCE_CYBER_MODEL_KEY]: "Inference DeepSeek V4.1 Flash 1017 Cyber",
-  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
-  [ABLITERATION_LARGE_V2_MODEL_KEY]:
-    "Abliteration abliterated-model-large-flash",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-deepseek-v41":
