@@ -587,7 +587,6 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         {trigger}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
-            data-chat-input-agent-menu
             side="bottom"
             className="rounded-t-2xl px-3 pb-8 pt-0 overscroll-contain"
           >
@@ -621,11 +620,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-        <PopoverContent
-          data-chat-input-agent-menu
-          className="w-[270px] p-1.5 rounded-xl"
-          align="start"
-        >
+        <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
           <ModelOptionList
             options={options}
             value={displayValue}
