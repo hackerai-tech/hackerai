@@ -1,3 +1,13 @@
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    queuedMessages: {
+      claimNextForDispatch: "claim",
+      getClaimedForDispatch: "getClaimed",
+      releaseDispatch: "release",
+      completeDispatch: "complete",
+    },
+  },
+}));
 jest.mock("@trigger.dev/sdk", () => ({
   task: (config: unknown) => config,
   tasks: { trigger: jest.fn() },
@@ -82,8 +92,9 @@ const dispatch = (run = finishedRun) =>
     }
   ).run({ run, completedRunId: "run-done", queuedId: "queued-1" });
 
-const releaseCalls = () =>
-  mockMutation.mock.calls.filter(([, args]) => "completedRunId" in args);
+const callsTo = (name: string) =>
+  mockMutation.mock.calls.filter(([fn]) => fn === name);
+const releaseCalls = () => callsTo("release");
 
 describe("server dispatch of queued follow-ups", () => {
   beforeEach(() => {
@@ -186,15 +197,45 @@ describe("server dispatch of queued follow-ups", () => {
     expect(releaseCalls()).toHaveLength(2);
   });
 
-  it("releases the claim only if the message was never saved", async () => {
+  it("returns the message to the queue when no run could be started", async () => {
     mockSaveMessage.mockRejectedValueOnce(new Error("save failed"));
     await expect(dispatch()).rejects.toThrow("save failed");
     expect(releaseCalls()).toHaveLength(1);
+
     mockMutation.mockClear();
-    (tasks.trigger as jest.Mock).mockRejectedValueOnce(new Error("trigger"));
-    await expect(dispatch()).rejects.toThrow("trigger");
-    // Saved: it is in the transcript now, like any send whose run failed.
+    // Every start attempt fails: no run exists, so the user can send it.
+    (tasks.trigger as jest.Mock).mockRejectedValue(new Error("trigger down"));
+    await expect(dispatch()).rejects.toThrow("trigger down");
+    expect(tasks.trigger).toHaveBeenCalledTimes(3);
+    expect(releaseCalls()).toHaveLength(1);
+    expect(callsTo("complete")).toHaveLength(0);
+  }, 15_000);
+
+  it("retries a failed start with the same key, so it never starts twice", async () => {
+    (tasks.trigger as jest.Mock)
+      .mockRejectedValueOnce(new Error("blip"))
+      .mockResolvedValue({ id: "run-next" });
+    await expect(dispatch()).resolves.toEqual(
+      expect.objectContaining({ outcome: "started" }),
+    );
+    const keys = (tasks.trigger as jest.Mock).mock.calls.map(
+      ([, , options]) => options.idempotencyKey,
+    );
+    expect(new Set(keys).size).toBe(1);
+    // The row leaves the queue only once the run is attached to the chat.
+    expect(callsTo("complete")).toHaveLength(1);
+    expect(mockFinalize.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMutation.mock.invocationCallOrder[
+        mockMutation.mock.calls.findIndex(([fn]) => fn === "complete")
+      ],
+    );
+  }, 15_000);
+
+  it("never returns a message whose run started but could not be attached", async () => {
+    mockFinalize.mockRejectedValueOnce(new Error("another run started"));
+    await expect(dispatch()).rejects.toThrow("another run started");
     expect(releaseCalls()).toHaveLength(0);
+    expect(callsTo("complete")).toHaveLength(1);
   });
 
   describe("after a run finishes", () => {

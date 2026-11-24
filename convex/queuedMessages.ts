@@ -4,16 +4,13 @@ import { getOwnedChat, requireUserId } from "./lib/ownedChat";
 import {
   findQueuedMessage,
   insertQueuedMessage,
+  isDispatchClaimed,
   queuedMessagesForChat,
 } from "./lib/queuedMessages";
 import { AGENT_STEER_MAX_PENDING } from "../lib/chat/agent-steer";
-import {
-  QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
-  QUEUED_MESSAGE_MAX_TEXT_LENGTH,
-} from "../lib/chat/queued-message";
+import { QUEUED_MESSAGE_MAX_TEXT_LENGTH } from "../lib/chat/queued-message";
 import { validateServiceKey } from "./lib/utils";
 import { settleSteer } from "./lib/agentSteers";
-import type { Doc } from "./_generated/dataModel";
 
 const queuedMessageValidator = v.object({
   id: v.string(),
@@ -21,13 +18,9 @@ const queuedMessageValidator = v.object({
   files: v.optional(v.array(v.any())),
   sentAt: v.number(),
   fromSteer: v.boolean(),
-  /** The server is sending it as the next turn. */
-  dispatching: v.optional(v.boolean()),
+  /** While the server sends it: when its claim started (the lease ends later). */
+  dispatchClaimedAt: v.optional(v.number()),
 });
-
-const isDispatchClaimed = (row: Doc<"queued_messages">, now: number) =>
-  row.dispatch_claimed_at !== undefined &&
-  now - row.dispatch_claimed_at < QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS;
 
 /** The chat's queue, oldest first. */
 export const list = query({
@@ -47,7 +40,9 @@ export const list = query({
         ...(row.files?.length ? { files: row.files } : {}),
         sentAt: row.sent_at,
         fromSteer: row.from_steer === true,
-        ...(isDispatchClaimed(row, now) ? { dispatching: true } : {}),
+        ...(isDispatchClaimed(row, now)
+          ? { dispatchClaimedAt: row.dispatch_claimed_at }
+          : {}),
       }));
   },
 });
@@ -187,13 +182,15 @@ export const claimNextForDispatch = mutation({
       });
     }
 
-    const next = (await queuedMessagesForChat(ctx, args.chatId)).find(
+    const queue = (await queuedMessagesForChat(ctx, args.chatId)).filter(
       (row) => row.user_id === args.userId,
     );
     const now = Date.now();
+    const next = queue[0];
     if (
       !next ||
-      isDispatchClaimed(next, now) ||
+      // One send at a time per chat, whichever row it holds.
+      queue.some((row) => isDispatchClaimed(row, now)) ||
       // Local Desktop attachments exist only in the browser that queued them.
       next.files?.some(
         (file) => (file as { storage?: unknown })?.storage === "local-desktop",
@@ -238,7 +235,9 @@ export const getClaimedForDispatch = query({
       !row ||
       row.chat_id !== args.chatId ||
       row.user_id !== args.userId ||
-      row.dispatch_run_id !== args.completedRunId
+      row.dispatch_run_id !== args.completedRunId ||
+      // An expired lease is the user's again; never send it from here.
+      !isDispatchClaimed(row, Date.now())
     )
       return null;
     return {
@@ -272,6 +271,30 @@ export const releaseDispatch = mutation({
         dispatch_claimed_at: undefined,
         dispatch_run_id: undefined,
       });
+    return null;
+  },
+});
+
+/** The started run is attached to the chat: the queued row is done. */
+export const completeDispatch = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    id: v.string(),
+    completedRunId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await findQueuedMessage(ctx, args.id);
+    if (
+      row &&
+      row.chat_id === args.chatId &&
+      row.user_id === args.userId &&
+      row.dispatch_run_id === args.completedRunId
+    )
+      await ctx.db.delete(row._id);
     return null;
   },
 });

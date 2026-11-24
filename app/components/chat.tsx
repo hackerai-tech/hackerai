@@ -567,6 +567,9 @@ function ForkAutoSendEffect({
   return null;
 }
 
+/** How long a tab waits for the server to send a stored queued message. */
+const SERVER_QUEUE_DISPATCH_GRACE_MS = 10_000;
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   return (
     <ConvexErrorBoundary diagnosticScope="chat_content">
@@ -2825,6 +2828,29 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     !!agentLongRunId ||
     status === "streaming" ||
     status === "submitted";
+  // After a run ends, the server gets the first chance to send a stored
+  // queued message (trigger/agent-queue-dispatch.ts). This tab sends it only
+  // if the server did not claim it in time, for example after a stop or for
+  // a run that needs approvals, so the two never race on one message.
+  const [agentIdleSince, setAgentIdleSince] = useState<number | null>(null);
+  const [serverGraceTick, setServerGraceTick] = useState(0);
+  useEffect(() => {
+    setAgentIdleSince(agentRunActive ? null : Date.now());
+  }, [agentRunActive]);
+  const headWaitsForServer =
+    agentSteeringEnabled &&
+    !!messageQueue[0]?.onServer &&
+    !messageQueue[0].files?.some((file) => file.storage === "local-desktop") &&
+    (agentIdleSince === null ||
+      Date.now() - agentIdleSince < SERVER_QUEUE_DISPATCH_GRACE_MS);
+  useEffect(() => {
+    if (!headWaitsForServer || agentIdleSince === null) return;
+    const timer = setTimeout(
+      () => setServerGraceTick((tick) => tick + 1),
+      Math.max(0, agentIdleSince + SERVER_QUEUE_DISPATCH_GRACE_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [agentIdleSince, headWaitsForServer]);
   const { pendingSteers, recovering: recoveringUnreadSteers } =
     useUnreadSteerRequeue({
       chatId,
@@ -2908,8 +2934,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
       !messageQueue[0].held &&
-      // The server is already sending it.
-      !messageQueue[0].dispatching &&
+      // The server is sending a queued message: wait for its run.
+      !messageQueue.some((message) => message.dispatching) &&
+      !headWaitsForServer &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
@@ -2954,6 +2981,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     status,
     recoveringUnreadSteers,
+    headWaitsForServer,
+    serverGraceTick,
     sendNowReleaseVersion,
     hasPendingSummarySteer,
     hasPendingUserWait,

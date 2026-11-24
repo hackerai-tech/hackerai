@@ -634,6 +634,8 @@ export interface QueuedMessage {
   fromSteer?: boolean;
   /** The server is sending it as the next turn after the run that finished. */
   dispatching?: boolean;
+  /** Stored on the server, where a finished run can send it. */
+  onServer?: boolean;
   /** Waits for the user to send it; automatic delivery stops at it. */
   held?: boolean;
   firstAttemptAt?: number;

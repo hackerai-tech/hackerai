@@ -38,6 +38,18 @@ type QueueDispatchPayload = {
 
 const serviceKey = () => process.env.CONVEX_SERVICE_ROLE_KEY!;
 
+const TRIGGER_ATTEMPTS = 3;
+async function withRetries<T>(start: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await start();
+    } catch (error) {
+      if (attempt >= TRIGGER_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+    }
+  }
+}
+
 // Approval sessions need the browser's live approval channel, so a queued
 // message for such a run waits for the user instead of starting unattended.
 const runsUnattended = (payload: AgentLongPayload) =>
@@ -90,7 +102,11 @@ export const agentQueueDispatch = task({
       getConvexClient()
         .mutation(api.queuedMessages.releaseDispatch, claim)
         .catch(() => undefined);
-    let messageSaved = false;
+    const complete = () =>
+      getConvexClient().mutation(api.queuedMessages.completeDispatch, claim);
+    // No run exists until Trigger accepts one; until then the row can return
+    // to the queue. Once a run exists, retrying could start a second turn.
+    let runStarted = false;
     try {
       const queued = await getConvexClient().query(
         api.queuedMessages.getClaimedForDispatch,
@@ -147,7 +163,6 @@ export const agentQueueDispatch = task({
         projectId: chat.project_id,
         sandboxType: run.sandboxPreference ?? "e2b",
       });
-      messageSaved = true;
 
       const now = Date.now();
       const nextPayload: AgentLongPayload = {
@@ -175,32 +190,37 @@ export const agentQueueDispatch = task({
         "permission_full_access",
       ];
       const priority = getAgentTriggerPriority(run.subscription);
-      const handle = await tasks.trigger<typeof agentLongTask>(
-        AGENT_TRIGGER_TASK_ID,
-        nextPayload,
-        {
-          ...(priority > 0 ? { priority } : {}),
-          machine: getAgentTriggerMachine(run.subscription),
-          tags,
-          region: run.triggerRegion,
-          idempotencyKey: await buildAgentRunIdempotencyKey(
-            buildAgentRunDedupeKeyParts({
-              userId,
-              chatId,
-              requestMessages: [userMessage as UIMessage],
-              triggerRequestedAt: now,
-            }),
-          ),
-          idempotencyKeyTTL: "6h",
-          metadata: {
-            status: "queued",
-            chatId,
-            userId,
-            subscription: run.subscription,
-            queuedFollowUp: true,
-          },
-        },
+      const idempotencyKey = await buildAgentRunIdempotencyKey(
+        buildAgentRunDedupeKeyParts({
+          userId,
+          chatId,
+          requestMessages: [userMessage as UIMessage],
+          triggerRequestedAt: now,
+        }),
       );
+      // The idempotency key makes a retry return the same run, never a second.
+      const handle = await withRetries(() =>
+        tasks.trigger<typeof agentLongTask>(
+          AGENT_TRIGGER_TASK_ID,
+          nextPayload,
+          {
+            ...(priority > 0 ? { priority } : {}),
+            machine: getAgentTriggerMachine(run.subscription),
+            tags,
+            region: run.triggerRegion,
+            idempotencyKey,
+            idempotencyKeyTTL: "6h",
+            metadata: {
+              status: "queued",
+              chatId,
+              userId,
+              subscription: run.subscription,
+              queuedFollowUp: true,
+            },
+          },
+        ),
+      );
+      runStarted = true;
       await finalizeStartedAgentRun({
         chatId,
         userId,
@@ -211,6 +231,8 @@ export const agentQueueDispatch = task({
           approvalSessionId: chat.active_agent_approval_session_id ?? null,
         },
       });
+      // Attached: the chat shows this run, so the queued row is done.
+      await complete();
       await captureAgentFollowUp("queue_dispatch_started", {
         ...report,
         runId: handle.id,
@@ -218,8 +240,11 @@ export const agentQueueDispatch = task({
       });
       return { outcome: "started" as const, runId: handle.id };
     } catch (error) {
-      // Once saved, the message is in the transcript like any failed send.
-      if (!messageSaved) await release();
+      // Without a run, the message goes back to the queue for the user (its
+      // saved copy is reused when it is sent). With one, the failed attach
+      // already cleaned the run up, as a failed start from the browser does.
+      if (runStarted) await complete().catch(() => undefined);
+      else await release();
       await captureAgentFollowUp("queue_dispatch_failed", {
         ...report,
         runId: completedRunId,

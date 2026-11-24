@@ -6,6 +6,7 @@ type Row = {
   sentAt: number;
   fromSteer: boolean;
   files?: unknown[];
+  dispatchClaimedAt?: number;
 };
 let mockRows: Row[] | undefined;
 const mockEnqueue = jest.fn<Promise<null>, [Record<string, unknown>]>();
@@ -260,5 +261,32 @@ describe("useServerMessageQueue", () => {
     await waitFor(() =>
       expect(result.current.messageQueue.map((item) => item.id)).toEqual([id]),
     );
+  });
+
+  it("shows a server send, and stops showing it when its claim expires", () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(100_000);
+      mockRows = [
+        {
+          id: "a",
+          text: "Sent by the server",
+          sentAt: 1,
+          fromSteer: false,
+          dispatchClaimedAt: 100_000,
+        },
+      ];
+      const { result } = render();
+      expect(result.current.messageQueue[0]).toEqual(
+        expect.objectContaining({ dispatching: true, onServer: true }),
+      );
+      // The dispatcher died: nothing writes the row again.
+      act(() => {
+        jest.advanceTimersByTime(2 * 60 * 1000 + 100);
+      });
+      expect(result.current.messageQueue[0].dispatching).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

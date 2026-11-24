@@ -514,7 +514,10 @@ describe("agent steers", () => {
       // Already being sent: a repeat callback claims nothing.
       expect(await claimNext(f)).toBeNull();
       expect(await f.listQueue()).toEqual([
-        expect.objectContaining({ id: "unread", dispatching: true }),
+        expect.objectContaining({
+          id: "unread",
+          dispatchClaimedAt: expect.any(Number),
+        }),
         expect.objectContaining({ id: "queued-later" }),
       ]);
     });
@@ -595,6 +598,51 @@ describe("agent steers", () => {
       await release("run-1");
       now.mockRestore();
       expect(f.rows.queued_messages[0].dispatch_claimed_at).toBeUndefined();
+    });
+
+    it("keeps a claimed row through the message save until the run is attached", async () => {
+      const f = fixture();
+      await f.enqueue("q");
+      finished(f);
+      await claimNext(f);
+      // The dispatcher saved the user message: the row still holds the queue.
+      await retireQueuedMessage(f.ctx as never, {
+        id: "q",
+        chatId: "chat",
+        userId: "owner",
+      });
+      expect(f.rows.queued_messages).toHaveLength(1);
+      // A row queued meanwhile with an earlier send time is not claimed too.
+      await f.enqueue("earlier", "earlier", 0);
+      expect(await claimNext(f, "run-1")).toBeNull();
+      await queue.completeDispatch.handler(f.ctx as never, {
+        serviceKey: "service-key",
+        chatId: "chat",
+        userId: "owner",
+        id: "q",
+        completedRunId: "run-1",
+      });
+      expect(f.rows.queued_messages.map((row) => row.id)).toEqual(["earlier"]);
+    });
+
+    it("never hands an expired claim to a late dispatcher", async () => {
+      const f = fixture();
+      await f.enqueue("q");
+      finished(f);
+      const now = jest.spyOn(Date, "now").mockReturnValue(10_000);
+      await claimNext(f);
+      const read = () =>
+        queue.getClaimedForDispatch.handler(f.ctx as never, {
+          serviceKey: "service-key",
+          chatId: "chat",
+          userId: "owner",
+          id: "q",
+          completedRunId: "run-1",
+        });
+      expect(await read()).toEqual(expect.objectContaining({ id: "q" }));
+      now.mockReturnValue(10_000 + 3 * 60 * 1000);
+      expect(await read()).toBeNull();
+      now.mockRestore();
     });
   });
 });

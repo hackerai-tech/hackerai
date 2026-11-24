@@ -1,6 +1,8 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import type { Doc } from "../_generated/dataModel";
 import {
+  QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
   QUEUED_MESSAGE_MAX_TEXT_LENGTH,
   isValidQueuedMessageId,
@@ -8,6 +10,11 @@ import {
 } from "../../lib/chat/queued-message";
 
 export const QUEUED_MESSAGE_DELETE_BATCH = 100;
+
+/** A server send owns the row until its run is attached or the lease ends. */
+export const isDispatchClaimed = (row: Doc<"queued_messages">, now: number) =>
+  row.dispatch_claimed_at !== undefined &&
+  now - row.dispatch_claimed_at < QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS;
 
 export const queuedMessagesForChat = (
   ctx: QueryCtx | MutationCtx,
@@ -76,14 +83,21 @@ export async function insertQueuedMessage(
 
 /**
  * Saving the user message that a queued row became removes the row in the
- * same transaction, so a reload or another device never sends it twice.
+ * same transaction, so a reload or another device never sends it twice. A
+ * server send keeps its row until its run is attached (`completeDispatch`):
+ * the row holds the queue in order, and a failed start can return it.
  */
 export async function retireQueuedMessage(
   ctx: MutationCtx,
   args: { id: string; chatId: string; userId: string },
 ) {
   const row = await findQueuedMessage(ctx, args.id);
-  if (row && row.chat_id === args.chatId && row.user_id === args.userId)
+  if (
+    row &&
+    row.chat_id === args.chatId &&
+    row.user_id === args.userId &&
+    !isDispatchClaimed(row, Date.now())
+  )
     await ctx.db.delete(row._id);
 }
 

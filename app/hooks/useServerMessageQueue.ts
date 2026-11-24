@@ -9,6 +9,7 @@ import { api } from "@/convex/_generated/api";
 import type { QueuedMessage } from "@/types/chat";
 import type { FileMessagePart } from "@/types/file";
 import {
+  QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
   sanitizeQueuedFiles,
 } from "@/lib/chat/queued-message";
@@ -133,7 +134,13 @@ export function useServerMessageQueue({
             }
           : {}),
         ...(row.fromSteer ? { fromSteer: true } : {}),
-        ...(row.dispatching ? { dispatching: true } : {}),
+        // The lease ends on the server's clock; a timer below re-renders then.
+        ...(row.dispatchClaimedAt !== undefined &&
+        Date.now() - row.dispatchClaimedAt <
+          QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS
+          ? { dispatching: true }
+          : {}),
+        onServer: true,
         ...(queuedHere.has(row.id) ? {} : { held: true }),
       });
     }
@@ -158,6 +165,22 @@ export function useServerMessageQueue({
     // `entries` mutates in place; `version` changes with each update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, rows, entries, version]);
+
+  // A send that died never writes its row again, so end "Sending…" when its
+  // lease expires instead of waiting for another queue change.
+  useEffect(() => {
+    const leaseEnds = (rows ?? []).flatMap((row) =>
+      row.dispatchClaimedAt === undefined
+        ? []
+        : [row.dispatchClaimedAt + QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS],
+    );
+    if (!leaseEnds.length) return;
+    const timer = setTimeout(
+      () => refresh((current) => current + 1),
+      Math.max(0, Math.min(...leaseEnds) - Date.now()) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [rows, version]);
 
   // Track which of this tab's drafts the server has stored, and drop local
   // state for rows that left the queue.

@@ -2027,7 +2027,9 @@ export const useChatHandlers = ({
   ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
-    if (!message || message.deliveryStatus === "sending") return;
+    // The server is already starting this message as the next turn.
+    if (!message || message.deliveryStatus === "sending" || message.dispatching)
+      return;
     // Goal runs keep the existing pause-and-send path.
     const goalActive =
       !!goalStateRef.current &&
