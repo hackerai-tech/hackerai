@@ -1907,6 +1907,7 @@ export const createChatHandler = () => {
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
 
+            let lastStreamModel = selectedModel;
             const createStream = (
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
@@ -1918,6 +1919,13 @@ export const createChatHandler = () => {
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
+              if (retryUsesDifferentModel(lastStreamModel, modelName)) {
+                recordExplicitModelFallback(
+                  state,
+                  trackedProvider.languageModel(modelName).modelId,
+                );
+                lastStreamModel = modelName;
+              }
               return createAgentStream(modelName, streamCtx, state);
             };
 
@@ -1980,12 +1988,6 @@ export const createChatHandler = () => {
                   selectedModel,
                   apiRetryModel,
                 );
-                if (retryUsedFallbackModel) {
-                  recordExplicitModelFallback(
-                    state,
-                    trackedProvider.languageModel(apiRetryModel).modelId,
-                  );
-                }
                 resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToStepLimit = false;
@@ -2544,11 +2546,6 @@ export const createChatHandler = () => {
                         if (userStopSignal.signal.aborted) {
                           isAborted = true;
                           break primaryProviderRecovery;
-                        }
-                        if (
-                          retryUsesDifferentModel(selectedModel, retryModel)
-                        ) {
-                          recordExplicitModelFallback(state, retryModelSlug);
                         }
                         const retryResult = await createStream(
                           retryModel,
