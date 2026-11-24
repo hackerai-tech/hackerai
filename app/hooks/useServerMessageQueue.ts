@@ -110,10 +110,13 @@ export function useServerMessageQueue({
     if (!enabled || !userId || !settings) return;
     if (requestedSettingsKey.current === settingsKey) return;
     requestedSettingsKey.current = settingsKey;
-    const sent =
-      heldSettingsKey.current === settingsKey
-        ? { ...settings, agentPermissionMode: "ask_approval" as const }
-        : settings;
+    // A hold covers only retries of the choice that failed; choosing these
+    // settings again later is a new choice.
+    const held = heldSettingsKey.current === settingsKey;
+    heldSettingsKey.current = null;
+    const sent = held
+      ? { ...settings, agentPermissionMode: "ask_approval" as const }
+      : settings;
     applySettings({ settings: sent }).then(
       () => {
         if (requestedSettingsKey.current === settingsKey)
@@ -123,7 +126,7 @@ export function useServerMessageQueue({
         console.warn("Could not update queued message settings", error);
         // A newer choice was already sent; it supersedes this one.
         if (requestedSettingsKey.current !== settingsKey) return;
-        if (sent.agentPermissionMode === "full_access")
+        if (held || sent.agentPermissionMode === "full_access")
           heldSettingsKey.current = settingsKey;
         requestedSettingsKey.current = null;
         const delay = Math.min(

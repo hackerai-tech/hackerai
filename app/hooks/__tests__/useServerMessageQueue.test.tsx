@@ -448,4 +448,52 @@ describe("useServerMessageQueue", () => {
       jest.useRealTimers();
     }
   });
+
+  it("lets a later choice of the same settings grant full access again", async () => {
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      type Mode = "ask_approval" | "full_access";
+      const desktop = {
+        agentPermissionMode: "full_access" as Mode,
+        sandboxPreference: "desktop",
+      };
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: {
+              agentPermissionMode: "full_access" as Mode,
+              sandboxPreference: "e2b",
+            },
+          },
+        },
+      );
+      rerender({ settings: desktop });
+      // The failed grant is retried as a hold.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+      });
+      rerender({
+        settings: {
+          agentPermissionMode: "ask_approval",
+          sandboxPreference: "desktop",
+        },
+      });
+      rerender({ settings: { ...desktop } });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(mockApplySettings).toHaveBeenLastCalledWith({ settings: desktop });
+      expect(mockApplySettings).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
