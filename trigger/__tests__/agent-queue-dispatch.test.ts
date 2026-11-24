@@ -197,6 +197,14 @@ describe("server dispatch of queued follow-ups", () => {
     expect(releaseCalls()).toHaveLength(2);
   });
 
+  it("does not start a run in a chat a pause canceled", async () => {
+    mockGetChat.mockResolvedValue({ user_id: "owner", canceled_at: 1 });
+    await expect(dispatch()).resolves.toEqual({ outcome: "chat_unavailable" });
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(releaseCalls()).toHaveLength(1);
+  });
+
   it("returns the message to the queue when no run could be started", async () => {
     mockSaveMessage.mockRejectedValueOnce(new Error("save failed"));
     await expect(dispatch()).rejects.toThrow("save failed");

@@ -1145,6 +1145,39 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
     });
 
+    it("queues a new message behind one the server is sending", async () => {
+      mockMessageQueue = [
+        {
+          id: "queued-1",
+          text: "Sent by the server",
+          files: [],
+          timestamp: 1,
+          dispatching: true,
+        },
+      ];
+      // No run is active yet: the server has not attached its run.
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          isSummarizing: false,
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: null },
+        }),
+      );
+      expect(await submit(result)).toBe(true);
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+    });
+
     it("leaves Ask mode's Send Now on its existing path", async () => {
       const toastError = jest.spyOn(toast, "error");
       mockChatMode = "ask";

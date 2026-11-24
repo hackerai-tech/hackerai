@@ -1245,20 +1245,27 @@ export const useChatHandlers = ({
       }
     }
 
+    // The server is starting a queued message as the next turn: a new
+    // message waits behind it in the queue, so the queue keeps its order.
+    const serverSendingQueued = messageQueue.some(
+      (queued) => queued.dispatching,
+    );
     // While an Agent run is starting or streaming, honor the queue behavior.
     if (
       !stoppedGoalForMessage &&
-      (status === "streaming" || status === "submitted")
+      (status === "streaming" || status === "submitted" || serverSendingQueued)
     ) {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
 
-      let followUpBehavior = resolveFollowUpBehavior(
-        queueBehavior,
-        agentSteeringEnabled && isAlternateSubmit(e),
-      );
+      let followUpBehavior = serverSendingQueued
+        ? "queue"
+        : resolveFollowUpBehavior(
+            queueBehavior,
+            agentSteeringEnabled && isAlternateSubmit(e),
+          );
       // A steer that cannot join the run is only queued. It must never turn
       // into the stop-and-send that summarization applies to other follow-ups.
       let steerFellBackToQueue = false;

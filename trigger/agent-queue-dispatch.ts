@@ -138,6 +138,8 @@ export const agentQueueDispatch = task({
         !chat ||
         chat.user_id !== userId ||
         chat.deletion_started_at !== undefined ||
+        // A goal or subscription pause canceled work in this chat.
+        chat.canceled_at !== undefined ||
         chat.active_trigger_run_id
       ) {
         await release();
