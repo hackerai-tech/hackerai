@@ -95,6 +95,7 @@ test.each([
   { ...report, description: "short" },
   { ...report, evidence: "x".repeat(6001) },
   { ...report, privateKey: "must not be emailed" },
+  { ...report, kind: "appeal", appealContext: "x".repeat(1001) },
 ])(
   "rejects mismatched, unbounded or unknown report data before SMTP",
   async (invalid) => {
@@ -122,4 +123,34 @@ test("includes appeal details and leaves supplied markup as text", async () => {
   expect(message.to).toBe("abuse@hackerai.co");
   expect(message).not.toHaveProperty("html");
   expect(message).not.toHaveProperty("attachments");
+});
+
+test("delivers a queued legacy appeal that has neither a reference nor context", async () => {
+  const legacy = { ...report, kind: "appeal", target: "", reference: "" };
+  expect(await sendAbuseNotification(reference, legacy, receivedAt)).toBe(
+    "sent",
+  );
+  expect(sendMail.mock.calls[0][0].text).not.toContain("Appeal context");
+});
+test("adds appeal context as its own section without moving the leading lines", async () => {
+  const appealContext = "No notice. The workspace showed 'restricted'.";
+  await sendAbuseNotification(reference, report, receivedAt);
+  await sendAbuseNotification(
+    reference,
+    { ...report, kind: "appeal", appealContext },
+    receivedAt,
+  );
+  const [plain, appeal] = sendMail.mock.calls.map(([{ text }]) =>
+    text.split("\n"),
+  );
+  expect(plain.join("\n")).not.toContain("Appeal context");
+  const leading = plain.indexOf("Description:");
+  expect(appeal.slice(1, leading)).toEqual(plain.slice(1, leading));
+  expect(appeal.join("\n")).toContain(
+    `Appeal context (notice, or what they tried and saw):\n${appealContext}\n`,
+  );
+  expect(sendMail.mock.calls[1][0]).toMatchObject({
+    to: "abuse@hackerai.co",
+    subject: `HackerAI report received: ${reference}`,
+  });
 });

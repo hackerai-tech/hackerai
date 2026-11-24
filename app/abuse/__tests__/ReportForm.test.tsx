@@ -230,3 +230,80 @@ test("an expired delivery window retains fields but starts a fresh submission af
     JSON.parse(fetchMock.mock.calls[0][1].body).submissionId,
   );
 });
+
+function fillAppeal() {
+  fireEvent.click(screen.getByRole("radio", { name: /Appeal a decision/ }));
+  fireEvent.change(screen.getByLabelText("Contact email"), {
+    target: { value: "reporter@example.test" },
+  });
+  fireEvent.change(
+    screen.getByLabelText("Why should the decision be reviewed?"),
+    { target: { value: "Synthetic appeal explaining the requested review." } },
+  );
+}
+const submitAppeal = () =>
+  fireEvent.click(screen.getByRole("button", { name: "Submit appeal" }));
+const contextField = () =>
+  screen.getByLabelText("Notice summary, or what you tried and saw");
+function accept() {
+  (global.fetch as jest.Mock).mockImplementation(async (_url, init) => ({
+    ok: true,
+    json: async () => ({
+      received: true,
+      reference: `AB-${JSON.parse(init.body).submissionId}`,
+    }),
+  }));
+}
+
+test("a low-detail appeal is blocked at the context field, then submits with an existing reference", async () => {
+  accept();
+  render(<ReportForm available siteKey="synthetic-site-key" />);
+  fillAppeal();
+  fireEvent.change(contextField(), { target: { value: "Got an email." } });
+  verified();
+  submitAppeal();
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(contextField()).toHaveFocus();
+  expect(contextField()).toHaveAttribute("aria-invalid", "true");
+  expect(contextField()).toHaveAccessibleDescription(
+    expect.stringContaining("Add a HackerAI reference"),
+  );
+  fireEvent.change(screen.getByLabelText("HackerAI reference"), {
+    target: { value: "AB-prior-case" },
+  });
+  submitAppeal();
+  expect(
+    await screen.findByRole("heading", {
+      name: "Thanks. Your appeal was received.",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body),
+  ).toMatchObject({
+    kind: "appeal",
+    reference: "AB-prior-case",
+    appealContext: "Got an email.",
+  });
+});
+
+test("a no-notice appeal submits with context and no reference", async () => {
+  accept();
+  render(<ReportForm available siteKey="synthetic-site-key" />);
+  fillAppeal();
+  fireEvent.change(contextField(), {
+    target: { value: "No notice. Starting a scan showed an error." },
+  });
+  verified();
+  submitAppeal();
+  expect(
+    await screen.findByRole("heading", {
+      name: "Thanks. Your appeal was received.",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body),
+  ).toMatchObject({
+    reference: "",
+    appealContext: "No notice. Starting a scan showed an error.",
+  });
+});

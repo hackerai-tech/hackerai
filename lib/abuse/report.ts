@@ -3,8 +3,11 @@ import { z } from "zod";
 const optionalText = (limit: number) =>
   z.string().trim().max(limit).default("");
 
-/** Plain text only. Submitted addresses and evidence links are never fetched. */
-export const abuseReportSchema = z
+/**
+ * Queued payload contract, including reports saved before appeals required
+ * context. Plain text only. Submitted addresses and evidence links are never fetched.
+ */
+export const storedAbuseReportSchema = z
   .object({
     submissionId: z.uuid().transform((value) => value.toLowerCase()),
     kind: z.enum(["abuse", "appeal"]),
@@ -24,6 +27,13 @@ export const abuseReportSchema = z
       .default(""),
     protocol: optionalText(40),
     reference: optionalText(160),
+    // Omitted when blank so payloads without it keep their submission fingerprint.
+    appealContext: z
+      .string()
+      .trim()
+      .max(1000)
+      .optional()
+      .transform((value) => value || undefined),
     evidence: optionalText(6000),
     website: z.literal("").default(""),
   })
@@ -37,6 +47,26 @@ export const abuseReportSchema = z
       });
     }
   });
+
+export const APPEAL_CONTEXT_ERROR =
+  "Add a HackerAI reference, or summarize the notice or what you tried and saw (20–1,000 characters).";
+
+/** New browser/API intake: an appeal needs a case reference or useful context. */
+export const abuseReportSchema = storedAbuseReportSchema.superRefine(
+  (report, ctx) => {
+    if (
+      report.kind === "appeal" &&
+      !report.reference &&
+      (report.appealContext ?? "").length < 20
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["appealContext"],
+        message: APPEAL_CONTEXT_ERROR,
+      });
+    }
+  },
+);
 
 export type AbuseReport = z.infer<typeof abuseReportSchema>;
 export type AbuseReportField = Exclude<

@@ -6,7 +6,11 @@ import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { abuseReportSchema, type AbuseReportField } from "@/lib/abuse/report";
+import {
+  APPEAL_CONTEXT_ERROR,
+  abuseReportSchema,
+  type AbuseReportField,
+} from "@/lib/abuse/report";
 import { HELP_CENTER_URL } from "@/lib/seo/site";
 import SecurityCheck from "./SecurityCheck";
 
@@ -68,6 +72,8 @@ export default function ReportForm({
   const [receipt, setReceipt] = useState("");
   const [description, setDescription] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [appealContext, setAppealContext] = useState("");
+  const [hasReference, setHasReference] = useState(false);
   const form = useRef<HTMLFormElement>(null);
   const resultHeading = useRef<HTMLHeadingElement>(null);
   const failureBox = useRef<HTMLDivElement>(null);
@@ -136,6 +142,7 @@ export default function ReportForm({
           next[field] = "Enter a valid email address.";
         else if (field === "target")
           next[field] = "Enter the affected domain, address, or other target.";
+        else if (field === "appealContext") next[field] = APPEAL_CONTEXT_ERROR;
         else if (field !== "kind")
           next[field] = "Check this field and its length.";
       }
@@ -246,6 +253,8 @@ export default function ReportForm({
               setReceipt("");
               setDescription("");
               setEvidence("");
+              setAppealContext("");
+              setHasReference(false);
               attempt.current = null;
             }}
           >
@@ -508,15 +517,48 @@ export default function ReportForm({
       <Field
         name="reference"
         label="HackerAI reference"
-        hint="Only if you already have one: a run, workspace, case reference, or notice from us."
+        hint={
+          kind === "appeal"
+            ? "The case reference from our notice or Support, if you have one. Without one, add context below."
+            : "Only if you already have one: a run, workspace, case reference, or notice from us."
+        }
         error={errors.reference}
       >
         <Input
           {...inputProps("reference")}
           maxLength={160}
           disabled={pending}
+          onChange={(event) =>
+            setHasReference(event.target.value.trim() !== "")
+          }
         />
       </Field>
+      {kind === "appeal" && (
+        <Field
+          name="appealContext"
+          label="Notice summary, or what you tried and saw"
+          required={!hasReference}
+          hint={
+            hasReference
+              ? "You can also summarize the notice or describe what you saw."
+              : "Summarize the notice. If you received none, describe what you tried and what you saw in at least 20 characters."
+          }
+          error={errors.appealContext}
+        >
+          <Textarea
+            {...inputProps("appealContext")}
+            value={appealContext}
+            onChange={(event) => setAppealContext(event.target.value)}
+            className="min-h-28"
+            maxLength={1000}
+            required={!hasReference}
+            disabled={pending}
+          />
+          <p className="text-right text-xs tabular-nums text-muted-foreground">
+            {appealContext.length.toLocaleString()} / 1,000
+          </p>
+        </Field>
+      )}
       <Field
         name="evidence"
         label="Log excerpt or other evidence"
