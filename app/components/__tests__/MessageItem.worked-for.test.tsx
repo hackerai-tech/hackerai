@@ -376,45 +376,57 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByText("final answer")).toBeInTheDocument();
   });
 
-  it("shows a steer the Agent read between the tool calls it separated", () => {
-    renderMessageItem({
-      mode: "agent",
-      message: {
-        ...assistantMessage,
-        parts: [
-          { type: "step-start" },
-          {
-            type: "tool-shell",
-            toolCallId: "call-1",
-            state: "output-available",
-            input: "first",
-          },
-          {
-            type: "data-agent-steer",
-            id: "steer-1",
-            data: { id: "steer-1", text: "Use staging" },
-          },
-          { type: "step-start" },
-          {
-            type: "tool-shell",
-            toolCallId: "call-2",
-            state: "output-available",
-            input: "second",
-          },
-          { type: "text", text: "final answer" },
-        ],
-      } as ChatMessage,
-    });
-    fireEvent.click(screen.getByRole("button", { name: /worked for/i }));
-    const rendered = screen
+  const steeredRun = {
+    ...assistantMessage,
+    parts: [
+      { type: "step-start" },
+      {
+        type: "tool-shell",
+        toolCallId: "call-1",
+        state: "output-available",
+        input: "first",
+      },
+      {
+        type: "data-agent-steer",
+        id: "steer-1",
+        data: { id: "steer-1", text: "Use staging" },
+      },
+      { type: "step-start" },
+      {
+        type: "tool-shell",
+        toolCallId: "call-2",
+        state: "output-available",
+        input: "second",
+      },
+      { type: "text", text: "final answer" },
+    ],
+  } as ChatMessage;
+  const renderedIndexes = () =>
+    screen
       .getAllByTestId(/^part-/)
       .map((element) => element.getAttribute("data-part-index"));
-    expect(screen.getByTestId("part-data-agent-steer")).toHaveAttribute(
-      "data-part-index",
-      "2",
-    );
+
+  it("shows a steer where the Agent read it while the run works", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: steeredRun,
+      status: "streaming",
+    });
+    const rendered = renderedIndexes();
     expect(rendered.indexOf("2")).toBeGreaterThan(rendered.indexOf("1"));
     expect(rendered.indexOf("2")).toBeLessThan(rendered.indexOf("4"));
+  });
+
+  it("keeps a steer visible after the run collapses its work, shown once", () => {
+    renderMessageItem({ mode: "agent", message: steeredRun });
+    // Visible without opening Worked for, before the answer.
+    let rendered = renderedIndexes();
+    expect(rendered).toContain("2");
+    expect(rendered.indexOf("2")).toBeLessThan(rendered.indexOf("5"));
+    fireEvent.click(screen.getByRole("button", { name: /worked for/i }));
+    rendered = renderedIndexes();
+    expect(rendered.filter((index) => index === "2")).toHaveLength(1);
+    expect(rendered).toContain("4");
   });
 
   it("shows Worked for for messages generated in agent mode", () => {

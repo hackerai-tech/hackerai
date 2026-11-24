@@ -1,3 +1,4 @@
+import { isAgentSteerPart } from "@/lib/chat/agent-steer";
 import type { LimitRescueRequest } from "@/types/chat";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { memo, useMemo, useCallback, Fragment, useState } from "react";
@@ -378,9 +379,32 @@ export const MessageItem = memo(function MessageItem({
     />
   );
 
-  const renderWorkParts = () => (
+  // Steers stay visible once a finished run collapses its work: they show
+  // between Worked for and the answer instead of inside the collapsed work.
+  const steerActivities = workProjection.activities.filter(({ part }) =>
+    isAgentSteerPart(part),
+  );
+  // Only steers would be left inside Worked for: show them without it.
+  const hasCollapsibleWork =
+    steerActivities.length === 0 ||
+    workProjection.activities.length > steerActivities.length;
+  const renderSteers = () =>
+    steerActivities.length > 0 ? (
+      <div key="steers">
+        {steerActivities.map(({ part, partIndex }) =>
+          renderAssistantPart(part, partIndex),
+        )}
+      </div>
+    ) : null;
+
+  const renderWorkParts = (omitSteers = false) => (
     <>
-      {workProjection.activities.map(({ id, part, partIndex, groupedParts }) =>
+      {(omitSteers
+        ? workProjection.activities.filter(
+            ({ part }) => !isAgentSteerPart(part),
+          )
+        : workProjection.activities
+      ).map(({ id, part, partIndex, groupedParts }) =>
         groupedParts ? (
           <SubagentToolGroup
             key={id}
@@ -624,7 +648,7 @@ export const MessageItem = memo(function MessageItem({
                   </>
                 ) : (
                   <>
-                    {workParts.length > 0 && (
+                    {workParts.length > 0 && hasCollapsibleWork && (
                       <WorkedFor
                         key="work"
                         hasWork={workProjection.hasExpandableWork}
@@ -632,10 +656,11 @@ export const MessageItem = memo(function MessageItem({
                       >
                         <WorkedForTrigger durationMs={generationTimeMs} />
                         <WorkedForContent lazy>
-                          {renderWorkParts}
+                          {() => renderWorkParts(true)}
                         </WorkedForContent>
                       </WorkedFor>
                     )}
+                    {renderSteers()}
                     {trailingTextParts.length > 0 && (
                       <div
                         className={
