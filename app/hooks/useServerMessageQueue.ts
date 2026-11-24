@@ -185,61 +185,80 @@ export function useServerMessageQueue({
     if (changed) refresh((current) => current + 1);
   }, [rows, entries]);
 
-  // Store drafts. The server refuses them until it has created the chat, so
-  // a draft queued during a new chat's first response retries shortly.
+  // Store drafts for every chat of this account, not only the open one, so a
+  // reload cannot lose one adopted for another chat. The server refuses a
+  // draft until it has created the chat, so one queued during a new chat's
+  // first response retries shortly.
   useEffect(() => {
-    if (!active || rows === undefined) return;
-    const storedIds = new Set(rows.map((row) => row.id));
+    if (!enabled || !userId) return;
     const now = Date.now();
     let nextRetryAt = Infinity;
-    for (const [id, local] of entries) {
-      if (
-        !local.draft ||
-        local.removed ||
-        local.storing ||
-        local.stored ||
-        local.storeFailed ||
-        local.persisted ||
-        storedIds.has(id)
-      )
-        continue;
-      if (local.nextStoreAt !== undefined && local.nextStoreAt > now) {
-        nextRetryAt = Math.min(nextRetryAt, local.nextStoreAt);
-        continue;
-      }
-      const queueKey = key;
-      const attempts = (local.storeAttempts ?? 0) + 1;
-      patchEntry(queueKey, id, { storing: true, storeAttempts: attempts });
-      void enqueue({
-        chatId: chatId!,
-        id,
-        text: local.draft.text,
-        ...(local.draft.files?.length
-          ? { files: sanitizeQueuedFiles(local.draft.files) }
-          : {}),
-        sentAt: local.draft.timestamp,
-      })
-        .then(() => {
-          patchEntry(queueKey, id, { storing: false, stored: true });
-          // Removed while it was being stored: remove the stored copy too.
-          if (entriesFor(queueKey).get(id)?.removed)
-            void remove({ chatId: chatId!, id }).catch(() => undefined);
+    for (const [queueKey, queueEntries] of entriesRef.current) {
+      const [ownerId, draftChatId] = JSON.parse(queueKey) as [
+        string | null,
+        string | null,
+      ];
+      if (ownerId !== userId || !draftChatId) continue;
+      const isOpenChat = queueKey === key;
+      // The open chat's snapshot shows which drafts are already stored.
+      if (isOpenChat && rows === undefined) continue;
+      const storedIds = new Set(isOpenChat ? rows!.map((row) => row.id) : []);
+      for (const [id, local] of queueEntries) {
+        if (
+          !local.draft ||
+          local.removed ||
+          local.storing ||
+          local.stored ||
+          local.storeFailed ||
+          local.persisted ||
+          storedIds.has(id)
+        )
+          continue;
+        if (local.nextStoreAt !== undefined && local.nextStoreAt > now) {
+          nextRetryAt = Math.min(nextRetryAt, local.nextStoreAt);
+          continue;
+        }
+        const attempts = (local.storeAttempts ?? 0) + 1;
+        patchEntry(queueKey, id, { storing: true, storeAttempts: attempts });
+        void enqueue({
+          chatId: draftChatId,
+          id,
+          text: local.draft.text,
+          ...(local.draft.files?.length
+            ? { files: sanitizeQueuedFiles(local.draft.files) }
+            : {}),
+          sentAt: local.draft.timestamp,
         })
-        .catch((error: unknown) => {
-          const code =
-            error instanceof ConvexError
-              ? (error.data as { code?: unknown })?.code
-              : undefined;
-          // The draft still sends from this tab; storing only adds recovery.
-          const giveUp =
-            code !== "ACCESS_DENIED" || attempts >= MAX_STORE_ATTEMPTS;
-          patchEntry(queueKey, id, {
-            storing: false,
-            ...(giveUp
-              ? { storeFailed: true }
-              : { nextStoreAt: Date.now() + STORE_RETRY_MS }),
+          .then(() => {
+            patchEntry(queueKey, id, { storing: false, stored: true });
+            // Removed while it was being stored: remove the stored copy too.
+            if (entriesFor(queueKey).get(id)?.removed)
+              void remove({ chatId: draftChatId, id })
+                .then(() => patchEntry(queueKey, id, null))
+                .catch((error: unknown) => {
+                  // Show it again rather than hide a row the server kept.
+                  patchEntry(queueKey, id, { removed: false });
+                  toast.error(
+                    errorMessage(error) ?? "Could not remove the message.",
+                  );
+                });
+          })
+          .catch((error: unknown) => {
+            const code =
+              error instanceof ConvexError
+                ? (error.data as { code?: unknown })?.code
+                : undefined;
+            // The draft still sends from this tab; storing only adds recovery.
+            const giveUp =
+              code !== "ACCESS_DENIED" || attempts >= MAX_STORE_ATTEMPTS;
+            patchEntry(queueKey, id, {
+              storing: false,
+              ...(giveUp
+                ? { storeFailed: true }
+                : { nextStoreAt: Date.now() + STORE_RETRY_MS }),
+            });
           });
-        });
+      }
     }
     if (nextRetryAt === Infinity) return;
     const timer = setTimeout(
@@ -248,12 +267,11 @@ export function useServerMessageQueue({
     );
     return () => clearTimeout(timer);
   }, [
-    active,
+    enabled,
+    userId,
     rows,
-    entries,
     version,
     key,
-    chatId,
     enqueue,
     remove,
     entriesFor,

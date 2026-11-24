@@ -221,4 +221,44 @@ describe("useServerMessageQueue", () => {
       ),
     );
   });
+
+  it("stores messages adopted for a chat that is not open", async () => {
+    const { result } = render();
+    act(() =>
+      result.current.adoptLocalMessages("chat-2", [
+        { id: "other-chat", text: "For another chat", timestamp: 7 },
+      ]),
+    );
+    await waitFor(() =>
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat-2", id: "other-chat" }),
+      ),
+    );
+    // It belongs to that chat's queue, not the open one.
+    expect(result.current.messageQueue).toEqual([]);
+  });
+
+  it("shows a message again when removing its stored copy fails", async () => {
+    let finishStore!: () => void;
+    mockEnqueue.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishStore = () => resolve(null);
+        }),
+    );
+    mockRemove.mockRejectedValueOnce(new Error("offline"));
+    const { result } = render();
+    let id: string | undefined;
+    act(() => {
+      id = result.current.queueMessage("Remove me while storing");
+    });
+    await waitFor(() => expect(mockEnqueue).toHaveBeenCalled());
+    act(() => result.current.removeQueuedMessage(id!));
+    expect(result.current.messageQueue).toEqual([]);
+    await act(async () => finishStore());
+    await waitFor(() => expect(mockRemove).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(result.current.messageQueue.map((item) => item.id)).toEqual([id]),
+    );
+  });
 });
