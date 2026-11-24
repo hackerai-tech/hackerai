@@ -1,5 +1,9 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { UsageTracker } from "../usage-tracker";
+import { UsageTracker, createUsageModelSelection } from "../usage-tracker";
+import {
+  observeServedModelFallback,
+  recordRequestedModelFallback,
+} from "@/convex/lib/usageModelSelection";
 import { BudgetMonitor } from "@/lib/chat/budget-monitor";
 import {
   billableCostDollarsToPoints,
@@ -988,7 +992,120 @@ describe("UsageTracker", () => {
         modelCostDollars: 0.01,
         nonModelCostDollars: 0,
         costSource: "provider",
+        // An absent override is a normal Auto write without a fallback.
+        modelSelection: { selected: "auto", initial_model: "model-config" },
       });
+    });
+
+    it("stores the accepted mode and the runner's fallback without changing the billed model", () => {
+      const localMockLog = jest.fn();
+      let IsolatedTracker: typeof UsageTracker;
+      jest.isolateModules(() => {
+        jest.doMock("@/lib/db/actions", () => ({
+          logUsageRecord: localMockLog,
+        }));
+        IsolatedTracker = require("../usage-tracker").UsageTracker;
+      });
+      const t = new IsolatedTracker!();
+      t.accumulateStep({ inputTokens: 10, outputTokens: 5, raw: { cost: 1 } });
+
+      t.log({
+        userId: "user-123",
+        selectedModel: "agent-model-max",
+        selectedModelOverride: "hackerai-max",
+        responseModel: "x-ai/grok-4.1-fast",
+        configuredModelId: "x-ai/grok-4.6",
+        rateLimitInfo: { remaining: 0, resetTime: new Date(), limit: 0 },
+        modelFallback: {
+          model: "x-ai/grok-4.1-fast",
+          awaitingServedModel: false,
+        },
+      });
+
+      expect(localMockLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "x-ai/grok-4.1-fast",
+          modelSelection: {
+            selected: "hackerai-max",
+            initial_model: "x-ai/grok-4.6",
+            fallback_model: "x-ai/grok-4.1-fast",
+          },
+        }),
+      );
+    });
+
+    it("omits a selection it cannot validate instead of guessing one", () => {
+      expect(
+        createUsageModelSelection({
+          selectedModelOverride: "model-custom",
+          initialModel: "model-config",
+        }),
+      ).toBeUndefined();
+      expect(
+        createUsageModelSelection({
+          selectedModelOverride: null,
+          initialModel: "model-config",
+        }),
+      ).toEqual({ selected: "auto", initial_model: "model-config" });
+    });
+
+    it("does not report normal Auto routing to another model as a fallback", () => {
+      let observed = observeServedModelFallback(undefined, {
+        servedModel: "deepseek/deepseek-v4-flash",
+        confirmedProviderFallback: false,
+      });
+      observed = observeServedModelFallback(observed, {
+        servedModel: "z-ai/glm-5.3",
+        confirmedProviderFallback: false,
+      });
+
+      expect(observed).toBeUndefined();
+      expect(
+        createUsageModelSelection({
+          selectedModelOverride: undefined,
+          initialModel: "deepseek/deepseek-v4-flash",
+          fallbackModel: observed?.model,
+        }),
+      ).not.toHaveProperty("fallback_model");
+    });
+
+    it("records an explicit alternate request and refines it with the served model", () => {
+      const requested = "x-ai/grok-4.1-fast";
+      let observed = recordRequestedModelFallback(undefined, requested);
+      expect(observed).toEqual({ model: requested, awaitingServedModel: true });
+
+      // A step with no served ID keeps the requested route.
+      observed = observeServedModelFallback(observed, {
+        confirmedProviderFallback: false,
+      });
+      expect(observed?.model).toBe(requested);
+
+      observed = observeServedModelFallback(observed, {
+        servedModel: "x-ai/grok-4.1-fast-20261101",
+        confirmedProviderFallback: false,
+      });
+      // Later normal steps on the fallback route keep the record.
+      observed = observeServedModelFallback(observed, {
+        servedModel: "x-ai/grok-4.1-fast-20261102",
+        confirmedProviderFallback: false,
+      });
+      expect(observed).toEqual({
+        model: "x-ai/grok-4.1-fast-20261101",
+        awaitingServedModel: false,
+      });
+    });
+
+    it("keeps a confirmed provider fallback after later primary steps", () => {
+      let observed = observeServedModelFallback(undefined, {
+        servedModel: "x-ai/grok-4.1-fast",
+        confirmedProviderFallback: true,
+      });
+      observed = observeServedModelFallback(observed, {
+        servedModel: "x-ai/grok-4.6",
+        confirmedProviderFallback: false,
+      });
+
+      expect(observed?.model).toBe("x-ai/grok-4.1-fast");
     });
 
     it("resolves only after the ledger write and returns its failure status", async () => {

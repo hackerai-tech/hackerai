@@ -288,6 +288,7 @@ import {
 import {
   createAgentStream,
   initAgentStreamState,
+  recordExplicitModelFallback,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -3855,6 +3856,7 @@ export const agentLongTask = task({
                     configuredModelId,
                     accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
+                    modelFallback: state.usageModelFallback,
                   });
                   const cutOff = state.stoppedDueToBudgetExhaustion;
                   capturePaidDailyFreeAllowanceServerEvent({
@@ -3968,6 +3970,7 @@ export const agentLongTask = task({
                     accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                     billingBreakdown,
+                    modelFallback: state.usageModelFallback,
                   });
                 }
                 runReporting.captureCost(captureUsageCost, {
@@ -4940,6 +4943,12 @@ export const agentLongTask = task({
                   selectedModel,
                   apiRetryModel,
                 );
+                if (retryUsedFallbackModel) {
+                  recordExplicitModelFallback(
+                    state,
+                    trackedProvider.languageModel(apiRetryModel).modelId,
+                  );
+                }
                 streamError = undefined;
                 resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
@@ -5687,6 +5696,11 @@ export const agentLongTask = task({
                           isAborted = true;
                           break primaryProviderRecovery;
                         }
+                        if (
+                          retryUsesDifferentModel(selectedModel, retryModel)
+                        ) {
+                          recordExplicitModelFallback(state, retryModelSlug);
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -5890,6 +5904,14 @@ export const agentLongTask = task({
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;
+                                    // Includes same-model Grok recovery on
+                                    // another provider.
+                                    recordExplicitModelFallback(
+                                      state,
+                                      trackedProvider.languageModel(
+                                        finalRetryModel,
+                                      ).modelId,
+                                    );
                                     state.finalMessages = nextRecoveryMessages!;
                                     const finalRetryStartTime = Date.now();
                                     const preservedFileIds =

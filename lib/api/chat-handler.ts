@@ -233,6 +233,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  recordExplicitModelFallback,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -1463,6 +1464,7 @@ export const createChatHandler = () => {
                         configuredModelId,
                         accountingModel: usageRecordArgs.accountingModel,
                         rateLimitInfo,
+                        modelFallback: state.usageModelFallback,
                       });
                       const cutOff = state.stoppedDueToBudgetExhaustion;
                       capturePaidDailyFreeAllowanceServerEvent({
@@ -1579,6 +1581,7 @@ export const createChatHandler = () => {
                         accountingModel: usageRecordArgs.accountingModel,
                         rateLimitInfo,
                         billingBreakdown,
+                        modelFallback: state.usageModelFallback,
                       });
                     }
                     captureUsageCost({
@@ -1977,6 +1980,12 @@ export const createChatHandler = () => {
                   selectedModel,
                   apiRetryModel,
                 );
+                if (retryUsedFallbackModel) {
+                  recordExplicitModelFallback(
+                    state,
+                    trackedProvider.languageModel(apiRetryModel).modelId,
+                  );
+                }
                 resetServedModelTelemetryForRetry(state);
                 state.lastStepInputTokens = 0;
                 state.stoppedDueToStepLimit = false;
@@ -2535,6 +2544,11 @@ export const createChatHandler = () => {
                         if (userStopSignal.signal.aborted) {
                           isAborted = true;
                           break primaryProviderRecovery;
+                        }
+                        if (
+                          retryUsesDifferentModel(selectedModel, retryModel)
+                        ) {
+                          recordExplicitModelFallback(state, retryModelSlug);
                         }
                         const retryResult = await createStream(
                           retryModel,

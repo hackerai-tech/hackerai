@@ -7,6 +7,10 @@ import {
   LEGACY_USAGE_COST_MULTIPLIER,
   utcDay,
 } from "./unitEconomicsLib";
+import {
+  getUsageModelLabel,
+  usageModelSelectionValidator,
+} from "./lib/usageModelSelection";
 
 const typeValidator = v.union(
   v.literal("included"),
@@ -80,6 +84,7 @@ export const logUsage = mutation({
         v.literal("raw_token_estimate"),
       ),
     ),
+    model_selection: v.optional(usageModelSelectionValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -192,6 +197,7 @@ export const logUsage = mutation({
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
+      model_selection: args.model_selection,
     });
 
     const commonDelta = {
@@ -312,7 +318,18 @@ export const getUserUsageLogs = query({
         _id: log._id,
         _creationTime: log._creationTime,
         assistant_message_id: log.assistant_message_id,
+        // `model` stays the recorded route for CSV export compatibility.
         model: cleanModelName(log.model),
+        model_label: getUsageModelLabel(
+          cleanModelName(log.model),
+          log.model_selection,
+        ),
+        initial_model: log.model_selection?.fallback_model
+          ? cleanModelName(log.model_selection.initial_model)
+          : undefined,
+        fallback_model: log.model_selection?.fallback_model
+          ? cleanModelName(log.model_selection.fallback_model)
+          : undefined,
         type: log.type as "included" | "extra" | "mixed",
         input_tokens: log.input_tokens,
         output_tokens: log.output_tokens,
