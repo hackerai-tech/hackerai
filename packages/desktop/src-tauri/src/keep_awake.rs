@@ -278,6 +278,22 @@ impl KeepAwake {
         }
     }
 
+    /// A handle saving to `preference_dir` whose lock does nothing.
+    #[cfg(test)]
+    pub(crate) fn start_for_test(preference_dir: PathBuf) -> Self {
+        struct NoLock;
+        impl SleepLock for NoLock {
+            fn acquire(&mut self) -> Result<(), &'static str> {
+                Ok(())
+            }
+            fn release(&mut self) {}
+        }
+        let mut keep_awake = Self::start_with(|| NoLock, IDLE_GRACE);
+        keep_awake.apply(read_preference(&preference_dir));
+        keep_awake.preference_dir = Some(preference_dir);
+        keep_awake
+    }
+
     pub(crate) fn enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
     }
@@ -352,8 +368,8 @@ fn write_preference(directory: &Path, enabled: bool) -> Result<(), &'static str>
 const UNAVAILABLE: &str = "Keep awake is unavailable for this page";
 
 #[tauri::command]
-pub(crate) fn get_keep_awake_enabled(
-    webview: tauri::Webview,
+pub(crate) fn get_keep_awake_enabled<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
     keep_awake: tauri::State<'_, KeepAwake>,
 ) -> Result<bool, String> {
     if !crate::notifications::is_trusted_webview(&webview) {
@@ -364,8 +380,8 @@ pub(crate) fn get_keep_awake_enabled(
 
 /// Returns the value now in effect.
 #[tauri::command]
-pub(crate) fn set_keep_awake_enabled(
-    webview: tauri::Webview,
+pub(crate) fn set_keep_awake_enabled<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
     keep_awake: tauri::State<'_, KeepAwake>,
     enabled: bool,
 ) -> Result<bool, String> {
