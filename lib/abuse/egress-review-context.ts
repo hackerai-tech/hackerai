@@ -79,8 +79,8 @@ const runPrefix = (kind: AcquisitionRunKind, chatId: string, runId: string) =>
  * never removed, so each removal leaves a witness for every window it
  * covered, and the run keeps at most a few records per look-back.
  *
- * Only members whose time equals their score are considered; anything else
- * stays and keeps the set incomplete for the reader. Retention trimming runs
+ * Only members whose time equals a safe integer score are considered; anything
+ * else stays and keeps the set incomplete for the reader. Retention trimming runs
  * first, and the rank trim still keeps one record past the bound so the
  * reader can see that older records were dropped.
  */
@@ -92,8 +92,11 @@ if not redis.call('ZSCORE', key, member) then
   local entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
   local latest, latestAt, previousAt
   for i = 1, #entries, 2 do
-    if entries[i] == prefix .. entries[i + 1] then
-      previousAt, latest, latestAt = latestAt, entries[i], tonumber(entries[i + 1])
+    local scoreText = entries[i + 1]
+    local score = tonumber(scoreText)
+    if score and scoreText:match('^-?%d+$') and math.abs(score) <= 9007199254740991
+      and entries[i] == prefix .. scoreText then
+      previousAt, latest, latestAt = latestAt, entries[i], score
     end
   end
   if previousAt and latestAt < now and now - previousAt <= tonumber(ARGV[4]) then

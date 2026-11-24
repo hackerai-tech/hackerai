@@ -445,14 +445,14 @@ export async function runEgressAbuseReview(
     : result;
 }
 
-/** Settled minutes of the case window, read only to compare with a cooldown. */
+/** The strongest verified minute and whether the settled window has gaps. */
 async function windowPeak(
   redis: NonNullable<ReturnType<typeof createRedisClient>>,
   region: EgressAbuseReviewPayload["region"],
   owner: string,
   windowStart: number,
   latestSettled: number,
-): Promise<{ minute: number; connections: number } | null> {
+) {
   const last = Math.min(windowStart + REVIEW_WINDOW_MINUTES - 1, latestSettled);
   const minutes = Array.from(
     { length: Math.max(0, last - windowStart + 1) },
@@ -460,22 +460,24 @@ async function windowPeak(
   );
   const records = await readTelemetryMinutes(redis, region, minutes);
   let peak = { minute: windowStart, connections: 0 };
+  let complete = records.length === minutes.length;
   for (const [index, record] of records.entries()) {
-    // A missing or lossy minute could hide an escalation.
     if (
       !record ||
       !record.complete ||
       record.droppedEvents ||
       record.droppedBatches
-    )
-      return null;
+    ) {
+      complete = false;
+      continue;
+    }
     const connections = record.counts
       .filter(([ref]) => ref === owner)
       .reduce((sum, [, , n]) => sum + n, 0);
     if (connections > peak.connections)
       peak = { minute: minutes[index], connections };
   }
-  return peak;
+  return { peak, complete };
 }
 
 async function reviewBurst(
@@ -661,29 +663,23 @@ async function reviewBurst(
   }
   if (cooldown && cooldown.digest !== digest) {
     const latestSettled = Math.floor(now / 60_000) - SETTLE_MINUTES;
-    const peak = await windowPeak(
+    const window = await windowPeak(
       redis,
       region,
       owner,
       windowStart,
       latestSettled,
     ).catch(() => null);
-    if (peak === null) diagnostic.cooldown = "unavailable";
-    else if (
-      cooldownSuppresses(
+    if (
+      window &&
+      !cooldownSuppresses(
         cooldown,
-        Math.max(peak.connections, observation.connections),
+        Math.max(window.peak.connections, observation.connections),
         threshold,
       )
     ) {
-      if (latestSettled >= windowStart + REVIEW_WINDOW_MINUTES - 1)
-        return { status: "skipped", reason: "cooldown_active" };
-      // Once dispatched, this case has consumed its queue idempotency key.
-      // Keep the review alive so a later escalation can still be evaluated.
-      if (!finalAttempt) throw new EgressReviewPendingError();
-      diagnostic.cooldown = "window_unsettled";
-    } else {
       diagnostic.cooldown = "bypassed";
+      const { peak } = window;
       if (peak.connections > observation.connections) {
         // Start from the settled minute that escalated. Its telemetry and
         // attribution are verified independently, and the case key is the same.
@@ -694,6 +690,16 @@ async function reviewBurst(
           false,
         );
       }
+    } else if (!window?.complete) {
+      // A missing or lossy minute could hide an escalation.
+      diagnostic.cooldown = "unavailable";
+    } else {
+      if (latestSettled >= windowStart + REVIEW_WINDOW_MINUTES - 1)
+        return { status: "skipped", reason: "cooldown_active" };
+      // Once dispatched, this case has consumed its queue idempotency key.
+      // Keep the review alive so a later escalation can still be evaluated.
+      if (!finalAttempt) throw new EgressReviewPendingError();
+      diagnostic.cooldown = "window_unsettled";
     }
   }
 

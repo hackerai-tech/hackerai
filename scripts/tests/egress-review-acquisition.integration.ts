@@ -222,3 +222,16 @@ it("leaves an unreadable member of the same run in place", async () => {
     incomplete: "invalid",
   });
 });
+
+it("does not coalesce an unreadable fractional time with a matching score", async () => {
+  acquire("run_a", T0);
+  const fractionalTime = T0 + 0.5;
+  const member = `p|chat_run_a|run_a|${fractionalTime}`;
+  mockCommand("ZADD", linkKey(), fractionalTime, member);
+  acquire("run_a", T0 + MINUTE);
+  expect(await read()).toMatchObject({
+    complete: false,
+    incomplete: "invalid",
+  });
+  expect(mockCommand("ZSCORE", linkKey(), member)).toBe(fractionalTime);
+});

@@ -125,13 +125,14 @@ async function upload(
   counts: Array<[typeof first, number]>,
   minute = MINUTE,
   region: "us" | "eu" = "us",
+  droppedEvents = 0,
 ) {
   const batch = telemetryBatchSchema.parse({
     version: 1,
     region,
     minute,
     complete: true,
-    droppedEvents: 0,
+    droppedEvents,
     droppedBatches: 0,
     overflowConnections: 0,
     counts: counts.map(([vector, connections]) => ({
@@ -1403,6 +1404,26 @@ describe("account cooldown after a corroborated legitimate review", () => {
       observation: { connections: 2_000 },
     });
   });
+
+  it.each(["missing", "lossy"])(
+    "reviews the strongest verified spike with an earlier %s minute",
+    async (gap) => {
+      await clear();
+      await upload([[first, 900]], NEXT);
+      if (gap === "lossy") await upload([[first, 3_000]], NEXT + 1, "us", 1);
+      await upload([[first, 2_000]], NEXT + 2);
+      await expect(run(NEXT)).resolves.toMatchObject({
+        status: "completed",
+        diagnostic: { cooldown: "bypassed" },
+      });
+      const row = convex.tables.abuse_cases[0];
+      expect(decryptAbuseEvidence(row.reference, row.ciphertext)).toMatchObject(
+        {
+          observation: { connections: 2_000 },
+        },
+      );
+    },
+  );
 
   it("does not suppress a retry of the review that granted it", async () => {
     await clear();
