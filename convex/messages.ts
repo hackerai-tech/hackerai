@@ -731,14 +731,6 @@ export const saveMessage = mutation({
       )
         return "stale_run" as const;
     }
-    // A queued message is sent with its queue ID as the user message ID.
-    // Retire the row with this save, so no tab or device sends it again.
-    if (args.role === "user")
-      await retireQueuedMessage(ctx, {
-        id: args.id,
-        chatId: args.chatId,
-        userId: args.userId,
-      });
     let failureStage = "start";
     let messageOwnershipMismatch: "chat" | "user" | "chat_and_user" | undefined;
     let chatForInsert: Doc<"chats"> | null = null;
@@ -989,6 +981,14 @@ export const saveMessage = mutation({
             });
         }
 
+        // A queued message is sent with its queue ID as the user message ID.
+        // Its user message exists, so no tab or device may send it again.
+        if (existingMessage.role === "user")
+          await retireQueuedMessage(ctx, {
+            id: args.id,
+            chatId: args.chatId,
+            userId: args.userId,
+          });
         return null;
       } else {
         // updateOnly: only patch existing messages, don't create new ones.
@@ -1109,6 +1109,13 @@ export const saveMessage = mutation({
           chatId: args.chatId,
           userId: args.userId,
           parts: partsForSave,
+        });
+      // Retired with the insert that saves its user message (see above).
+      if (args.role === "user")
+        await retireQueuedMessage(ctx, {
+          id: args.id,
+          chatId: args.chatId,
+          userId: args.userId,
         });
 
       // Give an admitted legacy chat stable history ownership so its history

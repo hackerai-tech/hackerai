@@ -41,7 +41,7 @@ jest.mock("convex/values", () => ({
 }));
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
 
-const { useServerMessageQueue } =
+const { useServerMessageQueue, markQueuedHere } =
   require("../useServerMessageQueue") as typeof import("../useServerMessageQueue");
 const { ConvexError } = require("convex/values") as {
   ConvexError: new (data: { code: string; message: string }) => Error;
@@ -180,5 +180,45 @@ describe("useServerMessageQueue", () => {
     mockRows = [{ id: "a", text: "Old", sentAt: 1, fromSteer: false }];
     rerender();
     expect(result.current.messageQueue[0].text).toBe("New");
+  });
+
+  it("removes a stored message on the server even before a snapshot lists it", async () => {
+    const { result } = render();
+    let id: string | undefined;
+    act(() => {
+      id = result.current.queueMessage("Remove me before the snapshot");
+    });
+    await waitFor(() => expect(mockEnqueue).toHaveBeenCalled());
+    await act(async () => {});
+    act(() => result.current.removeQueuedMessage(id!));
+    expect(mockRemove).toHaveBeenCalledWith({ chatId: "chat-1", id });
+    // The stored row arrives in a snapshot taken before the removal.
+    expect(result.current.messageQueue).toEqual([]);
+  });
+
+  it("shows a held row as sendable once this tab marks it as its own", () => {
+    mockRows = [{ id: "steer-x", text: "Unread", sentAt: 1, fromSteer: true }];
+    const { result } = render();
+    expect(result.current.messageQueue[0].held).toBe(true);
+    act(() => markQueuedHere("steer-x"));
+    expect(result.current.messageQueue[0].held).toBeUndefined();
+  });
+
+  it("keeps messages queued before the rollout resolved, with their IDs", async () => {
+    const { result } = render();
+    act(() =>
+      result.current.adoptLocalMessages("chat-1", [
+        { id: "early", text: "Queued while loading", timestamp: 5 },
+      ]),
+    );
+    expect(result.current.messageQueue).toEqual([
+      expect.objectContaining({ id: "early", text: "Queued while loading" }),
+    ]);
+    expect(result.current.messageQueue[0].held).toBeUndefined();
+    await waitFor(() =>
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "early", sentAt: 5 }),
+      ),
+    );
   });
 });

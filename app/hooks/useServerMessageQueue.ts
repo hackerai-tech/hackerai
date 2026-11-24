@@ -18,10 +18,14 @@ import {
 // the server queue (another tab or device, or before a reload) waits for the
 // user, so an old message is never sent behind their back.
 const queuedHere = new Set<string>();
+const queuedHereListeners = new Set<() => void>();
 const STORE_RETRY_MS = 3_000;
 const MAX_STORE_ATTEMPTS = 40;
 export const markQueuedHere = (id: string) => {
+  if (queuedHere.has(id)) return;
   queuedHere.add(id);
+  // A row already on screen as held must be shown as sendable again.
+  for (const listener of queuedHereListeners) listener();
 };
 export const isQueuedHere = (id: string) => queuedHere.has(id);
 
@@ -99,6 +103,14 @@ export function useServerMessageQueue({
     },
     [entriesFor],
   );
+
+  useEffect(() => {
+    const listener = () => refresh((current) => current + 1);
+    queuedHereListeners.add(listener);
+    return () => {
+      queuedHereListeners.delete(listener);
+    };
+  }, []);
 
   const entries = entriesFor(key);
   const messageQueue = useMemo<QueuedMessage[]>(() => {
@@ -291,19 +303,25 @@ export function useServerMessageQueue({
   const removeQueuedMessage = useCallback(
     (id: string) => {
       const local = entries.get(id);
+      const unstored = !!local?.draft && !local.persisted && !local.stored;
       // Never stored and not being stored: nothing to remove on the server.
-      if (local?.draft && !local.persisted && !local.storing) {
+      if (unstored && !local?.storing) {
         patchEntry(key, id, null);
         return;
       }
       patchEntry(key, id, { removed: true });
-      if (!chatId || (local?.draft && !local.persisted)) return;
-      void remove({ chatId, id }).catch((error: unknown) => {
-        patchEntry(key, id, { removed: false });
-        toast.error(errorMessage(error) ?? "Could not remove the message.");
-      });
+      // Still being stored: the store's completion removes the stored copy.
+      if (!chatId || unstored) return;
+      void remove({ chatId, id })
+        .then(() => {
+          if (entriesFor(key).get(id)?.removed) patchEntry(key, id, null);
+        })
+        .catch((error: unknown) => {
+          patchEntry(key, id, { removed: false });
+          toast.error(errorMessage(error) ?? "Could not remove the message.");
+        });
     },
-    [chatId, entries, key, patchEntry, remove],
+    [chatId, entries, entriesFor, key, patchEntry, remove],
   );
 
   const setQueuedMessageDelivery = useCallback(
@@ -319,7 +337,40 @@ export function useServerMessageQueue({
     for (const message of messageQueue) removeQueuedMessage(message.id);
   }, [messageQueue, removeQueuedMessage]);
 
+  /**
+   * Takes over messages this tab queued in its session-only queue before the
+   * steering rollout resolved, keeping their IDs and delivery state.
+   */
+  const adoptLocalMessages = useCallback(
+    (adoptChatId: string, messages: QueuedMessage[]) => {
+      if (!userId) return;
+      const queueKey = JSON.stringify([userId, adoptChatId]);
+      const adopted = entriesFor(queueKey);
+      for (const message of messages) {
+        if (adopted.has(message.id)) continue;
+        markQueuedHere(message.id);
+        adopted.set(message.id, {
+          draft: {
+            text: message.text,
+            files: message.files,
+            timestamp: message.timestamp,
+          },
+          ...(message.files?.length ? { files: message.files } : {}),
+          ...(message.deliveryStatus
+            ? {
+                deliveryStatus: message.deliveryStatus,
+                firstAttemptAt: message.firstAttemptAt,
+              }
+            : {}),
+        });
+      }
+      refresh((current) => current + 1);
+    },
+    [entriesFor, userId],
+  );
+
   return {
+    adoptLocalMessages,
     messageQueue,
     queueMessage,
     updateQueuedMessage,

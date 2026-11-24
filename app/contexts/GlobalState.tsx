@@ -1239,6 +1239,24 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     chatId: queueChatId,
     enabled: agentSteeringEnabled,
   });
+  // Messages queued while the rollout was still loading move to the server
+  // queue once steering turns on, so none are dropped by the switch.
+  const adoptLocalMessages = serverQueue.adoptLocalMessages;
+  useEffect(() => {
+    if (!agentSteeringEnabled || !user?.id) return;
+    let moved = false;
+    for (const [queueKey, queue] of queuesRef.current) {
+      const [ownerId, chatId] = JSON.parse(queueKey) as [
+        string | null,
+        string | null,
+      ];
+      if (ownerId !== user.id || !chatId) continue;
+      adoptLocalMessages(chatId, queue);
+      queuesRef.current.delete(queueKey);
+      moved = true;
+    }
+    if (moved) refreshQueues((version) => version + 1);
+  }, [adoptLocalMessages, agentSteeringEnabled, user?.id]);
   const localQueue = {
     messageQueue: localMessageQueue,
     queueMessage: localQueueMessage,
