@@ -94,10 +94,12 @@ const agentApprovalClientSrc = fs.readFileSync(
   "utf8",
 );
 
-const routeSrc = fs.readFileSync(
-  path.resolve(__dirname, "../agent-trigger-route.ts"),
-  "utf8",
-);
+// The route's run-start helpers live in agent-run-start.ts, shared with the
+// server-side queued follow-up dispatch.
+const routeSrc = [
+  fs.readFileSync(path.resolve(__dirname, "../agent-trigger-route.ts"), "utf8"),
+  fs.readFileSync(path.resolve(__dirname, "../agent-run-start.ts"), "utf8"),
+].join("\n");
 
 const agentRouteSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/api/agent/route.ts"),
