@@ -19,7 +19,10 @@ export type AgentFollowUpAction =
   | "queue_dispatch_failed";
 
 export type QueueDispatchSkipReason =
-  "not_queued" | "entitlement_changed" | "chat_unavailable";
+  | "not_queued"
+  | "settings_changed"
+  | "entitlement_changed"
+  | "chat_unavailable";
 
 type FollowUpContext = {
   userId: string;

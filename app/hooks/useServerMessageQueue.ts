@@ -12,6 +12,7 @@ import {
   QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
   sanitizeQueuedFiles,
+  type QueuedMessageSettings,
 } from "@/lib/chat/queued-message";
 
 // Messages this page session may send without the user's action: the ones it
@@ -65,14 +66,20 @@ const errorMessage = (error: unknown) =>
  * it survives reloads and appears on every device. This tab still delivers
  * the messages it queued; the user sends anything else explicitly.
  */
+const SETTINGS_RETRY_BASE_MS = 1_000;
+const SETTINGS_RETRY_MAX_MS = 30_000;
+
 export function useServerMessageQueue({
   userId,
   chatId,
   enabled,
+  settings,
 }: {
   userId: string | undefined;
   chatId: string | null;
   enabled: boolean;
+  /** The user's current Agent settings; see QueuedMessageSettings. */
+  settings?: QueuedMessageSettings;
 }) {
   const active = enabled && !!userId && !!chatId;
   const rows = useQuery(
@@ -82,6 +89,58 @@ export function useServerMessageQueue({
   const enqueue = useMutation(api.queuedMessages.enqueue);
   const update = useMutation(api.queuedMessages.update);
   const remove = useMutation(api.queuedMessages.remove);
+  const applySettings = useMutation(api.queuedMessages.applySettings);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  // Messages already waiting follow a settings change, so a server send never
+  // uses a permission mode or sandbox the user has since switched away from.
+  // Mounting sends nothing: another device's choice stays until this one
+  // queues, steers or changes a setting. A failed write is retried until it
+  // lands or a newer choice replaces it. A retry never grants full access: a
+  // late one could replace a stricter choice saved on another device since.
+  // It holds unattended sends instead, so queued messages wait for the
+  // browser, which sends them with its current settings.
+  const settingsKey = settings ? JSON.stringify(settings) : "";
+  const requestedSettingsKey = useRef<string | null>(settingsKey);
+  const heldSettingsKey = useRef<string | null>(null);
+  const settingsRequest = useRef(0);
+  const settingsFailures = useRef(0);
+  const [settingsRetry, setSettingsRetry] = useState(0);
+  useEffect(() => {
+    if (!enabled || !userId || !settings) return;
+    if (requestedSettingsKey.current === settingsKey) return;
+    requestedSettingsKey.current = settingsKey;
+    // A hold covers only retries of the choice that failed; choosing these
+    // settings again later is a new choice.
+    const held = heldSettingsKey.current === settingsKey;
+    heldSettingsKey.current = null;
+    const sent = held
+      ? { ...settings, agentPermissionMode: "ask_approval" as const }
+      : settings;
+    // Only the latest request's outcome counts: an older one may share these
+    // settings yet fail after a newer request for them was sent.
+    const request = ++settingsRequest.current;
+    applySettings({ settings: sent }).then(
+      () => {
+        if (settingsRequest.current === request) settingsFailures.current = 0;
+      },
+      (error: unknown) => {
+        console.warn("Could not update queued message settings", error);
+        if (settingsRequest.current !== request) return;
+        if (held || sent.agentPermissionMode === "full_access")
+          heldSettingsKey.current = settingsKey;
+        requestedSettingsKey.current = null;
+        const delay = Math.min(
+          SETTINGS_RETRY_MAX_MS,
+          SETTINGS_RETRY_BASE_MS * 2 ** settingsFailures.current++,
+        );
+        setTimeout(() => setSettingsRetry((count) => count + 1), delay);
+      },
+    );
+    // settingsKey captures every field of settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applySettings, enabled, settingsKey, settingsRetry, userId]);
 
   // Local state per account and chat, so async work keeps its original key.
   const key = JSON.stringify([userId ?? null, chatId]);
@@ -259,6 +318,8 @@ export function useServerMessageQueue({
             ? { files: sanitizeQueuedFiles(local.draft.files) }
             : {}),
           sentAt: local.draft.timestamp,
+          // Queuing sets the user's current settings for every waiting message.
+          ...(settingsRef.current ? { settings: settingsRef.current } : {}),
         })
           .then(() => {
             patchEntry(queueKey, id, { storing: false, stored: true });

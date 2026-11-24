@@ -10,6 +10,11 @@ import {
 import { AGENT_STEER_MAX_PENDING } from "../lib/chat/agent-steer";
 import { QUEUED_MESSAGE_MAX_TEXT_LENGTH } from "../lib/chat/queued-message";
 import { validateServiceKey } from "./lib/utils";
+import {
+  getQueuedMessageSettings,
+  queuedMessageSettingsValidator,
+  saveQueuedMessageSettings,
+} from "./lib/queuedMessageSettings";
 import { settleSteer } from "./lib/agentSteers";
 
 const queuedMessageValidator = v.object({
@@ -54,6 +59,7 @@ export const enqueue = mutation({
     text: v.string(),
     files: v.optional(v.array(v.any())),
     sentAt: v.number(),
+    settings: v.optional(queuedMessageSettingsValidator),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -64,7 +70,9 @@ export const enqueue = mutation({
         message: "Unauthorized: Chat not found",
       });
     }
-    await insertQueuedMessage(ctx, { ...args, userId });
+    const { settings, ...message } = args;
+    if (settings) await saveQueuedMessageSettings(ctx, userId, settings);
+    await insertQueuedMessage(ctx, { ...message, userId });
     return null;
   },
 });
@@ -201,6 +209,10 @@ export const claimNextForDispatch = mutation({
       !next ||
       // One send at a time per chat, whichever row it holds.
       queue.some((row) => isDispatchClaimed(row, now)) ||
+      // Only the user's current settings allowing unattended work let it
+      // start without the browser; the browser sends the rest with approvals.
+      (await getQueuedMessageSettings(ctx, args.userId))
+        ?.agentPermissionMode !== "full_access" ||
       // Local Desktop attachments exist only in the browser that queued them.
       next.files?.some(
         (file) => (file as { storage?: unknown })?.storage === "local-desktop",
@@ -236,6 +248,8 @@ export const getClaimedForDispatch = query({
       id: v.string(),
       text: v.string(),
       files: v.optional(v.array(v.any())),
+      /** The user's settings now; null when they never chose any. */
+      settings: v.union(v.null(), queuedMessageSettingsValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -254,6 +268,7 @@ export const getClaimedForDispatch = query({
       id: row.id,
       text: row.text,
       ...(row.files?.length ? { files: row.files } : {}),
+      settings: await getQueuedMessageSettings(ctx, args.userId),
     };
   },
 });
@@ -305,6 +320,21 @@ export const completeDispatch = mutation({
       row.dispatch_run_id === args.completedRunId
     )
       await ctx.db.delete(row._id);
+    return null;
+  },
+});
+
+/**
+ * The user changed their Agent settings (permission mode, sandbox or model).
+ * Every message still waiting for them follows the new choice, as it would if
+ * the browser sent it now.
+ */
+export const applySettings = mutation({
+  args: { settings: queuedMessageSettingsValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    await saveQueuedMessageSettings(ctx, userId, args.settings);
     return null;
   },
 });

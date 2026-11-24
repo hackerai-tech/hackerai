@@ -19,6 +19,11 @@ import {
   getAgentTriggerPriority,
 } from "@/lib/api/agent-run-start";
 import type { AgentLongPayload, agentLongTask } from "./agent-long";
+import type { QueuedMessageSettings } from "@/lib/chat/queued-message";
+import {
+  coerceSelectedModel,
+  normalizeSelectedModelOverrideForSubscription,
+} from "@/types/chat";
 import {
   captureAgentFollowUp,
   type QueueDispatchSkipReason,
@@ -54,6 +59,16 @@ async function withRetries<T>(start: () => Promise<T>): Promise<T> {
 // message for such a run waits for the user instead of starting unattended.
 const runsUnattended = (payload: AgentLongPayload) =>
   (payload.agentPermissionMode ?? "full_access") === "full_access";
+
+// The user's current settings decide, never the finished run's: they may have
+// switched to approvals or another sandbox since. Anything but full access in
+// the same sandbox waits for the browser.
+const allowsUnattendedSend = (
+  settings: QueuedMessageSettings | null | undefined,
+  run: AgentLongPayload,
+): settings is QueuedMessageSettings =>
+  settings?.agentPermissionMode === "full_access" &&
+  (settings.sandboxPreference ?? "e2b") === (run.sandboxPreference ?? "e2b");
 
 /**
  * Starts the next queued follow-up after a run finished, without a browser.
@@ -107,13 +122,16 @@ export const agentQueueDispatch = task({
     // No run exists until Trigger accepts one; until then the row can return
     // to the queue. Once a run exists, retrying could start a second turn.
     let runStarted = false;
+    const readClaimed = () =>
+      getConvexClient().query(api.queuedMessages.getClaimedForDispatch, claim);
     try {
-      const queued = await getConvexClient().query(
-        api.queuedMessages.getClaimedForDispatch,
-        claim,
-      );
+      const claimed = await readClaimed();
       // Sent or removed elsewhere since the claim.
-      if (!queued) return await skip("not_queued");
+      if (!claimed) return await skip("not_queued");
+      if (!allowsUnattendedSend(claimed.settings, run)) {
+        await release();
+        return await skip("settings_changed");
+      }
 
       await assertUserCanMakeCostIncurringRequest(userId);
       const fresh = await getCurrentAgentEntitlementContext({
@@ -144,6 +162,17 @@ export const agentQueueDispatch = task({
       ) {
         await release();
         return await skip("chat_unavailable");
+      }
+
+      // Read again just before sending, so a change made during the checks
+      // above applies. From here the message shows as sent, as it would after
+      // a browser send; a later change applies to the next message.
+      const queued = await readClaimed();
+      if (!queued) return await skip("not_queued");
+      const settings = queued.settings;
+      if (!allowsUnattendedSend(settings, run)) {
+        await release();
+        return await skip("settings_changed");
       }
 
       const userMessage = {
@@ -184,6 +213,12 @@ export const agentQueueDispatch = task({
         goalWorkerVersion: undefined,
         analyticsRequestContext: undefined,
         requestTiming: { routeStartedAt: now, triggerRequestedAt: now },
+        agentPermissionMode: "full_access",
+        autoReviewAssignment: undefined,
+        selectedModel: normalizeSelectedModelOverrideForSubscription(
+          coerceSelectedModel(settings.selectedModel ?? null),
+          run.subscription,
+        ),
       };
       const tags = [
         `user_${userId}`,

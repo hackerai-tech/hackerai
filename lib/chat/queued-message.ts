@@ -1,6 +1,17 @@
 // Relative so Convex functions can import this module too.
 import type { FileMessagePart } from "../../types/file";
 
+/**
+ * The Agent settings a user last chose while queuing, steering or changing
+ * them. A server send of a queued message uses these, never the settings of
+ * the run that just finished.
+ */
+export type QueuedMessageSettings = {
+  agentPermissionMode: "full_access" | "auto_review" | "ask_approval";
+  sandboxPreference?: string;
+  selectedModel?: string;
+};
+
 /** Queued follow-ups per chat, matching the browser queue's limit. */
 export const QUEUED_MESSAGE_MAX_COUNT = 10;
 // Well inside Convex's 1 MiB document limit even for multi-byte text.

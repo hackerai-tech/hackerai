@@ -1,4 +1,5 @@
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
+import { queuedMessageSettingsValidator } from "./lib/queuedMessageSettings";
 import { nextActionsStateValidator } from "./lib/nextActionsState";
 import { usageModelSelectionValidator } from "./lib/usageModelSelection";
 import {
@@ -2393,6 +2394,17 @@ export default defineSchema({
   })
     .index("by_queued_id", ["id"])
     .index("by_chat_and_sent", ["chat_id", "sent_at"]),
+
+  /**
+   * The Agent settings a user last chose while queuing, steering or changing
+   * them. A server send of a queued message runs with these, never with the
+   * finished run's, and only when they allow unattended work.
+   */
+  agent_queue_settings: defineTable({
+    user_id: v.string(),
+    settings: queuedMessageSettingsValidator,
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
 
   processed_webhooks: defineTable({
     event_id: v.string(),

@@ -12,6 +12,7 @@ let mockRows: Row[] | undefined;
 const mockEnqueue = jest.fn<Promise<null>, [Record<string, unknown>]>();
 const mockUpdate = jest.fn<Promise<null>, [Record<string, unknown>]>();
 const mockRemove = jest.fn<Promise<null>, [Record<string, unknown>]>();
+const mockApplySettings = jest.fn<Promise<null>, [Record<string, unknown>]>();
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -20,6 +21,7 @@ jest.mock("@/convex/_generated/api", () => ({
       enqueue: "enqueue",
       update: "update",
       remove: "remove",
+      applySettings: "applySettings",
     },
   },
 }));
@@ -27,11 +29,12 @@ jest.mock("convex/react", () => ({
   useQuery: (_query: string, args: unknown) =>
     args === "skip" ? undefined : mockRows,
   useMutation: (name: string) =>
-    name === "enqueue"
-      ? mockEnqueue
-      : name === "update"
-        ? mockUpdate
-        : mockRemove,
+    ({
+      enqueue: mockEnqueue,
+      update: mockUpdate,
+      remove: mockRemove,
+      applySettings: mockApplySettings,
+    })[name],
 }));
 jest.mock("convex/values", () => ({
   ConvexError: class ConvexError extends Error {
@@ -63,6 +66,7 @@ describe("useServerMessageQueue", () => {
     mockEnqueue.mockReset().mockResolvedValue(null);
     mockUpdate.mockReset().mockResolvedValue(null);
     mockRemove.mockReset().mockResolvedValue(null);
+    mockApplySettings.mockReset().mockResolvedValue(null);
   });
 
   it("stores this tab's message and lets only this tab send it automatically", async () => {
@@ -320,6 +324,212 @@ describe("useServerMessageQueue", () => {
       expect(jest.getTimerCount()).toBe(0);
     } finally {
       jest.restoreAllMocks();
+      jest.useRealTimers();
+    }
+  });
+
+  it("stores a message with the current settings and applies later changes", async () => {
+    const full = { agentPermissionMode: "full_access" as const };
+    const { result, rerender } = renderHook(
+      ({ settings }) =>
+        useServerMessageQueue({
+          userId: "user-1",
+          chatId: "chat-1",
+          enabled: true,
+          settings,
+        }),
+      { initialProps: { settings: full } },
+    );
+    // Mounting applies nothing; only a change does.
+    expect(mockApplySettings).not.toHaveBeenCalled();
+    act(() => {
+      result.current.queueMessage("new task");
+    });
+    await waitFor(() =>
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ settings: full }),
+      ),
+    );
+    const askForApproval = { agentPermissionMode: "ask_approval" as const };
+    rerender({ settings: askForApproval });
+    expect(mockApplySettings).toHaveBeenCalledWith({
+      settings: askForApproval,
+    });
+    rerender({ settings: { ...askForApproval } });
+    expect(mockApplySettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a settings change the server did not save", async () => {
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: { agentPermissionMode: "full_access" as const },
+          },
+        },
+      );
+      const askForApproval = { agentPermissionMode: "ask_approval" as const };
+      rerender({ settings: askForApproval });
+      expect(mockApplySettings).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(2);
+      expect(mockApplySettings).toHaveBeenLastCalledWith({
+        settings: askForApproval,
+      });
+      // Once saved, nothing more is sent.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("retries a failed full-access write only as a hold on unattended sends", async () => {
+    // A late full-access retry could replace a stricter choice saved on
+    // another device. A sandbox change under full access must still land.
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: {
+              agentPermissionMode: "full_access" as
+                "ask_approval" | "full_access",
+              sandboxPreference: "e2b",
+            },
+          },
+        },
+      );
+      rerender({
+        settings: {
+          agentPermissionMode: "full_access",
+          sandboxPreference: "desktop",
+        },
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings.mock.calls.map(([args]) => args)).toEqual([
+        {
+          settings: {
+            agentPermissionMode: "full_access",
+            sandboxPreference: "desktop",
+          },
+        },
+        {
+          settings: {
+            agentPermissionMode: "ask_approval",
+            sandboxPreference: "desktop",
+          },
+        },
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("lets a later choice of the same settings grant full access again", async () => {
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      type Mode = "ask_approval" | "full_access";
+      const desktop = {
+        agentPermissionMode: "full_access" as Mode,
+        sandboxPreference: "desktop",
+      };
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: {
+              agentPermissionMode: "full_access" as Mode,
+              sandboxPreference: "e2b",
+            },
+          },
+        },
+      );
+      rerender({ settings: desktop });
+      // The failed grant is retried as a hold.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+      });
+      rerender({
+        settings: {
+          agentPermissionMode: "ask_approval",
+          sandboxPreference: "desktop",
+        },
+      });
+      rerender({ settings: { ...desktop } });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(mockApplySettings).toHaveBeenLastCalledWith({ settings: desktop });
+      expect(mockApplySettings).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("ignores the late failure of a request a newer one replaced", async () => {
+    jest.useFakeTimers();
+    try {
+      type Mode = "ask_approval" | "full_access";
+      let failFirst: (error: Error) => void = () => undefined;
+      mockApplySettings.mockImplementationOnce(
+        () => new Promise((_, reject) => (failFirst = reject)),
+      );
+      const e2b = {
+        agentPermissionMode: "full_access" as Mode,
+        sandboxPreference: "e2b",
+      };
+      const desktop = { ...e2b, sandboxPreference: "desktop" };
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        { initialProps: { settings: e2b } },
+      );
+      rerender({ settings: desktop }); // pending, fails later
+      rerender({ settings: e2b });
+      rerender({ settings: { ...desktop } }); // succeeds
+      await act(async () => {
+        failFirst(new Error("offline"));
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(3);
+      expect(mockApplySettings).toHaveBeenLastCalledWith({ settings: desktop });
+    } finally {
       jest.useRealTimers();
     }
   });
