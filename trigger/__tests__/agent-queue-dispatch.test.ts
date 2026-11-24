@@ -239,6 +239,22 @@ describe("server dispatch of queued follow-ups", () => {
     );
   }, 15_000);
 
+  it("reports a started send even when retiring its queued row fails", async () => {
+    mockMutation.mockImplementation(async (fn: string) => {
+      if (fn === "complete") throw new Error("convex blip");
+      return null;
+    });
+    await expect(dispatch()).resolves.toEqual(
+      expect.objectContaining({ outcome: "started" }),
+    );
+    expect(callsTo("complete")).toHaveLength(3);
+    expect(releaseCalls()).toHaveLength(0);
+    expect(mockCapture).not.toHaveBeenCalledWith(
+      "queue_dispatch_failed",
+      expect.anything(),
+    );
+  }, 15_000);
+
   it("never returns a message whose run started but could not be attached", async () => {
     mockFinalize.mockRejectedValueOnce(new Error("another run started"));
     await expect(dispatch()).rejects.toThrow("another run started");

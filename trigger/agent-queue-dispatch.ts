@@ -233,8 +233,15 @@ export const agentQueueDispatch = task({
           approvalSessionId: chat.active_agent_approval_session_id ?? null,
         },
       });
-      // Attached: the chat shows this run, so the queued row is done.
-      await complete();
+      // Attached: the chat shows this run, so the queued row is done. The
+      // send succeeded even if this cleanup does not; the claim then simply
+      // lapses, and a resend returns this same run through its dedupe key.
+      await withRetries(complete).catch((error: unknown) =>
+        console.warn("Could not retire a sent queued message", {
+          chatId,
+          error: error instanceof Error ? error.name : typeof error,
+        }),
+      );
       await captureAgentFollowUp("queue_dispatch_started", {
         ...report,
         runId: handle.id,
