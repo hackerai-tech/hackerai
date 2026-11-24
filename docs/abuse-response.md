@@ -393,6 +393,48 @@ and its cases follow the review, hold and erasure rules in this runbook.
   overlapped creates a `multiple_runs` case, even if its workspace link is
   missing. A missing selected run, exceeded page limit, or unreliable result
   creates an `account_runs_unverified` case. Both require manual review.
+- **Acquisition links.** Each workspace keeps at most 16 link records across
+  runs; more makes its history incomplete (`acquisition_incomplete`). A run
+  that reconnects repeatedly does not add a record per reconnect: an atomic
+  write replaces the run's newest record only while its previous record still
+  covers every six-hour look-back window the replaced one did, so a record
+  placing a run before a burst survives later reconnects. Records are kept for
+  the look-back plus the two-hour telemetry retention, so a write between a
+  burst and its review cannot trim a record the review needs. History that was
+  already trimmed or holds an unreadable record stays incomplete until it
+  expires.
+- **Diagnostics.** A manual or `no_case` result, and the worker's
+  `Egress abuse review finished` log, carry a `diagnostic` object of closed
+  enums and small counts: `detail` names why the review stopped (for example
+  `multiple_sandboxes`, `link_history_trimmed`, `too_many_runs`,
+  `competing_links`, `concurrent_root_run`, `root_page_limit`,
+  `root_lookup_failed`, `selected_run_absent`, `run_overlap_unknown` or
+  `evidence_gaps` with its `gaps` list), alongside counts of verified
+  sandboxes, stored link records, linked runs and plausible runs. It never
+  holds identifiers, content or provider errors and does not change the case
+  or receipt.
+- **Account cooldown.** A `no_case` decision, which requires complete
+  exact-run evidence and corroborated legitimate work, stores a 24-hour
+  cooldown for the verified account with the cleared minute's connection
+  count. Owner references differ per region, so the cooldown is keyed by a
+  hash of the verified account and applies in every region. While it lasts, a
+  burst of that account is a routine spike and is skipped before evidence
+  reads and model calls (`skipped` / `cooldown_active`, no case or receipt)
+  unless the window's highest settled minute reaches both twice the cleared
+  count and twice the current threshold; such an escalation is reviewed in
+  full, because a new run can still be abusive. Manual cases, authorization
+  requests, enforcement and incomplete or unlinked evidence never grant it. A
+  later clearance at a higher count replaces it with a new 24-hour expiry;
+  an equal or lower one leaves it unchanged, and a retry of the granting
+  window is never suppressed. The monitor checks the cooldown only for new
+  cases it is about to queue and leaves a suppressed case unmarked, so a later
+  escalation in the same window is still queued. A worker that already holds
+  the window's queue key waits for the window to settle before skipping it.
+  It reviews the highest verified spike if the cooldown is bypassed. If it
+  runs out of retries it reviews the evidence. Any read failure, invalid stored
+  value, or missing or lossy minute in the window means a full review; a failed write
+  leaves no cooldown. To end cooldowns early, delete the
+  `egress-review:v1:cooldown:*` keys; they otherwise expire on their own.
 - **What it decides.** The model receives scrubbed evidence and returns
   enums and evidence indices. Hostnames, dotted names with alphabetic
   suffixes, and IPs become stable class placeholders. The scrubber normalizes

@@ -308,6 +308,46 @@ function recordDesktopAuthRedirect(
   }
 }
 
+/** Record when the proxy has built a pass-through response for Desktop sign-in. */
+function recordDesktopSignInProxyHandoff(
+  request: NextRequest,
+  branch: "authkit_pass_through" | "ended_session" | "anonymous_context_retry",
+): void {
+  try {
+    const pathname = request.nextUrl.pathname;
+    if (
+      request.method !== "GET" ||
+      (pathname !== "/desktop-login" &&
+        pathname !== "/api/auth/desktop-callback")
+    ) {
+      return;
+    }
+
+    const requestId = request.headers.get("x-vercel-id");
+    if (!requestId || !VERCEL_REQUEST_ID_PATTERN.test(requestId)) return;
+
+    const build = process.env.VERCEL_GIT_COMMIT_SHA;
+    console.info(
+      JSON.stringify({
+        event: "desktop_sign_in_proxy_handoff",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        route_kind:
+          pathname === "/desktop-login"
+            ? "desktop_login"
+            : "desktop_oauth_callback",
+        branch,
+        vercel_request_id: requestId,
+        ...(build && WEB_BUILD_COMMIT_PATTERN.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+      }),
+    );
+  } catch {
+    // Diagnostics must never change authentication responses.
+  }
+}
+
 /** Observe only unexpected AuthKit throws, without retaining request or error contents. */
 function recordProxyAuthkitFailure(
   request: NextRequest,
@@ -430,9 +470,11 @@ function buildEndedSessionResponse(
   }
 
   if (isUnauthenticatedPath(pathname)) {
-    return withSessionCookieCleared(
+    const response = withSessionCookieCleared(
       withAttributionCookies(request, NextResponse.next()),
     );
+    recordDesktopSignInProxyHandoff(request, "ended_session");
+    return response;
   }
 
   if (!isBrowserRequest(request)) {
@@ -641,7 +683,7 @@ export default async function proxy(request: NextRequest) {
         throw recoveryError;
       }
       const { headers } = anonymousResult;
-      return withSessionCookieCleared(
+      const response = withSessionCookieCleared(
         withAttributionCookies(
           request,
           NextResponse.next({
@@ -650,6 +692,8 @@ export default async function proxy(request: NextRequest) {
           }),
         ),
       );
+      recordDesktopSignInProxyHandoff(request, "anonymous_context_retry");
+      return response;
     }
     if (isInvalidRefreshTokenError(error)) {
       console.warn(
@@ -692,6 +736,7 @@ export default async function proxy(request: NextRequest) {
       headers,
       hadSessionCookie,
     );
+    recordDesktopSignInProxyHandoff(request, "authkit_pass_through");
     return response;
   }
 

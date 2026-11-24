@@ -9,7 +9,34 @@ import { isValidTokenCount } from "@/lib/token-usage";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
+import { isSelectedModel } from "@/types/chat";
+import type {
+  ObservedModelFallback,
+  UsageModelSelection,
+} from "@/convex/lib/usageModelSelection";
 import { v4 as uuidv4 } from "uuid";
+
+/**
+ * Ledger selection for a new write. Absent override means Auto; an
+ * unrecognized override is omitted rather than guessed.
+ */
+export const createUsageModelSelection = ({
+  selectedModelOverride,
+  initialModel,
+  fallbackModel,
+}: {
+  selectedModelOverride?: string | null;
+  initialModel: string;
+  fallbackModel?: string;
+}): UsageModelSelection | undefined => {
+  const selected = selectedModelOverride ?? "auto";
+  if (!isSelectedModel(selected) || !initialModel) return undefined;
+  return {
+    selected,
+    initial_model: initialModel,
+    ...(fallbackModel && { fallback_model: fallbackModel }),
+  };
+};
 
 interface StepUsage {
   inputTokens?: number;
@@ -780,8 +807,15 @@ export class UsageTracker {
     accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
+    /** Sticky fallback observed by the shared runner for this run. */
+    modelFallback?: ObservedModelFallback;
   }): Promise<UsageLogPersistence> {
     const usage = this.createUsageCostRecord(args);
+    const modelSelection = createUsageModelSelection({
+      selectedModelOverride: args.selectedModelOverride,
+      initialModel: args.configuredModelId || args.selectedModel,
+      fallbackModel: args.modelFallback?.model,
+    });
     // Callers await this so the ledger row is not abandoned when the request
     // or worker ends. It resolves with a failure status instead of throwing.
     return logUsageRecord({
@@ -812,6 +846,7 @@ export class UsageTracker {
       modelCostDollars: usage.modelCostDollars,
       nonModelCostDollars: usage.nonModelCostDollars,
       costSource: usage.costSource,
+      ...(modelSelection && { modelSelection }),
     });
   }
 }

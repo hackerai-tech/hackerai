@@ -120,6 +120,56 @@ describe("UsageLogsTable", () => {
     expect(screen.queryByText(/Included \$0\.00/)).not.toBeInTheDocument();
   });
 
+  it("shows the selected mode with its recorded fallback and keeps historical model text", () => {
+    const row = (id: string, fields: Record<string, unknown>) => ({
+      _id: id,
+      _creationTime: Date.parse("2026-11-23T14:14:00.000Z"),
+      type: "included",
+      input_tokens: 100,
+      output_tokens: 50,
+      total_tokens: 150,
+      cost_dollars: 0.42,
+      ...fields,
+    });
+    convexReact.setMockPaginatedQueryResult?.({
+      results: [
+        row("max-fallback", {
+          model: "grok-4.1-fast",
+          model_label: "Max",
+          initial_model: "grok-4.6",
+          fallback_model: "grok-4.1-fast",
+        }),
+        row("pro", { model: "deepseek-v4-pro", model_label: "Pro" }),
+        row("historical", {
+          model: "claude-sonnet-4.5",
+          model_label: "claude-sonnet-4.5",
+        }),
+        // A response from a server deployed before model_label existed.
+        row("older-server", { model: "kimi-k2.6" }),
+      ],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+      isLoading: false,
+    });
+
+    render(
+      <TooltipProvider>
+        <UsageLogsTable />
+      </TooltipProvider>,
+    );
+
+    const [, maxRow, proRow, historicalRow, olderServerRow] =
+      screen.getAllByRole("row");
+    expect(maxRow).toHaveTextContent("Max");
+    expect(maxRow).toHaveTextContent("Fallback: grok-4.6 → grok-4.1-fast");
+    expect(proRow).toHaveTextContent("Pro");
+    expect(proRow).not.toHaveTextContent("Fallback");
+    expect(historicalRow).toHaveTextContent("claude-sonnet-4.5");
+    expect(historicalRow).not.toHaveTextContent("Fallback");
+    expect(olderServerRow).toHaveTextContent("kimi-k2.6");
+    expect(screen.getAllByText(/^Fallback:/)).toHaveLength(1);
+  });
+
   it("uses the spreadsheet-safe serializer for CSV exports", () => {
     convexReact.setMockPaginatedQueryResult?.({
       results: [
@@ -128,6 +178,8 @@ describe("UsageLogsTable", () => {
           _creationTime: Date.parse("2026-07-19T15:29:18.000Z"),
           type: "included",
           model: "=FORMULA,with comma",
+          // CSV keeps the recorded model, not the display label.
+          model_label: "Standard",
           input_tokens: 100,
           output_tokens: 50,
           total_tokens: 150,

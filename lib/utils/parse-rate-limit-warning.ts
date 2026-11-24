@@ -93,11 +93,13 @@ export function parseRateLimitWarning(
   if (warningType === "paid-daily-free-allowance") {
     const modeRaw = typeof rawData.mode === "string" ? rawData.mode : null;
     const costLimitDollars = rawData.costLimitDollars;
+    const usedDollars = rawData.usedDollars;
     if (
       !isPaidIndividualSubscription(subscription) ||
       !isChatMode(modeRaw) ||
       !isNumber(costLimitDollars) ||
-      costLimitDollars <= 0
+      costLimitDollars <= 0 ||
+      (usedDollars !== undefined && (!isNumber(usedDollars) || usedDollars < 0))
     ) {
       return null;
     }
@@ -107,6 +109,8 @@ export function parseRateLimitWarning(
       subscription,
       mode: modeRaw,
       costLimitDollars,
+      ...(isNumber(usedDollars) && { usedDollars }),
+      ...(rawData.midStream === true && { midStream: true }),
     };
   }
 

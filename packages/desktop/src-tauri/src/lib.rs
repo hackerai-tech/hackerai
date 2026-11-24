@@ -4567,6 +4567,79 @@ mod tests {
         let _ = fs::remove_dir_all(&scratch);
     }
 
+    #[test]
+    fn keep_awake_setting_is_reachable_only_from_the_trusted_page_and_persists() {
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+
+        let scratch = unique_test_dir("keep-awake-setting");
+        let page = |url: &str| {
+            let app = mock_builder()
+                .manage(keep_awake::KeepAwake::start_for_test(scratch.clone()))
+                .invoke_handler(tauri::generate_handler![
+                    keep_awake::get_keep_awake_enabled,
+                    keep_awake::set_keep_awake_enabled
+                ])
+                .build(app_context())
+                .unwrap();
+            let window = tauri::WebviewWindowBuilder::new(
+                &app,
+                "main",
+                tauri::WebviewUrl::External(url.parse().unwrap()),
+            )
+            .build()
+            .unwrap();
+            (app, window)
+        };
+        let invoke = |window: &tauri::WebviewWindow<_>, cmd: &str, body: serde_json::Value| {
+            get_ipc_response(
+                window,
+                tauri::webview::InvokeRequest {
+                    cmd: cmd.into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "https://hackerai.co/".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+            .map(|response| response.deserialize::<serde_json::Value>().unwrap())
+        };
+
+        let (_untrusted_app, untrusted) = page("https://untrusted.invalid/");
+        let rejected = invoke(
+            &untrusted,
+            "set_keep_awake_enabled",
+            serde_json::json!({ "enabled": false }),
+        );
+        assert!(rejected.is_err(), "an untrusted page changed the setting");
+        assert!(
+            !scratch.join("keep-awake.json").exists(),
+            "an untrusted page saved a preference"
+        );
+
+        let (_trusted_app, trusted) = page("http://localhost:3000/");
+        assert_eq!(
+            invoke(&trusted, "get_keep_awake_enabled", serde_json::json!({})),
+            Ok(serde_json::json!(true))
+        );
+        assert_eq!(
+            invoke(
+                &trusted,
+                "set_keep_awake_enabled",
+                serde_json::json!({ "enabled": false })
+            ),
+            Ok(serde_json::json!(false))
+        );
+        assert_eq!(
+            invoke(&trusted, "get_keep_awake_enabled", serde_json::json!({})),
+            Ok(serde_json::json!(false))
+        );
+        // The next launch starts from the saved choice.
+        assert!(!keep_awake::KeepAwake::start_for_test(scratch.clone()).enabled());
+        let _ = fs::remove_dir_all(&scratch);
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "hackerai-desktop-{}-{}",
@@ -4830,7 +4903,9 @@ pub fn run() {
             execute_authorized_pty_kill,
             execute_pty_kill,
             notifications::agent_notification_permission,
-            notifications::show_agent_input_notification
+            notifications::show_agent_input_notification,
+            keep_awake::get_keep_awake_enabled,
+            keep_awake::set_keep_awake_enabled
         ]))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
@@ -4881,7 +4956,9 @@ pub fn run() {
             app.manage(lifecycle_diagnostics::LifecycleDiagnostics::start(
                 app.path().app_data_dir().ok(),
             ));
-            app.manage(keep_awake::KeepAwake::start());
+            app.manage(keep_awake::KeepAwake::start(
+                app.path().app_data_dir().ok(),
+            ));
             #[cfg(target_os = "linux")]
             watch_linux_web_process(app);
             notifications::init(app.handle());

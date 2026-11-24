@@ -247,6 +247,11 @@ import {
 } from "@/lib/utils/error-utils";
 import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
+import {
+  observeServedModelFallback,
+  recordRequestedModelFallback,
+  type ObservedModelFallback,
+} from "@/convex/lib/usageModelSelection";
 import type {
   BudgetAbortDetails,
   BudgetMonitor,
@@ -459,6 +464,11 @@ export type AgentStreamState = {
   responseModel: string | undefined;
   /** Set only when provider/retry state can identify fallback serving. */
   fallbackServed: boolean | undefined;
+  /**
+   * Usage-ledger fallback observed during this run. Unlike fallbackServed it
+   * is sticky: retries and usage resets keep it. Never read for routing.
+   */
+  usageModelFallback?: ObservedModelFallback;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
   /** Attribution from the failing request only, never merged with prior steps. */
@@ -545,6 +555,20 @@ export const resetServedModelTelemetryForRetry = (
 ): void => {
   state.responseModel = undefined;
   state.fallbackServed = undefined;
+};
+
+/**
+ * Ask and Agent callers mark an explicit alternate stream route, including a
+ * different provider for the same model, before starting it. Reporting only.
+ */
+export const recordExplicitModelFallback = (
+  state: Pick<AgentStreamState, "usageModelFallback">,
+  requestedModelId: string,
+): void => {
+  state.usageModelFallback = recordRequestedModelFallback(
+    state.usageModelFallback,
+    requestedModelId,
+  );
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -1326,6 +1350,12 @@ export async function createAgentStream(
         selectedModelOverride: ctx.selectedModelOverride,
       }),
     });
+    if (state.fallbackServed) {
+      state.usageModelFallback = observeServedModelFallback(
+        state.usageModelFallback,
+        { servedModel: state.responseModel, confirmedProviderFallback: true },
+      );
+    }
 
     const openRouterMetadata = lastStep
       ? extractOpenRouterMetadata({
@@ -3277,6 +3307,23 @@ export async function createAgentStream(
       }
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
+      // Ledger reporting only: a served model in this step's provider fallback
+      // chain is a confirmed fallback; any other served ID is normal routing.
+      state.usageModelFallback = observeServedModelFallback(
+        state.usageModelFallback,
+        {
+          servedModel: response?.modelId,
+          confirmedProviderFallback:
+            resolveFallbackServedTelemetry({
+              requestedModel: lastRequestedSlug,
+              responseModel: response?.modelId,
+              fallbackModels: getFallbackSlugs(activeStepModelName, ctx.mode, {
+                hasMultimodalToolResults: streamHasImageViewResults,
+                selectedModelOverride: ctx.selectedModelOverride,
+              }),
+            }) === true,
+        },
+      );
       const responsePdfParserEngine = getResponseHeader(
         response?.headers,
         PDF_PARSER_ENGINE_HEADER,
@@ -3622,6 +3669,12 @@ export async function createAgentStream(
         responseModel: state.responseModel,
         fallbackModels: fallbackSlugs,
       });
+      if (state.fallbackServed) {
+        state.usageModelFallback = observeServedModelFallback(
+          state.usageModelFallback,
+          { servedModel: state.responseModel, confirmedProviderFallback: true },
+        );
+      }
       if (state.fallbackServed && state.responseModel) {
         ctx.chatLogger?.recordModelFallback({
           requested: lastRequestedSlug,

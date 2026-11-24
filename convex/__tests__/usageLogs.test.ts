@@ -20,6 +20,7 @@ jest.mock("convex/values", () => ({
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
     null: jest.fn(() => "null"),
+    object: jest.fn(() => "object"),
   },
 }));
 
@@ -282,5 +283,104 @@ describe("usageLogs", () => {
       usage_deduction_failed: true,
     });
     expect(result.page[1].usage_deduction_failed).toBe(true);
+  });
+
+  it("persists the accepted model selection alongside the unchanged model", async () => {
+    const { logUsage } = await import("../usageLogs");
+    const { ctx, rows } = createLedgerCtx();
+    const modelSelection = {
+      selected: "hackerai-max",
+      initial_model: "x-ai/grok-4.6",
+      fallback_model: "x-ai/grok-4.1-fast",
+    };
+
+    await (logUsage as any).handler(ctx, {
+      ...includedUsage,
+      model: "x-ai/grok-4.1-fast",
+      model_selection: modelSelection,
+    });
+    // Older writers omit the field and keep working.
+    await (logUsage as any).handler(ctx, includedUsage);
+
+    expect(rows[0]).toMatchObject({
+      model: "x-ai/grok-4.1-fast",
+      model_selection: modelSelection,
+    });
+    expect(rows[1].model_selection).toBeUndefined();
+  });
+
+  it("labels rows by stored selection and leaves historical rows unrelabeled", async () => {
+    const { getUserUsageLogs } = await import("../usageLogs");
+    const row = (overrides: Record<string, unknown>) => ({
+      _id: `usage-${String(overrides.model)}`,
+      _creationTime: 1,
+      user_id: "user_1",
+      type: "included",
+      input_tokens: 1,
+      output_tokens: 1,
+      cost_dollars: 0.01,
+      ...overrides,
+    });
+    const paginate = jest.fn(async () => ({
+      page: [
+        row({
+          model: "x-ai/grok-4.1-fast",
+          model_selection: {
+            selected: "hackerai-max",
+            initial_model: "x-ai/grok-4.6",
+            fallback_model: "x-ai/grok-4.1-fast",
+          },
+        }),
+        row({
+          model: "deepseek/deepseek-v4-pro",
+          model_selection: {
+            selected: "hackerai-pro",
+            initial_model: "deepseek/deepseek-v4-pro",
+          },
+        }),
+        row({
+          model: "auto",
+          model_selection: { selected: "auto", initial_model: "model-a" },
+        }),
+        // Historical: an explicit pre-selection Grok row and a stored "auto".
+        row({ model: "x-ai/grok-4.1-fast" }),
+        row({ model: "auto" }),
+      ],
+      isDone: true,
+      continueCursor: "",
+    }));
+    const ctx: any = {
+      auth: {
+        getUserIdentity: jest.fn(async () => ({ subject: "user_1" })),
+      },
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn(() => ({
+            order: jest.fn(() => ({ paginate })),
+          })),
+        })),
+      },
+    };
+
+    const { page } = await (getUserUsageLogs as any).handler(ctx, {
+      paginationOpts: { numItems: 10, cursor: null },
+      startDate: 0,
+      endDate: 10,
+    });
+
+    expect(
+      page.map((log: any) => [
+        log.model_label,
+        log.initial_model,
+        log.fallback_model,
+        log.model,
+      ]),
+    ).toEqual([
+      ["Max", "grok-4.6", "grok-4.1-fast", "grok-4.1-fast"],
+      ["Pro", undefined, undefined, "deepseek-v4-pro"],
+      ["Auto", undefined, undefined, "auto"],
+      ["grok-4.1-fast", undefined, undefined, "grok-4.1-fast"],
+      ["Auto", undefined, undefined, "auto"],
+    ]);
   });
 });

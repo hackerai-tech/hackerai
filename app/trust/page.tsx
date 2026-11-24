@@ -139,7 +139,7 @@ const subprocessors: Subprocessor[] = [
 
 const contents = [
   ["data-we-process", "Data we process"],
-  ["ai-model-providers", "AI model providers"],
+  ["ai-model-providers", "AI models and zero data retention"],
   ["model-training", "Model training and data licensing"],
   ["execution-environments", "Execution environments"],
   ["account-security", "Account security"],
@@ -162,8 +162,11 @@ const InlineLink = ({
 }) => (
   <a
     href={href}
-    target="_blank"
-    rel="noopener noreferrer"
+    // In-page section links stay in the current tab.
+    {...(!href.startsWith("#") && {
+      target: "_blank",
+      rel: "noopener noreferrer",
+    })}
     className="font-medium text-foreground underline underline-offset-4 hover:text-foreground/80"
   >
     {children}
@@ -200,7 +203,8 @@ function TrustContent() {
           <p className="max-w-[420px] text-base leading-7 text-muted-foreground">
             HackerAI is an AI agent for penetration testing and security work.
             This page describes the data we process, where agent code runs, and
-            the services we rely on to operate.
+            the services we rely on to operate. AI model providers are
+            restricted to zero data retention.
           </p>
         </header>
 
@@ -266,9 +270,19 @@ function TrustContent() {
             <Section
               id="ai-model-providers"
               number="02"
-              title="AI model providers"
+              title="AI models and zero data retention"
               initiallyOpen
             >
+              <p>
+                <strong className="font-semibold text-foreground">
+                  Zero data retention.
+                </strong>{" "}
+                The companies that generate model responses for HackerAI may not
+                retain your prompts or responses. Requests through OpenRouter
+                may use only endpoints on its zero data retention list, and
+                Inference.net has confirmed this in writing for our account. The
+                limits of this commitment are described below.
+              </p>
               <p>
                 HackerAI sends your prompt, relevant conversation context, file
                 content, images, and tool results to the company serving the
@@ -308,14 +322,11 @@ function TrustContent() {
                 OCR or Cloudflare, through OpenRouter.
               </p>
               <p>
-                Model requests sent through OpenRouter may use only endpoints on
-                OpenRouter&apos;s zero data retention list, and Inference.net
-                has confirmed in writing that it does not retain prompts or
-                completions for our account. This covers the AI model providers
-                only: web search, page retrieval, moderation, and document
-                parsing follow those providers&apos; own terms, and HackerAI
-                stores your chats so you can return to them. Refer to the
-                provider policies linked above.
+                Zero data retention covers the AI model providers only: web
+                search, page retrieval, moderation, and document parsing follow
+                those providers&apos; own terms, and HackerAI stores your chats
+                so you can return to them. Refer to the provider policies linked
+                above.
               </p>
             </Section>
 
@@ -335,6 +346,14 @@ function TrustContent() {
                 </InlineLink>{" "}
                 for the notice and consent requirements that would apply before
                 any collection.
+              </p>
+              <p>
+                AI model providers are restricted to zero data retention and may
+                not keep your prompts or responses; see{" "}
+                <InlineLink href="#ai-model-providers">
+                  AI models and zero data retention
+                </InlineLink>
+                .
               </p>
             </Section>
 

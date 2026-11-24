@@ -855,3 +855,147 @@ describe("typed Agent start forbidden receipts", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe("Agent start on a closed Trigger session", () => {
+  // Pinned @trigger.dev/core 4.7.7 ApiError.generate(409, { error }) yields a
+  // ConflictError whose own name, status and message are exactly these; the
+  // SDK is ESM-only under Jest, so this mirrors that observed shape.
+  const CLOSED =
+    "Session is closed; use a different externalId to create a new session";
+  class TriggerConflict extends Error {
+    status = 409;
+    error: unknown;
+    constructor(message: string) {
+      super(message);
+      this.name = "TriggerApiError";
+      this.error = message;
+    }
+  }
+  const privateContext = {
+    requestId: "iad1::iad1-1792071667623-a1bd20d0daef",
+    userId: "PRIVATE_USER",
+    chatId: "PRIVATE_CHAT",
+    approvalSessionId: "PRIVATE_SESSION",
+    stage: "sessions.start",
+  };
+  let warn: jest.SpyInstance;
+  let error: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  const startFailure = (
+    failure: unknown,
+    {
+      endpoint = "/api/agent",
+      action = "start",
+      context = privateContext,
+    }: {
+      endpoint?: string;
+      action?: Parameters<typeof handleAgentRouteError>[0]["action"];
+      context?: Record<string, unknown>;
+    } = {},
+  ) =>
+    handleAgentRouteError({
+      error: failure,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "Failed to start agent run",
+      context: context as any,
+    });
+
+  test.each(["/api/agent", "/api/agent-long"])(
+    "returns 409 with a reload cause and one bounded receipt from %s",
+    async (endpoint) => {
+      const response = startFailure(new TriggerConflict(CLOSED), {
+        endpoint,
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        code: "bad_request:api",
+        message:
+          "The request couldn't be processed. Please check your input and try again.",
+        cause:
+          "This Agent request has already ended. Reload the chat to see its latest state.",
+      });
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+        timestamp: expect.any(String),
+        level: "warn",
+        event: "agent_start_session_closed",
+        service: "hackerai-web",
+        agent_start_session_closed_diagnostic_version: 1,
+        http_status: 409,
+        endpoint,
+        action: "start",
+        stage: "sessions.start",
+        request_id_kind: "vercel",
+        request_id: privateContext.requestId,
+      });
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).not.toContain("PRIVATE");
+      expect(logged).not.toContain("Session is closed");
+    },
+  );
+
+  test("omits an unrecognized request id from the receipt", () => {
+    startFailure(new TriggerConflict(CLOSED), {
+      context: { ...privateContext, requestId: "PRIVATE_REQUEST" },
+    });
+    const fields = JSON.parse(warn.mock.calls[0][0]);
+    expect(fields.request_id_kind).toBe("unavailable");
+    expect(fields).not.toHaveProperty("request_id");
+  });
+
+  test("keeps the 409 when the diagnostic sink throws", () => {
+    warn.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    expect(startFailure(new TriggerConflict(CLOSED)).status).toBe(409);
+  });
+
+  const relabeled = (patch: Record<string, unknown>) =>
+    Object.assign(new TriggerConflict(CLOSED), patch);
+  test.each([
+    ["another 409 message", new TriggerConflict("Session is expired")],
+    ["a longer message", new TriggerConflict(`${CLOSED}.`)],
+    ["a different status", relabeled({ status: 422 })],
+    ["a string status", relabeled({ status: "409" })],
+    ["a non-Trigger error name", relabeled({ name: "Error" })],
+    [
+      "a plain object copy",
+      { name: "TriggerApiError", status: 409, message: CLOSED },
+    ],
+  ])("keeps the original 500 for %s", async (_label, failure) => {
+    const response = startFailure(failure);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      cause: "Failed to start agent run",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      "tasks.trigger stage",
+      { context: { ...privateContext, stage: "tasks.trigger" } },
+    ],
+    ["missing stage", { context: { requestId: privateContext.requestId } }],
+    ["resume action", { action: "resume" as const }],
+    ["approve action", { action: "approve" as const }],
+    ["chat endpoint", { endpoint: "/api/chat" }],
+  ])("keeps the original 500 on the %s", async (_label, options) => {
+    const response = startFailure(new TriggerConflict(CLOSED), options);
+    expect(response.status).toBe(500);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});

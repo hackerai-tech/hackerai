@@ -57,6 +57,9 @@ export type RateLimitWarningData =
       subscription: SubscriptionTier;
       mode: ChatMode;
       costLimitDollars: number;
+      /** Present once the response has crossed a usage threshold. */
+      usedDollars?: number;
+      midStream?: boolean;
     }
   | {
       warningType: "agent-run-spend-cap";
@@ -110,6 +113,14 @@ const formatTimeUntil = (resetTime: Date): string => {
 };
 
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
+  // Paid monthly usage refills only when the renewal invoice is paid, never
+  // on a timer. A reset time already past means that renewal is pending, so
+  // "resets now" would be wrong. Free and daily allowances reset on a timer.
+  const paidRenewalPending =
+    data.subscription !== "free" && data.resetTime.getTime() <= Date.now();
+  const monthlyReset = (sentence: string) =>
+    paidRenewalPending ? "Your usage refills when your plan renews." : sentence;
+
   if (data.warningType === "sliding-window") {
     if (data.remaining === 0) {
       return data.mode === "agent"
@@ -121,11 +132,15 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "extra-usage-active") {
-    return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
+    return `You're now using extra usage credits. ${monthlyReset(`Your monthly limit resets ${timeString}.`)}`;
   }
 
   if (data.warningType === "paid-daily-free-allowance") {
-    return `Your paid-plan limit is used up, so this ${data.mode === "agent" ? "Agent" : "Ask"} response is using today's free $${data.costLimitDollars.toFixed(2)} allowance with our low-cost model. It resets ${timeString} and the response will stop if the allowance runs out.`;
+    const limit = `$${data.costLimitDollars.toFixed(2)}`;
+    if (data.usedDollars !== undefined) {
+      return `$${data.usedDollars.toFixed(2)} of today's free ${limit} allowance used. This response stops when it runs out. Resets ${timeString}.`;
+    }
+    return `You've used your plan's monthly usage. This ${data.mode === "agent" ? "Agent" : "Ask"} response is running on today's free ${limit} allowance with a lower-cost model, and it will stop if that runs out. Resets ${timeString}.`;
   }
 
   if (data.warningType === "agent-run-spend-cap") {
@@ -151,21 +166,30 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       if (data.capReason === "paid_daily_free_allowance_cut_off") {
         return `Today's free allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
       }
-      return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
+      return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. ${monthlyReset(`Resets ${timeString}.`)}`;
     }
     if (data.subscription === "free") {
       return `You've reached your free monthly usage limit. Upgrade for higher limits. Resets ${timeString}.`;
     }
 
-    return `You've reached your monthly usage limit. It resets ${timeString}.`;
+    return `You've reached your monthly usage limit. ${monthlyReset(`It resets ${timeString}.`)}`;
   }
 
-  const usedPercent = 100 - data.remainingPercent;
-  if (data.usedDollars !== undefined && data.limitDollars !== undefined) {
-    return `You've used $${data.usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
+  const toCents = (dollars: number) => Math.round(dollars * 100) / 100;
+  if (
+    data.usedDollars !== undefined &&
+    data.limitDollars !== undefined &&
+    toCents(data.limitDollars) > 0
+  ) {
+    // Derive the percent from the cent-rounded amounts shown beside it, so
+    // "$0.20 of $0.25" never reads as 79%.
+    const usedDollars = toCents(data.usedDollars);
+    const limitDollars = toCents(data.limitDollars);
+    const usedPercent = Math.round((usedDollars / limitDollars) * 100);
+    return `You've used $${usedDollars.toFixed(2)} of $${limitDollars.toFixed(2)} (${usedPercent}%). ${monthlyReset(`Resets ${timeString}.`)}`;
   }
 
-  return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+  return `You have ${data.remainingPercent}% of your monthly usage remaining. ${monthlyReset(`It resets ${timeString}.`)}`;
 };
 
 const getUpgradeCtaText = (
@@ -230,8 +254,12 @@ const RateLimitWarningContent = ({
     data.warningType === "paid-daily-free-allowance"
       ? undefined
       : data.capReason;
+  // Credits are the way past a used-up monthly plan, so the daily-allowance
+  // banner offers them too.
   const extraUsageCta =
-    data.warningType === "token-bucket" && !hideMonthlyWarning
+    (data.warningType === "token-bucket" ||
+      data.warningType === "paid-daily-free-allowance") &&
+    !hideMonthlyWarning
       ? getExtraUsageLimitCta({
           subscription: data.subscription,
           capReason,

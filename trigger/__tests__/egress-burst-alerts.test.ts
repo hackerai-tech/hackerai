@@ -15,6 +15,7 @@ jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 import { logger, tasks } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import { reviewCooldownKey } from "@/lib/abuse/egress-review-cooldown";
 import { registerAttributedWorkspace } from "@/lib/cloud-network/egress-attribution";
 import {
   ingestTelemetryBatch,
@@ -698,6 +699,83 @@ describe("abuse review dispatch", () => {
     expect(trigger()).toHaveBeenCalledTimes(10);
     expect(queued()).toEqual([]);
     await ok(runEgressBurstAlerts(at(MINUTE + 31)));
+  });
+
+  describe("with a review cooldown for the account", () => {
+    const cooldownReads = () =>
+      redis.mget.mock.calls.filter((keys) =>
+        keys.some((key: string) =>
+          key.startsWith("egress-review:v1:cooldown:"),
+        ),
+      );
+    beforeEach(async () => {
+      await registerAttributedWorkspace(
+        "us",
+        first,
+        first.userId,
+        first.sandboxId,
+      );
+      // Cleared at 9 connections; the threshold is 5.
+      store.set(
+        reviewCooldownKey(first.userId),
+        JSON.stringify({ v: 1, peak: 9, digest: "a".repeat(64) }),
+      );
+    });
+
+    it("leaves a routine spike unqueued and queues a later escalation in its window", async () => {
+      await upload("us", MINUTE, [count(first, 17)]);
+      await ok(runEgressBurstAlerts(at()));
+      expect(trigger()).not.toHaveBeenCalled();
+      expect(queued()).toEqual([]);
+      expect(volumeWarnings()).toHaveLength(1);
+
+      // Twice the cleared peak and twice the threshold.
+      await upload("eu", MINUTE + 1);
+      await upload("us", MINUTE + 1, [count(first, 18)]);
+      await ok(runEgressBurstAlerts(at(MINUTE + 1)));
+      expect(trigger()).toHaveBeenCalledTimes(1);
+      expect(trigger().mock.calls[0][1]).toEqual({
+        region: "us",
+        owner: first.owner,
+        minute: MINUTE + 1,
+      });
+    });
+
+    it("queues the review when the cooldown cannot be read", async () => {
+      const mget = redis.mget.getMockImplementation()!;
+      redis.mget.mockImplementation(async (...keys: string[]) => {
+        if (keys.includes(reviewCooldownKey(first.userId)))
+          throw new Error("store down");
+        return mget(...keys);
+      });
+      await upload("us", MINUTE, [count(first, 9)]);
+      await ok(runEgressBurstAlerts(at()));
+      expect(trigger()).toHaveBeenCalledTimes(1);
+    });
+
+    it("queues the strongest verified minute when the cooldown was bypassed by replay", async () => {
+      await upload("us", MINUTE, [count(first, 18)]);
+      await upload("eu", MINUTE + 6);
+      await upload("us", MINUTE + 6, [count(first, 17)]);
+      await ok(runEgressBurstAlerts(at(MINUTE + 6)));
+      expect(dispatchedMinutes()).toEqual([MINUTE]);
+    });
+
+    it("reads no cooldown without a new case to queue", async () => {
+      await upload("eu", MINUTE - 1);
+      await upload("us", MINUTE - 1, [count(first, 2)]);
+      await ok(runEgressBurstAlerts(at(MINUTE - 1)));
+      expect(cooldownReads()).toEqual([]);
+
+      // Dispatched without a cooldown; the next run finds it marked.
+      store.delete(reviewCooldownKey(first.userId));
+      await upload("us", MINUTE, [count(first, 9)]);
+      await ok(runEgressBurstAlerts(at()));
+      expect(trigger()).toHaveBeenCalledTimes(1);
+      const reads = cooldownReads().length;
+      await ok(runEgressBurstAlerts(at()));
+      expect(cooldownReads()).toHaveLength(reads);
+    });
   });
 
   it("still warns about high volume when the review toggle is invalid", async () => {

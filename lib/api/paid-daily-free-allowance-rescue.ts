@@ -45,6 +45,7 @@ export function createPaidDailyFreeAllowanceRateLimitInfo(
 
 export function createPaidDailyFreeAllowanceBudgetSnapshot(
   reservation: PaidDailyFreeAllowanceReservation,
+  mode: ChatMode,
 ): BudgetSnapshot | null {
   if (reservation.status.rateLimitSkipped) return null;
 
@@ -58,6 +59,7 @@ export function createPaidDailyFreeAllowanceBudgetSnapshot(
     extraUsageAutoReload: false,
     extraUsageOverflowAllowed: false,
     capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
+    paidDailyFreeAllowance: { mode },
   };
 }
 

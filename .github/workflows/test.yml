@@ -188,11 +188,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y redis-server
 
-      - name: Verify usage and Cloud recovery transactions against Redis
+      - name: Verify usage, Cloud recovery and egress review transactions against Redis
         run: |
           node scripts/verify-paid-usage-ledger.mjs
           node scripts/verify-cloud-recovery-admission.mjs
-          pnpm exec jest --runInBand --testMatch "**/cloud-workspace-identity.integration.ts"
+          pnpm exec jest --runInBand --testMatch "**/scripts/tests/*.integration.ts"
 
   codeql:
     name: CodeQL (${{ matrix.language }})

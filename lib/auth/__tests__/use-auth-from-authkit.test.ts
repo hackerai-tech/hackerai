@@ -72,6 +72,8 @@ describe("useAuthFromAuthKit", () => {
     });
 
     mockDeps = {
+      // The refresh lifecycle tests use opaque token labels.
+      matchesToken: () => true,
       useAuth: () => ({
         user: { id: "user-123" },
         loading: false,
@@ -472,11 +474,9 @@ describe("useAuthFromAuthKit", () => {
         );
         const latest = readConvexAuthTokenDecision()?.attempt;
 
-        // Convex can still hold the old callback; its existing context guard
-        // discards the result after the same provider call.
-        mockGetAccessToken.mockResolvedValueOnce("old-account-token");
+        // A callback retained by Convex cannot consult an obsolete context.
         expect(await oldFetch()).toBeNull();
-        expect(mockGetAccessToken).toHaveBeenCalledTimes(2);
+        expect(mockGetAccessToken).toHaveBeenCalledTimes(1);
         expect(readConvexAuthTokenDecision()?.attempt).toBe(latest);
         expect(tokenDecision()).toEqual({
           mode: "ordinary",
@@ -623,6 +623,196 @@ describe("useAuthFromAuthKit", () => {
         discarded.unmount();
       }
       expect(readConvexAuthTokenDecision()).toBeUndefined();
+    });
+  });
+
+  describe("committed session scope", () => {
+    // Synthetic, unsigned tokens: only their claims are read on the client.
+    const base64url = (value: object) =>
+      btoa(JSON.stringify(value))
+        .replace(/=+$/, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+    const jwt = (claims: Record<string, unknown>) =>
+      `${base64url({ alg: "RS256", typ: "JWT" })}.${base64url(claims)}.sig`;
+    const claims = { sub: "user-123", sid: "session-1", org_id: "org-456" };
+    const ownToken = jwt(claims);
+    let auth: { userId: string; sessionId: string; organizationId?: string };
+    let cachedToken: string | undefined;
+
+    beforeEach(() => {
+      delete mockDeps.matchesToken;
+      auth = {
+        userId: "user-123",
+        sessionId: "session-1",
+        organizationId: "org-456",
+      };
+      cachedToken = undefined;
+      mockDeps.isCrossTabEnabled = () => false;
+      mockDeps.useAuth = () => ({
+        user: { id: auth.userId },
+        loading: false,
+        sessionId: auth.sessionId,
+        organizationId: auth.organizationId,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockDeps.useAccessToken = () => ({
+        getAccessToken: mockGetAccessToken,
+        accessToken: cachedToken,
+        refresh: mockRefresh,
+      });
+    });
+
+    it("refreshes an unreadable token before authenticating Convex", async () => {
+      mockGetAccessToken.mockResolvedValue("invalid-token");
+      mockRefresh.mockResolvedValue(ownToken);
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+      expect(await result.current.fetchAccessToken()).toBe(ownToken);
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns this session's cached token without refreshing", async () => {
+      mockGetAccessToken.mockResolvedValue(ownToken);
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+      expect(await result.current.fetchAccessToken()).toBe(ownToken);
+      expect(await result.current.fetchAccessToken()).toBe(ownToken);
+      expect(mockRefresh).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["another account", { ...claims, sub: "user-999" }, "org-456"],
+      ["another session", { ...claims, sid: "session-2" }, "org-456"],
+      ["another organization", { ...claims, org_id: "org-999" }, "org-456"],
+      [
+        "no organization while the session is scoped",
+        { sub: "user-123", sid: "session-1" },
+        "org-456",
+      ],
+      [
+        "an organization an unscoped session has not selected",
+        claims,
+        undefined,
+      ],
+    ])(
+      "refreshes once against the current session instead of returning a token for %s",
+      async (_label, wrongClaims, organizationId) => {
+        auth.organizationId = organizationId;
+        const sessionToken = jwt({
+          sub: "user-123",
+          sid: "session-1",
+          ...(organizationId ? { org_id: organizationId } : {}),
+        });
+        mockGetAccessToken.mockResolvedValue(jwt(wrongClaims));
+        mockRefresh.mockResolvedValue(sessionToken);
+        const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+        expect(await result.current.fetchAccessToken()).toBe(sessionToken);
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("never returns another account's token and reconciles AuthKit while Convex waits", async () => {
+      // The browser's session now belongs to another account (for example,
+      // a sign-in in another window), but this tab committed user-123.
+      const otherAccount = jwt({
+        sub: "user-999",
+        sid: "session-9",
+        org_id: "org-999",
+      });
+      mockGetAccessToken.mockResolvedValue(otherAccount);
+      mockRefresh.mockResolvedValue(otherAccount);
+      mockRefreshAuth.mockImplementation(async (options) => {
+        // The session check (no options) adopts the server's session.
+        if (!options) {
+          auth = {
+            userId: "user-999",
+            sessionId: "session-9",
+            organizationId: "org-999",
+          };
+        }
+      });
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      let token: string | null = "unset";
+      await act(async () => {
+        token = await view.result.current.fetchAccessToken();
+      });
+      expect(token).toBeNull();
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+      // Recovery holds Convex in loading rather than signing the user out.
+      expect(view.result.current.isLoading).toBe(true);
+
+      await act(async () => {});
+      expect(mockRefreshAuth).toHaveBeenCalledWith();
+      view.rerender();
+      expect(view.result.current.isLoading).toBe(false);
+      // Only once AuthKit has committed that account may its token be used.
+      expect(await view.result.current.fetchAccessToken()).toBe(otherAccount);
+    });
+
+    it("recovers when the SDK keeps returning an old token after a failed refresh", async () => {
+      cachedToken = jwt({ ...claims, sub: "previous-user" });
+      mockGetAccessToken.mockImplementation(async () => cachedToken);
+      mockRefresh
+        .mockRejectedValueOnce(new Error("Offline"))
+        .mockImplementation(async () => {
+          cachedToken = ownToken;
+          return ownToken;
+        });
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      await act(async () => {
+        expect(await view.result.current.fetchAccessToken()).toBeNull();
+      });
+      expect(view.result.current.isLoading).toBe(true);
+      await act(async () => jest.advanceTimersByTimeAsync(20_000));
+      expect(view.result.current.isLoading).toBe(false);
+      expect(await view.result.current.fetchAccessToken()).toBe(ownToken);
+      expect(mockRefresh).toHaveBeenCalledTimes(2);
+    });
+
+    it("skips another account's fresh shared-tab token and shares only this session's token", async () => {
+      mockDeps.isCrossTabEnabled = () => true;
+      mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify({
+        token: jwt({ ...claims, sub: "user-999" }),
+        refreshedAt: Date.now() - 1000,
+      });
+      mockRefresh.mockResolvedValue(ownToken);
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      expect(
+        await result.current.fetchAccessToken({ forceRefreshToken: true }),
+      ).toBe(ownToken);
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(mockStorage[sharedToken.SHARED_TOKEN_KEY]).token).toBe(
+        ownToken,
+      );
+    });
+
+    it("excludes another account's cached token from exception and cooldown fallbacks", async () => {
+      cachedToken = jwt({ ...claims, sub: "user-999" });
+      mockGetAccessToken.mockRejectedValue(new Error("Network error"));
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      const force = () =>
+        view.result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(await view.result.current.fetchAccessToken()).toBeNull();
+      expect(tokenDecision()).toMatchObject({
+        outcome: "exception_fallback",
+        result: "null",
+      });
+      expect(await force()).toBeNull();
+      expect(tokenDecision()).toMatchObject({
+        outcome: "cooldown_fallback",
+        result: "null",
+      });
+      expect(mockRefresh).not.toHaveBeenCalled();
+
+      // This session's cached token remains the cooldown fallback.
+      cachedToken = ownToken;
+      view.rerender();
+      expect(await force()).toBe(ownToken);
+      expect(mockRefresh).not.toHaveBeenCalled();
+      view.unmount();
     });
   });
 

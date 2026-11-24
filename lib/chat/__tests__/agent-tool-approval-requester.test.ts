@@ -3,6 +3,9 @@
  */
 import type { UIMessageStreamWriter } from "ai";
 
+import { logger as triggerLogger } from "@trigger.dev/sdk";
+
+import { ChatSDKError } from "@/lib/errors";
 import {
   signAgentToolApprovalInput,
   verifyAgentToolApprovalInputAuthorization,
@@ -99,13 +102,14 @@ const signedDecision = (
   approvalId: string,
   decision: "approve" | "deny",
   message?: string,
+  toolCallId = request.toolCallId,
 ): AgentToolApprovalInputRecord =>
   signAgentToolApprovalInput(
     {
       type: "agent-tool-approval",
       protocolVersion: AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
       approvalId,
-      toolCallId: request.toolCallId,
+      toolCallId,
       decision,
       grant: "full_access",
       ...(message ? { message } : {}),
@@ -148,7 +152,8 @@ const buildRequester = ({
           runId: "run-1",
           approvalSessionId: APPROVAL_SESSION_ID,
           approvalId: input.approvalId,
-          toolCallId: request.toolCallId,
+          // The requester itself rejects input for another tool call.
+          toolCallId: input.toolCallId,
         },
       });
     },
@@ -590,6 +595,280 @@ describe("buildAgentToolApprovalRequester approval slot delays", () => {
       sandboxIdentity: "e2b",
     });
     expect(revalidateAfterSuspend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildAgentToolApprovalRequester approval slot release recovery", () => {
+  const slotReleaseFailed = {
+    approved: false,
+    approvalId: expect.any(String),
+    reason:
+      "HackerAI could not finish recording the previous approval, so this operation was not run and no approval was requested. Retry the action; if it fails again, stop and start a new Agent request.",
+  };
+  // The write's response was lost; it may or may not have committed.
+  const lostReleaseResponse = () =>
+    new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active agent approval state",
+      { db_error_name: "TypeError", db_outcome_unknown: true },
+    );
+  /**
+   * Models the Convex compare-and-set slot. Each release write either fails
+   * before committing ("fail"), commits but loses its response ("lost"), or
+   * completes normally ("ok", the default once the script is exhausted).
+   */
+  const scriptReleases = (...outcomes: Array<"fail" | "lost" | "ok">) => {
+    let heldApprovalId: string | undefined;
+    mockSetActiveAgentApprovalPending.mockImplementation(async (raw) => {
+      const input = raw as {
+        pending: boolean;
+        request?: { approvalId: string };
+        expectedApprovalId?: string;
+      };
+      if (input.pending) {
+        const approvalId = input.request!.approvalId;
+        if (heldApprovalId !== undefined && heldApprovalId !== approvalId) {
+          return "busy";
+        }
+        heldApprovalId = approvalId;
+        return "acquired";
+      }
+      const outcome = outcomes.shift() ?? "ok";
+      if (outcome === "fail") throw lostReleaseResponse();
+      const matches = heldApprovalId === input.expectedApprovalId;
+      if (matches) heldApprovalId = undefined;
+      if (outcome === "lost") throw lostReleaseResponse();
+      return matches ? "released" : "stale";
+    });
+  };
+  const releaseWrites = () =>
+    mockSetActiveAgentApprovalPending.mock.calls
+      .map(
+        ([input]) =>
+          input as {
+            pending: boolean;
+            expectedRunId?: string;
+            expectedApprovalSessionId?: string;
+            expectedApprovalId?: string;
+          },
+      )
+      .filter((input) => !input.pending)
+      .map(
+        ({ expectedRunId, expectedApprovalSessionId, expectedApprovalId }) => ({
+          expectedRunId,
+          expectedApprovalSessionId,
+          expectedApprovalId,
+        }),
+      );
+  const guardedRelease = (approvalId: string) => ({
+    expectedRunId: "run-1",
+    expectedApprovalSessionId: APPROVAL_SESSION_ID,
+    expectedApprovalId: approvalId,
+  });
+  // Covers every in-process retry delay of one bounded release.
+  const runReleaseRetries = async () => {
+    await jest.advanceTimersByTimeAsync(1_250);
+    await flush();
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    // A busy-slot poll stays pending, so polling a stale slot is observable.
+    mockWaitFor.mockImplementation(() => new Promise<void>(() => {}));
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    mockWaitFor.mockImplementation(async () => undefined);
+    mockSetActiveAgentApprovalPending.mockImplementation(
+      async () => "acquired",
+    );
+  });
+
+  it.each([
+    ["was not committed", "fail" as const],
+    ["committed before its response was lost", "lost" as const],
+  ])(
+    "retries the identical guarded release when the first write %s, then requires a fresh approval for the next action",
+    async (_label, firstRelease) => {
+      scriptReleases(firstRelease);
+      const { requester, writer, revalidateAfterSuspend } = buildRequester();
+
+      const first = track(requester(request));
+      const second = track(
+        requester({ ...request, toolCallId: "tool-call-2" }),
+      );
+      await flush();
+      const firstApprovalId = pendingApprovalId();
+      mockSessionWaits[0].resolve({
+        ok: true,
+        output: signedDecision(firstApprovalId, "approve"),
+      });
+      await flush();
+      // The queued action may not claim while the release is being retried.
+      expect(slotClaims()).toBe(1);
+
+      await runReleaseRetries();
+
+      // The decided approval is honored exactly once.
+      expect(first.value).toEqual({
+        approved: true,
+        approvalId: firstApprovalId,
+        sandboxIdentity: "e2b",
+      });
+      // The retry is the same compare-clear; after a committed write it
+      // returns "stale" and clears nothing else.
+      expect(releaseWrites()).toEqual([
+        guardedRelease(firstApprovalId),
+        guardedRelease(firstApprovalId),
+      ]);
+      expect(triggerLogger.error).toHaveBeenCalledWith(
+        "[agent-approval] failed to release approval slot",
+        expect.objectContaining({
+          approval_id: firstApprovalId,
+          attempt: 1,
+          will_retry: true,
+          cause_error_name: "TypeError",
+          outcome_unknown: true,
+        }),
+      );
+
+      // The next action claims its own slot without busy polling.
+      expect(slotClaims()).toBe(2);
+      const secondApprovalId = pendingApprovalId();
+      expect(secondApprovalId).not.toBe(firstApprovalId);
+      expect(mockWaitFor).not.toHaveBeenCalled();
+      expect(approvalRequestsWritten(writer)).toBe(2);
+
+      // Replaying the first decision cannot approve the second action.
+      mockSessionWaits[1].resolve({
+        ok: true,
+        output: signedDecision(firstApprovalId, "approve"),
+      });
+      await flush();
+      expect(second.settled).toBe(false);
+
+      mockSessionWaits[2].resolve({
+        ok: true,
+        output: signedDecision(
+          secondApprovalId,
+          "approve",
+          undefined,
+          "tool-call-2",
+        ),
+      });
+      await flush();
+
+      expect(second.value).toEqual({
+        approved: true,
+        approvalId: secondApprovalId,
+        sandboxIdentity: "e2b",
+      });
+      expect(revalidateAfterSuspend).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("withdraws a granted action when Stop arrives during release", async () => {
+    scriptReleases("fail", "ok");
+    const stop = new AbortController();
+    const { requester } = buildRequester({ signal: stop.signal });
+    const result = track(requester(request));
+    await flush();
+    const approvalId = pendingApprovalId();
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: signedDecision(approvalId, "approve"),
+    });
+    await flush();
+    expect(releaseWrites()).toHaveLength(1);
+    stop.abort();
+    await runReleaseRetries();
+    expect(result.value).toMatchObject({
+      approved: false,
+      approvalId,
+      reason: "The Agent run was stopped before the operation could start.",
+    });
+    expect(releaseWrites()).toHaveLength(2);
+  });
+
+  it.each(["ok", "fail"] as const)(
+    "honors Stop during queued release recovery (%s)",
+    async (lastWrite) => {
+      scriptReleases("fail", "fail", "fail", "fail", "fail", lastWrite);
+      const stop = new AbortController();
+      const { requester, writer } = buildRequester({ signal: stop.signal });
+      const first = track(requester(request));
+      const second = track(
+        requester({ ...request, toolCallId: "tool-call-2" }),
+      );
+      await flush();
+      mockSessionWaits[0].resolve({
+        ok: true,
+        output: signedDecision(pendingApprovalId(), "deny"),
+      });
+      await flush();
+      await runReleaseRetries();
+      expect(first.value).toMatchObject({ approved: false });
+      expect(releaseWrites()).toHaveLength(4);
+      stop.abort();
+      await runReleaseRetries();
+      expect(second.value).toMatchObject({
+        approved: false,
+        reason: "The Agent run was stopped before approval was requested.",
+      });
+      expect(approvalRequestsWritten(writer)).toBe(1);
+      expect(slotClaims()).toBe(1);
+    },
+  );
+
+  it("keeps a denial and denies follow-on actions without polling while the release keeps failing", async () => {
+    scriptReleases("fail", "fail", "fail", "fail", "fail", "fail");
+    const { requester, writer, revalidateAfterSuspend } = buildRequester();
+
+    const first = track(requester(request));
+    const second = track(requester({ ...request, toolCallId: "tool-call-2" }));
+    await flush();
+    const firstApprovalId = pendingApprovalId();
+    mockSessionWaits[0].resolve({
+      ok: true,
+      output: signedDecision(firstApprovalId, "deny", "wrong host"),
+    });
+    await flush();
+    await runReleaseRetries();
+
+    expect(first.value).toMatchObject({
+      approved: false,
+      approvalId: firstApprovalId,
+      reason:
+        "The user denied approval for this operation and said: wrong host",
+    });
+
+    // The queued action retries the same release (3 + 3 writes), then fails
+    // closed instead of claiming.
+    await runReleaseRetries();
+
+    expect(second.value).toEqual(slotReleaseFailed);
+    expect(releaseWrites()).toEqual(
+      Array(6).fill(guardedRelease(firstApprovalId)),
+    );
+    expect(slotClaims()).toBe(1);
+    expect(mockWaitFor).not.toHaveBeenCalled();
+    expect(mockSessionWait).toHaveBeenCalledTimes(1);
+    expect(approvalRequestsWritten(writer)).toBe(1);
+    expect(revalidateAfterSuspend).not.toHaveBeenCalled();
+
+    // Once the identical release succeeds (script exhausted), a later action
+    // asks the user again.
+    const third = track(requester({ ...request, toolCallId: "tool-call-3" }));
+    await flush();
+
+    expect(releaseWrites()).toEqual(
+      Array(7).fill(guardedRelease(firstApprovalId)),
+    );
+    expect(slotClaims()).toBe(2);
+    expect(pendingApprovalId()).not.toBe(firstApprovalId);
+    expect(approvalRequestsWritten(writer)).toBe(2);
+    expect(mockSessionWait).toHaveBeenCalledTimes(2);
+    expect(third.settled).toBe(false);
   });
 });
 

@@ -1522,6 +1522,159 @@ describe("proxy", () => {
     );
   });
 
+  describe("Desktop sign-in proxy handoff", () => {
+    const requestId = "iad1::fra1::abc12-1794282623256-a92d4497977c";
+    const privateMarker = "private-sign-in-canary";
+    const anonymousAuthkit = {
+      session: { user: null },
+      headers: new Headers(),
+    };
+
+    it.each([
+      ["/desktop-login", "desktop_login", "authkit_pass_through"],
+      [
+        "/api/auth/desktop-callback",
+        "desktop_oauth_callback",
+        "authkit_pass_through",
+      ],
+      ["/desktop-login", "desktop_login", "ended_session"],
+      [
+        "/api/auth/desktop-callback",
+        "desktop_oauth_callback",
+        "anonymous_context_retry",
+      ],
+    ])(
+      "records only bounded join fields for %s through %s (%s)",
+      async (pathname, routeKind, branch) => {
+        const info = jest.spyOn(console, "info").mockImplementation(() => {});
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        const env = jest.replaceProperty(process, "env", {
+          ...process.env,
+          VERCEL_GIT_COMMIT_SHA: "B".repeat(40),
+        });
+        try {
+          mockAuthkit.mockResolvedValue(anonymousAuthkit);
+          if (branch === "ended_session") {
+            mockAuthkit.mockRejectedValueOnce({
+              name: "TokenRefreshError",
+              isTransient: false,
+              cause: {
+                status: 400,
+                error: "invalid_grant",
+                errorDescription: "Invalid refresh token.",
+              },
+            });
+          } else if (branch === "anonymous_context_retry") {
+            mockAuthkit.mockRejectedValueOnce(new Error("Wrong mac prefix"));
+          }
+
+          const { default: proxy } = await import("../proxy");
+          const response = await proxy(
+            createRequest({
+              pathname: `${pathname}?code=${privateMarker}&state=${privateMarker}`,
+              headers: {
+                "x-vercel-id": requestId,
+                "x-unrelated": privateMarker,
+              },
+              cookieValues: { "wos-session": privateMarker },
+            }),
+          );
+
+          expect(response).toBe(mockNextResponseNext.mock.results[0]?.value);
+          expect(info).toHaveBeenCalledTimes(1);
+          const encoded = info.mock.calls[0][0] as string;
+          expect(encoded).not.toContain(privateMarker);
+          expect(JSON.parse(encoded)).toEqual({
+            event: "desktop_sign_in_proxy_handoff",
+            diagnostic_version: 1,
+            boundary: "proxy",
+            route_kind: routeKind,
+            branch,
+            vercel_request_id: requestId,
+            web_build_commit: "b".repeat(40),
+          });
+        } finally {
+          env.restore();
+          warning.mockRestore();
+          info.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      { pathname: "/desktop-login", method: "POST", id: requestId },
+      { pathname: "/desktop-callback", method: "GET", id: requestId },
+      {
+        pathname: "/api/auth/desktop-callback",
+        method: "GET",
+        id: privateMarker,
+      },
+    ])(
+      "does not log an unrelated or unjoinable $method $pathname",
+      async ({ pathname, method, id }) => {
+        const info = jest.spyOn(console, "info").mockImplementation(() => {});
+        try {
+          mockAuthkit.mockResolvedValue(anonymousAuthkit);
+          const { default: proxy } = await import("../proxy");
+          await proxy(
+            createRequest({ pathname, method, headers: { "x-vercel-id": id } }),
+          );
+          expect(info).not.toHaveBeenCalled();
+        } finally {
+          info.mockRestore();
+        }
+      },
+    );
+
+    it("keeps a proxy throw distinct from a completed handoff", async () => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const error = new Error("AuthKit unavailable");
+        mockAuthkit.mockRejectedValue(error);
+        const { default: proxy } = await import("../proxy");
+        await expect(
+          proxy(
+            createRequest({
+              pathname: "/api/auth/desktop-callback",
+              headers: { "x-vercel-id": requestId },
+            }),
+          ),
+        ).rejects.toBe(error);
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+        expect(info).not.toHaveBeenCalled();
+        expect(warning.mock.calls[0]?.[0]).toContain(
+          "proxy_authkit_failure_context",
+        );
+      } finally {
+        warning.mockRestore();
+        info.mockRestore();
+      }
+    });
+
+    it("preserves the pass-through response when logging throws", async () => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      try {
+        mockAuthkit.mockResolvedValue(anonymousAuthkit);
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/desktop-login",
+            headers: { "x-vercel-id": requestId },
+          }),
+        );
+        expect(info).toHaveBeenCalledTimes(1);
+        expect(response).toBe(mockNextResponseNext.mock.results[0]?.value);
+      } finally {
+        info.mockRestore();
+      }
+    });
+  });
+
   describe("public page auth context provenance", () => {
     const requestId = "iad1::fra1::abc12-1794282623256-a92d4497977c";
     const canary = "private-canary-marker";

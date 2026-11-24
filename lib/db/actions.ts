@@ -45,6 +45,7 @@ import type {
   CreateVulnerabilityReportInput,
 } from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { UsageModelSelection } from "@/convex/lib/usageModelSelection";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -2383,9 +2384,18 @@ export async function setActiveAgentApprovalPending({
       },
     );
   } catch (error) {
+    // Keep the cause class and whether the write may have committed, so
+    // approval-slot retries are diagnosable without logging Convex payloads.
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to set active agent approval state",
+      {
+        db_operation: "chats.setActiveAgentApprovalPending",
+        db_error_name: error instanceof Error ? error.name : typeof error,
+        ...(isConvexOutcomeUnknownError(error)
+          ? { db_outcome_unknown: true }
+          : {}),
+      },
     );
   }
 }
@@ -2962,6 +2972,7 @@ export async function logUsageRecord({
   modelCostDollars,
   nonModelCostDollars,
   costSource,
+  modelSelection,
 }: {
   usageSettlementId?: string;
   admissionOperationId?: string;
@@ -2990,9 +3001,11 @@ export async function logUsageRecord({
   modelCostDollars?: number;
   nonModelCostDollars?: number;
   costSource?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
+  modelSelection?: UsageModelSelection;
 }): Promise<UsageLogPersistence> {
   try {
-    await getConvexClient().mutation(api.usageLogs.logUsage, {
+    const client = getConvexClient();
+    const args = {
       serviceKey,
       usage_settlement_id: usageSettlementId,
       admission_operation_id: admissionOperationId,
@@ -3021,11 +3034,30 @@ export async function logUsageRecord({
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
-    });
+    };
+    try {
+      await client.mutation(api.usageLogs.logUsage, {
+        ...args,
+        ...(modelSelection && { model_selection: modelSelection }),
+      });
+    } catch (error) {
+      // Older backends reject this argument before running the mutation. Keep
+      // the ledger row during a staggered deploy and never replay an unknown outcome.
+      if (
+        !modelSelection ||
+        !(error instanceof Error) ||
+        !error.message.includes(
+          "ArgumentValidationError: Object contains extra field `model_selection` that is not in the validator.",
+        )
+      ) {
+        throw error;
+      }
+      await client.mutation(api.usageLogs.logUsage, args);
+    }
     return { status: "persisted" };
   } catch (error) {
-    // Ledger persistence is reporting, not money movement: never retry or fail
-    // the response here. Callers report this fixed outcome with the cost event.
+    // Ledger persistence is reporting, not money movement. Callers report
+    // this outcome with the cost event without failing the response.
     const failureCategory =
       error instanceof Error &&
       error.message.includes("already recorded for another account")

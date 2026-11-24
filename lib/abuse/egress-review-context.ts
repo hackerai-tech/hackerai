@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
+import { TELEMETRY_RETENTION_S } from "@/lib/cloud-network/egress-telemetry";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 
 // Short-lived links from a verified cloud workspace to the server-side chat and
@@ -15,12 +16,22 @@ export function egressAbuseReviewGate(
   return value === "true" ? "on" : "invalid";
 }
 
-/** Long enough for an Agent run that acquired before a burst plus review retries. */
+/** How far before a burst a review looks for the runs that acquired its workspace. */
 export const ACQUISITION_LINK_TTL_S = 6 * 60 * 60;
+/**
+ * Records are kept longer than the review looks back. A review starts after
+ * its burst and can still verify it only while the burst's telemetry is kept,
+ * so a write between the burst and its review must not trim a record that the
+ * review's look-back window still includes. The extra 30 minutes covers late
+ * collector uploads.
+ */
+export const ACQUISITION_LINK_RETENTION_S =
+  ACQUISITION_LINK_TTL_S + TELEMETRY_RETENTION_S + 30 * 60;
 /**
  * Acquisition records kept per workspace, across all runs. One more is
  * retained so a reader can tell that older records were trimmed and treat the
- * set as incomplete.
+ * set as incomplete. Repeated acquisitions by one run are coalesced on write,
+ * so this bounds distinct runs and long-lived runs rather than reconnects.
  */
 export const MAX_ACQUISITION_LINKS = 16;
 const RECORD_BUDGET_MS = 1_500;
@@ -51,12 +62,51 @@ const linkKey = (region: E2BCluster, userId: string, sandboxId: string) =>
 // The time is part of the member: a later acquisition by the same run adds a
 // record instead of moving the earlier one, a retried write of the same
 // acquisition is idempotent, and concurrent runs never overwrite each other.
-const encodeMember = (
-  kind: AcquisitionRunKind,
-  chatId: string,
-  runId: string,
-  acquiredAt: number,
-) => `${kind === "parent" ? "p" : "s"}|${chatId}|${runId}|${acquiredAt}`;
+// Members are `<run prefix><time>`; the prefix identifies kind, chat and run.
+const runPrefix = (kind: AcquisitionRunKind, chatId: string, runId: string) =>
+  `${kind === "parent" ? "p" : "s"}|${chatId}|${runId}|`;
+
+/**
+ * One atomic write per acquisition. A review asks whether a run has any
+ * record in [burst start - look-back, burst end), a window at least as long
+ * as the look-back. A reconnecting run would otherwise add a record per
+ * reconnect and crowd other runs out of the bounded set.
+ *
+ * So when the run's two newest valid records are P <= L and the new time T
+ * satisfies T - P <= look-back, L is replaced by T. Any such window that
+ * contained L still contains P (it ends by T, so it starts by T - look-back
+ * <= P) or T (it ends after T). The newest record is always kept and P is
+ * never removed, so each removal leaves a witness for every window it
+ * covered, and the run keeps at most a few records per look-back.
+ *
+ * Only members whose time equals a safe integer score are considered; anything
+ * else stays and keeps the set incomplete for the reader. Retention trimming runs
+ * first, and the rank trim still keeps one record past the bound so the
+ * reader can see that older records were dropped.
+ */
+const RECORD_ACQUISITION = `
+local key, prefix, now = KEYS[1], ARGV[1], tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', ARGV[3])
+local member = prefix .. ARGV[2]
+if not redis.call('ZSCORE', key, member) then
+  local entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
+  local latest, latestAt, previousAt
+  for i = 1, #entries, 2 do
+    local scoreText = entries[i + 1]
+    local score = tonumber(scoreText)
+    if score and scoreText:match('^-?%d+$') and math.abs(score) <= 9007199254740991
+      and entries[i] == prefix .. scoreText then
+      previousAt, latest, latestAt = latestAt, entries[i], score
+    end
+  end
+  if previousAt and latestAt < now and now - previousAt <= tonumber(ARGV[4]) then
+    redis.call('ZREM', key, latest)
+  end
+  redis.call('ZADD', key, now, member)
+end
+redis.call('ZREMRANGEBYRANK', key, 0, -tonumber(ARGV[5]))
+redis.call('EXPIRE', key, ARGV[6])
+return 1`;
 
 function decodeMember(value: unknown, score: unknown): AcquisitionLink | null {
   if (typeof value !== "string") return null;
@@ -121,16 +171,18 @@ export function recordEgressReviewAcquisition(input: {
     const now = input.now ?? Date.now();
     if (!Number.isSafeInteger(now)) return;
     const key = linkKey(region, userId, sandboxId);
-    const write = redis
-      .pipeline()
-      .zadd(key, {
-        score: now,
-        member: encodeMember(input.runKind ?? "parent", chatId, runId, now),
-      })
-      .zremrangebyscore(key, 0, now - ACQUISITION_LINK_TTL_S * 1_000)
-      .zremrangebyrank(key, 0, -(MAX_ACQUISITION_LINKS + 2))
-      .expire(key, ACQUISITION_LINK_TTL_S)
-      .exec();
+    const write = redis.eval(
+      RECORD_ACQUISITION,
+      [key],
+      [
+        runPrefix(input.runKind ?? "parent", chatId, runId),
+        String(now),
+        String(now - ACQUISITION_LINK_RETENTION_S * 1_000),
+        String(ACQUISITION_LINK_TTL_S * 1_000),
+        String(MAX_ACQUISITION_LINKS + 2),
+        String(ACQUISITION_LINK_RETENTION_S),
+      ],
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<never>((_, reject) => {
       timer = setTimeout(
@@ -149,10 +201,11 @@ export function recordEgressReviewAcquisition(input: {
 
 /**
  * Acquisitions recorded for one verified workspace since `since`, oldest
- * first; a run that acquired more than once has one record per acquisition.
+ * first; a run that acquired more than once may have several records.
  * `complete` is false when older records were trimmed or a stored member is
  * unreadable, so the caller cannot mistake a partial set for the only
- * plausible run.
+ * plausible run; `incomplete` says which, and `stored` counts the raw
+ * records, for closed diagnostics only.
  */
 export async function readAcquisitionLinks(
   redis: Redis,
@@ -160,7 +213,12 @@ export async function readAcquisitionLinks(
   userId: string,
   sandboxId: string,
   since: number,
-): Promise<{ links: AcquisitionLink[]; complete: boolean }> {
+): Promise<{
+  links: AcquisitionLink[];
+  complete: boolean;
+  incomplete?: "invalid" | "trimmed";
+  stored: number;
+}> {
   const raw = await redis.zrange<unknown[]>(
     linkKey(region, userId, sandboxId),
     0,
@@ -168,11 +226,22 @@ export async function readAcquisitionLinks(
     { withScores: true },
   );
   const links: AcquisitionLink[] = [];
-  let complete = raw.length / 2 <= MAX_ACQUISITION_LINKS;
+  let invalid = raw.length % 2 !== 0;
   for (let index = 0; index + 1 < raw.length; index += 2) {
     const link = decodeMember(raw[index], raw[index + 1]);
-    if (!link) complete = false;
+    if (!link) invalid = true;
     else if (link.acquiredAt >= since) links.push(link);
   }
-  return { links, complete: complete && raw.length % 2 === 0 };
+  const stored = Math.floor(raw.length / 2);
+  const incomplete = invalid
+    ? ("invalid" as const)
+    : stored > MAX_ACQUISITION_LINKS
+      ? ("trimmed" as const)
+      : undefined;
+  return {
+    links,
+    complete: !incomplete,
+    ...(incomplete ? { incomplete } : {}),
+    stored,
+  };
 }

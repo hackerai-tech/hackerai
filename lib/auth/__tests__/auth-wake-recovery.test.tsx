@@ -55,6 +55,8 @@ describe("auth recovery through ConvexProviderWithAuth", () => {
       if (ended) user = null;
     });
     deps = {
+      // The refresh lifecycle tests use opaque token labels.
+      matchesToken: () => true,
       useAuth: (() => ({
         user,
         loading: false,
@@ -324,6 +326,49 @@ describe("auth recovery through ConvexProviderWithAuth", () => {
     getAccessToken.mockResolvedValue(token);
     await act(async () => view.rerender(renderApp()));
     expect(observations.at(-1)?.isAuthenticated).toBe(true);
+  });
+
+  it("never authenticates Convex with a previous account's stored token", async () => {
+    delete deps.matchesToken;
+    // Synthetic, unsigned tokens: only their claims are read on the client.
+    const base64url = (value: object) =>
+      btoa(JSON.stringify(value))
+        .replace(/=+$/, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+    const jwt = (claims: object) =>
+      `${base64url({ alg: "RS256", typ: "JWT" })}.${base64url(claims)}.sig`;
+    const previousAccount = jwt({ sub: "user-0", sid: "session-0" });
+    const currentAccount = jwt({ sub: "user-1", sid: "session-1" });
+    // AuthKit's store still holds the previous sign-in's token; its
+    // session check then loads the current session's token.
+    token = previousAccount;
+    refreshAuth.mockImplementation(async () => {
+      token = currentAccount;
+    });
+    const returned: Array<string | null> = [];
+    client.setAuth = jest.fn((fetch, onChange) => {
+      fetchToken = fetch;
+      reportAuth = onChange;
+      void fetch({ forceRefreshToken: false }).then((value) => {
+        returned.push(value);
+        onChange(Boolean(value));
+      });
+    });
+
+    // Refused first; recovery's session check then loads this session's
+    // token and Convex re-registers with it.
+    await act(async () => render(renderApp()));
+    await act(async () => jest.advanceTimersByTimeAsync(10_000));
+    expect(returned[0]).toBeNull();
+    expect(refreshAuth).toHaveBeenCalledWith();
+    expect(observations.at(-1)?.isAuthenticated).toBe(true);
+    expect(screen.queryByText("Signed out")).not.toBeInTheDocument();
+    expect(returned).not.toContain(previousAccount);
+    expect(returned.at(-1)).toBe(currentAccount);
+    expect(
+      observations.some((state) => !state.isLoading && !state.isAuthenticated),
+    ).toBe(false);
   });
 
   describe("committed provider state behind Convex loading", () => {

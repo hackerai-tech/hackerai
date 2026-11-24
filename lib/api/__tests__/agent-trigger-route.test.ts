@@ -437,6 +437,53 @@ describe("web request correlation at Agent dispatch", () => {
     },
   );
 
+  describe("Trigger sessions.start on a closed session", () => {
+    // Shape of the pinned Trigger 4.7.7 ConflictError for this JSON error;
+    // Trigger rejects it before creating or reusing a run.
+    const closedSession = () =>
+      Object.assign(
+        new Error(
+          "Session is closed; use a different externalId to create a new session",
+        ),
+        { name: "TriggerApiError", status: 409 },
+      );
+
+    it.each(["/api/agent", "/api/agent-long"] as const)(
+      "returns 409 from %s without associating a run",
+      async (endpoint) => {
+        jest.spyOn(console, "warn").mockImplementation(() => {});
+        sessions.start.mockRejectedValue(closedSession());
+
+        const response = await start(endpoint, "ask_approval", requestId);
+
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: "bad_request:api",
+          cause:
+            "This Agent request has already ended. Reload the chat to see its latest state.",
+        });
+        expect(sessions.start).toHaveBeenCalledTimes(1);
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(mockCreatePublicToken).not.toHaveBeenCalled();
+        expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+        expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps the generic 500 when tasks.trigger reports the same error", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      mockTriggerTask.mockRejectedValue(closedSession());
+
+      const response = await start("/api/agent", "full_access", requestId);
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        cause: "Failed to start agent run",
+      });
+      expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+    });
+  });
+
   describe("Trigger sessions.start body limit", () => {
     // Trigger's sessions.start route (api.v1.sessions.ts in the pinned v4.7.7,
     // unchanged in v4.8.4) caps the JSON body at 32 KiB and returns this 413

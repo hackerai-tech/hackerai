@@ -1,5 +1,6 @@
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { nextActionsStateValidator } from "./lib/nextActionsState";
+import { usageModelSelectionValidator } from "./lib/usageModelSelection";
 import {
   settlementIdentityFields,
   walletActionResult,
@@ -1813,6 +1814,8 @@ export default defineSchema({
     ),
     max_mode: v.optional(v.boolean()),
     byok: v.optional(v.boolean()),
+    // Absent on historical rows and older writers; never backfilled.
+    model_selection: v.optional(usageModelSelectionValidator),
   })
     .index("by_usage_settlement_id", ["usage_settlement_id"])
     .index("by_user", ["user_id"])
