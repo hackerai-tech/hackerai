@@ -6,6 +6,7 @@ import {
   markLoopRecoveryCheckpoint,
 } from "../message-reconciliation";
 import type { ChatMessage } from "@/types";
+import { convertToUIMessages } from "@/lib/utils";
 
 const createAssistantMessage = (
   text: string,
@@ -187,6 +188,25 @@ describe("areMessagesEquivalentForConvexSync", () => {
       areMessagesEquivalentForConvexSync([persisted], [{ ...persisted }]),
     ).toBe(true);
   });
+  it("applies a saved Stop marker from history when no part changed", () => {
+    const current = createAssistantMessage("Partial");
+    const [persisted] = convertToUIMessages([
+      { ...current, user_stopped: true },
+    ]);
+    expect(persisted.metadata).toEqual({ userStopped: true });
+    expect(areMessagesEquivalentForConvexSync([current], [persisted])).toBe(
+      false,
+    );
+    expect(
+      areMessagesEquivalentForConvexSync(
+        [persisted],
+        convertToUIMessages([{ ...current, user_stopped: true }]),
+      ),
+    ).toBe(true);
+    // Rows without the marker must not gain one.
+    expect(convertToUIMessages([current])[0].metadata).toBeUndefined();
+  });
+
   it("detects completed text when the message ID and part count are unchanged", () => {
     const current = [createAssistantMessage("The latest")];
     const persisted = [
@@ -399,6 +419,18 @@ it("shows a saved continuation and receipt without regressing earlier streamed t
     goal: { achievedElapsedMs: 52000 },
   });
   expect(merged[1]).toEqual(continuation);
+});
+
+it("keeps more complete local text while showing its saved Stop marker", () => {
+  const local = createAssistantMessage("Full first response", {
+    metadata: { mode: "agent" },
+  });
+  const saved = createAssistantMessage("Full first", {
+    metadata: { userStopped: true },
+  });
+  const [merged] = mergePersistedGoalMessages([local], [saved]);
+  expect(merged.parts).toEqual(local.parts);
+  expect(merged.metadata).toEqual({ mode: "agent", userStopped: true });
 });
 
 it("places delayed saved continuations before later local user turns", () => {

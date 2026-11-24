@@ -183,6 +183,9 @@ export const areMessagesEquivalentForConvexSync = (
       message.id === next[index].id &&
       message.role === next[index].role &&
       haveSameJsonValue(message.metadata?.goal, next[index].metadata?.goal) &&
+      // The saved Stop marker can arrive without any part changing.
+      (message.metadata?.userStopped === true) ===
+        (next[index].metadata?.userStopped === true) &&
       haveSameJsonValue(message.parts, next[index].parts),
   );
 
@@ -238,7 +241,8 @@ export const arePersistedMessagesAtLeastAsComplete = (
 };
 
 // Preserve local content when an older persisted part is less complete, while
-// allowing independent saved goal messages and receipts to become visible.
+// allowing independent saved goal messages, receipts and Stop markers to
+// become visible.
 export function mergePersistedGoalMessages<T extends ReconciledMessage>(
   current: readonly T[],
   persisted: readonly T[],
@@ -260,11 +264,18 @@ export function mergePersistedGoalMessages<T extends ReconciledMessage>(
   return [
     ...current.flatMap((message) => {
       const saved = savedById.get(message.id);
+      const savedGoal = saved?.role === message.role && saved.metadata?.goal;
+      const savedStop =
+        saved?.role === message.role && saved.metadata?.userStopped === true;
       const merged =
-        saved?.role === message.role && saved.metadata?.goal
+        savedGoal || savedStop
           ? {
               ...message,
-              metadata: { ...message.metadata, goal: saved.metadata.goal },
+              metadata: {
+                ...message.metadata,
+                ...(savedGoal ? { goal: savedGoal } : {}),
+                ...(savedStop ? { userStopped: true } : {}),
+              },
             }
           : message;
       return [...(beforeShared.get(message.id) ?? []), merged];

@@ -586,6 +586,8 @@ export type MessageMetadata = {
   generationStartedAt?: number;
   generationTimeMs?: number;
   recoverySourceMessageId?: string;
+  /** Saved after an explicit Stop ended this turn; never inferred locally. */
+  userStopped?: boolean;
 };
 
 export type ChatMessage = UIMessage<MessageMetadata> & {

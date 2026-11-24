@@ -35,7 +35,16 @@ jest.mock("@/app/services/desktop-command-cancellation", () => ({
     mockCancelDesktopRunLocally(...args),
 }));
 
-const mockCancelStream = jest.fn(async () => null);
+const mockCancelStream = jest.fn<() => Promise<boolean | null>>(
+  async () => null,
+);
+const mockMarkUserStopped = jest.fn<
+  (args: {
+    chatId: string;
+    messageId: string;
+    role: "user" | "assistant";
+  }) => Promise<boolean>
+>(async () => false);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
 const mockRegenerateWithNewContent = jest.fn<
@@ -80,7 +89,10 @@ let mockCurrentTodos: unknown = todos;
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
-    chatStreams: { cancelStreamFromClient: "cancelStreamFromClient" },
+    chatStreams: {
+      cancelStreamFromClient: "cancelStreamFromClient",
+      markMessageUserStopped: "markMessageUserStopped",
+    },
     agentSteers: { create: "createAgentSteer" },
     messages: {
       deleteLastAssistantMessage: "deleteLastAssistantMessage",
@@ -95,6 +107,8 @@ jest.mock("convex/react", () => ({
     switch (mutation) {
       case "cancelStreamFromClient":
         return mockCancelStream;
+      case "markMessageUserStopped":
+        return mockMarkUserStopped;
       case "saveAssistantMessage":
         return mockSaveAssistantMessage;
       case "deleteLastAssistantMessage":
@@ -741,6 +755,196 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockStop).not.toHaveBeenCalled();
     expect(mockSaveAssistantMessage).not.toHaveBeenCalled();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  describe("explicit Stop marker", () => {
+    const renderStop = ({
+      mode,
+      runId,
+      currentMessages = messages,
+    }: {
+      mode: "ask" | "agent";
+      runId?: string;
+      currentMessages?: ChatMessage[];
+    }) => {
+      mockChatMode = mode;
+      return renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: currentMessages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: runId },
+        }),
+      ).result;
+    };
+    const stop = async (
+      result: { current: ReturnType<typeof useChatHandlers> },
+      options?: Parameters<ReturnType<typeof useChatHandlers>["handleStop"]>[0],
+    ) => {
+      let stopped: boolean | undefined;
+      await act(async () => {
+        stopped = await result.current.handleStop(options);
+      });
+      return stopped;
+    };
+    const localMarkerUpdate = () =>
+      mockSetMessages.mock.calls
+        .map(([update]) => update)
+        .find(
+          (update): update is (prev: ChatMessage[]) => ChatMessage[] =>
+            typeof update === "function",
+        );
+
+    it("marks the partial Ask reply only after Convex confirms it stopped a running stream", async () => {
+      let finishCancel!: (wasRunning: boolean) => void;
+      mockCancelStream.mockImplementationOnce(
+        () => new Promise((resolve) => (finishCancel = resolve)),
+      );
+      mockMarkUserStopped.mockResolvedValueOnce(true);
+      const result = renderStop({ mode: "ask" });
+      let stopping!: Promise<boolean>;
+      act(() => {
+        stopping = result.current.handleStop();
+      });
+      await waitFor(() => expect(mockCancelStream).toHaveBeenCalled());
+      expect(mockMarkUserStopped).not.toHaveBeenCalled();
+      await act(async () => {
+        finishCancel(true);
+        expect(await stopping).toBe(true);
+      });
+      expect(mockMarkUserStopped).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        messageId: "assistant-1",
+        role: "assistant",
+      });
+      expect(localMarkerUpdate()?.(messages)).toEqual([
+        messages[0],
+        { ...messages[1], metadata: { userStopped: true } },
+      ]);
+    });
+
+    it("anchors a Stop before any reply to the user's request", async () => {
+      mockCancelStream.mockResolvedValueOnce(true);
+      mockMarkUserStopped.mockResolvedValueOnce(true);
+      const result = renderStop({
+        mode: "ask",
+        currentMessages: [messages[0]],
+      });
+      expect(await stop(result)).toBe(true);
+      expect(mockMarkUserStopped).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        messageId: "user-1",
+        role: "user",
+      });
+    });
+
+    it.each([
+      { label: "already finished", cancel: () => Promise.resolve(false) },
+      {
+        label: "failed",
+        cancel: () => Promise.reject(new Error("Synthetic cancel failure")),
+      },
+    ])("leaves no marker when Ask cancellation $label", async ({ cancel }) => {
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockCancelStream.mockImplementationOnce(cancel);
+        const result = renderStop({ mode: "ask" });
+        await stop(result);
+        expect(mockMarkUserStopped).not.toHaveBeenCalled();
+        expect(localMarkerUpdate()).toBeUndefined();
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it("marks the reply after the exact Agent run is canceled", async () => {
+      mockMarkUserStopped.mockResolvedValueOnce(true);
+      const result = renderStop({ mode: "agent", runId: "run-1" });
+      expect(await stop(result)).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent/cancel",
+        expect.objectContaining({
+          body: JSON.stringify({
+            chatId: "chat-1",
+            expectedTriggerRunId: "run-1",
+          }),
+        }),
+      );
+      expect(mockMarkUserStopped).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        messageId: "assistant-1",
+        role: "assistant",
+      });
+    });
+
+    it.each([
+      {
+        label: "stale",
+        response: {
+          ok: false,
+          status: 409,
+          json: async () => ({ reason: "stale_run", activeTriggerRunId: null }),
+        },
+      },
+      {
+        label: "rejected",
+        response: { ok: false, status: 400, json: async () => ({}) },
+      },
+    ])(
+      "leaves no marker when the Agent cancellation is $label",
+      async ({ response }) => {
+        const log = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          jest.mocked(global.fetch).mockResolvedValue(response as Response);
+          const result = renderStop({ mode: "agent", runId: "run-1" });
+          expect(await stop(result)).toBe(false);
+          expect(mockMarkUserStopped).not.toHaveBeenCalled();
+        } finally {
+          log.mockRestore();
+        }
+      },
+    );
+
+    it("leaves goal controls unmarked even when their run is canceled", async () => {
+      const result = renderStop({ mode: "agent", runId: "run-1" });
+      expect(
+        await stop(result, {
+          requireSavedResponse: true,
+          expectedTriggerRunId: "run-1",
+        }),
+      ).toBe(true);
+      expect(mockMarkUserStopped).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: "refused", mark: () => Promise.resolve(false) },
+      {
+        label: "failed",
+        mark: () => Promise.reject(new Error("Synthetic marker failure")),
+      },
+    ])(
+      "keeps a successful Stop when the marker is $label",
+      async ({ mark }) => {
+        const log = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          mockCancelStream.mockResolvedValueOnce(true);
+          mockMarkUserStopped.mockImplementationOnce(mark);
+          const result = renderStop({ mode: "ask" });
+          expect(await stop(result)).toBe(true);
+          expect(mockMarkUserStopped).toHaveBeenCalledTimes(1);
+          expect(localMarkerUpdate()).toBeUndefined();
+        } finally {
+          log.mockRestore();
+        }
+      },
+    );
   });
 
   const renderSummarySteer = (isSummarizing = true, runId = "run-1") => {

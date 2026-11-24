@@ -1325,6 +1325,7 @@ export const getMessagesByChatId = query({
         generation_time_ms: v.optional(v.number()),
         generation_started_at: v.optional(v.number()),
         mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
+        user_stopped: v.optional(v.boolean()),
         fileDetails: v.optional(
           v.array(
             v.object({
@@ -1465,6 +1466,10 @@ export const getMessagesByChatId = query({
           generation_started_at: message.generation_started_at,
           goal: message.goal,
           generation_time_ms: message.generation_time_ms,
+          ...(message.user_stopped === true &&
+          (message.role !== "assistant" || !message.finish_reason)
+            ? { user_stopped: true }
+            : {}),
           fileDetails,
         });
       }
@@ -2362,6 +2367,7 @@ export const branchChat = mutation({
           generation_started_at: msg.generation_started_at,
           generation_time_ms: msg.generation_time_ms,
           finish_reason: msg.finish_reason,
+          user_stopped: msg.user_stopped,
           trigger_run_id: msg.trigger_run_id,
           usage: msg.usage,
         });
@@ -2612,6 +2618,7 @@ export const regenerateWithNewContent = mutation({
             : [{ type: "text", text: args.newContent }],
         content: args.newContent.trim() || undefined,
         file_ids: newFileIds && newFileIds.length > 0 ? newFileIds : undefined,
+        user_stopped: undefined,
         update_time: Date.now(),
       });
 
