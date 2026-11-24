@@ -210,14 +210,59 @@ describe("RateLimitWarning", () => {
       "today's free $0.25 allowance",
     );
     expect(screen.getByText(/this Agent response/i)).toHaveTextContent(
-      "low-cost model",
+      "plan's monthly usage",
     );
+    expect(
+      screen.getByRole("button", { name: "Add Credits" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /view usage/i }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /upgrade plan/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("names the daily free allowance when a paid run crosses a usage threshold", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "paid-daily-free-allowance",
+          resetTime: new Date(Date.now() + 60_000),
+          subscription: "pro",
+          mode: "agent",
+          costLimitDollars: 0.25,
+          usedDollars: 0.2,
+          midStream: true,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("rate-limit-warning")).toHaveTextContent(
+      "$0.20 of today's free $0.25 allowance used. This response stops when it runs out.",
+    );
+    expect(
+      screen.getByRole("button", { name: "Add Credits" }),
+    ).toBeInTheDocument();
+  });
+
+  it("derives the shown percent from the rounded dollar amounts", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          ...monthlyWarning,
+          remainingPercent: 21,
+          usedDollars: 0.198,
+          limitDollars: 0.25,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("rate-limit-warning")).toHaveTextContent(
+      "You've used $0.20 of $0.25 (80%).",
+    );
   });
 
   it("renders legacy Pro Agent run cap copy without upgrade or add-credit CTAs", () => {

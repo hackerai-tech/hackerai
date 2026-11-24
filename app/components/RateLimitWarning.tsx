@@ -57,6 +57,9 @@ export type RateLimitWarningData =
       subscription: SubscriptionTier;
       mode: ChatMode;
       costLimitDollars: number;
+      /** Present once the response has crossed a usage threshold. */
+      usedDollars?: number;
+      midStream?: boolean;
     }
   | {
       warningType: "agent-run-spend-cap";
@@ -125,7 +128,11 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "paid-daily-free-allowance") {
-    return `Your paid-plan limit is used up, so this ${data.mode === "agent" ? "Agent" : "Ask"} response is using today's free $${data.costLimitDollars.toFixed(2)} allowance with our low-cost model. It resets ${timeString} and the response will stop if the allowance runs out.`;
+    const limit = `$${data.costLimitDollars.toFixed(2)}`;
+    if (data.usedDollars !== undefined) {
+      return `$${data.usedDollars.toFixed(2)} of today's free ${limit} allowance used. This response stops when it runs out. Resets ${timeString}.`;
+    }
+    return `You've used your plan's monthly usage. This ${data.mode === "agent" ? "Agent" : "Ask"} response is running on today's free ${limit} allowance with a lower-cost model, and it will stop if that runs out. Resets ${timeString}.`;
   }
 
   if (data.warningType === "agent-run-spend-cap") {
@@ -160,9 +167,16 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You've reached your monthly usage limit. It resets ${timeString}.`;
   }
 
-  const usedPercent = 100 - data.remainingPercent;
-  if (data.usedDollars !== undefined && data.limitDollars !== undefined) {
-    return `You've used $${data.usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
+  if (
+    data.usedDollars !== undefined &&
+    data.limitDollars !== undefined &&
+    data.limitDollars > 0
+  ) {
+    // Derive the percent from the cent-rounded amounts shown beside it, so
+    // "$0.20 of $0.25" never reads as 79%.
+    const usedDollars = Math.round(data.usedDollars * 100) / 100;
+    const usedPercent = Math.round((usedDollars / data.limitDollars) * 100);
+    return `You've used $${usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
   }
 
   return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
@@ -230,8 +244,12 @@ const RateLimitWarningContent = ({
     data.warningType === "paid-daily-free-allowance"
       ? undefined
       : data.capReason;
+  // Credits are the way past a used-up monthly plan, so the daily-allowance
+  // banner offers them too.
   const extraUsageCta =
-    data.warningType === "token-bucket" && !hideMonthlyWarning
+    (data.warningType === "token-bucket" ||
+      data.warningType === "paid-daily-free-allowance") &&
+    !hideMonthlyWarning
       ? getExtraUsageLimitCta({
           subscription: data.subscription,
           capReason,

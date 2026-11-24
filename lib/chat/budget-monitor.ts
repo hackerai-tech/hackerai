@@ -2,6 +2,7 @@ import "server-only";
 
 import type { UIMessageStreamWriter } from "ai";
 import type {
+  ChatMode,
   ExtraUsageConfig,
   RateLimitInfo,
   SubscriptionTier,
@@ -37,6 +38,12 @@ export interface BudgetSnapshot {
   extraUsageMonthlyRemainingAtStart?: number;
   capReasonOnExhaustion?: LimitCapReason;
   extraUsageOverflowAllowed?: boolean;
+  /**
+   * Set when this budget is a paid user's daily free allowance. Threshold
+   * warnings then update the allowance banner shown at stream start instead
+   * of a generic usage banner that does not say which limit it is.
+   */
+  paidDailyFreeAllowance?: { mode: ChatMode };
 }
 
 export type BudgetBillingStopReason =
@@ -347,6 +354,23 @@ export class BudgetMonitor {
     cutOff?: boolean;
     capReason?: LimitCapReason;
   }): void {
+    const allowance = this.snapshot.paidDailyFreeAllowance;
+    // The cut-off keeps the token-bucket warning: it drives blocked-chat
+    // billing recovery and its cap reason already names this allowance.
+    if (allowance && !args.cutOff) {
+      writeRateLimitWarning(this.writer, {
+        warningType: "paid-daily-free-allowance",
+        resetTime: this.snapshot.monthlyResetTime.toISOString(),
+        subscription: this.subscription,
+        mode: allowance.mode,
+        costLimitDollars: this.snapshot.monthlyLimitPoints / POINTS_PER_DOLLAR,
+        usedDollars:
+          Math.round((args.projectedUsedPoints / POINTS_PER_DOLLAR) * 100) /
+          100,
+        midStream: true,
+      });
+      return;
+    }
     const ctx: TokenBucketEmitContext = {
       bucketType: this.snapshot.budgetPeriod ?? "monthly",
       usedPercent: args.usedPercent,

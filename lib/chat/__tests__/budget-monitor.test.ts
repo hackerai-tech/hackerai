@@ -207,6 +207,7 @@ describe("BudgetMonitor", () => {
         extraUsageAutoReload: false,
         extraUsageOverflowAllowed: false,
         capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
+        paidDailyFreeAllowance: { mode: "agent" },
       },
       writer,
       "pro",
@@ -230,6 +231,43 @@ describe("BudgetMonitor", () => {
           capReason: "paid_daily_free_allowance_cut_off",
           limitDollars: 0.1,
         }),
+      }),
+    );
+  });
+
+  it("updates the paid daily allowance banner when a threshold is crossed", () => {
+    const writer = makeWriter();
+    const monitor = new BudgetMonitor(
+      {
+        monthlyLimitPoints: 2500,
+        monthlyRemainingAtStart: 2500,
+        monthlyResetTime: new Date("2026-06-12T00:00:00.000Z"),
+        extraUsageEnabledAtStart: false,
+        extraUsageHasBalanceAtStart: false,
+        extraUsageBalanceAtStart: 0,
+        extraUsageAutoReload: false,
+        extraUsageOverflowAllowed: false,
+        capReasonOnExhaustion: "paid_daily_free_allowance_cut_off",
+        paidDailyFreeAllowance: { mode: "agent" },
+      },
+      writer,
+      "pro",
+    );
+
+    expect(monitor.checkAfterStep(0.2)).toEqual({ type: "continue" });
+    expect(writer.write).toHaveBeenCalledTimes(1);
+    expect(writer.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "data-rate-limit-warning",
+        data: {
+          warningType: "paid-daily-free-allowance",
+          resetTime: "2026-06-12T00:00:00.000Z",
+          subscription: "pro",
+          mode: "agent",
+          costLimitDollars: 0.25,
+          usedDollars: 0.2,
+          midStream: true,
+        },
       }),
     );
   });
