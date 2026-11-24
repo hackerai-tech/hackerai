@@ -53,7 +53,7 @@ fn is_trusted_url(url: &url::Url) -> bool {
     crate::validate_origin(&url.origin().ascii_serialization())
 }
 
-fn is_trusted_webview(webview: &tauri::Webview) -> bool {
+pub(crate) fn is_trusted_webview(webview: &tauri::Webview) -> bool {
     webview.label() == "main" && webview.url().is_ok_and(|url| is_trusted_url(&url))
 }
 

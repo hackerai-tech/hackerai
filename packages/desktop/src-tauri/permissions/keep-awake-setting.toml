@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-keep-awake-setting"
+description = "Allows the trusted HackerAI page to read and change whether this device stays awake while Agent works."
+commands.allow = [
+  "get_keep_awake_enabled",
+  "set_keep_awake_enabled",
+]

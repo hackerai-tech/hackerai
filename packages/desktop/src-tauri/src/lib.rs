@@ -4830,7 +4830,9 @@ pub fn run() {
             execute_authorized_pty_kill,
             execute_pty_kill,
             notifications::agent_notification_permission,
-            notifications::show_agent_input_notification
+            notifications::show_agent_input_notification,
+            keep_awake::get_keep_awake_enabled,
+            keep_awake::set_keep_awake_enabled
         ]))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
@@ -4881,7 +4883,9 @@ pub fn run() {
             app.manage(lifecycle_diagnostics::LifecycleDiagnostics::start(
                 app.path().app_data_dir().ok(),
             ));
-            app.manage(keep_awake::KeepAwake::start());
+            app.manage(keep_awake::KeepAwake::start(
+                app.path().app_data_dir().ok(),
+            ));
             #[cfg(target_os = "linux")]
             watch_linux_web_process(app);
             notifications::init(app.handle());
