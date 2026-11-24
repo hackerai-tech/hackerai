@@ -12,6 +12,10 @@ import {
 } from "../service-transport-observation";
 import { registerServiceTransportObserver } from "../service-transport-observation.node";
 
+const mockEmitPostHogLog = jest.fn();
+jest.mock("../../posthog/logs", () => ({
+  emitPostHogLog: (...args: unknown[]) => mockEmitPostHogLog(...args),
+}));
 jest.mock("convex/browser", () =>
   jest.requireActual("../../../node_modules/convex/dist/cjs/browser/index.js"),
 );
@@ -137,13 +141,13 @@ describe("bounded RPC failure diagnostics", () => {
         return [];
       }
     });
-  const request = (path = "fixture:accept") => ({
+  const request = (path = "fixture:accept", serviceKey = secret) => ({
     method: "POST",
     headers: { authorization: "PRIVATE_HEADER" },
     body: JSON.stringify({
       path,
       format: "convex_encoded_json",
-      args: [{ serviceKey: secret, target: "PRIVATE_TARGET" }],
+      args: [{ serviceKey, target: "PRIVATE_TARGET" }],
     }),
   });
   beforeEach(() => {
@@ -933,6 +937,227 @@ describe("bounded RPC failure diagnostics", () => {
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
       },
     );
+  });
+
+  describe("subagent proof timing receipt", () => {
+    const name = "subagents:listForParentBackend";
+    const reference = makeFunctionReference<"query">(name);
+    const receipt = "[Request ID: 0123456789abcdef] Server Error";
+    const issuedAt = 1_800_000_000_000;
+    let clock: number;
+    const errorBody = (overrides: Record<string, unknown> = {}) => ({
+      status: "error",
+      errorMessage: receipt,
+      logLines: [],
+      ...overrides,
+    });
+    // The proof timestamp is captured, then signed before dispatch; the
+    // transport resolves headers after a further delay.
+    const respond =
+      (payload: unknown, { status = 200, headersAfter = 61_000.2 } = {}) =>
+      async () => {
+        clock += headersAfter;
+        return new Response(JSON.stringify(payload), { status });
+      };
+    beforeEach(() => {
+      mockEmitPostHogLog.mockReset();
+      jest.spyOn(Date, "now").mockReturnValue(issuedAt);
+      clock = 1_250.4;
+      jest
+        .spyOn(performance, "now")
+        .mockReturnValueOnce(1_000)
+        .mockImplementation(() => clock);
+    });
+
+    it.each([
+      ["a production redacted", receipt, []],
+      [
+        "a guard rejection with a proof marker",
+        `${receipt}\nUncaught Error: Unauthorized: Invalid service request\n    at PRIVATE_STACK`,
+        [
+          `[WARN] '{"level":"warn","event":"service_proof_rejected","timestamp":"2026-11-16T16:04:34.714Z","diagnostic_version":1,"public_input_observation":"proof_expired"}'`,
+        ],
+      ],
+    ])(
+      "times %s real SDK error once, joined by its receipt",
+      async (_name, errorMessage, logLines) => {
+        let wire: Record<string, unknown> | undefined;
+        const transport = jest.fn(async (_input, init?: RequestInit) => {
+          wire = JSON.parse(String(init?.body)).args[0];
+          return respond(errorBody({ errorMessage, logLines }))();
+        });
+        globalThis.fetch = transport as typeof fetch;
+        const failure = await createServiceConvexClient(deployment)
+          .query(reference, {
+            serviceKey: secret,
+            parentTriggerRunId: "PRIVATE_RUN",
+          } as never)
+          .catch((error: Error) => error);
+
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toBe(errorMessage);
+        expect(transport).toHaveBeenCalledTimes(1);
+        // The real signer still stamps the proof with wall-clock Date.now.
+        expect(String(wire?.serviceKey)).toMatch(/^hmac1\.1800000000000\./);
+        expect(
+          await verifyServiceArgs(
+            { deployment, name, type: "query" },
+            wire!,
+            secret,
+            issuedAt,
+          ),
+        ).toBe(true);
+        expect(mockEmitPostHogLog.mock.calls).toEqual([
+          [
+            {
+              level: "warn",
+              event: "convex_service_query_proof_timing",
+              body: "convex_service_query_proof_timing",
+              attributes: {
+                function_name: name,
+                backend_request_id: "0123456789abcdef",
+                timestamp_to_dispatch_ms: 250,
+                dispatch_to_headers_ms: 61_000,
+              },
+            },
+          ],
+        ]);
+        // The existing console receipt is unchanged and carries the join key.
+        expect(diagnostics()).toEqual([
+          expect.objectContaining({
+            function_name: name,
+            reason: "application_error",
+            backend_request_id: "0123456789abcdef",
+          }),
+        ]);
+        const emitted = JSON.stringify(mockEmitPostHogLog.mock.calls);
+        for (const canary of [secret, "PRIVATE", deployment, `${issuedAt}`])
+          expect(emitted).not.toContain(canary);
+      },
+    );
+
+    it("caps the header wait at 300 seconds", async () => {
+      await createServiceFetch(
+        deployment,
+        jest.fn(respond(errorBody(), { headersAfter: 900_000 })),
+      )(`${deployment}/api/query`, request(name));
+      expect(mockEmitPostHogLog).toHaveBeenCalledTimes(1);
+      expect(mockEmitPostHogLog.mock.calls[0][0].attributes).toMatchObject({
+        timestamp_to_dispatch_ms: 250,
+        dispatch_to_headers_ms: 300_000,
+      });
+    });
+
+    const unsigned = {
+      method: "POST",
+      body: JSON.stringify({
+        path: name,
+        format: "convex_encoded_json",
+        args: [{ parentTriggerRunId: "PRIVATE_RUN" }],
+      }),
+    };
+    it.each([
+      ["a success", "query", request(name), { status: "success", value: [] }],
+      ["another function", "query", request(), errorBody()],
+      ["the same name as a mutation", "mutation", request(name), errorBody()],
+      ["an unsigned call", "query", unsigned, errorBody()],
+      [
+        "a receipt containing the configured credential",
+        "query",
+        request(name, "456789abcdef"),
+        errorBody(),
+      ],
+      [
+        "an uppercase receipt",
+        "query",
+        request(name),
+        errorBody({ errorMessage: receipt.replace("abcdef", "ABCDEF") }),
+      ],
+      [
+        "a short receipt",
+        "query",
+        request(name),
+        errorBody({ errorMessage: receipt.replace("0123", "123") }),
+      ],
+      [
+        "a missing receipt",
+        "query",
+        request(name),
+        errorBody({ errorMessage: "Server Error" }),
+      ],
+      [
+        "a typed ConvexError",
+        "query",
+        request(name),
+        errorBody({ errorData: { reason: "PRIVATE_DATA" } }),
+      ],
+      [
+        "a read byte limit",
+        "query",
+        request(name),
+        errorBody({
+          errorMessage: `${receipt}\nUncaught Error: Too many bytes read in a single function execution`,
+        }),
+      ],
+    ])("stays quiet for %s", async (_name, kind, init, payload) => {
+      const response = await createServiceFetch(
+        deployment,
+        jest.fn(respond(payload)),
+      )(`${deployment}/api/${kind}`, init);
+      expect(response.status).toBe(200);
+      expect(mockEmitPostHogLog).not.toHaveBeenCalled();
+    });
+
+    it("stays quiet for an HTTP 560 application error", async () => {
+      const response = await createServiceFetch(
+        deployment,
+        jest.fn(respond(errorBody(), { status: 560 })),
+      )(`${deployment}/api/query`, request(name));
+      expect(response.status).toBe(560);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({ reason: "http_5xx" }),
+      ]);
+      expect(mockEmitPostHogLog).not.toHaveBeenCalled();
+    });
+
+    it("stays quiet for a transport failure and preserves it", async () => {
+      const failure = new TypeError("fetch failed");
+      await expect(
+        createServiceFetch(deployment, jest.fn().mockRejectedValue(failure))(
+          `${deployment}/api/query`,
+          request(name),
+        ),
+      ).rejects.toBe(failure);
+      expect(mockEmitPostHogLog).not.toHaveBeenCalled();
+    });
+
+    it("emits independently when the console receipt throws", async () => {
+      warning.mockImplementation(() => {
+        throw new Error("console unavailable");
+      });
+      const response = await createServiceFetch(
+        deployment,
+        jest.fn(respond(errorBody())),
+      )(`${deployment}/api/query`, request(name));
+      expect(JSON.parse(await response.text())).toEqual(errorBody());
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(mockEmitPostHogLog).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the console receipt and SDK error when OTLP throws", async () => {
+      mockEmitPostHogLog.mockImplementation(() => {
+        throw new Error("otlp unavailable");
+      });
+      globalThis.fetch = jest.fn(respond(errorBody()));
+      const failure = await createServiceConvexClient(deployment)
+        .query(reference, { serviceKey: secret } as never)
+        .catch((error: Error) => error);
+      expect((failure as Error).message).toBe(receipt);
+      expect(mockEmitPostHogLog).toHaveBeenCalledTimes(1);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({ backend_request_id: "0123456789abcdef" }),
+      ]);
+    });
   });
 
   describe("pending RPC diagnostics", () => {

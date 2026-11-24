@@ -6,6 +6,7 @@ import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { signServiceArgs, type ServiceScope } from "./service-proof";
 import { redactSensitiveErrorMessage } from "../utils/error-redaction";
 import { observeServiceTransport } from "./service-transport-observation";
+import { emitPostHogLog } from "../posthog/logs";
 import {
   classifyPublicBackendError,
   observeServiceError,
@@ -18,6 +19,14 @@ const safeFunctionName = (name: unknown, secrets: string[]) =>
   !secrets.some((secret) => name.includes(secret))
     ? name
     : undefined;
+
+// One Trigger-only read whose proof Convex judged >60s old after a single
+// send. Times the client's share of that age on a monotonic clock.
+const PROOF_TIMING_FUNCTION = "subagents:listForParentBackend";
+const PROOF_TIMING_CAP_MS = 300_000;
+const BACKEND_REQUEST_ID = /^\[Request ID: ([a-f0-9]{16})\]/;
+const elapsedMs = (from: number, to: number) =>
+  Math.min(PROOF_TIMING_CAP_MS, Math.max(0, Math.round(to - from)));
 
 /** Wrap SDK RPCs with scoped service proofs, error redaction and bounded diagnostics. */
 export function createServiceFetch(
@@ -57,11 +66,22 @@ export function createServiceFetch(
     const args = jsonToConvex(body.args[0]) as Record<string, unknown>;
     const secret =
       typeof args.serviceKey === "string" ? args.serviceKey : undefined;
+    // Monotonic marks only; the proof keeps its wall-clock Date.now timestamp.
+    let proofTiming:
+      | { capturedAt: number; dispatchedAt?: number; headersAt?: number }
+      | undefined;
     if ("serviceKey" in args) {
-      const signed = await signServiceArgs(
-        { deployment, name: body.path, type: type as ServiceScope["type"] },
-        args,
-      );
+      const scope = {
+        deployment,
+        name: body.path,
+        type: type as ServiceScope["type"],
+      };
+      let signed;
+      if (type === "query" && body.path === PROOF_TIMING_FUNCTION) {
+        const issuedAt = Date.now();
+        proofTiming = { capturedAt: performance.now() };
+        signed = await signServiceArgs(scope, args, issuedAt);
+      } else signed = await signServiceArgs(scope, args);
       body.args = [convexToJson(signed as Value)];
     }
     const functionName = safeFunctionName(body.path, secret ? [secret] : []);
@@ -107,7 +127,7 @@ export function createServiceFetch(
         // application content.
         const requestId =
           typeof applicationError?.errorMessage === "string"
-            ? /^\[Request ID: ([a-f0-9]{16})\]/.exec(
+            ? BACKEND_REQUEST_ID.exec(
                 applicationError.errorMessage.slice(0, 256),
               )?.[1]
             : undefined;
@@ -184,8 +204,8 @@ export function createServiceFetch(
       stage = "request";
       statusCode = undefined;
       cfRay = undefined;
-      const response = await observation.run(() =>
-        transport(input, {
+      const response = await observation.run(() => {
+        const sendInit = {
           ...init,
           body: JSON.stringify(body),
           ...(retrySignal
@@ -195,8 +215,11 @@ export function createServiceFetch(
                   : retrySignal,
               }
             : {}),
-        }),
-      );
+        };
+        if (proofTiming) proofTiming.dispatchedAt = performance.now();
+        return transport(input, sendInit);
+      });
+      if (proofTiming) proofTiming.headersAt = performance.now();
       statusCode = response.status;
       // Only the bounded Cloudflare correlation ID is permitted. Never copy
       // arbitrary response headers into logs or the reconstructed SDK response.
@@ -261,6 +284,8 @@ export function createServiceFetch(
           ...(init?.signal ? [init.signal] : []),
         ]);
         reportRecovery("scheduled", recovery.remaining);
+        // A retry signs a new proof; first-attempt timings no longer apply.
+        proofTiming = undefined;
         try {
           await abortableDelay(100, retrySignal);
           retrySignal.throwIfAborted();
@@ -328,14 +353,50 @@ export function createServiceFetch(
         return value;
       };
       if (result.status === "error") {
+        const backendErrorKind =
+          response.status === 200
+            ? classifyPublicBackendError(result)
+            : undefined;
         // Any RPC's native backend error (SDK request receipt, no ConvexError
         // data) also gets this one receipt, read from its unscrubbed body
         // before the SDK sees the copy. An HTTP 560 keeps its earlier 5xx one.
-        if (
-          response.status === 200 &&
-          (browserHandoffRead || classifyPublicBackendError(result))
-        )
+        if (response.status === 200 && (browserHandoffRead || backendErrorKind))
           reportFailure("application_error", undefined, result);
+        // Separate best-effort OTLP receipt for the timed read, joinable to the
+        // redacted Convex exception by its native request ID alone.
+        try {
+          const timing = proofTiming;
+          const requestId =
+            timing && backendErrorKind && backendErrorKind !== "read_byte_limit"
+              ? BACKEND_REQUEST_ID.exec(result.errorMessage.slice(0, 256))?.[1]
+              : undefined;
+          if (
+            requestId &&
+            (!secret || !requestId.includes(secret)) &&
+            timing?.dispatchedAt !== undefined &&
+            timing.headersAt !== undefined
+          ) {
+            emitPostHogLog({
+              level: "warn",
+              event: "convex_service_query_proof_timing",
+              body: "convex_service_query_proof_timing",
+              attributes: {
+                function_name: PROOF_TIMING_FUNCTION,
+                backend_request_id: requestId,
+                timestamp_to_dispatch_ms: elapsedMs(
+                  timing.capturedAt,
+                  timing.dispatchedAt,
+                ),
+                dispatch_to_headers_ms: elapsedMs(
+                  timing.dispatchedAt,
+                  timing.headersAt,
+                ),
+              },
+            });
+          }
+        } catch {
+          // Telemetry must not replace the console receipt or RPC result.
+        }
         result = scrub(result);
       } else result.logLines = scrub(result.logLines);
       return new Response(JSON.stringify(result), { status: response.status });
