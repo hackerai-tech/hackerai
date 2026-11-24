@@ -1247,7 +1247,8 @@ export const useChatHandlers = ({
 
     // The server is starting a queued message as the next turn: a new
     // message waits behind it in the queue, so the queue keeps its order.
-    const serverSendingQueued = messageQueue.some(
+    // Read the latest queue: a claim can land while validation awaits above.
+    const serverSendingQueued = messageQueueRef.current.some(
       (queued) => queued.dispatching,
     );
     // While an Agent run is starting or streaming, honor the queue behavior.
