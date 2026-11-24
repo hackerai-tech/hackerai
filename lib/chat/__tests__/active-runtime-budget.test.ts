@@ -113,6 +113,31 @@ describe("createRuntimeSettlementWatchdog", () => {
     });
   });
 
+  it.each([
+    ["backward", -60_000],
+    ["forward", 60_000],
+  ])(
+    "reports the monotonic stall duration after a %s wall-clock step",
+    (_direction, wallClockStepMs) => {
+      const onStalled = jest.fn();
+      const watchdog = createRuntimeSettlementWatchdog({
+        delayMs: 30_000,
+        onStalled,
+      });
+
+      const exceededAt = Date.now();
+      watchdog.arm();
+      jest.setSystemTime(exceededAt + wallClockStepMs);
+      jest.advanceTimersByTime(30_000);
+
+      expect(onStalled).toHaveBeenCalledTimes(1);
+      expect(onStalled).toHaveBeenCalledWith({
+        runtimeBudgetExceededAt: exceededAt,
+        stalledForMs: 30_000,
+      });
+    },
+  );
+
   it("does not report after run cleanup begins", () => {
     const onStalled = jest.fn();
     const watchdog = createRuntimeSettlementWatchdog({
