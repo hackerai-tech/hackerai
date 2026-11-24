@@ -27,6 +27,13 @@ export function createRuntimeSettlementWatchdog({
   const arm = (runtimeBudgetExceededAt = Date.now()) => {
     if (armed || disposed) return;
     armed = true;
+    // The event timestamp stays wall-clock, but the reported duration uses a
+    // monotonic clock so host clock adjustments cannot distort it.
+    const stalledBeforeArmMs = Math.max(
+      0,
+      Date.now() - runtimeBudgetExceededAt,
+    );
+    const armedAt = performance.now();
     timeoutId = setTimeout(() => {
       timeoutId = undefined;
       if (disposed) return;
@@ -34,7 +41,8 @@ export function createRuntimeSettlementWatchdog({
         void Promise.resolve(
           onStalled({
             runtimeBudgetExceededAt,
-            stalledForMs: Math.max(0, Date.now() - runtimeBudgetExceededAt),
+            stalledForMs:
+              stalledBeforeArmMs + Math.max(0, performance.now() - armedAt),
           }),
         ).catch(() => {
           // Diagnostic emission must never change task settlement behavior.
