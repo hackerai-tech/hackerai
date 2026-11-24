@@ -189,7 +189,33 @@ describe("server dispatch of queued follow-ups", () => {
     expect(releaseCalls()).toHaveLength(4);
   });
 
-  it("starts the turn with the message's own model, not the finished run's", async () => {
+  it("checks the settings again just before sending", async () => {
+    // The user switches to approvals while entitlement and chat checks run.
+    mockQuery
+      .mockResolvedValueOnce({
+        id: "queued-1",
+        text: "new task",
+        settings: {
+          agentPermissionMode: "full_access",
+          sandboxPreference: "e2b",
+        },
+      })
+      .mockResolvedValueOnce({
+        id: "queued-1",
+        text: "new task",
+        settings: {
+          agentPermissionMode: "ask_approval",
+          sandboxPreference: "e2b",
+        },
+      });
+    await expect(dispatch()).resolves.toEqual({ outcome: "settings_changed" });
+    expect(mockEntitlement).toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(releaseCalls()).toHaveLength(1);
+  });
+
+  it("starts the turn with the user's current model, not the finished run's", async () => {
     mockQuery.mockResolvedValue({
       id: "queued-1",
       text: "also check X",

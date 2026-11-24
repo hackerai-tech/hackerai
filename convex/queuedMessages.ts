@@ -10,7 +10,11 @@ import {
 import { AGENT_STEER_MAX_PENDING } from "../lib/chat/agent-steer";
 import { QUEUED_MESSAGE_MAX_TEXT_LENGTH } from "../lib/chat/queued-message";
 import { validateServiceKey } from "./lib/utils";
-import { queuedMessageSettingsValidator } from "./lib/queuedMessageSettings";
+import {
+  getQueuedMessageSettings,
+  queuedMessageSettingsValidator,
+  saveQueuedMessageSettings,
+} from "./lib/queuedMessageSettings";
 import { settleSteer } from "./lib/agentSteers";
 
 const queuedMessageValidator = v.object({
@@ -66,7 +70,9 @@ export const enqueue = mutation({
         message: "Unauthorized: Chat not found",
       });
     }
-    await insertQueuedMessage(ctx, { ...args, userId });
+    const { settings, ...message } = args;
+    if (settings) await saveQueuedMessageSettings(ctx, userId, settings);
+    await insertQueuedMessage(ctx, { ...message, userId });
     return null;
   },
 });
@@ -191,7 +197,6 @@ export const claimNextForDispatch = mutation({
         text: steer.text,
         sentAt: steer.sent_at ?? steer.created_at,
         fromSteer: true,
-        ...(steer.settings ? { settings: steer.settings } : {}),
       });
     }
 
@@ -204,9 +209,10 @@ export const claimNextForDispatch = mutation({
       !next ||
       // One send at a time per chat, whichever row it holds.
       queue.some((row) => isDispatchClaimed(row, now)) ||
-      // Only a message whose current settings allow unattended work starts
-      // without the browser; the browser sends the rest with its approvals.
-      next.settings?.agentPermissionMode !== "full_access" ||
+      // Only the user's current settings allowing unattended work let it
+      // start without the browser; the browser sends the rest with approvals.
+      (await getQueuedMessageSettings(ctx, args.userId))
+        ?.agentPermissionMode !== "full_access" ||
       // Local Desktop attachments exist only in the browser that queued them.
       next.files?.some(
         (file) => (file as { storage?: unknown })?.storage === "local-desktop",
@@ -242,7 +248,8 @@ export const getClaimedForDispatch = query({
       id: v.string(),
       text: v.string(),
       files: v.optional(v.array(v.any())),
-      settings: v.optional(queuedMessageSettingsValidator),
+      /** The user's settings now; null when they never chose any. */
+      settings: v.union(v.null(), queuedMessageSettingsValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -261,7 +268,7 @@ export const getClaimedForDispatch = query({
       id: row.id,
       text: row.text,
       ...(row.files?.length ? { files: row.files } : {}),
-      ...(row.settings ? { settings: row.settings } : {}),
+      settings: await getQueuedMessageSettings(ctx, args.userId),
     };
   },
 });
@@ -318,31 +325,16 @@ export const completeDispatch = mutation({
 });
 
 /**
- * The user changed their Agent settings (permission mode, sandbox or model):
- * every message still waiting for them, queued or steered, follows the new
- * choice, as it would if the browser sent it now.
+ * The user changed their Agent settings (permission mode, sandbox or model).
+ * Every message still waiting for them follows the new choice, as it would if
+ * the browser sent it now.
  */
 export const applySettings = mutation({
   args: { settings: queuedMessageSettingsValidator },
   returns: v.null(),
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    const queued = await ctx.db
-      .query("queued_messages")
-      .withIndex("by_user", (q) => q.eq("user_id", userId))
-      .take(QUEUED_SETTINGS_SCAN_LIMIT);
-    for (const row of queued)
-      await ctx.db.patch(row._id, { settings: args.settings });
-    const steers = await ctx.db
-      .query("agent_steers")
-      .withIndex("by_user_and_settled", (q) =>
-        q.eq("user_id", userId).eq("settled_at", undefined),
-      )
-      .take(QUEUED_SETTINGS_SCAN_LIMIT);
-    for (const steer of steers)
-      await ctx.db.patch(steer._id, { settings: args.settings });
+    await saveQueuedMessageSettings(ctx, userId, args.settings);
     return null;
   },
 });
-
-const QUEUED_SETTINGS_SCAN_LIMIT = 500;

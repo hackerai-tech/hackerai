@@ -6,7 +6,10 @@ import {
   type QueryCtx,
 } from "./lib/serviceFunctions";
 import { getOwnedChat, requireUserId } from "./lib/ownedChat";
-import { queuedMessageSettingsValidator } from "./lib/queuedMessageSettings";
+import {
+  queuedMessageSettingsValidator,
+  saveQueuedMessageSettings,
+} from "./lib/queuedMessageSettings";
 import { findQueuedMessage, insertQueuedMessage } from "./lib/queuedMessages";
 import { validateServiceKey } from "./lib/utils";
 import type { Doc } from "./_generated/dataModel";
@@ -35,7 +38,7 @@ export const create = mutation({
     sentAt: v.number(),
     /** A queued message being steered; it leaves the queue with this write. */
     queuedId: v.optional(v.string()),
-    /** The user's Agent settings, kept if the steer returns to the queue. */
+    /** The sender's Agent settings, used if the steer returns to the queue. */
     settings: v.optional(queuedMessageSettingsValidator),
   },
   returns: v.union(v.literal("pending"), v.literal("no_active_run")),
@@ -100,8 +103,9 @@ export const create = mutation({
       text,
       created_at: now,
       sent_at: args.sentAt,
-      ...(args.settings ? { settings: args.settings } : {}),
     });
+    if (args.settings)
+      await saveQueuedMessageSettings(ctx, userId, args.settings);
     if (args.queuedId) {
       const queued = await findQueuedMessage(ctx, args.queuedId);
       // An edit made while this steer was on its way stays queued.
@@ -203,7 +207,6 @@ export const withdraw = mutation({
       text: row.text,
       sentAt: row.sent_at ?? row.created_at,
       fromSteer: true,
-      ...(row.settings ? { settings: row.settings } : {}),
     });
     return { outcome: "withdrawn" as const, text: row.text };
   },

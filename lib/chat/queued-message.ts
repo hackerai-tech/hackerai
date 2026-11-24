@@ -2,9 +2,9 @@
 import type { FileMessagePart } from "../../types/file";
 
 /**
- * The Agent settings selected when a follow-up was queued or steered, kept
- * current as the user changes them. A server send uses these, never the
- * settings of the run that just finished.
+ * The Agent settings a user last chose while queuing, steering or changing
+ * them. A server send of a queued message uses these, never the settings of
+ * the run that just finished.
  */
 export type QueuedMessageSettings = {
   agentPermissionMode: "full_access" | "auto_review" | "ask_approval";

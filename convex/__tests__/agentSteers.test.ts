@@ -43,6 +43,7 @@ function fixture(user = "owner") {
     agent_steers: [],
     queued_messages: [],
     agent_goals: [],
+    agent_queue_settings: [],
   };
   const select = (table: string, equals: Record<string, unknown>) =>
     rows[table].filter((row) =>
@@ -680,7 +681,7 @@ describe("agent steers", () => {
       ]);
     });
 
-    it("leaves a message for the browser unless its current settings allow unattended work", async () => {
+    it("leaves a message for the browser unless the user's settings allow unattended work", async () => {
       for (const settings of [
         undefined,
         { agentPermissionMode: "ask_approval", sandboxPreference: "e2b" },
@@ -702,53 +703,54 @@ describe("agent steers", () => {
       }
     });
 
-    it("applies a settings change to every waiting message and unread steer of that user", async () => {
+    it("holds every waiting message once the user switches to approvals", async () => {
       const f = fixture();
+      // Any number of waiting rows, in any order, follow one write.
+      for (let n = 0; n < 600; n++)
+        f.rows.queued_messages.push({
+          _id: `extra-${n}`,
+          id: `extra-${n}`,
+          chat_id: `chat-${n}`,
+          user_id: "owner",
+          text: "x",
+          sent_at: 1,
+          created_at: 1,
+        });
       await f.enqueue("q");
-      await steers.create.handler(
-        f.ctx as never,
-        {
-          chatId: "chat",
-          id: "s",
-          text: "steer",
-          sentAt: 2,
-          settings: { agentPermissionMode: "full_access" },
-        } as never,
-      );
-      f.rows.queued_messages.push({
-        _id: "other-user-row",
-        id: "other",
-        chat_id: "other-chat",
-        user_id: "someone-else",
-        text: "x",
-        sent_at: 1,
-        created_at: 1,
-        settings: { agentPermissionMode: "full_access" },
-      });
-      const askForApproval = {
-        agentPermissionMode: "ask_approval",
-        sandboxPreference: "e2b",
-      };
       await queue.applySettings.handler(
         f.ctx as never,
         {
-          settings: askForApproval,
+          settings: { agentPermissionMode: "ask_approval" },
         } as never,
       );
-      expect(
-        f.rows.queued_messages.find((r) => r.id === "q")!.settings,
-      ).toEqual(askForApproval);
-      expect(f.rows.agent_steers[0].settings).toEqual(askForApproval);
-      expect(
-        f.rows.queued_messages.find((r) => r.id === "other")!.settings,
-      ).toEqual({ agentPermissionMode: "full_access" });
-      // A queued message switched to approvals is no longer sent unattended.
       finished(f);
       expect(await claimNext(f)).toBeNull();
+      // Switching back lets the server send again.
+      await queue.applySettings.handler(
+        f.ctx as never,
+        {
+          settings: { agentPermissionMode: "full_access" },
+        } as never,
+      );
+      expect(await claimNext(f)).toEqual(expect.objectContaining({ id: "q" }));
     });
 
-    it("keeps a steer's settings when it returns to the queue unread", async () => {
+    it("keeps one user's settings from deciding another user's sends", async () => {
       const f = fixture();
+      await f.enqueue("q");
+      f.rows.agent_queue_settings.push({
+        _id: "other-settings",
+        user_id: "someone-else",
+        settings: { agentPermissionMode: "ask_approval" },
+        updated_at: 2,
+      });
+      finished(f);
+      expect(await claimNext(f)).toEqual(expect.objectContaining({ id: "q" }));
+    });
+
+    it("uses the settings a steer was sent under when it returns to the queue", async () => {
+      const f = fixture();
+      await f.enqueue("q");
       await steers.create.handler(
         f.ctx as never,
         {
@@ -759,11 +761,8 @@ describe("agent steers", () => {
           settings: { agentPermissionMode: "ask_approval" },
         } as never,
       );
-      f.rows.chats[0].active_trigger_run_id = undefined;
-      await f.withdraw("s");
-      expect(f.rows.queued_messages[0].settings).toEqual({
-        agentPermissionMode: "ask_approval",
-      });
+      finished(f);
+      expect(await claimNext(f)).toBeNull();
     });
   });
 });

@@ -66,6 +66,9 @@ const errorMessage = (error: unknown) =>
  * it survives reloads and appears on every device. This tab still delivers
  * the messages it queued; the user sends anything else explicitly.
  */
+const SETTINGS_RETRY_BASE_MS = 1_000;
+const SETTINGS_RETRY_MAX_MS = 30_000;
+
 export function useServerMessageQueue({
   userId,
   chatId,
@@ -92,18 +95,37 @@ export function useServerMessageQueue({
 
   // Messages already waiting follow a settings change, so a server send never
   // uses a permission mode or sandbox the user has since switched away from.
+  // Mounting sends nothing: another device's choice stays until this one
+  // queues, steers or changes a setting. A failed write is retried until it
+  // lands or a newer choice replaces it.
   const settingsKey = settings ? JSON.stringify(settings) : "";
-  const appliedSettingsKey = useRef(settingsKey);
+  const requestedSettingsKey = useRef<string | null>(settingsKey);
+  const settingsFailures = useRef(0);
+  const [settingsRetry, setSettingsRetry] = useState(0);
   useEffect(() => {
     if (!enabled || !userId || !settings) return;
-    if (appliedSettingsKey.current === settingsKey) return;
-    appliedSettingsKey.current = settingsKey;
-    void applySettings({ settings }).catch((error: unknown) =>
-      console.warn("Could not update queued message settings", error),
+    if (requestedSettingsKey.current === settingsKey) return;
+    requestedSettingsKey.current = settingsKey;
+    applySettings({ settings }).then(
+      () => {
+        if (requestedSettingsKey.current === settingsKey)
+          settingsFailures.current = 0;
+      },
+      (error: unknown) => {
+        console.warn("Could not update queued message settings", error);
+        // A newer choice was already sent; it supersedes this one.
+        if (requestedSettingsKey.current !== settingsKey) return;
+        requestedSettingsKey.current = null;
+        const delay = Math.min(
+          SETTINGS_RETRY_MAX_MS,
+          SETTINGS_RETRY_BASE_MS * 2 ** settingsFailures.current++,
+        );
+        setTimeout(() => setSettingsRetry((count) => count + 1), delay);
+      },
     );
     // settingsKey captures every field of settings.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applySettings, enabled, settingsKey, userId]);
+  }, [applySettings, enabled, settingsKey, settingsRetry, userId]);
 
   // Local state per account and chat, so async work keeps its original key.
   const key = JSON.stringify([userId ?? null, chatId]);
@@ -281,6 +303,7 @@ export function useServerMessageQueue({
             ? { files: sanitizeQueuedFiles(local.draft.files) }
             : {}),
           sentAt: local.draft.timestamp,
+          // Queuing sets the user's current settings for every waiting message.
           ...(settingsRef.current ? { settings: settingsRef.current } : {}),
         })
           .then(() => {

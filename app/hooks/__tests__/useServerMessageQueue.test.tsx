@@ -358,4 +358,42 @@ describe("useServerMessageQueue", () => {
     rerender({ settings: { ...askForApproval } });
     expect(mockApplySettings).toHaveBeenCalledTimes(1);
   });
+
+  it("retries a settings change the server did not save", async () => {
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: { agentPermissionMode: "full_access" as const },
+          },
+        },
+      );
+      const askForApproval = { agentPermissionMode: "ask_approval" as const };
+      rerender({ settings: askForApproval });
+      expect(mockApplySettings).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(2);
+      expect(mockApplySettings).toHaveBeenLastCalledWith({
+        settings: askForApproval,
+      });
+      // Once saved, nothing more is sent.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
