@@ -38,8 +38,13 @@ function successHook(dependencies: Record<string, unknown>) {
   const body = ts.transpileModule(`return (${hook.getText(source)});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  return new Function(...Object.keys(dependencies), body)(
-    ...Object.values(dependencies),
+  // The queued follow-up dispatch is covered in agent-queue-dispatch.test.ts.
+  const withDefaults = {
+    scheduleQueuedMessageDispatch: async () => undefined,
+    ...dependencies,
+  };
+  return new Function(...Object.keys(withDefaults), body)(
+    ...Object.values(withDefaults),
   );
 }
 

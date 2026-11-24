@@ -1245,20 +1245,28 @@ export const useChatHandlers = ({
       }
     }
 
+    // The server is starting a queued message as the next turn: a new
+    // message waits behind it in the queue, so the queue keeps its order.
+    // Read the latest queue: a claim can land while validation awaits above.
+    const serverSendingQueued = messageQueueRef.current.some(
+      (queued) => queued.dispatching,
+    );
     // While an Agent run is starting or streaming, honor the queue behavior.
     if (
       !stoppedGoalForMessage &&
-      (status === "streaming" || status === "submitted")
+      (status === "streaming" || status === "submitted" || serverSendingQueued)
     ) {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
 
-      let followUpBehavior = resolveFollowUpBehavior(
-        queueBehavior,
-        agentSteeringEnabled && isAlternateSubmit(e),
-      );
+      let followUpBehavior = serverSendingQueued
+        ? "queue"
+        : resolveFollowUpBehavior(
+            queueBehavior,
+            agentSteeringEnabled && isAlternateSubmit(e),
+          );
       // A steer that cannot join the run is only queued. It must never turn
       // into the stop-and-send that summarization applies to other follow-ups.
       let steerFellBackToQueue = false;
@@ -2028,6 +2036,14 @@ export const useChatHandlers = ({
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message || message.deliveryStatus === "sending") return;
+    // The server is starting a queued message as the next turn. Nothing else
+    // may start until its run is attached, or the queue would run out of order.
+    if (messageQueue.some((queued) => queued.dispatching)) {
+      toast.info("Sending your queued message first", {
+        description: "Send this one after the Agent starts on it.",
+      });
+      return;
+    }
     // Goal runs keep the existing pause-and-send path.
     const goalActive =
       !!goalStateRef.current &&
@@ -2050,6 +2066,11 @@ export const useChatHandlers = ({
       try {
         // Keep its queue position if the run never reads it.
         if (await steerActiveRun(message.text, message.timestamp, messageId)) {
+          captureAuthenticatedEvent("agent_follow_up", {
+            telemetry_version: 1,
+            action: "queued_row_steered",
+            from_steer: !!message.fromSteer,
+          });
           // An edit made while the steer was pending stays queued.
           const latest = messageQueueRef.current.find(
             (item) => item.id === messageId,
@@ -2083,6 +2104,14 @@ export const useChatHandlers = ({
 
     // Reset manual stop flag when using Send Now
     hasManuallyStoppedRef.current = false;
+    if (agentSteeringEnabled)
+      captureAuthenticatedEvent("agent_follow_up", {
+        telemetry_version: 1,
+        action: "queued_sent_now",
+        held: !!message.held,
+        from_steer: !!message.fromSteer,
+        run_active: hasActiveRunToReplace(),
+      });
 
     try {
       setIsAutoResuming(false);
@@ -2174,7 +2203,9 @@ export const useChatHandlers = ({
       sendDisabledReason ||
       editingQueuedMessageId != null ||
       hasManuallyStoppedRef.current ||
-      isSendingNowRef.current
+      isSendingNowRef.current ||
+      // Keep the deferred send until the server's queued message has a run.
+      messageQueue.some((queued) => queued.dispatching)
     ) {
       return;
     }

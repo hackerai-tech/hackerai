@@ -216,16 +216,28 @@ const QueuedMessageRow = ({
                 {message.text}
               </div>
             )}
-            {message.held && !message.deliveryStatus && (
+            {message.dispatching && !message.deliveryStatus && (
               <div
                 className="text-xs text-muted-foreground mt-0.5"
                 role="status"
               >
-                {message.fromSteer
-                  ? "Unread by the Agent. Send it when you are ready."
-                  : "Queued earlier. Send it when you are ready."}
+                Sending…
               </div>
             )}
+            {/* While a run works, the server sends queued messages after it. */}
+            {message.held &&
+              !isStreaming &&
+              !message.dispatching &&
+              !message.deliveryStatus && (
+                <div
+                  className="text-xs text-muted-foreground mt-0.5"
+                  role="status"
+                >
+                  {message.fromSteer
+                    ? "Unread by the Agent. Send it when you are ready."
+                    : "Queued earlier. Send it when you are ready."}
+                </div>
+              )}
             {message.deliveryStatus && (
               <div
                 className="text-xs text-muted-foreground mt-0.5"
@@ -248,7 +260,8 @@ const QueuedMessageRow = ({
         )}
       </div>
 
-      {!isEditing && (
+      {/* The server is sending it: it can no longer be changed here. */}
+      {!isEditing && !message.dispatching && (
         <div className="flex items-center gap-1 flex-shrink-0">
           <Button
             type="button"

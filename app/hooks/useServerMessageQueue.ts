@@ -9,6 +9,7 @@ import { api } from "@/convex/_generated/api";
 import type { QueuedMessage } from "@/types/chat";
 import type { FileMessagePart } from "@/types/file";
 import {
+  QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
   sanitizeQueuedFiles,
 } from "@/lib/chat/queued-message";
@@ -133,6 +134,13 @@ export function useServerMessageQueue({
             }
           : {}),
         ...(row.fromSteer ? { fromSteer: true } : {}),
+        // The lease ends on the server's clock; a timer below re-renders then.
+        ...(row.dispatchClaimedAt !== undefined &&
+        Date.now() - row.dispatchClaimedAt <
+          QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS
+          ? { dispatching: true }
+          : {}),
+        onServer: true,
         ...(queuedHere.has(row.id) ? {} : { held: true }),
       });
     }
@@ -157,6 +165,29 @@ export function useServerMessageQueue({
     // `entries` mutates in place; `version` changes with each update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, rows, entries, version]);
+
+  // A send that died never writes its row again, so end "Sending…" when its
+  // lease expires instead of waiting for another queue change. Deadlines come
+  // from rows this render shows as sending: one that expired since the render
+  // still gets a refresh, and the refreshed render shows none, so no loop.
+  useEffect(() => {
+    const shownSending = new Set(
+      messageQueue
+        .filter((message) => message.dispatching)
+        .map((message) => message.id),
+    );
+    const leaseEnds = (rows ?? []).flatMap((row) =>
+      shownSending.has(row.id) && row.dispatchClaimedAt !== undefined
+        ? [row.dispatchClaimedAt + QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS]
+        : [],
+    );
+    if (!leaseEnds.length) return;
+    const timer = setTimeout(
+      () => refresh((current) => current + 1),
+      Math.max(0, Math.min(...leaseEnds) - Date.now()) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [messageQueue, rows]);
 
   // Track which of this tab's drafts the server has stored, and drop local
   // state for rows that left the queue.

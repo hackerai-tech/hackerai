@@ -817,6 +817,43 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a deferred Send now until the server's queued message has a run", async () => {
+    const { result, rerender } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    expect(result.current.hasPendingSummarySteer).toBe(true);
+    // The server claims an earlier row before the summary settles.
+    mockMessageQueue = [
+      {
+        id: "queued-0",
+        text: "Sent by the server",
+        files: [],
+        timestamp: 1,
+        dispatching: true,
+      },
+      ...mockMessageQueue,
+    ];
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(result.current.hasPendingSummarySteer).toBe(true);
+    // Its run is attached and the row is gone: the deferred send proceeds.
+    mockMessageQueue = mockMessageQueue.slice(1);
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.hasPendingSummarySteer).toBe(false);
+  });
+
   it.each(["submission", "Send now"])(
     "retains a summary steer chosen by %s until an earlier handoff releases",
     async (source) => {
@@ -1123,6 +1160,59 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(mockStop).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
       expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
+    it("never starts a queued message while the server is sending an earlier one", async () => {
+      mockMessageQueue = [
+        {
+          id: "queued-1",
+          text: "Sent by the server",
+          files: [],
+          timestamp: 1,
+          dispatching: true,
+        },
+        { id: "queued-2", text: "Next", files: [], timestamp: 2 },
+      ];
+      const { result } = renderSummarySteer(false);
+      for (const id of ["queued-1", "queued-2"])
+        await act(async () => result.current.handleSendNow(id));
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    });
+
+    it("queues a new message behind one the server is sending", async () => {
+      mockMessageQueue = [
+        {
+          id: "queued-1",
+          text: "Sent by the server",
+          files: [],
+          timestamp: 1,
+          dispatching: true,
+        },
+      ];
+      // No run is active yet: the server has not attached its run.
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          isSummarizing: false,
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: null },
+        }),
+      );
+      expect(await submit(result)).toBe(true);
+      expect(mockQueueMessage).toHaveBeenCalledWith("Use the staging host", []);
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
     });
 
     it("leaves Ask mode's Send Now on its existing path", async () => {
