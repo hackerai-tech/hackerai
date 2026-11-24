@@ -408,18 +408,23 @@ same idempotency key. Entries over 30 minutes old are removed and reported as
 expired when no dispatch mark exists. Queue and dispatch failures surface as
 errors. Disabling review pauses the queue. Entries still eligible can resume
 when review is enabled again. An idle queue expires two hours after its last
-addition.
+addition. Before queuing a new case, the monitor skips a routine spike from an
+account under a review cooldown; see
+[Account cooldown](abuse-response.md#automated-egress-burst-review).
 
 While the toggle is on, every successful cloud acquisition with a server chat
 and Trigger run also records a short-lived link from the verified workspace to
 that chat, run and time, after ownership and network verification. The write is
 best effort and not awaited, so a store outage cannot delay or fail an
-acquisition. Each acquisition is a separate record. The review selects each
-run's latest acquisition before the burst ended and checks the run's
-persisted timing for overlap. It uses up to 16 records per workspace from
-the last six hours. Additional records signal incomplete coverage and route
-the case to manual review. The older per-run format expires on its original
-six-hour schedule. These links are separate from attribution credentials.
+acquisition. The review selects each run's latest acquisition before the
+burst ended and checks the run's persisted timing for overlap. It uses up to
+16 records per workspace from the six hours before the burst. Additional
+records signal incomplete coverage and route the case to manual review. A
+run's repeated reconnects are coalesced atomically without losing the record
+that places it before a burst; see
+[Acquisition links](abuse-response.md#automated-egress-burst-review). The
+older per-run format expires on its original six-hour schedule. These links
+are separate from attribution credentials.
 
 ### Coverage and delivery
 

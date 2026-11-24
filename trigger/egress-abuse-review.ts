@@ -16,6 +16,12 @@ import {
   type AcquisitionLink,
 } from "@/lib/abuse/egress-review-context";
 import {
+  cooldownSuppresses,
+  grantReviewCooldown,
+  readReviewCooldowns,
+  type ReviewCooldown,
+} from "@/lib/abuse/egress-review-cooldown";
+import {
   accountActivityReason,
   buildCaseRecord,
   decideAccountActivity,
@@ -24,6 +30,7 @@ import {
   EGRESS_REVIEW_PROMPT_VERSION,
   egressReviewClassificationSchema,
   prepareReview,
+  REVIEW_WINDOW_MINUTES,
   reviewCaseKey,
   reviewDigest,
   reviewReference,
@@ -100,9 +107,73 @@ export type EgressAbuseReviewPayload = z.infer<
   typeof egressAbuseReviewPayloadSchema
 >;
 
+/**
+ * Closed detail for why a review stopped where it did. Diagnostics only: it
+ * never changes a decision and carries no identifiers, content or provider
+ * errors, only these enums and small counts.
+ */
+export type ReviewDiagnosticDetail =
+  // acquisition_incomplete
+  | "multiple_sandboxes"
+  | "link_history_trimmed"
+  | "link_history_invalid"
+  | "too_many_runs"
+  // multiple_runs
+  | "competing_links"
+  | "concurrent_root_run"
+  | "concurrent_run_evidence"
+  // account_runs_unverified
+  | "root_history_settling"
+  | "root_lookup_failed"
+  | "root_page_limit"
+  | "root_page_invalid"
+  | "root_row_mismatch"
+  | "root_timing_invalid"
+  | "selected_run_absent"
+  | "selected_run_not_started"
+  | "selected_run_outside_burst"
+  // observation_incomplete
+  | "run_overlap_unknown"
+  | "evidence_run_mismatch"
+  | "evidence_incomplete"
+  | "evidence_gaps"
+  // evidence_unavailable and subagent_unresolved
+  | "linked_chat_unavailable"
+  | "subagent_link"
+  | "subagent_overlap";
+export type ObservationGap =
+  | "no_user_messages"
+  | "run_active"
+  | "history_truncated"
+  | "user_messages_omitted"
+  | "commands_omitted"
+  | "incomplete_tool_calls"
+  | "prompt_items_truncated"
+  | "prompt_items_omitted";
+export type ReviewDiagnostic = {
+  detail?: ReviewDiagnosticDetail;
+  /** Verified sandboxes counted in the burst minute. */
+  sandboxes?: number;
+  /** Raw link records stored for the workspace. */
+  storedLinks?: number;
+  /** Distinct runs linked before the burst ended. */
+  runLinks?: number;
+  /** Linked parent runs that could have been active during the burst. */
+  plausibleRuns?: number;
+  /** Linked runs whose chat was unavailable. */
+  unavailableLinks?: number;
+  gaps?: ObservationGap[];
+  /** An active cooldown was bypassed, or could not be checked. */
+  cooldown?: "bypassed" | "unavailable" | "window_unsettled";
+  /** What a corroborated legitimate decision did to the cooldown. */
+  cooldownGrant?: "granted" | "kept" | "failed";
+};
+
 export type EgressAbuseReviewResult =
   | { status: "disabled" }
   | { status: "skipped"; reason: "burst_not_verified" }
+  // A routine burst from an account recently cleared on exact-run evidence.
+  | { status: "skipped"; reason: "cooldown_active" }
   | {
       status: "completed";
       outcome: ReviewDecision["outcome"];
@@ -112,6 +183,7 @@ export type EgressAbuseReviewResult =
       enforcementReason: EnforcementReason;
       /** Set only for a block applied by this attempt. */
       notice?: "queued" | "deduplicated";
+      diagnostic?: ReviewDiagnostic;
     }
   // The window's case already existed and was left unchanged. This attempt's
   // decision was not stored, so the receipt does not report one.
@@ -148,11 +220,17 @@ const timeOf = (value: unknown) =>
  * to have started after or finished before the burst, or to have ended
  * without ever starting. Anything else is `concurrent` or `unverified`.
  */
+type RootRunCheck =
+  | { status: "sole" | "concurrent" }
+  | { status: "unverified"; detail: ReviewDiagnosticDetail };
+
 async function checkAccountRootRuns(
   userId: string,
   runId: string,
   burst: { burstStart: number; burstEnd: number },
-): Promise<"sole" | "concurrent" | "unverified"> {
+): Promise<RootRunCheck> {
+  const unverified = (detail: ReviewDiagnosticDetail) =>
+    ({ status: "unverified", detail }) as const;
   const tag = `user_${userId}`;
   const latest = burst.burstEnd + CLOCK_SKEW_MS;
   const earliest = burst.burstStart - CLOCK_SKEW_MS;
@@ -164,6 +242,7 @@ async function checkAccountRootRuns(
     startedAt?: Date;
     finishedAt?: Date;
   }>;
+  let failure: ReviewDiagnosticDetail = "root_lookup_failed";
   try {
     // The SDK adds filters, including the account tag, to its trace spans.
     rows = await context.with(suppressTracing(context.active()), async () => {
@@ -177,25 +256,32 @@ async function checkAccountRootRuns(
       });
       const history = [...page.data];
       for (let read = 1; page.hasNextPage(); read++) {
-        if (read >= MAX_ROOT_PAGES) throw new Error("Run history page limit");
-        if (page.data.length > ROOT_RUN_PAGE)
+        if (read >= MAX_ROOT_PAGES) {
+          failure = "root_page_limit";
+          throw new Error("Run history page limit");
+        }
+        if (page.data.length > ROOT_RUN_PAGE) {
+          failure = "root_page_invalid";
           throw new Error("Invalid page size");
+        }
         page = await page.getNextPage();
         history.push(...page.data);
       }
-      if (page.data.length > ROOT_RUN_PAGE)
+      if (page.data.length > ROOT_RUN_PAGE) {
+        failure = "root_page_invalid";
         throw new Error("Invalid page size");
+      }
       return history;
     });
   } catch {
     // The error can echo request details; only the closed reason is kept.
-    return "unverified";
+    return unverified(failure);
   }
   let selected = false;
   let concurrent = false;
   for (const row of rows) {
     if (row.taskIdentifier !== AGENT_TASK || !row.tags?.includes(tag))
-      return "unverified";
+      return unverified("root_row_mismatch");
     const startedAt = timeOf(row.startedAt);
     const finishedAt = timeOf(row.finishedAt);
     if (
@@ -203,15 +289,16 @@ async function checkAccountRootRuns(
       finishedAt !== undefined &&
       finishedAt < startedAt
     )
-      return "unverified";
+      return unverified("root_timing_invalid");
     if (row.id === runId) {
       // Trigger must agree that the selected run could overlap the burst.
+      if (startedAt === undefined)
+        return unverified("selected_run_not_started");
       if (
-        startedAt === undefined ||
         startedAt > latest ||
         (finishedAt !== undefined && finishedAt < earliest)
       )
-        return "unverified";
+        return unverified("selected_run_outside_burst");
       selected = true;
       continue;
     }
@@ -221,8 +308,8 @@ async function checkAccountRootRuns(
       (startedAt === undefined && TERMINAL_RUN_STATUSES.has(row.status));
     if (!disjoint) concurrent = true;
   }
-  if (!selected) return "unverified";
-  return concurrent ? "concurrent" : "sole";
+  if (!selected) return unverified("selected_run_absent");
+  return { status: concurrent ? "concurrent" : "sole" };
 }
 
 /** Retried by Trigger while a still-active run's evidence may grow. */
@@ -347,6 +434,57 @@ export async function runEgressAbuseReview(
     number: EGRESS_REVIEW_MAX_ATTEMPTS,
     max: EGRESS_REVIEW_MAX_ATTEMPTS,
   },
+): Promise<EgressAbuseReviewResult> {
+  const diagnostic: ReviewDiagnostic = {};
+  const result = await reviewBurst(payload, attempt, diagnostic);
+  // Explains an abstention or a clearance; other outcomes keep their output.
+  return result.status === "completed" &&
+    result.outcome !== "authorization_request" &&
+    Object.keys(diagnostic).length
+    ? { ...result, diagnostic: { ...diagnostic } }
+    : result;
+}
+
+/** The strongest verified minute and whether the settled window has gaps. */
+async function windowPeak(
+  redis: NonNullable<ReturnType<typeof createRedisClient>>,
+  region: EgressAbuseReviewPayload["region"],
+  owner: string,
+  windowStart: number,
+  latestSettled: number,
+) {
+  const last = Math.min(windowStart + REVIEW_WINDOW_MINUTES - 1, latestSettled);
+  const minutes = Array.from(
+    { length: Math.max(0, last - windowStart + 1) },
+    (_, index) => windowStart + index,
+  );
+  const records = await readTelemetryMinutes(redis, region, minutes);
+  let peak = { minute: windowStart, connections: 0 };
+  let complete = records.length === minutes.length;
+  for (const [index, record] of records.entries()) {
+    if (
+      !record ||
+      !record.complete ||
+      record.droppedEvents ||
+      record.droppedBatches
+    ) {
+      complete = false;
+      continue;
+    }
+    const connections = record.counts
+      .filter(([ref]) => ref === owner)
+      .reduce((sum, [, , n]) => sum + n, 0);
+    if (connections > peak.connections)
+      peak = { minute: minutes[index], connections };
+  }
+  return { peak, complete };
+}
+
+async function reviewBurst(
+  payload: EgressAbuseReviewPayload,
+  attempt: { number: number; max: number },
+  diagnostic: ReviewDiagnostic,
+  followEscalation = true,
 ): Promise<EgressAbuseReviewResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
   const threshold = egressBurstThreshold();
@@ -511,9 +649,66 @@ export async function runEgressAbuseReview(
   sandboxIds = resolved.sandboxIds;
   if (!userId || resolved.unverifiedWorkspaces > 0 || !sandboxIds.length)
     return manual("attribution_unverified");
+  diagnostic.sandboxes = sandboxIds.length;
+
+  // A recent exact-run clearance suppresses routine bursts before any
+  // evidence or model call. Any failure to read or compare reviews in full.
+  let cooldown: ReviewCooldown | null = null;
+  if (followEscalation) {
+    try {
+      [cooldown] = await readReviewCooldowns(redis, [userId]);
+    } catch {
+      diagnostic.cooldown = "unavailable";
+    }
+  }
+  if (cooldown && cooldown.digest !== digest) {
+    const latestSettled = Math.floor(now / 60_000) - SETTLE_MINUTES;
+    const window = await windowPeak(
+      redis,
+      region,
+      owner,
+      windowStart,
+      latestSettled,
+    ).catch(() => null);
+    if (
+      window &&
+      !cooldownSuppresses(
+        cooldown,
+        Math.max(window.peak.connections, observation.connections),
+        threshold,
+      )
+    ) {
+      diagnostic.cooldown = "bypassed";
+      const { peak } = window;
+      if (peak.connections > observation.connections) {
+        // Start from the settled minute that escalated. Its telemetry and
+        // attribution are verified independently, and the case key is the same.
+        return reviewBurst(
+          { ...payload, minute: peak.minute },
+          attempt,
+          diagnostic,
+          false,
+        );
+      }
+    } else if (!window?.complete) {
+      // A missing or lossy minute could hide an escalation.
+      diagnostic.cooldown = "unavailable";
+    } else {
+      if (latestSettled >= windowStart + REVIEW_WINDOW_MINUTES - 1)
+        return { status: "skipped", reason: "cooldown_active" };
+      // Once dispatched, this case has consumed its queue idempotency key.
+      // Keep the review alive so a later escalation can still be evaluated.
+      if (!finalAttempt) throw new EgressReviewPendingError();
+      diagnostic.cooldown = "window_unsettled";
+    }
+  }
+
   // One linked run may explain one sandbox. A shared owner does not prove
   // which activity caused a combined burst from multiple sandboxes.
-  if (sandboxIds.length !== 1) return manual("acquisition_incomplete");
+  if (sandboxIds.length !== 1) {
+    diagnostic.detail = "multiple_sandboxes";
+    return manual("acquisition_incomplete");
+  }
 
   const since = burst.burstStart - ACQUISITION_LINK_TTL_S * 1_000;
   const links = new Map<string, AcquisitionLink>();
@@ -525,7 +720,14 @@ export async function runEgressAbuseReview(
       sandboxId,
       since,
     );
-    if (!read.complete) return manual("acquisition_incomplete");
+    diagnostic.storedLinks = read.stored;
+    if (!read.complete) {
+      diagnostic.detail =
+        read.incomplete === "invalid"
+          ? "link_history_invalid"
+          : "link_history_trimmed";
+      return manual("acquisition_incomplete");
+    }
     // Each run's latest acquisition before the burst ended; one after it
     // cannot hide an earlier one.
     for (const link of read.links) {
@@ -594,7 +796,11 @@ export async function runEgressAbuseReview(
         : {}),
     });
   }
-  if (links.size > MAX_LINKS) return manual("acquisition_incomplete");
+  diagnostic.runLinks = links.size;
+  if (links.size > MAX_LINKS) {
+    diagnostic.detail = "too_many_runs";
+    return manual("acquisition_incomplete");
+  }
 
   const matches = await Promise.all(
     [...links.values()].map(async (link) => ({
@@ -611,29 +817,52 @@ export async function runEgressAbuseReview(
       ).status,
     })),
   );
-  if (matches.some(({ status }) => status === "unavailable"))
+  const unavailableLinks = matches.filter(
+    ({ status }) => status === "unavailable",
+  ).length;
+  if (unavailableLinks) {
+    diagnostic.detail = "linked_chat_unavailable";
+    diagnostic.unavailableLinks = unavailableLinks;
     return manual("evidence_unavailable");
+  }
   if (
     matches.some(
       ({ link, status }) => link.kind === "subagent" && status !== "disjoint",
     )
-  )
+  ) {
+    diagnostic.detail = "subagent_link";
     return manual("subagent_unresolved");
+  }
   const plausible = matches.filter(
     ({ link, status }) => link.kind === "parent" && status !== "disjoint",
   );
-  if (plausible.length > 1) return manual("multiple_runs");
+  diagnostic.plausibleRuns = plausible.length;
+  if (plausible.length > 1) {
+    diagnostic.detail = "competing_links";
+    return manual("multiple_runs");
+  }
   if (!plausible.length) return manual("no_matching_run");
   const [{ link, status }] = plausible;
   const run = { chatId: link.chatId, runId: link.runId };
-  if (status !== "overlaps") return pending("observation_incomplete", { run });
-  if (now - burst.burstEnd < ROOT_HISTORY_SETTLE_MS)
+  if (status !== "overlaps") {
+    diagnostic.detail = "run_overlap_unknown";
+    return pending("observation_incomplete", { run });
+  }
+  if (now - burst.burstEnd < ROOT_HISTORY_SETTLE_MS) {
+    diagnostic.detail = "root_history_settling";
     return pending("account_runs_unverified", { run });
+  }
   // A competing run's link may be missing or expired; rule out every other
   // root run of the account before reading this run's evidence.
   const roots = await checkAccountRootRuns(userId, link.runId, burst);
-  if (roots === "concurrent") return manual("multiple_runs", { run });
-  if (roots === "unverified") return manual("account_runs_unverified", { run });
+  if (roots.status === "concurrent") {
+    diagnostic.detail = "concurrent_root_run";
+    return manual("multiple_runs", { run });
+  }
+  if (roots.status === "unverified") {
+    diagnostic.detail = roots.detail;
+    return manual("account_runs_unverified", { run });
+  }
 
   const read = await client.query(api.egressAbuseReview.readRunEvidence, {
     serviceKey,
@@ -642,10 +871,18 @@ export async function runEgressAbuseReview(
     ...burst,
   });
   if (read.status === "unavailable") {
-    if (read.reason === "subagent_overlap")
+    if (read.reason === "subagent_overlap") {
+      diagnostic.detail = "subagent_overlap";
       return manual("subagent_unresolved", { run });
-    if (read.reason === "concurrent_run")
+    }
+    if (read.reason === "concurrent_run") {
+      diagnostic.detail = "concurrent_run_evidence";
       return manual("multiple_runs", { run });
+    }
+    diagnostic.detail =
+      read.reason === "run_mismatch"
+        ? "evidence_run_mismatch"
+        : "evidence_incomplete";
     return pending("observation_incomplete", { run });
   }
   const evidence: ReviewEvidence = read;
@@ -675,17 +912,25 @@ export async function runEgressAbuseReview(
       !evidence.userMessages.length,
   };
   const { coverage } = evidence;
-  if (
-    !evidence.userMessages.length ||
-    coverage.runActive ||
-    coverage.historyTruncated ||
-    coverage.userMessagesOmitted ||
-    coverage.commandsOmitted ||
-    coverage.incompleteToolCalls ||
-    prepared.itemsTruncated ||
-    prepared.itemsOmitted
+  const gaps = (
+    [
+      ["no_user_messages", !evidence.userMessages.length],
+      ["run_active", coverage.runActive],
+      ["history_truncated", coverage.historyTruncated],
+      ["user_messages_omitted", coverage.userMessagesOmitted],
+      ["commands_omitted", coverage.commandsOmitted],
+      ["incomplete_tool_calls", coverage.incompleteToolCalls],
+      ["prompt_items_truncated", prepared.itemsTruncated],
+      ["prompt_items_omitted", prepared.itemsOmitted],
+    ] as const
   )
+    .filter(([, present]) => present)
+    .map(([gap]) => gap);
+  if (gaps.length) {
+    diagnostic.detail = "evidence_gaps";
+    diagnostic.gaps = [...gaps];
     return manual("observation_incomplete", base);
+  }
   if (!passesPrivacyGuard(prepared.prompt))
     return manual("privacy_guard", base);
 
@@ -713,6 +958,15 @@ export async function runEgressAbuseReview(
       logger.warn("Egress abuse review receipt was not recorded", {
         decision: "keep_active",
       });
+    }
+    // Only this complete, corroborated exact-run decision grants a cooldown.
+    try {
+      diagnostic.cooldownGrant = await grantReviewCooldown(redis, userId, {
+        peak: observation.connections,
+        digest,
+      });
+    } catch {
+      diagnostic.cooldownGrant = "failed";
     }
     return {
       status: "completed",
@@ -880,10 +1134,13 @@ export const egressAbuseReviewTask = schemaTask({
             case: result.case,
             enforcement: result.enforcement,
             enforcementReason: result.enforcementReason,
+            ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
           }
         : result.status === "preserved"
           ? { status: result.status, case: result.case }
-          : { status: result.status },
+          : result.status === "skipped"
+            ? { status: result.status, reason: result.reason }
+            : { status: result.status },
     );
     return result;
   },

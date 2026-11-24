@@ -32,6 +32,7 @@ import { createRedisClient } from "@/lib/rate-limit/redis";
 import { createServiceConvexClient } from "@/lib/db/service-client";
 import { decryptAbuseEvidence } from "@/lib/abuse/evidence-crypto";
 import { recordEgressReviewAcquisition } from "@/lib/abuse/egress-review-context";
+import { reviewCooldownKey } from "@/lib/abuse/egress-review-cooldown";
 import {
   reviewCaseKey,
   reviewReference,
@@ -47,7 +48,7 @@ import {
   runEgressAbuseReview,
 } from "../egress-abuse-review";
 
-const [first, second] = fixture.vectors;
+const [first, second, europe] = fixture.vectors;
 const REVIEW_KEY = "synthetic-egress-review-key";
 const ENFORCEMENT_KEY = "synthetic-egress-enforcement-key";
 const CHAT = "chat_review";
@@ -107,32 +108,31 @@ function fakeRedis() {
         .sort((a, b) => a[1] - b[1])
         .flatMap(([member, score]) => [member, score]),
     ),
-    pipeline: jest.fn(() => {
-      const ops: Array<() => void> = [];
-      const chain = {
-        zadd: (key: string, { score, member }: any) => {
-          ops.push(() => zset(key).set(member, score));
-          return chain;
-        },
-        zremrangebyscore: () => chain,
-        zremrangebyrank: () => chain,
-        expire: () => chain,
-        exec: async () => ops.forEach((op) => op()),
-      };
-      return chain;
-    }),
+    // An acquisition record as a plain add; its coalescing script runs
+    // against real Redis in scripts/tests/egress-review-acquisition.integration.ts.
+    eval: jest.fn(
+      async (_script: string, [key]: string[], [prefix, time]: string[]) => {
+        zset(key).set(`${prefix}${time}`, Number(time));
+        return 1;
+      },
+    ),
   };
   jest.mocked(createRedisClient).mockReturnValue(redis as never);
   return redis;
 }
 
-async function upload(counts: Array<[typeof first, number]>, minute = MINUTE) {
+async function upload(
+  counts: Array<[typeof first, number]>,
+  minute = MINUTE,
+  region: "us" | "eu" = "us",
+  droppedEvents = 0,
+) {
   const batch = telemetryBatchSchema.parse({
     version: 1,
-    region: "us",
+    region,
     minute,
     complete: true,
-    droppedEvents: 0,
+    droppedEvents,
     droppedBatches: 0,
     overflowConnections: 0,
     counts: counts.map(([vector, connections]) => ({
@@ -471,7 +471,7 @@ describe("other root runs of the account", () => {
     });
   });
 
-  it.each<[string, () => void, string]>([
+  it.each<[string, () => void, string, string]>([
     [
       "a finished run with no acquisition link that overlapped the burst",
       () =>
@@ -483,16 +483,32 @@ describe("other root runs of the account", () => {
           selectedRun,
         ]),
       "multiple_runs",
+      "concurrent_root_run",
     ],
     [
       "a run that has not started yet",
       () => listRootRuns([competing({ status: "QUEUED" }), selectedRun]),
       "multiple_runs",
+      "concurrent_root_run",
     ],
     [
       "pagination is unavailable",
       () => listRootRuns([selectedRun], true),
       "account_runs_unverified",
+      "root_lookup_failed",
+    ],
+    [
+      "more history than the bounded page reads",
+      () => {
+        const page: any = {
+          data: [selectedRun],
+          hasNextPage: () => true,
+          getNextPage: async () => page,
+        };
+        jest.mocked(runs.list).mockReturnValue(page);
+      },
+      "account_runs_unverified",
+      "root_page_limit",
     ],
     [
       "a list without the selected run",
@@ -504,11 +520,13 @@ describe("other root runs of the account", () => {
           }),
         ]),
       "account_runs_unverified",
+      "selected_run_absent",
     ],
     [
       "a selected run Trigger never started",
       () => listRootRuns([rootRun(RUN, { status: "CANCELED" })]),
       "account_runs_unverified",
+      "selected_run_not_started",
     ],
     [
       "a row for another account",
@@ -518,6 +536,7 @@ describe("other root runs of the account", () => {
           { ...competing({ status: "CANCELED" }), tags: ["user_someone"] },
         ]),
       "account_runs_unverified",
+      "root_row_mismatch",
     ],
     [
       "an unavailable run list",
@@ -526,38 +545,49 @@ describe("other root runs of the account", () => {
           throw new Error(`list failed for user_${first.userId} ${CHAT}`);
         }),
       "account_runs_unverified",
+      "root_lookup_failed",
     ],
-  ])("opens a closed manual case for %s", async (_label, arrange, reason) => {
-    await seedRun();
-    await link();
-    arrange();
-    classifyAs(concerning);
-    await expect(run()).resolves.toEqual({
-      status: "completed",
-      outcome: "manual_review",
-      reason,
-      case: "created",
-      enforcement: "keep_active",
-      enforcementReason: "coverage_incomplete",
-    });
-    expect(generateText).not.toHaveBeenCalled();
-    const record = caseRecord();
-    expect(record).toMatchObject({
-      reason,
-      draft: null,
-      run: { chatId: CHAT, runId: RUN },
-      coverage: null,
-    });
-    // Neither run data nor an SDK error reaches the case or the logs.
-    const exposed = JSON.stringify([
-      record,
-      jest.mocked(logger.info).mock.calls,
-      jest.mocked(logger.warn).mock.calls,
-      jest.mocked(logger.error).mock.calls,
-    ]);
-    for (const raw of ["run_unlinked", "list failed", "user_someone"])
-      expect(exposed).not.toContain(raw);
-  });
+  ])(
+    "opens a closed manual case for %s",
+    async (_label, arrange, reason, detail) => {
+      await seedRun();
+      await link();
+      arrange();
+      classifyAs(concerning);
+      await expect(run()).resolves.toEqual({
+        status: "completed",
+        outcome: "manual_review",
+        reason,
+        case: "created",
+        enforcement: "keep_active",
+        enforcementReason: "coverage_incomplete",
+        diagnostic: {
+          detail,
+          sandboxes: 1,
+          storedLinks: 1,
+          runLinks: 1,
+          plausibleRuns: 1,
+        },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+      const record = caseRecord();
+      expect(record).toMatchObject({
+        reason,
+        draft: null,
+        run: { chatId: CHAT, runId: RUN },
+        coverage: null,
+      });
+      // Neither run data nor an SDK error reaches the case or the logs.
+      const exposed = JSON.stringify([
+        record,
+        jest.mocked(logger.info).mock.calls,
+        jest.mocked(logger.warn).mock.calls,
+        jest.mocked(logger.error).mock.calls,
+      ]);
+      for (const raw of ["run_unlinked", "list failed", "user_someone"])
+        expect(exposed).not.toContain(raw);
+    },
+  );
 });
 
 it("finds a run by its pre-burst acquisition after it re-acquired the workspace", async () => {
@@ -589,6 +619,7 @@ it("skips clearly corroborated legitimate work without creating a case", async (
     case: "none",
     enforcement: "keep_active",
     enforcementReason: "legitimate_corroborated",
+    diagnostic: expect.objectContaining({ cooldownGrant: "granted" }),
   });
   expect(convex.tables.abuse_cases ?? []).toHaveLength(0);
   expect(recordCaseCalls()).toHaveLength(0);
@@ -619,7 +650,7 @@ it("dedupes a sustained burst into the window's case and preserves operator revi
   });
 });
 
-it.each([
+it.each<[string, () => Promise<unknown>, string, string | undefined]>([
   [
     "several plausible runs",
     async () => {
@@ -629,6 +660,7 @@ it.each([
       await link("run_parent2", "parent", "chat_two");
     },
     "multiple_runs",
+    "competing_links",
   ],
   [
     "a subagent that may have used the workspace",
@@ -646,6 +678,7 @@ it.each([
       await link("run_child1", "subagent");
     },
     "subagent_unresolved",
+    "subagent_link",
   ],
   [
     "a counted workspace that is not verified",
@@ -665,8 +698,14 @@ it.each([
       await link();
     },
     "attribution_unverified",
+    undefined,
   ],
-  ["no recorded acquisition", async () => seedRun(), "no_acquisition_link"],
+  [
+    "no recorded acquisition",
+    async () => seedRun(),
+    "no_acquisition_link",
+    undefined,
+  ],
   [
     "an acquisition that started after the burst",
     async () => {
@@ -682,6 +721,7 @@ it.each([
       await new Promise((resolve) => setImmediate(resolve));
     },
     "no_acquisition_link",
+    undefined,
   ],
   [
     "a deleted linked chat",
@@ -691,13 +731,15 @@ it.each([
       await link();
     },
     "evidence_unavailable",
+    "linked_chat_unavailable",
   ],
 ])(
   "creates a manual case without a model call or draft for %s",
-  async (_label, arrange, reason) => {
+  async (_label, arrange, reason, detail) => {
     await arrange();
     classifyAs(concerning);
-    await expect(run()).resolves.toEqual({
+    const result = await run();
+    expect(result).toMatchObject({
       status: "completed",
       outcome: "manual_review",
       reason,
@@ -705,6 +747,7 @@ it.each([
       enforcement: "keep_active",
       enforcementReason: "coverage_incomplete",
     });
+    expect((result as any).diagnostic?.detail).toBe(detail);
     expect(generateText).not.toHaveBeenCalled();
     expect(caseRecord()).toMatchObject({ draft: null, reason });
   },
@@ -731,6 +774,7 @@ it("waits for an active run and never skips it on partial evidence", async () =>
     outcome: "manual_review",
     reason: "observation_incomplete",
     case: "created",
+    diagnostic: { detail: "evidence_gaps", gaps: ["run_active"] },
   });
 });
 
@@ -832,6 +876,7 @@ describe("without an acquisition link", () => {
       case: "created",
       enforcement: "keep_active",
       enforcementReason: "coverage_incomplete",
+      diagnostic: { sandboxes: 1, storedLinks: 0 },
     });
     expect(caseRecord().accountActivity.status).toBe("unavailable");
     expect(generateText).not.toHaveBeenCalled();
@@ -852,6 +897,7 @@ describe("without an acquisition link", () => {
       case: "created",
       enforcement: "keep_active",
       enforcementReason: "unlinked_history",
+      diagnostic: { sandboxes: 1, storedLinks: 0 },
     });
     const record = caseRecord();
     expect(record).toMatchObject({
@@ -914,6 +960,7 @@ describe("without an acquisition link", () => {
       case: "created",
       enforcement: "keep_active",
       enforcementReason: "coverage_incomplete",
+      diagnostic: { sandboxes: 1, storedLinks: 0 },
     });
     expect(caseRecord()).toMatchObject({
       draft: null,
@@ -1226,5 +1273,218 @@ describe("automatic enforcement", () => {
     expect(receipts()).toEqual([
       expect.objectContaining({ refusal: "competing_case", reference }),
     ]);
+  });
+});
+
+describe("closed diagnostics for abstentions", () => {
+  it("names a burst split across several sandboxes of the account", async () => {
+    kv.clear();
+    await upload([
+      [first, 500],
+      [second, 500],
+    ]);
+    for (const vector of [first, second])
+      await registerAttributedWorkspace(
+        "us",
+        vector,
+        vector.userId,
+        vector.sandboxId,
+      );
+    await expect(run()).resolves.toMatchObject({
+      reason: "acquisition_incomplete",
+      diagnostic: { detail: "multiple_sandboxes", sandboxes: 2 },
+    });
+  });
+
+  it("names link history that was trimmed past its bound", async () => {
+    for (let index = 0; index <= 16; index++) await link(`run_${index}`);
+    await expect(run()).resolves.toMatchObject({
+      reason: "acquisition_incomplete",
+      diagnostic: { detail: "link_history_trimmed", storedLinks: 17 },
+    });
+  });
+});
+
+describe("account cooldown after a corroborated legitimate review", () => {
+  const legitimate = {
+    verdict: "clearly_legitimate",
+    activity: "ordinary_development",
+    authorization: "not_stated",
+    commandIndices: [1],
+    messageIndices: [1],
+  };
+  // The next 30-minute window; by default it has fully settled.
+  const NEXT = MINUTE + 29;
+  let clock: jest.SpyInstance;
+  beforeEach(() => {
+    clock = jest.spyOn(Date, "now").mockReturnValue((NEXT + 31) * MINUTE_MS);
+  });
+  afterEach(() => clock.mockRestore());
+  const nextWindow = async (
+    peaks: Record<number, number>,
+    vector = first,
+    region: "us" | "eu" = "us",
+  ) => {
+    const latest = Math.floor(Date.now() / MINUTE_MS) - 2;
+    for (let minute = NEXT; minute <= Math.min(NEXT + 29, latest); minute++)
+      await upload(
+        peaks[minute] ? [[vector, peaks[minute]]] : [],
+        minute,
+        region,
+      );
+  };
+  const clear = async () => {
+    await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+    await link();
+    classifyAs(legitimate);
+    await expect(run()).resolves.toMatchObject({ outcome: "no_case" });
+    jest.mocked(generateText).mockClear();
+    jest.mocked(runs.list).mockClear();
+  };
+  // Every run shares one client fixture.
+  const evidenceReads = () =>
+    jest.mocked(createServiceConvexClient).mock.results[0].value.query.mock
+      .calls.length;
+
+  it("skips a routine burst of the account in a later window before reading evidence", async () => {
+    await clear();
+    // Below twice the cleared peak (900), though above twice the threshold.
+    await nextWindow({ [NEXT]: 1_799 });
+    const reads = evidenceReads();
+    await expect(run(NEXT)).resolves.toEqual({
+      status: "skipped",
+      reason: "cooldown_active",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expect(evidenceReads()).toBe(reads);
+    expect(recordCaseCalls()).toHaveLength(0);
+  });
+
+  it("applies across regions, keyed by the verified account", async () => {
+    await clear();
+    await registerAttributedWorkspace(
+      "eu",
+      europe,
+      europe.userId,
+      europe.sandboxId,
+    );
+    await nextWindow({ [NEXT]: 900 }, europe, "eu");
+    await expect(
+      runEgressAbuseReview(
+        { region: "eu", owner: europe.owner, minute: NEXT },
+        FINAL,
+      ),
+    ).resolves.toEqual({ status: "skipped", reason: "cooldown_active" });
+  });
+
+  it("reviews a material escalation in full", async () => {
+    await clear();
+    await nextWindow({ [NEXT]: 1_800 });
+    const result = await run(NEXT);
+    expect(result).toMatchObject({ status: "completed" });
+    expect((result as any).diagnostic.cooldown).toBe("bypassed");
+  });
+
+  it("waits before suppressing a queued review and uses the minute that escalated", async () => {
+    await clear();
+    clock.mockReturnValue((NEXT + 2) * MINUTE_MS);
+    await nextWindow({ [NEXT]: 900 });
+    await expect(run(NEXT, { number: 1, max: 4 })).rejects.toThrow(
+      "evidence is still being recorded",
+    );
+    expect(generateText).not.toHaveBeenCalled();
+
+    clock.mockReturnValue((NEXT + 31) * MINUTE_MS);
+    await nextWindow({ [NEXT]: 900, [NEXT + 1]: 2_000 });
+    const result = await run(NEXT);
+    expect(result).toMatchObject({ status: "completed" });
+    expect((result as any).diagnostic.cooldown).toBe("bypassed");
+    const row = convex.tables.abuse_cases[0];
+    expect(decryptAbuseEvidence(row.reference, row.ciphertext)).toMatchObject({
+      observation: { connections: 2_000 },
+    });
+  });
+
+  it.each(["missing", "lossy"])(
+    "reviews the strongest verified spike with an earlier %s minute",
+    async (gap) => {
+      await clear();
+      await upload([[first, 900]], NEXT);
+      if (gap === "lossy") await upload([[first, 3_000]], NEXT + 1, "us", 1);
+      await upload([[first, 2_000]], NEXT + 2);
+      await expect(run(NEXT)).resolves.toMatchObject({
+        status: "completed",
+        diagnostic: { cooldown: "bypassed" },
+      });
+      const row = convex.tables.abuse_cases[0];
+      expect(decryptAbuseEvidence(row.reference, row.ciphertext)).toMatchObject(
+        {
+          observation: { connections: 2_000 },
+        },
+      );
+    },
+  );
+
+  it("does not suppress a retry of the review that granted it", async () => {
+    await clear();
+    await expect(run()).resolves.toMatchObject({
+      outcome: "no_case",
+      diagnostic: { cooldownGrant: "kept" },
+    });
+  });
+
+  it("reviews in full when the cooldown cannot be read", async () => {
+    await clear();
+    await nextWindow({ [NEXT]: 900 });
+    const redis = jest.mocked(createRedisClient).mock.results[0].value;
+    const mget = redis.mget.getMockImplementation();
+    redis.mget.mockImplementation(async (...keys: string[]) => {
+      if (keys.includes(reviewCooldownKey(first.userId)))
+        throw new Error("store down");
+      return mget(...keys);
+    });
+    const result = await run(NEXT);
+    expect(result).toMatchObject({ status: "completed" });
+    expect((result as any).diagnostic.cooldown).toBe("unavailable");
+  });
+
+  it.each<[string, () => Promise<void>]>([
+    [
+      "an authorization request",
+      async () => {
+        await seedRun();
+        await link();
+        classifyAs(concerning);
+      },
+    ],
+    [
+      "an ambiguous classification",
+      async () => {
+        await seedRun();
+        await link();
+        classifyAs({ ...legitimate, verdict: "ambiguous" });
+      },
+    ],
+    [
+      "incomplete run evidence",
+      async () => {
+        await seedRun(RUN, CHAT, { active: true });
+        await link();
+        classifyAs(legitimate);
+      },
+    ],
+    [
+      "unlinked account activity that looks legitimate",
+      async () => {
+        await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+        classifyAs(legitimate);
+      },
+    ],
+  ])("is never granted by %s", async (_label, arrange) => {
+    await arrange();
+    await expect(run()).resolves.toMatchObject({ status: "completed" });
+    expect(kv.has(reviewCooldownKey(first.userId))).toBe(false);
+    await nextWindow({ [NEXT]: 900 });
+    await expect(run(NEXT)).resolves.toMatchObject({ status: "completed" });
   });
 });

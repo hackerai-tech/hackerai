@@ -174,6 +174,27 @@ export async function registerAttributedWorkspace(
   );
 }
 
+const ownerUserId = (record: unknown) =>
+  record &&
+  typeof record === "object" &&
+  typeof (record as { userId?: unknown }).userId === "string"
+    ? (record as { userId: string }).userId
+    : undefined;
+
+/** Verified accounts for several owner references in one read. */
+export async function resolveOwners(
+  redis: Redis,
+  refs: Array<{ region: E2BCluster; owner: string }>,
+): Promise<(string | undefined)[]> {
+  if (!refs.length) return [];
+  const records = await redis.mget<unknown[]>(
+    ...refs.map(({ region, owner }) => ownerKey(region, owner)),
+  );
+  if (records.length !== refs.length)
+    throw new Error("Incomplete attribution lookup");
+  return records.map(ownerUserId);
+}
+
 /**
  * Resolves an owner reference and its workspace references to the verified
  * user and sandbox IDs. Workspaces registered to anyone else, or missing,
@@ -189,12 +210,7 @@ export async function resolveAttribution(
     ownerKey(region, owner),
     ...workspaces.map((workspace) => workspaceKey(region, workspace)),
   );
-  const userId =
-    ownerRecord &&
-    typeof ownerRecord === "object" &&
-    typeof (ownerRecord as { userId?: unknown }).userId === "string"
-      ? (ownerRecord as { userId: string }).userId
-      : undefined;
+  const userId = ownerUserId(ownerRecord);
   const sandboxIds: string[] = [];
   for (const record of records) {
     const value = record as {
