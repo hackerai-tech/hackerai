@@ -1,3 +1,4 @@
+import type { AuthkitOptions } from "@workos-inc/authkit-nextjs";
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier } from "@/types";
@@ -55,19 +56,23 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
 };
 
 export type AuthSessionPhase = "load_sdk" | "session" | "entitlements";
+type AuthKitSessionObserver = NonNullable<AuthkitOptions["onSessionPhase"]>;
+export type AuthKitSessionPhase = Parameters<AuthKitSessionObserver>[0];
 
 /**
  * Get the current user ID and pro status from the authenticated session
  * Throws ChatSDKError if user is not authenticated
  *
  * @param req - NextRequest object (server-side only)
- * @param onPhase - Optional finite progress observer; receives no session data.
+ * @param onPhase - Optional finite progress observer.
+ * @param onAuthKitSessionPhase - Optional AuthKit subphase observer.
  * @returns Authenticated identity, subscription and quota metadata.
  * @throws ChatSDKError - When user is not authenticated
  */
 export const getUserIDAndPro = async (
   req: NextRequest,
   onPhase?: (phase: AuthSessionPhase) => void,
+  onAuthKitSessionPhase?: AuthKitSessionObserver,
 ): Promise<{
   userId: string;
   subscription: SubscriptionTier;
@@ -89,7 +94,9 @@ export const getUserIDAndPro = async (
     reportPhase("load_sdk");
     const { authkit } = await import("@workos-inc/authkit-nextjs");
     reportPhase("session");
-    const { session } = await authkit(req);
+    const { session } = await (onAuthKitSessionPhase
+      ? authkit(req, { onSessionPhase: onAuthKitSessionPhase })
+      : authkit(req));
 
     if (!session?.user?.id) {
       throw new ChatSDKError("unauthorized:auth");

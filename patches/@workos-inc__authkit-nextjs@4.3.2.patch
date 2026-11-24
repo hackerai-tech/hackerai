@@ -312,10 +312,42 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..a509a45cca12657424e836e5f13c53ea
              accessToken: undefined,
              error: 'Failed to refresh access token',
 diff --git a/dist/esm/session.js b/dist/esm/session.js
-index 33445c94c1cb3f8d1f510b0a6914b628e29fac40..f994f5c30ba0e491235a2dda6a1c9646d5ec274d 100644
+index 33445c94c1cb3f8d1f510b0a6914b628e29fac40..fafd2826a1aa492ce4534426bf11acb9438397db 100644
 --- a/dist/esm/session.js
 +++ b/dist/esm/session.js
-@@ -175,6 +175,8 @@ async function updateSession(request, options = { debug: false }) {
+@@ -106,6 +106,15 @@ async function updateSessionMiddleware(request, debug, middlewareAuth, redirectU
+     return handleAuthkitHeaders(request, headers);
+ }
+ async function updateSession(request, options = { debug: false }) {
++    const reportPhase = (phase) => {
++        try {
++            options.onSessionPhase?.(phase);
++        }
++        catch {
++            // Diagnostics cannot affect authentication.
++        }
++    };
++    reportPhase('read_cookie');
+     const session = await getSessionFromCookie(request);
+     // Since we're setting the headers in the response, we need to create a new Headers object without copying
+     // the request headers.
+@@ -127,6 +136,7 @@ async function updateSession(request, options = { debug: false }) {
+         if (options.debug) {
+             console.log('No session found from cookie');
+         }
++        reportPhase('prepare_anonymous_response');
+         const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
+             returnPathname: getReturnPathname(request.url),
+             redirectUri: options.redirectUri || WORKOS_REDIRECT_URI,
+@@ -140,6 +150,7 @@ async function updateSession(request, options = { debug: false }) {
+             authorizationUrl,
+         };
+     }
++    reportPhase('verify_access_token');
+     const hasValidSession = await verifyAccessToken(session.accessToken);
+     const isExpiring = hasValidSession && isTokenExpiring(session.accessToken, options.refreshBufferSeconds);
+     const cookieName = WORKOS_COOKIE_NAME || 'wos-session';
+@@ -175,6 +186,8 @@ async function updateSession(request, options = { debug: false }) {
      if (hasValidSession && !isExpiring) {
          return respondWithCurrentToken();
      }
@@ -324,25 +356,28 @@ index 33445c94c1cb3f8d1f510b0a6914b628e29fac40..f994f5c30ba0e491235a2dda6a1c9646
      try {
          if (options.debug) {
              // istanbul ignore next
-@@ -183,11 +185,13 @@ async function updateSession(request, options = { debug: false }) {
+@@ -183,11 +196,15 @@ async function updateSession(request, options = { debug: false }) {
                  : `Session invalid. ${session.accessToken ? `Refreshing access token that ends in ${session.accessToken.slice(-10)}` : 'Access token missing.'}`);
          }
          const { org_id: organizationIdFromAccessToken } = decodeJwt(session.accessToken);
 +        refreshStage = 'refresh_request';
++        reportPhase('refresh_request');
          const { accessToken, refreshToken, user, impersonator, authenticationMethod } = await getWorkOS().userManagement.authenticateWithRefreshToken({
              clientId: WORKOS_CLIENT_ID,
              refreshToken: session.refreshToken,
              organizationId: organizationIdFromAccessToken,
          });
 +        refreshStage = 'after_refresh_response';
++        reportPhase('finish_refresh');
          if (options.debug) {
              console.log('Session successfully refreshed');
          }
-@@ -264,7 +268,7 @@ async function updateSession(request, options = { debug: false }) {
+@@ -264,7 +281,8 @@ async function updateSession(request, options = { debug: false }) {
                  newRequestHeaders.append('Set-Cookie', deleteJwtCookie);
              }
          }
 -        options.onSessionRefreshError?.({ error: e, request, isTransient });
++        reportPhase('prepare_refresh_fallback');
 +        options.onSessionRefreshError?.({ error: e, request, isTransient, refreshStage });
          const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
              returnPathname: getReturnPathname(request.url),
@@ -365,10 +400,21 @@ index 2ad3f32e5f275becdf7b076f0de253cdd52aab58..f81a1be45a32b1181d42059514d9c759
      organizationId?: string | undefined;
      role?: string | undefined;
 diff --git a/dist/esm/types/interfaces.d.ts b/dist/esm/types/interfaces.d.ts
-index d82fd847dc74bac022339c79d3c876ec58719864..62ee1cce799bcdb2d8a30d5a9f0a3723a638c7bf 100644
+index d82fd847dc74bac022339c79d3c876ec58719864..f0465d6580fcb84cd5b9ab3f33311f5f07e286b5 100644
 --- a/dist/esm/types/interfaces.d.ts
 +++ b/dist/esm/types/interfaces.d.ts
-@@ -151,6 +151,12 @@ export interface AuthkitOptions {
+@@ -136,6 +136,10 @@ export interface AuthkitOptions {
+      * a total lifetime of 5 minutes or less). Set to `0` to disable.
+      */
+     refreshBufferSeconds?: number;
++    /** Synchronous diagnostics for the pending session step. Receives only a phase label. */
++    onSessionPhase?: (
++        phase: 'read_cookie' | 'prepare_anonymous_response' | 'verify_access_token' | 'refresh_request' | 'finish_refresh' | 'prepare_refresh_fallback',
++    ) => undefined;
+     onSessionRefreshSuccess?: (data: {
+         accessToken: string;
+         user: User;
+@@ -151,6 +155,12 @@ export interface AuthkitOptions {
           * session cookie is preserved for a later retry instead of being cleared.
           */
          isTransient: boolean;
@@ -767,10 +813,21 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..8f28c43e3f3ebeee2f6c9d890c2a59a1
        accessToken: undefined,
        error: 'Failed to refresh access token',
 diff --git a/src/interfaces.ts b/src/interfaces.ts
-index c0d05b2de0f6227ad77849fbb45af6a266bf2c37..45bcee830d302c6b6290631e09e763fe7b003dea 100644
+index c0d05b2de0f6227ad77849fbb45af6a266bf2c37..a5c1d424dfff590d3fe487c3f334ac4976117a65 100644
 --- a/src/interfaces.ts
 +++ b/src/interfaces.ts
-@@ -161,6 +161,12 @@ export interface AuthkitOptions {
+@@ -146,6 +146,10 @@ export interface AuthkitOptions {
+    * a total lifetime of 5 minutes or less). Set to `0` to disable.
+    */
+   refreshBufferSeconds?: number;
++  /** Synchronous diagnostics for the pending session step. Receives only a phase label. */
++  onSessionPhase?: (
++    phase: 'read_cookie' | 'prepare_anonymous_response' | 'verify_access_token' | 'refresh_request' | 'finish_refresh' | 'prepare_refresh_fallback',
++  ) => undefined;
+   onSessionRefreshSuccess?: (data: {
+     accessToken: string;
+     user: User;
+@@ -161,6 +165,12 @@ export interface AuthkitOptions {
       * session cookie is preserved for a later retry instead of being cleared.
       */
      isTransient: boolean;
@@ -784,10 +841,42 @@ index c0d05b2de0f6227ad77849fbb45af6a266bf2c37..45bcee830d302c6b6290631e09e763fe
  }
  
 diff --git a/src/session.ts b/src/session.ts
-index 9cd410fc84198b027c3c9f112529a9d579c898dd..b18d137caff40c27e1817e935af50e3239aa3783 100644
+index 9cd410fc84198b027c3c9f112529a9d579c898dd..3eef8507a98ba196b3d001efd7451fcfc1475e00 100644
 --- a/src/session.ts
 +++ b/src/session.ts
-@@ -262,6 +262,9 @@ async function updateSession(
+@@ -167,6 +167,15 @@ async function updateSession(
+   request: NextRequest,
+   options: AuthkitOptions = { debug: false },
+ ): Promise<AuthkitResponse> {
++  const reportPhase = (phase: Parameters<NonNullable<AuthkitOptions['onSessionPhase']>>[0]) => {
++    try {
++      options.onSessionPhase?.(phase);
++    } catch {
++      // Diagnostics cannot affect authentication.
++    }
++  };
++
++  reportPhase('read_cookie');
+   const session = await getSessionFromCookie(request);
+ 
+   // Since we're setting the headers in the response, we need to create a new Headers object without copying
+@@ -195,6 +204,7 @@ async function updateSession(
+       console.log('No session found from cookie');
+     }
+ 
++    reportPhase('prepare_anonymous_response');
+     const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
+       returnPathname: getReturnPathname(request.url),
+       redirectUri: options.redirectUri || WORKOS_REDIRECT_URI,
+@@ -211,6 +221,7 @@ async function updateSession(
+     };
+   }
+ 
++  reportPhase('verify_access_token');
+   const hasValidSession = await verifyAccessToken(session.accessToken);
+   const isExpiring = hasValidSession && isTokenExpiring(session.accessToken, options.refreshBufferSeconds);
+ 
+@@ -262,6 +273,9 @@ async function updateSession(
      return respondWithCurrentToken();
    }
  
@@ -797,27 +886,30 @@ index 9cd410fc84198b027c3c9f112529a9d579c898dd..b18d137caff40c27e1817e935af50e32
    try {
      if (options.debug) {
        // istanbul ignore next
-@@ -273,6 +276,7 @@ async function updateSession(
+@@ -273,6 +287,8 @@ async function updateSession(
      }
  
      const { org_id: organizationIdFromAccessToken } = decodeJwt<AccessToken>(session.accessToken);
 +    refreshStage = 'refresh_request';
++    reportPhase('refresh_request');
  
      const { accessToken, refreshToken, user, impersonator, authenticationMethod } =
        await getWorkOS().userManagement.authenticateWithRefreshToken({
-@@ -280,6 +284,7 @@ async function updateSession(
+@@ -280,6 +296,8 @@ async function updateSession(
          refreshToken: session.refreshToken,
          organizationId: organizationIdFromAccessToken,
        });
 +    refreshStage = 'after_refresh_response';
++    reportPhase('finish_refresh');
  
      if (options.debug) {
        console.log('Session successfully refreshed');
-@@ -378,7 +383,7 @@ async function updateSession(
+@@ -378,7 +396,8 @@ async function updateSession(
        }
      }
  
 -    options.onSessionRefreshError?.({ error: e, request, isTransient });
++    reportPhase('prepare_refresh_fallback');
 +    options.onSessionRefreshError?.({ error: e, request, isTransient, refreshStage });
  
      const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ApiError, runs } from "@trigger.dev/sdk";
 
-import { getUserIDAndPro, type AuthSessionPhase } from "@/lib/auth/get-user-id";
+import {
+  getUserIDAndPro,
+  type AuthKitSessionPhase,
+  type AuthSessionPhase,
+} from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
@@ -28,6 +32,14 @@ type TriggerRunStatus = {
 // this read's signal to its fetch): the browser's next poll is the retry.
 const TRIGGER_RUN_READ_DEADLINE_MS = 5_000;
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
+const AUTHKIT_SESSION_PHASES = new Set<AuthKitSessionPhase>([
+  "read_cookie",
+  "prepare_anonymous_response",
+  "verify_access_token",
+  "refresh_request",
+  "finish_refresh",
+  "prepare_refresh_fallback",
+]);
 const TERMINAL_RUN_STATUSES = new Set([
   "COMPLETED",
   "CANCELED",
@@ -99,6 +111,7 @@ export const createAgentStatusPost =
   async (req: NextRequest) => {
     let stage = "read_request";
     let authPhase: AuthSessionPhase | undefined;
+    let authKitSessionPhase: AuthKitSessionPhase | undefined;
     let userId: string | undefined;
     let chatId: string | undefined;
     let runId: string | undefined;
@@ -132,6 +145,10 @@ export const createAgentStatusPost =
             ...(stage === "authenticate" && {
               auth_phase_diagnostic_version: 1,
               auth_phase: authPhase ?? "not_observed",
+              ...(authPhase === "session" &&
+                authKitSessionPhase && {
+                  authkit_session_phase: authKitSessionPhase,
+                }),
             }),
             elapsed_ms: elapsedMs,
             warning_threshold_ms: delay,
@@ -160,14 +177,20 @@ export const createAgentStatusPost =
       }
 
       stage = "authenticate";
-      const authContext = await getUserIDAndPro(req, (phase) => {
-        if (
-          phase === "load_sdk" ||
-          phase === "session" ||
-          phase === "entitlements"
-        )
-          authPhase = phase;
-      });
+      const authContext = await getUserIDAndPro(
+        req,
+        (phase) => {
+          if (
+            phase === "load_sdk" ||
+            phase === "session" ||
+            phase === "entitlements"
+          )
+            authPhase = phase;
+        },
+        (phase) => {
+          if (AUTHKIT_SESSION_PHASES.has(phase)) authKitSessionPhase = phase;
+        },
+      );
       userId = authContext.userId;
 
       stage = "get_chat";
