@@ -39,7 +39,7 @@ import {
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { useFollowUpBehavior } from "@/app/hooks/useFollowUpBehavior";
-import type { RestoredSteer } from "@/app/hooks/useUnreadSteerRequeue";
+import { useServerMessageQueue } from "@/app/hooks/useServerMessageQueue";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
@@ -135,7 +135,6 @@ interface GlobalStateType {
   queueChatId: string | null;
   selectMessageQueue: (chatId: string) => void;
   queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
-  requeueUnreadSteers: (chatId: string, steers: RestoredSteer[]) => void;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
@@ -510,7 +509,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const queueKey = JSON.stringify([user?.id ?? null, queueChatId]);
   const queuesRef = useRef(new Map<string, QueuedMessage[]>());
   const [, refreshQueues] = useState(0);
-  const messageQueue = queuesRef.current.get(queueKey) ?? [];
+  const localMessageQueue = queuesRef.current.get(queueKey) ?? [];
   const setMessageQueue = useCallback(
     (
       update: QueuedMessage[] | ((queue: QueuedMessage[]) => QueuedMessage[]),
@@ -1166,7 +1165,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   // Message queue handlers
-  const queueMessage = useCallback(
+  const localQueueMessage = useCallback(
     (text: string, files?: FileMessagePart[]) => {
       if ((queuesRef.current.get(queueKey)?.length ?? 0) >= 10) {
         toast.error("Queue is full", {
@@ -1188,49 +1187,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [queueKey, setMessageQueue],
   );
 
-  // Unread steers return in send order: ahead of anything queued after them,
-  // even when separate withdrawals restore them out of order. Only this
-  // browser's clock is comparable with its queue, so a steer sent elsewhere
-  // goes to the front, after earlier ones from elsewhere. They were already
-  // accepted, so the queue limit never drops them.
-  const requeueUnreadSteers = useCallback(
-    (chatId: string, steers: RestoredSteer[]) => {
-      if (!steers.length) return;
-      // Withdrawal is async; target the steers' own chat, not the open one.
-      const key = JSON.stringify([user?.id ?? null, chatId]);
-      const queue = [...(queuesRef.current.get(key) ?? [])];
-      for (const steer of steers) {
-        // Never ahead of a message whose delivery already started.
-        const firstMovable =
-          queue.findLastIndex((message) => message.deliveryStatus) + 1;
-        let index: number;
-        if (steer.sentHere) {
-          const later = queue.findIndex(
-            (message, position) =>
-              position >= firstMovable &&
-              !message.restoredFromElsewhere &&
-              message.timestamp > steer.timestamp,
-          );
-          index = later === -1 ? queue.length : later;
-        } else {
-          index = firstMovable;
-          while (queue[index]?.restoredFromElsewhere) index++;
-        }
-        queue.splice(index, 0, {
-          id: uuidv4(),
-          text: steer.text,
-          timestamp: steer.timestamp,
-          ...(steer.sentHere ? {} : { restoredFromElsewhere: true }),
-          ...(steer.held ? { held: true } : {}),
-        });
-      }
-      queuesRef.current.set(key, queue);
-      refreshQueues((version) => version + 1);
-    },
-    [user?.id],
-  );
-
-  const removeQueuedMessage = useCallback(
+  const localRemoveQueuedMessage = useCallback(
     (id: string) => {
       setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
       setEditingQueuedMessageId((currentId) =>
@@ -1240,7 +1197,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [setMessageQueue],
   );
 
-  const setQueuedMessageDelivery = useCallback(
+  const localSetQueuedMessageDelivery = useCallback(
     (
       id: string,
       deliveryStatus: NonNullable<QueuedMessage["deliveryStatus"]>,
@@ -1257,7 +1214,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [setMessageQueue],
   );
 
-  const updateQueuedMessage = useCallback(
+  const localUpdateQueuedMessage = useCallback(
     (id: string, text: string) => {
       setMessageQueue((prev) =>
         prev.map((message) =>
@@ -1270,10 +1227,44 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [setMessageQueue],
   );
 
-  const clearQueue = useCallback(() => {
+  const localClearQueue = useCallback(() => {
     setMessageQueue([]);
     setEditingQueuedMessageId(null);
   }, [setMessageQueue]);
+
+  // With mid-run steering, the queue lives on the server so it survives a
+  // reload and appears on every device; otherwise it stays in this session.
+  const serverQueue = useServerMessageQueue({
+    userId: user?.id,
+    chatId: queueChatId,
+    enabled: agentSteeringEnabled,
+  });
+  const localQueue = {
+    messageQueue: localMessageQueue,
+    queueMessage: localQueueMessage,
+    updateQueuedMessage: localUpdateQueuedMessage,
+    removeQueuedMessage: localRemoveQueuedMessage,
+    setQueuedMessageDelivery: localSetQueuedMessageDelivery,
+    clearQueue: localClearQueue,
+  };
+  const {
+    messageQueue,
+    queueMessage,
+    updateQueuedMessage,
+    setQueuedMessageDelivery,
+    clearQueue,
+  } = agentSteeringEnabled ? serverQueue : localQueue;
+  const removeFromServerQueue = serverQueue.removeQueuedMessage;
+  const removeQueuedMessage = useCallback(
+    (id: string) => {
+      if (!agentSteeringEnabled) return localRemoveQueuedMessage(id);
+      removeFromServerQueue(id);
+      setEditingQueuedMessageId((currentId) =>
+        currentId === id ? null : currentId,
+      );
+    },
+    [agentSteeringEnabled, localRemoveQueuedMessage, removeFromServerQueue],
+  );
 
   const markChatNavigationStarted = useCallback(() => {
     chatNavigationRevisionRef.current += 1;
@@ -1481,7 +1472,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     selectMessageQueue,
     queueMessage,
     updateQueuedMessage,
-    requeueUnreadSteers,
     editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,

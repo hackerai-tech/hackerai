@@ -639,7 +639,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     subscription,
     activeProjectId,
     agentSteeringEnabled,
-    requeueUnreadSteers,
   } = useGlobalState();
   const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
     useState(false);
@@ -2820,18 +2819,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
+  const agentRunActive =
+    !!activeTriggerRunId ||
+    !!agentLongRunId ||
+    status === "streaming" ||
+    status === "submitted";
   const { pendingSteers, recovering: recoveringUnreadSteers } =
     useUnreadSteerRequeue({
       chatId,
       enabled: agentSteeringEnabled && isConvexAuthenticated,
       // Until the chat loads, an active run is unknown; never withdraw early.
-      runActive:
-        !hasLoadedCurrentChat ||
-        !!activeTriggerRunId ||
-        !!agentLongRunId ||
-        status === "streaming" ||
-        status === "submitted",
-      onRequeue: requeueUnreadSteers,
+      runActive: !hasLoadedCurrentChat || agentRunActive,
     });
 
   // Automatic queue processing - send next queued message when ready
@@ -3263,6 +3261,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     <Messages
                       key={chatId}
                       chatId={chatId}
+                      pendingSteers={agentRunActive ? pendingSteers : undefined}
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}
@@ -3365,7 +3364,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     }
 
                     onSubmit={handleSubmit}
-                    pendingSteers={pendingSteers}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}

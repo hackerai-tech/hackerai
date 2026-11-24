@@ -2365,6 +2365,29 @@ export default defineSchema({
     .index("by_chat_and_settled", ["chat_id", "settled_at"])
     .index("by_run_and_settled", ["run_id", "settled_at"]),
 
+  /**
+   * Follow-ups waiting for an Agent run to finish, for accounts with mid-run
+   * steering. Kept on the server so a reload or another device still shows
+   * them. The browser that queued a message sends it; saving the user message
+   * with the same ID deletes the row in that transaction.
+   */
+  queued_messages: defineTable({
+    /** Client-generated; becomes the user message ID when sent. */
+    id: v.string(),
+    chat_id: v.string(),
+    user_id: v.string(),
+    text: v.string(),
+    /** File parts without URLs or local paths. */
+    files: v.optional(v.array(v.any())),
+    /** Browser time it was first sent or queued; orders the queue. */
+    sent_at: v.number(),
+    /** A steer the Agent never read, returned here after its run ended. */
+    from_steer: v.optional(v.boolean()),
+    created_at: v.number(),
+  })
+    .index("by_queued_id", ["id"])
+    .index("by_chat_and_sent", ["chat_id", "sent_at"]),
+
   processed_webhooks: defineTable({
     event_id: v.string(),
     // Fraud source IDs let support resolution fence an in-flight delivery.

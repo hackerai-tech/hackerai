@@ -6,6 +6,7 @@ import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { syncGoalInputTiming } from "./lib/goalInputTiming";
 import { deleteAgentSteersForChat } from "./lib/agentSteers";
+import { deleteQueuedMessagesForChat } from "./lib/queuedMessages";
 import { goalTimingForState } from "../lib/goals/timing";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
@@ -417,7 +418,10 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
     .unique();
   if (goal) await ctx.db.delete(goal._id);
-  if (await deleteAgentSteersForChat(ctx, chat.id)) {
+  if (
+    (await deleteAgentSteersForChat(ctx, chat.id)) ||
+    (await deleteQueuedMessagesForChat(ctx, chat.id))
+  ) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
     return;
   }
@@ -504,7 +508,10 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
     .unique();
   if (goal) await ctx.db.delete(goal._id);
-  if (await deleteAgentSteersForChat(ctx, chat.id)) {
+  if (
+    (await deleteAgentSteersForChat(ctx, chat.id)) ||
+    (await deleteQueuedMessagesForChat(ctx, chat.id))
+  ) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }

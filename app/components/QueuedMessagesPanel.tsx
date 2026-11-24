@@ -7,7 +7,6 @@ import {
   ListX,
 } from "lucide-react";
 import type { QueuedMessage, QueueBehavior } from "@/types/chat";
-import type { PendingAgentSteer } from "@/app/hooks/useUnreadSteerRequeue";
 import { useEffect, useState, type KeyboardEvent } from "react";
 import {
   DropdownMenu,
@@ -25,8 +24,6 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 
 interface QueuedMessagesPanelProps {
   messages: QueuedMessage[];
-  /** Sent into the running Agent and waiting for its next step. */
-  pendingSteers?: PendingAgentSteer[];
   agentSteeringEnabled?: boolean;
   onSendNow: (messageId: string) => void;
   onEdit: (messageId: string, text: string) => void;
@@ -224,7 +221,9 @@ const QueuedMessageRow = ({
                 className="text-xs text-muted-foreground mt-0.5"
                 role="status"
               >
-                Unread by the Agent. Send it when you are ready.
+                {message.fromSteer
+                  ? "Unread by the Agent. Send it when you are ready."
+                  : "Queued earlier. Send it when you are ready."}
               </div>
             )}
             {message.deliveryStatus && (
@@ -307,27 +306,8 @@ const QueuedMessageRow = ({
   );
 };
 
-const PendingSteerRow = ({ steer }: { steer: PendingAgentSteer }) => (
-  <div
-    className="flex items-start gap-2 py-0.5 min-w-0"
-    data-testid={`pending-steer-${steer.id}`}
-  >
-    <CornerDownRight
-      aria-hidden="true"
-      className="w-3 h-3 mt-1 flex-shrink-0 text-muted-foreground"
-    />
-    <div className="flex-1 min-w-0">
-      <div className="text-sm truncate text-foreground">{steer.text}</div>
-      <div className="text-xs text-muted-foreground mt-0.5" role="status">
-        Steer · waiting for the Agent&apos;s next step
-      </div>
-    </div>
-  </div>
-);
-
 export const QueuedMessagesPanel = ({
   messages,
-  pendingSteers = [],
   agentSteeringEnabled = false,
   onSendNow,
   onEdit,
@@ -341,7 +321,7 @@ export const QueuedMessagesPanel = ({
 
   useEffect(() => () => onEditingMessageChange(null), [onEditingMessageChange]);
 
-  if (messages.length === 0 && pendingSteers.length === 0) {
+  if (messages.length === 0) {
     return null;
   }
 
@@ -370,9 +350,6 @@ export const QueuedMessagesPanel = ({
   return (
     <div className="mx-0 rounded-[22px_22px_0px_0px] border border-black/8 dark:border-border border-b-0 bg-input-chat md:mx-4">
       <div className="px-4 pt-3 pb-1 space-y-1 max-h-[240px] overflow-y-auto">
-        {pendingSteers.map((steer) => (
-          <PendingSteerRow key={steer.id} steer={steer} />
-        ))}
         {messages.map(renderMessage)}
       </div>
     </div>

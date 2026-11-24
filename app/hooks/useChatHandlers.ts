@@ -716,6 +716,8 @@ export const useChatHandlers = ({
   const steerActiveRun = async (
     text: string,
     sentAt = Date.now(),
+    /** A queued message leaving the queue with this steer. */
+    queuedId?: string,
   ): Promise<boolean> => {
     const trimmed = text.trim();
     if (
@@ -731,8 +733,13 @@ export const useChatHandlers = ({
     rememberSteerSentHere(id);
     try {
       return (
-        (await createAgentSteer({ chatId, id, text: trimmed, sentAt })) ===
-        "pending"
+        (await createAgentSteer({
+          chatId,
+          id,
+          text: trimmed,
+          sentAt,
+          ...(queuedId ? { queuedId } : {}),
+        })) === "pending"
       );
     } catch (error) {
       console.warn("Could not steer the Agent run; queueing instead", error);
@@ -2042,7 +2049,7 @@ export const useChatHandlers = ({
       isSendingNowRef.current = true;
       try {
         // Keep its queue position if the run never reads it.
-        if (await steerActiveRun(message.text, message.timestamp)) {
+        if (await steerActiveRun(message.text, message.timestamp, messageId)) {
           // An edit made while the steer was pending stays queued.
           const latest = messageQueueRef.current.find(
             (item) => item.id === messageId,

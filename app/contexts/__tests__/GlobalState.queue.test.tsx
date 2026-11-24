@@ -68,68 +68,6 @@ describe("message queue admission", () => {
     expect(result.current.messageQueue.map((m) => m.text)).toEqual(["A later"]);
   });
 
-  it("restores unread steers in send order around later queued messages", async () => {
-    const { result } = renderHook(() => useGlobalState(), {
-      wrapper: GlobalStateProvider,
-    });
-    await act(async () => result.current.selectMessageQueue("a"));
-    const now = jest.spyOn(Date, "now").mockReturnValue(300);
-    await act(async () => {
-      result.current.queueMessage("Queued after both steers");
-    });
-    now.mockRestore();
-    // Separate withdrawals can restore the later steer first.
-    await act(async () => {
-      result.current.requeueUnreadSteers("a", [
-        { text: "Second steer", timestamp: 200, sentHere: true, held: false },
-      ]);
-      result.current.requeueUnreadSteers("a", [
-        { text: "First steer", timestamp: 100, sentHere: true, held: false },
-      ]);
-    });
-    expect(result.current.messageQueue.map((m) => m.text)).toEqual([
-      "First steer",
-      "Second steer",
-      "Queued after both steers",
-    ]);
-    // A tie keeps restoration order: it goes after the equal timestamp.
-    await act(async () => {
-      result.current.requeueUnreadSteers("a", [
-        { text: "Tied steer", timestamp: 200, sentHere: true, held: false },
-      ]);
-    });
-    expect(result.current.messageQueue.map((m) => m.text)).toEqual([
-      "First steer",
-      "Second steer",
-      "Tied steer",
-      "Queued after both steers",
-    ]);
-    // Another device's clock is not comparable: front, in restore order.
-    await act(async () => {
-      result.current.requeueUnreadSteers("a", [
-        {
-          text: "Elsewhere 1",
-          timestamp: 999_999,
-          sentHere: false,
-          held: true,
-        },
-      ]);
-      result.current.requeueUnreadSteers("a", [
-        { text: "Elsewhere 2", timestamp: 1, sentHere: false, held: true },
-      ]);
-    });
-    expect(result.current.messageQueue.map((m) => m.text)).toEqual([
-      "Elsewhere 1",
-      "Elsewhere 2",
-      "First steer",
-      "Second steer",
-      "Tied steer",
-      "Queued after both steers",
-    ]);
-    expect(result.current.messageQueue[0].held).toBe(true);
-    expect(result.current.messageQueue[2].held).toBeUndefined();
-  });
-
   it("never exposes another account's queue", async () => {
     const auth = require("@workos-inc/authkit-nextjs/components").useAuth;
     const original = auth();

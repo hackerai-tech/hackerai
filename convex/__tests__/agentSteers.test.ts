@@ -19,6 +19,10 @@ jest.mock("../lib/utils", () => ({
 }));
 
 const steers = require("../agentSteers") as typeof import("../agentSteers");
+const queue =
+  require("../queuedMessages") as typeof import("../queuedMessages");
+const { retireQueuedMessage } =
+  require("../lib/queuedMessages") as typeof import("../lib/queuedMessages");
 const { deleteAgentSteersForChat, retireSavedSteers, withoutWithdrawnSteers } =
   require("../lib/agentSteers") as typeof import("../lib/agentSteers");
 
@@ -37,6 +41,7 @@ function fixture(user = "owner") {
       { _id: "other-chat-row", id: "other-chat", user_id: "someone-else" },
     ],
     agent_steers: [],
+    queued_messages: [],
   };
   const select = (table: string, equals: Record<string, unknown>) =>
     rows[table].filter((row) =>
@@ -112,7 +117,13 @@ function fixture(user = "owner") {
     });
   const withdraw = (id: string) =>
     steers.withdraw.handler(ctx as never, { chatId: "chat", id });
-  return { rows, ctx, create, claim, withdraw };
+  const enqueue = (id: string, text = `queued ${id}`, sentAt = 1_000) =>
+    queue.enqueue.handler(ctx as never, { chatId: "chat", id, text, sentAt });
+  const listQueue = () =>
+    queue.list.handler(ctx as never, { chatId: "chat" }) as Promise<
+      Array<{ id: string; text: string; fromSteer: boolean }>
+    >;
+  return { rows, ctx, create, claim, withdraw, enqueue, listQueue };
 }
 
 describe("agent steers", () => {
@@ -338,5 +349,123 @@ describe("agent steers", () => {
     expect(await deleteAgentSteersForChat(ctx as never, "chat")).toBe(true);
     expect(await deleteAgentSteersForChat(ctx as never, "chat")).toBe(false);
     expect(rows.agent_steers).toEqual([]);
+  });
+
+  it("moves a withdrawn steer into the queue under its own ID, once", async () => {
+    const { create, withdraw, rows, listQueue } = fixture();
+    await create("a", "use staging");
+    rows.chats[0].active_trigger_run_id = undefined;
+    await withdraw("a");
+    // Same ID: saving it as a user message later retires this queued row.
+    expect(await listQueue()).toEqual([
+      expect.objectContaining({
+        id: "a",
+        text: "use staging",
+        fromSteer: true,
+      }),
+    ]);
+    expect(await withdraw("a")).toEqual({ outcome: "not_found" });
+    expect(rows.queued_messages).toHaveLength(1);
+  });
+
+  it("returns an unread steer even when the queue is full", async () => {
+    const { create, withdraw, enqueue, rows, listQueue } = fixture();
+    await create("steer", "use staging");
+    for (let index = 0; index < 10; index++) await enqueue(`q${index}`);
+    await expect(enqueue("overflow")).rejects.toThrow(
+      "Please wait for queued messages to send before adding more.",
+    );
+    rows.chats[0].active_trigger_run_id = undefined;
+    await withdraw("steer");
+    expect((await listQueue()).map((row) => row.id)).toContain("steer");
+  });
+
+  it("takes a steered queued message out of the queue in the same write", async () => {
+    const { ctx, enqueue, rows, listQueue } = fixture();
+    await enqueue("queued", "check the login form");
+    await enqueue("edited", "old text");
+    const steer = (id: string, queuedId: string, text: string) =>
+      steers.create.handler(ctx as never, {
+        chatId: "chat",
+        id,
+        text,
+        sentAt: 1_000,
+        queuedId,
+      });
+    expect(await steer("s1", "queued", "check the login form")).toBe("pending");
+    // Edited after the steer left: the newer text stays queued.
+    rows.queued_messages.find((row) => row.id === "edited")!.text = "new text";
+    await steer("s2", "edited", "old text");
+    expect((await listQueue()).map((row) => row.text)).toEqual(["new text"]);
+  });
+
+  it("keeps each account's queue private", async () => {
+    const owner = fixture();
+    await owner.enqueue("a", "private");
+    const intruder = fixture("intruder");
+    intruder.rows.queued_messages = owner.rows.queued_messages;
+    expect(
+      await queue.list.handler(intruder.ctx as never, { chatId: "chat" }),
+    ).toEqual([]);
+    await queue.update.handler(intruder.ctx as never, {
+      chatId: "chat",
+      id: "a",
+      text: "changed",
+    });
+    await queue.remove.handler(intruder.ctx as never, {
+      chatId: "chat",
+      id: "a",
+    });
+    await expect(intruder.enqueue("b")).rejects.toThrow("Chat not found");
+    expect(owner.rows.queued_messages).toEqual([
+      expect.objectContaining({ id: "a", text: "private" }),
+    ]);
+  });
+
+  it("stores queued file parts without expiring URLs or local paths", async () => {
+    const { ctx, rows } = fixture();
+    await queue.enqueue.handler(ctx as never, {
+      chatId: "chat",
+      id: "earlier",
+      text: "",
+      sentAt: 1_000,
+      files: [
+        {
+          type: "file",
+          fileId: "file-1",
+          name: "scan.txt",
+          mediaType: "text/plain",
+          size: 4,
+          url: "https://expiring.example/scan.txt",
+          localPath: "/Users/me/scan.txt",
+        },
+      ],
+    });
+    expect(rows.queued_messages[0].files).toEqual([
+      {
+        type: "file",
+        fileId: "file-1",
+        name: "scan.txt",
+        mediaType: "text/plain",
+        size: 4,
+      },
+    ]);
+  });
+
+  it("retires a queued message when its user message is saved, only for its owner", async () => {
+    const { ctx, enqueue, listQueue } = fixture();
+    await enqueue("a");
+    await retireQueuedMessage(ctx as never, {
+      id: "a",
+      chatId: "chat",
+      userId: "intruder",
+    });
+    expect(await listQueue()).toHaveLength(1);
+    await retireQueuedMessage(ctx as never, {
+      id: "a",
+      chatId: "chat",
+      userId: "owner",
+    });
+    expect(await listQueue()).toEqual([]);
   });
 });

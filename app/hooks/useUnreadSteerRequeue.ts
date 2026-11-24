@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useCommittedRef } from "./useLatestRef";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { markQueuedHere } from "./useServerMessageQueue";
 
 const MAX_WITHDRAW_RETRIES = 5;
 
@@ -20,13 +20,6 @@ export const rememberStoppedRun = (runId: string) => {
 };
 export const wasRunStopped = (runId: string) => stoppedRuns.has(runId);
 
-export type RestoredSteer = {
-  text: string;
-  timestamp: number;
-  sentHere: boolean;
-  /** Not sent during the user's current visit to this chat. */
-  held: boolean;
-};
 const WITHDRAW_RETRY_BASE_MS = 1_000;
 
 export type PendingAgentSteer = {
@@ -38,23 +31,21 @@ export type PendingAgentSteer = {
 };
 
 /**
- * Pending steers for this chat. Once no run is active, each is withdrawn and
- * returned to the queue; the withdrawal races the run's claim atomically.
- * Saving a response that shows a steer deletes its row, so any row still
- * listed was never saved and is safe to queue again. Steers sent before this
- * visit to the chat, or from another tab or device, come back held, so a
- * returning user never has an old message sent without their action.
+ * Pending steers for this chat. Once no run is active, each is withdrawn: the
+ * server moves it into the chat's queue in the same transaction that races
+ * the run's claim. Saving a response that shows a steer settles its row, so
+ * any row still listed was never saved and is safe to queue again. Only a
+ * steer this tab sent during the current visit, to a run the user did not
+ * stop, is sent again automatically; the rest wait for the user.
  */
 export function useUnreadSteerRequeue({
   chatId,
   enabled,
   runActive,
-  onRequeue,
 }: {
   chatId: string;
   enabled: boolean;
   runActive: boolean;
-  onRequeue: (chatId: string, steers: RestoredSteer[]) => void;
 }): {
   pendingSteers: PendingAgentSteer[];
   /** Queued messages must wait: unread steers go back ahead of them. */
@@ -75,7 +66,6 @@ export function useUnreadSteerRequeue({
     undefined,
   );
   const visit = useRef({ chatId, startedAt: 0 });
-  const onRequeueRef = useCommittedRef(onRequeue);
 
   useLayoutEffect(() => {
     visit.current = { chatId, startedAt: Date.now() };
@@ -103,25 +93,14 @@ export function useUnreadSteerRequeue({
     );
     if (!unread.length) return;
     for (const steer of unread) withdrawing.current.add(steer.id);
-    // Restore into the queue of the account that started this withdrawal,
-    // even if the signed-in account changes before it completes.
-    const requeue = onRequeueRef.current;
     void (async () => {
       setInFlight((count) => count + 1);
-      const withdrawn: Array<
-        Omit<RestoredSteer, "held"> & { fromStoppedRun: boolean }
-      > = [];
+      const withdrawn: PendingAgentSteer[] = [];
       let failed = false;
       for (const [index, steer] of unread.entries()) {
         try {
           const result = await withdraw({ chatId, id: steer.id });
-          if (result.outcome === "withdrawn")
-            withdrawn.push({
-              text: result.text,
-              timestamp: steer.sentAt,
-              sentHere: steersSentHere.has(steer.id),
-              fromStoppedRun: stoppedRuns.has(steer.runId),
-            });
+          if (result.outcome === "withdrawn") withdrawn.push(steer);
           // Its run still holds it; a later snapshot can try again.
           else withdrawing.current.delete(steer.id);
         } catch {
@@ -137,16 +116,13 @@ export function useUnreadSteerRequeue({
       // the user moved to another chat, nobody is here to see it: hold it.
       const visitStartedAt =
         visit.current.chatId === chatId ? visit.current.startedAt : Infinity;
-      requeue(
-        chatId,
-        withdrawn.map(({ fromStoppedRun, ...steer }) => ({
-          ...steer,
-          held:
-            fromStoppedRun ||
-            !steer.sentHere ||
-            steer.timestamp < visitStartedAt,
-        })),
-      );
+      for (const steer of withdrawn)
+        if (
+          steersSentHere.has(steer.id) &&
+          !stoppedRuns.has(steer.runId) &&
+          steer.sentAt >= visitStartedAt
+        )
+          markQueuedHere(steer.id);
       if (!failed) {
         retryAttempts.current = 0;
         setGaveUp(false);
@@ -164,7 +140,7 @@ export function useUnreadSteerRequeue({
       }
       setInFlight((count) => count - 1);
     })();
-  }, [chatId, enabled, onRequeueRef, pending, retryTick, runActive, withdraw]);
+  }, [chatId, enabled, pending, retryTick, runActive, withdraw]);
 
   return {
     pendingSteers: enabled ? (pending ?? []) : [],

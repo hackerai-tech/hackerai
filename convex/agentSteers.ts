@@ -5,6 +5,8 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./lib/serviceFunctions";
+import { getOwnedChat, requireUserId } from "./lib/ownedChat";
+import { findQueuedMessage, insertQueuedMessage } from "./lib/queuedMessages";
 import { validateServiceKey } from "./lib/utils";
 import type { Doc } from "./_generated/dataModel";
 import {
@@ -19,30 +21,6 @@ import {
   isValidAgentSteerId,
 } from "../lib/chat/agent-steer";
 
-async function requireUserId(ctx: QueryCtx | MutationCtx) {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new ConvexError({
-      code: "UNAUTHORIZED",
-      message: "Unauthorized: User not authenticated",
-    });
-  }
-  return identity.subject;
-}
-
-async function getOwnedChat(
-  ctx: QueryCtx | MutationCtx,
-  chatId: string,
-  userId: string,
-) {
-  const chat = await ctx.db
-    .query("chats")
-    .withIndex("by_chat_id", (q) => q.eq("id", chatId))
-    .first();
-  if (!chat || chat.user_id !== userId || chat.deletion_started_at) return null;
-  return chat;
-}
-
 /**
  * Target the chat's active Trigger run. Without one there is nothing to steer;
  * the client queues the message instead.
@@ -54,6 +32,8 @@ export const create = mutation({
     text: v.string(),
     /** Browser time, comparable with queued messages for restore order. */
     sentAt: v.number(),
+    /** A queued message being steered; it leaves the queue with this write. */
+    queuedId: v.optional(v.string()),
   },
   returns: v.union(v.literal("pending"), v.literal("no_active_run")),
   handler: async (ctx, args) => {
@@ -118,6 +98,17 @@ export const create = mutation({
       created_at: now,
       sent_at: args.sentAt,
     });
+    if (args.queuedId) {
+      const queued = await findQueuedMessage(ctx, args.queuedId);
+      // An edit made while this steer was on its way stays queued.
+      if (
+        queued &&
+        queued.user_id === userId &&
+        queued.chat_id === args.chatId &&
+        queued.text.trim() === text
+      )
+        await ctx.db.delete(queued._id);
+    }
     return "pending" as const;
   },
 });
@@ -175,10 +166,12 @@ export const listPending = query({
 });
 
 /**
- * Take back a steer no running Agent holds, for example after its run ended.
- * This races the run's claim inside one transaction. An open row was never
- * saved in a response, so its text is safe to queue again; a save that
- * arrives later drops it (`withoutWithdrawnSteers`).
+ * Return a steer no running Agent holds to the chat's queue, for example
+ * after its run ended. This races the run's claim inside one transaction. An
+ * open row was never saved in a response, so its text is safe to queue
+ * again; a save that arrives later drops it (`withoutWithdrawnSteers`). The
+ * queued copy keeps the steer's ID, so saving it as a user message later
+ * retires the queued row.
  */
 export const withdraw = mutation({
   args: { chatId: v.string(), id: v.string() },
@@ -199,6 +192,14 @@ export const withdraw = mutation({
       return { outcome: "not_found" as const };
     // A tombstone: a late save from a stopped worker must drop this steer.
     await settleSteer(ctx, row, "withdrawn");
+    await insertQueuedMessage(ctx, {
+      id: row.id,
+      chatId: row.chat_id,
+      userId,
+      text: row.text,
+      sentAt: row.sent_at ?? row.created_at,
+      fromSteer: true,
+    });
     return { outcome: "withdrawn" as const, text: row.text };
   },
 });
@@ -207,7 +208,8 @@ export const withdraw = mutation({
  * The owning run reads steers before a model step. The run never deletes a
  * row: a claim whose response was lost returns the same steer on the next
  * step. Saving the response that shows a steer retires its row
- * (`retireSavedSteers`), and after the run the client queues any that remain.
+ * (`retireSavedSteers`), and after the run the client returns any that
+ * remain to the queue (`withdraw`).
  */
 export const claimForBackend = mutation({
   args: {

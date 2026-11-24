@@ -4,6 +4,7 @@ import {
   ensureChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
 import { retireSavedSteers, withoutWithdrawnSteers } from "./lib/agentSteers";
+import { retireQueuedMessage } from "./lib/queuedMessages";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
@@ -730,6 +731,14 @@ export const saveMessage = mutation({
       )
         return "stale_run" as const;
     }
+    // A queued message is sent with its queue ID as the user message ID.
+    // Retire the row with this save, so no tab or device sends it again.
+    if (args.role === "user")
+      await retireQueuedMessage(ctx, {
+        id: args.id,
+        chatId: args.chatId,
+        userId: args.userId,
+      });
     let failureStage = "start";
     let messageOwnershipMismatch: "chat" | "user" | "chat_and_user" | undefined;
     let chatForInsert: Doc<"chats"> | null = null;

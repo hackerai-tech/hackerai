@@ -630,8 +630,8 @@ export interface ExtraUsageConfig {
 
 export interface QueuedMessage {
   deliveryStatus?: "sending" | "failed" | "active";
-  /** An unread steer sent from another device; its clock is not comparable. */
-  restoredFromElsewhere?: boolean;
+  /** A steer the Agent never read, returned after its run ended. */
+  fromSteer?: boolean;
   /** Waits for the user to send it; automatic delivery stops at it. */
   held?: boolean;
   firstAttemptAt?: number;
