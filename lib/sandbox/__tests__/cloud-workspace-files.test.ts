@@ -43,7 +43,7 @@ it("rejects a foreign sandbox before connecting", async () => {
       "us-east-1",
       input({ sandboxId: "foreign" }),
     ),
-  ).rejects.toMatchObject({ code: "not_found" });
+  ).rejects.toMatchObject({ code: "not_found", diagnostics: undefined });
   expect(Sandbox.connect).not.toHaveBeenCalled();
 });
 it("does not resume paused workspaces until explicitly requested", async () => {
@@ -125,6 +125,31 @@ it("labels unreadable cloud list failures with the cloud reader only for list", 
   const resume = await failure("resume");
   expect(resume).toMatchObject({ code: "unreadable_path", status: 400 });
   expect(resume.diagnostics).toBeUndefined();
+});
+it("labels a missing cloud list folder without changing its public status", async () => {
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      error: "not_found",
+      phase: "directory",
+      category: "missing",
+    }),
+  });
+  await expect(
+    accessCloudWorkspaceFiles(
+      "owner",
+      "us-east-1",
+      input({ sandboxId: "sandbox", path: "reports" }),
+    ),
+  ).rejects.toMatchObject({
+    code: "not_found",
+    status: 404,
+    diagnostics: {
+      reader: "cloud",
+      reader_phase: "directory",
+      os_error_category: "missing",
+    },
+  });
 });
 it("reads without changing a running Agent's sandbox timeout", async () => {
   await accessCloudWorkspaceFiles(

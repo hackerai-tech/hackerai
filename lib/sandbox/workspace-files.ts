@@ -64,6 +64,7 @@ export type WorkspaceStatus = {
 
 const readerPhase = z.enum(["root", "directory", "enumerate", "entry_stat"]);
 const osErrorCategory = z.enum([
+  "missing",
   "permission",
   "not_directory_or_symlink",
   "io",
@@ -78,20 +79,20 @@ type WorkspaceListDiagnostics = {
 };
 
 /** Reader stdout is untrusted: keep only allow-listed values, and only for an
- * original list request that failed with unreadable_path. */
-export function unreadableListDiagnostics(
+ * original list request that the reader failed with a filesystem error. */
+export function filesystemListDiagnostics(
   reader: WorkspaceListDiagnostics["reader"],
   action: WorkspaceRequest["action"],
   output: unknown,
 ): WorkspaceListDiagnostics | undefined {
-  if (
-    action !== "list" ||
-    typeof output !== "object" ||
-    output === null ||
-    (output as { error?: unknown }).error !== "unreadable_path"
-  )
+  if (action !== "list" || typeof output !== "object" || output === null)
     return undefined;
-  const { phase, category } = output as { phase?: unknown; category?: unknown };
+  const { error, phase, category } = output as {
+    error?: unknown;
+    phase?: unknown;
+    category?: unknown;
+  };
+  if (error !== "not_found" && error !== "unreadable_path") return undefined;
   const parsedPhase = readerPhase.safeParse(phase);
   const parsedCategory = osErrorCategory.safeParse(category);
   return {
@@ -120,7 +121,7 @@ export class WorkspaceFileError extends Error {
 export const WORKSPACE_READER_PYTHON = String.raw`
 import os, sys, json, base64, stat, hashlib, errno
 request = json.loads(base64.b64decode(sys.argv[1]))
-root = sys.argv[2] if len(sys.argv) > 2 else os.getcwd()
+root = sys.argv[2] if len(sys.argv) > 2 else None
 fds = []
 phase = None
 def open_dir(name, parent=None):
@@ -128,6 +129,8 @@ def open_dir(name, parent=None):
     fds.append(fd)
     return fd
 def os_error_category(error):
+    if error.errno == errno.ENOENT:
+        return 'missing'
     if error.errno in (errno.EACCES, errno.EPERM):
         return 'permission'
     if error.errno in (errno.ENOTDIR, errno.ELOOP):
@@ -142,9 +145,14 @@ try:
         raise ValueError('invalid_path')
     listing = request['action'] == 'list'
     phase = 'root'
+    # Resolve here so a deleted current directory reports a labelled root failure.
+    if root is None:
+        root = os.getcwd()
     directory = open_dir('/')
-    for part in root.strip('/').split('/'):
-        directory = open_dir(part, directory)
+    # '/' itself and repeated separators have no component to open.
+    for part in root.split('/'):
+        if part:
+            directory = open_dir(part, directory)
     phase = 'directory'
     for part in (parts if listing else parts[:-1]):
         directory = open_dir(part, directory)
@@ -211,11 +219,9 @@ try:
         print(json.dumps(dict(root=root, data=base64.b64encode(data).decode('ascii'), size=info.st_size, revision=revision, nextByteOffset=next_offset if next_offset < info.st_size else None)))
 except ValueError as error:
     print(json.dumps(dict(error=str(error))))
-except FileNotFoundError:
-    print(json.dumps(dict(error='not_found')))
 except OSError as error:
     # List diagnostics use fixed labels only: no errno numbers, messages or names.
-    failure = dict(error='unreadable_path')
+    failure = dict(error='not_found' if isinstance(error, FileNotFoundError) else 'unreadable_path')
     if phase and listing:
         failure['phase'] = phase
         category = os_error_category(error)
