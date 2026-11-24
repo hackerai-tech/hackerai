@@ -320,6 +320,27 @@ describe("RateLimitWarning", () => {
     );
   });
 
+  it("says usage refills at renewal when a paid cycle ended but has not renewed", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          warningType: "extra-usage-active",
+          bucketType: "monthly",
+          resetTime: new Date(Date.now() - 60_000),
+          subscription: "pro",
+          capReason: "extra_usage_active",
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    const warning = screen.getByTestId("rate-limit-warning");
+    expect(warning).toHaveTextContent(
+      "You're now using extra usage credits. Your usage refills when your plan renews.",
+    );
+    expect(warning).not.toHaveTextContent(/resets now/i);
+  });
+
   it("uses extra usage copy when paid overflow credits are active", () => {
     render(
       <RateLimitWarning

@@ -113,6 +113,14 @@ const formatTimeUntil = (resetTime: Date): string => {
 };
 
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
+  // Paid monthly usage refills only when the renewal invoice is paid, never
+  // on a timer. A reset time already past means that renewal is pending, so
+  // "resets now" would be wrong. Free and daily allowances reset on a timer.
+  const paidRenewalPending =
+    data.subscription !== "free" && data.resetTime.getTime() <= Date.now();
+  const monthlyReset = (sentence: string) =>
+    paidRenewalPending ? "Your usage refills when your plan renews." : sentence;
+
   if (data.warningType === "sliding-window") {
     if (data.remaining === 0) {
       return data.mode === "agent"
@@ -124,7 +132,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "extra-usage-active") {
-    return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
+    return `You're now using extra usage credits. ${monthlyReset(`Your monthly limit resets ${timeString}.`)}`;
   }
 
   if (data.warningType === "paid-daily-free-allowance") {
@@ -158,13 +166,13 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       if (data.capReason === "paid_daily_free_allowance_cut_off") {
         return `Today's free allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
       }
-      return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
+      return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. ${monthlyReset(`Resets ${timeString}.`)}`;
     }
     if (data.subscription === "free") {
       return `You've reached your free monthly usage limit. Upgrade for higher limits. Resets ${timeString}.`;
     }
 
-    return `You've reached your monthly usage limit. It resets ${timeString}.`;
+    return `You've reached your monthly usage limit. ${monthlyReset(`It resets ${timeString}.`)}`;
   }
 
   if (
@@ -176,10 +184,10 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     // "$0.20 of $0.25" never reads as 79%.
     const usedDollars = Math.round(data.usedDollars * 100) / 100;
     const usedPercent = Math.round((usedDollars / data.limitDollars) * 100);
-    return `You've used $${usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
+    return `You've used $${usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). ${monthlyReset(`Resets ${timeString}.`)}`;
   }
 
-  return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+  return `You have ${data.remainingPercent}% of your monthly usage remaining. ${monthlyReset(`It resets ${timeString}.`)}`;
 };
 
 const getUpgradeCtaText = (
