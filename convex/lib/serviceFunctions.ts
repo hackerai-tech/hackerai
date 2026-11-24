@@ -63,15 +63,14 @@ export function serviceContext<T extends Context>(ctx: T): T {
   return wrapped;
 }
 
-// Log lines may be visible to the caller. Report only the public-input
-// observation, never the proof, key configuration, scope or arguments.
-function warnServiceProofRejected(
-  observation: ServiceProofObservation | undefined,
-) {
+// Log lines and the rejection message may be visible to the caller. Report
+// only the public-input observation, never the proof, key configuration, scope
+// or arguments.
+function warnServiceProofRejected(observation: ServiceProofObservation) {
   try {
     convexLogger.warn("service_proof_rejected", {
       diagnostic_version: 1,
-      public_input_observation: observation ?? "verification_failed",
+      public_input_observation: observation,
     });
   } catch {
     // Diagnostics must never replace the authorization failure.
@@ -120,8 +119,14 @@ function wrapBuilder<T>(builder: T): T {
             observation = seen;
           }))
         ) {
-          warnServiceProofRejected(observation);
-          throw new Error("Unauthorized: Invalid service request");
+          const reason = observation ?? "verification_failed";
+          warnServiceProofRejected(reason);
+          // Native exception reporting retains the message. Keep its first
+          // line stable for callers and append the bounded observation.
+          throw new Error(
+            "Unauthorized: Invalid service request\n" +
+              `service_proof_rejected diagnostic_version=1 public_input_observation=${reason}`,
+          );
         }
         authorizedArgs = { ...args, serviceKey: secret };
       }
