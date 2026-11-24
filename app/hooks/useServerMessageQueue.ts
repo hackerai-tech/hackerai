@@ -104,6 +104,7 @@ export function useServerMessageQueue({
   const settingsKey = settings ? JSON.stringify(settings) : "";
   const requestedSettingsKey = useRef<string | null>(settingsKey);
   const heldSettingsKey = useRef<string | null>(null);
+  const settingsRequest = useRef(0);
   const settingsFailures = useRef(0);
   const [settingsRetry, setSettingsRetry] = useState(0);
   useEffect(() => {
@@ -117,15 +118,16 @@ export function useServerMessageQueue({
     const sent = held
       ? { ...settings, agentPermissionMode: "ask_approval" as const }
       : settings;
+    // Only the latest request's outcome counts: an older one may share these
+    // settings yet fail after a newer request for them was sent.
+    const request = ++settingsRequest.current;
     applySettings({ settings: sent }).then(
       () => {
-        if (requestedSettingsKey.current === settingsKey)
-          settingsFailures.current = 0;
+        if (settingsRequest.current === request) settingsFailures.current = 0;
       },
       (error: unknown) => {
         console.warn("Could not update queued message settings", error);
-        // A newer choice was already sent; it supersedes this one.
-        if (requestedSettingsKey.current !== settingsKey) return;
+        if (settingsRequest.current !== request) return;
         if (held || sent.agentPermissionMode === "full_access")
           heldSettingsKey.current = settingsKey;
         requestedSettingsKey.current = null;

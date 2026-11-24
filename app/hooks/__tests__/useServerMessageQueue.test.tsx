@@ -496,4 +496,41 @@ describe("useServerMessageQueue", () => {
       jest.useRealTimers();
     }
   });
+
+  it("ignores the late failure of a request a newer one replaced", async () => {
+    jest.useFakeTimers();
+    try {
+      type Mode = "ask_approval" | "full_access";
+      let failFirst: (error: Error) => void = () => undefined;
+      mockApplySettings.mockImplementationOnce(
+        () => new Promise((_, reject) => (failFirst = reject)),
+      );
+      const e2b = {
+        agentPermissionMode: "full_access" as Mode,
+        sandboxPreference: "e2b",
+      };
+      const desktop = { ...e2b, sandboxPreference: "desktop" };
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        { initialProps: { settings: e2b } },
+      );
+      rerender({ settings: desktop }); // pending, fails later
+      rerender({ settings: e2b });
+      rerender({ settings: { ...desktop } }); // succeeds
+      await act(async () => {
+        failFirst(new Error("offline"));
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(3);
+      expect(mockApplySettings).toHaveBeenLastCalledWith({ settings: desktop });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
