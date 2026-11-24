@@ -44,7 +44,7 @@ export class SidebarComponent {
    * Find a chat item in the sidebar by its title
    */
   async findChatByTitle(title: string): Promise<Locator> {
-    return this.page.getByRole("button", { name: `Open chat: ${title}` });
+    return this.page.getByRole("button", { name: `Open task: ${title}` });
   }
 
   /**
@@ -100,21 +100,18 @@ export class SidebarComponent {
   }
 
   /**
-   * Get the visible title of a sidebar chat row by its chat ID (from aria-label).
+   * Get the title of a sidebar task, without its accessible status suffix.
    */
   async getChatTitleById(chatId: string): Promise<string> {
     const chatItem = this.page.getByTestId(`chat-item-${chatId}`).first();
-    const label = await chatItem.getAttribute("aria-label");
-    const prefix = "Open chat: ";
-    if (!label?.startsWith(prefix)) return label ?? "";
-    return label.slice(prefix.length);
+    return (await chatItem.getAttribute("title")) ?? "";
   }
 
   /**
    * Get all chat items in the sidebar
    */
   async getAllChatItems(): Promise<Locator> {
-    return this.page.locator('[role="button"][aria-label^="Open chat:"]');
+    return this.page.locator('[role="button"][aria-label^="Open task: "]');
   }
 
   /**
@@ -130,11 +127,9 @@ export class SidebarComponent {
    * The list stays mounted while collapsed and fades in after the width animation.
    */
   async waitForChatListReady(timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
+    const chatItems = await this.getAllChatItems();
     await Promise.race([
-      this.page
-        .locator('[role="button"][aria-label^="Open chat:"]')
-        .first()
-        .waitFor({ state: "visible", timeout }),
+      chatItems.first().waitFor({ state: "visible", timeout }),
       this.page
         .getByTestId("sidebar-chat-empty")
         .waitFor({ state: "visible", timeout }),
@@ -146,14 +141,7 @@ export class SidebarComponent {
    * Waits for the menu to be visible.
    */
   async openChatOptionsByTitle(title: string): Promise<void> {
-    const chatRow = await this.findChatByTitle(title);
-    const optionsTrigger = chatRow.getByRole("button", {
-      name: "Open conversation options",
-    });
-    await optionsTrigger.click();
-    await expect(this.page.getByRole("menu")).toBeVisible({
-      timeout: TIMEOUTS.SHORT,
-    });
+    await this.openChatOptions(await this.findChatByTitle(title));
   }
 
   /**
@@ -162,13 +150,7 @@ export class SidebarComponent {
    */
   async openChatOptionsById(chatId: string): Promise<void> {
     const chatRow = this.page.getByTestId(`chat-item-${chatId}`).first();
-    const optionsTrigger = chatRow.getByRole("button", {
-      name: "Open conversation options",
-    });
-    await optionsTrigger.click();
-    await expect(this.page.getByRole("menu")).toBeVisible({
-      timeout: TIMEOUTS.SHORT,
-    });
+    await this.openChatOptions(chatRow);
   }
 
   /**
@@ -177,11 +159,12 @@ export class SidebarComponent {
    */
   async openChatOptionsByIndex(index: number): Promise<void> {
     const chatItems = await this.getAllChatItems();
-    const chatRow = chatItems.nth(index);
-    const optionsTrigger = chatRow.getByRole("button", {
-      name: "Open conversation options",
-    });
-    await optionsTrigger.click();
+    await this.openChatOptions(chatItems.nth(index));
+  }
+
+  private async openChatOptions(chatRow: Locator): Promise<void> {
+    await chatRow.hover();
+    await chatRow.getByRole("button", { name: "Open task options" }).click();
     await expect(this.page.getByRole("menu")).toBeVisible({
       timeout: TIMEOUTS.SHORT,
     });
