@@ -2203,7 +2203,9 @@ export const useChatHandlers = ({
       sendDisabledReason ||
       editingQueuedMessageId != null ||
       hasManuallyStoppedRef.current ||
-      isSendingNowRef.current
+      isSendingNowRef.current ||
+      // Keep the deferred send until the server's queued message has a run.
+      messageQueue.some((queued) => queued.dispatching)
     ) {
       return;
     }

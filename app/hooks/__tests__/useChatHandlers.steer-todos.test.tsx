@@ -817,6 +817,43 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a deferred Send now until the server's queued message has a run", async () => {
+    const { result, rerender } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    expect(result.current.hasPendingSummarySteer).toBe(true);
+    // The server claims an earlier row before the summary settles.
+    mockMessageQueue = [
+      {
+        id: "queued-0",
+        text: "Sent by the server",
+        files: [],
+        timestamp: 1,
+        dispatching: true,
+      },
+      ...mockMessageQueue,
+    ];
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(result.current.hasPendingSummarySteer).toBe(true);
+    // Its run is attached and the row is gone: the deferred send proceeds.
+    mockMessageQueue = mockMessageQueue.slice(1);
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.hasPendingSummarySteer).toBe(false);
+  });
+
   it.each(["submission", "Send now"])(
     "retains a summary steer chosen by %s until an earlier handoff releases",
     async (source) => {
