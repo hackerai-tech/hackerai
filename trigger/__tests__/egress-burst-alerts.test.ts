@@ -753,6 +753,14 @@ describe("abuse review dispatch", () => {
       expect(trigger()).toHaveBeenCalledTimes(1);
     });
 
+    it("queues the strongest verified minute when the cooldown was bypassed by replay", async () => {
+      await upload("us", MINUTE, [count(first, 18)]);
+      await upload("eu", MINUTE + 6);
+      await upload("us", MINUTE + 6, [count(first, 17)]);
+      await ok(runEgressBurstAlerts(at(MINUTE + 6)));
+      expect(dispatchedMinutes()).toEqual([MINUTE]);
+    });
+
     it("reads no cooldown without a new case to queue", async () => {
       await upload("eu", MINUTE - 1);
       await upload("us", MINUTE - 1, [count(first, 2)]);

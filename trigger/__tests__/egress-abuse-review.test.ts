@@ -1312,8 +1312,13 @@ describe("account cooldown after a corroborated legitimate review", () => {
     commandIndices: [1],
     messageIndices: [1],
   };
-  // The next 30-minute window; every minute of it so far is uploaded.
+  // The next 30-minute window; by default it has fully settled.
   const NEXT = MINUTE + 29;
+  let clock: jest.SpyInstance;
+  beforeEach(() => {
+    clock = jest.spyOn(Date, "now").mockReturnValue((NEXT + 31) * MINUTE_MS);
+  });
+  afterEach(() => clock.mockRestore());
   const nextWindow = async (
     peaks: Record<number, number>,
     vector = first,
@@ -1379,12 +1384,24 @@ describe("account cooldown after a corroborated legitimate review", () => {
     expect((result as any).diagnostic.cooldown).toBe("bypassed");
   });
 
-  it("reviews a routine minute in full when a later minute of its window escalated", async () => {
+  it("waits before suppressing a queued review and uses the minute that escalated", async () => {
     await clear();
+    clock.mockReturnValue((NEXT + 2) * MINUTE_MS);
+    await nextWindow({ [NEXT]: 900 });
+    await expect(run(NEXT, { number: 1, max: 4 })).rejects.toThrow(
+      "evidence is still being recorded",
+    );
+    expect(generateText).not.toHaveBeenCalled();
+
+    clock.mockReturnValue((NEXT + 31) * MINUTE_MS);
     await nextWindow({ [NEXT]: 900, [NEXT + 1]: 2_000 });
     const result = await run(NEXT);
     expect(result).toMatchObject({ status: "completed" });
     expect((result as any).diagnostic.cooldown).toBe("bypassed");
+    const row = convex.tables.abuse_cases[0];
+    expect(decryptAbuseEvidence(row.reference, row.ciphertext)).toMatchObject({
+      observation: { connections: 2_000 },
+    });
   });
 
   it("does not suppress a retry of the review that granted it", async () => {

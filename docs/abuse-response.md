@@ -428,9 +428,11 @@ and its cases follow the review, hold and erasure rules in this runbook.
   an equal or lower one leaves it unchanged, and a retry of the granting
   window is never suppressed. The monitor checks the cooldown only for new
   cases it is about to queue and leaves a suppressed case unmarked, so a later
-  escalation in the same window is still queued; the worker repeats the check
-  against the whole window. Any read failure, invalid stored value, or
-  missing or lossy minute in the window means a full review; a failed write
+  escalation in the same window is still queued. A worker that already holds
+  the window's queue key waits for the window to settle before skipping it.
+  It reviews the highest verified spike if the cooldown is bypassed. If it
+  runs out of retries it reviews the evidence. Any read failure, invalid stored
+  value, or missing or lossy minute in the window means a full review; a failed write
   leaves no cooldown. To end cooldowns early, delete the
   `egress-review:v1:cooldown:*` keys; they otherwise expire on their own.
 - **What it decides.** The model receives scrubbed evidence and returns

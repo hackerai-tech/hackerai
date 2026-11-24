@@ -412,8 +412,11 @@ async function dispatchReviews(
     );
     peaks.set(key, Math.max(peaks.get(key) ?? 0, candidate.connections));
     if (!candidate.complete) continue;
-    // Current candidates come first, followed by replay candidates.
-    if (!byCase.has(key)) byCase.set(key, candidate);
+    // Review the strongest verified spike, including a replayed minute that
+    // caused the case to bypass a cooldown.
+    const earlier = byCase.get(key);
+    if (!earlier || candidate.connections > earlier.connections)
+      byCase.set(key, candidate);
   }
   if (byCase.size) {
     try {

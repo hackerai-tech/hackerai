@@ -164,7 +164,7 @@ export type ReviewDiagnostic = {
   unavailableLinks?: number;
   gaps?: ObservationGap[];
   /** An active cooldown was bypassed, or could not be checked. */
-  cooldown?: "bypassed" | "unavailable";
+  cooldown?: "bypassed" | "unavailable" | "window_unsettled";
   /** What a corroborated legitimate decision did to the cooldown. */
   cooldownGrant?: "granted" | "kept" | "failed";
 };
@@ -452,15 +452,15 @@ async function windowPeak(
   owner: string,
   windowStart: number,
   latestSettled: number,
-): Promise<number | null> {
+): Promise<{ minute: number; connections: number } | null> {
   const last = Math.min(windowStart + REVIEW_WINDOW_MINUTES - 1, latestSettled);
   const minutes = Array.from(
     { length: Math.max(0, last - windowStart + 1) },
     (_, index) => windowStart + index,
   );
   const records = await readTelemetryMinutes(redis, region, minutes);
-  let peak = 0;
-  for (const record of records) {
+  let peak = { minute: windowStart, connections: 0 };
+  for (const [index, record] of records.entries()) {
     // A missing or lossy minute could hide an escalation.
     if (
       !record ||
@@ -472,7 +472,8 @@ async function windowPeak(
     const connections = record.counts
       .filter(([ref]) => ref === owner)
       .reduce((sum, [, , n]) => sum + n, 0);
-    peak = Math.max(peak, connections);
+    if (connections > peak.connections)
+      peak = { minute: minutes[index], connections };
   }
   return peak;
 }
@@ -481,6 +482,7 @@ async function reviewBurst(
   payload: EgressAbuseReviewPayload,
   attempt: { number: number; max: number },
   diagnostic: ReviewDiagnostic,
+  followEscalation = true,
 ): Promise<EgressAbuseReviewResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
   const threshold = egressBurstThreshold();
@@ -650,29 +652,49 @@ async function reviewBurst(
   // A recent exact-run clearance suppresses routine bursts before any
   // evidence or model call. Any failure to read or compare reviews in full.
   let cooldown: ReviewCooldown | null = null;
-  try {
-    [cooldown] = await readReviewCooldowns(redis, [userId]);
-  } catch {
-    diagnostic.cooldown = "unavailable";
+  if (followEscalation) {
+    try {
+      [cooldown] = await readReviewCooldowns(redis, [userId]);
+    } catch {
+      diagnostic.cooldown = "unavailable";
+    }
   }
   if (cooldown && cooldown.digest !== digest) {
+    const latestSettled = Math.floor(now / 60_000) - SETTLE_MINUTES;
     const peak = await windowPeak(
       redis,
       region,
       owner,
       windowStart,
-      Math.floor(now / 60_000) - SETTLE_MINUTES,
+      latestSettled,
     ).catch(() => null);
     if (peak === null) diagnostic.cooldown = "unavailable";
     else if (
       cooldownSuppresses(
         cooldown,
-        Math.max(peak, observation.connections),
+        Math.max(peak.connections, observation.connections),
         threshold,
       )
-    )
-      return { status: "skipped", reason: "cooldown_active" };
-    else diagnostic.cooldown = "bypassed";
+    ) {
+      if (latestSettled >= windowStart + REVIEW_WINDOW_MINUTES - 1)
+        return { status: "skipped", reason: "cooldown_active" };
+      // Once dispatched, this case has consumed its queue idempotency key.
+      // Keep the review alive so a later escalation can still be evaluated.
+      if (!finalAttempt) throw new EgressReviewPendingError();
+      diagnostic.cooldown = "window_unsettled";
+    } else {
+      diagnostic.cooldown = "bypassed";
+      if (peak.connections > observation.connections) {
+        // Start from the settled minute that escalated. Its telemetry and
+        // attribution are verified independently, and the case key is the same.
+        return reviewBurst(
+          { ...payload, minute: peak.minute },
+          attempt,
+          diagnostic,
+          false,
+        );
+      }
+    }
   }
 
   // One linked run may explain one sandbox. A shared owner does not prove
