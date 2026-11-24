@@ -81,10 +81,15 @@ function fixture(user = "owner") {
             },
           };
           build(q as never);
-          const matches = () =>
-            select(table, equals).filter((row) =>
+          const matches = () => {
+            const rows = select(table, equals).filter((row) =>
               ranges.every((range) => range(row)),
             );
+            // Like Convex, this index returns the queue in send order.
+            return _name === "by_chat_and_sent"
+              ? rows.sort((a, b) => Number(a.sent_at) - Number(b.sent_at))
+              : rows;
+          };
           return {
             first: async () => matches()[0] ?? null,
             take: async (count: number) => matches().slice(0, count),
@@ -495,17 +500,6 @@ describe("agent steers", () => {
         sentAt: 1_000,
       });
       finished(f);
-      f.rows.queued_messages.sort(
-        (a, b) => Number(a.sent_at) - Number(b.sent_at),
-      );
-      // The fake index does not sort inserts; the real one orders by sent_at.
-      const sortQueue = f.ctx.db.insert;
-      f.ctx.db.insert = async (table, value) => {
-        await sortQueue(table, value);
-        f.rows.queued_messages.sort(
-          (a, b) => Number(a.sent_at) - Number(b.sent_at),
-        );
-      };
       expect(await claimNext(f)).toEqual(
         expect.objectContaining({ id: "unread", text: "use staging" }),
       );

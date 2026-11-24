@@ -285,6 +285,8 @@ describe("useServerMessageQueue", () => {
         jest.advanceTimersByTime(2 * 60 * 1000 + 100);
       });
       expect(result.current.messageQueue[0].dispatching).toBeUndefined();
+      // An expired lease schedules nothing more: no refresh loop.
+      expect(jest.getTimerCount()).toBe(0);
     } finally {
       jest.useRealTimers();
     }
