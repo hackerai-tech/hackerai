@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { ChatSDKError, ERROR_TYPES, ERROR_SURFACES } from "@/lib/errors";
+import {
+  ChatSDKError,
+  ERROR_TYPES,
+  ERROR_SURFACES,
+  getMessageByErrorCode,
+} from "@/lib/errors";
 import {
   AGENT_API_ENDPOINT,
   LEGACY_AGENT_API_ENDPOINT,
@@ -173,6 +178,75 @@ const logAgentStartForbidden = (
   );
 };
 
+/** Trigger 4.7.7's exact JSON error for a sessions.start on a closed externalId. */
+const TRIGGER_CLOSED_SESSION_MESSAGE =
+  "Session is closed; use a different externalId to create a new session";
+const AGENT_START_CLOSED_SESSION_CAUSE =
+  "This Agent request has already ended. Reload the chat to see its latest state.";
+
+/**
+ * Only the definitive upstream closed-session rejection, read from own data
+ * properties. Trigger rejects it before creating a run; other 409s stay 500.
+ */
+const isAgentStartClosedSessionRejection = (
+  error: unknown,
+  endpoint: AgentApiEndpoint,
+  action: string,
+  context: AgentRouteErrorContext,
+) => {
+  try {
+    if (
+      action !== "start" ||
+      (endpoint !== AGENT_API_ENDPOINT &&
+        endpoint !== LEGACY_AGENT_API_ENDPOINT) ||
+      !(error instanceof Error) ||
+      Object.getOwnPropertyDescriptor(context, "stage")?.value !==
+        "sessions.start"
+    )
+      return false;
+    const own = (key: string) =>
+      Object.getOwnPropertyDescriptor(error, key)?.value;
+    return (
+      own("name") === "TriggerApiError" &&
+      own("status") === 409 &&
+      own("message") === TRIGGER_CLOSED_SESSION_MESSAGE
+    );
+  } catch {
+    return false;
+  }
+};
+
+/** A receipt for this returned 409; never the raw error, body or identifiers. */
+const logAgentStartClosedSession = (
+  endpoint: AgentApiEndpoint,
+  context: AgentRouteErrorContext,
+) => {
+  try {
+    const requestId = Object.getOwnPropertyDescriptor(
+      context,
+      "requestId",
+    )?.value;
+    const requestIdKind = getRequestIdKind(requestId);
+    console.warn(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        event: "agent_start_session_closed",
+        service: "hackerai-web",
+        agent_start_session_closed_diagnostic_version: 1,
+        http_status: 409,
+        endpoint,
+        action: "start",
+        stage: "sessions.start",
+        request_id_kind: requestIdKind,
+        ...(requestIdKind !== "unavailable" ? { request_id: requestId } : {}),
+      }),
+    );
+  } catch {
+    // Optional diagnostics must not change the returned 409.
+  }
+};
+
 const truncate = (value: string, maxLength: number): string =>
   value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 
@@ -224,7 +298,7 @@ const serializeRouteError = (error: unknown) => {
   };
 };
 
-/** Preserve typed responses; optional 503/403 receipts must never change delivery. */
+/** Preserve typed responses; optional 503/403/409 receipts must never change delivery. */
 export function handleAgentRouteError({
   error,
   endpoint,
@@ -290,6 +364,18 @@ export function handleAgentRouteError({
       // Optional diagnostics must preserve the exact original response.
     }
     return response;
+  }
+
+  if (isAgentStartClosedSessionRejection(error, endpoint, action, context)) {
+    logAgentStartClosedSession(endpoint, context);
+    return NextResponse.json(
+      {
+        code: "bad_request:api",
+        message: getMessageByErrorCode("bad_request:api"),
+        cause: AGENT_START_CLOSED_SESSION_CAUSE,
+      },
+      { status: 409 },
+    );
   }
 
   const logSuffix =
