@@ -1,4 +1,4 @@
-import { authkit } from "@workos-inc/authkit-nextjs";
+import { authkit, type AuthkitOptions } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
 import {
@@ -63,6 +63,21 @@ const AUTH_REFRESH_STAGES = new Set<unknown>([
   "refresh_request",
   "after_refresh_response",
 ]);
+type AuthKitSessionPhase = Parameters<
+  NonNullable<AuthkitOptions["onSessionPhase"]>
+>[0];
+// Closed labels from the patched AuthKit session observer.
+const AUTHKIT_SESSION_PHASES = new Set<unknown>([
+  "read_cookie",
+  "prepare_anonymous_response",
+  "verify_access_token",
+  "refresh_request",
+  "finish_refresh",
+  "prepare_refresh_fallback",
+] satisfies AuthKitSessionPhase[]);
+// The platform deadline can end the request before AuthKit settles, so the
+// settlement and throw logs never run. Warn once while it is still pending.
+const AUTHKIT_PENDING_WARNING_MS = 10_000;
 
 const UNAUTHENTICATED_PATHS = new Set([
   ...AUTHKIT_BYPASS_PATHS,
@@ -348,6 +363,47 @@ function recordDesktopSignInProxyHandoff(
   }
 }
 
+/** Categorical request context for proxy AuthKit diagnostics; omits malformed correlation values. */
+function getProxyAuthkitRequestContext(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  const requestId = request.headers.get("x-vercel-id");
+  const build = process.env.VERCEL_GIT_COMMIT_SHA;
+  const environment = process.env.VERCEL_ENV;
+  return {
+    request_method: [
+      "GET",
+      "HEAD",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ].includes(request.method)
+      ? request.method
+      : "OTHER",
+    route_kind: ROOT_PAGE_PATHS.has(pathname)
+      ? "root"
+      : pathname === "/login"
+        ? "login"
+        : pathname.startsWith("/c/")
+          ? "chat_page"
+          : pathname.startsWith("/api/")
+            ? "api"
+            : "other_page",
+    ...(requestId && VERCEL_REQUEST_ID_PATTERN.test(requestId)
+      ? { vercel_request_id: requestId }
+      : {}),
+    ...(build && WEB_BUILD_COMMIT_PATTERN.test(build)
+      ? { web_build_commit: build.toLowerCase() }
+      : {}),
+    environment: ["production", "preview", "development"].includes(
+      environment ?? "",
+    )
+      ? environment
+      : "unknown",
+  };
+}
+
 /** Observe only unexpected AuthKit throws, without retaining request or error contents. */
 function recordProxyAuthkitFailure(
   request: NextRequest,
@@ -355,53 +411,59 @@ function recordProxyAuthkitFailure(
   phase: "unexpected_initial_authkit" | "anonymous_context_retry",
 ): void {
   try {
-    const pathname = request.nextUrl.pathname;
-    const requestId = request.headers.get("x-vercel-id");
-    const build = process.env.VERCEL_GIT_COMMIT_SHA;
-    const environment = process.env.VERCEL_ENV;
     console.warn(
       JSON.stringify({
         event: "proxy_authkit_failure_context",
         diagnostic_version: 1,
         boundary: "proxy",
         phase,
-        request_method: [
-          "GET",
-          "HEAD",
-          "POST",
-          "PUT",
-          "PATCH",
-          "DELETE",
-          "OPTIONS",
-        ].includes(request.method)
-          ? request.method
-          : "OTHER",
-        route_kind: ROOT_PAGE_PATHS.has(pathname)
-          ? "root"
-          : pathname === "/login"
-            ? "login"
-            : pathname.startsWith("/c/")
-              ? "chat_page"
-              : pathname.startsWith("/api/")
-                ? "api"
-                : "other_page",
-        ...(requestId && VERCEL_REQUEST_ID_PATTERN.test(requestId)
-          ? { vercel_request_id: requestId }
-          : {}),
-        ...(build && WEB_BUILD_COMMIT_PATTERN.test(build)
-          ? { web_build_commit: build.toLowerCase() }
-          : {}),
-        environment: ["production", "preview", "development"].includes(
-          environment ?? "",
-        )
-          ? environment
-          : "unknown",
+        ...getProxyAuthkitRequestContext(request),
         ...getRefreshFailureDiagnostics(error),
       }),
     );
   } catch {
     // Telemetry must never replace the original error or participate in auth decisions.
   }
+}
+
+/**
+ * Arm one warning for a session-cookie AuthKit call that is still pending at
+ * the threshold. Returns the cleanup to run as soon as that call settles.
+ */
+function startProxyAuthkitPendingWarning(
+  request: NextRequest,
+  getSessionPhase: () => AuthKitSessionPhase | undefined,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const startedAt = Date.now();
+    timer = setTimeout(() => {
+      try {
+        const elapsedMs = Date.now() - startedAt;
+        console.warn(
+          JSON.stringify({
+            event: "proxy_authkit_pending",
+            diagnostic_version: 1,
+            boundary: "proxy",
+            authkit_session_phase: getSessionPhase() ?? "not_observed",
+            elapsed_ms: elapsedMs,
+            warning_threshold_ms: AUTHKIT_PENDING_WARNING_MS,
+            timer_lateness_ms: Math.max(
+              0,
+              elapsedMs - AUTHKIT_PENDING_WARNING_MS,
+            ),
+            ...getProxyAuthkitRequestContext(request),
+          }),
+        );
+      } catch {
+        // Telemetry must never change the pending authentication result.
+      }
+    }, AUTHKIT_PENDING_WARNING_MS);
+    timer.unref?.();
+  } catch {
+    // Telemetry must never prevent the AuthKit call.
+  }
+  return () => clearTimeout(timer);
 }
 
 /**
@@ -575,11 +637,20 @@ export default async function proxy(request: NextRequest) {
   let refreshEndedSession = false;
   const hadSessionCookie = request.cookies.has("wos-session");
 
+  let authkitSessionPhase: AuthKitSessionPhase | undefined;
+  // Anonymous requests and the malformed-cookie retry below are not timed.
+  const stopAuthkitPendingWarning = hadSessionCookie
+    ? startProxyAuthkitPendingWarning(request, () => authkitSessionPhase)
+    : () => {};
+
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
   try {
     authkitResult = await authkit(request, {
       redirectUri: getRedirectUri(request),
       eagerAuth: true,
+      onSessionPhase: (phase) => {
+        if (AUTHKIT_SESSION_PHASES.has(phase)) authkitSessionPhase = phase;
+      },
       onSessionRefreshError: ({ error, isTransient, refreshStage }) => {
         if (isInvalidRefreshTokenError(error)) {
           refreshEndedSession = true;
@@ -644,6 +715,8 @@ export default async function proxy(request: NextRequest) {
       },
     });
   } catch (error) {
+    // Settled: clear before any recovery path, including the anonymous retry.
+    stopAuthkitPendingWarning();
     if (
       hadSessionCookie &&
       error instanceof Error &&
@@ -710,6 +783,7 @@ export default async function proxy(request: NextRequest) {
     recordProxyAuthkitFailure(request, error, "unexpected_initial_authkit");
     throw error;
   }
+  stopAuthkitPendingWarning();
 
   const { session, headers, authorizationUrl } = authkitResult;
 

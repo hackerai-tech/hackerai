@@ -1,11 +1,13 @@
 import {
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
   it,
   jest,
 } from "@jest/globals";
+import type { AuthkitOptions } from "@workos-inc/authkit-nextjs";
 import type { NextRequest } from "next/server";
 
 const mockAuthkit = jest.fn();
@@ -1984,5 +1986,320 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).toHaveBeenCalledWith(
       new URL("/login", "https://hackerai.co/dashboard"),
     );
+  });
+
+  describe("pending AuthKit warning", () => {
+    const requestId = "iad1::fra1::abc12-1794282623256-a92d4497977c";
+    const privateMarker = "private-pending-marker";
+    const signedInAuthkit = {
+      session: { user: { id: "user" } },
+      headers: new Headers(),
+    };
+
+    /** An AuthKit call the test settles explicitly. */
+    function deferredAuthkit() {
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      return { promise, resolve, reject };
+    }
+
+    /** Pass any phase, including values outside the typed set, to the proxy's observer. */
+    function reportPhases(options: unknown, phases: unknown[]) {
+      const observe = (options as AuthkitOptions).onSessionPhase as
+        ((phase: unknown) => void) | undefined;
+      for (const phase of phases) observe?.(phase);
+    }
+
+    function pendingWarnings(warning: { mock: { calls: unknown[][] } }) {
+      return warning.mock.calls
+        .map(([message]) => message)
+        .filter(
+          (message): message is string =>
+            typeof message === "string" &&
+            message.includes('"event":"proxy_authkit_pending"'),
+        );
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("warns once with the latest phase while a session-cookie AuthKit call is pending", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const env = jest.replaceProperty(process, "env", {
+        ...process.env,
+        VERCEL_ENV: "production",
+        VERCEL_GIT_COMMIT_SHA: "C".repeat(40),
+      });
+      const pending = deferredAuthkit();
+      try {
+        mockAuthkit.mockImplementationOnce(
+          (_request: unknown, options: unknown) => {
+            reportPhases(options, [
+              "verify_access_token",
+              "refresh_request",
+              privateMarker,
+            ]);
+            return pending.promise;
+          },
+        );
+        const { default: proxy } = await import("../proxy");
+        const response = proxy(
+          createRequest({
+            pathname: `/c/${privateMarker}?secret=${privateMarker}`,
+            method: "POST",
+            accept: "text/html",
+            userAgent: `Mozilla/5.0 ${privateMarker}`,
+            hasSession: true,
+            headers: {
+              "x-vercel-id": requestId,
+              authorization: privateMarker,
+            },
+            cookieValues: { unrelated: privateMarker },
+          }),
+        );
+
+        await jest.advanceTimersByTimeAsync(9_999);
+        expect(warning).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(1);
+        expect(warning).toHaveBeenCalledTimes(1);
+        const encoded = warning.mock.calls[0][0] as string;
+        expect(encoded).not.toContain(privateMarker);
+        expect(JSON.parse(encoded)).toEqual({
+          event: "proxy_authkit_pending",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          authkit_session_phase: "refresh_request",
+          elapsed_ms: 10_000,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 0,
+          request_method: "POST",
+          route_kind: "chat_page",
+          vercel_request_id: requestId,
+          web_build_commit: "c".repeat(40),
+          environment: "production",
+        });
+
+        await jest.advanceTimersByTimeAsync(60_000);
+        pending.resolve(signedInAuthkit);
+        const result = await response;
+        expect(result).toBe(mockNextResponseNext.mock.results[0]?.value);
+        expect(result).toMatchObject({ kind: "next" });
+        expect(warning).toHaveBeenCalledTimes(1);
+      } finally {
+        env.restore();
+        warning.mockRestore();
+      }
+    });
+
+    it("reports an unobserved phase, drops malformed fields and keeps the AuthKit error", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const env = jest.replaceProperty(process, "env", {
+        ...process.env,
+        VERCEL_ENV: privateMarker,
+        VERCEL_GIT_COMMIT_SHA: privateMarker,
+      });
+      const pending = deferredAuthkit();
+      const error = new Error("provider unavailable");
+      try {
+        mockAuthkit.mockImplementationOnce(
+          (_request: unknown, options: unknown) => {
+            reportPhases(options, [privateMarker, undefined]);
+            return pending.promise;
+          },
+        );
+        const { default: proxy } = await import("../proxy");
+        const response = proxy(
+          createRequest({
+            pathname: `/api/${privateMarker}`,
+            method: "PRIVATE-METHOD-MARKER",
+            hasSession: true,
+            headers: { "x-vercel-id": privateMarker },
+          }),
+        );
+
+        await jest.advanceTimersByTimeAsync(10_000);
+        const [encoded] = pendingWarnings(warning);
+        expect(encoded).not.toContain(privateMarker);
+        expect(encoded).not.toContain("PRIVATE-");
+        expect(JSON.parse(encoded)).toEqual({
+          event: "proxy_authkit_pending",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          authkit_session_phase: "not_observed",
+          elapsed_ms: 10_000,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 0,
+          request_method: "OTHER",
+          route_kind: "api",
+          environment: "unknown",
+        });
+
+        pending.reject(error);
+        await expect(response).rejects.toBe(error);
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(pendingWarnings(warning)).toHaveLength(1);
+        expect(warning).toHaveBeenLastCalledWith(
+          expect.stringContaining('"event":"proxy_authkit_failure_context"'),
+        );
+      } finally {
+        env.restore();
+        warning.mockRestore();
+      }
+    });
+
+    it.each([
+      {
+        outcome: "signed-in result",
+        settle: (call: ReturnType<typeof deferredAuthkit>) =>
+          call.resolve(signedInAuthkit),
+        expected: { kind: "next" },
+      },
+      {
+        outcome: "ended-session rejection",
+        settle: (call: ReturnType<typeof deferredAuthkit>) =>
+          call.reject(
+            Object.assign(new Error("invalid_grant"), {
+              name: "TokenRefreshError",
+              cause: {
+                error: "invalid_grant",
+                errorDescription: "Session has already ended.",
+              },
+            }),
+          ),
+        expected: { kind: "json", status: 401 },
+      },
+      {
+        outcome: "unexpected rejection",
+        settle: (call: ReturnType<typeof deferredAuthkit>) =>
+          call.reject(new Error("provider unavailable")),
+        expected: { error: "provider unavailable" },
+      },
+    ])(
+      "does not warn after AuthKit settles before the threshold: $outcome",
+      async ({ settle, expected }) => {
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        const pending = deferredAuthkit();
+        try {
+          mockAuthkit.mockReturnValueOnce(pending.promise);
+          const { default: proxy } = await import("../proxy");
+          const response = proxy(
+            createRequest({ pathname: "/api/example", hasSession: true }),
+          ).then(
+            (value) => value,
+            (error: Error) => ({ error: error.message }),
+          );
+
+          await jest.advanceTimersByTimeAsync(9_999);
+          settle(pending);
+          expect(await response).toMatchObject(expected);
+          await jest.advanceTimersByTimeAsync(60_000);
+          expect(pendingWarnings(warning)).toEqual([]);
+        } finally {
+          warning.mockRestore();
+        }
+      },
+    );
+
+    it("does not time an anonymous AuthKit call", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const pending = deferredAuthkit();
+      try {
+        mockAuthkit.mockReturnValueOnce(pending.promise);
+        const { default: proxy } = await import("../proxy");
+        const response = proxy(createRequest({ pathname: "/" }));
+
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(pendingWarnings(warning)).toEqual([]);
+        pending.resolve({ session: { user: null }, headers: new Headers() });
+        expect(await response).toMatchObject({ kind: "next" });
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("does not time a bypassed request", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({ pathname: "/api/health/core", hasSession: true }),
+        );
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(response).toMatchObject({ kind: "next" });
+        expect(mockAuthkit).not.toHaveBeenCalled();
+        expect(warning).not.toHaveBeenCalled();
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("does not time the anonymous retry after a malformed session cookie", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const retry = deferredAuthkit();
+      try {
+        mockAuthkit
+          .mockRejectedValueOnce(new Error("Wrong mac prefix"))
+          .mockReturnValueOnce(retry.promise);
+        const { default: proxy } = await import("../proxy");
+        const response = proxy(
+          createRequest({
+            pathname: "/",
+            accept: "text/html",
+            cookieValues: { "wos-session": "bad*1*a*b*c*d*e*f" },
+          }),
+        );
+
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(mockAuthkit).toHaveBeenCalledTimes(2);
+        expect(pendingWarnings(warning)).toEqual([]);
+        retry.resolve({ session: { user: null }, headers: new Headers() });
+        const result = await response;
+        expect(result).toMatchObject({ kind: "next" });
+        expect(result.cookies.delete).toHaveBeenCalledWith("wos-session");
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("preserves the AuthKit response when the pending warning logger throws", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      const pending = deferredAuthkit();
+      const sessionCookie = "wos-session=refreshed; Path=/; HttpOnly";
+      try {
+        mockAuthkit.mockReturnValueOnce(pending.promise);
+        const { default: proxy } = await import("../proxy");
+        const response = proxy(
+          createRequest({ pathname: "/api/example", hasSession: true }),
+        );
+
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(warning).toHaveBeenCalledTimes(1);
+        pending.resolve({
+          session: { user: { id: "user" } },
+          headers: new Headers({ "set-cookie": sessionCookie }),
+        });
+        const result = await response;
+        expect(result).toBe(mockNextResponseNext.mock.results[0]?.value);
+        const init = mockNextResponseNext.mock.calls[0]?.[0] as {
+          headers: Headers;
+        };
+        expect(init.headers.get("set-cookie")).toBe(sessionCookie);
+      } finally {
+        warning.mockRestore();
+      }
+    });
   });
 });
