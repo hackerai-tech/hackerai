@@ -2027,9 +2027,15 @@ export const useChatHandlers = ({
   ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
-    // The server is already starting this message as the next turn.
-    if (!message || message.deliveryStatus === "sending" || message.dispatching)
+    if (!message || message.deliveryStatus === "sending") return;
+    // The server is starting a queued message as the next turn. Nothing else
+    // may start until its run is attached, or the queue would run out of order.
+    if (messageQueue.some((queued) => queued.dispatching)) {
+      toast.info("Sending your queued message first", {
+        description: "Send this one after the Agent starts on it.",
+      });
       return;
+    }
     // Goal runs keep the existing pause-and-send path.
     const goalActive =
       !!goalStateRef.current &&

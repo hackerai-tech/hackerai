@@ -638,5 +638,25 @@ describe("agent steers", () => {
       expect(await read()).toBeNull();
       now.mockRestore();
     });
+
+    it("refuses to remove or edit a row the server is sending", async () => {
+      const f = fixture();
+      await f.enqueue("q", "original");
+      finished(f);
+      await claimNext(f);
+      await expect(
+        queue.remove.handler(f.ctx as never, { chatId: "chat", id: "q" }),
+      ).rejects.toThrow("This message is already being sent.");
+      await expect(
+        queue.update.handler(f.ctx as never, {
+          chatId: "chat",
+          id: "q",
+          text: "changed",
+        }),
+      ).rejects.toThrow("This message is already being sent.");
+      expect(f.rows.queued_messages).toEqual([
+        expect.objectContaining({ id: "q", text: "original" }),
+      ]);
+    });
   });
 });

@@ -1125,6 +1125,26 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(mockSendMessage).not.toHaveBeenCalled();
     });
 
+    it("never starts a queued message while the server is sending an earlier one", async () => {
+      mockMessageQueue = [
+        {
+          id: "queued-1",
+          text: "Sent by the server",
+          files: [],
+          timestamp: 1,
+          dispatching: true,
+        },
+        { id: "queued-2", text: "Next", files: [], timestamp: 2 },
+      ];
+      const { result } = renderSummarySteer(false);
+      for (const id of ["queued-1", "queued-2"])
+        await act(async () => result.current.handleSendNow(id));
+      expect(mockCreateAgentSteer).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    });
+
     it("leaves Ask mode's Send Now on its existing path", async () => {
       const toastError = jest.spyOn(toast, "error");
       mockChatMode = "ask";

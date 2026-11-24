@@ -260,7 +260,8 @@ const QueuedMessageRow = ({
         )}
       </div>
 
-      {!isEditing && (
+      {/* The server is sending it: it can no longer be changed here. */}
+      {!isEditing && !message.dispatching && (
         <div className="flex items-center gap-1 flex-shrink-0">
           <Button
             type="button"

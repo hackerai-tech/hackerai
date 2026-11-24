@@ -80,6 +80,12 @@ async function ownedRow(
     : null;
 }
 
+const sendingError = () =>
+  new ConvexError({
+    code: "QUEUED_MESSAGE_SENDING",
+    message: "This message is already being sent.",
+  });
+
 /** Edits a queued message's text. Missing rows were already sent or removed. */
 export const update = mutation({
   args: { chatId: v.string(), id: v.string(), text: v.string() },
@@ -92,6 +98,7 @@ export const update = mutation({
       });
     }
     const row = await ownedRow(ctx, args);
+    if (row && isDispatchClaimed(row, Date.now())) throw sendingError();
     if (row) await ctx.db.patch(row._id, { text: args.text });
     return null;
   },
@@ -102,6 +109,9 @@ export const remove = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const row = await ownedRow(ctx, args);
+    // A server send holds its row until the run is attached; removing it
+    // would let the next message start first.
+    if (row && isDispatchClaimed(row, Date.now())) throw sendingError();
     if (row) await ctx.db.delete(row._id);
     return null;
   },
