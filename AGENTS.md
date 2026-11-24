@@ -244,6 +244,33 @@ do not accumulate.
 For churn, retention, renewal, or a change's effect on subscribers, follow
 the [hackerai-retention-analysis skill](.agents/skills/hackerai-retention-analysis/SKILL.md).
 
+## Linear Issue Handoff
+
+When implementing or operating work tracked in Linear, read the owning issue
+before starting or resuming. Confirm the issue ID, title, scope, current state,
+and acceptance criteria. Search for an existing issue if the request refers to
+tracked work without an ID. Create a new issue only when the task calls for one.
+Read-only investigations do not authorize tracker writes.
+
+Link the PR or other delivery evidence to the owning issue when available. Use a
+non-closing GitHub reference such as `Refs HAC-123` if merge leaves any acceptance,
+release, rollout, readout, or customer follow-up pending. Use `Related to HAC-123`
+when the PR should leave the issue's status alone. Verify the issue link and
+state after any [automatic transition](https://linear.app/docs/github#magic-words).
+
+Refresh the issue at material milestones and before handoff, including Full
+Send, Full Stop, direct pushes, and operational follow-ups. Record the PR or
+commit, the checks and environments actually verified, and any remaining gate
+with its next action and owner or dependency. Update the state when the evidence
+warrants it. Use In Review when PR review is the current gate. Mark Done only
+when the issue's own acceptance criteria are met. If PR automation closed it
+early, restore the appropriate open state and record the remaining gate. Keep
+private receipts in Linear and avoid duplicate updates.
+
+Read back the saved issue state and link the issue in the handoff. If Linear is
+unavailable, report the specific update that could not be recorded and continue
+independent work within the authorized scope.
+
 ## Pull Request Review Workflow
 
 When a PR has been pushed and is ready for review, wait for required CI and
