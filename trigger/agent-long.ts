@@ -22,6 +22,7 @@ import {
 } from "@/lib/goals/server";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
 import { scheduleQueuedMessageDispatch } from "./agent-queue-dispatch";
+import { captureAgentFollowUp } from "@/lib/analytics/agent-follow-up";
 import { trace } from "@opentelemetry/api";
 import { getAgentRunClockContext } from "@/lib/chat/agent-run-clock";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
@@ -4322,6 +4323,15 @@ export const agentLongTask = task({
                       runId: ctx.run.id,
                       error_name:
                         error instanceof Error ? error.name : "UnknownError",
+                    }),
+                  onClaimed: (steers) =>
+                    void captureAgentFollowUp("steer_read", {
+                      userId,
+                      chatId,
+                      runId: ctx.run.id,
+                      subscription,
+                      steerCount: steers.length,
+                      dedupeKey: steers.map((steer) => steer.id).join(","),
                     }),
                 })
               : undefined;

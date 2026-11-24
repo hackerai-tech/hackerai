@@ -1,6 +1,6 @@
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { createAgentSteerInbox } from "@/lib/chat/agent-steer";
+import { createAgentSteerInbox, type AgentSteer } from "@/lib/chat/agent-steer";
 
 // A slow read delays the next model step; an unread steer is queued later.
 const CLAIM_TIMEOUT_MS = 2_000;
@@ -11,11 +11,13 @@ export function createRunSteerInbox({
   chatId,
   runId,
   onError,
+  onClaimed,
 }: {
   userId: string;
   chatId: string;
   runId: string;
   onError?: (error: unknown) => void;
+  onClaimed?: (steers: AgentSteer[]) => void;
 }) {
   return createAgentSteerInbox({
     claim: () =>
@@ -29,5 +31,6 @@ export function createRunSteerInbox({
         },
       ),
     onError,
+    onClaimed,
   });
 }

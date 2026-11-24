@@ -2050,6 +2050,11 @@ export const useChatHandlers = ({
       try {
         // Keep its queue position if the run never reads it.
         if (await steerActiveRun(message.text, message.timestamp, messageId)) {
+          captureAuthenticatedEvent("agent_follow_up", {
+            telemetry_version: 1,
+            action: "queued_row_steered",
+            from_steer: !!message.fromSteer,
+          });
           // An edit made while the steer was pending stays queued.
           const latest = messageQueueRef.current.find(
             (item) => item.id === messageId,
@@ -2083,6 +2088,14 @@ export const useChatHandlers = ({
 
     // Reset manual stop flag when using Send Now
     hasManuallyStoppedRef.current = false;
+    if (agentSteeringEnabled)
+      captureAuthenticatedEvent("agent_follow_up", {
+        telemetry_version: 1,
+        action: "queued_sent_now",
+        held: !!message.held,
+        from_steer: !!message.fromSteer,
+        run_active: hasActiveRunToReplace(),
+      });
 
     try {
       setIsAutoResuming(false);

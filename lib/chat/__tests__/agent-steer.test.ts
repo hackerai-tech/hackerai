@@ -66,4 +66,18 @@ describe("createAgentSteerInbox", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(inbox.delivered()).toEqual([]);
   });
+
+  it("reports only newly delivered steers to analytics", async () => {
+    const onClaimed = jest.fn();
+    const steer = { id: "a", text: "use staging" };
+    const inbox = createAgentSteerInbox({
+      claim: async () => [steer],
+      onClaimed,
+    });
+    await inbox.claim();
+    // A lost claim response returns the same steer again: no second report.
+    await inbox.claim();
+    expect(onClaimed).toHaveBeenCalledTimes(1);
+    expect(onClaimed).toHaveBeenCalledWith([steer]);
+  });
 });

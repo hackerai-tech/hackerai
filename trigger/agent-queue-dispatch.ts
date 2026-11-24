@@ -19,6 +19,10 @@ import {
   getAgentTriggerPriority,
 } from "@/lib/api/agent-run-start";
 import type { AgentLongPayload, agentLongTask } from "./agent-long";
+import {
+  captureAgentFollowUp,
+  type QueueDispatchSkipReason,
+} from "@/lib/analytics/agent-follow-up";
 
 const QUEUE_DISPATCH_TASK_ID = "agent-queue-dispatch";
 
@@ -27,6 +31,9 @@ type QueueDispatchPayload = {
   run: AgentLongPayload;
   completedRunId: string;
   queuedId: string;
+  /** For analytics: when it was first queued, and whether it was a steer. */
+  sentAt?: number;
+  fromSteer?: boolean;
 };
 
 const serviceKey = () => process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -48,9 +55,30 @@ export const agentQueueDispatch = task({
   id: QUEUE_DISPATCH_TASK_ID,
   maxDuration: 60,
   retry: { maxAttempts: 1 },
-  run: async ({ run, completedRunId, queuedId }: QueueDispatchPayload) => {
+  run: async ({
+    run,
+    completedRunId,
+    queuedId,
+    sentAt,
+    fromSteer,
+  }: QueueDispatchPayload) => {
     if (run.convexUrl) setConvexUrl(run.convexUrl);
     const { chatId, userId } = run;
+    const report = {
+      userId,
+      chatId,
+      subscription: run.subscription,
+      fromSteer,
+      dedupeKey: queuedId,
+    };
+    const skip = async (skipReason: QueueDispatchSkipReason) => {
+      await captureAgentFollowUp("queue_dispatch_skipped", {
+        ...report,
+        runId: completedRunId,
+        skipReason,
+      });
+      return { outcome: skipReason };
+    };
     const claim = {
       serviceKey: serviceKey(),
       chatId,
@@ -69,7 +97,7 @@ export const agentQueueDispatch = task({
         claim,
       );
       // Sent or removed elsewhere since the claim.
-      if (!queued) return { outcome: "not_queued" as const };
+      if (!queued) return await skip("not_queued");
 
       await assertUserCanMakeCostIncurringRequest(userId);
       const fresh = await getCurrentAgentEntitlementContext({
@@ -81,7 +109,7 @@ export const agentQueueDispatch = task({
         fresh.organizationId !== run.organizationId
       ) {
         await release();
-        return { outcome: "entitlement_changed" as const };
+        return await skip("entitlement_changed");
       }
       assertFreeAgentGates({
         mode: "agent",
@@ -97,7 +125,7 @@ export const agentQueueDispatch = task({
         chat.active_trigger_run_id
       ) {
         await release();
-        return { outcome: "chat_unavailable" as const };
+        return await skip("chat_unavailable");
       }
 
       const userMessage = {
@@ -183,10 +211,19 @@ export const agentQueueDispatch = task({
           approvalSessionId: chat.active_agent_approval_session_id ?? null,
         },
       });
+      await captureAgentFollowUp("queue_dispatch_started", {
+        ...report,
+        runId: handle.id,
+        ...(sentAt !== undefined ? { queuedForMs: Date.now() - sentAt } : {}),
+      });
       return { outcome: "started" as const, runId: handle.id };
     } catch (error) {
       // Once saved, the message is in the transcript like any failed send.
       if (!messageSaved) await release();
+      await captureAgentFollowUp("queue_dispatch_failed", {
+        ...report,
+        runId: completedRunId,
+      });
       throw error;
     }
   },
@@ -218,12 +255,22 @@ export async function scheduleQueuedMessageDispatch(
     );
     if (!claimed) return;
     claimedId = claimed.id;
+    await captureAgentFollowUp("queue_dispatch_claimed", {
+      userId: payload.userId,
+      chatId: payload.chatId,
+      runId: completedRunId,
+      subscription: payload.subscription,
+      fromSteer: claimed.fromSteer,
+      dedupeKey: claimed.id,
+    });
     await tasks.trigger<typeof agentQueueDispatch>(
       QUEUE_DISPATCH_TASK_ID,
       {
         run: { ...payload, messages: [] },
         completedRunId,
         queuedId: claimed.id,
+        sentAt: claimed.sentAt,
+        fromSteer: claimed.fromSteer,
       },
       {
         idempotencyKey: `queue-dispatch:${completedRunId}`,

@@ -22,6 +22,9 @@ jest.mock("@/lib/api/chat-stream-helpers", () => ({
 jest.mock("@/lib/experiments/agent-steering.server", () => ({
   isAgentSteeringEnabled: () => mockFlag(),
 }));
+jest.mock("@/lib/analytics/agent-follow-up", () => ({
+  captureAgentFollowUp: (...args: unknown[]) => mockCapture(...args),
+}));
 jest.mock("@/lib/api/agent-run-start", () => ({
   buildAgentRunDedupeKeyParts: (args: {
     userId: string;
@@ -53,7 +56,8 @@ const mockMutation = jest.fn(),
   mockEntitlement = jest.fn(),
   mockSaveMessage = jest.fn(),
   mockFinalize = jest.fn(),
-  mockFlag = jest.fn();
+  mockFlag = jest.fn(),
+  mockCapture = jest.fn();
 
 const finishedRun = {
   chatId: "chat",
@@ -138,6 +142,10 @@ describe("server dispatch of queued follow-ups", () => {
         previousOwner: { runId: null, approvalSessionId: null },
       }),
     );
+    expect(mockCapture).toHaveBeenCalledWith(
+      "queue_dispatch_started",
+      expect.objectContaining({ runId: "run-next", chatId: "chat" }),
+    );
   });
 
   it("does nothing when the message was already sent or removed", async () => {
@@ -166,6 +174,15 @@ describe("server dispatch of queued follow-ups", () => {
     });
     await expect(dispatch()).resolves.toEqual({ outcome: "chat_unavailable" });
     expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(
+      mockCapture.mock.calls.map(([action, context]) => [
+        action,
+        context.skipReason,
+      ]),
+    ).toEqual([
+      ["queue_dispatch_skipped", "entitlement_changed"],
+      ["queue_dispatch_skipped", "chat_unavailable"],
+    ]);
     expect(releaseCalls()).toHaveLength(2);
   });
 

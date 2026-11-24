@@ -140,6 +140,7 @@ export const claimNextForDispatch = mutation({
       text: v.string(),
       files: v.optional(v.array(v.any())),
       sentAt: v.number(),
+      fromSteer: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -208,6 +209,7 @@ export const claimNextForDispatch = mutation({
       text: next.text,
       ...(next.files?.length ? { files: next.files } : {}),
       sentAt: next.sent_at,
+      fromSteer: next.from_steer === true,
     };
   },
 });
