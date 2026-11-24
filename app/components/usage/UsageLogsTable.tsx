@@ -314,8 +314,18 @@ const UsageLogsTable = () => {
                     <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
                       {billingLabel}
                     </td>
-                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                      {log.model}
+                    <td className="min-w-28 px-3 py-2.5 text-muted-foreground">
+                      {/* Older servers omit model_label; keep their raw model. */}
+                      <div>{log.model_label ?? log.model}</div>
+                      {log.fallback_model ? (
+                        <div className="mt-0.5 wrap-anywhere text-[11px] leading-4 text-muted-foreground/80">
+                          Fallback:{" "}
+                          {log.initial_model &&
+                          log.initial_model !== log.fallback_model
+                            ? `${log.initial_model} → ${log.fallback_model}`
+                            : log.fallback_model}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
                       <TokenBreakdownTooltip

@@ -288,6 +288,7 @@ import {
 import {
   createAgentStream,
   initAgentStreamState,
+  recordExplicitModelFallback,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -3855,6 +3856,7 @@ export const agentLongTask = task({
                     configuredModelId,
                     accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
+                    modelFallback: state.usageModelFallback,
                   });
                   const cutOff = state.stoppedDueToBudgetExhaustion;
                   capturePaidDailyFreeAllowanceServerEvent({
@@ -3968,6 +3970,7 @@ export const agentLongTask = task({
                     accountingModel: usageRecordArgs.accountingModel,
                     rateLimitInfo,
                     billingBreakdown,
+                    modelFallback: state.usageModelFallback,
                   });
                 }
                 runReporting.captureCost(captureUsageCost, {
@@ -4481,6 +4484,7 @@ export const agentLongTask = task({
                   : null,
             };
 
+            let lastStreamModel = selectedModel;
             const createStream = (
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
@@ -4494,6 +4498,10 @@ export const agentLongTask = task({
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
+              if (retryUsesDifferentModel(lastStreamModel, modelName)) {
+                recordExplicitModelFallback(state, terminalRequestedModelSlug);
+                lastStreamModel = modelName;
+              }
               return createAgentStream(modelName, streamCtx, state);
             };
 

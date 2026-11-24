@@ -233,6 +233,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
   initAgentStreamState,
+  recordExplicitModelFallback,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
   type AgentStreamContext,
@@ -1463,6 +1464,7 @@ export const createChatHandler = () => {
                         configuredModelId,
                         accountingModel: usageRecordArgs.accountingModel,
                         rateLimitInfo,
+                        modelFallback: state.usageModelFallback,
                       });
                       const cutOff = state.stoppedDueToBudgetExhaustion;
                       capturePaidDailyFreeAllowanceServerEvent({
@@ -1579,6 +1581,7 @@ export const createChatHandler = () => {
                         accountingModel: usageRecordArgs.accountingModel,
                         rateLimitInfo,
                         billingBreakdown,
+                        modelFallback: state.usageModelFallback,
                       });
                     }
                     captureUsageCost({
@@ -1904,6 +1907,7 @@ export const createChatHandler = () => {
                 preemptiveTimeout?.isPreemptive() ? "timeout" : null,
             };
 
+            let lastStreamModel = selectedModel;
             const createStream = (
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
@@ -1915,6 +1919,13 @@ export const createChatHandler = () => {
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;
               setCurrentModelName(modelName);
+              if (retryUsesDifferentModel(lastStreamModel, modelName)) {
+                recordExplicitModelFallback(
+                  state,
+                  trackedProvider.languageModel(modelName).modelId,
+                );
+                lastStreamModel = modelName;
+              }
               return createAgentStream(modelName, streamCtx, state);
             };
 
