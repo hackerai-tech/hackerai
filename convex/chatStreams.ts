@@ -3,6 +3,10 @@ import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
+import { assertChatHistoryOwner } from "./lib/chatHistoryAccess";
+import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
+
+const USER_STOP_NEWER_MESSAGE_LIMIT = 8;
 
 /**
  * Start a stream by setting active_stream_id and clearing canceled_at (backend only)
@@ -94,7 +98,8 @@ export const prepareForNewStream = mutation({
 
 /**
  * Cancel a stream from the client (with auth check)
- * Client-callable version of cancelStream
+ * Client-callable version of cancelStream. Returns true only when this call
+ * ended an active stream, so callers can tell a real Stop from a no-op.
  */
 export const cancelStreamFromClient = mutation({
   args: {
@@ -116,7 +121,7 @@ export const cancelStreamFromClient = mutation({
       ),
     ),
   },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
@@ -134,7 +139,7 @@ export const cancelStreamFromClient = mutation({
 
     if (!chat) {
       // Benign race: chat was deleted before cancel arrived. Nothing to do.
-      return null;
+      return false;
     }
 
     // Verify ownership
@@ -174,7 +179,79 @@ export const cancelStreamFromClient = mutation({
       skipSave: args.skipSave,
     });
 
-    return null;
+    return wasRunning;
+  },
+});
+
+/**
+ * Record that an explicit Stop ended this turn. The client calls this only
+ * after its cancellation was acknowledged; this re-checks that the anchor is
+ * still the chat's latest turn and did not already finish on its own.
+ * Returns whether the marker is saved. Idempotent.
+ */
+export const markMessageUserStopped = mutation({
+  args: {
+    chatId: v.string(),
+    messageId: v.string(),
+    role: v.union(v.literal("user"), v.literal("assistant")),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) return false;
+    if (chat.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+    await assertChatHistoryOwner(ctx, args.chatId, identity.subject);
+
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+      .first();
+    if (
+      !message ||
+      message.chat_id !== args.chatId ||
+      message.user_id !== identity.subject ||
+      message.role !== args.role ||
+      message.is_hidden === true
+    )
+      return false;
+    if (message.user_stopped === true) return true;
+    // Both workers clear the finish reason for a user abort. A saved reason
+    // belongs to a different terminal outcome, including automatic limits.
+    if (message.role === "assistant" && message.finish_reason) return false;
+
+    // Check only messages written after the anchor. Older tool results can be
+    // large and cannot make this Stop stale.
+    const newerMessages = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) =>
+        q.eq("chat_id", args.chatId).gt("_creationTime", message._creationTime),
+      )
+      .take(USER_STOP_NEWER_MESSAGE_LIMIT);
+    if (
+      newerMessages.length === USER_STOP_NEWER_MESSAGE_LIMIT ||
+      newerMessages.some((row) => !row.is_hidden && row.role !== "system")
+    )
+      return false;
+
+    await ctx.db.patch(message._id, { user_stopped: true });
+    return true;
   },
 });
 

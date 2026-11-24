@@ -321,6 +321,9 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
+  const markMessageUserStopped = useMutation(
+    api.chatStreams.markMessageUserStopped,
+  );
   /** Prepare storage-only parts without awaiting code needed by backend Stop. */
   const getStopSnapshot = (message: ChatMessage): StopSnapshot => {
     const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
@@ -533,12 +536,12 @@ export const useChatHandlers = ({
     skipSave?: boolean;
     requireCancelSuccess?: boolean;
     requireSaveSuccess?: boolean;
-  }): Promise<ChatMessage[]> => {
+  }): Promise<boolean> => {
     // Stop the stream immediately (client-side abort)
     stop();
 
     // Early return if no messages to process
-    if (messages.length === 0) return messages;
+    if (messages.length === 0) return false;
 
     // Normalize messages to mark incomplete tools as interrupted/completed
     const { messages: normalizedMessages, hasChanges } = normalizeMessages(
@@ -662,7 +665,7 @@ export const useChatHandlers = ({
       // filtered subset or an invented empty list would overwrite progress.
       ...(isTodoSnapshotForCancellation(todos) ? { todos } : {}),
     });
-    await Promise.all([
+    const [wasRunning] = await Promise.all([
       options?.requireCancelSuccess
         ? cancelPromise
         : cancelPromise.catch((error) => {
@@ -671,7 +674,7 @@ export const useChatHandlers = ({
       savePromise,
     ]);
 
-    return normalizedMessages;
+    return wasRunning === true;
   };
 
   const stopActiveRunForReplacement = async (
@@ -1447,7 +1450,17 @@ export const useChatHandlers = ({
     stopGenerationRef.current += 1;
     const stoppedGeneration = stopGenerationRef.current;
     setSummarySteer(null);
-
+    // Only the composer's explicit Stop records the transcript marker; goal
+    // controls stop a run as a side effect of another action. Capture the
+    // turn now: the partial reply, or the request when nothing has streamed.
+    const lastMessage = messages[messages.length - 1];
+    const stopAnchor =
+      options === undefined &&
+      lastMessage &&
+      (lastMessage.role === "assistant" ||
+        (lastMessage.role === "user" && !lastMessage.metadata?.isAutoContinue))
+        ? { messageId: lastMessage.id, role: lastMessage.role }
+        : undefined;
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
@@ -1491,6 +1504,44 @@ export const useChatHandlers = ({
     ) {
       await recoverStaleAgentRun(triggerCancelResult.value, requestGeneration);
       return false;
+    }
+
+    // Agent needs its exact run acknowledged as canceled; Ask needs Convex to
+    // confirm this Stop ended a running stream. Anything else leaves no marker.
+    const stopAcknowledged =
+      triggerCancelResult.status === "fulfilled" &&
+      (triggerCancelResult.value.outcome === "canceled" ||
+        (triggerCancelResult.value.outcome === "not_applicable" &&
+          streamStopResult.status === "fulfilled" &&
+          streamStopResult.value));
+    if (stopAnchor && stopAcknowledged) {
+      try {
+        const marked = await markMessageUserStopped({
+          chatId,
+          messageId: stopAnchor.messageId,
+          role: stopAnchor.role,
+        });
+        if (
+          marked === true &&
+          currentChatIdRef.current === chatId &&
+          stopGenerationRef.current === stoppedGeneration
+        ) {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === stopAnchor.messageId &&
+              message.role === stopAnchor.role
+                ? {
+                    ...message,
+                    metadata: { ...message.metadata, userStopped: true },
+                  }
+                : message,
+            ),
+          );
+        }
+      } catch (error) {
+        // The run is already stopped; a missing marker must not undo that.
+        console.error("Failed to record the stopped turn:", error);
+      }
     }
 
     return (
@@ -1911,6 +1962,9 @@ export const useChatHandlers = ({
       updatedMessages[editedMessageIndex] = {
         ...currentMessage,
         parts: buildUpdatedParts(currentMessage.parts),
+        ...(currentMessage.metadata?.userStopped
+          ? { metadata: { ...currentMessage.metadata, userStopped: undefined } }
+          : {}),
       };
 
       return updatedMessages;

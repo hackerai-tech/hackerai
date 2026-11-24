@@ -20,7 +20,15 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { ChevronDown, ChevronUp, FileSearch, CircleCheck } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  FileSearch,
+  CircleCheck,
+  CircleStop,
+} from "lucide-react";
+import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
+import { CLIENT_SAVED_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import {
   extractMessageText,
   hasTextContent,
@@ -170,6 +178,10 @@ function areMessageItemPropsEqual(
     if (
       prev.message.metadata?.feedbackType !==
       next.message.metadata?.feedbackType
+    )
+      return false;
+    if (
+      prev.message.metadata?.userStopped !== next.message.metadata?.userStopped
     )
       return false;
     if (
@@ -451,6 +463,15 @@ export const MessageItem = memo(function MessageItem({
     return null;
   }
 
+  const showsUserStop =
+    message.metadata?.userStopped === true &&
+    !(isLastMessage && (status === "streaming" || status === "submitted"));
+  // The divider explains a manual Stop; keep notices that need recovery.
+  const userStopOwnsFinishNotice =
+    showsUserStop &&
+    !requiresManualAgentResume(finishReason) &&
+    finishReason !== CLIENT_SAVED_FINISH_REASON;
+
   return (
     <Fragment>
       <div
@@ -731,7 +752,8 @@ export const MessageItem = memo(function MessageItem({
         {/* Finish reason notice under last assistant message */}
         {isLastAssistantMessage &&
           index > (lastUserMessageIndex ?? -1) &&
-          status !== "streaming" && (
+          status !== "streaming" &&
+          !userStopOwnsFinishNotice && (
             <FinishReasonNotice
               finishReason={finishReason}
               lastSavedStep={
@@ -806,6 +828,34 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
       </div>
+
+      {showsUserStop && (
+        <div
+          data-testid="user-stop-divider"
+          className="mt-2 flex items-center gap-2 py-3 text-sm sm:gap-4"
+        >
+          <div
+            aria-hidden
+            className="h-px min-w-2 flex-1 bg-border sm:min-w-4"
+          />
+          <div className="flex min-w-0 flex-wrap items-center justify-center gap-x-1.5 gap-y-0.5">
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-medium text-foreground/80">
+              <CircleStop
+                aria-hidden
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+              Run interrupted
+            </span>{" "}
+            <span className="whitespace-nowrap text-muted-foreground">
+              <span aria-hidden>· </span>Stopped by user
+            </span>
+          </div>
+          <div
+            aria-hidden
+            className="h-px min-w-2 flex-1 bg-border sm:min-w-4"
+          />
+        </div>
+      )}
 
       {/* Branch indicator - show after the branched message */}
       {shouldShowBranchIndicator && (

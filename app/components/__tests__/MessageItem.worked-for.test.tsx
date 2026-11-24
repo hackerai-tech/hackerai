@@ -978,3 +978,85 @@ describe("MessageItem user message collapse", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("MessageItem stopped-run divider", () => {
+  const stoppedReply = {
+    ...assistantMessage,
+    metadata: { ...assistantMessage.metadata, userStopped: true },
+  } as ChatMessage;
+  const baseProps = {
+    message: stoppedReply,
+    index: 1,
+    messagesLength: 2,
+    lastAssistantMessageIndex: 1,
+    lastUserMessageIndex: 0,
+    status: "ready" as ChatStatus,
+    canEdit: false,
+    isEditing: false,
+    feedbackInputMessageId: null,
+    branchBoundaryIndex: undefined,
+    onStartEdit: jest.fn(),
+    onSaveEdit: jest.fn(async () => {}),
+    onCancelEdit: jest.fn(),
+    onRegenerate: jest.fn(),
+    onFeedback: jest.fn(),
+    onFeedbackSubmit: jest.fn(async () => {}),
+    onFeedbackCancel: jest.fn(),
+    onShowAllFiles: jest.fn(),
+    getCachedUrl: jest.fn(),
+  };
+
+  it("appears below the actions when the saved marker arrives with unchanged parts", () => {
+    const { rerender } = render(
+      <MessageItem {...baseProps} message={assistantMessage} />,
+    );
+    expect(screen.queryByTestId("user-stop-divider")).not.toBeInTheDocument();
+
+    // Same id and parts, as when the Convex marker reconciles after Stop.
+    rerender(<MessageItem {...baseProps} message={stoppedReply} />);
+    const divider = screen.getByTestId("user-stop-divider");
+    expect(divider).toHaveTextContent("Run interrupted · Stopped by user");
+    expect(
+      screen.getByTestId("message-actions").compareDocumentPosition(divider) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("stays attached to a stopped request after a follow-up", () => {
+    render(
+      <MessageItem
+        {...baseProps}
+        message={{
+          ...createUserMessage("Scan the host"),
+          metadata: { userStopped: true },
+        }}
+        index={0}
+        messagesLength={3}
+        lastAssistantMessageIndex={2}
+        lastUserMessageIndex={1}
+        canEdit
+      />,
+    );
+    expect(screen.getByTestId("user-stop-divider")).toBeInTheDocument();
+  });
+
+  it("is hidden while that message is still streaming", () => {
+    render(<MessageItem {...baseProps} status="streaming" />);
+    expect(screen.queryByTestId("user-stop-divider")).not.toBeInTheDocument();
+  });
+
+  it("replaces a generic finish notice but keeps a recovery notice", () => {
+    const { rerender } = render(
+      <MessageItem {...baseProps} finishReason="tool-calls" />,
+    );
+    expect(screen.getByTestId("user-stop-divider")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("finish-reason-notice"),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <MessageItem {...baseProps} finishReason="local-connection-lost" />,
+    );
+    expect(screen.getByTestId("finish-reason-notice")).toBeInTheDocument();
+  });
+});

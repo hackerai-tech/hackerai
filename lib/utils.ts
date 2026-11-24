@@ -20,6 +20,7 @@ export interface MessageRecord {
   generation_started_at?: number;
   generation_time_ms?: number;
   goal?: { sent?: boolean; achievedElapsedMs?: number };
+  user_stopped?: boolean;
   fileDetails?: Array<{
     fileId: Id<"files">;
     name: string;
@@ -120,9 +121,11 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
       message.goal ||
       message.feedback ||
       message.mode ||
+      message.user_stopped === true ||
       typeof message.generation_started_at === "number" ||
       typeof message.generation_time_ms === "number"
         ? {
+            ...(message.user_stopped === true ? { userStopped: true } : {}),
             ...(message.goal ? { goal: message.goal } : {}),
             ...(message.feedback
               ? { feedbackType: message.feedback.feedbackType }

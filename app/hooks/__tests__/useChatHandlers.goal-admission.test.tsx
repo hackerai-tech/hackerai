@@ -18,7 +18,10 @@ jest.mock("@/app/services/desktop-command-cancellation", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
-    chatStreams: { cancelStreamFromClient: "cancelStreamFromClient" },
+    chatStreams: {
+      cancelStreamFromClient: "cancelStreamFromClient",
+      markMessageUserStopped: "markMessageUserStopped",
+    },
     agentSteers: { create: "createAgentSteer" },
     messages: {
       deleteLastAssistantMessage: "deleteLastAssistantMessage",
