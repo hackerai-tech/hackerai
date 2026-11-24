@@ -16,6 +16,7 @@ import {
   TOKEN_FRESHNESS_MS,
 } from "@/lib/auth/shared-token";
 import { isCrossTabTokenSharingEnabled } from "@/lib/auth/feature-flags";
+import { tokenMatchesWorkOSSession } from "@/lib/auth/workos-token-scope";
 import {
   advanceConvexAuthTokenDecisionContext,
   beginConvexAuthTokenDecision,
@@ -53,6 +54,7 @@ export type AuthKitDeps = {
   useAuth: typeof useAuth;
   useAccessToken: typeof useAccessToken;
   mutex: CrossTabMutex;
+  matchesToken?: typeof tokenMatchesWorkOSSession;
   isCrossTabEnabled?: (userId: string | undefined) => boolean;
 };
 
@@ -79,6 +81,18 @@ export function useAuthFromAuthKit(
   const hasResolvedOrgRef = useRef(false);
   const authContext = JSON.stringify([user?.id, sessionId, organizationId]);
   const authContextRef = useRef(authContext);
+  const userId = user?.id;
+  const matchesToken = deps.matchesToken ?? tokenMatchesWorkOSSession;
+  // AuthKit's token store (seeded from a one-shot cookie), its cached token
+  // and the profile-wide shared tab token are not bound to this committed
+  // session. Only a token issued for it may reach Convex from any path.
+  const isUsableToken = useCallback(
+    (token: string | null | undefined): token is string =>
+      !!token &&
+      !!userId &&
+      matchesToken(token, { userId, sessionId, organizationId }),
+    [userId, sessionId, organizationId, matchesToken],
+  );
   // Diagnostics only: this provider's stable token-decision owner. It is never
   // set, so it adds no updates, and is published only with committed state.
   const [tokenDecisions] = useState(createConvexAuthTokenDecisionOwner);
@@ -194,6 +208,7 @@ export function useAuthFromAuthKit(
     if (!isRecovering) return;
     let cancelled = false;
     let pending = false;
+    let refreshMismatchedToken = false;
     let timer: ReturnType<typeof setTimeout>;
     let nextAttemptAt = lastRefreshErrorAt.current + REFRESH_COOLDOWN_MS;
 
@@ -216,11 +231,20 @@ export function useAuthFromAuthKit(
       );
       try {
         // AuthKit checks JWT expiry and deduplicates concurrent wake refreshes.
-        const token = await getAccessToken();
+        // The SDK can keep returning an unexpired token after a failed refresh.
+        // If reconciling the session left it in place, bypass that cache on the
+        // next bounded retry.
+        const fetched = refreshMismatchedToken
+          ? await refresh()
+          : await getAccessToken();
         if (cancelled || authContextRef.current !== recovery?.context) {
           settle("context_superseded");
           return;
         }
+        // Another account's, session's or organization's token counts as
+        // missing, so the session check reconciles AuthKit's committed scope.
+        const token = isUsableToken(fetched) ? fetched : undefined;
+        refreshMismatchedToken = !!fetched && !token;
         if (!token) await reconcileMissingToken();
         if (cancelled || authContextRef.current !== recovery?.context) {
           settle("context_superseded");
@@ -271,6 +295,8 @@ export function useAuthFromAuthKit(
     recovery,
     accessToken,
     getAccessToken,
+    refresh,
+    isUsableToken,
     reconcileMissingToken,
     tokenDecisions,
   ]);
@@ -284,13 +310,25 @@ export function useAuthFromAuthKit(
         forceRefreshToken ? "forced_refresh" : "ordinary",
         authContextRef.current === authContext,
       );
+      if (authContextRef.current !== authContext) {
+        settle("context_superseded", false);
+        return null;
+      }
       if (!user) {
         settle("no_owner", false);
         return null;
       }
 
+      // A cached token is a fallback only for this committed session.
+      const usableCachedToken = () =>
+        isUsableToken(accessTokenRef.current) ? accessTokenRef.current : null;
       try {
         let token: string | null | undefined;
+        let refreshed = false;
+        const refreshOnce = () => {
+          refreshed = true;
+          return refresh();
+        };
         if (forceRefreshToken) {
           // Cooldown: skip refresh if we recently hit an error (e.g., rate limit)
           // to prevent Convex retry loops from hammering the server
@@ -298,7 +336,7 @@ export function useAuthFromAuthKit(
             console.log(
               "[Convex Auth] Skipping refresh during cooldown, using cached token",
             );
-            const cached = accessTokenRef.current ?? null;
+            const cached = usableCachedToken();
             settle("cooldown_fallback", !!cached);
             return cached;
           }
@@ -310,18 +348,28 @@ export function useAuthFromAuthKit(
             const refreshWithLock = async () => {
               const token = await deps.mutex.withLock(async () => {
                 // Double-check after acquiring lock - another tab may have refreshed while we waited
-                return getFreshSharedTokenWithFallback(async () => refresh());
+                return getFreshSharedTokenWithFallback(
+                  refreshOnce,
+                  isUsableToken,
+                );
               });
               // If lock timed out, fall back to getAccessToken
               return (
-                token ?? (await getFreshSharedTokenWithFallback(getAccessToken))
+                token ??
+                (await getFreshSharedTokenWithFallback(
+                  getAccessToken,
+                  isUsableToken,
+                ))
               );
             };
 
-            token = await getFreshSharedTokenWithFallback(refreshWithLock);
+            token = await getFreshSharedTokenWithFallback(
+              refreshWithLock,
+              isUsableToken,
+            );
           } else {
             // Legacy behavior: direct refresh without cross-tab coordination
-            token = await refresh();
+            token = await refreshOnce();
           }
         } else {
           token = await getAccessToken();
@@ -330,8 +378,27 @@ export function useAuthFromAuthKit(
           settle("context_superseded", false);
           return null;
         }
+        if (token && !isUsableToken(token)) {
+          // A token for another account, session or organization. Ask the
+          // current session cookie once for this session's token.
+          if (!refreshed) {
+            token = await refreshOnce();
+            if (authContextRef.current !== authContext) {
+              settle("context_superseded", false);
+              return null;
+            }
+          }
+          if (token && !isUsableToken(token)) {
+            // The server session differs from AuthKit's committed one. Never
+            // return the token; recovery holds Convex in loading while its
+            // session check reconciles AuthKit with the server session.
+            startRecovery();
+            settle("null", false);
+            return null;
+          }
+        }
         if (!token) {
-          const cachedToken = accessTokenRef.current;
+          const cachedToken = usableCachedToken();
           const recoveryFailed = await reconcileMissingToken();
           if (authContextRef.current !== authContext) {
             settle("context_superseded", false);
@@ -339,9 +406,8 @@ export function useAuthFromAuthKit(
           }
           if (recoveryFailed) {
             startRecovery();
-            const cached = cachedToken ?? null;
-            settle("cached_fallback", !!cached);
-            return cached;
+            settle("cached_fallback", !!cachedToken);
+            return cachedToken;
           }
           accessTokenRef.current = undefined;
         } else {
@@ -361,7 +427,7 @@ export function useAuthFromAuthKit(
         lastRefreshErrorAt.current = Date.now();
         startRecovery();
         console.log("[Convex Auth] Using cached token during network issues");
-        const cached = accessTokenRef.current ?? null;
+        const cached = usableCachedToken();
         settle("exception_fallback", !!cached);
         return cached;
       }
@@ -369,6 +435,7 @@ export function useAuthFromAuthKit(
     [
       user,
       getAccessToken,
+      isUsableToken,
       refresh,
       deps.mutex,
       isCrossTabEnabled,

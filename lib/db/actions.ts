@@ -2384,9 +2384,18 @@ export async function setActiveAgentApprovalPending({
       },
     );
   } catch (error) {
+    // Keep the cause class and whether the write may have committed, so
+    // approval-slot retries are diagnosable without logging Convex payloads.
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to set active agent approval state",
+      {
+        db_operation: "chats.setActiveAgentApprovalPending",
+        db_error_name: error instanceof Error ? error.name : typeof error,
+        ...(isConvexOutcomeUnknownError(error)
+          ? { db_outcome_unknown: true }
+          : {}),
+      },
     );
   }
 }
