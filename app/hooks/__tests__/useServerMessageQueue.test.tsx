@@ -396,4 +396,36 @@ describe("useServerMessageQueue", () => {
       jest.useRealTimers();
     }
   });
+
+  it("never retries a write that grants full access", async () => {
+    // A late retry could replace a stricter choice saved on another device.
+    jest.useFakeTimers();
+    try {
+      mockApplySettings.mockRejectedValueOnce(new Error("offline"));
+      const { rerender } = renderHook(
+        ({ settings }) =>
+          useServerMessageQueue({
+            userId: "user-1",
+            chatId: "chat-1",
+            enabled: true,
+            settings,
+          }),
+        {
+          initialProps: {
+            settings: {
+              agentPermissionMode: "ask_approval" as
+                "ask_approval" | "full_access",
+            },
+          },
+        },
+      );
+      rerender({ settings: { agentPermissionMode: "full_access" } });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockApplySettings).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
