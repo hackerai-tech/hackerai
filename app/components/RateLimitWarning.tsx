@@ -175,16 +175,18 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You've reached your monthly usage limit. ${monthlyReset(`It resets ${timeString}.`)}`;
   }
 
+  const toCents = (dollars: number) => Math.round(dollars * 100) / 100;
   if (
     data.usedDollars !== undefined &&
     data.limitDollars !== undefined &&
-    data.limitDollars > 0
+    toCents(data.limitDollars) > 0
   ) {
     // Derive the percent from the cent-rounded amounts shown beside it, so
     // "$0.20 of $0.25" never reads as 79%.
-    const usedDollars = Math.round(data.usedDollars * 100) / 100;
-    const usedPercent = Math.round((usedDollars / data.limitDollars) * 100);
-    return `You've used $${usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). ${monthlyReset(`Resets ${timeString}.`)}`;
+    const usedDollars = toCents(data.usedDollars);
+    const limitDollars = toCents(data.limitDollars);
+    const usedPercent = Math.round((usedDollars / limitDollars) * 100);
+    return `You've used $${usedDollars.toFixed(2)} of $${limitDollars.toFixed(2)} (${usedPercent}%). ${monthlyReset(`Resets ${timeString}.`)}`;
   }
 
   return `You have ${data.remainingPercent}% of your monthly usage remaining. ${monthlyReset(`It resets ${timeString}.`)}`;

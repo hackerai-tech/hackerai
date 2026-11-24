@@ -265,6 +265,24 @@ describe("RateLimitWarning", () => {
     );
   });
 
+  it("derives the shown percent from a cent-rounded limit too", () => {
+    render(
+      <RateLimitWarning
+        data={{
+          ...monthlyWarning,
+          remainingPercent: 21,
+          usedDollars: 0.2,
+          limitDollars: 0.254,
+        }}
+        onDismiss={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("rate-limit-warning")).toHaveTextContent(
+      "You've used $0.20 of $0.25 (80%).",
+    );
+  });
+
   it("renders legacy Pro Agent run cap copy without upgrade or add-credit CTAs", () => {
     render(
       <RateLimitWarning
