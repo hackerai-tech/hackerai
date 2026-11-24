@@ -122,6 +122,7 @@ import {
   type Todo,
   type ChatMessage,
 } from "@/types";
+import type { QueuedMessage } from "@/types/chat";
 import {
   getAgentToolApprovalPromptDetail,
   getAgentToolApprovalPromptKind,
@@ -2832,34 +2833,53 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       runActive: !hasLoadedCurrentChat || agentRunActive,
     });
 
-  // The server sends the next queued message after a run finishes. Attach
-  // to the run it starts, as a reload would, so the reply streams here too.
-  const sawServerDispatchRef = useRef(false);
+  // The server sends the next queued message after a run finishes. Show that
+  // message here and attach to the run it starts, as a reload would, so the
+  // reply streams in this tab too.
+  const serverDispatchRef = useRef<QueuedMessage | null>(null);
   const attachedServerRunRef = useRef<string | null>(null);
-  const serverDispatchInView = messageQueue.some(
-    (message) => message.dispatching,
-  );
+  const serverDispatch = messageQueue.find((message) => message.dispatching);
   useEffect(() => {
-    if (serverDispatchInView) sawServerDispatchRef.current = true;
-  }, [serverDispatchInView]);
+    if (serverDispatch) serverDispatchRef.current = serverDispatch;
+  }, [serverDispatch]);
   useEffect(() => {
+    const dispatched = serverDispatchRef.current;
     if (
       !agentSteeringEnabled ||
-      !sawServerDispatchRef.current ||
+      !dispatched ||
       !activeTriggerRunId ||
       agentLongRunId ||
       status !== "ready" ||
       attachedServerRunRef.current === activeTriggerRunId
     )
       return;
-    sawServerDispatchRef.current = false;
+    serverDispatchRef.current = null;
     attachedServerRunRef.current = activeTriggerRunId;
+    setMessages((current) =>
+      current.some((message) => message.id === dispatched.id)
+        ? current
+        : [
+            ...current,
+            {
+              id: dispatched.id,
+              role: "user",
+              parts: [
+                ...(dispatched.files ?? []),
+                ...(dispatched.text
+                  ? [{ type: "text" as const, text: dispatched.text }]
+                  : []),
+              ] as ChatMessage["parts"],
+              metadata: { createdAt: dispatched.timestamp },
+            } as ChatMessage,
+          ],
+    );
     void resumeStream();
   }, [
     activeTriggerRunId,
     agentLongRunId,
     agentSteeringEnabled,
     resumeStream,
+    setMessages,
     status,
   ]);
 
