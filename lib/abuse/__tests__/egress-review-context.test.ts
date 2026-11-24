@@ -10,54 +10,31 @@ import {
   recordEgressReviewAcquisition,
 } from "../egress-review-context";
 
-/** Sorted-set semantics of the Upstash calls the module uses. */
+/**
+ * Stores what the module writes and reads it back. The write script's
+ * coalescing runs against real Redis in
+ * scripts/tests/egress-review-acquisition.integration.ts; here a write is a
+ * plain add of the acquisition member.
+ */
 function sortedSetRedis() {
   const sets = new Map<string, Map<string, number>>();
   const set = (key: string) => {
     if (!sets.has(key)) sets.set(key, new Map());
     return sets.get(key)!;
   };
-  const ordered = (key: string) =>
-    [...set(key).entries()].sort((a, b) => a[1] - b[1]);
   const redis = {
-    pipeline: jest.fn(() => {
-      const ops: Array<() => void> = [];
-      const chain = {
-        zadd(
-          key: string,
-          { score, member }: { score: number; member: string },
-        ) {
-          ops.push(() => set(key).set(member, score));
-          return chain;
-        },
-        zremrangebyscore(key: string, min: number, max: number) {
-          ops.push(() => {
-            for (const [member, score] of set(key))
-              if (score >= min && score <= max) set(key).delete(member);
-          });
-          return chain;
-        },
-        zremrangebyrank(key: string, start: number, stop: number) {
-          ops.push(() => {
-            const entries = ordered(key);
-            const end = stop < 0 ? entries.length + stop : stop;
-            // Redis treats a resolved stop before start as an empty range.
-            if (end < start) return;
-            entries
-              .slice(start, end + 1)
-              .forEach(([member]) => set(key).delete(member));
-          });
-          return chain;
-        },
-        expire() {
-          return chain;
-        },
-        exec: jest.fn(async () => ops.forEach((op) => op())),
-      };
-      return chain;
-    }),
+    eval: jest.fn(
+      async (_script: string, [key]: string[], [prefix, time]: string[]) => {
+        set(key).set(`${prefix}${time}`, Number(time));
+        return 1;
+      },
+    ),
+    zadd: (key: string, score: number, member: string) =>
+      set(key).set(member, score),
     zrange: jest.fn(async (key: string) =>
-      ordered(key).flatMap(([member, score]) => [member, score]),
+      [...set(key).entries()]
+        .sort((a, b) => a[1] - b[1])
+        .flatMap(([member, score]) => [member, score]),
     ),
   };
   return redis;
@@ -97,43 +74,30 @@ it("is off by default and does not touch the store", async () => {
   expect(createRedisClient).not.toHaveBeenCalled();
 });
 
-it("keeps every acquisition, so a later one cannot replace an earlier one", async () => {
+it("does not record acquisitions without a server chat and run", async () => {
+  recordEgressReviewAcquisition({ ...base, chatId: "chat_a" });
+  recordEgressReviewAcquisition({ ...base, runId: "run_a" });
+  recordEgressReviewAcquisition({ ...base, chatId: "a|b", runId: "run_a" });
+  await flush();
+  expect(redis.eval).not.toHaveBeenCalled();
+});
+
+it("keys records by account and workspace", async () => {
   recordEgressReviewAcquisition({
     ...base,
     chatId: "chat_a",
     runId: "run_a",
     now: 1_000,
   });
-  recordEgressReviewAcquisition({
-    ...base,
-    chatId: "chat_b",
-    runId: "run_b",
-    runKind: "subagent",
-    now: 2_000,
-  });
-  // The same run acquires again later, and one write is retried.
-  for (let attempt = 0; attempt < 2; attempt++)
-    recordEgressReviewAcquisition({
-      ...base,
-      chatId: "chat_a",
-      runId: "run_a",
-      now: 3_000,
-    });
   await flush();
-  const read = await readAcquisitionLinks(
-    redis as never,
-    "us",
-    "user_1",
-    "sbx_1",
-    0,
-  );
-  expect(read).toEqual({
-    complete: true,
+  await expect(
+    readAcquisitionLinks(redis as never, "us", "user_1", "sbx_1", 0),
+  ).resolves.toEqual({
     links: [
       { kind: "parent", chatId: "chat_a", runId: "run_a", acquiredAt: 1_000 },
-      { kind: "subagent", chatId: "chat_b", runId: "run_b", acquiredAt: 2_000 },
-      { kind: "parent", chatId: "chat_a", runId: "run_a", acquiredAt: 3_000 },
     ],
+    complete: true,
+    stored: 1,
   });
   // Another account's workspace with the same sandbox ID is a different key.
   expect(
@@ -142,52 +106,29 @@ it("keeps every acquisition, so a later one cannot replace an earlier one", asyn
   ).toEqual([]);
 });
 
-it("does not record acquisitions without a server chat and run", async () => {
-  recordEgressReviewAcquisition({ ...base, chatId: "chat_a" });
-  recordEgressReviewAcquisition({ ...base, runId: "run_a" });
-  recordEgressReviewAcquisition({ ...base, chatId: "a|b", runId: "run_a" });
+it("tells trimmed history from an unreadable record", async () => {
+  recordEgressReviewAcquisition({
+    ...base,
+    chatId: "c",
+    runId: "run_0",
+    now: 1,
+  });
   await flush();
-  expect(redis.pipeline).not.toHaveBeenCalled();
-});
-
-it("reports a trimmed link set as incomplete", async () => {
-  for (let index = 0; index <= MAX_ACQUISITION_LINKS + 3; index++)
-    recordEgressReviewAcquisition({
-      ...base,
-      chatId: "chat",
-      runId: `run_${index}`,
-      now: 1_000 + index,
-    });
-  await flush();
-  const read = await readAcquisitionLinks(
-    redis as never,
-    "us",
-    "user_1",
-    "sbx_1",
-    0,
-  );
-  // One more than the bound is kept so the reader can see the trim.
-  expect(read.links).toHaveLength(MAX_ACQUISITION_LINKS + 1);
-  expect(read.complete).toBe(false);
-});
-
-it("reports repeated acquisitions by one run beyond the bound as incomplete", async () => {
-  for (let index = 0; index <= MAX_ACQUISITION_LINKS; index++)
-    recordEgressReviewAcquisition({
-      ...base,
-      chatId: "chat",
-      runId: "run_a",
-      now: 1_000 + index,
-    });
-  await flush();
-  const read = await readAcquisitionLinks(
-    redis as never,
-    "us",
-    "user_1",
-    "sbx_1",
-    0,
-  );
-  expect(read.complete).toBe(false);
+  const [[, [key]]] = redis.eval.mock.calls;
+  for (let index = 1; index <= MAX_ACQUISITION_LINKS; index++)
+    redis.zadd(key, 1 + index, `p|c|run_${index}|${1 + index}`);
+  await expect(
+    readAcquisitionLinks(redis as never, "us", "user_1", "sbx_1", 0),
+  ).resolves.toMatchObject({
+    complete: false,
+    incomplete: "trimmed",
+    stored: MAX_ACQUISITION_LINKS + 1,
+  });
+  // A member whose time does not match its score is unreadable, whatever the count.
+  redis.zadd(key, 99, "p|c|run_x|98");
+  await expect(
+    readAcquisitionLinks(redis as never, "us", "user_1", "sbx_1", 0),
+  ).resolves.toMatchObject({ complete: false, incomplete: "invalid" });
 });
 
 it("never reads links stored in the v1 per-run format", async () => {
@@ -197,19 +138,15 @@ it("never reads links stored in the v1 per-run format", async () => {
     .update("user_1\nsbx_1")
     .digest("hex")
     .slice(0, 32)}`;
-  redis
-    .pipeline()
-    .zadd(v1Key, { score: 5_000, member: "p|chat_old|run_old" })
-    .exec();
-  await flush();
+  redis.zadd(v1Key, 5_000, "p|chat_old|run_old");
   await expect(
     readAcquisitionLinks(redis as never, "us", "user_1", "sbx_1", 0),
-  ).resolves.toEqual({ links: [], complete: true });
+  ).resolves.toEqual({ links: [], complete: true, stored: 0 });
 });
 
 it("never delays, throws from, or fails an acquisition when the store is down", async () => {
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-  redis.pipeline.mockImplementationOnce(() => {
+  redis.eval.mockImplementationOnce(() => {
     throw new Error("store down");
   });
   expect(() =>
@@ -218,9 +155,7 @@ it("never delays, throws from, or fails an acquisition when the store is down", 
   // A hung write returns immediately and is abandoned after its budget.
   jest.useFakeTimers();
   try {
-    const chain = sortedSetRedis().pipeline();
-    chain.exec.mockReturnValue(new Promise(() => {}));
-    redis.pipeline.mockReturnValueOnce(chain);
+    redis.eval.mockReturnValueOnce(new Promise(() => {}));
     expect(
       recordEgressReviewAcquisition({ ...base, chatId: "c", runId: "run_b" }),
     ).toBeUndefined();
