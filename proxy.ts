@@ -110,12 +110,18 @@ const UNAUTHENTICATED_PATHS = new Set([
 function getRedirectUri(request: NextRequest): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
     // Keep the branch origin's auth cookie usable by its allowlisted relay.
-    // Never derive a callback from an arbitrary request/forwarded Host value.
+    // Never derive a callback from an arbitrary request/forwarded Host value:
+    // only the branch host, or the one QA alias (PREVIEW_QA_HOST) that the
+    // team points at a Preview deployment, may receive its own callback.
     const branchHost = process.env.VERCEL_BRANCH_URL;
+    const qaHost = process.env.PREVIEW_QA_HOST;
+    const requestHost = request.nextUrl.host;
     const host =
-      branchHost && request.nextUrl.host === branchHost
+      branchHost && requestHost === branchHost
         ? branchHost
-        : process.env.VERCEL_URL;
+        : qaHost && requestHost === qaHost
+          ? qaHost
+          : process.env.VERCEL_URL;
     return `https://${host}/callback`;
   }
   return undefined;
