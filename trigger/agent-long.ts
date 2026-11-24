@@ -3656,6 +3656,7 @@ export const agentLongTask = task({
               paidDailyFreeAllowanceReservation
                 ? createPaidDailyFreeAllowanceBudgetSnapshot(
                     paidDailyFreeAllowanceReservation,
+                    mode,
                   )
                 : null;
             const effectiveBudgetSnapshot =

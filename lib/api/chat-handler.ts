@@ -1298,6 +1298,7 @@ export const createChatHandler = () => {
               paidDailyFreeAllowanceReservation
                 ? createPaidDailyFreeAllowanceBudgetSnapshot(
                     paidDailyFreeAllowanceReservation,
+                    mode,
                   )
                 : null;
             const effectiveBudgetSnapshot =

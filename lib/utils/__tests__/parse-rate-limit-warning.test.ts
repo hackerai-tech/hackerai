@@ -51,6 +51,27 @@ describe("parseRateLimitWarning", () => {
     });
   });
 
+  it("keeps the used amount on mid-stream paid daily allowance updates", () => {
+    const raw = {
+      warningType: "paid-daily-free-allowance",
+      subscription: "pro",
+      mode: "agent",
+      resetTime: "2026-06-30T00:00:00.000Z",
+      costLimitDollars: 0.25,
+      usedDollars: 0.2,
+      midStream: true,
+    };
+    expect(
+      parseRateLimitWarning(raw, { hasUserDismissed: false }),
+    ).toMatchObject({ usedDollars: 0.2, midStream: true });
+    expect(
+      parseRateLimitWarning(
+        { ...raw, usedDollars: -1 },
+        { hasUserDismissed: false },
+      ),
+    ).toBeNull();
+  });
+
   it("rejects paid daily allowance notices for free users", () => {
     expect(
       parseRateLimitWarning(

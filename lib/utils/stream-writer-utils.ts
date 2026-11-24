@@ -229,6 +229,9 @@ export type RateLimitWarningData =
       subscription: SubscriptionTier;
       mode: ChatMode;
       costLimitDollars: number;
+      // Set by mid-stream threshold updates; absent at stream start.
+      usedDollars?: number;
+      midStream?: boolean;
     }
   | {
       // Legacy Pro Agent per-run spend-cap warning.
