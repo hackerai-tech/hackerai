@@ -46,6 +46,7 @@ import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
+import { useUnreadSteerRequeue } from "@/app/hooks/useUnreadSteerRequeue";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
@@ -637,6 +638,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
+    agentSteeringEnabled,
   } = useGlobalState();
   const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
     useState(false);
@@ -2777,6 +2779,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleSendNow,
     handleContinue,
     hasPendingSummarySteer,
+    sendNowReleaseVersion,
   } = useChatHandlers({
     chatId,
     messages,
@@ -2816,6 +2819,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerTabsEnabled,
   });
 
+  const agentRunActive =
+    !!activeTriggerRunId ||
+    !!agentLongRunId ||
+    status === "streaming" ||
+    status === "submitted";
+  const { pendingSteers, recovering: recoveringUnreadSteers } =
+    useUnreadSteerRequeue({
+      chatId,
+      enabled: agentSteeringEnabled && isConvexAuthenticated,
+      // Until the chat loads, an active run is unknown; never withdraw early.
+      runActive: !hasLoadedCurrentChat || agentRunActive,
+    });
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
@@ -2840,10 +2856,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
+      !messageQueue[0].held &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
-      !hasManuallyStoppedRef.current
+      !hasManuallyStoppedRef.current &&
+      !recoveringUnreadSteers
     ) {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
@@ -2882,6 +2900,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    recoveringUnreadSteers,
+    sendNowReleaseVersion,
     hasPendingSummarySteer,
     hasPendingUserWait,
     persistedGoal?.state,
@@ -3241,6 +3261,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     <Messages
                       key={chatId}
                       chatId={chatId}
+                      pendingSteers={agentRunActive ? pendingSteers : undefined}
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}

@@ -1,4 +1,8 @@
 import { memo, useMemo } from "react";
+import {
+  AGENT_STEER_PART_TYPE,
+  isAgentSteerPart,
+} from "@/lib/chat/agent-steer";
 import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { SandboxAttachmentContext } from "./SandboxAttachmentLink";
@@ -232,6 +236,10 @@ export function areMessagePartHandlerPropsEqual(
     nextProps.terminalOutputByToolCallId
   )
     return false;
+
+  if (prevProps.part?.type === AGENT_STEER_PART_TYPE) {
+    return deepEqual(prevProps.part.data, nextProps.part?.data);
+  }
 
   if (prevProps.part?.type === "data-shared-finding") {
     return deepEqual(prevProps.part.data, nextProps.part.data);
@@ -512,6 +520,22 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           toolName={part.type.slice("tool-".length) as FindingHuntToolName}
         />
       );
+
+    case AGENT_STEER_PART_TYPE:
+      // A follow-up the Agent read mid-run, shown where it read it.
+      return isAgentSteerPart(part) ? (
+        <div
+          className="my-2 flex w-full justify-end"
+          data-testid="agent-steer-message"
+        >
+          <div className="max-w-[80%] rounded-[18px] rounded-se-lg border border-border bg-secondary px-4 py-1.5 text-primary-foreground">
+            <div className="text-xs text-muted-foreground">Steer</div>
+            <div className="whitespace-pre-wrap break-words">
+              {part.data.text}
+            </div>
+          </div>
+        </div>
+      ) : null;
 
     case "data-shared-finding":
       return part.data ? (

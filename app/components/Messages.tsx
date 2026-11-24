@@ -198,6 +198,24 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
   }
 };
 
+/**
+ * A steer the running Agent has not read yet, shown where it will land: the
+ * end of the current turn. Once read, it renders inline as a saved part.
+ */
+const PendingSteerBubble = ({ text }: { text: string }) => (
+  <div
+    className="my-2 flex w-full justify-end"
+    data-testid="pending-agent-steer"
+  >
+    <div className="max-w-[80%] rounded-[18px] rounded-se-lg border border-dashed border-border bg-secondary/60 px-4 py-1.5 text-primary-foreground">
+      <div className="text-xs text-muted-foreground" role="status">
+        Steer · waiting to be read
+      </div>
+      <div className="whitespace-pre-wrap break-words opacity-80">{text}</div>
+    </div>
+  </div>
+);
+
 interface MessagesProps {
   chatId: string;
   messages: ChatMessage[];
@@ -244,7 +262,11 @@ interface MessagesProps {
   branchedFromChatTitle?: string;
   anchorMessageId?: string | null;
   contentInsetEndAdjustment?: number;
+  /** Steers sent to the running Agent that it has not read yet. */
+  pendingSteers?: Array<{ id: string; text: string }>;
 }
+
+const EMPTY_PENDING_STEERS: Array<{ id: string; text: string }> = [];
 
 export const Messages = ({
   chatId,
@@ -276,6 +298,7 @@ export const Messages = ({
   branchedFromChatTitle,
   anchorMessageId = null,
   contentInsetEndAdjustment = 0,
+  pendingSteers = EMPTY_PENDING_STEERS,
 }: MessagesProps) => {
   const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
@@ -968,6 +991,7 @@ export const Messages = ({
     status !== "streaming" &&
     (lastAssistantMessageIndex ?? -1) <= (lastUserMessageIndex ?? -1);
   const timelineFooter =
+    pendingSteers.length > 0 ||
     showManualResumeWithoutAssistant ||
     showSummarizationSeparately ||
     uploadStatus?.isUploading ||
@@ -999,6 +1023,9 @@ export const Messages = ({
         {uploadStatus?.isUploading && (
           <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
         )}
+        {pendingSteers.map((steer) => (
+          <PendingSteerBubble key={steer.id} text={steer.text} />
+        ))}
         {shouldShowLoadingDots ? (
           showPendingAgentReasoning ? (
             <PendingAgentReasoning />

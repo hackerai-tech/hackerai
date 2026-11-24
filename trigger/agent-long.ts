@@ -1,4 +1,5 @@
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
+import { convertToModelMessagesWithSteers } from "@/lib/chat/agent-steer-model-messages";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
 import {
   getLatestUserTaskText,
@@ -11,6 +12,8 @@ import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
 import type { GoalJudgment } from "@/lib/goals/contracts";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
+import { createRunSteerInbox } from "@/lib/chat/agent-steer-backend";
+import { isAgentSteeringEnabled } from "@/lib/experiments/agent-steering.server";
 import {
   getGoal,
   goalServiceKey,
@@ -74,7 +77,6 @@ import {
   type UIMessageStreamWriter,
   UIMessage,
   type ToolSet,
-  convertToModelMessages,
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import {
@@ -4304,6 +4306,22 @@ export const agentLongTask = task({
                   }
                 : null;
 
+            // Only rollout users can send steers; others skip the per-step read.
+            const steerInbox = (await isAgentSteeringEnabled(userId, posthog))
+              ? createRunSteerInbox({
+                  userId,
+                  chatId,
+                  runId: ctx.run.id,
+                  onError: (error) =>
+                    triggerLogger.warn("[agent-long] steer claim failed", {
+                      event: "agent_steer_claim_failed",
+                      chatId,
+                      runId: ctx.run.id,
+                      error_name:
+                        error instanceof Error ? error.name : "UnknownError",
+                    }),
+                })
+              : undefined;
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               runtimeCheckpoint,
@@ -4311,6 +4329,7 @@ export const agentLongTask = task({
               browserHandoffGoalObjective: activeGoal?.objective,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
+              steerInbox,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
@@ -5672,14 +5691,15 @@ export const agentLongTask = task({
                               chatId,
                               userId,
                               triggerRunId: ctx.run.id,
-                              message:
+                              message: summarizationTracker.withSteerParts(
                                 loopContinuation &&
-                                message.id === loopRecoverySourceMessageId
+                                  message.id === loopRecoverySourceMessageId
                                   ? markLoopRecoveryCheckpoint(
                                       message,
                                       retryMessageId,
                                     )
                                   : message,
+                              ),
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
                               mode,
@@ -5829,14 +5849,16 @@ export const agentLongTask = task({
                                     nextRecoveryMessages
                                   ) {
                                     try {
-                                      const raw = await convertToModelMessages(
-                                        nextRecoveryMessages,
-                                        {
-                                          tools: createPromptSerializationTools(
-                                            streamCtx.tools,
-                                          ),
-                                        },
-                                      );
+                                      const raw =
+                                        await convertToModelMessagesWithSteers(
+                                          nextRecoveryMessages,
+                                          {
+                                            tools:
+                                              createPromptSerializationTools(
+                                                streamCtx.tools,
+                                              ),
+                                          },
+                                        );
                                       const projected =
                                         restoreProviderRecoveryContext(
                                           state.providerRecoveryContext,
@@ -5912,7 +5934,10 @@ export const agentLongTask = task({
                                         chatId,
                                         userId,
                                         triggerRunId: ctx.run.id,
-                                        message,
+                                        message:
+                                          summarizationTracker.withSteerParts(
+                                            message,
+                                          ),
                                         extraFileIds: preservedFileIds,
                                         model:
                                           trackedProvider.languageModel(

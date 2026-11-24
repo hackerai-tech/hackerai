@@ -24,6 +24,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 
 interface QueuedMessagesPanelProps {
   messages: QueuedMessage[];
+  agentSteeringEnabled?: boolean;
   onSendNow: (messageId: string) => void;
   onEdit: (messageId: string, text: string) => void;
   onEditingMessageChange: (messageId: string | null) => void;
@@ -36,6 +37,7 @@ interface QueuedMessagesPanelProps {
 interface QueuedMessageMenuProps {
   message: QueuedMessage;
   queueBehavior: QueueBehavior;
+  agentSteeringEnabled: boolean;
   onEdit: () => void;
   onQueueBehaviorChange?: (behavior: QueueBehavior) => void;
 }
@@ -45,6 +47,7 @@ interface QueuedMessageRowProps {
   isEditing: boolean;
   isStreaming: boolean;
   queueBehavior: QueueBehavior;
+  agentSteeringEnabled: boolean;
   onSendNow: (messageId: string) => void;
   onEdit: (messageId: string, text: string) => void;
   onStartEditing: (messageId: string) => void;
@@ -56,11 +59,17 @@ interface QueuedMessageRowProps {
 const QueuedMessageMenu = ({
   message,
   queueBehavior,
+  agentSteeringEnabled,
   onEdit,
   onQueueBehaviorChange,
 }: QueuedMessageMenuProps) => {
   const toggleQueueBehavior = () => {
-    const nextBehavior = queueBehavior === "queue" ? "stop-and-send" : "queue";
+    const nextBehavior =
+      queueBehavior !== "queue"
+        ? "queue"
+        : agentSteeringEnabled
+          ? "steer"
+          : "stop-and-send";
     onQueueBehaviorChange?.(nextBehavior);
   };
 
@@ -103,6 +112,7 @@ const QueuedMessageRow = ({
   isEditing,
   isStreaming,
   queueBehavior,
+  agentSteeringEnabled,
   onSendNow,
   onEdit,
   onStartEditing,
@@ -206,6 +216,16 @@ const QueuedMessageRow = ({
                 {message.text}
               </div>
             )}
+            {message.held && !message.deliveryStatus && (
+              <div
+                className="text-xs text-muted-foreground mt-0.5"
+                role="status"
+              >
+                {message.fromSteer
+                  ? "Unread by the Agent. Send it when you are ready."
+                  : "Queued earlier. Send it when you are ready."}
+              </div>
+            )}
             {message.deliveryStatus && (
               <div
                 className="text-xs text-muted-foreground mt-0.5"
@@ -241,7 +261,9 @@ const QueuedMessageRow = ({
               message.deliveryStatus && message.deliveryStatus !== "sending"
                 ? "Check for an active run before retrying this message"
                 : isStreaming
-                  ? "Stop the current response and steer with this message"
+                  ? agentSteeringEnabled && !message.files?.length
+                    ? "Send this message to the Agent before its next step"
+                    : "Stop the current response and steer with this message"
                   : "Send this queued message now"
             }
           >
@@ -266,6 +288,7 @@ const QueuedMessageRow = ({
           <QueuedMessageMenu
             message={message}
             queueBehavior={queueBehavior}
+            agentSteeringEnabled={agentSteeringEnabled}
             onEdit={startEditing}
             onQueueBehaviorChange={onQueueBehaviorChange}
           />
@@ -285,6 +308,7 @@ const QueuedMessageRow = ({
 
 export const QueuedMessagesPanel = ({
   messages,
+  agentSteeringEnabled = false,
   onSendNow,
   onEdit,
   onEditingMessageChange,
@@ -313,6 +337,7 @@ export const QueuedMessagesPanel = ({
       isEditing={editingMessageId === message.id}
       isStreaming={isStreaming}
       queueBehavior={queueBehavior}
+      agentSteeringEnabled={agentSteeringEnabled}
       onSendNow={onSendNow}
       onEdit={onEdit}
       onStartEditing={setEditingMessage}

@@ -1,4 +1,5 @@
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
+import { createAgentSteerInbox } from "@/lib/chat/agent-steer";
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
@@ -2873,6 +2874,117 @@ describe("createAgentStream repeated compaction", () => {
       role: "user",
       content: "I selected the XSS lab. Continue from here.",
     });
+  });
+
+  it("adds a steer to the next request after the tool it followed and keeps it on later steps", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Scan it")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const steer = { id: "steer-1", text: "Use the staging host" };
+    const claim = jest
+      .fn<Promise<Array<{ id: string; text: string }>>, []>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([steer])
+      .mockResolvedValue([]);
+    const writer = { write: jest.fn() };
+    const recordSteer = jest.fn();
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        steerInbox: createAgentSteerInbox({ claim }),
+        writer,
+        usageTracker: {},
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSteer,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const toolCall: ModelMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "scan-1",
+          toolName: "run_terminal_cmd",
+          input: { command: "nmap prod" },
+        },
+      ],
+    };
+    const toolResult: ModelMessage = {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "scan-1",
+          toolName: "run_terminal_cmd",
+          output: { type: "text", value: "done" },
+        },
+      ],
+    };
+    const initial: ModelMessage[] = [{ role: "user", content: "Scan it" }];
+    await stream.prepareStep({ steps: [], messages: initial });
+    const afterTool = await stream.prepareStep({
+      steps: [{ toolCalls: [{ toolCallId: "scan-1" }] }],
+      stepNumber: 1,
+      messages: [...initial, toolCall, toolResult],
+    });
+
+    expect(afterTool.messages.at(-1)).toEqual({
+      role: "user",
+      content: "Use the staging host",
+    });
+    expect(writer.write).toHaveBeenCalledWith({
+      type: "data-agent-steer",
+      id: "steer-1",
+      data: steer,
+    });
+    expect(recordSteer).toHaveBeenCalledWith(steer, "scan-1");
+
+    // The SDK does not retain prepareStep messages; the steer stays in place.
+    const reply: ModelMessage = {
+      role: "assistant",
+      content: "Switching to staging.",
+    };
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 2,
+      messages: [...initial, toolCall, toolResult, reply],
+    });
+    expect(next.messages.slice(-2)).toEqual([
+      { role: "user", content: "Use the staging host" },
+      reply,
+    ]);
+    expect(writer.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves new steers unread once the run is stopping", async () => {
+    const controller = new AbortController();
+    const claim = jest.fn(async () => [{ id: "late", text: "Also check X" }]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        abortController: controller,
+        steerInbox: createAgentSteerInbox({ claim }),
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Scan it")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    controller.abort();
+    await stream
+      .prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Scan it" }],
+      })
+      .catch(() => undefined);
+    expect(claim).not.toHaveBeenCalled();
   });
 
   it("keeps a handoff note after its screenshot when older images are elided", async () => {

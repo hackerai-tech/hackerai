@@ -630,6 +630,10 @@ export interface ExtraUsageConfig {
 
 export interface QueuedMessage {
   deliveryStatus?: "sending" | "failed" | "active";
+  /** A steer the Agent never read, returned after its run ended. */
+  fromSteer?: boolean;
+  /** Waits for the user to send it; automatic delivery stops at it. */
+  held?: boolean;
   firstAttemptAt?: number;
   id: string;
   text: string;
@@ -637,7 +641,8 @@ export interface QueuedMessage {
   timestamp: number;
 }
 
-export type QueueBehavior = "queue" | "stop-and-send";
+/** What sending does while an Agent run is working. */
+export type QueueBehavior = "steer" | "queue" | "stop-and-send";
 
 /**
  * Persisted sandbox selection: legacy `e2b` means any managed cloud sandbox,

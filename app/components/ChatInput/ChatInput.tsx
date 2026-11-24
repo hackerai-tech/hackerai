@@ -357,6 +357,7 @@ const ChatInputContent = ({
     removeQueuedMessage,
     queueBehavior,
     setQueueBehavior,
+    agentSteeringEnabled,
     sandboxPreference,
     setSandboxPreference,
     selectedModel,
@@ -1570,6 +1571,7 @@ const ChatInputContent = ({
               {messageQueue.length > 0 && !isWaitingForReply && (
                 <QueuedMessagesPanel
                   messages={messageQueue}
+                  agentSteeringEnabled={agentSteeringEnabled}
                   onSendNow={onSendNow}
                   onEdit={updateQueuedMessage}
                   onEditingMessageChange={setEditingQueuedMessageId}

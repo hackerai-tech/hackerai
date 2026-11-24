@@ -3,6 +3,8 @@ import {
   createChatHistoryAccess,
   ensureChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
+import { retireSavedSteers, withoutWithdrawnSteers } from "./lib/agentSteers";
+import { retireQueuedMessage } from "./lib/queuedMessages";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
@@ -806,7 +808,14 @@ export const saveMessage = mutation({
               ]),
             )
           : args.fileIds;
-      const partsForSave = args.parts;
+      const partsForSave =
+        args.role === "assistant"
+          ? await withoutWithdrawnSteers(ctx, {
+              chatId: args.chatId,
+              userId: args.userId,
+              parts: args.parts,
+            })
+          : args.parts;
 
       failureStage = "find_existing_message";
       const existingMessage = await ctx.db
@@ -964,8 +973,22 @@ export const saveMessage = mutation({
           patch.update_time = Date.now();
           failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
+          if (patch.parts && args.role === "assistant")
+            await retireSavedSteers(ctx, {
+              chatId: args.chatId,
+              userId: args.userId,
+              parts: patch.parts as unknown[],
+            });
         }
 
+        // A queued message is sent with its queue ID as the user message ID.
+        // Its user message exists, so no tab or device may send it again.
+        if (existingMessage.role === "user")
+          await retireQueuedMessage(ctx, {
+            id: args.id,
+            chatId: args.chatId,
+            userId: args.userId,
+          });
         return null;
       } else {
         // updateOnly: only patch existing messages, don't create new ones.
@@ -1081,6 +1104,19 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+      if (args.role === "assistant")
+        await retireSavedSteers(ctx, {
+          chatId: args.chatId,
+          userId: args.userId,
+          parts: partsForSave,
+        });
+      // Retired with the insert that saves its user message (see above).
+      if (args.role === "user")
+        await retireQueuedMessage(ctx, {
+          id: args.id,
+          chatId: args.chatId,
+          userId: args.userId,
+        });
 
       // Give an admitted legacy chat stable history ownership so its history
       // pages stop depending on chat status writes. Deleting chats are skipped;
@@ -1521,15 +1557,21 @@ export const saveAssistantMessage = mutation({
         throw new Error("Chat not found");
       }
 
-      // Save parts as-is - fixing happens at read time in chat-processor.ts
-      const content = extractTextFromParts(args.parts);
+      // Save parts as-is - fixing happens at read time in chat-processor.ts,
+      // except a steer the client already withdrew back to its queue.
+      const parts = await withoutWithdrawnSteers(ctx, {
+        chatId: args.chatId,
+        userId: user.subject,
+        parts: args.parts,
+      });
+      const content = extractTextFromParts(parts);
 
       const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
-        parts: args.parts,
+        parts,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -1561,6 +1603,12 @@ export const saveAssistantMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+      if (args.role === "assistant")
+        await retireSavedSteers(ctx, {
+          chatId: args.chatId,
+          userId: user.subject,
+          parts,
+        });
 
       return null;
     } catch (error) {

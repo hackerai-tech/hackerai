@@ -783,3 +783,42 @@ describe("completed report activity labels", () => {
     );
   });
 });
+
+describe("steer parts in Agent work", () => {
+  it("keeps a read steer in the timeline between the tools it separated", () => {
+    const first = part("tool-shell", {
+      toolCallId: "call-1",
+      state: "output-available",
+    });
+    const steer = part("data-agent-steer", {
+      id: "steer-1",
+      data: { id: "steer-1", text: "Use staging" },
+    });
+    const second = part("tool-shell", {
+      toolCallId: "call-2",
+      state: "output-available",
+    });
+    const parts = [
+      part("step-start"),
+      first,
+      steer,
+      part("step-start"),
+      second,
+      part("text", { text: "done" }),
+    ];
+    const { workPartIndexes } = splitWorkedForParts(parts);
+    const projection = projectAgentWorkParts(parts, workPartIndexes);
+    expect(projection.activities.map(({ part: p }) => p)).toEqual([
+      first,
+      steer,
+      second,
+    ]);
+    const items = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: true,
+      parts,
+      workPartIndexes,
+    });
+    expect(JSON.stringify(items)).toContain("Use staging");
+  });
+});
