@@ -144,9 +144,12 @@ export type AgentSteerInbox = {
 export function createAgentSteerInbox({
   claim,
   onError,
+  onClaimed,
 }: {
   claim: () => Promise<AgentSteer[]>;
   onError?: (error: unknown) => void;
+  /** Steers newly handed to the Agent, for analytics. */
+  onClaimed?: (steers: AgentSteer[]) => void;
 }): AgentSteerInbox {
   const delivered: AgentSteer[] = [];
   return {
@@ -156,6 +159,13 @@ export function createAgentSteerInbox({
           (steer) => !delivered.some((existing) => existing.id === steer.id),
         );
         delivered.push(...claimed);
+        if (claimed.length) {
+          try {
+            onClaimed?.(claimed);
+          } catch {
+            // Reporting must not affect the model step.
+          }
+        }
         return claimed;
       } catch (error) {
         try {

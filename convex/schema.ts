@@ -2387,6 +2387,9 @@ export default defineSchema({
     /** A steer the Agent never read, returned here after its run ended. */
     from_steer: v.optional(v.boolean()),
     created_at: v.number(),
+    /** Set while the server sends it after the run that claimed it. */
+    dispatch_claimed_at: v.optional(v.number()),
+    dispatch_run_id: v.optional(v.string()),
   })
     .index("by_queued_id", ["id"])
     .index("by_chat_and_sent", ["chat_id", "sent_at"]),

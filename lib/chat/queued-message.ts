@@ -6,6 +6,12 @@ export const QUEUED_MESSAGE_MAX_COUNT = 10;
 // Well inside Convex's 1 MiB document limit even for multi-byte text.
 export const QUEUED_MESSAGE_MAX_TEXT_LENGTH = 200_000;
 
+/**
+ * How long a server send owns a queued message. A dispatcher that dies
+ * mid-start releases it after this, so it never stays "Sending" forever.
+ */
+export const QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS = 2 * 60 * 1000;
+
 export const isValidQueuedMessageId = (id: string) =>
   /^[A-Za-z0-9_-]{1,64}$/.test(id);
 

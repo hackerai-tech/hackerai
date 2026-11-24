@@ -6,6 +6,7 @@ type Row = {
   sentAt: number;
   fromSteer: boolean;
   files?: unknown[];
+  dispatchClaimedAt?: number;
 };
 let mockRows: Row[] | undefined;
 const mockEnqueue = jest.fn<Promise<null>, [Record<string, unknown>]>();
@@ -260,5 +261,66 @@ describe("useServerMessageQueue", () => {
     await waitFor(() =>
       expect(result.current.messageQueue.map((item) => item.id)).toEqual([id]),
     );
+  });
+
+  it("shows a server send, and stops showing it when its claim expires", () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(100_000);
+      mockRows = [
+        {
+          id: "a",
+          text: "Sent by the server",
+          sentAt: 1,
+          fromSteer: false,
+          dispatchClaimedAt: 100_000,
+        },
+      ];
+      const { result } = render();
+      expect(result.current.messageQueue[0]).toEqual(
+        expect.objectContaining({ dispatching: true, onServer: true }),
+      );
+      // The dispatcher died: nothing writes the row again.
+      act(() => {
+        jest.advanceTimersByTime(2 * 60 * 1000 + 100);
+      });
+      expect(result.current.messageQueue[0].dispatching).toBeUndefined();
+      // An expired lease schedules nothing more: no refresh loop.
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("still clears Sending when the claim expires between render and effect", () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(100_000 + 2 * 60 * 1000 - 1);
+      mockRows = [
+        {
+          id: "a",
+          text: "Sent by the server",
+          sentAt: 1,
+          fromSteer: false,
+          dispatchClaimedAt: 100_000,
+        },
+      ];
+      // The render sees a live claim; by the effect, the lease has ended.
+      const realNow = Date.now;
+      let calls = 0;
+      jest
+        .spyOn(Date, "now")
+        .mockImplementation(() => (calls++ === 0 ? realNow() : realNow() + 10));
+      const { result } = render();
+      expect(result.current.messageQueue[0].dispatching).toBe(true);
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(result.current.messageQueue[0].dispatching).toBeUndefined();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.restoreAllMocks();
+      jest.useRealTimers();
+    }
   });
 });
