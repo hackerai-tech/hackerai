@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  unreadableListDiagnostics,
+  filesystemListDiagnostics,
   WORKSPACE_READER_PYTHON,
   workspaceReaderCommand,
   workspaceRequest,
@@ -67,6 +67,60 @@ describe("workspace reader filesystem boundary", () => {
     expect(JSON.parse(output)).toMatchObject({
       root,
       entries: [{ name: "report.txt", kind: "file", size: 7 }],
+    });
+  });
+
+  it("opens the filesystem root and roots written with repeated separators", () => {
+    mkdirSync(join(root, "reports"));
+    writeFileSync(join(root, "reports", "report.txt"), "fixture");
+    const request = workspaceRequest.parse({
+      chatId: "chat",
+      action: "list",
+      search: "tmp",
+    });
+    const fromSlash = JSON.parse(
+      execFileSync("sh", ["-c", workspaceReaderCommand(request, null)], {
+        cwd: "/",
+        encoding: "utf8",
+      }),
+    );
+    const rootListing = {
+      root: "/",
+      entries: expect.arrayContaining([
+        expect.objectContaining({ name: "tmp" }),
+      ]),
+    };
+    expect(fromSlash).toMatchObject(rootListing);
+    root = "/";
+    expect(read({ search: "tmp" })).toMatchObject(rootListing);
+    root = `/${fixture}//workspace/`;
+    expect(read({ path: "reports" }).entries).toEqual([
+      expect.objectContaining({ name: "report.txt", kind: "file", size: 7 }),
+    ]);
+  });
+
+  it("labels a missing root separately from a missing nested folder", () => {
+    const missing = { error: "not_found", category: "missing" };
+    expect(read({ path: "gone" })).toEqual({ ...missing, phase: "directory" });
+    // Non-list actions keep the original reader body.
+    expect(read({ action: "download", path: "gone/report.txt" })).toEqual({
+      error: "not_found",
+    });
+    root = join(fixture, "moved");
+    expect(read({})).toEqual({ ...missing, phase: "root" });
+  });
+
+  it("reports a deleted current directory as a missing root", () => {
+    const request = workspaceRequest.parse({ chatId: "chat", action: "list" });
+    const output = execFileSync(
+      "sh",
+      ["-c", `rmdir "$PWD" && ${workspaceReaderCommand(request, null)}`],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(JSON.parse(output)).toEqual({
+      error: "not_found",
+      phase: "root",
+      category: "missing",
     });
   });
 
@@ -183,9 +237,21 @@ describe("workspace reader filesystem boundary", () => {
       { reader: "local" },
     ],
     [
+      "a missing list folder",
+      "list",
+      { error: "not_found", phase: "root", category: "missing" },
+      { reader: "local", reader_phase: "root", os_error_category: "missing" },
+    ],
+    [
       "another error code",
       "list",
-      { error: "not_found", phase: "root", category: "permission" },
+      { error: "file_changed", phase: "root", category: "missing" },
+      undefined,
+    ],
+    [
+      "a malformed error code",
+      "list",
+      { error: { toString: "not_found" }, phase: "root", category: "missing" },
       undefined,
     ],
     [
@@ -194,11 +260,17 @@ describe("workspace reader filesystem boundary", () => {
       { error: "unreadable_path", phase: "root", category: "permission" },
       undefined,
     ],
+    [
+      "a missing file preview",
+      "preview",
+      { error: "not_found", phase: "directory", category: "missing" },
+      undefined,
+    ],
     ["non-object output", "list", "unreadable_path", undefined],
   ] as const)(
     "keeps only closed list diagnostics for %s",
     (_case, action, output, expected) => {
-      expect(unreadableListDiagnostics("local", action, output)).toEqual(
+      expect(filesystemListDiagnostics("local", action, output)).toEqual(
         expected,
       );
     },

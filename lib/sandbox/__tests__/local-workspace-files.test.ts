@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import { accessLocalWorkspaceFiles } from "../local-workspace-files";
 import { workspaceRequest } from "../workspace-files";
 const query = jest.fn();
@@ -168,6 +169,41 @@ it("labels an unreadable Local list root as the local reader only for list", asy
     expect(status).toMatchObject({ code: "unreadable_path", status: 400 });
     expect(status.diagnostics).toBeUndefined();
     expect(close).toHaveBeenCalledTimes(2);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+it("lets the reader diagnose a moved linked folder instead of using it as the relay cwd", async () => {
+  const fixture = realpathSync(
+    mkdtempSync(join(tmpdir(), "local-workspace-moved-")),
+  );
+  try {
+    // Like the relay, spawn in the sandbox working directory when one is set;
+    // a missing folder there fails before Python can run.
+    run.mockImplementation(async (command: string) => ({
+      exitCode: 0,
+      stdout: execFileSync("sh", ["-c", command], {
+        encoding: "utf8",
+        cwd: jest.mocked(CentrifugoSandbox).mock.calls[0][3] ?? fixture,
+      }),
+    }));
+    const error = await accessLocalWorkspaceFiles(
+      "owner",
+      "environment:machine",
+      input({ sandboxId: "session" }),
+      join(fixture, "moved-project"),
+    ).catch((failure) => failure);
+    expect(error).toMatchObject({
+      code: "not_found",
+      status: 400,
+      diagnostics: {
+        reader: "local",
+        reader_phase: "root",
+        os_error_category: "missing",
+      },
+    });
+    expect(close).toHaveBeenCalled();
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

@@ -4,7 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { resolveEnvironmentConnection } from "./environment";
 import { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import {
-  unreadableListDiagnostics,
+  filesystemListDiagnostics,
   workspaceReaderCommand,
   WorkspaceFileError,
   type WorkspaceRequest,
@@ -100,11 +100,13 @@ export async function accessLocalWorkspaceFiles(
     throw new WorkspaceFileError("workspace_changed", 409);
   if (connection.osInfo?.platform === "win32")
     return { state: "unsupported" as const, environmentLabel: connection.name };
+  // The saved root is only the reader's argument, never the relay cwd: a moved
+  // folder would otherwise fail spawn before the reader can report not_found.
   const sandbox = new CentrifugoSandbox(
     userId,
     connection,
     { wsUrl, tokenSecret },
-    root,
+    undefined,
     undefined,
     input.chatId,
   );
@@ -139,7 +141,7 @@ export async function accessLocalWorkspaceFiles(
       throw new WorkspaceFileError(
         allowed.includes(parsed.error) ? parsed.error : "workspace_unavailable",
         undefined,
-        unreadableListDiagnostics("local", input.action, parsed),
+        filesystemListDiagnostics("local", input.action, parsed),
       );
     }
     const validated = (

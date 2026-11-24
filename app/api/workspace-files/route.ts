@@ -202,7 +202,8 @@ function describeFailure(error: unknown, stage: Stage): Rejection {
   }
   if (error instanceof WorkspaceFileError)
     return {
-      // Allow-listed by unreadableListDiagnostics; present only for list unreadable_path.
+      // Allow-listed by filesystemListDiagnostics; present only for reader list
+      // not_found/unreadable_path, never auth or sandbox lookup failures.
       ...error.diagnostics,
       reason: "workspace_file_error",
       stage,
