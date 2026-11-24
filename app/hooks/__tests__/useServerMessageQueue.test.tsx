@@ -397,8 +397,9 @@ describe("useServerMessageQueue", () => {
     }
   });
 
-  it("never retries a write that grants full access", async () => {
-    // A late retry could replace a stricter choice saved on another device.
+  it("retries a failed full-access write only as a hold on unattended sends", async () => {
+    // A late full-access retry could replace a stricter choice saved on
+    // another device. A sandbox change under full access must still land.
     jest.useFakeTimers();
     try {
       mockApplySettings.mockRejectedValueOnce(new Error("offline"));
@@ -413,17 +414,36 @@ describe("useServerMessageQueue", () => {
         {
           initialProps: {
             settings: {
-              agentPermissionMode: "ask_approval" as
+              agentPermissionMode: "full_access" as
                 "ask_approval" | "full_access",
+              sandboxPreference: "e2b",
             },
           },
         },
       );
-      rerender({ settings: { agentPermissionMode: "full_access" } });
+      rerender({
+        settings: {
+          agentPermissionMode: "full_access",
+          sandboxPreference: "desktop",
+        },
+      });
       await act(async () => {
         await jest.advanceTimersByTimeAsync(60_000);
       });
-      expect(mockApplySettings).toHaveBeenCalledTimes(1);
+      expect(mockApplySettings.mock.calls.map(([args]) => args)).toEqual([
+        {
+          settings: {
+            agentPermissionMode: "full_access",
+            sandboxPreference: "desktop",
+          },
+        },
+        {
+          settings: {
+            agentPermissionMode: "ask_approval",
+            sandboxPreference: "desktop",
+          },
+        },
+      ]);
     } finally {
       jest.useRealTimers();
     }

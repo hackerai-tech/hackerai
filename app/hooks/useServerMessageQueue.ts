@@ -96,20 +96,25 @@ export function useServerMessageQueue({
   // Messages already waiting follow a settings change, so a server send never
   // uses a permission mode or sandbox the user has since switched away from.
   // Mounting sends nothing: another device's choice stays until this one
-  // queues, steers or changes a setting. A failed write that restricts
-  // unattended work is retried until it lands or a newer choice replaces it.
-  // One that grants full access is not: a late retry could replace a stricter
-  // choice saved on another device since, and without it queued messages
-  // simply wait for the browser.
+  // queues, steers or changes a setting. A failed write is retried until it
+  // lands or a newer choice replaces it. A retry never grants full access: a
+  // late one could replace a stricter choice saved on another device since.
+  // It holds unattended sends instead, so queued messages wait for the
+  // browser, which sends them with its current settings.
   const settingsKey = settings ? JSON.stringify(settings) : "";
   const requestedSettingsKey = useRef<string | null>(settingsKey);
+  const heldSettingsKey = useRef<string | null>(null);
   const settingsFailures = useRef(0);
   const [settingsRetry, setSettingsRetry] = useState(0);
   useEffect(() => {
     if (!enabled || !userId || !settings) return;
     if (requestedSettingsKey.current === settingsKey) return;
     requestedSettingsKey.current = settingsKey;
-    applySettings({ settings }).then(
+    const sent =
+      heldSettingsKey.current === settingsKey
+        ? { ...settings, agentPermissionMode: "ask_approval" as const }
+        : settings;
+    applySettings({ settings: sent }).then(
       () => {
         if (requestedSettingsKey.current === settingsKey)
           settingsFailures.current = 0;
@@ -118,7 +123,8 @@ export function useServerMessageQueue({
         console.warn("Could not update queued message settings", error);
         // A newer choice was already sent; it supersedes this one.
         if (requestedSettingsKey.current !== settingsKey) return;
-        if (settings.agentPermissionMode === "full_access") return;
+        if (sent.agentPermissionMode === "full_access")
+          heldSettingsKey.current = settingsKey;
         requestedSettingsKey.current = null;
         const delay = Math.min(
           SETTINGS_RETRY_MAX_MS,
