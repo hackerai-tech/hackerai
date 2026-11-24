@@ -10,7 +10,14 @@
 //! with this process, so a crash cannot leave the computer awake. Failing to
 //! acquire the lock is logged and retried with backoff; it never affects the
 //! Agent operation that asked for it.
+//!
+//! People can turn this off per device in Settings. Turning it off releases a
+//! held lock at once; turning it back on applies to Agent work still running.
 
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +28,9 @@ const FIRST_RETRY: Duration = Duration::from_secs(5);
 const MAX_RETRY: Duration = Duration::from_secs(5 * 60);
 /// Bounds app exit's wait for the lock to be released.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(1);
+/// This device's choice, kept in app data so it never syncs to the account.
+const PREFERENCE_FILE: &str = "keep-awake.json";
+const PREFERENCE_MAX_BYTES: u64 = 256;
 
 /// The OS mechanism. Every call happens on the controller's own thread, which
 /// Windows requires because its execution state belongs to the calling thread.
@@ -49,6 +59,7 @@ struct Controller<L> {
     held: bool,
     failures: u32,
     retry_at: Option<Instant>,
+    enabled: bool,
 }
 
 impl<L: SleepLock> Controller<L> {
@@ -61,7 +72,22 @@ impl<L: SleepLock> Controller<L> {
             held: false,
             failures: 0,
             retry_at: None,
+            enabled: true,
         }
+    }
+
+    /// Activity keeps being counted while off, so turning this back on during
+    /// a running command acquires the lock without waiting for new activity.
+    fn set_enabled(&mut self, enabled: bool, now: Instant) -> Option<Instant> {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            if !enabled && self.held {
+                self.lock.release();
+                self.held = false;
+                log::info!("Desktop keep-awake released because it was turned off");
+            }
+        }
+        self.reconcile(now)
     }
 
     fn begin(&mut self, now: Instant) -> Option<Instant> {
@@ -87,7 +113,8 @@ impl<L: SleepLock> Controller<L> {
     }
 
     fn wanted(&self, now: Instant) -> bool {
-        self.active > 0 || self.idle_deadline().is_some_and(|deadline| now < deadline)
+        self.enabled
+            && (self.active > 0 || self.idle_deadline().is_some_and(|deadline| now < deadline))
     }
 
     /// Acquire or release as activity requires; returns the next wake time.
@@ -169,6 +196,7 @@ enum Message {
     Begin,
     End,
     Touch,
+    SetEnabled(bool),
     Shutdown(mpsc::Sender<()>),
 }
 
@@ -191,6 +219,7 @@ fn drive<L: SleepLock>(mut controller: Controller<L>, messages: mpsc::Receiver<M
             Some(Message::Begin) => controller.begin(now),
             Some(Message::End) => controller.end(now),
             Some(Message::Touch) => controller.touch(now),
+            Some(Message::SetEnabled(enabled)) => controller.set_enabled(enabled, now),
             Some(Message::Shutdown(done)) => {
                 controller.shutdown();
                 let _ = done.send(());
@@ -205,6 +234,8 @@ fn drive<L: SleepLock>(mut controller: Controller<L>, messages: mpsc::Receiver<M
 /// App-managed handle. Sends never block an Agent operation.
 pub(crate) struct KeepAwake {
     messages: mpsc::Sender<Message>,
+    enabled: AtomicBool,
+    preference_dir: Option<PathBuf>,
 }
 
 /// Agent activity in progress; ending it starts the idle grace.
@@ -217,8 +248,13 @@ impl Drop for Activity<'_> {
 }
 
 impl KeepAwake {
-    pub(crate) fn start() -> Self {
-        Self::start_with(platform::lock, IDLE_GRACE)
+    /// Starts with this device's saved choice; on by default.
+    pub(crate) fn start(preference_dir: Option<PathBuf>) -> Self {
+        let enabled = preference_dir.as_deref().is_none_or(read_preference);
+        let mut keep_awake = Self::start_with(platform::lock, IDLE_GRACE);
+        keep_awake.preference_dir = preference_dir;
+        keep_awake.apply(enabled);
+        keep_awake
     }
 
     /// The lock is created on the controller thread, which owns it for life.
@@ -235,7 +271,45 @@ impl KeepAwake {
             // The receiver is gone, so every later send is a silent no-op.
             log::warn!("Desktop keep-awake unavailable (thread_spawn_failed)");
         }
-        Self { messages }
+        Self {
+            messages,
+            enabled: AtomicBool::new(true),
+            preference_dir: None,
+        }
+    }
+
+    /// A handle saving to `preference_dir` whose lock does nothing.
+    #[cfg(test)]
+    pub(crate) fn start_for_test(preference_dir: PathBuf) -> Self {
+        struct NoLock;
+        impl SleepLock for NoLock {
+            fn acquire(&mut self) -> Result<(), &'static str> {
+                Ok(())
+            }
+            fn release(&mut self) {}
+        }
+        let mut keep_awake = Self::start_with(|| NoLock, IDLE_GRACE);
+        keep_awake.apply(read_preference(&preference_dir));
+        keep_awake.preference_dir = Some(preference_dir);
+        keep_awake
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// Saves this device's choice, then applies it. An unsaved choice is not
+    /// applied, so the setting never shows a value the next launch would lose.
+    pub(crate) fn set_enabled(&self, enabled: bool) -> Result<(), &'static str> {
+        let directory = self.preference_dir.as_deref().ok_or("unavailable")?;
+        write_preference(directory, enabled)?;
+        self.apply(enabled);
+        Ok(())
+    }
+
+    fn apply(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        let _ = self.messages.send(Message::SetEnabled(enabled));
     }
 
     pub(crate) fn activity(&self) -> Activity<'_> {
@@ -255,6 +329,74 @@ impl KeepAwake {
             let _ = finished.recv_timeout(SHUTDOWN_WAIT);
         }
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Preference {
+    enabled: bool,
+}
+
+/// A missing, linked, oversized or unreadable file keeps the default (on).
+fn read_preference(directory: &Path) -> bool {
+    let path = directory.join(PREFERENCE_FILE);
+    fs::symlink_metadata(&path)
+        .ok()
+        .filter(|metadata| metadata.is_file() && metadata.len() <= PREFERENCE_MAX_BYTES)
+        .and_then(|_| fs::read(&path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Preference>(&bytes).ok())
+        .is_none_or(|preference| preference.enabled)
+}
+
+fn write_preference(directory: &Path, enabled: bool) -> Result<(), &'static str> {
+    fs::create_dir_all(directory).map_err(|_| "save_failed")?;
+    let temporary = directory.join(format!(".keep-awake-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&serde_json::to_vec(&Preference { enabled })?)?;
+        file.sync_all()?;
+        fs::rename(&temporary, directory.join(PREFERENCE_FILE))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|_| "save_failed")
+}
+
+const UNAVAILABLE: &str = "Keep awake is unavailable for this page";
+
+#[tauri::command]
+pub(crate) fn get_keep_awake_enabled<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    keep_awake: tauri::State<'_, KeepAwake>,
+) -> Result<bool, String> {
+    if !crate::notifications::is_trusted_webview(&webview) {
+        return Err(UNAVAILABLE.into());
+    }
+    Ok(keep_awake.enabled())
+}
+
+/// Returns the value now in effect.
+#[tauri::command]
+pub(crate) fn set_keep_awake_enabled<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
+    keep_awake: tauri::State<'_, KeepAwake>,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !crate::notifications::is_trusted_webview(&webview) {
+        return Err(UNAVAILABLE.into());
+    }
+    keep_awake.set_enabled(enabled).map_err(|class| {
+        log::warn!("Desktop keep-awake setting not saved ({class})");
+        "Could not save this setting. Try again.".to_string()
+    })?;
+    log::info!(
+        "Desktop keep-awake turned {}",
+        if enabled { "on" } else { "off" }
+    );
+    Ok(keep_awake.enabled())
 }
 
 #[cfg(target_os = "macos")]
@@ -697,6 +839,52 @@ mod tests {
         assert_eq!(retry_delay(2), Duration::from_secs(10));
         assert_eq!(retry_delay(7), Duration::from_secs(300));
         assert_eq!(retry_delay(u32::MAX), MAX_RETRY);
+    }
+
+    #[test]
+    fn turning_off_releases_at_once_and_turning_on_resumes_running_work() {
+        let fake = Fake::default();
+        let mut controller = Controller::new(fake.clone(), GRACE);
+        let start = Instant::now();
+
+        controller.begin(start);
+        assert!(fake.held());
+        assert_eq!(controller.set_enabled(false, at(start, 1)), None);
+        assert!(!fake.held(), "still held after turning off");
+        // Activity while off never acquires.
+        controller.touch(at(start, 2));
+        controller.begin(at(start, 3));
+        assert!(!fake.held());
+
+        controller.set_enabled(true, at(start, 4));
+        assert!(fake.held(), "running work not covered after turning on");
+        assert_eq!(fake.counts(), (2, 1));
+    }
+
+    #[test]
+    fn turning_on_after_the_grace_does_not_acquire() {
+        let fake = Fake::default();
+        let mut controller = Controller::new(fake.clone(), GRACE);
+        let start = Instant::now();
+
+        controller.set_enabled(false, start);
+        controller.touch(start);
+        controller.set_enabled(true, at(start, 61));
+        assert!(!fake.held());
+        assert_eq!(fake.counts(), (0, 0));
+    }
+
+    #[test]
+    fn the_preference_defaults_on_and_round_trips() {
+        let directory = std::env::temp_dir().join(format!("keep-awake-{}", uuid::Uuid::new_v4()));
+        assert!(read_preference(&directory), "missing file must default on");
+        write_preference(&directory, false).unwrap();
+        assert!(!read_preference(&directory));
+        write_preference(&directory, true).unwrap();
+        assert!(read_preference(&directory));
+        fs::write(directory.join(PREFERENCE_FILE), b"not json").unwrap();
+        assert!(read_preference(&directory), "corrupt file must default on");
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

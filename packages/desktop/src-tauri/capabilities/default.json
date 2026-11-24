@@ -17,6 +17,7 @@
     },
     "allow-desktop-command-bridge",
     "allow-agent-input-notifications",
+    "allow-keep-awake-setting",
     "os:default",
     "process:default",
     "updater:default",

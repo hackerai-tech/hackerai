@@ -14,6 +14,7 @@ import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
 import { AgentInputNotificationSetting } from "@/app/components/AgentInputNotificationSetting";
+import { KeepAwakeSetting } from "@/app/components/KeepAwakeSetting";
 
 const AgentsTab = () => {
   const {
@@ -75,6 +76,8 @@ const AgentsTab = () => {
       </div>
 
       <AgentInputNotificationSetting />
+
+      <KeepAwakeSetting />
 
       {subscription !== "free" && <CloudNetworkSettings />}
 
