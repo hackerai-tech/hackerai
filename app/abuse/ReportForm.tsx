@@ -434,7 +434,7 @@ export default function ReportForm({
         required
         hint={
           kind === "appeal"
-            ? "Explain the decision, why you think it should change, and any new information."
+            ? "Explain the decision and why it should change. Already talking with Support about it? Reply there with new evidence."
             : "Describe what you saw and why you think it involved HackerAI. Plain language is fine."
         }
         error={errors.description}
