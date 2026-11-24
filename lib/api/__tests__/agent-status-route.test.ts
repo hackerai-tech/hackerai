@@ -6,6 +6,7 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import type { AuthkitOptions } from "@workos-inc/authkit-nextjs";
 import { channel } from "node:diagnostics_channel";
 import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 import {
@@ -974,18 +975,21 @@ describe("agent status timeout diagnostics", () => {
   });
 
   it.each(["/api/agent", "/api/agent-long"] as const)(
-    "observes the real pending session phase on %s without changing request completion",
+    "observes the pending AuthKit subphase on %s without changing request completion",
     async (endpoint) => {
       const { createAgentStatusPost } = await import("../agent-status-route");
       const actual = jest.requireActual<
         typeof import("@/lib/auth/get-user-id")
       >("@/lib/auth/get-user-id");
       let finish!: (value: unknown) => void;
-      mockAuthkit.mockReturnValueOnce(
-        new Promise((resolve) => {
+      let observeSession: NonNullable<AuthkitOptions["onSessionPhase"]>;
+      mockAuthkit.mockImplementationOnce((_, options) => {
+        observeSession = (options as AuthkitOptions).onSessionPhase!;
+        observeSession("verify_access_token");
+        return new Promise((resolve) => {
           finish = resolve;
-        }),
-      );
+        });
+      });
       mockGetUserIDAndPro.mockImplementationOnce(
         actual.getUserIDAndPro as never,
       );
@@ -993,6 +997,8 @@ describe("agent status timeout diagnostics", () => {
         requestFor("chat-1", "run-1"),
       );
       await jest.advanceTimersByTimeAsync(10_000);
+      observeSession!("refresh_request");
+      (observeSession! as (phase: string) => void)("PRIVATE unexpected phase");
       await jest.advanceTimersByTimeAsync(10_000);
       const logs = jest
         .mocked(console.warn)
@@ -1003,11 +1009,12 @@ describe("agent status timeout diagnostics", () => {
           log.stage,
           log.auth_phase_diagnostic_version,
           log.auth_phase,
+          log.authkit_session_phase,
           log.warning_threshold_ms,
         ]),
       ).toEqual([
-        ["authenticate", 1, "session", 10_000],
-        ["authenticate", 1, "session", 20_000],
+        ["authenticate", 1, "session", "verify_access_token", 10_000],
+        ["authenticate", 1, "session", "refresh_request", 20_000],
       ]);
       finish({
         session: {
