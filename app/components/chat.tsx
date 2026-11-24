@@ -2832,6 +2832,37 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       runActive: !hasLoadedCurrentChat || agentRunActive,
     });
 
+  // The server sends the next queued message after a run finishes. Attach
+  // to the run it starts, as a reload would, so the reply streams here too.
+  const sawServerDispatchRef = useRef(false);
+  const attachedServerRunRef = useRef<string | null>(null);
+  const serverDispatchInView = messageQueue.some(
+    (message) => message.dispatching,
+  );
+  useEffect(() => {
+    if (serverDispatchInView) sawServerDispatchRef.current = true;
+  }, [serverDispatchInView]);
+  useEffect(() => {
+    if (
+      !agentSteeringEnabled ||
+      !sawServerDispatchRef.current ||
+      !activeTriggerRunId ||
+      agentLongRunId ||
+      status !== "ready" ||
+      attachedServerRunRef.current === activeTriggerRunId
+    )
+      return;
+    sawServerDispatchRef.current = false;
+    attachedServerRunRef.current = activeTriggerRunId;
+    void resumeStream();
+  }, [
+    activeTriggerRunId,
+    agentLongRunId,
+    agentSteeringEnabled,
+    resumeStream,
+    status,
+  ]);
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
@@ -2857,6 +2888,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
       !messageQueue[0].held &&
+      // The server is already sending it.
+      !messageQueue[0].dispatching &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&

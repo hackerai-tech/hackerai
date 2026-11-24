@@ -133,6 +133,7 @@ export function useServerMessageQueue({
             }
           : {}),
         ...(row.fromSteer ? { fromSteer: true } : {}),
+        ...(row.dispatching ? { dispatching: true } : {}),
         ...(queuedHere.has(row.id) ? {} : { held: true }),
       });
     }

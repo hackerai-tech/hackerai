@@ -42,6 +42,7 @@ function fixture(user = "owner") {
     ],
     agent_steers: [],
     queued_messages: [],
+    agent_goals: [],
   };
   const select = (table: string, equals: Record<string, unknown>) =>
     rows[table].filter((row) =>
@@ -467,5 +468,133 @@ describe("agent steers", () => {
       userId: "owner",
     });
     expect(await listQueue()).toEqual([]);
+  });
+
+  describe("server dispatch of the next queued message", () => {
+    // The finished run's state as the worker leaves it before onSuccess.
+    const finished = (f: ReturnType<typeof fixture>, finishReason = "stop") => {
+      f.rows.chats[0].active_trigger_run_id = undefined;
+      f.rows.chats[0].finish_reason = finishReason;
+    };
+    const claimNext = (f: ReturnType<typeof fixture>, runId = "run-1") =>
+      queue.claimNextForDispatch.handler(f.ctx as never, {
+        serviceKey: "service-key",
+        chatId: "chat",
+        userId: "owner",
+        completedRunId: runId,
+      });
+
+    it("claims the oldest message once, after unread steers join in send order", async () => {
+      const f = fixture();
+      await f.enqueue("queued-later", "later", 5_000);
+      // Sent before the queued message but never read by the run.
+      await steers.create.handler(f.ctx as never, {
+        chatId: "chat",
+        id: "unread",
+        text: "use staging",
+        sentAt: 1_000,
+      });
+      finished(f);
+      f.rows.queued_messages.sort(
+        (a, b) => Number(a.sent_at) - Number(b.sent_at),
+      );
+      // The fake index does not sort inserts; the real one orders by sent_at.
+      const sortQueue = f.ctx.db.insert;
+      f.ctx.db.insert = async (table, value) => {
+        await sortQueue(table, value);
+        f.rows.queued_messages.sort(
+          (a, b) => Number(a.sent_at) - Number(b.sent_at),
+        );
+      };
+      expect(await claimNext(f)).toEqual(
+        expect.objectContaining({ id: "unread", text: "use staging" }),
+      );
+      // A late save of the finished run must not show the steer again.
+      expect(f.rows.agent_steers[0].withdrawn_at).toEqual(expect.any(Number));
+      // Already being sent: a repeat callback claims nothing.
+      expect(await claimNext(f)).toBeNull();
+      expect(await f.listQueue()).toEqual([
+        expect.objectContaining({ id: "unread", dispatching: true }),
+        expect.objectContaining({ id: "queued-later" }),
+      ]);
+    });
+
+    it("leaves the queue to the user when the run did not finish normally", async () => {
+      for (const setup of [
+        (f: ReturnType<typeof fixture>) => finished(f, "length"),
+        (f: ReturnType<typeof fixture>) => {
+          finished(f);
+          f.rows.chats[0].canceled_at = 1;
+        },
+        (f: ReturnType<typeof fixture>) => {
+          finished(f);
+          f.rows.chats[0].active_agent_user_wait = { toolCallId: "t" };
+        },
+        (f: ReturnType<typeof fixture>) => {
+          finished(f);
+          f.rows.chats[0].active_trigger_run_id = "run-user-started";
+        },
+        (f: ReturnType<typeof fixture>) => {
+          finished(f);
+          f.rows.agent_goals.push({
+            _id: "goal",
+            chatId: "chat",
+            state: "running",
+          });
+        },
+      ]) {
+        const f = fixture();
+        await f.enqueue("q");
+        setup(f);
+        expect(await claimNext(f)).toBeNull();
+      }
+    });
+
+    it("never sends a message whose Desktop attachment exists only in one browser", async () => {
+      const f = fixture();
+      await queue.enqueue.handler(f.ctx as never, {
+        chatId: "chat",
+        id: "local",
+        text: "see file",
+        sentAt: 1,
+        files: [
+          {
+            type: "file",
+            name: "a.txt",
+            mediaType: "text/plain",
+            size: 1,
+            storage: "local-desktop",
+          },
+        ],
+      });
+      finished(f);
+      expect(await claimNext(f)).toBeNull();
+    });
+
+    it("releases a claim only for the dispatch that holds it, and expires stale claims", async () => {
+      const f = fixture();
+      await f.enqueue("q");
+      finished(f);
+      const now = jest.spyOn(Date, "now").mockReturnValue(10_000);
+      await claimNext(f);
+      const release = (runId: string) =>
+        queue.releaseDispatch.handler(f.ctx as never, {
+          serviceKey: "service-key",
+          chatId: "chat",
+          userId: "owner",
+          id: "q",
+          completedRunId: runId,
+        });
+      await release("run-other");
+      expect(f.rows.queued_messages[0].dispatch_claimed_at).toBe(10_000);
+      // A dispatcher that died: the claim lapses and the next finish retries.
+      now.mockReturnValue(10_000 + 3 * 60 * 1000);
+      expect(await claimNext(f, "run-1")).toEqual(
+        expect.objectContaining({ id: "q" }),
+      );
+      await release("run-1");
+      now.mockRestore();
+      expect(f.rows.queued_messages[0].dispatch_claimed_at).toBeUndefined();
+    });
   });
 });

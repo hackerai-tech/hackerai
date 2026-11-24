@@ -21,6 +21,7 @@ import {
   assertGoalExecutionAllowed,
 } from "@/lib/goals/server";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
+import { scheduleQueuedMessageDispatch } from "./agent-queue-dispatch";
 import { trace } from "@opentelemetry/api";
 import { getAgentRunClockContext } from "@/lib/chat/agent-run-clock";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
@@ -1695,6 +1696,8 @@ export const agentLongTask = task({
       },
       ctx.run.id,
     );
+    // Send the next queued follow-up from the server, as T3 Code does.
+    await scheduleQueuedMessageDispatch(payload, ctx.run.id);
   },
   onFailure: async ({ payload, ctx }) => {
     const settledGoal = await finishGoalRun(payload, ctx.run.id, {
