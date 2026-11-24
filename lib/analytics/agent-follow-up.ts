@@ -31,6 +31,8 @@ type FollowUpContext = {
   /** Time from first queuing to the server start, on the sender's clock. */
   queuedForMs?: number;
   fromSteer?: boolean;
+  /** For queue_dispatch_failed: before Trigger returned a run, or after. */
+  failurePhase?: "start" | "attach";
   /** Distinguishes events that share a run, such as several steer reads. */
   dedupeKey?: string;
 };
@@ -69,6 +71,7 @@ export async function captureAgentFollowUp(
             ? context.queuedForMs
             : undefined,
         from_steer: context.fromSteer,
+        failure_phase: context.failurePhase,
         $geoip_disable: true,
         $process_person_profile: false,
       },

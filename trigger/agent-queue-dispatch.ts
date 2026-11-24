@@ -240,14 +240,23 @@ export const agentQueueDispatch = task({
       });
       return { outcome: "started" as const, runId: handle.id };
     } catch (error) {
-      // Without a run, the message goes back to the queue for the user (its
-      // saved copy is reused when it is sent). With one, the failed attach
-      // already cleaned the run up, as a failed start from the browser does.
+      // Without a confirmed run, the message goes back to the queue. Sending
+      // it reuses the saved copy and the same dedupe key, so if Trigger did
+      // create a run whose response was lost, that run is returned rather
+      // than a second one started.
+      //
+      // Once Trigger returned a run, the row is never returned to the queue.
+      // An unconfirmed attach may have succeeded, and any other failed attach
+      // (another run took the chat, or the chat was deleted) already cancelled
+      // this run. Resending would reuse the same dedupe key and get that
+      // cancelled run back. This matches a failed start from the browser,
+      // where the saved message stays and the user sends again.
       if (runStarted) await complete().catch(() => undefined);
       else await release();
       await captureAgentFollowUp("queue_dispatch_failed", {
         ...report,
         runId: completedRunId,
+        failurePhase: runStarted ? "attach" : "start",
       });
       throw error;
     }

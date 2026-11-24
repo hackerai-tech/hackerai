@@ -236,6 +236,10 @@ describe("server dispatch of queued follow-ups", () => {
     await expect(dispatch()).rejects.toThrow("another run started");
     expect(releaseCalls()).toHaveLength(0);
     expect(callsTo("complete")).toHaveLength(1);
+    expect(mockCapture).toHaveBeenCalledWith(
+      "queue_dispatch_failed",
+      expect.objectContaining({ failurePhase: "attach" }),
+    );
   });
 
   describe("after a run finishes", () => {
