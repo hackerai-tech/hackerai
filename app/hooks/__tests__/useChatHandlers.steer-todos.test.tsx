@@ -1186,12 +1186,32 @@ describe("useChatHandlers steer todo handoff", () => {
         id: expect.any(String),
         text: "Use the staging host",
         sentAt: expect.any(Number),
+        settings: {
+          agentPermissionMode: "full_access",
+          sandboxPreference: "e2b",
+          selectedModel: "hackerai-standard",
+        },
       });
       expect(mockQueueMessage).not.toHaveBeenCalled();
       expect(mockStop).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
       expect(mockSendMessage).not.toHaveBeenCalled();
       expect(mockClearInput).toHaveBeenCalledTimes(1);
+    });
+
+    it("records the approval mode a steer was sent under", async () => {
+      // If the run ends unread, the steer is queued and must not later start
+      // with more permission than the user chose.
+      mockAgentPermissionMode = "ask_approval";
+      const { result } = renderSummarySteer(false);
+      expect(await submit(result)).toBe(true);
+      expect(mockCreateAgentSteer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({
+            agentPermissionMode: "ask_approval",
+          }),
+        }),
+      );
     });
 
     it("queues with Cmd/Ctrl+Enter instead of steering", async () => {

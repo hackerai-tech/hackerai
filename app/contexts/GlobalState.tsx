@@ -1234,10 +1234,25 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   // With mid-run steering, the queue lives on the server so it survives a
   // reload and appears on every device; otherwise it stays in this session.
+  // The settings a queued message would be sent with right now, matching
+  // what chat.tsx sends: they travel with it so a server send uses them.
+  const queueSettingsModel = normalizeSelectedModelForSubscription(
+    selectedModel,
+    subscription,
+  );
+  const queueSettings = useMemo(
+    () => ({
+      agentPermissionMode,
+      sandboxPreference,
+      ...(queueSettingsModel ? { selectedModel: queueSettingsModel } : {}),
+    }),
+    [agentPermissionMode, sandboxPreference, queueSettingsModel],
+  );
   const serverQueue = useServerMessageQueue({
     userId: user?.id,
     chatId: queueChatId,
     enabled: agentSteeringEnabled,
+    settings: queueSettings,
   });
   // Messages queued while the rollout was still loading move to the server
   // queue once steering turns on, so none are dropped by the switch.

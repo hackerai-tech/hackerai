@@ -12,6 +12,7 @@ import {
   QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
   sanitizeQueuedFiles,
+  type QueuedMessageSettings,
 } from "@/lib/chat/queued-message";
 
 // Messages this page session may send without the user's action: the ones it
@@ -69,10 +70,13 @@ export function useServerMessageQueue({
   userId,
   chatId,
   enabled,
+  settings,
 }: {
   userId: string | undefined;
   chatId: string | null;
   enabled: boolean;
+  /** The user's current Agent settings; see QueuedMessageSettings. */
+  settings?: QueuedMessageSettings;
 }) {
   const active = enabled && !!userId && !!chatId;
   const rows = useQuery(
@@ -82,6 +86,24 @@ export function useServerMessageQueue({
   const enqueue = useMutation(api.queuedMessages.enqueue);
   const update = useMutation(api.queuedMessages.update);
   const remove = useMutation(api.queuedMessages.remove);
+  const applySettings = useMutation(api.queuedMessages.applySettings);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  // Messages already waiting follow a settings change, so a server send never
+  // uses a permission mode or sandbox the user has since switched away from.
+  const settingsKey = settings ? JSON.stringify(settings) : "";
+  const appliedSettingsKey = useRef(settingsKey);
+  useEffect(() => {
+    if (!enabled || !userId || !settings) return;
+    if (appliedSettingsKey.current === settingsKey) return;
+    appliedSettingsKey.current = settingsKey;
+    void applySettings({ settings }).catch((error: unknown) =>
+      console.warn("Could not update queued message settings", error),
+    );
+    // settingsKey captures every field of settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applySettings, enabled, settingsKey, userId]);
 
   // Local state per account and chat, so async work keeps its original key.
   const key = JSON.stringify([userId ?? null, chatId]);
@@ -259,6 +281,7 @@ export function useServerMessageQueue({
             ? { files: sanitizeQueuedFiles(local.draft.files) }
             : {}),
           sentAt: local.draft.timestamp,
+          ...(settingsRef.current ? { settings: settingsRef.current } : {}),
         })
           .then(() => {
             patchEntry(queueKey, id, { storing: false, stored: true });

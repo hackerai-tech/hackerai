@@ -72,6 +72,7 @@ import type * as lib_localSandboxHeartbeat from "../lib/localSandboxHeartbeat.js
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_nextActionsState from "../lib/nextActionsState.js";
 import type * as lib_ownedChat from "../lib/ownedChat.js";
+import type * as lib_queuedMessageSettings from "../lib/queuedMessageSettings.js";
 import type * as lib_queuedMessages from "../lib/queuedMessages.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
 import type * as lib_serviceFunctions from "../lib/serviceFunctions.js";
@@ -192,6 +193,7 @@ declare const fullApi: ApiFromModules<{
   "lib/logger": typeof lib_logger;
   "lib/nextActionsState": typeof lib_nextActionsState;
   "lib/ownedChat": typeof lib_ownedChat;
+  "lib/queuedMessageSettings": typeof lib_queuedMessageSettings;
   "lib/queuedMessages": typeof lib_queuedMessages;
   "lib/retainedTail": typeof lib_retainedTail;
   "lib/serviceFunctions": typeof lib_serviceFunctions;

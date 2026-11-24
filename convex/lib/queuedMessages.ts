@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc } from "../_generated/dataModel";
+import type { QueuedMessageSettings } from "../../lib/chat/queued-message";
 import {
   QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS,
   QUEUED_MESSAGE_MAX_COUNT,
@@ -45,6 +46,7 @@ export async function insertQueuedMessage(
     files?: unknown[];
     sentAt: number;
     fromSteer?: boolean;
+    settings?: QueuedMessageSettings;
   },
 ) {
   const files = sanitizeQueuedFiles(args.files);
@@ -77,6 +79,7 @@ export async function insertQueuedMessage(
     ...(files.length ? { files } : {}),
     sent_at: args.sentAt,
     ...(args.fromSteer ? { from_steer: true } : {}),
+    ...(args.settings ? { settings: args.settings } : {}),
     created_at: Date.now(),
   });
 }

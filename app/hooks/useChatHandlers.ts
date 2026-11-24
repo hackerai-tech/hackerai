@@ -742,6 +742,14 @@ export const useChatHandlers = ({
           text: trimmed,
           sentAt,
           ...(queuedId ? { queuedId } : {}),
+          // Kept with the steer in case it returns to the queue unread.
+          settings: {
+            agentPermissionMode: agentPermissionModeRef.current,
+            sandboxPreference: sandboxPreferenceRef.current,
+            ...(requestSelectedModelRef.current
+              ? { selectedModel: requestSelectedModelRef.current }
+              : {}),
+          },
         })) === "pending"
       );
     } catch (error) {

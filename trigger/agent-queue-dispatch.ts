@@ -20,6 +20,10 @@ import {
 } from "@/lib/api/agent-run-start";
 import type { AgentLongPayload, agentLongTask } from "./agent-long";
 import {
+  coerceSelectedModel,
+  normalizeSelectedModelOverrideForSubscription,
+} from "@/types/chat";
+import {
   captureAgentFollowUp,
   type QueueDispatchSkipReason,
 } from "@/lib/analytics/agent-follow-up";
@@ -114,6 +118,18 @@ export const agentQueueDispatch = task({
       );
       // Sent or removed elsewhere since the claim.
       if (!queued) return await skip("not_queued");
+      // The message's own current settings decide, never the finished run's:
+      // the user may have switched to approvals or another sandbox since.
+      // Anything but full access in the same sandbox waits for the browser.
+      const settings = queued.settings;
+      if (
+        settings?.agentPermissionMode !== "full_access" ||
+        (settings.sandboxPreference ?? "e2b") !==
+          (run.sandboxPreference ?? "e2b")
+      ) {
+        await release();
+        return await skip("settings_changed");
+      }
 
       await assertUserCanMakeCostIncurringRequest(userId);
       const fresh = await getCurrentAgentEntitlementContext({
@@ -184,6 +200,12 @@ export const agentQueueDispatch = task({
         goalWorkerVersion: undefined,
         analyticsRequestContext: undefined,
         requestTiming: { routeStartedAt: now, triggerRequestedAt: now },
+        agentPermissionMode: "full_access",
+        autoReviewAssignment: undefined,
+        selectedModel: normalizeSelectedModelOverrideForSubscription(
+          coerceSelectedModel(settings.selectedModel ?? null),
+          run.subscription,
+        ),
       };
       const tags = [
         `user_${userId}`,

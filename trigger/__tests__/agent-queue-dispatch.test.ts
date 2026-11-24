@@ -102,7 +102,15 @@ describe("server dispatch of queued follow-ups", () => {
     process.env.CONVEX_SERVICE_ROLE_KEY = "service";
     mockFlag.mockResolvedValue(true);
     mockMutation.mockResolvedValue(null);
-    mockQuery.mockResolvedValue({ id: "queued-1", text: "also check X" });
+    mockQuery.mockResolvedValue({
+      id: "queued-1",
+      text: "also check X",
+      settings: {
+        agentPermissionMode: "full_access",
+        sandboxPreference: "e2b",
+        selectedModel: "auto",
+      },
+    });
     mockEntitlement.mockResolvedValue({
       subscription: "pro",
       organizationId: "org",
@@ -156,6 +164,53 @@ describe("server dispatch of queued follow-ups", () => {
     expect(mockCapture).toHaveBeenCalledWith(
       "queue_dispatch_started",
       expect.objectContaining({ runId: "run-next", chatId: "chat" }),
+    );
+  });
+
+  it("never starts a run with permissions the user has since restricted", async () => {
+    for (const settings of [
+      undefined,
+      { agentPermissionMode: "ask_approval", sandboxPreference: "e2b" },
+      { agentPermissionMode: "auto_review", sandboxPreference: "e2b" },
+      // Switched sandbox: the browser re-admits it with its own checks.
+      { agentPermissionMode: "full_access", sandboxPreference: "desktop" },
+    ]) {
+      mockQuery.mockResolvedValueOnce({
+        id: "queued-1",
+        text: "new task",
+        ...(settings ? { settings } : {}),
+      });
+      await expect(dispatch()).resolves.toEqual({
+        outcome: "settings_changed",
+      });
+    }
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(releaseCalls()).toHaveLength(4);
+  });
+
+  it("starts the turn with the message's own model, not the finished run's", async () => {
+    mockQuery.mockResolvedValue({
+      id: "queued-1",
+      text: "also check X",
+      settings: {
+        agentPermissionMode: "full_access",
+        sandboxPreference: "e2b",
+        selectedModel: "hackerai-max",
+      },
+    });
+    await dispatch({
+      ...finishedRun,
+      agentPermissionMode: "full_access",
+      selectedModel: "auto",
+    } as AgentLongPayload);
+    const [, payload] = (tasks.trigger as jest.Mock).mock.calls[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        agentPermissionMode: "full_access",
+        selectedModel: "hackerai-max",
+        approvalSessionId: undefined,
+      }),
     );
   });
 

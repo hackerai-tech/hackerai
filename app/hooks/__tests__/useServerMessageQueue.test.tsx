@@ -12,6 +12,7 @@ let mockRows: Row[] | undefined;
 const mockEnqueue = jest.fn<Promise<null>, [Record<string, unknown>]>();
 const mockUpdate = jest.fn<Promise<null>, [Record<string, unknown>]>();
 const mockRemove = jest.fn<Promise<null>, [Record<string, unknown>]>();
+const mockApplySettings = jest.fn<Promise<null>, [Record<string, unknown>]>();
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -20,6 +21,7 @@ jest.mock("@/convex/_generated/api", () => ({
       enqueue: "enqueue",
       update: "update",
       remove: "remove",
+      applySettings: "applySettings",
     },
   },
 }));
@@ -27,11 +29,12 @@ jest.mock("convex/react", () => ({
   useQuery: (_query: string, args: unknown) =>
     args === "skip" ? undefined : mockRows,
   useMutation: (name: string) =>
-    name === "enqueue"
-      ? mockEnqueue
-      : name === "update"
-        ? mockUpdate
-        : mockRemove,
+    ({
+      enqueue: mockEnqueue,
+      update: mockUpdate,
+      remove: mockRemove,
+      applySettings: mockApplySettings,
+    })[name],
 }));
 jest.mock("convex/values", () => ({
   ConvexError: class ConvexError extends Error {
@@ -63,6 +66,7 @@ describe("useServerMessageQueue", () => {
     mockEnqueue.mockReset().mockResolvedValue(null);
     mockUpdate.mockReset().mockResolvedValue(null);
     mockRemove.mockReset().mockResolvedValue(null);
+    mockApplySettings.mockReset().mockResolvedValue(null);
   });
 
   it("stores this tab's message and lets only this tab send it automatically", async () => {
@@ -322,5 +326,36 @@ describe("useServerMessageQueue", () => {
       jest.restoreAllMocks();
       jest.useRealTimers();
     }
+  });
+
+  it("stores a message with the current settings and applies later changes", async () => {
+    const full = { agentPermissionMode: "full_access" as const };
+    const { result, rerender } = renderHook(
+      ({ settings }) =>
+        useServerMessageQueue({
+          userId: "user-1",
+          chatId: "chat-1",
+          enabled: true,
+          settings,
+        }),
+      { initialProps: { settings: full } },
+    );
+    // Mounting applies nothing; only a change does.
+    expect(mockApplySettings).not.toHaveBeenCalled();
+    act(() => {
+      result.current.queueMessage("new task");
+    });
+    await waitFor(() =>
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ settings: full }),
+      ),
+    );
+    const askForApproval = { agentPermissionMode: "ask_approval" as const };
+    rerender({ settings: askForApproval });
+    expect(mockApplySettings).toHaveBeenCalledWith({
+      settings: askForApproval,
+    });
+    rerender({ settings: { ...askForApproval } });
+    expect(mockApplySettings).toHaveBeenCalledTimes(1);
   });
 });
