@@ -280,3 +280,63 @@ test("expired delivery receipts return a finite resubmission response without a 
   expect(await response.json()).toMatchObject({ code: "report_expired" });
   expect((await response.json()).reference).toBeUndefined();
 });
+
+const appeal = {
+  ...report,
+  kind: "appeal",
+  target: "",
+  description: "SYNTHETIC_APPEAL: please review this restriction.",
+};
+const received = () =>
+  mockMutation.mockImplementation(async (_ref, args) => ({
+    outcome: "received",
+    reference: args.reference,
+  }));
+const stored = () => {
+  const args = mockMutation.mock.calls[0][1];
+  return decryptAbuseEvidence(args.reference, args.ciphertext) as Record<
+    string,
+    unknown
+  >;
+};
+
+test.each([
+  { reference: " ", appealContext: "" },
+  { appealContext: "Got an email." },
+])(
+  "rejects a low-detail appeal before verification or storage: %j",
+  async (detail) => {
+    const response = await POST(
+      request(JSON.stringify({ ...appeal, ...detail })),
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json()).fieldErrors).toEqual({
+      appealContext: expect.stringContaining("HackerAI reference"),
+    });
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+test("accepts an appeal with an existing reference and stores no blank context", async () => {
+  received();
+  const response = await POST(
+    request(
+      JSON.stringify({ ...appeal, reference: "AB-prior", appealContext: " " }),
+    ),
+  );
+  expect(response.status).toBe(201);
+  expect(stored()).toMatchObject({ kind: "appeal", reference: "AB-prior" });
+  expect(stored()).not.toHaveProperty("appealContext");
+});
+
+test("accepts a no-notice appeal with context and no reference", async () => {
+  received();
+  const appealContext =
+    "No notice. Starting a scan showed 'workspace restricted'.";
+  const response = await POST(
+    request(JSON.stringify({ ...appeal, appealContext: ` ${appealContext} ` })),
+  );
+  expect(response.status).toBe(201);
+  expect(stored()).toMatchObject({ reference: "", appealContext });
+});

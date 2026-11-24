@@ -8,6 +8,7 @@ import {
   encryptAbuseEvidence,
 } from "@/lib/abuse/evidence";
 import {
+  APPEAL_CONTEXT_ERROR,
   AbuseRequestError,
   abuseReportSchema,
   readAbuseJson,
@@ -47,6 +48,7 @@ export async function POST(request: NextRequest) {
         "sourcePort",
         "protocol",
         "reference",
+        "appealContext",
         "evidence",
       ];
       const fieldErrors: Record<string, string> = {};
@@ -60,7 +62,9 @@ export async function POST(request: NextRequest) {
                 ? "Enter a valid email address."
                 : field === "target"
                   ? "Enter the affected domain, address, or other target."
-                  : "Check this field and its length.";
+                  : field === "appealContext"
+                    ? APPEAL_CONTEXT_ERROR
+                    : "Check this field and its length.";
       }
       return reply(
         { error: "Please check the report details.", fieldErrors },

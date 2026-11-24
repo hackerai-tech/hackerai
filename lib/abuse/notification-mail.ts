@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { abuseReportSchema } from "./report";
+import { storedAbuseReportSchema } from "./report";
 
 export type NotificationOutcome = "sent" | "retry" | "failed" | "uncertain";
 
@@ -17,7 +17,8 @@ export async function sendAbuseNotification(
     !/^AB-[a-f0-9-]{36}$/.test(reference)
   )
     return "failed";
-  const parsed = abuseReportSchema.safeParse(submittedReport);
+  // Queued reports keep the validation they were accepted under.
+  const parsed = storedAbuseReportSchema.safeParse(submittedReport);
   const received = new Date(receivedAt);
   if (
     !parsed.success ||
@@ -41,6 +42,13 @@ export async function sendAbuseNotification(
     `Protocol: ${report.protocol || "Not provided"}`,
     `Related report reference: ${report.reference || "Not provided"}`,
     "",
+    ...(report.kind === "appeal" && report.appealContext
+      ? [
+          "Appeal context (notice, or what they tried and saw):",
+          report.appealContext,
+          "",
+        ]
+      : []),
     "Description:",
     report.description,
     "",
