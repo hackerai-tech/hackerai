@@ -291,4 +291,36 @@ describe("useServerMessageQueue", () => {
       jest.useRealTimers();
     }
   });
+
+  it("still clears Sending when the claim expires between render and effect", () => {
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(100_000 + 2 * 60 * 1000 - 1);
+      mockRows = [
+        {
+          id: "a",
+          text: "Sent by the server",
+          sentAt: 1,
+          fromSteer: false,
+          dispatchClaimedAt: 100_000,
+        },
+      ];
+      // The render sees a live claim; by the effect, the lease has ended.
+      const realNow = Date.now;
+      let calls = 0;
+      jest
+        .spyOn(Date, "now")
+        .mockImplementation(() => (calls++ === 0 ? realNow() : realNow() + 10));
+      const { result } = render();
+      expect(result.current.messageQueue[0].dispatching).toBe(true);
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(result.current.messageQueue[0].dispatching).toBeUndefined();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.restoreAllMocks();
+      jest.useRealTimers();
+    }
+  });
 });

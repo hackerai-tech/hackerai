@@ -167,23 +167,27 @@ export function useServerMessageQueue({
   }, [active, rows, entries, version]);
 
   // A send that died never writes its row again, so end "Sending…" when its
-  // lease expires instead of waiting for another queue change.
+  // lease expires instead of waiting for another queue change. Deadlines come
+  // from rows this render shows as sending: one that expired since the render
+  // still gets a refresh, and the refreshed render shows none, so no loop.
   useEffect(() => {
-    const now = Date.now();
-    // Only leases still running; an expired one has already re-rendered.
+    const shownSending = new Set(
+      messageQueue
+        .filter((message) => message.dispatching)
+        .map((message) => message.id),
+    );
     const leaseEnds = (rows ?? []).flatMap((row) =>
-      row.dispatchClaimedAt === undefined ||
-      row.dispatchClaimedAt + QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS <= now
-        ? []
-        : [row.dispatchClaimedAt + QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS],
+      shownSending.has(row.id) && row.dispatchClaimedAt !== undefined
+        ? [row.dispatchClaimedAt + QUEUED_MESSAGE_DISPATCH_CLAIM_TTL_MS]
+        : [],
     );
     if (!leaseEnds.length) return;
     const timer = setTimeout(
       () => refresh((current) => current + 1),
-      Math.min(...leaseEnds) - now + 50,
+      Math.max(0, Math.min(...leaseEnds) - Date.now()) + 50,
     );
     return () => clearTimeout(timer);
-  }, [rows, version]);
+  }, [messageQueue, rows]);
 
   // Track which of this tab's drafts the server has stored, and drop local
   // state for rows that left the queue.
