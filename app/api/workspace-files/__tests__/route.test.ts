@@ -5,7 +5,10 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { GET, POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById, getProjectById } from "@/lib/db/actions";
-import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
+import {
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
   assertUserCanAccessChatHistory,
@@ -209,6 +212,7 @@ it("normalizes a legacy Desktop connection before checking its linked project fo
     "desktop-environment:machine",
     expect.anything(),
     "/Users/test/project",
+    expect.anything(),
   );
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
 });
@@ -419,6 +423,83 @@ describe("POST rejection diagnostics", () => {
         os_error_category: "permission",
       },
     );
+  });
+
+  it.each([
+    ["cloud", "connect", undefined, accessCloudWorkspaceFiles],
+    [
+      "local",
+      "run_reader",
+      "desktop-environment:machine",
+      accessLocalWorkspaceFiles,
+    ],
+  ] as const)(
+    "labels an unexpected %s list failure with its last access step",
+    async (reader, step, environment, access) => {
+      jest.mocked(access).mockImplementation(async (...args: unknown[]) => {
+        (args.at(-1) as { step?: string }).step = step;
+        throw new Error(`https://${MARKER}.example/home/user/${MARKER}`);
+      });
+      await expectRejection(
+        POST(sensitive({ environment, path: `${MARKER}/reports` })),
+        503,
+        "workspace_unavailable",
+        {
+          reason: "unexpected_error",
+          stage: "workspace",
+          action: "list",
+          error_name: "other",
+          reader,
+          failed_step: step,
+        },
+      );
+      // The same failure on a non-list action keeps the existing fields.
+      await expectRejection(
+        POST(sensitive({ environment, action: "preview", sandboxId: "sbx" })),
+        503,
+        "workspace_unavailable",
+        {
+          reason: "unexpected_error",
+          stage: "workspace",
+          action: "preview",
+          error_name: "other",
+        },
+      );
+    },
+  );
+
+  it("leaves out steps outside the closed vocabulary", async () => {
+    jest
+      .mocked(accessCloudWorkspaceFiles)
+      .mockImplementationOnce(async (_userId, _region, _input, progress) => {
+        (progress as { step?: string }).step = MARKER;
+        throw new Error(MARKER);
+      });
+    await expectRejection(POST(sensitive()), 503, "workspace_unavailable", {
+      reason: "unexpected_error",
+      stage: "workspace",
+      action: "list",
+      error_name: "other",
+      reader: "cloud",
+    });
+  });
+
+  it("does not attribute a later error to a successful workspace access", async () => {
+    jest
+      .mocked(accessCloudWorkspaceFiles)
+      .mockImplementationOnce(async (_userId, _region, _input, progress) => {
+        if (progress) progress.step = "decode";
+        return { state: "missing" };
+      });
+    jest.mocked(phLogger.event).mockImplementationOnce(() => {
+      throw new Error(MARKER);
+    });
+    await expectRejection(POST(sensitive()), 503, "workspace_unavailable", {
+      reason: "unexpected_error",
+      stage: "workspace",
+      action: "list",
+      error_name: "other",
+    });
   });
 
   it("does not log successful requests", async () => {

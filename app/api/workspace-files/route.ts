@@ -19,9 +19,11 @@ import { getExecutionRegionForVercelRequest } from "@/lib/api/trigger-region";
 import { CloudWorkspaceUnavailableError } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
+  WORKSPACE_ACCESS_STEPS,
   WORKSPACE_FILES_FLAG,
   workspaceRequest,
   WorkspaceFileError,
+  type WorkspaceAccessProgress,
 } from "@/lib/sandbox/workspace-files";
 
 export const maxDuration = 60;
@@ -134,6 +136,8 @@ const ERROR_NAMES = new Set([
 ]);
 
 type Rejection = { reason: string } & Record<string, string | number>;
+type WorkspaceAccess = WorkspaceAccessProgress & { reader: "local" | "cloud" };
+const ACCESS_STEPS = new Set<string>(WORKSPACE_ACCESS_STEPS);
 
 function logRejection(
   status: number,
@@ -179,7 +183,12 @@ function describeSchemaFailure(
   };
 }
 
-function describeFailure(error: unknown, stage: Stage): Rejection {
+function describeFailure(
+  error: unknown,
+  stage: Stage,
+  // Only for a list request; adds fixed labels to an unexpected failure.
+  listAccess?: WorkspaceAccess,
+): Rejection {
   if (error instanceof AuthorizationRejection)
     return { reason: error.reason, stage };
   if (error instanceof ChatSDKError) {
@@ -223,6 +232,14 @@ function describeFailure(error: unknown, stage: Stage): Rejection {
       error instanceof Error && ERROR_NAMES.has(error.name)
         ? error.name
         : "other",
+    ...(stage === "workspace" && listAccess
+      ? {
+          reader: listAccess.reader,
+          ...(listAccess.step && ACCESS_STEPS.has(listAccess.step)
+            ? { failed_step: listAccess.step }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -258,6 +275,7 @@ export async function POST(req: NextRequest) {
   let userId: string | undefined;
   let action: string | undefined;
   const progress: { stage: Stage } = { stage: "request" };
+  let access: WorkspaceAccess | undefined;
   const reject = (error: string, status: number, fields: Rejection) => {
     logRejection(status, action, fields);
     return json({ error }, status);
@@ -331,18 +349,22 @@ export async function POST(req: NextRequest) {
         })
       : {};
     progress.stage = "workspace";
+    access = { reader: local ? "local" : "cloud" };
     const result = local
       ? await accessLocalWorkspaceFiles(
           userId,
           normalizedPreference,
           input,
           project.workingDirectory,
+          access,
         )
       : await accessCloudWorkspaceFiles(
           userId,
           getExecutionRegionForVercelRequest(req),
           input,
+          access,
         );
+    access = undefined;
     phLogger.event("workspace_files_operation", {
       userId,
       action,
@@ -360,7 +382,11 @@ export async function POST(req: NextRequest) {
       });
     const response = failure(error);
     logRejection(response.status, action, () =>
-      describeFailure(error, progress.stage),
+      describeFailure(
+        error,
+        progress.stage,
+        action === "list" ? access : undefined,
+      ),
     );
     return response;
   }
