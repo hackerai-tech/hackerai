@@ -17,6 +17,12 @@ import {
 } from "@/lib/posthog/server";
 import { getExecutionRegionForVercelRequest } from "@/lib/api/trigger-region";
 import { CloudWorkspaceUnavailableError } from "@/lib/ai/tools/utils/cloud-workspace-guard";
+import { getAttachmentDownloadFailureContext } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+import {
+  isLocalCommandDispatchError,
+  isLocalCommandRelayUnsubscribedError,
+} from "@/lib/ai/tools/utils/local-sandbox-errors";
+import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostics";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
   WORKSPACE_ACCESS_STEPS,
@@ -135,9 +141,63 @@ const ERROR_NAMES = new Set([
   "TimeoutError",
 ]);
 
-type Rejection = { reason: string } & Record<string, string | number>;
+type Diagnostics = Record<string, string | number | boolean>;
+type Rejection = { reason: string } & Diagnostics;
 type WorkspaceAccess = WorkspaceAccessProgress & { reader: "local" | "cloud" };
 const ACCESS_STEPS = new Set<string>(WORKSPACE_ACCESS_STEPS);
+const RECEIVER_REASONS = new Set<ReceiverCleanupReason>([
+  "terminal_ack_published",
+  "legacy_terminal",
+  "canceled",
+  "cancel_failed",
+  "deadline",
+  "output_unavailable",
+  "unsequenced_error",
+  "sequence_gap",
+  "recovery_incomplete",
+  "subscription_error",
+  "unsubscribed",
+  "presence_missing",
+  "dispatch_failed",
+  "disconnected",
+  "client_error",
+]);
+
+/** Project only known transport facts from the exact rejection. Do not copy
+ * error text, causes, commands, or connection IDs into the warning. */
+function describeLocalReaderDispatch(error: unknown): Diagnostics {
+  try {
+    const dispatch = isLocalCommandDispatchError(error);
+    if (!dispatch && !isLocalCommandRelayUnsubscribedError(error)) return {};
+    // Set only by the command receiver that selected this exact rejection.
+    const context = getAttachmentDownloadFailureContext(error);
+    const reason = context?.attachment_command_receiver_reason;
+    const receiver =
+      context?.attachment_command_receiver_version === 1 &&
+      reason &&
+      RECEIVER_REASONS.has(reason) &&
+      typeof context.attachment_command_receiver_publish_completed === "boolean"
+        ? {
+            reader_receiver_reason: reason,
+            reader_publish_completed:
+              context.attachment_command_receiver_publish_completed,
+          }
+        : undefined;
+    const publicationStarted = dispatch
+      ? error.dispatched
+      : receiver && context?.attachment_command_receiver_publication_started;
+    return {
+      reader_failure: dispatch ? "dispatch_error" : "relay_unsubscribed",
+      ...(typeof publicationStarted === "boolean"
+        ? { reader_publication_started: publicationStarted }
+        : {}),
+      ...receiver,
+    };
+  } catch {
+    // Optional detail must not drop the existing rejection fields.
+    return {};
+  }
+}
 
 function logRejection(
   status: number,
@@ -237,6 +297,9 @@ function describeFailure(
           reader: listAccess.reader,
           ...(listAccess.step && ACCESS_STEPS.has(listAccess.step)
             ? { failed_step: listAccess.step }
+            : {}),
+          ...(listAccess.reader === "local" && listAccess.step === "run_reader"
+            ? describeLocalReaderDispatch(error)
             : {}),
         }
       : {}),

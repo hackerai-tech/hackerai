@@ -17,6 +17,12 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { WorkspaceFileError } from "@/lib/sandbox/workspace-files";
+import { recordAttachmentCommandReceiver } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+import {
+  LocalCommandDispatchError,
+  LocalCommandRelayUnsubscribedError,
+} from "@/lib/ai/tools/utils/local-sandbox-errors";
+import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostics";
 
 jest.mock("@/lib/sandbox/local-workspace-files", () => ({
   accessLocalWorkspaceFiles: jest.fn(),
@@ -481,6 +487,161 @@ describe("POST rejection diagnostics", () => {
       action: "list",
       error_name: "other",
       reader: "cloud",
+    });
+  });
+
+  describe("local reader dispatch failures", () => {
+    const environment = "desktop-environment:machine";
+    const unexpected = {
+      reason: "unexpected_error",
+      stage: "workspace",
+      error_name: "other",
+    };
+    const failLocalAt = (step: string, error: unknown) =>
+      jest
+        .mocked(accessLocalWorkspaceFiles)
+        .mockImplementationOnce(async (...args: unknown[]) => {
+          (args.at(-1) as { step?: string }).step = step;
+          throw error;
+        });
+    // Records what the Centrifugo command receiver binds to its rejection.
+    const withReceiver = <T extends Error>(
+      error: T,
+      reason: ReceiverCleanupReason,
+      publicationStarted: boolean,
+      publishCompleted: boolean,
+    ) => {
+      recordAttachmentCommandReceiver(error, {
+        reason,
+        connectedObserved: true,
+        subscribedObserved: true,
+        publicationStarted,
+        publishCompleted,
+        firstMessageObserved: false,
+      });
+      return error;
+    };
+
+    it.each([
+      [
+        "a published dispatch failure with its receiver cleanup",
+        () =>
+          withReceiver(
+            new LocalCommandDispatchError(new Error(`wss://${MARKER}`), true),
+            "disconnected",
+            true,
+            true,
+          ),
+        {
+          reader_failure: "dispatch_error",
+          reader_publication_started: true,
+          reader_receiver_reason: "disconnected",
+          reader_publish_completed: true,
+        },
+      ],
+      [
+        "a dispatch failure before any receiver ran",
+        () => new LocalCommandDispatchError(new Error(MARKER), false),
+        { reader_failure: "dispatch_error", reader_publication_started: false },
+      ],
+      [
+        "an unsubscribed relay with its receiver cleanup",
+        () =>
+          withReceiver(
+            new LocalCommandRelayUnsubscribedError(`conn-${MARKER}`),
+            "unsubscribed",
+            false,
+            false,
+          ),
+        {
+          reader_failure: "relay_unsubscribed",
+          reader_publication_started: false,
+          reader_receiver_reason: "unsubscribed",
+          reader_publish_completed: false,
+        },
+      ],
+      [
+        "an unsubscribed relay without receiver evidence",
+        () => new LocalCommandRelayUnsubscribedError(`conn-${MARKER}`),
+        { reader_failure: "relay_unsubscribed" },
+      ],
+    ])("logs only the known facts of %s", async (_case, makeError, fields) => {
+      failLocalAt("run_reader", makeError());
+      await expectRejection(
+        POST(sensitive({ environment, path: `${MARKER}/reports` })),
+        503,
+        "workspace_unavailable",
+        {
+          ...unexpected,
+          action: "list",
+          reader: "local",
+          failed_step: "run_reader",
+          ...fields,
+        },
+      );
+    });
+
+    it("keeps the existing fields outside a local list reader run", async () => {
+      const typed = () =>
+        withReceiver(
+          new LocalCommandDispatchError(new Error(MARKER), true),
+          "deadline",
+          true,
+          true,
+        );
+      failLocalAt("lookup", typed());
+      await expectRejection(
+        POST(sensitive({ environment })),
+        503,
+        "workspace_unavailable",
+        {
+          ...unexpected,
+          action: "list",
+          reader: "local",
+          failed_step: "lookup",
+        },
+      );
+      failLocalAt("run_reader", typed());
+      await expectRejection(
+        POST(sensitive({ environment, action: "preview", sandboxId: "sbx" })),
+        503,
+        "workspace_unavailable",
+        { ...unexpected, action: "preview" },
+      );
+      jest
+        .mocked(accessCloudWorkspaceFiles)
+        .mockImplementationOnce(async (_userId, _region, _input, progress) => {
+          if (progress) progress.step = "run_reader";
+          throw typed();
+        });
+      await expectRejection(POST(sensitive()), 503, "workspace_unavailable", {
+        ...unexpected,
+        action: "list",
+        reader: "cloud",
+        failed_step: "run_reader",
+      });
+    });
+
+    it("keeps the base fields when the rejection cannot be inspected", async () => {
+      failLocalAt(
+        "run_reader",
+        Object.defineProperty(new Error(MARKER), "code", {
+          get() {
+            throw new Error(MARKER);
+          },
+        }),
+      );
+      await expectRejection(
+        POST(sensitive({ environment })),
+        503,
+        "workspace_unavailable",
+        {
+          ...unexpected,
+          action: "list",
+          reader: "local",
+          failed_step: "run_reader",
+        },
+      );
     });
   });
 
