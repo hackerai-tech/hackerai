@@ -239,7 +239,7 @@ export function deriveChatTimelineRows({
     const onlySteers = projection.activities.every(({ part }) =>
       isAgentSteerPart(part),
     );
-    if (!(canToggle && onlySteers)) {
+    if (isTiming || !onlySteers) {
       rows.push({
         kind: "agent-work-header",
         id: `work-header:${message.id}`,

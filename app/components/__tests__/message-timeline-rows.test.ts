@@ -413,6 +413,15 @@ describe("deriveChatTimelineRows", () => {
       }).map((row) => row.kind);
 
     expect(rows("ready")).toEqual(["agent-activity", "message"]);
+    // Also when the run finished without answer text, e.g. after a stop.
+    expect(
+      deriveChatTimelineRows({
+        messages: [agentMessage([message.parts[0]])],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      }).map((row) => row.kind),
+    ).toEqual(["agent-activity", "message"]);
     // A live run keeps its Working for timer.
     expect(rows("streaming")).toEqual([
       "agent-work-header",
