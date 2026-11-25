@@ -12,6 +12,7 @@ import {
   filesystemListDiagnostics,
   workspaceReaderCommand,
   WorkspaceFileError,
+  type WorkspaceAccessProgress,
   type WorkspaceRequest,
 } from "./workspace-files";
 
@@ -36,7 +37,9 @@ export async function accessCloudWorkspaceFiles(
   userId: string,
   region: TriggerRunRegion | undefined,
   input: WorkspaceRequest,
+  progress: WorkspaceAccessProgress = {},
 ) {
+  progress.step = "lookup";
   const state = await readCloudWorkspaceState(userId);
   if (state && state.phase !== "e2b")
     throw new CloudWorkspaceUnavailableError();
@@ -84,6 +87,7 @@ export async function accessCloudWorkspaceFiles(
     info.metadata?.template !== cluster.template
   )
     throw new WorkspaceFileError("not_found", 404);
+  progress.step = "fence";
   await assertCloudWorkspaceAvailable(userId, sandboxId);
   if (
     input.action === "status" ||
@@ -98,10 +102,13 @@ export async function accessCloudWorkspaceFiles(
   if (!["running", "paused"].includes(info.state))
     return { state: "missing" as const };
   // Reading files must not shorten a concurrently running Agent's sandbox lease.
+  progress.step = "connect";
   const sandbox = await Sandbox.connect(sandboxId, options);
+  progress.step = "fence";
   await assertCloudWorkspaceAvailable(userId, sandboxId);
   const request =
     input.action === "resume" ? { ...input, action: "list" as const } : input;
+  progress.step = "run_reader";
   const result = await sandbox.commands.run(workspaceReaderCommand(request), {
     user: "root",
     cwd: "/home/user",
@@ -109,6 +116,7 @@ export async function accessCloudWorkspaceFiles(
   });
   if (result.exitCode !== 0)
     throw new WorkspaceFileError("workspace_unavailable", 503);
+  progress.step = "decode";
   let parsed: unknown;
   try {
     parsed = JSON.parse(result.stdout);
@@ -134,7 +142,9 @@ export async function accessCloudWorkspaceFiles(
     );
   }
   // Recheck the recovery/deletion fence before returning any file bytes.
+  progress.step = "fence";
   await assertCloudWorkspaceAvailable(userId, sandboxId);
+  progress.step = "decode";
   if (request.action === "list")
     return {
       state: "running" as const,

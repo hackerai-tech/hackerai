@@ -7,6 +7,7 @@ import {
   filesystemListDiagnostics,
   workspaceReaderCommand,
   WorkspaceFileError,
+  type WorkspaceAccessProgress,
   type WorkspaceRequest,
 } from "./workspace-files";
 import { z } from "zod";
@@ -70,7 +71,9 @@ export async function accessLocalWorkspaceFiles(
   preference: string,
   input: WorkspaceRequest,
   root?: string,
+  progress: WorkspaceAccessProgress = {},
 ) {
+  progress.step = "lookup";
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   const wsUrl = process.env.CENTRIFUGO_WS_URL;
   const tokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
@@ -111,6 +114,8 @@ export async function accessLocalWorkspaceFiles(
     input.chatId,
   );
   try {
+    // The relay connects lazily inside this call.
+    progress.step = "run_reader";
     const result = await sandbox.commands.run(
       workspaceReaderCommand(
         {
@@ -126,6 +131,7 @@ export async function accessLocalWorkspaceFiles(
     );
     if (result.exitCode !== 0)
       throw new WorkspaceFileError("local_reader_unavailable", 503);
+    progress.step = "decode";
     const parsed = JSON.parse(result.stdout);
     if (parsed.error) {
       const allowed = [

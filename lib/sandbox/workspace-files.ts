@@ -104,6 +104,19 @@ export function filesystemListDiagnostics(
   };
 }
 
+/** Last workspace-access step entered. Adapters only record it; callers may
+ * log it for an otherwise unclassified failure. Fixed labels, never values. */
+export const WORKSPACE_ACCESS_STEPS = [
+  "lookup",
+  "fence",
+  "connect",
+  "run_reader",
+  "decode",
+] as const;
+export type WorkspaceAccessProgress = {
+  step?: (typeof WORKSPACE_ACCESS_STEPS)[number];
+};
+
 export class WorkspaceFileError extends Error {
   constructor(
     public readonly code: string,

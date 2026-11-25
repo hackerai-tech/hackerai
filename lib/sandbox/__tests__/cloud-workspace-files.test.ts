@@ -151,6 +151,28 @@ it("labels a missing cloud list folder without changing its public status", asyn
     },
   });
 });
+it.each([
+  ["lookup", () => jest.mocked(Sandbox.getInfo)],
+  ["fence", () => jest.mocked(assertCloudWorkspaceAvailable)],
+  ["connect", () => jest.mocked(Sandbox.connect)],
+  ["run_reader", () => run],
+] as const)(
+  "records %s as the last step of an unclassified provider failure",
+  async (step, target) => {
+    const failure = new Error("provider detail");
+    target().mockRejectedValueOnce(failure);
+    const progress = {};
+    await expect(
+      accessCloudWorkspaceFiles(
+        "owner",
+        "us-east-1",
+        input({ sandboxId: "sandbox" }),
+        progress,
+      ),
+    ).rejects.toBe(failure);
+    expect(progress).toEqual({ step });
+  },
+);
 it("reads without changing a running Agent's sandbox timeout", async () => {
   await accessCloudWorkspaceFiles(
     "owner",

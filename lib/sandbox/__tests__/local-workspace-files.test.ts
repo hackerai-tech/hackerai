@@ -90,6 +90,28 @@ it("releases the relay on failures and preserves a file-change error", async () 
   expect(close).toHaveBeenCalled();
 });
 
+it.each([
+  ["lookup", () => query.mockReset().mockRejectedValue(new Error("relay"))],
+  ["run_reader", () => run.mockRejectedValue(new Error("relay"))],
+  ["decode", () => run.mockResolvedValue({ exitCode: 0, stdout: "partial" })],
+] as const)(
+  "records %s as the last step of an unclassified relay failure",
+  async (step, inject) => {
+    inject();
+    const progress = {};
+    await expect(
+      accessLocalWorkspaceFiles(
+        "owner",
+        "environment:machine",
+        input(),
+        undefined,
+        progress,
+      ),
+    ).rejects.not.toHaveProperty("code");
+    expect(progress).toEqual({ step });
+  },
+);
+
 it.each(["status", "resume"])(
   "returns a real root listing for Local %s without a path",
   async (action) => {
