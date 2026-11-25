@@ -28,7 +28,10 @@ import {
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
-import { readConvexAuthProviderState } from "@/lib/auth/convex-auth-diagnostics";
+import {
+  readConvexAuthProviderState,
+  type ConvexAuthProviderState,
+} from "@/lib/auth/convex-auth-diagnostics";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -111,11 +114,82 @@ const bridgeTelemetry = new DesktopRelayTelemetry(captureAuthenticatedEvent);
 // The bridge outlives the consumer that created it, so its auth-stop
 // diagnostics read the latest committed consumer rather than a render closure.
 // Each commit's snapshot object is its owner token for cleanup.
-let nativeAuthFrontendSnapshot: { state: NativeAuthFrontendState } | null =
-  null;
+let nativeAuthFrontendSnapshot: {
+  state: NativeAuthFrontendState;
+  ownerId?: string;
+} | null = null;
 
 function readNativeAuthFrontendState(): NativeAuthFrontendState {
   return nativeAuthFrontendSnapshot?.state ?? "unavailable";
+}
+
+// A registration sent while our token recovery holds Convex in loading can
+// reach the backend after the SDK clears auth for a null token. Hold it until
+// Convex commits the session's auth result; provider readiness alone can
+// precede the backend's acknowledgement.
+const REGISTRATION_AUTH_WAIT_PROVIDER_STATES = new Set<ConvexAuthProviderState>(
+  ["token_recovery", "authkit_loading_and_token_recovery"],
+);
+const SETTLED_REGISTRATION_AUTH_STATES = new Set<NativeAuthFrontendState>([
+  "owner_present_convex_authenticated",
+  // Terminal: registration proceeds and keeps its existing rejection path.
+  "owner_present_convex_unauthenticated",
+]);
+// Woken on each committed auth/owner change and each generation change, then
+// removed; a wait never outlives the commit, cancellation or stop that ends it.
+const registrationAuthWaiters = new Set<() => void>();
+
+function notifyRegistrationAuthWaiters(): void {
+  for (const wake of [...registrationAuthWaiters]) wake();
+}
+
+function advanceBridgeGeneration(): void {
+  bridgeGeneration += 1;
+  notifyRegistrationAuthWaiters();
+}
+
+function createRegistrationAuthGate(
+  generation: number,
+  ownerId: string | undefined,
+) {
+  // Recovery can finish during the native probes, before Convex acknowledges it.
+  let waitingForConvex = REGISTRATION_AUTH_WAIT_PROVIDER_STATES.has(
+    readConvexAuthProviderState(),
+  );
+  return (signal: AbortSignal): true | Promise<void> => {
+    if (signal.aborted || generation !== bridgeGeneration) {
+      throw new Error("Desktop bridge stopped during startup");
+    }
+    const snapshot = nativeAuthFrontendSnapshot;
+    if (snapshot?.ownerId !== undefined && snapshot.ownerId !== ownerId) {
+      // The owner may change while the native probes run, before the first
+      // auth check. A fresh generation must own the replacement's start.
+      advanceBridgeGeneration();
+      bridgeStartPromise = null;
+      bridgeRetryListener?.();
+      throw new Error("Desktop bridge stopped during startup");
+    }
+    waitingForConvex ||= REGISTRATION_AUTH_WAIT_PROVIDER_STATES.has(
+      readConvexAuthProviderState(),
+    );
+    if (
+      snapshot?.state !== "owner_absent" &&
+      (ownerId === undefined || snapshot?.ownerId === ownerId) &&
+      (!waitingForConvex ||
+        (snapshot && SETTLED_REGISTRATION_AUTH_STATES.has(snapshot.state)))
+    ) {
+      return true;
+    }
+    return new Promise<void>((resolve) => {
+      const wake = () => {
+        registrationAuthWaiters.delete(wake);
+        signal.removeEventListener("abort", wake);
+        resolve();
+      };
+      registrationAuthWaiters.add(wake);
+      signal.addEventListener("abort", wake, { once: true });
+    });
+  };
 }
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
@@ -143,6 +217,9 @@ function scheduleStableRecoveryReset(generation: number): void {
 
 export function useSandboxPreference(
   isAuthenticated: boolean,
+  // In memory only: distinguishes an account replacement that keeps
+  // isAuthenticated true while registration waits.
+  ownerId?: string,
 ): SandboxPreferenceState {
   const [desktopBridgeActive, setDesktopBridgeActive] = useState(false);
   const [desktopBridgeStatus, setDesktopBridgeStatus] =
@@ -158,15 +235,20 @@ export function useSandboxPreference(
       : convexAuth.isAuthenticated
         ? "owner_present_convex_authenticated"
         : "owner_present_convex_unauthenticated";
+  const committedOwnerId = isAuthenticated ? ownerId : undefined;
   useLayoutEffect(() => {
-    const snapshot = { state: nativeAuthFrontendState };
+    const snapshot = {
+      state: nativeAuthFrontendState,
+      ownerId: committedOwnerId,
+    };
     nativeAuthFrontendSnapshot = snapshot;
+    notifyRegistrationAuthWaiters();
     return () => {
       if (nativeAuthFrontendSnapshot === snapshot) {
         nativeAuthFrontendSnapshot = null;
       }
     };
-  }, [nativeAuthFrontendState]);
+  }, [nativeAuthFrontendState, committedOwnerId]);
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
@@ -321,7 +403,7 @@ export function useSandboxPreference(
       bridgeRecoveryTimer = setTimeout(() => {
         bridgeRecoveryTimer = null;
         if (generation !== bridgeGeneration) return;
-        bridgeGeneration += 1;
+        advanceBridgeGeneration();
         bridgeStartPromise = null;
         bridgeRetryListener?.();
       }, delayMs);
@@ -339,7 +421,7 @@ export function useSandboxPreference(
       bridgeRetryListener = null;
       bridgeStatus = "idle";
       bridgeEnvironmentId = undefined;
-      bridgeGeneration += 1;
+      advanceBridgeGeneration();
       bridgeStartPromise = null;
       const bridgeToStop = activeBridge;
       activeBridge = null;
@@ -360,7 +442,7 @@ export function useSandboxPreference(
     // currently mounted consumer, not the component that first started it.
     const handleBeforeUnload = () => {
       bridgeTelemetry.flush();
-      bridgeGeneration += 1;
+      advanceBridgeGeneration();
       clearBridgeRecovery(true);
       bridgeStartPromise = null;
       bridgeStateListener = null;
@@ -404,6 +486,7 @@ export function useSandboxPreference(
 
     async function startBridge() {
       const startGeneration = bridgeGeneration;
+      const startOwnerId = nativeAuthFrontendSnapshot?.ownerId;
       publishBridgeState(false, "connecting");
       try {
         if (!bridgeStartPromise) {
@@ -423,6 +506,10 @@ export function useSandboxPreference(
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
                   readNativeAuthFrontendState,
                   readNativeAuthProviderState: readConvexAuthProviderState,
+                  registrationAuthGate: createRegistrationAuthGate(
+                    generation,
+                    startOwnerId,
+                  ),
                   onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
@@ -456,6 +543,9 @@ export function useSandboxPreference(
                   await bridge.start();
                 } catch (error) {
                   await bridge.stop();
+                  // A start canceled during its registration wait must not
+                  // report failure over the generation that replaced it.
+                  if (generation !== bridgeGeneration) return null;
                   throw error;
                 }
 
@@ -566,7 +656,7 @@ export function useSandboxPreference(
     // A live bridge owns its bounded transport recovery. Keep its callbacks
     // valid (and any running commands intact) when Retry is clicked mid-reconnect.
     if (activeBridge?.getConnectionId()) return;
-    bridgeGeneration += 1;
+    advanceBridgeGeneration();
     bridgeRecoveryExhausted = false;
     bridgeRecoveryPausedOffline = false;
     bridgeRecoveryResumeAt = 0;
@@ -591,7 +681,7 @@ export function useSandboxPreference(
         return;
       if (bridgeRecoveryPausedOffline) {
         bridgeRecoveryPausedOffline = false;
-        bridgeGeneration += 1;
+        advanceBridgeGeneration();
         setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
       } else {
         retryDesktopBridge();

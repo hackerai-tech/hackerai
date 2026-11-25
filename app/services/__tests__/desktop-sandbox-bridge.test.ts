@@ -1463,6 +1463,103 @@ it("keeps one telemetry window across replacement bridges", async () => {
   }
 });
 
+// ── registration auth gate ────────────────────────────────────────────
+
+describe("registration auth gate", () => {
+  function gateSequence(...answers: Array<true | Promise<void>>) {
+    const signals: AbortSignal[] = [];
+    const gate = jest.fn((signal: AbortSignal) => {
+      signals.push(signal);
+      const answer = answers.shift();
+      if (answer === undefined) throw new Error("gate asked too often");
+      return answer;
+    });
+    return { gate, signals };
+  }
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+  const withEnvironment = () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_environment_id" ? "native-environment" : original(cmd, args);
+  };
+
+  it("publishes local identity, then registers once after the gate allows it", async () => {
+    withEnvironment();
+    const firstWake = deferred();
+    const secondWake = deferred();
+    // Auth returned to loading after the first wake, so the gate waits again.
+    const { gate } = gateSequence(firstWake.promise, secondWake.promise, true);
+    const onConnectionState = jest.fn();
+    const config = buildConfig({
+      onConnectionState,
+      registrationAuthGate: gate,
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    const started = bridge.start();
+    try {
+      await waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+      expect(onConnectionState).toHaveBeenCalledWith(
+        "connecting",
+        "native-environment",
+      );
+      firstWake.resolve();
+      await waitFor(() => expect(gate).toHaveBeenCalledTimes(2));
+      expect(config.connectDesktop).not.toHaveBeenCalled();
+      secondWake.resolve();
+      await started;
+      expect(gate).toHaveBeenCalledTimes(3);
+      expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({ environmentId: "native-environment" }),
+      );
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("aborts a waiting registration at stop without registering", async () => {
+    const { gate, signals } = gateSequence(new Promise(() => {}));
+    const config = buildConfig({ registrationAuthGate: gate });
+    const bridge = new DesktopSandboxBridge(config);
+    const started = expect(bridge.start()).rejects.toThrow(
+      "stopped during startup",
+    );
+    await waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+    await bridge.stop();
+    expect(signals[0].aborted).toBe(true);
+    await started;
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(config.connectDesktop).not.toHaveBeenCalled();
+    expect(mockClient.connect).not.toHaveBeenCalled();
+  });
+
+  it("does not register a start the gate cancels", async () => {
+    const wake = deferred();
+    let asked = 0;
+    const gate = jest.fn((): true | Promise<void> => {
+      asked += 1;
+      if (asked === 1) return wake.promise;
+      throw new Error("Desktop bridge stopped during startup");
+    });
+    const config = buildConfig({ registrationAuthGate: gate });
+    const bridge = new DesktopSandboxBridge(config);
+    const started = expect(bridge.start()).rejects.toThrow(
+      "stopped during startup",
+    );
+    await waitFor(() => expect(gate).toHaveBeenCalledTimes(1));
+    wake.resolve();
+    await started;
+    expect(config.connectDesktop).not.toHaveBeenCalled();
+    await bridge.stop();
+  });
+});
+
 describe("terminal connection state", () => {
   it("notifies the owner when the server terminates the connection", async () => {
     const onTerminated = jest.fn();
