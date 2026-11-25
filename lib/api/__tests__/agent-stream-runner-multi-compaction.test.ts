@@ -3279,6 +3279,34 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each([
+    ["ask", 1],
+    ["agent", 0],
+  ] as const)(
+    "refunds a non-aborted %s provider error immediately only when no internal recovery can continue",
+    async (mode, expectedRefunds) => {
+      const refund = jest.fn();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: { hasUsage: false },
+          usageRefundTracker: { refund },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+
+      await stream.onError({ error: new Error("Upstream disconnected") });
+
+      expect(refund).toHaveBeenCalledTimes(expectedRefunds);
+    },
+  );
+
   it.each(["/api/chat", "/api/agent"])(
     "does not attribute a bare disconnect on %s to the previous step's upstream",
     async (endpoint) => {

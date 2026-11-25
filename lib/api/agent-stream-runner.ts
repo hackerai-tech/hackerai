@@ -3776,6 +3776,7 @@ export async function createAgentStream(
       }
       if (
         !isProviderContentBlockedFinishReasonError(error) &&
+        ctx.mode !== "agent" &&
         !ctx.usageTracker.hasUsage
       ) {
         await ctx.usageRefundTracker.refund();

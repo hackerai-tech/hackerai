@@ -122,8 +122,16 @@ function proseText(block: HastNode): string {
 // quotes and Arabic punctuation end the path so they stay outside it.
 const BARE_PATH =
   /(^|[\s([{"'«“‘])((?:~|\.{1,2})?\/[^\s<>"'()[\]{}«»“”‘’،؛؟]*)/gu;
-const PATH_TRAILING_PUNCTUATION = /[.,:;!?]+$/u;
+const PATH_TRAILING_PUNCTUATION = new Set([".", ",", ":", ";", "!", "?"]);
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+// A reverse scan rather than /[.,:;!?]+$/: that regex retries from every
+// punctuation character, so a long run followed by a letter is quadratic.
+function trimTrailingPunctuation(path: string): string {
+  let end = path.length;
+  while (end > 0 && PATH_TRAILING_PUNCTUATION.has(path[end - 1])) end--;
+  return path.slice(0, end);
+}
 
 // Links, code and existing isolates already keep their own direction.
 const ISOLATED_TAGS = new Set(["a", "bdi", "code", "pre"]);
@@ -137,7 +145,7 @@ function isolateBarePathsInText(text: string): HastNode[] | null {
   let pieces: HastNode[] | null = null;
   let cursor = 0;
   for (const match of text.matchAll(BARE_PATH)) {
-    const path = match[2].replace(PATH_TRAILING_PUNCTUATION, "");
+    const path = trimTrailingPunctuation(match[2]);
     // Skip a lone slash and Arabic words written after one ("نعم /لا"):
     // those read correctly in the surrounding right-to-left order.
     if (!LETTER_OR_DIGIT.test(path) || RTL_LETTER.test(path)) continue;

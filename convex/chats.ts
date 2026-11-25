@@ -43,6 +43,7 @@ import {
 import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { getSidebarChatAttention } from "./lib/sidebarChatAttention";
+import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -487,6 +488,11 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     return;
   }
 
+  if (await deleteScopeBatch(ctx, chat.id)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
+  }
+
   // Delete the chat itself
   await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
@@ -557,6 +563,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   }
 
   if (await deleteSubagentDataForChat(ctx, chat.id)) {
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
+
+  if (await deleteScopeBatch(ctx, chat.id)) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }

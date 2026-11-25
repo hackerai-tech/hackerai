@@ -14,41 +14,93 @@ const stripPlatformAuthorizationFromText = (text: string): string =>
     .replace(PLATFORM_AUTHORIZATION_BLOCK_PATTERN, "")
     .replace(PLATFORM_AUTHORIZATION_TAG_PATTERN, "");
 
+type TextBearingModelPart = { type: string; text?: string };
+
+const stripPlatformAuthorizationFromParts = (
+  parts: TextBearingModelPart[],
+): { parts: TextBearingModelPart[]; changed: boolean } => {
+  let changed = false;
+  const cleaned: TextBearingModelPart[] = [];
+  for (let index = 0; index < parts.length;) {
+    const part = parts[index];
+    if (part.type !== "text" || typeof part.text !== "string") {
+      cleaned.push(part);
+      index += 1;
+      continue;
+    }
+
+    const textParts: TextBearingModelPart[] = [];
+    while (
+      index < parts.length &&
+      parts[index].type === "text" &&
+      typeof parts[index].text === "string"
+    ) {
+      textParts.push(parts[index]);
+      index += 1;
+    }
+    const combinedText = textParts.map((textPart) => textPart.text).join("");
+    const text = stripPlatformAuthorizationFromText(combinedText);
+    if (text === combinedText) {
+      cleaned.push(...textParts);
+      continue;
+    }
+
+    changed = true;
+    if (text) cleaned.push({ ...textParts[0], text });
+  }
+  return { parts: cleaned, changed };
+};
+
 const stripPlatformAuthorization = (
   messages: ModelMessage[],
 ): ModelMessage[] => {
   const cleanedMessages = messages.map((message) => {
-    if (message.role !== "user") return message;
-
+    if (message.role !== "user" && message.role !== "assistant") return message;
     if (typeof message.content === "string") {
       const content = stripPlatformAuthorizationFromText(message.content);
       return content === message.content ? message : { ...message, content };
     }
 
-    let changed = false;
-    const content: typeof message.content = [];
-    for (const part of message.content) {
-      if (part.type !== "text") {
-        content.push(part);
-        continue;
-      }
-
-      const text = stripPlatformAuthorizationFromText(part.text);
-      if (text === part.text) {
-        content.push(part);
-        continue;
-      }
-
-      changed = true;
-      if (text) content.push({ ...part, text });
-    }
-
-    return changed ? { ...message, content } : message;
+    const { parts, changed } = stripPlatformAuthorizationFromParts(
+      message.content as TextBearingModelPart[],
+    );
+    return changed ? ({ ...message, content: parts } as ModelMessage) : message;
   });
 
   return cleanedMessages.every((message, index) => message === messages[index])
     ? messages
     : cleanedMessages;
+};
+
+const hasSubstantiveAssistantContent = (content: unknown): boolean => {
+  if (!Array.isArray(content)) {
+    if (content == null) return false;
+    return typeof content !== "string" || content.trim().length > 0;
+  }
+
+  return content.some((part: unknown) => {
+    if (!part || typeof part !== "object") return true;
+    const candidate = part as { type?: unknown; text?: unknown };
+    if (candidate.type === "text") {
+      return (
+        typeof candidate.text === "string" && candidate.text.trim().length > 0
+      );
+    }
+    return (
+      candidate.type !== "reasoning" && candidate.type !== "redacted-reasoning"
+    );
+  });
+};
+
+const removeEmptyAssistantMessages = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  const filtered = messages.filter(
+    (message) =>
+      message.role !== "assistant" ||
+      hasSubstantiveAssistantContent(message.content),
+  );
+  return filtered.length === messages.length ? messages : filtered;
 };
 
 /**
@@ -97,8 +149,10 @@ export const preparePlatformAuthorizationForModel = (
   messages: ModelMessage[],
   platformAuthorized: boolean,
   modelName: string,
-): ModelMessage[] =>
-  appendPlatformAuthorizationToLatestUserMessage(
+): ModelMessage[] => {
+  const prepared = appendPlatformAuthorizationToLatestUserMessage(
     messages,
     platformAuthorized && !isInferenceCyberModel(modelName),
   );
+  return removeEmptyAssistantMessages(prepared);
+};
