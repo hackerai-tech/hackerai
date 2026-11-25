@@ -286,6 +286,7 @@ describe("useSandboxPreference", () => {
       registrationAuthGate?: (signal: AbortSignal) => true | Promise<void>;
     };
     let configs: GateConfig[];
+    let beforeGate: Promise<void> | undefined;
     // The committed frontend state each registration was sent under.
     let registrations: unknown[];
     let clearProviderState: (() => void) | undefined;
@@ -323,6 +324,7 @@ describe("useSandboxPreference", () => {
 
     beforeEach(() => {
       configs = [];
+      beforeGate = undefined;
       registrations = [];
       setConvexAuth(true, false);
       mockConvexAuth = () => convexAuth;
@@ -334,6 +336,7 @@ describe("useSandboxPreference", () => {
           let connectionId: string | null = null;
           return {
             start: jest.fn(async () => {
+              if (beforeGate) await beforeGate;
               await startThroughGate(config, stopped.signal);
               connectionId = "connection";
               return connectionId;
@@ -386,6 +389,37 @@ describe("useSandboxPreference", () => {
         expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
         expect(toast.error).not.toHaveBeenCalled();
       } finally {
+        await signOut(view);
+      }
+    });
+
+    it("waits for Convex when token recovery finishes during the native probes", async () => {
+      let finishProbes!: () => void;
+      beforeGate = new Promise<void>((resolve) => {
+        finishProbes = resolve;
+      });
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+
+        setProviderState("ready");
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await act(async () => finishProbes());
+
+        expect(view.result.current.desktopEnvironmentId).toBe(
+          "native-environment",
+        );
+        expect(view.result.current.desktopBridgeStatus).toBe("connecting");
+        expect(registrations).toEqual([]);
+
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+      } finally {
+        finishProbes();
         await signOut(view);
       }
     });

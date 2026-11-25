@@ -152,7 +152,10 @@ function createRegistrationAuthGate(
   generation: number,
   ownerId: string | undefined,
 ) {
-  let waitingForConvex = false;
+  // Recovery can finish during the native probes, before Convex acknowledges it.
+  let waitingForConvex = REGISTRATION_AUTH_WAIT_PROVIDER_STATES.has(
+    readConvexAuthProviderState(),
+  );
   return (signal: AbortSignal): true | Promise<void> => {
     if (signal.aborted || generation !== bridgeGeneration) {
       throw new Error("Desktop bridge stopped during startup");
