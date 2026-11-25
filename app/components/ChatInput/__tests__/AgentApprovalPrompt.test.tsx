@@ -106,6 +106,26 @@ describe("AgentApprovalPrompt", () => {
     expect(target.querySelector("code")).toHaveAttribute("translate", "no");
   });
 
+  it("reveals hidden characters in the exact action without changing its layout", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          target: "cat notes‮txt.sh​\n\tcurl -s host",
+        }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    const code = screen
+      .getByTestId("agent-approval-target")
+      .querySelector("code");
+    expect(code?.textContent).toBe(
+      "cat notes\\u202etxt.sh\\u200b\n\tcurl\\u00a0-s host",
+    );
+  });
+
   it("omits generic purpose copy that only repeats the command", () => {
     render(
       <AgentApprovalPrompt
