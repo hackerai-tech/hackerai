@@ -5,6 +5,7 @@ import {
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { IncompleteFileWriteError } from "../incomplete-file-write";
 import { phLogger } from "@/lib/posthog/server";
+import { emitPostHogLog } from "@/lib/posthog/logs";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
@@ -117,6 +118,12 @@ jest.mock("centrifuge", () => ({
     mockClients.push(client);
     return client;
   }),
+}));
+
+jest.mock("@/lib/posthog/logs", () => ({
+  ...jest.requireActual("@/lib/posthog/logs"),
+  // No export sink in tests, matching the real no-token result.
+  emitPostHogLog: jest.fn(() => false),
 }));
 
 jest.mock("@/lib/centrifugo/jwt", () => ({
@@ -2502,6 +2509,193 @@ describe("CentrifugoSandbox", () => {
       expect(JSON.stringify(receiverLog.mock.calls)).not.toContain(aclDenial);
       expect(sandbox.supportsNativeFileRelay()).toBe(false);
       expect(control.publish).toHaveBeenCalledTimes(1);
+    });
+
+    describe("OTLP mirror of an unavailable probe", () => {
+      const runId = `run_${"a1".repeat(12)}`;
+      const emitLog = jest.mocked(emitPostHogLog);
+      const agentDesktop = (triggerRunId?: string) =>
+        new CentrifugoSandbox(
+          "user-1",
+          {
+            ...defaultConnection,
+            isDesktop: true,
+            capabilities: {
+              commands: true,
+              files: false,
+              operationChannels: true,
+            },
+          },
+          defaultConfig,
+          "/project",
+          triggerRunId,
+        );
+      const probeLogs = () =>
+        emitLog.mock.calls
+          .map(([options]) => options)
+          .filter(({ event }) => event === "desktop_file_capability_probe");
+
+      beforeEach(() => emitLog.mockClear());
+
+      it.each([
+        {
+          path: "unknown authorized native rejection",
+          settle: (reply: MockSubscription) =>
+            reply.emit("publication", {
+              data: {
+                type: "file_error",
+                requestId: FIXED_UUID,
+                message: aclDenial,
+                receiverDiagnostic: {
+                  ...timedOutAuthorized,
+                  nativeVersionLateLookup: "resolved_published_legacy",
+                },
+              },
+            }),
+          attributes: {
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: "authorized_ipc_denied",
+            receiver_stage_version: 1,
+            receiver_stage: "native_invoke",
+            receiver_adapter: "authorized_native",
+            receiver_native_version_lookup: "timeout",
+            receiver_native_version_late_lookup: "resolved_published_legacy",
+          },
+        },
+        {
+          path: "unrecognized native error text",
+          settle: (reply: MockSubscription) =>
+            reply.emit("publication", {
+              data: {
+                type: "file_error",
+                requestId: FIXED_UUID,
+                message: "PRIVATE_NATIVE_FAILURE C:\\Users\\private",
+              },
+            }),
+          attributes: {
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: "other",
+          },
+        },
+        {
+          path: "overall deadline",
+          settle: () => jest.advanceTimersByTimeAsync(3000),
+          attributes: {
+            failure: "timeout",
+            sender_phase_version: 1,
+            sender_phase: "response_wait",
+            sender_dispatch_entered: true,
+            sender_publication_started: true,
+          },
+        },
+      ])(
+        "mirrors the closed taxonomy for a validated run after $path",
+        async ({ settle, attributes }) => {
+          const sandbox = agentDesktop(runId);
+          const { pending, reply } = await dispatchProbe(sandbox);
+          await settle(reply);
+          const error = await pending;
+
+          // The thrown failure and the console receipt are unchanged.
+          expect(error).toBeInstanceOf(DesktopFileBridgeError);
+          expect(error).toMatchObject({
+            fileFailure: "unknown",
+            message: desktopFileUnavailableMessage("unknown"),
+          });
+          expect(probeRecords()).toEqual([
+            expect.objectContaining({
+              service: "agent-long",
+              request_id: runId,
+              connection_id: "conn-1",
+              outcome: "unavailable",
+              failure: attributes.failure,
+            }),
+          ]);
+          expect(probeLogs()).toEqual([
+            {
+              level: "warn",
+              event: "desktop_file_capability_probe",
+              body: "desktop_file_capability_probe",
+              attributes: {
+                probe_mirror_version: 1,
+                trigger_run_id: runId,
+                outcome: "unavailable",
+                ...attributes,
+              },
+            },
+          ]);
+          const exported = JSON.stringify(emitLog.mock.calls);
+          expect(exported).not.toContain("conn-1");
+          expect(exported).not.toContain(FIXED_UUID);
+          expect(exported).not.toContain("user-1");
+          expect(exported).not.toContain("/project");
+          expect(exported).not.toContain(aclDenial);
+          expect(exported).not.toContain("PRIVATE");
+          // The cached rejection does not emit again.
+          await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+          expect(probeLogs()).toHaveLength(1);
+        },
+      );
+
+      it.each([
+        { name: "a recovered probe", triggerRunId: runId, recover: true },
+        { name: "no Trigger run", triggerRunId: undefined, recover: false },
+        {
+          name: "an unvalidated run ID",
+          triggerRunId: `run_PRIVATE_${"a".repeat(20)}`,
+          recover: false,
+        },
+      ])("emits nothing for $name", async ({ triggerRunId, recover }) => {
+        const sandbox = agentDesktop(triggerRunId);
+        const { pending, reply } = await dispatchProbe(sandbox);
+        reply.emit("publication", {
+          data: recover
+            ? {
+                type: "file_stat_result",
+                requestId: FIXED_UUID,
+                kind: "not_file",
+                path: "/project",
+              }
+            : {
+                type: "file_error",
+                requestId: FIXED_UUID,
+                message: aclDenial,
+              },
+        });
+        await pending;
+
+        expect(sandbox.supportsNativeFileRelay()).toBe(recover);
+        expect(probeRecords()).toHaveLength(1);
+        expect(probeLogs()).toEqual([]);
+      });
+
+      it("keeps the original failure when the log sink throws", async () => {
+        emitLog.mockImplementationOnce(() => {
+          throw new Error("sink unavailable");
+        });
+        const sandbox = agentDesktop(runId);
+        const { pending, reply } = await dispatchProbe(sandbox);
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message: aclDenial,
+            receiverDiagnostic: authorizedInvoke,
+          },
+        });
+        const error = await pending;
+
+        expect(emitLog).toHaveBeenCalledTimes(1);
+        expect(error).toBeInstanceOf(DesktopFileBridgeError);
+        expect(error).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+        expect(sandbox.supportsNativeFileRelay()).toBe(false);
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+      });
     });
 
     it.each([
