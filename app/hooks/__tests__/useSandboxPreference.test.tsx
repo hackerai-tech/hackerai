@@ -1,7 +1,18 @@
 import { Component, StrictMode, Suspense, type ReactNode } from "react";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
+import {
+  publishConvexAuthProviderState,
+  type ConvexAuthProviderState,
+} from "@/lib/auth/convex-auth-diagnostics";
 
 const mockResolvedPreferences = new Map<string, string>();
 type ConvexAuthState = { isLoading: boolean; isAuthenticated: boolean };
@@ -266,6 +277,336 @@ describe("useSandboxPreference", () => {
       } finally {
         await act(async () => consumer.rerender({ authenticated: false }));
         consumer.unmount();
+      }
+    });
+  });
+
+  describe("registration auth wait during token recovery", () => {
+    type GateConfig = BridgeConfig & {
+      registrationAuthGate?: (signal: AbortSignal) => true | Promise<void>;
+    };
+    let configs: GateConfig[];
+    // The committed frontend state each registration was sent under.
+    let registrations: unknown[];
+    let clearProviderState: (() => void) | undefined;
+    const setProviderState = (state: ConvexAuthProviderState) => {
+      clearProviderState?.();
+      clearProviderState = publishConvexAuthProviderState(state);
+    };
+    let convexAuth: ConvexAuthState;
+    const setConvexAuth = (isLoading: boolean, isAuthenticated: boolean) => {
+      convexAuth = { isLoading, isAuthenticated };
+    };
+    type Props = { authenticated: boolean; ownerId?: string };
+    const mountConsumer = () =>
+      renderHook(
+        ({ authenticated, ownerId }: Props) =>
+          useSandboxPreference(authenticated, ownerId),
+        { initialProps: { authenticated: true, ownerId: "user-a" } as Props },
+      );
+    const flush = () => act(async () => {});
+
+    // Mirrors the bridge's registration contract, which its own suite covers:
+    // publish local identity, ask the gate, await each wake, register on true.
+    const startThroughGate = async (
+      config: GateConfig,
+      signal: AbortSignal,
+    ) => {
+      config.onConnectionState?.("connecting", "native-environment");
+      const gate = config.registrationAuthGate ?? (() => true as const);
+      for (let ready = gate(signal); ready !== true; ready = gate(signal)) {
+        await ready;
+        if (signal.aborted) throw new Error("stopped during startup");
+      }
+      registrations.push(config.readNativeAuthFrontendState?.());
+    };
+
+    beforeEach(() => {
+      configs = [];
+      registrations = [];
+      setConvexAuth(true, false);
+      mockConvexAuth = () => convexAuth;
+      setProviderState("token_recovery");
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: GateConfig) => {
+          configs.push(config);
+          const stopped = new AbortController();
+          let connectionId: string | null = null;
+          return {
+            start: jest.fn(async () => {
+              await startThroughGate(config, stopped.signal);
+              connectionId = "connection";
+              return connectionId;
+            }),
+            stop: jest.fn(async () => {
+              stopped.abort();
+              connectionId = null;
+            }),
+            getConnectionId: () => connectionId,
+            getEnvironmentId: () => "native-environment",
+          };
+        },
+      );
+    });
+
+    afterEach(() => {
+      clearProviderState?.();
+      clearProviderState = undefined;
+    });
+
+    const signOut = async (view: ReturnType<typeof mountConsumer>) => {
+      await act(async () => view.rerender({ authenticated: false }));
+      view.unmount();
+    };
+
+    it("registers once, only after Convex acknowledges the recovered session", async () => {
+      const view = mountConsumer();
+      try {
+        // Local identity is published while backend registration waits.
+        await waitFor(() =>
+          expect(view.result.current.desktopEnvironmentId).toBe(
+            "native-environment",
+          ),
+        );
+        expect(view.result.current.desktopBridgeStatus).toBe("connecting");
+        expect(registrations).toEqual([]);
+
+        // The provider can finish recovery before the backend acknowledges.
+        setProviderState("ready");
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await flush();
+        expect(registrations).toEqual([]);
+
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+        expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("lets a terminal unauthenticated result register into its existing rejection path", async () => {
+      setProviderState("authkit_loading_and_token_recovery");
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        await flush();
+        expect(registrations).toEqual([]);
+        setProviderState("ready");
+        setConvexAuth(false, false);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await waitFor(() =>
+          expect(registrations).toEqual([
+            "owner_present_convex_unauthenticated",
+          ]),
+        );
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it.each<[ConvexAuthProviderState | "uncommitted", boolean]>([
+      ["ready", false],
+      ["authkit_loading", true],
+      ["uncommitted", true],
+    ])(
+      "does not wait outside token recovery (provider %s, Convex loading %s)",
+      async (providerState, convexLoading) => {
+        if (providerState === "uncommitted") {
+          clearProviderState?.();
+          clearProviderState = undefined;
+        } else {
+          setProviderState(providerState);
+        }
+        setConvexAuth(convexLoading, !convexLoading);
+        const view = mountConsumer();
+        try {
+          await waitFor(() =>
+            expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+          );
+          expect(registrations).toEqual([
+            convexLoading
+              ? "owner_present_convex_loading"
+              : "owner_present_convex_authenticated",
+          ]);
+        } finally {
+          await signOut(view);
+        }
+      },
+    );
+
+    it("asks again at dispatch when auth returns to loading after a wake", async () => {
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: GateConfig) => {
+          configs.push(config);
+          return {
+            start: jest.fn(() => new Promise(() => {})),
+            stop: jest.fn().mockResolvedValue(undefined),
+            getConnectionId: () => null,
+          };
+        },
+      );
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        const gate = configs[0].registrationAuthGate!;
+        const signal = new AbortController().signal;
+        const woken = gate(signal);
+        expect(woken).toBeInstanceOf(Promise);
+
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        setConvexAuth(true, false);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await woken;
+        // The wake no longer reflects the committed state.
+        const again = gate(signal);
+        expect(again).toBeInstanceOf(Promise);
+
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await again;
+        expect(gate(signal)).toBe(true);
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("settles an aborted wait without a later auth commit", async () => {
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: GateConfig) => {
+          configs.push(config);
+          return {
+            start: jest.fn(() => new Promise(() => {})),
+            stop: jest.fn().mockResolvedValue(undefined),
+            getConnectionId: () => null,
+          };
+        },
+      );
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        const controller = new AbortController();
+        const woken = configs[0].registrationAuthGate!(controller.signal);
+        controller.abort();
+        await expect(woken).resolves.toBeUndefined();
+        expect(() =>
+          configs[0].registrationAuthGate!(controller.signal),
+        ).toThrow("stopped during startup");
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("cancels a waiting registration at sign-out without sending it under the next session", async () => {
+      const view = mountConsumer();
+      await waitFor(() => expect(configs).toHaveLength(1));
+      await act(async () =>
+        view.rerender({ authenticated: false, ownerId: undefined }),
+      );
+      expect(view.result.current.desktopBridgeStatus).toBe("idle");
+
+      setProviderState("ready");
+      setConvexAuth(false, true);
+      view.rerender({ authenticated: true, ownerId: "user-a" });
+      try {
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(configs).toHaveLength(2);
+        // Only the new session's start registered.
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("replaces a waiting start on Retry without reporting it failed", async () => {
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        act(() => view.result.current.retryDesktopBridge());
+        await waitFor(() => expect(configs).toHaveLength(2));
+        await flush();
+        expect(view.result.current.desktopBridgeStatus).toBe("connecting");
+        expect(registrations).toEqual([]);
+
+        setProviderState("ready");
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-a" });
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("fences an older start when the account changes before its first gate check", async () => {
+      setProviderState("ready");
+      setConvexAuth(false, true);
+      let finishFirstProbe!: () => void;
+      const firstProbe = new Promise<void>((resolve) => {
+        finishFirstProbe = resolve;
+      });
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: GateConfig) => {
+          const firstStart = configs.length === 0;
+          configs.push(config);
+          const stopped = new AbortController();
+          return {
+            start: jest.fn(async () => {
+              if (firstStart) await firstProbe;
+              await startThroughGate(config, stopped.signal);
+            }),
+            stop: jest.fn(async () => stopped.abort()),
+            getConnectionId: () => null,
+            getEnvironmentId: () => "native-environment",
+          };
+        },
+      );
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        view.rerender({ authenticated: true, ownerId: "user-b" });
+        await act(async () => finishFirstProbe());
+        await waitFor(() => expect(configs).toHaveLength(2));
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        await signOut(view);
+      }
+    });
+
+    it("restarts for a replacement account that stays signed in while registration waits", async () => {
+      const view = mountConsumer();
+      try {
+        await waitFor(() => expect(configs).toHaveLength(1));
+        view.rerender({ authenticated: true, ownerId: "user-b" });
+        await waitFor(() => expect(configs).toHaveLength(2));
+        await flush();
+        expect(registrations).toEqual([]);
+        expect(view.result.current.desktopBridgeStatus).toBe("connecting");
+
+        setProviderState("ready");
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true, ownerId: "user-b" });
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        // The first account's start never registered under the second's auth.
+        expect(registrations).toEqual(["owner_present_convex_authenticated"]);
+        expect(toast.error).not.toHaveBeenCalled();
+      } finally {
+        await signOut(view);
       }
     });
   });

@@ -679,6 +679,14 @@ interface DesktopBridgeConfig {
   readNativeAuthProviderState?: () => ConvexAuthProviderState;
   // Defaults to the committed provider's module state; injectable for tests.
   readNativeAuthTokenDecision?: () => unknown;
+  /**
+   * Asked synchronously immediately before registration. Returns true when
+   * connectDesktop may be invoked now; otherwise a promise that settles when
+   * the committed auth state or session owner may have changed (or `signal`
+   * aborts), after which it is asked again. Throws when this start no longer
+   * belongs to the current session.
+   */
+  registrationAuthGate?: (signal: AbortSignal) => true | Promise<void>;
 }
 
 type NativeAuthStateReaders = Pick<
@@ -736,6 +744,8 @@ export class DesktopSandboxBridge {
   /** Native identity proven at startup; older binaries have none. */
   private nativeSession: DesktopSessionIdentity | undefined;
   private sessionChallengeInFlight = false;
+  /** The current start's pending registration auth wait, aborted at stop. */
+  private registrationAuthWait: AbortController | null = null;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -1014,6 +1024,7 @@ export class DesktopSandboxBridge {
     const generation = ++this.startupGeneration;
     const wasStopped = () =>
       this.isStoppingOrStopped || generation !== this.startupGeneration;
+    this.registrationAuthWait?.abort();
     this.isStoppingOrStopped = false;
     this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
@@ -1069,6 +1080,42 @@ export class DesktopSandboxBridge {
     const commandStdin = await this.probeCommandStdin();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
+    // Local identity is already published above; only the backend
+    // registration waits for the session's auth to settle.
+    const gate = this.config.registrationAuthGate;
+    if (gate) {
+      const wait = new AbortController();
+      this.registrationAuthWait = wait;
+      try {
+        for (
+          let ready = gate(wait.signal);
+          ready !== true;
+          ready = gate(wait.signal)
+        ) {
+          // Do not accumulate abort listeners across auth-state wakes.
+          let onAbort: (() => void) | undefined;
+          const aborted = new Promise<void>((resolve) => {
+            onAbort = resolve;
+            if (wait.signal.aborted) resolve();
+            else wait.signal.addEventListener("abort", onAbort, { once: true });
+          });
+          try {
+            await Promise.race([ready, aborted]);
+          } finally {
+            if (onAbort) wait.signal.removeEventListener("abort", onAbort);
+          }
+          if (wasStopped())
+            throw new Error("Desktop bridge stopped during startup");
+        }
+        if (wasStopped())
+          throw new Error("Desktop bridge stopped during startup");
+      } finally {
+        if (this.registrationAuthWait === wait)
+          this.registrationAuthWait = null;
+      }
+    }
+    // No await between the gate's final answer and this invocation, so a
+    // stale continuation cannot register under a newer auth state.
     const registration = this.nativeAuthInvocation(
       "localSandbox:connectDesktop",
     );
@@ -4022,6 +4069,8 @@ export class DesktopSandboxBridge {
     this.startupGeneration += 1;
     this.commandOutputStopSource = "bridge_stop";
     this.isStoppingOrStopped = true;
+    this.registrationAuthWait?.abort();
+    this.registrationAuthWait = null;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
     this.ackTelemetry.dispose();
     this.acknowledgedOutputs.clear();

@@ -543,7 +543,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     desktopBridgeStatus,
     desktopEnvironmentId,
     retryDesktopBridge,
-  } = useSandboxPreference(!!user);
+  } = useSandboxPreference(!!user, user?.id);
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
