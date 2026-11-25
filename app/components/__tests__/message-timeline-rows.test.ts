@@ -399,6 +399,28 @@ describe("deriveChatTimelineRows", () => {
     });
   });
 
+  it("shows a steer-only finished run without an empty Worked for header", () => {
+    const message = agentMessage([
+      { type: "data-agent-steer", data: { id: "steer-1", text: "Skip it" } },
+      { type: "text", text: "final answer" },
+    ] as ChatMessage["parts"]);
+    const rows = (status: "ready" | "streaming") =>
+      deriveChatTimelineRows({
+        messages: [message],
+        status,
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      }).map((row) => row.kind);
+
+    expect(rows("ready")).toEqual(["agent-activity", "message"]);
+    // A live run keeps its Working for timer.
+    expect(rows("streaming")).toEqual([
+      "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
   it("settles a completed prior tool step into its summary group", () => {
     const message = agentMessage([
       { type: "step-start" },

@@ -234,23 +234,30 @@ export function deriveChatTimelineRows({
       workPartIndexes,
     });
 
-    rows.push({
-      kind: "agent-work-header",
-      id: `work-header:${message.id}`,
-      message,
-      messageIndex,
-      canToggle,
-      durationMs:
-        typeof message.metadata?.generationTimeMs === "number"
-          ? message.metadata.generationTimeMs
-          : undefined,
-      expanded,
-      isTiming,
-      startedAt:
-        typeof message.metadata?.generationStartedAt === "number"
-          ? message.metadata.generationStartedAt
-          : undefined,
-    });
+    // A finished run whose only activity is a steer has no work to collapse,
+    // so its steer shows without an empty Worked for header.
+    const onlySteers = projection.activities.every(({ part }) =>
+      isAgentSteerPart(part),
+    );
+    if (!(canToggle && onlySteers)) {
+      rows.push({
+        kind: "agent-work-header",
+        id: `work-header:${message.id}`,
+        message,
+        messageIndex,
+        canToggle,
+        durationMs:
+          typeof message.metadata?.generationTimeMs === "number"
+            ? message.metadata.generationTimeMs
+            : undefined,
+        expanded,
+        isTiming,
+        startedAt:
+          typeof message.metadata?.generationStartedAt === "number"
+            ? message.metadata.generationStartedAt
+            : undefined,
+      });
+    }
 
     // Steers are the user's own words, so they stay visible after a finished
     // run collapses its work, between Worked for and the answer.
