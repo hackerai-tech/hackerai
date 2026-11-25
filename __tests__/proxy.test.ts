@@ -295,11 +295,24 @@ describe("proxy", () => {
       "https://deployment.vercel.app/callback",
     ],
     ["preview", "untrusted.example", "https://deployment.vercel.app/callback"],
+    // The configured QA alias keeps its own callback; look-alikes do not.
+    ["preview", "preview.hackerai.co", "https://preview.hackerai.co/callback"],
+    [
+      "preview",
+      "preview.hackerai.co.evil.example",
+      "https://deployment.vercel.app/callback",
+    ],
     ["production", "qa-branch.vercel.app", undefined],
+    ["production", "preview.hackerai.co", undefined],
   ])(
     "keeps auth on a trusted Preview branch origin (%s / %s)",
     async (environment, host, redirectUri) => {
-      const keys = ["VERCEL_ENV", "VERCEL_URL", "VERCEL_BRANCH_URL"] as const;
+      const keys = [
+        "VERCEL_ENV",
+        "VERCEL_URL",
+        "VERCEL_BRANCH_URL",
+        "PREVIEW_QA_HOST",
+      ] as const;
       const previous = Object.fromEntries(
         keys.map((key) => [key, process.env[key]]),
       );
@@ -307,6 +320,7 @@ describe("proxy", () => {
         VERCEL_ENV: environment,
         VERCEL_URL: "deployment.vercel.app",
         VERCEL_BRANCH_URL: "qa-branch.vercel.app",
+        PREVIEW_QA_HOST: "preview.hackerai.co",
       });
       mockAuthkit.mockResolvedValue({
         session: { user: { id: "user" } },
