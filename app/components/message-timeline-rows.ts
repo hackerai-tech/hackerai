@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatStatus } from "@/types";
+import { isAgentSteerPart } from "@/lib/chat/agent-steer";
 import {
   projectAgentWorkParts,
   projectAgentWorkTimelineItems,
@@ -251,38 +252,43 @@ export function deriveChatTimelineRows({
           : undefined,
     });
 
-    if (expanded) {
-      for (const item of timelineItems) {
-        if (item.kind === "tool-group") {
-          rows.push({
-            kind: "agent-tool-group",
-            id: `work:${message.id}:${item.id}`,
-            message,
-            messageIndex,
-            activities: item.activities,
-            isLastMessage: messageIndex === messages.length - 1,
-            restored: isRestored,
-            settled: item.settled,
-            summary: item.summary,
-            terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
-          });
-          continue;
-        }
-
-        const { kind: _kind, ...activity } = item;
+    // Steers are the user's own words, so they stay visible after a finished
+    // run collapses its work, between Worked for and the answer.
+    const visibleItems = expanded
+      ? timelineItems
+      : timelineItems.filter(
+          (item) => item.kind === "activity" && isAgentSteerPart(item.part),
+        );
+    for (const item of visibleItems) {
+      if (item.kind === "tool-group") {
         rows.push({
-          kind: "agent-activity",
+          kind: "agent-tool-group",
+          id: `work:${message.id}:${item.id}`,
           message,
           messageIndex,
-          ...activity,
-          id: `work:${message.id}:${activity.id}`,
+          activities: item.activities,
           isLastMessage: messageIndex === messages.length - 1,
-          keepLatestReasoningOpenDuringStreaming: true,
-          suppressReasoningAutoOpen: isRestored,
-          deferReasoningCollapseUntilParent: hasFinalAnswer,
+          restored: isRestored,
+          settled: item.settled,
+          summary: item.summary,
           terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
         });
+        continue;
       }
+
+      const { kind: _kind, ...activity } = item;
+      rows.push({
+        kind: "agent-activity",
+        message,
+        messageIndex,
+        ...activity,
+        id: `work:${message.id}:${activity.id}`,
+        isLastMessage: messageIndex === messages.length - 1,
+        keepLatestReasoningOpenDuringStreaming: true,
+        suppressReasoningAutoOpen: isRestored,
+        deferReasoningCollapseUntilParent: hasFinalAnswer,
+        terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
+      });
     }
 
     rows.push({
