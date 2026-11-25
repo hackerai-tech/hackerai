@@ -1436,12 +1436,33 @@ describe("subagent finalization", () => {
 });
 
 describe("subagent deletion cancellation", () => {
+  const indexedQuery = (rows: Array<Record<string, unknown>>) =>
+    jest.fn(() => ({
+      withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+        const equalities: Array<[string, unknown]> = [];
+        const q = {
+          eq: jest.fn((field: string, value: unknown) => {
+            equalities.push([field, value]);
+            return q;
+          }),
+        };
+        callback(q);
+        const matchingRows = rows.filter((row) =>
+          equalities.every(([field, value]) => row[field] === value),
+        );
+        return {
+          take: jest.fn(async (limit: number) => matchingRows.slice(0, limit)),
+        };
+      }),
+    }));
+
   it("returns canceled Trigger ids again when a later deletion flow uses a different reason", async () => {
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const rowsByStatus: Record<string, Array<Record<string, unknown>>> = {
       running: [
         {
           _id: "active-child",
+          chat_id: "chat-1",
           user_id: "user-1",
           status: "running",
           trigger_run_id: "child-run-active",
@@ -1450,6 +1471,7 @@ describe("subagent deletion cancellation", () => {
       canceled: [
         {
           _id: "retry-child",
+          chat_id: "chat-1",
           user_id: "user-1",
           status: "canceled",
           trigger_run_id: "child-run-retry",
@@ -1459,23 +1481,7 @@ describe("subagent deletion cancellation", () => {
     };
     const ctx = {
       db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            let status = "";
-            const q = {
-              eq: jest.fn((field: string, value: string) => {
-                if (field === "status") status = value;
-                return q;
-              }),
-            };
-            callback(q);
-            return {
-              take: jest
-                .fn<any>()
-                .mockResolvedValue(rowsByStatus[status] ?? []),
-            };
-          }),
-        })),
+        query: indexedQuery(Object.values(rowsByStatus).flat()),
         patch,
       },
     } as any;
@@ -1512,23 +1518,7 @@ describe("subagent deletion cancellation", () => {
     };
     const ctx = {
       db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            let status = "";
-            const q = {
-              eq: jest.fn((field: string, value: string) => {
-                if (field === "status") status = value;
-                return q;
-              }),
-            };
-            callback(q);
-            return {
-              take: jest
-                .fn<any>()
-                .mockResolvedValue(status === "canceled" ? [retryRow] : []),
-            };
-          }),
-        })),
+        query: indexedQuery([retryRow]),
         patch,
       },
     } as any;
@@ -1557,25 +1547,7 @@ describe("subagent deletion cancellation", () => {
     }));
     const ctx = {
       db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
-            let status = "";
-            const q = {
-              eq: jest.fn((field: string, value: string) => {
-                if (field === "status") status = value;
-                return q;
-              }),
-            };
-            callback(q);
-            return {
-              take: jest
-                .fn<any>()
-                .mockImplementation(async (limit: number) =>
-                  status === "canceled" ? canceledRows.slice(0, limit) : [],
-                ),
-            };
-          }),
-        })),
+        query: indexedQuery(canceledRows),
         patch,
       },
     } as any;

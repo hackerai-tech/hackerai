@@ -496,12 +496,17 @@ test("a newer user message supersedes an older delivered stop", () => {
 });
 
 test("does not synchronously parse oversized persisted wait replies", () => {
-  const sources = buildPredictionSources(
-    waitTurn("List my lab hosts.", wait("“".repeat(60_000))),
+  const oversized = buildPredictionSources(
+    waitTurn("List my lab hosts.", wait(`${"x".repeat(59_994)}. stop`)),
+  );
+  const boundary = buildPredictionSources(
+    waitTurn("List my lab hosts.", wait(`${"x".repeat(3_994)}. stop`)),
   );
 
-  expect(sources.at(-1)?.latestUserReplyStopped).toBe(false);
-  expect(hasExplicitPredictionStop(sources)).toBe(false);
+  expect(oversized.at(-1)?.latestUserReplyStopped).toBe(false);
+  expect(hasExplicitPredictionStop(oversized)).toBe(false);
+  expect(boundary.at(-1)?.latestUserReplyStopped).toBe(true);
+  expect(hasExplicitPredictionStop(boundary)).toBe(true);
 });
 
 test("retains structured questions and delivered replies even without user message rows", () => {
