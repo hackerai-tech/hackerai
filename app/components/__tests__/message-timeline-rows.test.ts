@@ -369,6 +369,67 @@ describe("deriveChatTimelineRows", () => {
     ]);
   });
 
+  it("keeps a read steer visible when settled work collapses", () => {
+    const message = agentMessage([
+      {
+        type: "tool-shell",
+        toolCallId: "tool-1",
+        input: { command: "sleep 30" },
+        state: "output-available",
+      },
+      { type: "data-agent-steer", data: { id: "steer-1", text: "Skip it" } },
+      { type: "text", text: "final answer" },
+    ] as ChatMessage["parts"]);
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "ready",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+    expect((rows[1] as AgentActivityTimelineRow).part).toMatchObject({
+      type: "data-agent-steer",
+      data: { text: "Skip it" },
+    });
+  });
+
+  it("shows a steer-only finished run without an empty Worked for header", () => {
+    const message = agentMessage([
+      { type: "data-agent-steer", data: { id: "steer-1", text: "Skip it" } },
+      { type: "text", text: "final answer" },
+    ] as ChatMessage["parts"]);
+    const rows = (status: "ready" | "streaming") =>
+      deriveChatTimelineRows({
+        messages: [message],
+        status,
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      }).map((row) => row.kind);
+
+    expect(rows("ready")).toEqual(["agent-activity", "message"]);
+    // Also when the run finished without answer text, e.g. after a stop.
+    expect(
+      deriveChatTimelineRows({
+        messages: [agentMessage([message.parts[0]])],
+        status: "ready",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      }).map((row) => row.kind),
+    ).toEqual(["agent-activity", "message"]);
+    // A live run keeps its Working for timer.
+    expect(rows("streaming")).toEqual([
+      "agent-work-header",
+      "agent-activity",
+      "message",
+    ]);
+  });
+
   it("settles a completed prior tool step into its summary group", () => {
     const message = agentMessage([
       { type: "step-start" },

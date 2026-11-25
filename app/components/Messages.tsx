@@ -19,6 +19,7 @@ import {
 import dynamic from "next/dynamic";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { BrainIcon } from "lucide-react";
+import { SteerMessageBubble } from "./SteerMessageBubble";
 import { MessageItem } from "./MessageItem";
 import { AgentActivityRow } from "./AgentActivityRow";
 import { AgentToolGroupRow } from "./AgentToolGroupRow";
@@ -197,24 +198,6 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
     ref.current = element;
   }
 };
-
-/**
- * A steer the running Agent has not read yet, shown where it will land: the
- * end of the current turn. Once read, it renders inline as a saved part.
- */
-const PendingSteerBubble = ({ text }: { text: string }) => (
-  <div
-    className="my-2 flex w-full justify-end"
-    data-testid="pending-agent-steer"
-  >
-    <div className="max-w-[80%] rounded-[18px] rounded-se-lg border border-dashed border-border bg-secondary/60 px-4 py-1.5 text-primary-foreground">
-      <div className="text-xs text-muted-foreground" role="status">
-        Steer · waiting to be read
-      </div>
-      <div className="whitespace-pre-wrap break-words opacity-80">{text}</div>
-    </div>
-  </div>
-);
 
 interface MessagesProps {
   chatId: string;
@@ -1024,7 +1007,7 @@ export const Messages = ({
           <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
         )}
         {pendingSteers.map((steer) => (
-          <PendingSteerBubble key={steer.id} text={steer.text} />
+          <SteerMessageBubble key={steer.id} text={steer.text} pending />
         ))}
         {shouldShowLoadingDots ? (
           showPendingAgentReasoning ? (
