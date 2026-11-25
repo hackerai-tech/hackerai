@@ -170,13 +170,18 @@ const workLedgerSummaryValidator = v.object({
 });
 const isActiveStatus = (status: string): boolean =>
   ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
-const isPendingDeletionCancellation = (
-  row: {
-    status: string;
-    cancel_reason?: string;
-  },
-  reason: string,
-): boolean => row.status === "canceled" && row.cancel_reason === reason;
+const DELETION_CANCELLATION_REASONS = [
+  "chat_deleted",
+  "all_chats_deleted",
+  "account_deleted",
+  "terminal-sandbox-deleted",
+] as const;
+const isPendingDeletionCancellation = (row: {
+  status: string;
+  cancel_reason?: string;
+}): boolean =>
+  row.status === "canceled" &&
+  DELETION_CANCELLATION_REASONS.some((reason) => row.cancel_reason === reason);
 const deletionCancellationResultValidator = v.object({
   triggerRunIds: v.array(v.string()),
   hasMore: v.boolean(),
@@ -1257,15 +1262,17 @@ export const cancelForChatDeletionBackend = mutation({
           )
           .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
       ),
-      ctx.db
-        .query("subagent_runs")
-        .withIndex("by_chat_status_and_cancel_reason", (q) =>
-          q
-            .eq("chat_id", args.chatId)
-            .eq("status", "canceled")
-            .eq("cancel_reason", args.reason),
-        )
-        .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ...DELETION_CANCELLATION_REASONS.map((cancelReason) =>
+        ctx.db
+          .query("subagent_runs")
+          .withIndex("by_chat_status_and_cancel_reason", (q) =>
+            q
+              .eq("chat_id", args.chatId)
+              .eq("status", "canceled")
+              .eq("cancel_reason", cancelReason),
+          )
+          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ),
     ]);
     if (
       batches.some(
@@ -1274,16 +1281,19 @@ export const cancelForChatDeletionBackend = mutation({
     ) {
       return { triggerRunIds: [], hasMore: true };
     }
-    const candidateRows = batches
-      .flat()
-      .filter((row) => row.user_id === args.userId);
+    const candidateRows = [
+      ...new Map(
+        batches
+          .flat()
+          .filter((row) => row.user_id === args.userId)
+          .map((row) => [row._id, row] as const),
+      ).values(),
+    ];
     const activeRows = candidateRows.filter((row) =>
       isActiveStatus(row.status),
     );
     const cancellationRows = candidateRows.filter(
-      (row) =>
-        isActiveStatus(row.status) ||
-        isPendingDeletionCancellation(row, args.reason),
+      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
     );
     const now = Date.now();
     await Promise.all(
@@ -1321,15 +1331,17 @@ export const cancelForUserDeletionBackend = mutation({
           )
           .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
       ),
-      ctx.db
-        .query("subagent_runs")
-        .withIndex("by_user_status_and_cancel_reason", (q) =>
-          q
-            .eq("user_id", args.userId)
-            .eq("status", "canceled")
-            .eq("cancel_reason", args.reason),
-        )
-        .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ...DELETION_CANCELLATION_REASONS.map((cancelReason) =>
+        ctx.db
+          .query("subagent_runs")
+          .withIndex("by_user_status_and_cancel_reason", (q) =>
+            q
+              .eq("user_id", args.userId)
+              .eq("status", "canceled")
+              .eq("cancel_reason", cancelReason),
+          )
+          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      ),
     ]);
     if (
       batches.some(
@@ -1338,14 +1350,14 @@ export const cancelForUserDeletionBackend = mutation({
     ) {
       return { triggerRunIds: [], hasMore: true };
     }
-    const candidateRows = batches.flat();
+    const candidateRows = [
+      ...new Map(batches.flat().map((row) => [row._id, row] as const)).values(),
+    ];
     const activeRows = candidateRows.filter((row) =>
       isActiveStatus(row.status),
     );
     const cancellationRows = candidateRows.filter(
-      (row) =>
-        isActiveStatus(row.status) ||
-        isPendingDeletionCancellation(row, args.reason),
+      (row) => isActiveStatus(row.status) || isPendingDeletionCancellation(row),
     );
     const now = Date.now();
     await Promise.all(

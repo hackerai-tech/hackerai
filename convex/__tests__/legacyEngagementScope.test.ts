@@ -9,6 +9,7 @@ import {
 } from "../engagementScopes";
 import { validateServiceKey } from "../lib/utils";
 import { assertUserCanAccessChatHistory } from "../lib/suspensionGuards";
+import { deleteScopeBatch } from "../lib/legacyEngagementScope";
 jest.mock("../lib/serviceFunctions", () => ({
   query: (c: unknown) => c,
   mutation: (c: unknown) => c,
@@ -110,6 +111,47 @@ it("lets old workers/admission finish without loading or changing saved scope", 
   ).rejects.toThrow("retired");
   expect([...db.rows.values()]).toEqual(before);
   expect(query.mock.calls.every(([table]) => table === "chats")).toBe(true);
+});
+
+it("deletes legacy scope text in bounded batches before its chat is removed", async () => {
+  const db = database();
+  await db.insert("engagement_scopes", {
+    chat_id: "chat",
+    user_id: "owner",
+    active: false,
+    revision: 1,
+    rules: [],
+    restrictions: [],
+    status: "ready",
+    clarification: "",
+    clarificationRequested: false,
+    source_id: "source",
+  });
+  for (let index = 0; index < 101; index++) {
+    await db.insert("engagement_scope_events", {
+      chat_id: "chat",
+      source_id: `message-${index}`,
+      source_text: `private scope ${index}`,
+      source_kind: "user_message",
+      status: "applied",
+      revision: index,
+    });
+  }
+
+  await expect(deleteScopeBatch(db.ctx, "chat")).resolves.toBe(true);
+  expect(
+    [...db.rows.values()].filter(
+      (row) => row.table === "engagement_scope_events",
+    ),
+  ).toHaveLength(1);
+  await expect(deleteScopeBatch(db.ctx, "chat")).resolves.toBe(false);
+  expect(
+    [...db.rows.values()].filter(
+      (row) =>
+        row.table === "engagement_scope_events" ||
+        row.table === "engagement_scopes",
+    ),
+  ).toEqual([]);
 });
 
 it("retains service authentication, ownership, and suspension guards on compatibility endpoints", async () => {

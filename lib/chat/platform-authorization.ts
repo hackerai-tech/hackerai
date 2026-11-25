@@ -14,36 +14,45 @@ const stripPlatformAuthorizationFromText = (text: string): string =>
     .replace(PLATFORM_AUTHORIZATION_BLOCK_PATTERN, "")
     .replace(PLATFORM_AUTHORIZATION_TAG_PATTERN, "");
 
+type TextBearingModelPart = { type: string; text?: string };
+
+const stripPlatformAuthorizationFromParts = (
+  parts: TextBearingModelPart[],
+): { parts: TextBearingModelPart[]; changed: boolean } => {
+  let changed = false;
+  const cleaned: TextBearingModelPart[] = [];
+  for (const part of parts) {
+    if (part.type !== "text" || typeof part.text !== "string") {
+      cleaned.push(part);
+      continue;
+    }
+
+    const text = stripPlatformAuthorizationFromText(part.text);
+    if (text === part.text) {
+      cleaned.push(part);
+      continue;
+    }
+
+    changed = true;
+    if (text) cleaned.push({ ...part, text });
+  }
+  return { parts: cleaned, changed };
+};
+
 const stripPlatformAuthorization = (
   messages: ModelMessage[],
 ): ModelMessage[] => {
   const cleanedMessages = messages.map((message) => {
-    if (message.role !== "user") return message;
-
+    if (message.role !== "user" && message.role !== "assistant") return message;
     if (typeof message.content === "string") {
       const content = stripPlatformAuthorizationFromText(message.content);
       return content === message.content ? message : { ...message, content };
     }
 
-    let changed = false;
-    const content: typeof message.content = [];
-    for (const part of message.content) {
-      if (part.type !== "text") {
-        content.push(part);
-        continue;
-      }
-
-      const text = stripPlatformAuthorizationFromText(part.text);
-      if (text === part.text) {
-        content.push(part);
-        continue;
-      }
-
-      changed = true;
-      if (text) content.push({ ...part, text });
-    }
-
-    return changed ? { ...message, content } : message;
+    const { parts, changed } = stripPlatformAuthorizationFromParts(
+      message.content as TextBearingModelPart[],
+    );
+    return changed ? ({ ...message, content: parts } as ModelMessage) : message;
   });
 
   return cleanedMessages.every((message, index) => message === messages[index])

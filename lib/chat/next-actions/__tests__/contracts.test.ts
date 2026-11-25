@@ -495,6 +495,15 @@ test("a newer user message supersedes an older delivered stop", () => {
   expect(hasExplicitPredictionStop(sources)).toBe(false);
 });
 
+test("does not synchronously parse oversized persisted wait replies", () => {
+  const sources = buildPredictionSources(
+    waitTurn("List my lab hosts.", wait("“".repeat(60_000))),
+  );
+
+  expect(sources.at(-1)?.latestUserReplyStopped).toBe(false);
+  expect(hasExplicitPredictionStop(sources)).toBe(false);
+});
+
 test("retains structured questions and delivered replies even without user message rows", () => {
   const sources = buildPredictionSources([
     {

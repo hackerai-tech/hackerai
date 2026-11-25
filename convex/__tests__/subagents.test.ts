@@ -1436,7 +1436,7 @@ describe("subagent finalization", () => {
 });
 
 describe("subagent deletion cancellation", () => {
-  it("returns active and retryable canceled Trigger ids before chat deletion", async () => {
+  it("returns canceled Trigger ids again when a later deletion flow uses a different reason", async () => {
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const rowsByStatus: Record<string, Array<Record<string, unknown>>> = {
       running: [
@@ -1485,7 +1485,7 @@ describe("subagent deletion cancellation", () => {
         serviceKey: "service-key",
         chatId: "chat-1",
         userId: "user-1",
-        reason: "chat_deleted",
+        reason: "account_deleted",
       }),
     ).resolves.toEqual({
       triggerRunIds: ["child-run-active", "child-run-retry"],
@@ -1496,7 +1496,7 @@ describe("subagent deletion cancellation", () => {
       "active-child",
       expect.objectContaining({
         status: "canceled",
-        cancel_reason: "chat_deleted",
+        cancel_reason: "account_deleted",
       }),
     );
   });

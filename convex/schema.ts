@@ -9,6 +9,7 @@ import {
 } from "./lib/settlementReceiptValidators";
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
+import { scopePolicy, scopeRule } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -340,6 +341,35 @@ export default defineSchema({
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
   agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
+
+  // Deprecated scope data remains schema-compatible until all historical
+  // rows have been removed through normal chat/account deletion.
+  engagement_scopes: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+    active: v.boolean(),
+    revision: v.number(),
+    rules: v.array(scopeRule),
+    restrictions: v.array(v.string()),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("processing"),
+      v.literal("unavailable"),
+      v.literal("ambiguous"),
+    ),
+    clarification: v.string(),
+    clarificationRequested: v.boolean(),
+    source_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+  engagement_scope_events: defineTable({
+    chat_id: v.string(),
+    source_id: v.string(),
+    source_text: v.string(),
+    source_kind: v.union(v.literal("user_message"), v.literal("user_edit")),
+    status: v.union(v.literal("pending"), v.literal("applied")),
+    revision: v.number(),
+    policy: v.optional(scopePolicy),
+  }).index("by_chat_source", ["chat_id", "source_id"]),
 
   chat_history_access: defineTable({
     chat_id: v.string(),

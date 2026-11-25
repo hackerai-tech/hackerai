@@ -258,6 +258,12 @@ export function hasExplicitPredictionStop(
 
 /** Claims only unambiguous conversational stops; the model sees everything else. */
 function isExplicitStopText(latest: string): boolean {
+  // Stop detection is an optional prediction precheck, not request admission.
+  // Persisted tool replies can be much larger than the interactive reply
+  // limit, and the quote-removal expressions below intentionally support
+  // several punctuation forms. Bound that synchronous work before parsing so
+  // an oversized saved reply cannot monopolize the server event loop.
+  if (latest.length > 4_000) return false;
   // Quoted examples are not direct stop instructions. Apostrophes within
   // words are preserved, including contractions inside a quoted example.
   const instruction = latest.replace(
