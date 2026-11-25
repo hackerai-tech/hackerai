@@ -55,25 +55,36 @@ const getApprovalCategory = (request: ActiveAgentToolApprovalRequest) => {
     : action;
 };
 
+const HIDDEN_CHARACTER =
+  /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]|(?!\u0020)\p{Zs}/gu;
+
+/**
+ * Shows invisible, direction-changing and unusual space characters as their
+ * code units so they cannot disguise what is being approved. Line breaks and
+ * tabs stay literal to keep a multi-line action readable. Display only: the
+ * submitted target and grants are unchanged.
+ */
+const revealHiddenCharacters = (value: string): string =>
+  value.replace(HIDDEN_CHARACTER, (character) =>
+    character === "\n" || character === "\t"
+      ? character
+      : character
+          .split("")
+          .map(
+            (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`,
+          )
+          .join(""),
+  );
+
 const getReusableApprovalDescription = (
   grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
 ): string => {
   if (grant.kind === "terminal_command") {
-    // JSON leaves some invisible characters literal; show their code units so
-    // they cannot disguise the selected scope. Submitted argv stays unchanged.
+    // JSON leaves some invisible characters literal, so reveal them in the
+    // selected scope too. Submitted argv stays unchanged.
     const displayedArgv = `[${grant.argv
       .map((argument) => {
-        const escaped = JSON.stringify(argument).replace(
-          /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]|(?!\u0020)\p{Zs}/gu,
-          (character) =>
-            character
-              .split("")
-              .map(
-                (unit) =>
-                  `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`,
-              )
-              .join(""),
-        );
+        const escaped = revealHiddenCharacters(JSON.stringify(argument));
         // Isolate each argument so natural RTL text cannot reorder neighbors.
         return `\u2068${escaped}\u2069`;
       })
@@ -261,7 +272,9 @@ export function AgentApprovalPrompt({
             className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
             data-testid="agent-approval-target"
           >
-            <code translate="no">{request.target}</code>
+            <code translate="no">
+              {revealHiddenCharacters(request.target ?? "")}
+            </code>
           </pre>
         ) : null}
 
