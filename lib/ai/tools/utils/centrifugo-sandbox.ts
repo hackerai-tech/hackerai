@@ -24,6 +24,7 @@ import {
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { phLogger } from "@/lib/posthog/server";
+import { emitPostHogLog } from "@/lib/posthog/logs";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import {
   classifyPersistenceFailure,
@@ -690,7 +691,7 @@ export class CentrifugoSandbox extends EventEmitter {
       sender.frozen = true;
       controller.abort();
     }, 3000);
-    let failure: string | undefined;
+    let failure: ReturnType<typeof getLocalFileRequestFailure> | undefined;
     let fileFailure: DesktopFileFailure | undefined;
     let receiverErrorClass: NativeReceiverErrorClass | undefined;
     let receiverDiagnostic: DesktopFileReceiverDiagnostic | undefined;
@@ -734,6 +735,12 @@ export class CentrifugoSandbox extends EventEmitter {
       clearTimeout(deadline);
       sender.frozen = true;
     }
+    // Only beside the exact authorized ACL denial: whether the receiver's
+    // own timed-out version IPC settled within its bounded window.
+    const receiverLateLookup =
+      receiverErrorClass === "authorized_ipc_denied"
+        ? receiverDiagnostic?.nativeVersionLateLookup
+        : undefined;
     console.info(
       JSON.stringify({
         event: "desktop_file_capability_probe",
@@ -748,12 +755,7 @@ export class CentrifugoSandbox extends EventEmitter {
         receiver_stage: receiverDiagnostic?.stage,
         receiver_adapter: receiverDiagnostic?.adapter,
         receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
-        // Only beside the exact authorized ACL denial: whether the receiver's
-        // own timed-out version IPC settled within its bounded window.
-        receiver_native_version_late_lookup:
-          receiverErrorClass === "authorized_ipc_denied"
-            ? receiverDiagnostic?.nativeVersionLateLookup
-            : undefined,
+        receiver_native_version_late_lookup: receiverLateLookup,
         // Overall-deadline failures only: where the sender was when it expired.
         ...(failure === "timeout" && {
           sender_phase_version: 1,
@@ -765,6 +767,40 @@ export class CentrifugoSandbox extends EventEmitter {
       }),
     );
     if (!this.nativeFileRelayConfirmed) {
+      // Correlate the closed failure taxonomy with the Agent run in PostHog.
+      // The existing Agent log flush handles delivery.
+      const runId = this.triggerRunId;
+      if (typeof runId === "string" && /^run_[a-z0-9]{20,40}$/.test(runId)) {
+        try {
+          emitPostHogLog({
+            level: "warn",
+            event: "desktop_file_capability_probe",
+            body: "desktop_file_capability_probe",
+            attributes: {
+              probe_mirror_version: 1,
+              trigger_run_id: runId,
+              outcome: "unavailable",
+              failure,
+              file_failure: fileFailure,
+              receiver_error_class: receiverErrorClass,
+              receiver_stage_version: receiverDiagnostic?.version,
+              receiver_stage: receiverDiagnostic?.stage,
+              receiver_adapter: receiverDiagnostic?.adapter,
+              receiver_native_version_lookup:
+                receiverDiagnostic?.nativeVersionLookup,
+              receiver_native_version_late_lookup: receiverLateLookup,
+              ...(failure === "timeout" && {
+                sender_phase_version: 1,
+                sender_phase: sender.phase,
+                sender_dispatch_entered: sender.dispatchEntered,
+                sender_publication_started: sender.publicationStarted,
+              }),
+            },
+          });
+        } catch {
+          // Best-effort telemetry cannot replace the unavailable-bridge error.
+        }
+      }
       throw new DesktopFileBridgeError(
         fileFailure ?? "unknown",
         desktopFileUnavailableMessage(fileFailure ?? "unknown"),
