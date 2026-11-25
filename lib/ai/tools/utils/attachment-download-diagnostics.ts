@@ -475,18 +475,29 @@ export type AttachmentDownloadBoundary = {
   resultState: "not_observed" | "success" | "nonzero";
   /** Last shell-context call this download entered; kept only for its phase. */
   shellContextStage?: AttachmentDownloadShellContextStage;
+  /** This call's own shell probe outcome; kept only with the detect_shell stage. */
+  shellContextDetectResult?: AttachmentDownloadShellDetectResult;
 };
 
 /** The awaited call last entered inside the shared shell context, not the
  * native cause, delivery result or recovery. Owned by one download call. */
 export type AttachmentDownloadShellContextStage =
   "detect_shell" | "native_path_conversion";
+/** How this call's own shell probe failed: its setup command rejected before
+ * returning a result, or returned the native wrapper's -1 sentinel or another
+ * nonzero exit. Not the cause; cached, declared-Unix, aborted-before-run and
+ * successful probes record nothing. */
+export type AttachmentDownloadShellDetectResult =
+  "rejected" | "nonzero_exit_minus_one" | "nonzero_exit_other";
 export type AttachmentDownloadShellContextObservation = {
   stage?: AttachmentDownloadShellContextStage;
+  detectShellResult?: AttachmentDownloadShellDetectResult;
 };
 type ShellContextStageContext = {
   attachment_download_shell_context_diagnostic_version: 1;
   attachment_download_shell_context_stage: AttachmentDownloadShellContextStage;
+  attachment_download_shell_context_detect_version: 1;
+  attachment_download_shell_context_detect_result: AttachmentDownloadShellDetectResult;
 };
 
 type BoundaryContext = {
@@ -784,7 +795,10 @@ export function recordAttachmentDownloadBoundary(
     // A reused rejection must not keep an earlier call's shell-context stage.
     delete previous.attachment_download_shell_context_diagnostic_version;
     delete previous.attachment_download_shell_context_stage;
+    delete previous.attachment_download_shell_context_detect_version;
+    delete previous.attachment_download_shell_context_detect_result;
     const stage = input.shellContextStage;
+    const detect = input.shellContextDetectResult;
     contexts.set(error, {
       ...previous,
       attachment_download_boundary_version: 1,
@@ -800,6 +814,17 @@ export function recordAttachmentDownloadBoundary(
         ? {
             attachment_download_shell_context_diagnostic_version: 1 as const,
             attachment_download_shell_context_stage: stage,
+          }
+        : {}),
+      // Only the probe's own closed outcome, never with path conversion.
+      ...(input.phase === "shell_context" &&
+      stage === "detect_shell" &&
+      (detect === "rejected" ||
+        detect === "nonzero_exit_minus_one" ||
+        detect === "nonzero_exit_other")
+        ? {
+            attachment_download_shell_context_detect_version: 1 as const,
+            attachment_download_shell_context_detect_result: detect,
           }
         : {}),
     });

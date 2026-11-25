@@ -7169,9 +7169,13 @@ describe("CentrifugoSandbox", () => {
           ([key]) => key.startsWith("attachment_download_shell_context_"),
         ),
       );
-    const stage = (value: string) => ({
+    const stage = (value: string, detect?: string) => ({
       attachment_download_shell_context_diagnostic_version: 1,
       attachment_download_shell_context_stage: value,
+      ...(detect && {
+        attachment_download_shell_context_detect_version: 1,
+        attachment_download_shell_context_detect_result: detect,
+      }),
     });
     // No cached shell, mount or HTTP client: every setup call is actually run.
     function windowsSandbox(
@@ -7194,13 +7198,15 @@ describe("CentrifugoSandbox", () => {
     }
 
     it.each([
-      ["detect_shell", "rejects"],
-      ["detect_shell", "exits"],
-      ["native_path_conversion", "rejects"],
-      ["native_path_conversion", "exits"],
+      ["detect_shell", "rejects", "rejected"],
+      ["detect_shell", "exits", "nonzero_exit_other"],
+      ["detect_shell", "exits_sentinel", "nonzero_exit_minus_one"],
+      ["native_path_conversion", "rejects", undefined],
+      ["native_path_conversion", "exits", undefined],
+      ["native_path_conversion", "exits_sentinel", undefined],
     ] as const)(
       "records the actual %s call when its command %s, without later setup",
-      async (expectedStage, outcome) => {
+      async (expectedStage, outcome, detect) => {
         const original = Object.freeze(new Error("PRIVATE_SETUP_REJECTION"));
         const failing =
           expectedStage === "detect_shell" ? SHELL_PROBE : cygpath(DEST);
@@ -7210,7 +7216,7 @@ describe("CentrifugoSandbox", () => {
             return {
               stdout: "PRIVATE_STDOUT",
               stderr: "bash: /usr/bin/cygpath: command not found",
-              exitCode: 127,
+              exitCode: outcome === "exits_sentinel" ? -1 : 127,
             };
           }
           if (command === SHELL_PROBE) return bash;
@@ -7224,9 +7230,10 @@ describe("CentrifugoSandbox", () => {
         else if (expectedStage === "detect_shell")
           expect(checkpointCommandContext(failure)).toMatchObject({
             command_stage: "detect_shell",
-            command_exit_code: 127,
+            // The existing command context buckets the -1 sentinel.
+            command_exit_code: outcome === "exits_sentinel" ? "other" : 127,
           });
-        else
+        else if (outcome === "exits")
           expect(checkpointFailureOrigin(failure)).toBe(
             "windows_path_missing_utility",
           );
@@ -7243,13 +7250,80 @@ describe("CentrifugoSandbox", () => {
           attachment_download_attempt: 0,
           attachment_download_result_state: "not_observed",
           attachment_download_error_kind: "error",
-          ...stage(expectedStage),
         });
+        // The probe result is kept only for the probe's own failure.
+        expect(stageFields(failure)).toEqual(stage(expectedStage, detect));
         expect(JSON.stringify(context)).not.toMatch(
           /PRIVATE|private|cygpath|hackerai-upload|command not found/,
         );
       },
     );
+
+    it("observes only a shell probe this call actually ran and saw fail", async () => {
+      const original = Object.freeze(new Error("PRIVATE_PROBE_REJECTION"));
+      let probe: () => unknown = () => bash;
+      const { sandbox, commands } = windowsSandbox((command) => {
+        if (command !== SHELL_PROBE) throw new Error("unexpected command");
+        return probe();
+      });
+      const observe = async (signal?: AbortSignal) => {
+        const observation: Record<string, unknown> = {};
+        const failure = await sandbox
+          .detectShell(signal, undefined, observation as never)
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        return { observation, failure };
+      };
+
+      const controller = new AbortController();
+      controller.abort(original);
+      expect(await observe(controller.signal)).toEqual({
+        observation: {},
+        failure: original,
+      });
+      expect(commands).toEqual([]);
+
+      probe = () => {
+        throw original;
+      };
+      expect(await observe()).toEqual({
+        observation: { detectShellResult: "rejected" },
+        failure: original,
+      });
+      probe = () => ({ stdout: "PRIVATE", stderr: "", exitCode: -1 });
+      expect((await observe()).observation).toEqual({
+        detectShellResult: "nonzero_exit_minus_one",
+      });
+      probe = () => ({ stdout: "PRIVATE", stderr: "", exitCode: 1 });
+      expect((await observe()).observation).toEqual({
+        detectShellResult: "nonzero_exit_other",
+      });
+      probe = () => bash;
+      expect(await observe()).toEqual({ observation: {}, failure: undefined });
+      // Cached: no probe runs, so nothing is observed.
+      expect(await observe()).toEqual({ observation: {}, failure: undefined });
+      expect(commands.filter((c) => c === SHELL_PROBE)).toHaveLength(4);
+
+      // A declared Unix host never probes.
+      const unix = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x86_64",
+          release: "6.8.0",
+          hostname: "LINUX-DEV",
+        },
+      });
+      const unixRun = jest.fn();
+      (unix as any).commands.run = unixRun;
+      const unixObservation: Record<string, unknown> = {};
+      await expect(
+        unix.detectShell(undefined, undefined, unixObservation as never),
+      ).resolves.toBe("bash");
+      expect(unixObservation).toEqual({});
+      expect(unixRun).not.toHaveBeenCalled();
+    });
 
     it("drops an earlier stage when the same rejection fails a later download phase", async () => {
       const reused = Object.freeze(new Error("PRIVATE_REUSED_REJECTION"));
@@ -7266,7 +7340,7 @@ describe("CentrifugoSandbox", () => {
       expect(
         await sandbox.files.downloadFromUrl(URL, DEST).catch((e) => e),
       ).toBe(reused);
-      expect(stageFields(reused)).toEqual(stage("detect_shell"));
+      expect(stageFields(reused)).toEqual(stage("detect_shell", "rejected"));
 
       shellAvailable = true;
       expect(
@@ -7318,7 +7392,10 @@ describe("CentrifugoSandbox", () => {
       expect(await first).toBe(shellFailure);
       rejectPath(pathFailure);
       expect(await second).toBe(pathFailure);
-      expect(stageFields(shellFailure)).toEqual(stage("detect_shell"));
+      expect(stageFields(shellFailure)).toEqual(
+        stage("detect_shell", "rejected"),
+      );
+      // The second call's own probe succeeded; the first's result is not shared.
       expect(stageFields(pathFailure)).toEqual(stage("native_path_conversion"));
     });
 
@@ -7408,8 +7485,19 @@ describe("CentrifugoSandbox", () => {
               attachment_download_boundary_present: true,
               attachment_download_phase: "shell_context",
               attachment_download_attempt: 0,
-              ...stage(expectedStage),
             });
+            expect(
+              Object.fromEntries(
+                Object.entries(fields).filter(([key]) =>
+                  key.startsWith("attachment_download_shell_context_"),
+                ),
+              ),
+            ).toEqual(
+              stage(
+                expectedStage,
+                expectedStage === "detect_shell" ? "rejected" : undefined,
+              ),
+            );
             expect(JSON.stringify(fields)).not.toMatch(
               /PRIVATE|private\.example|cygpath|hackerai-upload|Permission/,
             );

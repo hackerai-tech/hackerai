@@ -2466,6 +2466,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     signal?: AbortSignal,
     /** Set only by a local copy, to attribute a probe it actually issues. */
     copyRole?: LocalCopyRole,
+    /** Caller-owned; receives only this call's own probe failure outcome. */
+    observation?: AttachmentDownloadShellContextObservation,
   ): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
@@ -2477,12 +2479,23 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       this.shellKind = "bash";
       return "bash";
     }
-    const probe = await this.runSetupCommand("echo $BASH_VERSION", {
-      signal,
-      displayName: "",
-      copyOwnerStage: copyRole && "shell_detection",
-    });
+    let probe: CommandResult;
+    try {
+      probe = await this.runSetupCommand("echo $BASH_VERSION", {
+        signal,
+        displayName: "",
+        copyOwnerStage: copyRole && "shell_detection",
+      });
+    } catch (error) {
+      if (observation) observation.detectShellResult = "rejected";
+      throw error;
+    }
     if (probe.exitCode !== 0) {
+      if (observation)
+        observation.detectShellResult =
+          probe.exitCode === -1
+            ? "nonzero_exit_minus_one"
+            : "nonzero_exit_other";
       throw persistenceCommandError("Failed to detect local shell", probe);
     }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
@@ -2557,7 +2570,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     escapeValue: (value: string) => string;
   }> {
     if (observation) observation.stage = "detect_shell";
-    const shell = await this.detectShell(signal, copyRole);
+    const shell = await this.detectShell(signal, copyRole, observation);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
     if (observation) observation.stage = "native_path_conversion";
@@ -3768,6 +3781,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           attempt: diagnosticAttempt,
           resultState,
           shellContextStage: shellContextObservation.stage,
+          shellContextDetectResult: shellContextObservation.detectShellResult,
         });
         throw error;
       }
