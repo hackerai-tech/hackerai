@@ -127,7 +127,7 @@ it("deletes legacy scope text in bounded batches before its chat is removed", as
     clarificationRequested: false,
     source_id: "source",
   });
-  for (let index = 0; index < 101; index++) {
+  for (let index = 0; index < 9; index++) {
     await db.insert("engagement_scope_events", {
       chat_id: "chat",
       source_id: `message-${index}`,

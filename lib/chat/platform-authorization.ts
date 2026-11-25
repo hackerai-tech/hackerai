@@ -21,20 +21,32 @@ const stripPlatformAuthorizationFromParts = (
 ): { parts: TextBearingModelPart[]; changed: boolean } => {
   let changed = false;
   const cleaned: TextBearingModelPart[] = [];
-  for (const part of parts) {
+  for (let index = 0; index < parts.length;) {
+    const part = parts[index];
     if (part.type !== "text" || typeof part.text !== "string") {
       cleaned.push(part);
+      index += 1;
       continue;
     }
 
-    const text = stripPlatformAuthorizationFromText(part.text);
-    if (text === part.text) {
-      cleaned.push(part);
+    const textParts: TextBearingModelPart[] = [];
+    while (
+      index < parts.length &&
+      parts[index].type === "text" &&
+      typeof parts[index].text === "string"
+    ) {
+      textParts.push(parts[index]);
+      index += 1;
+    }
+    const combinedText = textParts.map((textPart) => textPart.text).join("");
+    const text = stripPlatformAuthorizationFromText(combinedText);
+    if (text === combinedText) {
+      cleaned.push(...textParts);
       continue;
     }
 
     changed = true;
-    if (text) cleaned.push({ ...part, text });
+    if (text) cleaned.push({ ...textParts[0], text });
   }
   return { parts: cleaned, changed };
 };
@@ -58,6 +70,37 @@ const stripPlatformAuthorization = (
   return cleanedMessages.every((message, index) => message === messages[index])
     ? messages
     : cleanedMessages;
+};
+
+const hasSubstantiveAssistantContent = (content: unknown): boolean => {
+  if (!Array.isArray(content)) {
+    if (content == null) return false;
+    return typeof content !== "string" || content.trim().length > 0;
+  }
+
+  return content.some((part: unknown) => {
+    if (!part || typeof part !== "object") return true;
+    const candidate = part as { type?: unknown; text?: unknown };
+    if (candidate.type === "text") {
+      return (
+        typeof candidate.text === "string" && candidate.text.trim().length > 0
+      );
+    }
+    return (
+      candidate.type !== "reasoning" && candidate.type !== "redacted-reasoning"
+    );
+  });
+};
+
+const removeEmptyAssistantMessages = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  const filtered = messages.filter(
+    (message) =>
+      message.role !== "assistant" ||
+      hasSubstantiveAssistantContent(message.content),
+  );
+  return filtered.length === messages.length ? messages : filtered;
 };
 
 /**
@@ -106,8 +149,10 @@ export const preparePlatformAuthorizationForModel = (
   messages: ModelMessage[],
   platformAuthorized: boolean,
   modelName: string,
-): ModelMessage[] =>
-  appendPlatformAuthorizationToLatestUserMessage(
+): ModelMessage[] => {
+  const prepared = appendPlatformAuthorizationToLatestUserMessage(
     messages,
     platformAuthorized && !isInferenceCyberModel(modelName),
   );
+  return removeEmptyAssistantMessages(prepared);
+};

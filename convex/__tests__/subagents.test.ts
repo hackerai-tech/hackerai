@@ -1546,6 +1546,52 @@ describe("subagent deletion cancellation", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("does not let historical canceled rows block user deletion", async () => {
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const canceledRows = Array.from({ length: 101 }, (_, index) => ({
+      _id: `canceled-child-${index}`,
+      user_id: "user-1",
+      status: "canceled",
+      trigger_run_id: `child-run-${index}`,
+      cancel_reason: "chat_deleted",
+    }));
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn((_name: string, callback: (q: any) => void) => {
+            let status = "";
+            const q = {
+              eq: jest.fn((field: string, value: string) => {
+                if (field === "status") status = value;
+                return q;
+              }),
+            };
+            callback(q);
+            return {
+              take: jest
+                .fn<any>()
+                .mockImplementation(async (limit: number) =>
+                  status === "canceled" ? canceledRows.slice(0, limit) : [],
+                ),
+            };
+          }),
+        })),
+        patch,
+      },
+    } as any;
+
+    const result = await cancelForUserDeletionBackend.handler(ctx, {
+      serviceKey: "service-key",
+      userId: "user-1",
+      reason: "account_deleted",
+    });
+
+    expect(result.hasMore).toBe(false);
+    expect(result.triggerRunIds).toHaveLength(100);
+    expect(new Set(result.triggerRunIds).size).toBe(100);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("fails closed without patching when a status batch is truncated", async () => {
     const patch = jest.fn<any>().mockResolvedValue(undefined);
     const runningRows = Array.from({ length: 101 }, (_, index) => ({

@@ -1253,34 +1253,42 @@ export const cancelForChatDeletionBackend = mutation({
   returns: deletionCancellationResultValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const batches = await Promise.all([
-      ...ACTIVE_SUBAGENT_STATUSES.map((status) =>
-        ctx.db
-          .query("subagent_runs")
-          .withIndex("by_chat_and_status", (q) =>
-            q.eq("chat_id", args.chatId).eq("status", status),
-          )
-          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+    const [activeBatches, canceledBatches] = await Promise.all([
+      Promise.all(
+        ACTIVE_SUBAGENT_STATUSES.map((status) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_chat_and_status", (q) =>
+              q.eq("chat_id", args.chatId).eq("status", status),
+            )
+            .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+        ),
       ),
-      ...DELETION_CANCELLATION_REASONS.map((cancelReason) =>
-        ctx.db
-          .query("subagent_runs")
-          .withIndex("by_chat_status_and_cancel_reason", (q) =>
-            q
-              .eq("chat_id", args.chatId)
-              .eq("status", "canceled")
-              .eq("cancel_reason", cancelReason),
-          )
-          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      Promise.all(
+        DELETION_CANCELLATION_REASONS.map((cancelReason) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_chat_status_and_cancel_reason", (q) =>
+              q
+                .eq("chat_id", args.chatId)
+                .eq("status", "canceled")
+                .eq("cancel_reason", cancelReason),
+            )
+            .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE),
+        ),
       ),
     ]);
     if (
-      batches.some(
+      activeBatches.some(
         (batch) => batch.length > SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE,
       )
     ) {
       return { triggerRunIds: [], hasMore: true };
     }
+    // Canceled rows are best-effort Trigger cleanup retries. They have no
+    // durable completion transition, so historical rows must never fence the
+    // deletion that ultimately removes them.
+    const batches = [...activeBatches, ...canceledBatches];
     const candidateRows = [
       ...new Map(
         batches
@@ -1322,34 +1330,42 @@ export const cancelForUserDeletionBackend = mutation({
   returns: deletionCancellationResultValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const batches = await Promise.all([
-      ...ACTIVE_SUBAGENT_STATUSES.map((status) =>
-        ctx.db
-          .query("subagent_runs")
-          .withIndex("by_user_and_status", (q) =>
-            q.eq("user_id", args.userId).eq("status", status),
-          )
-          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+    const [activeBatches, canceledBatches] = await Promise.all([
+      Promise.all(
+        ACTIVE_SUBAGENT_STATUSES.map((status) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_user_and_status", (q) =>
+              q.eq("user_id", args.userId).eq("status", status),
+            )
+            .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+        ),
       ),
-      ...DELETION_CANCELLATION_REASONS.map((cancelReason) =>
-        ctx.db
-          .query("subagent_runs")
-          .withIndex("by_user_status_and_cancel_reason", (q) =>
-            q
-              .eq("user_id", args.userId)
-              .eq("status", "canceled")
-              .eq("cancel_reason", cancelReason),
-          )
-          .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE + 1),
+      Promise.all(
+        DELETION_CANCELLATION_REASONS.map((cancelReason) =>
+          ctx.db
+            .query("subagent_runs")
+            .withIndex("by_user_status_and_cancel_reason", (q) =>
+              q
+                .eq("user_id", args.userId)
+                .eq("status", "canceled")
+                .eq("cancel_reason", cancelReason),
+            )
+            .take(SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE),
+        ),
       ),
     ]);
     if (
-      batches.some(
+      activeBatches.some(
         (batch) => batch.length > SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE,
       )
     ) {
       return { triggerRunIds: [], hasMore: true };
     }
+    // A large historical canceled set must not permanently block account,
+    // all-chat, or sandbox deletion. Retry a bounded prefix without treating
+    // the remainder as an active-run overflow.
+    const batches = [...activeBatches, ...canceledBatches];
     const candidateRows = [
       ...new Map(batches.flat().map((row) => [row._id, row] as const)).values(),
     ];
