@@ -38,6 +38,7 @@ import type {
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
+import { decodeTextBytes } from "./lib/textDecoding";
 import {
   getUploadLimitsForMode,
   isSupportedImageMediaType,
@@ -326,8 +327,7 @@ const processFile = async (
           ];
         } else {
           // For non-binary files, convert to text and process as txt
-          const textDecoder = new TextDecoder("utf-8");
-          const cleanText = textDecoder.decode(fileBuffer);
+          const cleanText = decodeTextBytes(fileBuffer);
           return await processTxtFile(new Blob([cleanText]));
         }
       }
@@ -481,8 +481,7 @@ const processFileAuto = async (
       try {
         const blob = file as Blob;
         const fileBuffer = Buffer.from(await blob.arrayBuffer());
-        const textDecoder = new TextDecoder("utf-8");
-        const textContent = textDecoder.decode(fileBuffer);
+        const textContent = decodeTextBytes(fileBuffer);
         const fallbackTokens = safeCountTokens(textContent);
 
         // Check token limit for fallback processing
@@ -575,8 +574,7 @@ const processCsvFile = async (csv: Blob): Promise<FileItemChunk[]> => {
 
 const processJsonFile = async (json: Blob): Promise<FileItemChunk[]> => {
   const fileBuffer = Buffer.from(await json.arrayBuffer());
-  const textDecoder = new TextDecoder("utf-8");
-  const jsonText = textDecoder.decode(fileBuffer);
+  const jsonText = decodeTextBytes(fileBuffer);
   const parsedJson = JSON.parse(jsonText);
   const completeText = JSON.stringify(parsedJson, null, 2);
 
@@ -590,8 +588,7 @@ const processJsonFile = async (json: Blob): Promise<FileItemChunk[]> => {
 
 const processTxtFile = async (txt: Blob): Promise<FileItemChunk[]> => {
   const fileBuffer = Buffer.from(await txt.arrayBuffer());
-  const textDecoder = new TextDecoder("utf-8");
-  const textContent = textDecoder.decode(fileBuffer);
+  const textContent = decodeTextBytes(fileBuffer);
 
   return [
     {
@@ -606,8 +603,7 @@ const processMarkdownFile = async (
   prepend = "",
 ): Promise<FileItemChunk[]> => {
   const fileBuffer = Buffer.from(await markdown.arrayBuffer());
-  const textDecoder = new TextDecoder("utf-8");
-  const textContent = textDecoder.decode(fileBuffer);
+  const textContent = decodeTextBytes(fileBuffer);
 
   const finalContent =
     prepend + (prepend?.length > 0 ? "\n\n" : "") + textContent;
