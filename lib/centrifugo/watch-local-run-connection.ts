@@ -17,15 +17,19 @@ import {
   type DesktopDispatchGate,
   type DesktopSessionIdentity,
   type PublishedDesktopCommand,
+  type UncertainExecution,
 } from "./desktop-session";
 import {
   LocalConnectionLostError,
   readCallbackCode,
   readClientState,
   readSocketClose,
+  type LocalOperationKind,
+  type LocalRecoveryPhase,
   type LocalRunRecoverySummary,
   type LocalStopClientState,
   type LocalStopReason,
+  type LocalUnreconciledCause,
 } from "@/lib/chat/local-connection-stop";
 
 // This lease belongs to one run and one connection incarnation. A new Desktop
@@ -88,8 +92,11 @@ type SocketClose = ReturnType<typeof readSocketClose>;
 type Recovery = {
   timer: ReturnType<typeof setTimeout>;
   windowMs: number;
-  /** False while only a completion check reopened verification. */
-  outage: boolean;
+  /**
+   * Why verification is open. Only an outage counts as one the run recovered
+   * from; an outage during a check upgrades it, never the reverse.
+   */
+  phase: LocalRecoveryPhase;
   wallStart?: number;
   monotonicStart?: number;
   wallDeadline?: number;
@@ -159,6 +166,7 @@ export function watchLocalRunConnection({
   let lastPositivePresenceAt: number | undefined;
   let recoveredOutages = 0;
   let maxRecoveredOutageMs: number | undefined;
+  let unknownOutcomeOperations = 0;
   let clientStateAtStop: LocalStopClientState | undefined;
   // Readiness is live state: any interruption clears it before its handler
   // returns, so a dispatch can never pass on an earlier verification.
@@ -243,15 +251,25 @@ export function watchLocalRunConnection({
   const lost = (
     reason: LocalStopReason,
     observed?: { context?: unknown; close: SocketClose },
+    unreconciled?: {
+      cause: LocalUnreconciledCause;
+      operation?: LocalOperationKind;
+    },
   ) => {
     if (!dispose()) return;
     const now = monotonicNow();
-    const interrupted = recovery?.outage ? recovery : undefined;
+    const open = recovery;
+    const interrupted = open?.phase === "outage" ? open : undefined;
     const error = new LocalConnectionLostError(reason, {
       connectionId,
       ...(interrupted && {
         recoveryWindowMs: interrupted.windowMs,
         recoveryElapsedMs: recoveryElapsed(interrupted),
+      }),
+      ...(open && { recoveryPhase: open.phase }),
+      ...(unreconciled && {
+        unreconciledCause: unreconciled.cause,
+        unreconciledOperation: unreconciled.operation,
       }),
       hadPositivePresence,
       lastPositivePresenceAgeMs:
@@ -270,6 +288,10 @@ export function watchLocalRunConnection({
   };
   const callbackLost = (reason: LocalStopReason, context: unknown) =>
     lost(reason, { context, close: socketClose });
+  const unreconciled = (
+    cause: LocalUnreconciledCause,
+    operation?: LocalOperationKind,
+  ) => lost("desktop_command_unreconciled", undefined, { cause, operation });
   const expire = () => {
     if (recovery)
       lost(
@@ -296,10 +318,10 @@ export function watchLocalRunConnection({
   const endRecovery = () => {
     if (!recovery) return;
     clearTimeout(recovery.timer);
-    const { outage } = recovery;
+    const { phase } = recovery;
     const elapsed = recoveryElapsed(recovery);
     recovery = undefined;
-    if (!outage) return;
+    if (phase !== "outage") return;
     recoveredOutages++;
     if (elapsed !== undefined)
       maxRecoveredOutageMs = Math.max(maxRecoveredOutageMs ?? 0, elapsed);
@@ -328,8 +350,8 @@ export function watchLocalRunConnection({
     timer = setTimeout(() => void check(), delay);
   };
   // Invalidates the current lookup, proof and readiness. Only the first
-  // interruption of an outage starts its window; a completion check shares it.
-  const interrupt = (outage = true) => {
+  // interruption starts its window; a later check or outage shares it.
+  const interrupt = (phase: LocalRecoveryPhase = "outage") => {
     generation++;
     epoch++;
     ready = false;
@@ -350,9 +372,13 @@ export function watchLocalRunConnection({
           monotonic === undefined ? undefined : monotonic + windowMs,
         close: socketClose,
         hostDeparted: false,
-        outage,
+        phase,
       };
-    } else if (outage) recovery.outage = true;
+    } else if (
+      phase === "outage" ||
+      (phase === "completion_check" && recovery.phase === "reverification")
+    )
+      recovery.phase = phase;
     clearTimeout(timer);
     // A subscription that is still current is looked up again.
     if (subscribed)
@@ -384,11 +410,11 @@ export function watchLocalRunConnection({
       try {
         commands = [...desktopSession.publishedCommands()];
       } catch {
-        lost("desktop_command_unreconciled");
+        unreconciled("registry_unreadable");
         return;
       }
       if (commands.length > MAX_RECONCILED_COMMANDS) {
-        lost("desktop_command_unreconciled");
+        unreconciled("operation_limit");
         return;
       }
     } else {
@@ -461,10 +487,17 @@ export function watchLocalRunConnection({
     try {
       current = [...desktopSession!.publishedCommands()];
     } catch {
-      lost("desktop_command_unreconciled");
+      unreconciled("registry_unreadable");
       return;
     }
     const named = new Set(answered.commands.map((each) => each.commandId));
+    // Re-verification alone interrupted no stream: only the reporting
+    // operation's outcome was lost, and its owner already recorded it.
+    const reconcile = recovery.phase !== "reverification";
+    // The same session cannot account for the rest (an open terminal, or a
+    // command whose output it no longer retains). Each is settled as an
+    // unknown outcome, refuses further execution and stays recorded, before
+    // any dispatch is admitted again; nothing is published twice.
     for (const command of current) {
       let complete = false;
       try {
@@ -472,11 +505,16 @@ export function watchLocalRunConnection({
       } catch {
         complete = false;
       }
-      if (complete) continue;
-      if (!named.has(command.commandId) || !retained.has(command.commandId)) {
-        lost("desktop_command_unreconciled");
+      if (complete || !reconcile) continue;
+      if (named.has(command.commandId) && retained.has(command.commandId))
+        continue;
+      try {
+        command.abandon();
+      } catch {
+        unreconciled("settle_failed", command.kind);
         return;
       }
+      unknownOutcomeOperations++;
     }
     endRecovery();
     hadPositivePresence = true;
@@ -650,6 +688,7 @@ export function watchLocalRunConnection({
       Object.freeze({
         recoveredOutages,
         ...(maxRecoveredOutageMs !== undefined && { maxRecoveredOutageMs }),
+        ...(unknownOutcomeOperations > 0 && { unknownOutcomeOperations }),
       }),
     isReady: () => ready,
     waitUntilReady,
@@ -658,7 +697,7 @@ export function watchLocalRunConnection({
       if (signal?.aborted) return Promise.reject(signal.reason);
       // Invalidate even an unready lookup/proof: it may have started before
       // this completion boundary. interrupt preserves an existing deadline.
-      if (baseline) interrupt(false);
+      if (baseline) interrupt("completion_check");
       else {
         generation++;
         epoch++;
@@ -669,10 +708,21 @@ export function watchLocalRunConnection({
       void check();
       return waitUntilReady(signal);
     },
-    // Only a Desktop host can recover; a forgotten uncertain execution must
-    // never let it, or later dispatch, proceed.
+    // Only a Desktop host can recover. An execution with an unknown outcome
+    // stays recorded by its owner; no later dispatch proceeds until the same
+    // proven session answers a fresh challenge. Without a proven session no
+    // proof can vouch for the host, so the run stops.
     ...(desktopSession && {
-      failUncertainExecution: () => lost("desktop_command_unreconciled"),
+      reportUncertainExecution: ({ cause, operation }: UncertainExecution) => {
+        if (stopped) return;
+        if (!baseline) {
+          unreconciled(cause, operation);
+          return;
+        }
+        unknownOutcomeOperations++;
+        interrupt("reverification");
+        void check();
+      },
     }),
   };
 }

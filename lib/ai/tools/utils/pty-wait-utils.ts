@@ -1,4 +1,23 @@
 import type { PtySession } from "./pty-session-manager";
+import type { PtyExitResult } from "./pty-exited-promise";
+
+/** The Ask-mode unknown-outcome wording, for a terminal the run continues past. */
+export const TERMINAL_OUTCOME_UNKNOWN_ERROR =
+  "Terminal outcome is unknown: the connection to this terminal was interrupted and its output could not be recovered. It may still be running, and it no longer accepts input. Do not rerun this command automatically; it may already have executed.";
+
+/**
+ * Model-facing exit fields. A terminal whose outcome is unknown never reads
+ * as exited: it carries the unknown outcome and its do-not-rerun guidance.
+ */
+export function terminalExitFields(exit: PtyExitResult | null | undefined) {
+  if (!exit) return {};
+  if (exit.outcomeUnknown)
+    return {
+      executionOutcome: "unknown" as const,
+      error: TERMINAL_OUTCOME_UNKNOWN_ERROR,
+    };
+  return { exited: { exitCode: exit.exitCode } };
+}
 
 /**
  * Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
@@ -127,8 +146,8 @@ export function capOutput(text: string, maxBytes: number = 8 * 1024): string {
  */
 export async function peekExited(
   session: PtySession,
-): Promise<{ exitCode: number | null } | null> {
-  const sentinel: { exitCode: number | null } = { exitCode: -0xdeadbeef };
+): Promise<PtyExitResult | null> {
+  const sentinel: PtyExitResult = { exitCode: -0xdeadbeef };
   const result = await Promise.race([
     session.handle.exited,
     new Promise<typeof sentinel>((r) => {

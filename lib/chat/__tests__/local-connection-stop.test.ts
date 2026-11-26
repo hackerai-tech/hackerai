@@ -313,3 +313,71 @@ describe("recovery outcome analytics", () => {
     ).toBeUndefined();
   });
 });
+
+describe("unreconciled operation analytics", () => {
+  it("projects which closed cause fired, for which operation, and in which verification phase", () => {
+    const stop = new LocalConnectionLostError("desktop_command_unreconciled", {
+      connectionId: CONNECTION,
+      recoveryPhase: "completion_check",
+      unreconciledCause: "kill_unconfirmed",
+      unreconciledOperation: "pty",
+    });
+    expect(localStopAnalyticsProperties(stop)).toEqual({
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "desktop_command_unreconciled",
+      local_stop_connection_id: CONNECTION,
+      local_stop_recovery_phase: "completion_check",
+      local_stop_unreconciled_cause: "kill_unconfirmed",
+      local_stop_unreconciled_operation: "pty",
+    });
+    // An end-of-response check is not an outage the run was recovering from.
+    expect(localRecoveryAnalyticsProperties(undefined, stop)).toMatchObject({
+      local_recovery_outcome: "stopped_unrecoverable",
+    });
+  });
+
+  it("drops open values and a cause attached to any other stop", () => {
+    const forgedCause = new LocalConnectionLostError(
+      "desktop_command_unreconciled",
+      {
+        recoveryPhase: "PRIVATE" as never,
+        unreconciledCause: "rm -rf /" as never,
+        unreconciledOperation: "PRIVATE" as never,
+      },
+    );
+    expect(getLocalStopDiagnostic(forgedCause)).toEqual({
+      reason: "desktop_command_unreconciled",
+    });
+    const otherStop = new LocalConnectionLostError("selected_host_left", {
+      unreconciledCause: "receiver_deadline",
+      unreconciledOperation: "command",
+    });
+    expect(getLocalStopDiagnostic(otherStop)).toEqual({
+      reason: "selected_host_left",
+    });
+  });
+
+  it("counts operations a run continued past, even without an outage or a stop", () => {
+    expect(
+      localRecoveryAnalyticsProperties(
+        { recoveredOutages: 0, unknownOutcomeOperations: 2 },
+        undefined,
+      ),
+    ).toEqual({ local_unknown_outcome_operations: 2 });
+    expect(
+      localRecoveryAnalyticsProperties(
+        {
+          recoveredOutages: 1,
+          maxRecoveredOutageMs: 2_000,
+          unknownOutcomeOperations: 1,
+        },
+        undefined,
+      ),
+    ).toEqual({
+      local_recovery_outcome: "recovered",
+      local_recovered_outages: 1,
+      local_recovered_max_outage_bucket: "lt_5s",
+      local_unknown_outcome_operations: 1,
+    });
+  });
+});

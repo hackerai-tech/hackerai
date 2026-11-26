@@ -54,7 +54,11 @@ import {
   type DesktopDispatchGate,
   type PublishedDesktopCommand,
 } from "@/lib/centrifugo/desktop-session";
-import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
+import {
+  LocalConnectionLostError,
+  type LocalOperationKind,
+  type LocalUnreconciledCause,
+} from "@/lib/chat/local-connection-stop";
 import { IncompleteFileWriteError } from "./incomplete-file-write";
 import { EventEmitter } from "events";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
@@ -398,6 +402,24 @@ const isPreconnectTransportClosure = (error: unknown): boolean => {
   );
 };
 
+/** The content-free cause of a receiver that ended without a terminal. */
+function unreconciledCause(
+  reason: ReceiverCleanupReason,
+): LocalUnreconciledCause {
+  switch (reason) {
+    case "unreconciled":
+      return "host_returned_unretained";
+    case "deadline":
+      return "receiver_deadline";
+    case "output_unavailable":
+      return "output_unavailable";
+    case "cancel_failed":
+      return "cancel_unconfirmed";
+    default:
+      return "receiver_failed";
+  }
+}
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -557,6 +579,31 @@ export interface CentrifugoConfig {
   tokenSecret: string;
 }
 
+/** A published operation this run continued past with an unknown outcome. */
+export type UnknownDesktopOperation = Readonly<{
+  operationId: string;
+  kind: LocalOperationKind;
+  cause: LocalUnreconciledCause;
+}>;
+
+/** The owner's handle on one published operation's registry entry. */
+export interface PublishedOperationRegistration {
+  /** Settled with a known outcome: nothing remains to reconcile. */
+  release(): void;
+  /**
+   * Its outcome is unknown and it may still run. It stays recorded for the
+   * run, is never reconciled or published again, and the gate is told so a
+   * later dispatch first needs a fresh proof of the same session. Pass
+   * `reconciled` only when the observer itself settled it during a proof it
+   * accepted, which needs no further report. Idempotent.
+   */
+  markUnknown(cause: LocalUnreconciledCause, reconciled?: boolean): void;
+}
+
+/** Output could not be recovered after the same Desktop session returned. */
+export const DESKTOP_OUTPUT_UNRECONCILED_MESSAGE =
+  "The Desktop connection was interrupted and its output could not be recovered after it reconnected";
+
 /**
  * Centrifugo-based sandbox that implements E2B-compatible interface.
  * Uses Centrifugo pub/sub for real-time command streaming.
@@ -583,6 +630,11 @@ export class CentrifugoSandbox extends EventEmitter {
   private readonly publishedCommands = new Map<
     string,
     PublishedDesktopCommand
+  >();
+  /** Published operations with an unknown outcome; never forgotten or resent. */
+  private readonly unknownOperations = new Map<
+    string,
+    UnknownDesktopOperation
   >();
 
   constructor(
@@ -639,16 +691,39 @@ export class CentrifugoSandbox extends EventEmitter {
     return [...this.publishedCommands.values()];
   }
 
+  /** Operations this run continued past with an unknown outcome. */
+  getUnknownOperations(): UnknownDesktopOperation[] {
+    return [...this.unknownOperations.values()];
+  }
+
   /**
    * Record an operation whose execution publication began, until it settles.
    * One without replayable output reports outputComplete() false, so a host
-   * return while it is active stops the run for manual Resume.
+   * return while it is active settles it as an unknown outcome.
    */
-  registerPublishedOperation(operation: PublishedDesktopCommand): () => void {
-    this.publishedCommands.set(operation.commandId, operation);
-    return () => {
-      if (this.publishedCommands.get(operation.commandId) === operation)
-        this.publishedCommands.delete(operation.commandId);
+  registerPublishedOperation(
+    operation: PublishedDesktopCommand,
+  ): PublishedOperationRegistration {
+    const { commandId, kind } = operation;
+    // The gate that admitted this publication is the one told of its outcome.
+    const gate = this.dispatchGate;
+    this.publishedCommands.set(commandId, operation);
+    const take = () => {
+      if (this.publishedCommands.get(commandId) !== operation) return false;
+      this.publishedCommands.delete(commandId);
+      return true;
+    };
+    return {
+      release: () => void take(),
+      markUnknown: (cause, reconciled = false) => {
+        if (!take()) return;
+        this.unknownOperations.set(
+          commandId,
+          Object.freeze({ operationId: commandId, kind, cause }),
+        );
+        if (!reconciled)
+          gate?.reportUncertainExecution?.({ cause, operation: kind });
+      },
     };
   }
 
@@ -1454,28 +1529,38 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
         const published: PublishedDesktopCommand = {
           commandId,
+          kind: "command",
           // Sequenced frames are accepted only in order, so a received
           // terminal means every frame before it was received too.
           outputComplete: () => acknowledgedOutput && terminalReceived,
           resumeOutput: () => {
             void sendOutputCursor("command_output_resume", true);
           },
+          abandon: () => {
+            if (settled) return;
+            settled = true;
+            cleanup("unreconciled");
+            reject(new Error(DESKTOP_OUTPUT_UNRECONCILED_MESSAGE));
+          },
         };
-        let unregisterPublished: (() => void) | undefined;
+        let registration: PublishedOperationRegistration | undefined;
         const markPublicationStarted = () => {
           commandPublicationStarted = true;
-          unregisterPublished ??= this.registerPublishedOperation(published);
+          registration ??= this.registerPublishedOperation(published);
         };
 
         const cleanup = (reason: ReceiverCleanupReason) => {
           cleanupReason = reason;
           diagnostics.finish(reason);
           // Published, but neither a terminal nor a confirmed cancellation
-          // arrived: execution may continue. Stop the run before forgetting
-          // it, so no recovery or later dispatch can proceed past it.
-          if (unregisterPublished && !terminalReceived && reason !== "canceled")
-            gate?.failUncertainExecution?.();
-          unregisterPublished?.();
+          // arrived: execution may continue. Keep it recorded as unknown, and
+          // let no later dispatch proceed past it without a fresh proof.
+          if (!terminalReceived && reason !== "canceled")
+            registration?.markUnknown(
+              unreconciledCause(reason),
+              reason === "unreconciled",
+            );
+          else registration?.release();
           dispatchAbort.abort();
           clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the

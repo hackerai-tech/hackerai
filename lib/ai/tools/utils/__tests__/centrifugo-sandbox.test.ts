@@ -538,7 +538,7 @@ describe("CentrifugoSandbox", () => {
                 { once: true },
               );
             }),
-          failUncertainExecution: jest.fn(),
+          reportUncertainExecution: jest.fn(),
         },
         close: () => {
           ready = false;
@@ -595,7 +595,13 @@ describe("CentrifugoSandbox", () => {
       expect(control.publish).toHaveBeenCalledTimes(1);
       const indexes = () =>
         control.publish.mock.calls.map(([fragment]) => fragment.index);
-      return { result, readiness, mockClient: mockClients[0], indexes };
+      return {
+        sandbox,
+        result,
+        readiness,
+        mockClient: mockClients[0],
+        indexes,
+      };
     }
 
     it("continues only once verified, each fragment exactly once", async () => {
@@ -605,7 +611,7 @@ describe("CentrifugoSandbox", () => {
       const sent = indexes();
       expect(sent.length).toBeGreaterThan(2);
       expect(sent).toEqual([...sent.keys()]);
-      expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+      expect(readiness.gate.reportUncertainExecution).not.toHaveBeenCalled();
       mockClient.emit("disconnected", { reason: "test teardown" });
     });
 
@@ -621,7 +627,7 @@ describe("CentrifugoSandbox", () => {
           mockClient.emit("disconnected", { reason: "relay closed" }),
       ],
     ])(
-      "never sends the rest when %s, and stops the run for the partial request",
+      "never sends the rest when %s, and keeps the partial request recorded as unknown",
       async (_name, end) => {
         const started = await publishFirstFragment();
         end(started);
@@ -629,9 +635,24 @@ describe("CentrifugoSandbox", () => {
         started.readiness.open();
         await jest.advanceTimersByTimeAsync(10_000);
         expect(started.indexes()).toEqual([0]);
+        // The gate requires a fresh proof before any later dispatch.
         expect(
-          started.readiness.gate.failUncertainExecution,
+          started.readiness.gate.reportUncertainExecution,
         ).toHaveBeenCalledTimes(1);
+        expect(
+          started.readiness.gate.reportUncertainExecution,
+        ).toHaveBeenCalledWith({
+          cause: "receiver_failed",
+          operation: "command",
+        });
+        // Never forgotten, and never offered for reconciliation again.
+        expect(started.sandbox.getPublishedCommands()).toEqual([]);
+        expect(started.sandbox.getUnknownOperations()).toEqual([
+          expect.objectContaining({
+            kind: "command",
+            cause: "receiver_failed",
+          }),
+        ]);
       },
     );
   });

@@ -318,6 +318,7 @@ test("a reconnected subscription alone never restores readiness", async () => {
   expect(cause()).toEqual({
     reason: "observer_recovery_expired",
     recoveryWindowMs: 15_000,
+    recoveryPhase: "outage",
     recoveryElapsedMs: 15_000,
     connectionId: SELECTED,
     hadPositivePresence: true,

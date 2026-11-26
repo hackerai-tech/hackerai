@@ -12,6 +12,9 @@ import {
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import { createCentrifugoPtyHandle } from "@/lib/ai/tools/utils/centrifugo-pty-adapter";
+import { TerminalInputRefusedError } from "@/lib/ai/tools/utils/pty-exited-promise";
+import { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
+import type { TerminalExecutionRecord } from "@/lib/ai/tools/utils/terminal-execution-record";
 import {
   LocalConnectionLostError,
   getLocalStopDiagnostic,
@@ -643,7 +646,7 @@ describe("a returning connection that cannot prove the same session is terminal"
   });
 });
 
-test("a returning session whose output window closed while execution is pending stops without replaying it", async () => {
+test("a returning session that no longer retains a command's output settles it as unknown and continues, never replaying it", async () => {
   const run = await startRun();
   const { commandId, outcome, done } = await runCommand(run);
   relay.dropHost();
@@ -652,26 +655,39 @@ test("a returning session whose output window closed while execution is pending 
   run.host.loseOutput(commandId);
   expect(run.host.output(commandId)).toBeDefined();
   const later = run.sandbox.commands.run("printf later");
-  void later.catch(() => {});
   relay.refused.clear();
-  await until(() => run.onLost.mock.calls.length > 0);
-  expect(run.cause()).toMatchObject({
-    reason: "desktop_command_unreconciled",
-    hadPositivePresence: true,
-  });
+  await until(() => !!outcome.error);
+  await done;
   expect(relay.published("desktop_session_proof").at(-1)?.data).toMatchObject({
     retainedCommandIds: [],
   });
-  await expect(later).rejects.toBeDefined();
-  expect(run.host.executions).toEqual([commandId]);
-  expect(commandsPublished()).toBe(1);
-  expect(relay.published("command_output_resume")).toHaveLength(0);
+  // The tool call learns its outcome is unknown; nothing is re-sent.
+  expect(String(outcome.error)).toContain("could not be recovered");
   expect(outcome.result).toBeUndefined();
-  run.sandbox.close();
-  await done;
+  expect(relay.published("command_output_resume")).toHaveLength(0);
+  expect(run.sandbox.getUnknownOperations()).toEqual([
+    {
+      operationId: commandId,
+      kind: "command",
+      cause: "host_returned_unretained",
+    },
+  ]);
+
+  // The run continues: the waiting command is published once, after proof.
+  await until(() => run.host.executions.length === 2);
+  run.host.output(run.host.executions[1]).append({ type: "exit", exitCode: 0 });
+  await expect(later).resolves.toMatchObject({ exitCode: 0 });
+  expect(run.host.executions).toEqual([commandId, run.host.executions[1]]);
+  expect(commandsPublished()).toBe(2);
+  expect(run.watch.recoverySummary()).toMatchObject({
+    recoveredOutages: 1,
+    unknownOutcomeOperations: 1,
+  });
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(run.onLost).not.toHaveBeenCalled();
 });
 
-test("an active interactive terminal makes a returning host stop the run, never replaying its creation", async () => {
+test("an open interactive terminal does not stop a returning session: it becomes a dead terminal that refuses input and is never recreated", async () => {
   const run = await startRun();
   const handle = await createCentrifugoPtyHandle(run.sandbox, {
     command: "bounded-shell",
@@ -679,26 +695,43 @@ test("an active interactive terminal makes a returning host stop the run, never 
     rows: 24,
   });
   expect(run.host.terminals).toHaveLength(1);
-  // Unsequenced output with no replay protocol cannot be reconciled.
-  expect(run.sandbox.getPublishedCommands()).toEqual([
-    expect.objectContaining({ commandId: run.host.terminals[0] }),
-  ]);
+  const [terminal] = run.host.terminals;
   relay.dropHost();
   await until(() => !run.watch.isReady());
+  // Typed while the host was away: held by the gate, never sent.
+  const typed = handle.sendInput(new TextEncoder().encode("rm -rf build\n"));
+  void typed.catch(() => {});
   relay.refused.clear();
-  await until(() => run.onLost.mock.calls.length > 0);
-  expect(run.cause()).toMatchObject({
-    reason: "desktop_command_unreconciled",
-  });
+  await until(() => run.watch.isReady());
+  // Unsequenced output with no replay: the outcome is unknown.
   expect(
     relay.published("desktop_session_challenge").at(-1)?.data,
-  ).toMatchObject({ commandIds: [run.host.terminals[0]] });
-  await jest.advanceTimersByTimeAsync(10_000);
+  ).toMatchObject({ commandIds: [terminal] });
+  await expect(handle.exited).resolves.toEqual({
+    exitCode: null,
+    observationFailed: true,
+    outcomeUnknown: true,
+  });
+  await expect(typed).rejects.toBeInstanceOf(TerminalInputRefusedError);
+  await expect(
+    handle.sendInput(new TextEncoder().encode("ls\n")),
+  ).rejects.toBeInstanceOf(TerminalInputRefusedError);
+  expect(relay.published("pty_input")).toHaveLength(0);
+  expect(run.sandbox.getUnknownOperations()).toEqual([
+    expect.objectContaining({ operationId: terminal, kind: "pty" }),
+  ]);
+
+  // The run continues, and the dead terminal can still be killed.
+  const next = run.sandbox.commands.run("printf next");
+  await until(() => run.host.executions.length === 1);
+  run.host.output(run.host.executions[0]).append({ type: "exit", exitCode: 0 });
+  await expect(next).resolves.toMatchObject({ exitCode: 0 });
+  await handle.kill();
+  expect(relay.published("pty_kill")).toHaveLength(1);
   expect(relay.published("pty_create")).toHaveLength(1);
-  expect(run.host.terminals).toHaveLength(1);
-  void handle.kill();
-  await jest.advanceTimersByTimeAsync(2_000);
-  expect(run.sandbox.getPublishedCommands()).toEqual([]);
+  expect(run.host.terminals).toEqual([terminal]);
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(run.onLost).not.toHaveBeenCalled();
 });
 
 test("a host that never returns, or returns as a replacement connection, expires at the fixed window", async () => {
@@ -815,61 +848,79 @@ test("Stop before publication ends a readiness wait at once without dispatching"
 });
 
 describe("a published execution whose outcome becomes unknown", () => {
-  /** Later work on the captured sandbox never reaches the host. */
-  async function expectDispatchClosed(
+  /**
+   * Later work waits for a fresh proof of the same session, then runs once;
+   * the uncertain execution itself is never sent again.
+   */
+  async function expectDispatchAfterFreshProof(
     run: Awaited<ReturnType<typeof startRun>>,
+    proofsBefore: number,
   ) {
     const executed = run.host.executions.length;
-    const published = commandsPublished();
-    await expect(
-      run.sandbox.commands.run("printf after"),
-    ).rejects.toBeDefined();
+    const next = run.sandbox.commands.run("printf after");
+    await until(() => run.host.executions.length === executed + 1);
+    expect(relay.published("desktop_session_proof").length).toBeGreaterThan(
+      proofsBefore,
+    );
+    run.host
+      .output(run.host.executions[executed])
+      .append({ type: "exit", exitCode: 0 });
+    await expect(next).resolves.toMatchObject({ exitCode: 0 });
     await jest.advanceTimersByTimeAsync(10_000);
-    expect(commandsPublished()).toBe(published);
-    expect(run.host.executions).toHaveLength(executed);
+    expect(run.host.executions).toHaveLength(executed + 1);
+    expect(run.onLost).not.toHaveBeenCalled();
   }
 
-  test("a receiver failure without a terminal stops the run while the observer stays healthy", async () => {
+  test("a receiver failure without a terminal requires a fresh same-session proof, then the run continues", async () => {
     const run = await startRun();
     const { commandId, outcome, done } = await runCommand(run);
+    const proofs = relay.published("desktop_session_proof").length;
     run.host.reportUnavailable(commandId);
     await until(() => !!outcome.error);
     await done;
-    expect(run.cause()).toMatchObject({
-      reason: "desktop_command_unreconciled",
-      connectionId: SELECTED,
-    });
-    expect(run.watch.isReady()).toBe(false);
-    await expectDispatchClosed(run);
+    expect(run.sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({
+        operationId: commandId,
+        cause: "output_unavailable",
+      }),
+    ]);
+    await expectDispatchAfterFreshProof(run, proofs);
+    expect(run.host.executions.filter((id) => id === commandId)).toHaveLength(
+      1,
+    );
   });
 
-  test("an interactive terminal that fails after ready stops the run", async () => {
+  test("an interactive terminal that fails after ready is settled as unknown and the run continues", async () => {
     const run = await startRun();
     const handle = await createCentrifugoPtyHandle(run.sandbox, {
       command: "bounded-shell",
       cols: 80,
       rows: 24,
     });
+    const proofs = relay.published("desktop_session_proof").length;
     run.host.reportTerminalError(run.host.terminals[0]);
     await expect(handle.exited).resolves.toMatchObject({
       observationFailed: true,
+      outcomeUnknown: true,
     });
-    expect(run.cause()?.reason).toBe("desktop_command_unreconciled");
-    await expectDispatchClosed(run);
+    await expectDispatchAfterFreshProof(run, proofs);
     expect(run.host.terminals).toHaveLength(1);
   });
 
   test("an error before PTY readiness does not prove native execution never started", async () => {
     const run = await startRun(startHost({ ptyCreationError: true }));
+    const proofs = relay.published("desktop_session_proof").length;
     await expect(
       createCentrifugoPtyHandle(run.sandbox, {
         command: "bounded-shell",
         cols: 80,
         rows: 24,
       }),
-    ).rejects.toThrow("Native PID unavailable");
-    expect(run.cause()?.reason).toBe("desktop_command_unreconciled");
-    await expectDispatchClosed(run);
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("Native PID unavailable"),
+      executionOutcome: "unknown",
+    });
+    await expectDispatchAfterFreshProof(run, proofs);
     expect(run.host.terminals).toHaveLength(1);
   });
 
@@ -886,16 +937,40 @@ describe("a published execution whose outcome becomes unknown", () => {
     relay.dropWorker();
     relay.dropHost();
     await until(() => exitedAt !== undefined);
-    // Its teardown itself stopped the run, before any recovery proof could
-    // see an empty in-flight list.
-    expect(run.cause()?.reason).toBe("desktop_command_unreconciled");
+    // Recorded as unknown before any recovery proof could see an empty
+    // in-flight list, and never offered for reconciliation again.
+    await expect(handle.exited).resolves.toMatchObject({
+      outcomeUnknown: true,
+    });
+    expect(run.sandbox.getPublishedCommands()).toEqual([]);
+    expect(run.sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({ kind: "pty", cause: "transport_failed" }),
+    ]);
     expect(relay.published("desktop_session_proof")).toHaveLength(1);
     relay.accepting = true;
     relay.refused.clear();
+    await until(() => run.watch.isReady());
     await jest.advanceTimersByTimeAsync(30_000);
-    expect(run.onLost).toHaveBeenCalledTimes(1);
-    expect(run.watch.isReady()).toBe(false);
+    expect(run.onLost).not.toHaveBeenCalled();
     expect(relay.published("pty_create")).toHaveLength(1);
+  });
+
+  test("a host that never proved its session still stops the run, with the cause", async () => {
+    const run = await startRun(startHost({ startup: null }));
+    const { commandId, outcome, done } = await runCommand(run);
+    run.host.reportUnavailable(commandId);
+    await until(() => !!outcome.error);
+    await done;
+    expect(run.cause()).toMatchObject({
+      reason: "desktop_command_unreconciled",
+      unreconciledCause: "output_unavailable",
+      unreconciledOperation: "command",
+    });
+    expect(run.watch.isReady()).toBe(false);
+    await expect(
+      run.sandbox.commands.run("printf after"),
+    ).rejects.toBeDefined();
+    expect(commandsPublished()).toBe(1);
   });
 
   test("a confirmed Stop and a failure before publication leave the run going", async () => {
@@ -925,6 +1000,7 @@ describe("a published execution whose outcome becomes unknown", () => {
       .append({ type: "exit", exitCode: 0 });
     await expect(next).resolves.toMatchObject({ exitCode: 0 });
     expect(run.onLost).not.toHaveBeenCalled();
+    expect(run.sandbox.getUnknownOperations()).toEqual([]);
   });
 });
 
@@ -937,6 +1013,51 @@ describe("completion confirmation after the model finished", () => {
     );
     return outcome;
   };
+
+  test("a terminal whose exit is unconfirmed at the end of the response finishes normally, recorded as possibly running", async () => {
+    const run = await startRun();
+    const records: TerminalExecutionRecord[] = [];
+    const manager = new PtySessionManager();
+    // The same order as the end of a response: close terminals, then confirm.
+    await manager.create("chat", {
+      createHandle: () =>
+        createCentrifugoPtyHandle(run.sandbox, {
+          command: "bounded-shell",
+          cols: 80,
+          rows: 24,
+        }),
+      cols: 80,
+      rows: 24,
+      sandboxIdentity: "local",
+      originalCommand: "bounded-shell",
+      executionRecord: {
+        sandboxInstance: "desktop",
+        artifactPaths: [],
+        save: async (record) => {
+          records.push(record);
+          return "/records/terminal.json";
+        },
+        prune: async () => {},
+      },
+    });
+    // This host never answers the kill with an exit.
+    const closed = track(manager.closeAll("chat"));
+    await until(() => closed.done);
+    expect(closed.error).toBeUndefined();
+    expect(relay.published("pty_kill")).toHaveLength(1);
+    const confirmed = track(run.watch.confirmReady());
+    await until(() => confirmed.done);
+    expect(confirmed.error).toBeUndefined();
+    expect(run.onLost).not.toHaveBeenCalled();
+    expect(records.at(-1)).toMatchObject({
+      status: "unknown",
+      exitReason: "outcome_unknown",
+    });
+    expect(run.sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({ kind: "pty", cause: "kill_unconfirmed" }),
+    ]);
+    expect(relay.published("pty_create")).toHaveLength(1);
+  });
 
   test("a healthy host is confirmed by a fresh proof, never the cached readiness", async () => {
     const run = await startRun();

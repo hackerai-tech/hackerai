@@ -12,6 +12,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { AddressInfo } from "node:net";
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
 import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
+import { TerminalInputRefusedError } from "../pty-exited-promise";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import type { PtyHandle } from "../e2b-pty-adapter";
 
@@ -366,13 +367,16 @@ describe("local relay PTY connection token refresh", () => {
   });
 });
 
-/** The run's live readiness, opened and closed by the test. */
-function controllableGate() {
+/**
+ * The run's live readiness, opened and closed by the test. `reports` is false
+ * for a gate that never continues past an unknown outcome (a CLI host).
+ */
+function controllableGate({ reports = true } = {}) {
   let ready = false;
   const waiters = new Set<() => void>();
   return {
     gate: {
-      failUncertainExecution: jest.fn(),
+      ...(reports && { reportUncertainExecution: jest.fn() }),
       isReady: () => ready,
       waitUntilReady: (signal?: AbortSignal) =>
         new Promise<void>((resolve, reject) => {
@@ -442,7 +446,8 @@ describe("run readiness for interactive terminals", () => {
     await within(handle.exited, "pty_exit");
     expect(sandbox.getPublishedCommands()).toEqual([]);
     // A host-reported exit is a known outcome.
-    expect(readiness.gate.failUncertainExecution).not.toHaveBeenCalled();
+    expect(readiness.gate.reportUncertainExecution).not.toHaveBeenCalled();
+    expect(sandbox.getUnknownOperations()).toEqual([]);
   });
 
   it("holds input while unverified; kill stays available, ends the wait and the input is never sent", async () => {
@@ -480,11 +485,15 @@ describe("run readiness for interactive terminals", () => {
     expect(server.publications("pty_create")).toHaveLength(1);
     expect(sandbox.getPublishedCommands()).toEqual([]);
     // The held input never left. The kill's exit arrived while the host was
-    // unverified, so earlier unsequenced output may be missing: the run stops.
-    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    // unverified, so earlier unsequenced output may be missing: it stays
+    // recorded as unknown and later dispatch needs a fresh proof.
+    expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledTimes(1);
+    expect(sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({ kind: "pty", cause: "exit_unverified" }),
+    ]);
   });
 
-  it("stops the run when a session's exit arrives while the host is unverified", async () => {
+  it("records a session as unknown when its exit arrives while the host is unverified", async () => {
     runPtyRunner();
     const sandbox = createSandbox();
     const readiness = controllableGate();
@@ -508,11 +517,14 @@ describe("run readiness for interactive terminals", () => {
     await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
       exitCode: 0,
     });
-    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
+    expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledWith({
+      cause: "exit_unverified",
+      operation: "pty",
+    });
     expect(sandbox.getPublishedCommands()).toEqual([]);
   });
 
-  it("stops the run when input delivery fails after publication began", async () => {
+  it("settles a terminal as unknown when input delivery fails after publication began, refusing any further input", async () => {
     runPtyRunner();
     const sandbox = createSandbox();
     const readiness = controllableGate();
@@ -530,54 +542,90 @@ describe("run readiness for interactive terminals", () => {
     await expect(
       within(handle.sendInput(new TextEncoder().encode("ls\n")), "input"),
     ).rejects.toBeDefined();
-    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
-    // Never sent again; kill remains available.
-    server.rejectPublish = undefined;
-    await within(handle.kill(), "PTY teardown");
-    expect(server.publications("pty_input")).toHaveLength(1);
-    expect(server.publications("pty_kill")).toHaveLength(1);
-  });
-
-  it("stops the run when a published session ends without a host-reported exit", async () => {
-    runPtyRunner();
-    const runner = server.onPublish;
-    // The host never confirms this kill.
-    server.onPublish = (data, channel) => {
-      if (data.type !== "pty_kill") runner(data, channel);
-    };
-    const sandbox = createSandbox();
-    const readiness = controllableGate();
-    readiness.open();
-    sandbox.setDispatchGate(readiness.gate);
-    const handle = await within(
-      createCentrifugoPtyHandle(sandbox, {
-        command: "bounded-shell",
-        cols: 80,
-        rows: 24,
-      }),
-      "pty_ready",
-    );
-    const killed = handle.kill();
-    await within(
-      server.next((f) => f.command.publish?.data?.type === "pty_kill"),
-      "kill",
-    );
-    // The kill's exit wait starts after its publish reply arrives over real
-    // I/O; only then can its (fake) 1.5s fallback elapse.
-    let settled = false;
-    void killed.then(() => (settled = true));
-    for (let step = 0; step < 30 && !settled; step++) {
-      await ioSettles();
-      await jest.advanceTimersByTimeAsync(500);
-    }
-    await within(killed, "kill settles");
+    expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledWith({
+      cause: "input_unconfirmed",
+      operation: "pty",
+    });
+    // The run continues past it, so its tools must not report an exit.
     await expect(handle.exited).resolves.toEqual({
       exitCode: null,
       observationFailed: true,
+      outcomeUnknown: true,
     });
-    expect(readiness.gate.failUncertainExecution).toHaveBeenCalledTimes(1);
-    expect(sandbox.getPublishedCommands()).toEqual([]);
+    // The shell's state is unknown: later input is refused, never sent.
+    server.rejectPublish = undefined;
+    await expect(
+      handle.sendInput(new TextEncoder().encode("ls\n")),
+    ).rejects.toBeInstanceOf(TerminalInputRefusedError);
+    // Kill remains available.
+    await within(handle.kill(), "PTY teardown");
+    expect(server.publications("pty_input")).toHaveLength(1);
+    expect(server.publications("pty_kill")).toHaveLength(1);
+    expect(sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({ kind: "pty", cause: "input_unconfirmed" }),
+    ]);
   });
+
+  it.each([
+    [
+      "a run that continues past it records it as unknown",
+      true,
+      { outcomeUnknown: true },
+    ],
+    ["a CLI host keeps its exit result", false, {}],
+  ])(
+    "an unconfirmed kill is never a lost connection: %s",
+    async (_name, reports, flags) => {
+      runPtyRunner();
+      const runner = server.onPublish;
+      // The host never confirms this kill.
+      server.onPublish = (data, channel) => {
+        if (data.type !== "pty_kill") runner(data, channel);
+      };
+      const sandbox = createSandbox();
+      const readiness = controllableGate({ reports });
+      readiness.open();
+      sandbox.setDispatchGate(readiness.gate);
+      const handle = await within(
+        createCentrifugoPtyHandle(sandbox, {
+          command: "bounded-shell",
+          cols: 80,
+          rows: 24,
+        }),
+        "pty_ready",
+      );
+      const killed = handle.kill();
+      await within(
+        server.next((f) => f.command.publish?.data?.type === "pty_kill"),
+        "kill",
+      );
+      // The kill's exit wait starts after its publish reply arrives over real
+      // I/O; only then can its (fake) 1.5s fallback elapse.
+      let settled = false;
+      void killed.then(() => (settled = true));
+      for (let step = 0; step < 30 && !settled; step++) {
+        await ioSettles();
+        await jest.advanceTimersByTimeAsync(500);
+      }
+      await within(killed, "kill settles");
+      await expect(handle.exited).resolves.toEqual({
+        exitCode: null,
+        observationFailed: true,
+        ...flags,
+      });
+      // Possibly still running: kept recorded, never reconciled or recreated.
+      expect(sandbox.getPublishedCommands()).toEqual([]);
+      expect(sandbox.getUnknownOperations()).toEqual([
+        expect.objectContaining({ kind: "pty", cause: "kill_unconfirmed" }),
+      ]);
+      if (reports)
+        expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledWith({
+          cause: "kill_unconfirmed",
+          operation: "pty",
+        });
+      expect(server.publications("pty_create")).toHaveLength(1);
+    },
+  );
 
   it("requires readiness again after Desktop authorization before creating", async () => {
     runPtyRunner();

@@ -30,6 +30,59 @@ const LOCAL_STOP_REASONS = [
 
 export type LocalStopReason = (typeof LOCAL_STOP_REASONS)[number];
 
+/**
+ * Why a published Desktop operation could not be reconciled. Closed and
+ * content-free: never a command, path, output or message.
+ */
+const LOCAL_UNRECONCILED_CAUSES = [
+  // The same session returned without this operation's output: a command
+  // whose output is no longer retained, or an open terminal (unsequenced).
+  "host_returned_unretained",
+  // More in-flight operations than one session challenge can name.
+  "operation_limit",
+  // The run's in-flight operations could not be read.
+  "registry_unreadable",
+  // An operation could not be settled as an unknown outcome.
+  "settle_failed",
+  // A command's delivery deadline passed without a terminal.
+  "receiver_deadline",
+  // The host reported the command's output unavailable (e.g. window bounds).
+  "output_unavailable",
+  // Stop was sent but cancellation was never confirmed.
+  "cancel_unconfirmed",
+  // The command receiver failed after publication began.
+  "receiver_failed",
+  // A terminal's creation was published but never confirmed ready.
+  "create_unconfirmed",
+  // A terminal kill was sent but no exit was observed.
+  "kill_unconfirmed",
+  // Terminal input may have reached the shell, unconfirmed.
+  "input_unconfirmed",
+  // A terminal's transport failed after it was ready.
+  "transport_failed",
+  // A terminal exited while the host was unverified; output may be missing.
+  "exit_unverified",
+] as const;
+
+export type LocalUnreconciledCause = (typeof LOCAL_UNRECONCILED_CAUSES)[number];
+
+const LOCAL_OPERATION_KINDS = ["command", "pty"] as const;
+
+export type LocalOperationKind = (typeof LOCAL_OPERATION_KINDS)[number];
+
+/**
+ * Why verification was open when the run stopped: a host outage, the
+ * end-of-response completion check, or a fresh proof required after an
+ * operation's outcome became unknown.
+ */
+const LOCAL_RECOVERY_PHASES = [
+  "outage",
+  "completion_check",
+  "reverification",
+] as const;
+
+export type LocalRecoveryPhase = (typeof LOCAL_RECOVERY_PHASES)[number];
+
 const CLIENT_STATES = ["connected", "connecting", "disconnected"] as const;
 
 export type LocalStopClientState = (typeof CLIENT_STATES)[number];
@@ -55,6 +108,12 @@ export type LocalStopDetails = {
   recoveryWindowMs?: number;
   /** How long that outage had lasted when the run stopped. */
   recoveryElapsedMs?: number;
+  /** Set whenever verification was open at the stop, outage or not. */
+  recoveryPhase?: LocalRecoveryPhase;
+  /** Only with `desktop_command_unreconciled`: which cause fired. */
+  unreconciledCause?: LocalUnreconciledCause;
+  /** Only with `desktop_command_unreconciled`, when one operation caused it. */
+  unreconciledOperation?: LocalOperationKind;
 };
 
 type LocalStopDiagnostic = Readonly<
@@ -114,6 +173,9 @@ function callbackCode(value: unknown): number | undefined {
 function clientState(value: unknown): LocalStopClientState | undefined {
   return CLIENT_STATES.find((known) => known === value);
 }
+
+const closed = <T extends string>(known: readonly T[], value: unknown) =>
+  known.find((each) => each === value);
 
 function socketClose(code: unknown, wasClean: unknown) {
   return typeof code === "number" &&
@@ -178,6 +240,23 @@ function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
     const elapsed = duration(ownData(details, "recoveryElapsedMs"));
     if (elapsed !== undefined) diagnostic.recoveryElapsedMs = elapsed;
   }
+  const phase = closed(
+    LOCAL_RECOVERY_PHASES,
+    ownData(details, "recoveryPhase"),
+  );
+  if (phase) diagnostic.recoveryPhase = phase;
+  if (diagnostic.reason === "desktop_command_unreconciled") {
+    const cause = closed(
+      LOCAL_UNRECONCILED_CAUSES,
+      ownData(details, "unreconciledCause"),
+    );
+    if (cause) diagnostic.unreconciledCause = cause;
+    const operation = closed(
+      LOCAL_OPERATION_KINDS,
+      ownData(details, "unreconciledOperation"),
+    );
+    if (operation) diagnostic.unreconciledOperation = operation;
+  }
   return Object.freeze(diagnostic);
 }
 
@@ -239,6 +318,15 @@ export function localStopAnalyticsProperties(error: unknown) {
         diagnostic.recoveryElapsedMs,
       ),
     }),
+    ...(diagnostic.recoveryPhase !== undefined && {
+      local_stop_recovery_phase: diagnostic.recoveryPhase,
+    }),
+    ...(diagnostic.unreconciledCause !== undefined && {
+      local_stop_unreconciled_cause: diagnostic.unreconciledCause,
+    }),
+    ...(diagnostic.unreconciledOperation !== undefined && {
+      local_stop_unreconciled_operation: diagnostic.unreconciledOperation,
+    }),
   } as const;
 }
 
@@ -247,6 +335,11 @@ export type LocalRunRecoverySummary = Readonly<{
   recoveredOutages: number;
   /** Longest recovered outage; absent when none was measured. */
   maxRecoveredOutageMs?: number;
+  /**
+   * Published operations the run continued past with an unknown outcome
+   * instead of stopping; absent when none.
+   */
+  unknownOutcomeOperations?: number;
 }>;
 
 /**
@@ -274,16 +367,25 @@ export function localRecoveryAnalyticsProperties(
     : recovered > 0
       ? "recovered"
       : undefined;
-  if (!outcome) return undefined;
+  const unknown =
+    typeof summary?.unknownOutcomeOperations === "number" &&
+    Number.isSafeInteger(summary.unknownOutcomeOperations) &&
+    summary.unknownOutcomeOperations > 0
+      ? summary.unknownOutcomeOperations
+      : 0;
+  if (!outcome && unknown === 0) return undefined;
   const longest = summary?.maxRecoveredOutageMs;
   return {
-    local_recovery_outcome: outcome,
-    local_recovered_outages: recovered,
+    ...(outcome && {
+      local_recovery_outcome: outcome,
+      local_recovered_outages: recovered,
+    }),
     ...(recovered > 0 &&
       typeof longest === "number" &&
       Number.isFinite(longest) &&
       longest >= 0 && {
         local_recovered_max_outage_bucket: outageDurationBucket(longest),
       }),
+    ...(unknown > 0 && { local_unknown_outcome_operations: unknown }),
   } as const;
 }

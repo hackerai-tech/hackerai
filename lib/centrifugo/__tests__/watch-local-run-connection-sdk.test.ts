@@ -182,7 +182,11 @@ test.each([
     3501,
     "disconnected",
     // The same teardown's resubscribe opened a window the stop ended at once.
-    { recoveryWindowMs: 15_000, recoveryElapsedMs: 0 },
+    {
+      recoveryWindowMs: 15_000,
+      recoveryElapsedMs: 0,
+      recoveryPhase: "outage",
+    },
   ],
   [
     "a server unsubscribe",
@@ -283,6 +287,7 @@ test("an outage outlasting the window stops once with the interrupting close", a
   expect(getLocalStopDiagnostic(watcher.onLost.mock.calls[0][0])).toEqual({
     reason: "observer_recovery_expired",
     recoveryWindowMs: 15_000,
+    recoveryPhase: "outage",
     recoveryElapsedMs: 15_000,
     connectionId: SELECTED,
     hadPositivePresence: true,
@@ -356,6 +361,7 @@ test("a close during initial setup is not the run's socket close", async () => {
     callbackCode: 3501,
     clientState: "disconnected",
     recoveryWindowMs: 15_000,
+    recoveryPhase: "outage",
     recoveryElapsedMs: 0,
   });
 });

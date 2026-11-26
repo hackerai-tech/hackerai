@@ -32,8 +32,15 @@ import {
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
 import type { PtyHandle, CreatePtyOptions } from "./e2b-pty-adapter";
-import type { CentrifugoSandbox } from "./centrifugo-sandbox";
-import { createResolvableExited } from "./pty-exited-promise";
+import type {
+  CentrifugoSandbox,
+  PublishedOperationRegistration,
+} from "./centrifugo-sandbox";
+import type { LocalUnreconciledCause } from "@/lib/chat/local-connection-stop";
+import {
+  createResolvableExited,
+  TerminalInputRefusedError,
+} from "./pty-exited-promise";
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -202,16 +209,24 @@ export async function createCentrifugoPtyHandle(
   const reassembler = new CentrifugoMessageReassembler();
   // The owning run's live host readiness; absent outside a watched run.
   const gate = sandbox.getDispatchGate();
+  // A watched Desktop run continues past a terminal whose outcome is unknown,
+  // so its tools must say so. Ask, CLI and other hosts keep their results.
+  const continuesPastUnknown =
+    typeof gate?.reportUncertainExecution === "function";
   // Ends readiness waits on kill or teardown; never a published operation.
   const dispatchAbort = new AbortController();
-  let unregisterPublished: (() => void) | undefined;
+  let registration: PublishedOperationRegistration | undefined;
   // PTY output is unsequenced and has no replay, so an active session can
-  // never be reconciled after its host leaves: recovery stops the run.
+  // never be reconciled after its host leaves: the returning session settles
+  // it as an unknown outcome. The client stays connected so a later kill
+  // still reaches the host.
   const markPublished = () => {
-    unregisterPublished ??= sandbox.registerPublishedOperation({
+    registration ??= sandbox.registerPublishedOperation({
       commandId: sessionId,
+      kind: "pty",
       outputComplete: () => false,
       resumeOutput: () => {},
+      abandon: () => loseOutcome("host_returned_unretained", true),
     });
   };
 
@@ -241,16 +256,39 @@ export async function createCentrifugoPtyHandle(
   // Only an observed exit proves the session ended. A creation error can
   // follow native execution (e.g. no returned PID), even before pty_ready.
   let outcomeKnown = false;
-  const cleanup = () => {
+  // Once this worker cannot account for the session's input or output, it is
+  // a dead terminal: it may still run on the host, so it refuses input and
+  // stays recorded as unknown. Nothing about it is ever published again.
+  let outcomeUnknown = false;
+  const loseOutcome = (cause: LocalUnreconciledCause, reconciled = false) => {
+    if (outcomeKnown || outcomeUnknown) return;
+    outcomeUnknown = true;
+    registration?.markUnknown(cause, reconciled);
+    resolveExitedOnce({
+      exitCode: null,
+      observationFailed: true,
+      ...(continuesPastUnknown && { outcomeUnknown: true as const }),
+    });
+  };
+  // A creation that was published but never confirmed may have started.
+  const creationFailure = (message: string) => {
+    const error = new Error(`${LOG_PREFIX} ${message}`);
+    return registration && continuesPastUnknown
+      ? Object.assign(error, { executionOutcome: "unknown" as const })
+      : error;
+  };
+  const cleanup = (uncertain: LocalUnreconciledCause) => {
     if (cleanedUp) return;
     cleanedUp = true;
     dispatchAbort.abort();
     // The shell may still run, or (with an exit seen while the host is
-    // unverified) unsequenced output may be missing: stop the run before
-    // forgetting the session. A verified host's exit stays a normal end.
-    if (unregisterPublished && (!outcomeKnown || (gate && !gate.isReady())))
-      gate?.failUncertainExecution?.();
-    unregisterPublished?.();
+    // unverified) unsequenced output may be missing: keep it recorded as
+    // unknown before releasing the session. A verified host's exit stays a
+    // normal end.
+    if (!outcomeKnown) loseOutcome(uncertain);
+    else if (gate && !gate.isReady())
+      registration?.markUnknown("exit_unverified");
+    else registration?.release();
     recordTraffic();
     if (subscription) {
       try {
@@ -275,8 +313,10 @@ export async function createCentrifugoPtyHandle(
     // Creation and input run commands; kill and resize stay available while
     // the host is unverified. Nothing here is ever published twice.
     const gated = payload.type === "pty_create" || payload.type === "pty_input";
+    const input = payload.type === "pty_input";
     let publishing = false;
     try {
+      if (input && outcomeUnknown) throw new TerminalInputRefusedError();
       if (gated) await awaitDispatchReadiness(gate, dispatchAbort.signal);
       const authorizationId = desktop
         ? await authorizeDesktopOperation(
@@ -293,6 +333,8 @@ export async function createCentrifugoPtyHandle(
         dispatchAbort.signal.throwIfAborted();
         if (payload.type === "pty_create") markPublished();
       }
+      // Settled as unknown while this input waited: it is never sent.
+      if (input && outcomeUnknown) throw new TerminalInputRefusedError();
       publishing = true;
       await subscription.publish({
         ...payload,
@@ -301,8 +343,8 @@ export async function createCentrifugoPtyHandle(
     } catch (err) {
       // Input that may have reached the shell, unconfirmed, is an unknown
       // execution. A failure before publication never is.
-      if (payload.type === "pty_input" && publishing)
-        gate?.failUncertainExecution?.();
+      if (input && publishing && continuesPastUnknown)
+        loseOutcome("input_unconfirmed");
       if (err instanceof Error) throw err;
       const msg =
         typeof err === "string"
@@ -364,8 +406,9 @@ export async function createCentrifugoPtyHandle(
         exited,
         new Promise<void>((resolve) => setTimeout(resolve, 1500)),
       ]);
-      resolveExitedOnce({ exitCode: null, observationFailed: true });
-      cleanup();
+      // No exit observed: the terminal may still run on the host.
+      loseOutcome("kill_unconfirmed");
+      cleanup("kill_unconfirmed");
     },
 
     onData(cb: (bytes: Uint8Array) => void): () => void {
@@ -386,10 +429,8 @@ export async function createCentrifugoPtyHandle(
     const timeoutId = setTimeout(() => {
       if (!settled) {
         settled = true;
-        cleanup();
-        reject(
-          new Error(`${LOG_PREFIX} pty_create timed out after ${TIMEOUT_MS}ms`),
-        );
+        cleanup("create_unconfirmed");
+        reject(creationFailure(`pty_create timed out after ${TIMEOUT_MS}ms`));
       }
     }, TIMEOUT_MS);
 
@@ -400,12 +441,11 @@ export async function createCentrifugoPtyHandle(
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
-        cleanup();
-        reject(new Error(`${LOG_PREFIX} ${message}`));
+        cleanup("create_unconfirmed");
+        reject(creationFailure(message));
       } else {
         console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
-        resolveExitedOnce({ exitCode: null, observationFailed: true });
-        cleanup();
+        cleanup("transport_failed");
       }
     };
 
@@ -452,23 +492,23 @@ export async function createCentrifugoPtyHandle(
           }
 
           case "pty_exit":
-            outcomeKnown = true;
+            // A terminal already settled as unknown stays recorded as such.
+            if (!outcomeUnknown) outcomeKnown = true;
             resolveExitedOnce({ exitCode: msg.exitCode });
-            cleanup();
+            cleanup("exit_unverified");
             break;
 
           case "pty_error":
             if (!settled) {
               settled = true;
               clearTimeout(timeoutId);
-              cleanup();
-              reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
+              cleanup("create_unconfirmed");
+              reject(creationFailure(`pty_error: ${msg.message}`));
             } else {
               console.error(
                 `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
               );
-              resolveExitedOnce({ exitCode: null, observationFailed: true });
-              cleanup();
+              cleanup("transport_failed");
             }
             break;
         }

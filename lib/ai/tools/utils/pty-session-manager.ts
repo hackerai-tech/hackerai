@@ -353,7 +353,9 @@ export class PtySessionManager {
           (info) => {
             session.exitedNaturally = { exitCode: info.exitCode };
             session.processExitConfirmed = info.observationFailed !== true;
-            if (info.observationFailed)
+            // It may still be running: record that, over any cleanup reason.
+            if (info.outcomeUnknown) session.exitReason = "outcome_unknown";
+            else if (info.observationFailed)
               session.exitReason ??= "transport_error";
             void this.checkpoint(session).finally(() =>
               this.pruneCompleted(chatId),
@@ -533,7 +535,8 @@ export class PtySessionManager {
           internal.recordDirty = false;
           const exit = internal.exitedNaturally;
           const status =
-            internal.exitReason === "termination_unconfirmed"
+            internal.exitReason === "termination_unconfirmed" ||
+            internal.exitReason === "outcome_unknown"
               ? "unknown"
               : internal.exitReason && internal.exitReason !== "transport_error"
                 ? "stopped"

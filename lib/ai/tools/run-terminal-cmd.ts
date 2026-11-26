@@ -62,6 +62,7 @@ import {
   capOutput,
   stripAnsi,
   peekExited,
+  terminalExitFields,
 } from "./utils/pty-wait-utils";
 import {
   captureAgentBrowserUsage,
@@ -98,6 +99,13 @@ import { phLogger } from "@/lib/posthog/server";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
+
+/** An error whose execution may already have happened. */
+const hasUnknownExecutionOutcome = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "executionOutcome" in error &&
+  error.executionOutcome === "unknown";
 const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
@@ -618,10 +626,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               sessionSnapshot: snapshots.cleaned,
               rawSnapshot: snapshots.raw,
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
-              ...(exited ? { exited: { exitCode: exited.exitCode } } : {}),
+              ...terminalExitFields(exited),
             },
           };
         } catch (err) {
+          // A creation published but never confirmed may already be running.
+          if (hasUnknownExecutionOutcome(err))
+            return {
+              result: {
+                output: "",
+                exitCode: null,
+                executionOutcome: "unknown",
+                error: `Local command outcome is unknown: ${resolveToolErrorMessage(err)}. Do not rerun this command automatically; it may already have executed.`,
+              },
+            };
           return {
             result: {
               output: "",
@@ -1668,19 +1686,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }));
         } // end of executeCommand
       } catch (error) {
-        const executionOutcome =
-          error &&
-          typeof error === "object" &&
-          "executionOutcome" in error &&
-          error.executionOutcome === "unknown"
-            ? "unknown"
-            : undefined;
         return {
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
             error: resolveToolErrorMessage(error),
-            ...(executionOutcome && { executionOutcome }),
+            ...(hasUnknownExecutionOutcome(error) && {
+              executionOutcome: "unknown" as const,
+            }),
           },
         };
       }

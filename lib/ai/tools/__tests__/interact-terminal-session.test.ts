@@ -34,6 +34,8 @@ import {
   PtySessionManager,
   MAX_CONCURRENT_PTYS_PER_CHAT,
 } from "../utils/pty-session-manager";
+import type { PtyExitResult } from "../utils/pty-exited-promise";
+import { hasUncertainProviderToolOutcome } from "@/lib/chat/agent-long-provider-retry";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -1004,5 +1006,60 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(result.result.exited).toEqual({ exitCode: 7 });
     // Critically — we did NOT attempt to write to the dead PID.
     expect(handle.sendInputCalls.length).toBe(before);
+  });
+
+  // A watched Desktop run continues past a terminal it can no longer account
+  // for. It may still be running, so it must never read as exited, never
+  // accept input, and never be replayed by an automatic provider retry.
+  test("a terminal whose outcome is unknown refuses input and never reads as exited", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let lose!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      lose = () =>
+        resolve({
+          exitCode: null,
+          observationFailed: true,
+          outcomeUnknown: true,
+        });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    lose();
+    await new Promise((r) => setTimeout(r, 0));
+    const tool = createInteractTerminalSession(context);
+    // Creation itself typed the command into the fixture's shell.
+    const before = handle.sendInputCalls.length;
+
+    const sent = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "rm -rf build\n",
+    })) as { result: Record<string, unknown> };
+    expect(sent.result.error).toMatch(/^Input was not sent\./);
+    expect(sent.result.error).toMatch(
+      /Do not rerun this command automatically/,
+    );
+    expect(sent.result).not.toHaveProperty("exited");
+    expect(handle.sendInputCalls).toHaveLength(before);
+
+    for (const action of ["wait", "view"]) {
+      const output = (await runTool(tool, {
+        action,
+        session: sessionId,
+        timeout: 0.1,
+      })) as { result: Record<string, unknown> };
+      expect(output.result).toMatchObject({ executionOutcome: "unknown" });
+      expect(output.result).not.toHaveProperty("exited");
+      expect(
+        hasUncertainProviderToolOutcome([
+          {
+            type: "tool-interact_terminal_session",
+            state: "output-available",
+            output,
+          },
+        ]),
+      ).toBe(true);
+    }
   });
 });
