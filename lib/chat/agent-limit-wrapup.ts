@@ -70,9 +70,13 @@ function prepareLimitWrapUp({
     usageStepsLeft !== undefined &&
     usageStepsLeft <= USAGE_WRAPUP_RESERVE_STEPS;
   if (!stepDue && !usageDue) return undefined;
-  // Name the limit that stops the run first.
+  // Name the limit that stops the run first, even when only the other one is
+  // due: 10 steps left but 5 steps of usage left is a usage stop.
   const kind =
-    usageDue && (!stepDue || usageStepsLeft! <= stepsLeft!) ? "usage" : "step";
+    usageStepsLeft !== undefined &&
+    (stepsLeft === undefined || usageStepsLeft <= stepsLeft)
+      ? "usage"
+      : "step";
   const left = Math.max(
     1,
     Math.floor(kind === "usage" ? usageStepsLeft! : stepsLeft!),

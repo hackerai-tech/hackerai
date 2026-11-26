@@ -83,6 +83,27 @@ describe("Agent limit wrap-up", () => {
     expect(wrapUp.prepare({ completedSteps: first, maxSteps })).toBeDefined();
   });
 
+  it("names usage when the step reserve fires but usage stops first", () => {
+    const onExposed = jest.fn();
+    const wrapUp = createAgentLimitWrapUp({ onExposed });
+    const notice = wrapUp.prepare({
+      completedSteps: 490,
+      maxSteps: 500,
+      // 5 steps of usage left: not yet due, but sooner than 10 steps.
+      budget: {
+        remainingPoints: 500,
+        recentStepCostPoints: 100,
+        usedPercent: 95,
+      },
+    });
+    expect(notice).toContain("close to its usage limit");
+    expect(notice).toContain("about 5 more model steps");
+    wrapUp.recordExposure();
+    expect(onExposed).toHaveBeenCalledWith(
+      expect.objectContaining({ trigger_kind: "usage" }),
+    );
+  });
+
   it("re-evaluates a prepared note that never reached the model", () => {
     const onExposed = jest.fn();
     const wrapUp = createAgentLimitWrapUp({ onExposed });
