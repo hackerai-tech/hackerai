@@ -35,14 +35,14 @@ export function WorkspaceFilesShortcut({ chatId }: { chatId?: string }) {
   const shown = enabled && !!chatId;
 
   // Refs survive effect replay, so each chat reports once per mounted header.
-  const exposedChat = useRef<string | null>(null);
+  const exposedChats = useRef(new Set<string>());
   useEffect(() => {
     if (
       shown &&
-      exposedChat.current !== chatId &&
+      !exposedChats.current.has(chatId) &&
       trackWorkspaceFiles("workspace_files_header_exposed", {})
     ) {
-      exposedChat.current = chatId;
+      exposedChats.current.add(chatId);
     }
   }, [shown, chatId]);
 

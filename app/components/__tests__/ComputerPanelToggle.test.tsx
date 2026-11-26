@@ -148,6 +148,15 @@ it("opens Files from the header every time, never closing the open panel, and re
     await jest.advanceTimersByTimeAsync(0);
   });
   expect(tracked("workspace_files_header_exposed")).toHaveLength(2);
+
+  rerender(<WorkspaceFilesShortcut chatId="chat" />);
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(0);
+  });
+  expect(
+    screen.getByRole("button", { name: "Open files" }),
+  ).toBeInTheDocument();
+  expect(tracked("workspace_files_header_exposed")).toHaveLength(2);
 });
 
 it.each([200, 403])(
