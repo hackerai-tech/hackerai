@@ -137,10 +137,20 @@ request = json.loads(base64.b64decode(sys.argv[1]))
 root = sys.argv[2] if len(sys.argv) > 2 else None
 fds = []
 phase = None
-def open_dir(name, parent=None):
-    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+# Folders that are only traversed need search permission, not read permission.
+SEARCH = getattr(os, 'O_PATH', 0) or getattr(os, 'O_SEARCH', 0)
+# A macOS O_SEARCH handle keeps the search right it was opened with, so check
+# the folder's current search permission before each lookup. Linux O_PATH
+# lookups do this in the kernel.
+RECHECK = bool(SEARCH) and not hasattr(os, 'O_PATH')
+def open_at(name, flags, parent=None):
+    if RECHECK and parent is not None and not os.access('.', os.X_OK, dir_fd=parent, effective_ids=True, follow_symlinks=False):
+        raise PermissionError(errno.EACCES, 'search denied')
+    fd = os.open(name, flags | os.O_NOFOLLOW, dir_fd=parent)
     fds.append(fd)
     return fd
+def open_dir(name, parent=None, readable=False):
+    return open_at(name, (os.O_RDONLY if readable or not SEARCH else SEARCH) | os.O_DIRECTORY, parent)
 def os_error_category(error):
     if error.errno == errno.ENOENT:
         return 'missing'
@@ -161,14 +171,12 @@ try:
     # Resolve here so a deleted current directory reports a labelled root failure.
     if root is None:
         root = os.getcwd()
-    directory = open_dir('/')
     # '/' itself and repeated separators have no component to open.
-    for part in root.split('/'):
-        if part:
-            directory = open_dir(part, directory)
-    phase = 'directory'
-    for part in (parts if listing else parts[:-1]):
-        directory = open_dir(part, directory)
+    steps = [('root', p) for p in root.split('/') if p] + [('directory', p) for p in (parts if listing else parts[:-1])]
+    # Only the listed folder is opened for reading.
+    directory = open_dir('/', None, listing and not steps)
+    for index, (phase, part) in enumerate(steps):
+        directory = open_dir(part, directory, listing and index == len(steps) - 1)
     if listing:
         entries = []
         count = 0
@@ -198,8 +206,7 @@ try:
     else:
         if not parts:
             raise ValueError('not_file')
-        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        fds.append(fd)
+        fd = open_at(parts[-1], os.O_RDONLY | os.O_NONBLOCK, directory)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise ValueError('not_file')
