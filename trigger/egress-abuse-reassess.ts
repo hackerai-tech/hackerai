@@ -8,6 +8,7 @@ import {
   decideRetainedCandidate,
   EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
   prepareReview,
+  retainedCandidateClassificationSchema,
   type EgressReviewClassification,
 } from "@/lib/abuse/egress-review";
 import {
@@ -206,7 +207,10 @@ export async function runEgressAbuseReassessment(
     key: USER_RESEARCH_MODEL_KEY,
     promptVersion: EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
   };
-  const classification = await classifyEvidence(prepared.prompt);
+  const classification = await classifyEvidence(
+    prepared.prompt,
+    retainedCandidateClassificationSchema(prepared),
+  );
   if (typeof classification === "string")
     return completed({
       coverage: "complete",

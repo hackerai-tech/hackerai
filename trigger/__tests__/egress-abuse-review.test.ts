@@ -1630,7 +1630,7 @@ describe("on-demand reassessment of a multiple_runs case", () => {
       },
       model: {
         key: "model-grok-4.6",
-        promptVersion: "egress-retained-candidate-review-v1",
+        promptVersion: "egress-retained-candidate-review-v2",
       },
     });
     // One scrubbed, tool-less, ZDR classification of the candidate only:
@@ -1663,6 +1663,34 @@ describe("on-demand reassessment of a multiple_runs case", () => {
     );
     // The pinned SDK's runs.retrieve() automatically resolves payload/output.
     expect(runs.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("constrains model citations to the evidence and policy limit before classification", async () => {
+    await overlapCase();
+    const row = convex.tables.messages.find(
+      ({ id }: any) => id === `${CHAT}-assistant`,
+    );
+    for (let index = 2; index <= 11; index++)
+      row.parts.push(terminal(`call-${index}`, "npm test"));
+    classifyAs(concerning);
+
+    await expect(reassess()).resolves.toMatchObject({ advisory: "concern" });
+
+    const request = jest.mocked(generateText).mock.calls[0][0] as any;
+    const schema = request.output.schema;
+    expect(request.prompt).toContain("at most 10 commands and 10 messages");
+    expect(
+      schema.safeParse({ ...concerning, commandIndices: [1, 11] }).success,
+    ).toBe(true);
+    for (const citations of [
+      { commandIndices: [0] },
+      { commandIndices: [12] },
+      { messageIndices: [2] },
+      { commandIndices: Array.from({ length: 11 }, (_, i) => i + 1) },
+    ])
+      expect(schema.safeParse({ ...concerning, ...citations }).success).toBe(
+        false,
+      );
   });
 
   it("reports corroborated legitimate work without clearing the case or granting a cooldown", async () => {

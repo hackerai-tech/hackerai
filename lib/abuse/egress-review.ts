@@ -21,7 +21,7 @@ export const EGRESS_REVIEW_PROMPT_VERSION = "egress-abuse-review-v2";
 export const EGRESS_ACCOUNT_ACTIVITY_PROMPT_VERSION =
   "egress-account-activity-review-v1";
 export const EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION =
-  "egress-retained-candidate-review-v1";
+  "egress-retained-candidate-review-v2";
 export const EGRESS_REVIEW_ACTOR = "egress_abuse_review";
 export const EGRESS_REVIEW_SENDER = "abuse@hackerai.co";
 const MAX_ITEM_CHARS = 1_500;
@@ -607,6 +607,11 @@ export function prepareReview(
     '- "concerning_unauthorized": specific cited commands show concerning activity (for example broad scanning, credential brute forcing, flooding, or exploitation) against public targets, and the messages state no authorization or a scope that does not cover those targets.',
     '- "ambiguous": anything else, including plausible but incomplete authorization, missing context, keyword matches without supporting commands, or any doubt.',
     "Cite supporting commands by the number in [C#] and supporting messages by the number in [M#]; cite nothing you did not rely on.",
+    ...(mode === "retained_candidate"
+      ? [
+          `Cite at most ${MAX_CITATIONS} commands and ${MAX_CITATIONS} messages. Select only numbered evidence shown below and use an empty list when no item supports the verdict.`,
+        ]
+      : []),
     "",
     "<evidence>",
     "Messages:",
@@ -674,6 +679,20 @@ export const egressReviewClassificationSchema = z.object({
 export type EgressReviewClassification = z.infer<
   typeof egressReviewClassificationSchema
 >;
+
+/** Match the provider's citation schema to the evidence and policy limit. */
+export function retainedCandidateClassificationSchema(
+  evidence: Pick<PreparedReview, "commands" | "messages">,
+) {
+  const indices = (count: number) =>
+    z
+      .array(z.number().int().min(1).max(Math.max(1, count)))
+      .max(Math.min(MAX_CITATIONS, count));
+  return egressReviewClassificationSchema.extend({
+    commandIndices: indices(evidence.commands.length),
+    messageIndices: indices(evidence.messages.length),
+  });
+}
 
 const CONCERNING_ACTIVITIES = new Set([
   "network_scanning",
