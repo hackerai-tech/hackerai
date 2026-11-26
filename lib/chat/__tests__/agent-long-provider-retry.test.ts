@@ -14,6 +14,7 @@ import {
   detectAssistantContentLoopFromText,
   getMaxAgentFirstRecoveryModel,
   getNextProviderDisconnectRetryModel,
+  getProviderRetryUsageOptions,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
@@ -21,6 +22,7 @@ import {
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
 import { convertToModelMessages, type UIMessage } from "ai";
+import { UsageTracker } from "@/lib/usage-tracker";
 
 describe("prepareAgentFinishContinuation", () => {
   const completedTool = {
@@ -1421,5 +1423,47 @@ describe("prepareAgentLoopContinuation", () => {
         { id: "second", role: "assistant", parts: [missing] } as UIMessage,
       ])?.messages.map((message) => message.id),
     ).toEqual(["primary", "second"]);
+  });
+});
+
+describe("getProviderRetryUsageOptions", () => {
+  const reasoningOnly = [
+    { type: "step-start" },
+    { type: "reasoning", text: "hidden work" },
+  ];
+
+  // Same derivation both Ask and Agent callers use before a full retry.
+  const retryWithFallback = (finishReason: string) => {
+    const tracker = new UsageTracker();
+    tracker.accumulateStep(
+      { inputTokens: 1_000, outputTokens: 8_000, raw: { cost: 0.5 } },
+      "primary",
+    );
+    tracker.prepareModelRetry(
+      getProviderRetryUsageOptions({
+        loopRecovery: false,
+        nonDurableOutputLimit:
+          shouldRetryProviderStreamAfterNonDurableOutputLimit(reasoningOnly, {
+            finishReason,
+          }),
+      }),
+    );
+    tracker.accumulateStep(
+      { inputTokens: 1_000, outputTokens: 100, raw: { cost: 0.1 } },
+      "fallback",
+    );
+    return tracker;
+  };
+
+  it("bills the primary leg that spent its output allowance without durable output", () => {
+    const tracker = retryWithFallback("length");
+    expect(tracker.computeCostDollars("fallback")).toBeCloseTo(0.6);
+    expect(tracker.outputTokens).toBe(8_100);
+  });
+
+  it("replaces the failed leg after an ordinary provider error", () => {
+    const tracker = retryWithFallback("error");
+    expect(tracker.computeCostDollars("fallback")).toBeCloseTo(0.1);
+    expect(tracker.outputTokens).toBe(100);
   });
 });

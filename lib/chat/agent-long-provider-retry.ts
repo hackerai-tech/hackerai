@@ -832,6 +832,23 @@ export const shouldRetryProviderStreamAfterNonDurableOutputLimit = (
   options.finishReason === OUTPUT_LIMIT_FINISH_REASON &&
   isOutputLimitWithoutDurableOutput(parts);
 
+/**
+ * Accounting for a full provider retry. A provider that finished at its output
+ * limit charged for that leg even though nothing durable was saved, so the
+ * fallback must not refund it; repeated prompts could otherwise obtain
+ * unbilled output. Ordinary provider failures still replace the failed leg.
+ */
+export const getProviderRetryUsageOptions = ({
+  loopRecovery,
+  nonDurableOutputLimit,
+}: {
+  loopRecovery: boolean;
+  nonDurableOutputLimit: boolean;
+}) => ({
+  isLoopRecovery: loopRecovery,
+  preserveIncurredUsage: nonDurableOutputLimit,
+});
+
 export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,

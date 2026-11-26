@@ -251,6 +251,7 @@ import {
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import {
   detectAssistantContentLoopFromParts,
+  getProviderRetryUsageOptions,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
@@ -2501,9 +2502,13 @@ export const createChatHandler = () => {
                             emptyResponseContinuation ??
                             prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
-                            usageTracker.prepareModelRetry({
-                              isLoopRecovery: loopTriggeredRetry,
-                            });
+                            usageTracker.prepareModelRetry(
+                              getProviderRetryUsageOptions({
+                                loopRecovery: loopTriggeredRetry,
+                                nonDurableOutputLimit:
+                                  shouldRetryNonDurableOutputLimit,
+                              }),
+                            );
                           }
                           if (
                             continuation &&
@@ -2527,9 +2532,13 @@ export const createChatHandler = () => {
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.prepareModelRetry({
-                            isLoopRecovery: loopTriggeredRetry,
-                          });
+                          usageTracker.prepareModelRetry(
+                            getProviderRetryUsageOptions({
+                              loopRecovery: loopTriggeredRetry,
+                              nonDurableOutputLimit:
+                                shouldRetryNonDurableOutputLimit,
+                            }),
+                          );
                         } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
@@ -2537,10 +2546,14 @@ export const createChatHandler = () => {
                             );
                         } else {
                           // Ordinary failed-provider retries replace model usage;
-                          // loop recovery retains work already delivered.
-                          usageTracker.prepareModelRetry({
-                            isLoopRecovery: loopTriggeredRetry,
-                          });
+                          // loop recovery and output-limit legs stay billed.
+                          usageTracker.prepareModelRetry(
+                            getProviderRetryUsageOptions({
+                              loopRecovery: loopTriggeredRetry,
+                              nonDurableOutputLimit:
+                                shouldRetryNonDurableOutputLimit,
+                            }),
+                          );
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);

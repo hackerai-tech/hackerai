@@ -235,6 +235,8 @@ export class UsageTracker {
   /**
    * Prepare accounting before a fallback retry. Loop recovery retains recorded
    * work: user-influenced repetition must not refund earlier model output.
+   * preserveIncurredUsage retains a leg the provider completed and charged,
+   * such as one that spent its output allowance without durable output.
    * Ordinary provider failures discard the failed model leg's usage.
    * Keeps nonModelCost (sandbox/tool spend already incurred) and all
    * summarization usage, so the final deduction only replaces the streamed
@@ -242,8 +244,9 @@ export class UsageTracker {
    */
   prepareModelRetry({
     isLoopRecovery = false,
-  }: { isLoopRecovery?: boolean } = {}) {
-    if (isLoopRecovery) return;
+    preserveIncurredUsage = false,
+  }: { isLoopRecovery?: boolean; preserveIncurredUsage?: boolean } = {}) {
+    if (isLoopRecovery || preserveIncurredUsage) return;
 
     this.modelLegStartStep = undefined;
     this.discardedModelSteps.push(...this.modelStepCosts);
