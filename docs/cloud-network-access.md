@@ -418,8 +418,9 @@ that chat, run and time, after ownership and network verification. The write is
 best effort and not awaited, so a store outage cannot delay or fail an
 acquisition. The review selects each run's latest acquisition before the
 burst ended and checks the run's persisted timing for overlap. It uses up to
-16 records per workspace from the six hours before the burst. Additional
-records signal incomplete coverage and route the case to manual review. A
+48 records per workspace from the six hours before the burst and up to 16
+distinct runs. Records evicted past that bound make any review whose window
+reaches them incomplete and route the case to manual review. A
 run's repeated reconnects are coalesced atomically without losing the record
 that places it before a burst; see
 [Acquisition links](abuse-response.md#automated-egress-burst-review). The

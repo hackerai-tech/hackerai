@@ -393,16 +393,30 @@ and its cases follow the review, hold and erasure rules in this runbook.
   overlapped creates a `multiple_runs` case, even if its workspace link is
   missing. A missing selected run, exceeded page limit, or unreliable result
   creates an `account_runs_unverified` case. Both require manual review.
-- **Acquisition links.** Each workspace keeps at most 16 link records across
-  runs; more makes its history incomplete (`acquisition_incomplete`). A run
-  that reconnects repeatedly does not add a record per reconnect: an atomic
-  write replaces the run's newest record only while its previous record still
-  covers every six-hour look-back window the replaced one did, so a record
-  placing a run before a burst survives later reconnects. Records are kept for
-  the look-back plus the two-hour telemetry retention, so a write between a
-  burst and its review cannot trim a record the review needs. History that was
-  already trimmed or holds an unreadable record stays incomplete until it
-  expires.
+- **Acquisition links.** Each workspace keeps at most 48 link records across
+  runs; the review still abstains with `too_many_runs` when more than 16
+  distinct runs fall inside its window. Past 48 the oldest records are
+  evicted, and the store keeps one metadata member with the newest evicted
+  time. A review whose six-hour look-back starts at or before that time reads
+  the history as incomplete (`link_history_trimmed`); a later window is
+  complete. A run that reconnects repeatedly does not add a record per
+  reconnect: an atomic write replaces the run's newest record only while its
+  previous record still covers every six-hour look-back window the replaced
+  one did, so a record placing a run before a burst survives later
+  reconnects. Records are kept for the look-back plus the two-hour telemetry
+  retention, so a write between a burst and its review cannot trim a record
+  the review needs. Unreadable records or metadata make history incomplete
+  (`link_history_invalid`); the next write replaces unreadable metadata with a
+  bound at its own time or the newest record, whichever is later.
+- **Mixed deployments.** No flag or Redis reset is needed. The previous writer
+  kept 16 records plus one trim sentinel and wrote no metadata, so history
+  with more than 16 records and no metadata is always incomplete. That
+  writer's time prune removes the metadata member; when more than 16 records
+  remain, the next current write takes the oldest of them as the bound for
+  what that writer evicted.
+  The previous reader treats the metadata member as unreadable, so while it
+  runs, histories above 16 records report `link_history_invalid` instead of
+  `link_history_trimmed`.
 - **Diagnostics.** A manual or `no_case` result, and the worker's
   `Egress abuse review finished` log, carry a `diagnostic` object of closed
   enums and small counts: `detail` names why the review stopped (for example
