@@ -1,5 +1,5 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { streamText, type LanguageModel } from "ai";
+import { streamText, type LanguageModel, type ModelMessage } from "ai";
 import { TextDecoderStream, WritableStream } from "node:stream/web";
 import { withProviderStreamTimeout } from "../provider-stream-timeout";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
@@ -8,6 +8,8 @@ import {
   getProviderStatusCode,
 } from "@/lib/utils/error-utils";
 import { getOpenRouterStreamErrorContext } from "@/lib/utils/openrouter-stream-error-context";
+import { DEEPSEEK_1017_SLUG } from "@/lib/experiments/paid-deepseek-1017";
+import { describeOpenRouterRequestJsonEscape } from "../openrouter-request-json-escape";
 import { withOpenRouterStreamErrorContext } from "../openrouter-stream-error-context";
 
 const edge = require("next/dist/compiled/@edge-runtime/primitives/fetch");
@@ -33,6 +35,188 @@ afterAll(() => {
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);
+  }
+});
+
+const ESCAPE_ERROR =
+  "Failed to deserialize the JSON body into the target type: unexpected end of hex escape";
+const ESCAPE_EVENT = "openrouter_request_json_escape_diagnostic";
+
+function jsonEscapeDiagnosticCalls(warn: jest.SpyInstance) {
+  return warn.mock.calls.flatMap(([value]) =>
+    typeof value === "string" && value.includes(ESCAPE_EVENT)
+      ? [JSON.parse(value)]
+      : [],
+  );
+}
+
+async function streamOpenRouterError(input: {
+  modelId?: string;
+  messages: ModelMessage[];
+  error?: { code: number; message: string };
+}) {
+  const error = input.error ?? { code: 400, message: ESCAPE_ERROR };
+  const fetch = jest.fn().mockResolvedValue(
+    new Response(`data: ${JSON.stringify({ error })}\n\ndata: [DONE]\n\n`, {
+      headers: { "content-type": "text/event-stream" },
+    }),
+  );
+  const model = withOpenRouterStreamErrorContext(
+    createOpenRouter({ apiKey: "synthetic-unused", fetch }).chat(
+      input.modelId ?? DEEPSEEK_1017_SLUG,
+    ),
+  );
+  const observed: unknown[] = [];
+  const stream = streamText({
+    model,
+    messages: input.messages,
+    maxRetries: 0,
+    onError: ({ error }) => {
+      observed.push(error);
+    },
+  });
+  const parts = [];
+  for await (const part of stream.fullStream) parts.push(part);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toMatchObject(error);
+  expect(parts.find((part) => part.type === "error")?.error).toBe(observed[0]);
+}
+
+it("distinguishes an outer bad surrogate from nested tool JSON through the SDK", async () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await streamOpenRouterError({
+      messages: [{ role: "user", content: "PRIVATE_CANARY \ud83d" }],
+    });
+    await streamOpenRouterError({
+      messages: [
+        { role: "user", content: "Valid pair 😀 and literal \\ud83d" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "private-call",
+              toolName: "private-tool",
+              input: { privateInput: "\ud83d" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "private-call",
+              toolName: "private-tool",
+              output: { type: "json", value: { privateOutput: "\ud83d" } },
+            },
+          ],
+        },
+      ],
+    });
+    const common = {
+      event: ESCAPE_EVENT,
+      diagnostic_version: 1,
+      source: "sdk_request_body",
+    };
+    expect(jsonEscapeDiagnosticCalls(warn)).toEqual([
+      {
+        ...common,
+        outer: "present",
+        tool_arguments_json: "absent",
+        tool_content_json: "absent",
+      },
+      {
+        ...common,
+        outer: "absent",
+        tool_arguments_json: "present",
+        tool_content_json: "present",
+      },
+    ]);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("requires the exact DeepSeek error and treats literal escape text as well formed", async () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "a regular pair 😀 and escaped text \\ud83d" },
+    ];
+    await streamOpenRouterError({ messages, modelId: "unrelated/model" });
+    await streamOpenRouterError({
+      messages,
+      error: { code: 400, message: "Other provider rejection" },
+    });
+    expect(jsonEscapeDiagnosticCalls(warn)).toEqual([]);
+    await streamOpenRouterError({ messages });
+    expect(jsonEscapeDiagnosticCalls(warn)).toEqual([
+      {
+        event: ESCAPE_EVENT,
+        diagnostic_version: 1,
+        source: "sdk_request_body",
+        outer: "absent",
+        tool_arguments_json: "absent",
+        tool_content_json: "absent",
+      },
+    ]);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("keeps the scan bounded and declines getters without invoking them", () => {
+  const unreadable = jest.fn();
+  const body = Object.defineProperty({}, "messages", {
+    enumerable: true,
+    get: unreadable,
+  });
+  expect(describeOpenRouterRequestJsonEscape(body)).toEqual({
+    outer: "unavailable",
+    tool_arguments_json: "unavailable",
+    tool_content_json: "unavailable",
+  });
+  expect(unreadable).not.toHaveBeenCalled();
+  expect(
+    describeOpenRouterRequestJsonEscape({
+      messages: [{ role: "user", content: "a".repeat(2 * 1024 * 1024) }],
+    }),
+  ).toEqual({
+    outer: "limited",
+    tool_arguments_json: "limited",
+    tool_content_json: "limited",
+  });
+});
+
+it("does not inspect or report a healthy DeepSeek stream", async () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const fetch = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          'data: {"id":"gen-test","model":"deepseek","choices":[{"index":0,"delta":{"content":"reply"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      );
+    const model = withOpenRouterStreamErrorContext(
+      createOpenRouter({ apiKey: "synthetic-unused", fetch }).chat(
+        DEEPSEEK_1017_SLUG,
+      ),
+    );
+    const stream = streamText({
+      model,
+      prompt: "synthetic \ud83d",
+      maxRetries: 0,
+    });
+    expect(await stream.text).toBe("reply");
+    expect(jsonEscapeDiagnosticCalls(warn)).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
   }
 });
 
