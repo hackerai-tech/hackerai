@@ -8,6 +8,7 @@ import {
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { getOwnedChat } from "./lib/ownedChat";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
   localAutoContinueReasonValidator,
   localAutoContinueStateValidator,
@@ -204,6 +205,19 @@ export const recordStop = mutation({
   returns: v.object({ created: v.boolean(), decision: decisionValidator }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    // Account deletion has started: never write a row its cleanup may have
+    // already swept. Not created, so the worker reports nothing.
+    if (await isUserDeletionFenced(ctx.db, args.userId))
+      return {
+        created: false,
+        decision: {
+          stoppedRunId: args.stoppedRunId,
+          chatId: args.chatId,
+          state: "ineligible" as const,
+          reason: "account_deleting" as const,
+          stoppedAt: Date.now(),
+        },
+      };
     const existing = await rowFor(ctx, args.stoppedRunId);
     if (existing) return { created: false, decision: decision(existing) };
     const now = Date.now();
@@ -592,6 +606,9 @@ export const cancelForChat = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    // Account deletion owns this user's rows and runs from here on.
+    if (await isUserDeletionFenced(ctx.db, args.userId))
+      return { cancelled: [], running: [] };
     const now = Date.now();
     // When the action was first stored; it covers only what existed then.
     let actedAt = now;

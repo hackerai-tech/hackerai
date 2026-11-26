@@ -499,6 +499,19 @@ describe("automatic continuation after a Desktop comes back", () => {
     },
   );
 
+  it("writes nothing for a user whose account deletion has started", async () => {
+    tables.user_deletion_fences = [{ _id: "fence", user_id: "owner" }];
+    await recordStop();
+    const cancelled = await cancelReport("user_stop");
+
+    expect(cancelled.status).toBe(200);
+    expect(tables.agent_local_auto_continues ?? []).toEqual([]);
+    expect(tables.agent_local_auto_continue_blocks ?? []).toEqual([]);
+    await report();
+    expect(startAgent).not.toHaveBeenCalled();
+    expect(events("agent_local_auto_continue_outcome")).toEqual([]);
+  });
+
   it("never continues a stop whose Desktop never proved its native session", async () => {
     tables.local_sandbox_connections[0].native_launch_id = undefined;
     await recordStop();

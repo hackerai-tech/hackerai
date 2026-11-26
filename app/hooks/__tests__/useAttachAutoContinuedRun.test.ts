@@ -52,7 +52,7 @@ describe("attaching to an automatic continuation", () => {
     expect(resumeStream).toHaveBeenCalledTimes(1);
   });
 
-  it("retries a failed attach, a bounded number of times", () => {
+  it("retries a failed attach, a bounded number of times", async () => {
     const { resumeStream, view, settle } = attach({ ...run, status: "ready" });
     settle();
     for (
@@ -60,9 +60,10 @@ describe("attaching to an automatic continuation", () => {
       attempt <= AUTO_CONTINUE_ATTACH_ATTEMPTS + 1;
       attempt++
     ) {
-      // The attempt starts, then fails.
+      // The attempt starts, then fails and settles.
       view.rerender({ ...run, status: "submitted" });
       view.rerender({ ...run, status: "error" });
+      await act(async () => {});
       settle();
     }
 
@@ -78,6 +79,23 @@ describe("attaching to an automatic continuation", () => {
     ) {
       settle();
       // Let the failed attempt settle; the status never changes.
+      await act(async () => {});
+    }
+
+    expect(resumeStream).toHaveBeenCalledTimes(AUTO_CONTINUE_ATTACH_ATTEMPTS);
+  });
+
+  it("retries an attach that ends ready without streaming", async () => {
+    const { resumeStream, view, settle } = attach({ ...run, status: "ready" });
+    for (
+      let attempt = 1;
+      attempt <= AUTO_CONTINUE_ATTACH_ATTEMPTS + 1;
+      attempt++
+    ) {
+      settle();
+      // The transport fails: the attempt starts, then ends ready, unstreamed.
+      view.rerender({ ...run, status: "submitted" });
+      view.rerender({ ...run, status: "ready" });
       await act(async () => {});
     }
 

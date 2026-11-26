@@ -52,6 +52,7 @@ export const LOCAL_AUTO_CONTINUE_REASONS = [
   "not_host_departure",
   "usage_limit",
   "stop_too_old",
+  "account_deleting",
   // manual / suppressed
   "control",
   "cap",

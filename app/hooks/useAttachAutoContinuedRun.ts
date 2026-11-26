@@ -29,7 +29,19 @@ export function useAttachAutoContinuedRun({
   resumeStream: () => Promise<void>;
 }) {
   const attempts = useRef<{ runId: string; count: number } | null>(null);
+  // The run an attempt actually streamed. A transport failure can also end in
+  // `ready`, so only streaming proves the attach worked.
+  const streamedRunId = useRef<string | null>(null);
+  const inFlight = useRef(false);
   const [settledAttempts, setSettledAttempts] = useState(0);
+  useEffect(() => {
+    if (
+      status === "streaming" &&
+      continuedRunId &&
+      attempts.current?.runId === continuedRunId
+    )
+      streamedRunId.current = continuedRunId;
+  }, [continuedRunId, status]);
   useEffect(() => {
     if (
       !continuedRunId ||
@@ -38,20 +50,25 @@ export function useAttachAutoContinuedRun({
       (status !== "ready" && status !== "error")
     )
       return;
+    // Retry only after the previous attempt settled.
+    if (inFlight.current) return;
     const made =
       attempts.current?.runId === continuedRunId ? attempts.current.count : 0;
-    // After an attempt, `ready` means it attached and the stream ended.
     if (
       made >= AUTO_CONTINUE_ATTACH_ATTEMPTS ||
-      (made > 0 && status !== "error")
+      (made > 0 && streamedRunId.current === continuedRunId)
     )
       return;
     const timer = setTimeout(
       () => {
         attempts.current = { runId: continuedRunId, count: made + 1 };
+        inFlight.current = true;
         void resumeStream()
           .catch(() => undefined)
-          .finally(() => setSettledAttempts((count) => count + 1));
+          .finally(() => {
+            inFlight.current = false;
+            setSettledAttempts((count) => count + 1);
+          });
       },
       made === 0 ? 0 : RETRY_BASE_MS * 2 ** (made - 1),
     );
