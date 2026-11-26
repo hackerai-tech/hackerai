@@ -150,7 +150,11 @@ interface InternalSession extends PtySession {
   /** True once close() has been initiated — prevents re-entry. */
   closing: boolean;
   /** Set when the process exits naturally — session stays around for view/wait. */
-  exitedNaturally: { exitCode: number | null } | null;
+  exitedNaturally: {
+    exitCode: number | null;
+    /** Kept for the saved record once the live handle is gone. */
+    outputIncomplete?: true;
+  } | null;
   /** A rejected transport observation is not proof the process exited. */
   processExitConfirmed: boolean;
   executionRecord?: CreateSessionOpts["executionRecord"];
@@ -351,7 +355,10 @@ export class PtySessionManager {
       handle.exited
         .then(
           (info) => {
-            session.exitedNaturally = { exitCode: info.exitCode };
+            session.exitedNaturally = {
+              exitCode: info.exitCode,
+              ...(info.outputIncomplete && { outputIncomplete: true }),
+            };
             session.processExitConfirmed = info.observationFailed !== true;
             // It may still be running: record that, over any cleanup reason.
             if (info.outcomeUnknown) session.exitReason = "outcome_unknown";
@@ -560,6 +567,7 @@ export class PtySessionManager {
             updatedAt: 0,
             output: new TextDecoder().decode(this.snapshot(session)),
             outputTruncated: session.bufferTruncated,
+            ...(exit?.outputIncomplete && { outputIncomplete: true as const }),
             artifactPaths: [
               ...new Set([
                 ...(session.outputPath ? [session.outputPath] : []),

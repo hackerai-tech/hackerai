@@ -12,7 +12,7 @@ import { PtySessionManager } from "../utils/pty-session-manager";
 import { createTerminalRecordStore } from "../utils/terminal-execution-record";
 
 /** Hold record writes independently so recovery cannot mistake a running snapshot for the final record. */
-async function fixture(coalesced = false) {
+async function fixture(coalesced = false, outputIncomplete = false) {
   let failSave = false;
   let releaseFirst!: () => void;
   const receipt = new Promise<void>((resolve) => {
@@ -51,7 +51,22 @@ async function fixture(coalesced = false) {
   };
   const manager = new PtySessionManager();
   const kill = jest.fn(async () => true);
-  const handle = createCommandSessionHandle({ kill });
+  const commandHandle = createCommandSessionHandle({ kill });
+  // A Desktop PTY exit seen while its host was unverified.
+  let resolveIncomplete!: (exit: {
+    exitCode: number;
+    outputIncomplete: true;
+  }) => void;
+  const handle = outputIncomplete
+    ? {
+        ...commandHandle,
+        exited: new Promise<{ exitCode: number; outputIncomplete: true }>(
+          (resolve) => {
+            resolveIncomplete = resolve;
+          },
+        ),
+      }
+    : commandHandle;
   const createHandle = jest.fn(async () => handle);
   const store = createTerminalRecordStore(
     sandbox,
@@ -81,7 +96,9 @@ async function fixture(coalesced = false) {
     await checkpoint;
   }
   handle.emitText("retained failed-command output");
-  handle.resolveExit(7);
+  if (outputIncomplete)
+    resolveIncomplete({ exitCode: 7, outputIncomplete: true });
+  else commandHandle.resolveExit(7);
   const forgotten = manager.forget("fixture-chat", session.sessionId);
   await jest.advanceTimersByTimeAsync(2001);
   await forgotten;
@@ -158,6 +175,26 @@ describe("completed terminal record recovery during a pending save", () => {
       });
       expect(f.createHandle).toHaveBeenCalledTimes(1);
       expect(f.kill).not.toHaveBeenCalled();
+    } finally {
+      f.release();
+      await f.manager.closeAll("fixture-chat");
+    }
+  });
+
+  test("keeps the output-incomplete warning once only the saved record remains", async () => {
+    const f = await fixture(false, true);
+    try {
+      f.release();
+      await f.manager.closeAll("fixture-chat");
+      for (const action of ["view", "wait"]) {
+        const { result } = await f.interact(action);
+        expect(result).toMatchObject({
+          recovered: true,
+          exitCode: 7,
+          outputIncomplete: true,
+          warning: expect.stringContaining("output may be incomplete"),
+        });
+      }
     } finally {
       f.release();
       await f.manager.closeAll("fixture-chat");

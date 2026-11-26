@@ -17,6 +17,7 @@ import {
   peekExited,
   terminalExitFields,
   TERMINAL_OUTCOME_UNKNOWN_ERROR,
+  TERMINAL_OUTPUT_INCOMPLETE_ERROR,
 } from "./utils/pty-wait-utils";
 import { TerminalInputRefusedError } from "./utils/pty-exited-promise";
 import { translateInput } from "./utils/pty-keys";
@@ -629,6 +630,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
                 updatedAt: record.updatedAt,
                 output: capOutput(stripAnsi(record.output)),
                 outputTruncated: record.outputTruncated,
+                ...(record.outputIncomplete && {
+                  outputIncomplete: true as const,
+                  warning: TERMINAL_OUTPUT_INCOMPLETE_ERROR,
+                }),
                 artifactPaths: record.artifactPaths,
                 note: "Historical execution record from the sandbox. No live handle is available. Inspect saved output and artifacts before deciding whether any work remains; this record does not authorize adopting a PID or automatically rerunning the command.",
                 ...(action === "send" || action === "kill"
