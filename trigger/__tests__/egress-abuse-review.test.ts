@@ -1320,6 +1320,95 @@ describe("closed diagnostics for abstentions", () => {
   });
 });
 
+describe("run timeline shadow", () => {
+  const legitimate = {
+    verdict: "clearly_legitimate",
+    activity: "ordinary_development",
+    authorization: "not_stated",
+    commandIndices: [1],
+    messageIndices: [1],
+  };
+  const cleared = {
+    status: "completed",
+    outcome: "no_case",
+    reason: "legitimate_corroborated",
+    case: "none",
+    enforcement: "keep_active",
+    enforcementReason: "legitimate_corroborated",
+    diagnostic: expect.objectContaining({ cooldownGrant: "granted" }),
+  };
+  /** Routes timeline scripts to `reply`; acquisition links keep the fake. */
+  const timelineStore = (reply: () => Promise<unknown>) => {
+    const redis = createRedisClient() as any;
+    const links = redis.eval.getMockImplementation();
+    redis.eval.mockImplementation(
+      (script: string, keys: string[], args: string[]) =>
+        keys[0].startsWith("egress-review:timeline:")
+          ? reply()
+          : links(script, keys, args),
+    );
+    return redis;
+  };
+  const shadowLog = () =>
+    jest
+      .mocked(logger.info)
+      .mock.calls.find(([message]) => message === "Egress run timeline shadow");
+
+  beforeEach(async () => {
+    process.env.E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED = "true";
+    await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+    await link();
+    classifyAs(legitimate);
+  });
+
+  it("cannot change the review when its read fails", async () => {
+    timelineStore(() => Promise.reject(new Error("store down")));
+    await expect(run()).resolves.toEqual(cleared);
+    expect(shadowLog()?.[1]).toMatchObject({
+      timeline: { status: "unavailable" },
+      review: { status: "completed", reason: "legitimate_corroborated" },
+    });
+  });
+
+  it("logs an aggregate comparison without identifiers", async () => {
+    const at = String(BURST_START - 10 * MINUTE_MS);
+    timelineStore(async () => [[`p|${CHAT}|${RUN}|${at}`, at], ""]);
+    await expect(run()).resolves.toEqual(cleared);
+    const [, fields] = shadowLog()!;
+    expect(fields).toEqual({
+      timeline: expect.objectContaining({
+        status: "read",
+        assessment: "one_possible",
+        parents: 1,
+        limitations: [],
+      }),
+      review: {
+        status: "completed",
+        outcome: "no_case",
+        reason: "legitimate_corroborated",
+        runLinks: 1,
+        plausibleRuns: 1,
+      },
+      selectedRun: "listed",
+    });
+    const exposed = JSON.stringify(fields);
+    for (const raw of [CHAT, RUN, first.userId, first.sandboxId, first.owner])
+      expect(exposed).not.toContain(raw);
+  });
+
+  it("is not read or logged while switched off", async () => {
+    delete process.env.E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED;
+    const redis = timelineStore(async () => [[], ""]);
+    await expect(run()).resolves.toEqual(cleared);
+    expect(
+      redis.eval.mock.calls.some(([, [key]]: [string, string[]]) =>
+        key.startsWith("egress-review:timeline:"),
+      ),
+    ).toBe(false);
+    expect(shadowLog()).toBeUndefined();
+  });
+});
+
 describe("account cooldown after a corroborated legitimate review", () => {
   const legitimate = {
     verdict: "clearly_legitimate",

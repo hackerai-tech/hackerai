@@ -1,3 +1,12 @@
+// Off unless a test opts in: then every store call fails.
+let mockFailingStore: { eval: jest.Mock } | null = null;
+jest.mock("@/lib/rate-limit/redis", () => {
+  const actual = jest.requireActual("@/lib/rate-limit/redis");
+  return {
+    ...actual,
+    createRedisClient: () => mockFailingStore ?? actual.createRedisClient(),
+  };
+});
 jest.mock("../cloud-workspace-routing", () => ({
   resolveCloudWorkspaceRegion: jest.fn(),
 }));
@@ -188,6 +197,49 @@ describe("E2B cloud acquisition", () => {
       }),
     );
     expect(failedEvents()).toEqual([]);
+  });
+
+  it("acquires normally when the diagnostic link stores fail", async () => {
+    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
+    process.env.E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED = "true";
+    const burstEnd = 1_800_000_000_000;
+    const clock = jest.spyOn(Date, "now").mockReturnValue(burstEnd - 1);
+    mockFailingStore = {
+      eval: jest.fn(() => {
+        // The first write starts just before the boundary and the next can
+        // start after it, but both describe the same acquisition.
+        clock.mockReturnValue(burstEnd);
+        throw new Error("store down");
+      }),
+    };
+    try {
+      const setSandbox = jest.fn();
+      const result = await ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: {
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+          triggerRegion: "us-east-1",
+        },
+      });
+      expect(setSandbox).toHaveBeenCalledWith(result.sandbox);
+      expect(failedEvents()).toEqual([]);
+      // The acquisition link and the run timeline both tried and failed.
+      const writes = mockFailingStore.eval.mock.calls.map(
+        ([, [key], [, timestamp]]) => [key, timestamp],
+      );
+      expect(writes).toEqual([
+        [expect.stringMatching(/^egress-review:v2:/), String(burstEnd - 1)],
+        [
+          expect.stringMatching(/^egress-review:timeline:v1:/),
+          String(burstEnd - 1),
+        ],
+      ]);
+    } finally {
+      clock.mockRestore();
+      mockFailingStore = null;
+    }
   });
 
   it.each([

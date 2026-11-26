@@ -502,6 +502,55 @@ with a `timestamp` two minutes after the synthetic minute. Confirm the monitor
 logs a `High connection volume` warning and the delayed `egress-abuse-review`
 returns a `completed` or `preserved` receipt after the run history has settled.
 
+### Run timeline shadow
+
+`E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED=true`, together with the review
+toggle, keeps a second, diagnostic-only index of which runs acquired each
+verified workspace. Set it in the web app and the Agent worker; it is off by
+default and needs no Convex change. It never feeds a decision, case, receipt,
+cooldown, notice or restriction, and never calls the model.
+
+- **What it records.** At the same verified acquisition boundary as the
+  acquisition links, one record per run of a workspace: the first and the
+  latest acquisition. Reconnects move only that run's latest time, so a busy
+  run cannot crowd out another. A workspace keeps at most 32 runs; past that
+  the least recently acquiring run is evicted and the newest evicted time is
+  kept. Records follow the acquisition-link retention. Acquisitions do not
+  wait for the write. The review reads in parallel and may wait for diagnostics
+  at the end of the attempt, within the 1.5-second read budget.
+- **What it lists.** For each verified workspace of a burst (at most four),
+  the runs first acquired before the burst ended and acquired again no
+  earlier than six hours before it began. Proxy telemetry identifies a
+  workspace, not a run, so a listed run could have used the workspace; it is
+  never named as the cause. Acquisition times alone do not establish continuous
+  activity, and the best-effort index can miss an acquisition. The assessment
+  describes recorded candidates only and is `none`, `one_possible`,
+  `several` (parents and subagents are counted separately), `incomplete` or
+  `unavailable`. `incomplete` carries closed limitations
+  (`evicted_in_window`, `invalid_record`, `capped`, `workspaces_capped`,
+  `workspace_unavailable`), and its counts are lower bounds. A run that was
+  evicted and acquired again starts a new record, so a later first-time
+  record near an eviction also marks the window `evicted_in_window`.
+- **What it cannot see.** Tool calls on an already connected client, lease
+  heartbeats, run completion or cancellation, and processes left running
+  after a run ended are not observed. A run whose acquisitions are more than
+  the retention apart, or that stopped acquiring more than six hours before
+  the burst while still running, is not listed. Acquisitions without a server
+  chat and Trigger run, such as some Ask requests, are not recorded.
+- **Where to view it.** Each settled review attempt that read the timeline
+  writes one `Egress run timeline shadow` log in the Agent worker: the
+  timeline summary, the review's status, reason, `detail`, `runLinks` and
+  `plausibleRuns`, and whether the run the review selected is listed. It holds
+  no identifiers, prompts, commands or payloads. Compare outcomes in aggregate
+  across Trigger logs; a single line is not evidence about an account.
+
+To validate in Preview, enable both toggles in the Preview web app and worker,
+acquire a pilot workspace from an Agent run, and follow the burst procedure
+above. Confirm the review's receipt is unchanged and the worker log shows the
+shadow line with `selectedRun: "listed"`. To stop it, unset the shadow toggle in
+both processes; its keys (`egress-review:timeline:v1:*`) expire on their own
+and nothing else reads them.
+
 ### Reassessing a `multiple_runs` case
 
 A `multiple_runs` case records the one linked candidate chat and run but

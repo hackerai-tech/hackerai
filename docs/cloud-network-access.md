@@ -425,6 +425,9 @@ that places it before a burst; see
 [Acquisition links](abuse-response.md#automated-egress-burst-review). The
 older per-run format expires on its original six-hour schedule. These links
 are separate from attribution credentials.
+`E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED=true` adds a diagnostic-only run
+timeline at the same boundary; see
+[Run timeline shadow](abuse-response.md#run-timeline-shadow).
 
 ### Coverage and delivery
 

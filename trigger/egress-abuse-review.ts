@@ -16,6 +16,10 @@ import {
   type AcquisitionLink,
 } from "@/lib/abuse/egress-review-context";
 import {
+  readRunTimeline,
+  type RunTimelineRead,
+} from "@/lib/abuse/egress-run-timeline";
+import {
   cooldownSuppresses,
   grantReviewCooldown,
   readReviewCooldowns,
@@ -458,13 +462,64 @@ export async function runEgressAbuseReview(
   },
 ): Promise<EgressAbuseReviewResult> {
   const diagnostic: ReviewDiagnostic = {};
-  const result = await reviewBurst(payload, attempt, diagnostic);
+  const shadow: TimelineShadow = {};
+  const result = await reviewBurst(payload, attempt, diagnostic, true, shadow);
+  await logTimelineShadow(shadow, result, diagnostic);
   // Explains an abstention or a clearance; other outcomes keep their output.
   return result.status === "completed" &&
     result.outcome !== "authorization_request" &&
     Object.keys(diagnostic).length
     ? { ...result, diagnostic: { ...diagnostic } }
     : result;
+}
+
+/**
+ * The run timeline read for the burst a review settled on, and the run it
+ * selected, if any. Diagnostics only: nothing here reaches a decision.
+ */
+type TimelineShadow = {
+  read?: Promise<RunTimelineRead>;
+  selected?: AcquisitionLink;
+};
+
+/**
+ * One aggregate line comparing the shadow timeline with the review: closed
+ * enums and small counts, never identifiers. It never throws, and its read is
+ * bounded and cannot reject, so it cannot change or fail the review.
+ */
+async function logTimelineShadow(
+  shadow: TimelineShadow,
+  result: EgressAbuseReviewResult,
+  diagnostic: ReviewDiagnostic,
+) {
+  try {
+    if (!shadow.read) return;
+    const timeline = await shadow.read;
+    if (timeline.summary.status === "disabled") return;
+    const { detail, runLinks, plausibleRuns } = diagnostic;
+    logger.info("Egress run timeline shadow", {
+      timeline: timeline.summary,
+      review: {
+        status: result.status,
+        ...(result.status === "completed"
+          ? { outcome: result.outcome, reason: result.reason }
+          : result.status === "skipped"
+            ? { reason: result.reason }
+            : {}),
+        ...(detail ? { detail } : {}),
+        ...(runLinks !== undefined ? { runLinks } : {}),
+        ...(plausibleRuns !== undefined ? { plausibleRuns } : {}),
+      },
+      // Whether the run the review selected is among the timeline's runs.
+      selectedRun: shadow.selected
+        ? timeline.lists(shadow.selected)
+          ? "listed"
+          : "not_listed"
+        : "none",
+    });
+  } catch {
+    /* The shadow comparison never affects the review. */
+  }
 }
 
 /** The strongest verified minute and whether the settled window has gaps. */
@@ -507,8 +562,12 @@ async function reviewBurst(
   attempt: { number: number; max: number },
   diagnostic: ReviewDiagnostic,
   followEscalation = true,
+  shadow: TimelineShadow = {},
 ): Promise<EgressAbuseReviewResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
+  // An escalated review describes its own burst.
+  delete shadow.read;
+  delete shadow.selected;
   const threshold = egressBurstThreshold();
   if (threshold === null)
     throw new Error("Egress review threshold is unavailable");
@@ -672,6 +731,8 @@ async function reviewBurst(
   if (!userId || resolved.unverifiedWorkspaces > 0 || !sandboxIds.length)
     return manual("attribution_unverified");
   diagnostic.sandboxes = sandboxIds.length;
+  // Started alongside the review and awaited only after it settles.
+  shadow.read = readRunTimeline({ region, userId, sandboxIds, ...burst });
 
   // A recent exact-run clearance suppresses routine bursts before any
   // evidence or model call. Any failure to read or compare reviews in full.
@@ -710,6 +771,7 @@ async function reviewBurst(
           attempt,
           diagnostic,
           false,
+          shadow,
         );
       }
     } else if (!window?.complete) {
@@ -865,6 +927,7 @@ async function reviewBurst(
   }
   if (!plausible.length) return manual("no_matching_run");
   const [{ link, status }] = plausible;
+  shadow.selected = link;
   const run = { chatId: link.chatId, runId: link.runId };
   if (status !== "overlaps") {
     diagnostic.detail = "run_overlap_unknown";
