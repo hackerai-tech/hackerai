@@ -6,6 +6,7 @@ import {
   createAgentRuntimeCheckpoint,
   resolveAgentRuntimeCheckpointEnabled,
 } from "@/lib/chat/agent-runtime-checkpoint";
+import { createAgentLimitWrapUp } from "@/lib/chat/agent-limit-wrapup";
 
 // Execute the worker's actual claim and runtime setup, with remote I/O faked.
 // This catches wiring regressions without loading the Trigger SDK/services.
@@ -28,8 +29,8 @@ function visit(node: ts.Node) {
           "agentLongMaxDurationMs",
           "activeGoal",
           "runtimeBudget",
-          "[runtimeCheckpointEnabled, limitWrapUpEnabled]",
           "runtimeCheckpoint",
+          "limitWrapUp",
         ].includes(name)
       )
         statements.set(name, node.getText(source));
@@ -55,9 +56,14 @@ const body = ts.transpileModule(
     ${statements.get("activeGoal")}
     ${claim}
     ${statements.get("runtimeBudget")}
-    ${statements.get("[runtimeCheckpointEnabled, limitWrapUpEnabled]")}
     ${statements.get("runtimeCheckpoint")}
-    return { agentLongMaxDurationMs, runtimeBudget, runtimeCheckpoint };
+    ${statements.get("limitWrapUp")}
+    return {
+      agentLongMaxDurationMs,
+      runtimeBudget,
+      runtimeCheckpoint,
+      limitWrapUp,
+    };
   })();`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
@@ -67,8 +73,7 @@ async function setup({
   isAutoContinue = false,
   isAutomaticContinuation = false,
   claimed = true,
-  enabled = true,
-  wrapUpEnabled = null as boolean | null,
+  enabled = true as boolean | null,
   maxDurationMs = 1000,
   duringClaim = () => {},
 } = {}) {
@@ -76,7 +81,6 @@ async function setup({
   const abort = jest.fn();
   const flags: Record<string, boolean | null> = {
     "agent-runtime-checkpoint-v1": enabled,
-    "agent-limit-wrapup-v1": wrapUpEnabled,
   };
   const decision = jest.fn(async (flagKey: string) => flags[flagKey] ?? null);
   const mutation = jest.fn(async () => {
@@ -96,10 +100,10 @@ async function setup({
     assertGoalExecutionAllowed: jest.fn(async () => {}),
     createActiveRuntimeBudget,
     createAgentRuntimeCheckpoint,
+    createAgentLimitWrapUp,
     resolveAgentRuntimeCheckpointEnabled,
     getPostHogBooleanFlagDecisionForUser: decision,
     AGENT_RUNTIME_CHECKPOINT_FLAG: "agent-runtime-checkpoint-v1",
-    AGENT_LIMIT_WRAPUP_FLAG: "agent-limit-wrapup-v1",
     getAgentLongMaxDurationMs: () => maxDurationMs,
     // Keep the former cap available so restoring it fails the duration assertion.
     GOAL_SLICE_MS: 20 * 60 * 1000,
@@ -124,9 +128,9 @@ async function setup({
 }
 
 const nearLimits = {
-  completedSteps: 450,
+  completedSteps: 490,
   maxSteps: 500,
-  budgetUsedPercent: 95,
+  budget: { remainingPoints: 20, recentStepCostPoints: 10, usedPercent: 97 },
 };
 
 beforeEach(() => jest.useFakeTimers());
@@ -176,7 +180,6 @@ it.each([
       goal: true,
       isAutoContinue,
       isAutomaticContinuation,
-      wrapUpEnabled: true,
     });
     try {
       expect(run.mutation).toHaveBeenCalledWith(
@@ -184,8 +187,10 @@ it.each([
         expect.objectContaining({ generation: 2, runId: "run-test" }),
       );
       jest.advanceTimersByTime(900);
-      expect(run.runtimeCheckpoint?.takeNotice(nearLimits)).toBeUndefined();
+      expect(run.runtimeCheckpoint?.takeNotice()).toBeUndefined();
       run.runtimeCheckpoint?.recordExposure();
+      // Goals continue past step limits, so they never get the wrap-up.
+      expect(run.limitWrapUp).toBeUndefined();
       expect(run.decision).not.toHaveBeenCalled();
       expect(run.exposed).not.toHaveBeenCalled();
       expect(run.abort).not.toHaveBeenCalled();
@@ -209,7 +214,6 @@ it.each([false, true])(
       expect(run.mutation).not.toHaveBeenCalled();
       expect(run.decision.mock.calls.map(([flagKey]) => flagKey)).toEqual([
         "agent-runtime-checkpoint-v1",
-        "agent-limit-wrapup-v1",
       ]);
       jest.advanceTimersByTime(899);
       expect(run.runtimeCheckpoint.takeNotice()).toBeUndefined();
@@ -250,41 +254,33 @@ it("does not start runtime or checkpoint setup when the goal claim is rejected",
 });
 
 it.each([null, false])(
-  "keeps limit wrap-up silent when its assignment is %s",
-  async (wrapUpEnabled) => {
-    const run = await setup({ enabled: false, wrapUpEnabled });
+  "wraps up an ordinary Agent run with runtime checkpoint flag %s and reports content-free exposure",
+  async (enabled) => {
+    const run = await setup({ enabled });
     try {
-      expect(run.runtimeCheckpoint.takeNotice(nearLimits)).toBeUndefined();
-      run.runtimeCheckpoint.recordExposure();
+      expect(run.limitWrapUp.prepare(nearLimits)).toContain(
+        "<agent_limit_wrapup>",
+      );
       expect(run.exposed).not.toHaveBeenCalled();
+      run.limitWrapUp.recordExposure();
+      expect(run.exposed).toHaveBeenCalledTimes(1);
+      expect(run.exposed).toHaveBeenCalledWith("agent_limit_wrapup_exposed", {
+        userId: "user-test",
+        trigger_run_id: "run-test",
+        chat_id: "chat-test",
+        subscription_tier: "pro",
+        trigger_kind: "usage",
+        step_count_bucket: "450+",
+        budget_pct_bucket: "95-99",
+        $process_person_profile: false,
+      });
+      // No assignment is looked up for the wrap-up.
+      expect(run.decision.mock.calls.map(([flagKey]) => flagKey)).toEqual([
+        "agent-runtime-checkpoint-v1",
+      ]);
+      expect(run.runtimeCheckpoint.takeNotice()).toBeUndefined();
     } finally {
       run.runtimeBudget.dispose();
     }
   },
 );
-
-it("wraps up an assigned ordinary Agent run and reports content-free exposure", async () => {
-  const run = await setup({ enabled: false, wrapUpEnabled: true });
-  try {
-    expect(run.runtimeCheckpoint.takeNotice(nearLimits)).toContain(
-      "<agent_limit_wrapup>",
-    );
-    expect(run.exposed).not.toHaveBeenCalled();
-    run.runtimeCheckpoint.recordExposure();
-    expect(run.exposed).toHaveBeenCalledTimes(1);
-    expect(run.exposed).toHaveBeenCalledWith("agent_limit_wrapup_exposed", {
-      userId: "user-test",
-      trigger_run_id: "run-test",
-      chat_id: "chat-test",
-      flag_key: "agent-limit-wrapup-v1",
-      "$feature/agent-limit-wrapup-v1": true,
-      subscription_tier: "pro",
-      trigger_kind: "usage",
-      step_count_bucket: "450+",
-      budget_pct_bucket: "95-99",
-      $process_person_profile: false,
-    });
-  } finally {
-    run.runtimeBudget.dispose();
-  }
-});

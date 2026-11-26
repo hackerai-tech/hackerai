@@ -234,11 +234,11 @@ import {
   getPostHogBooleanFlagDecisionForUser,
 } from "@/lib/posthog/server";
 import {
-  AGENT_LIMIT_WRAPUP_FLAG,
   AGENT_RUNTIME_CHECKPOINT_FLAG,
   createAgentRuntimeCheckpoint,
   resolveAgentRuntimeCheckpointEnabled,
 } from "@/lib/chat/agent-runtime-checkpoint";
+import { createAgentLimitWrapUp } from "@/lib/chat/agent-limit-wrapup";
 import {
   evaluateFlashRouting,
   getActiveFlashRoutingAssignment,
@@ -2533,25 +2533,19 @@ export const agentLongTask = task({
       // Claimed goals checkpoint progress and continue across runs, including
       // past step limits. Do not add time- or limit-pressure prompts to
       // initial, resumed, or automatic goal runs.
-      const [runtimeCheckpointEnabled, limitWrapUpEnabled] = activeGoal
-        ? [false, false]
-        : await Promise.all(
-            [AGENT_RUNTIME_CHECKPOINT_FLAG, AGENT_LIMIT_WRAPUP_FLAG].map(
-              (flagKey) =>
-                resolveAgentRuntimeCheckpointEnabled({
-                  signal: userStopSignal.signal,
-                  loadDecision: () =>
-                    getPostHogBooleanFlagDecisionForUser(
-                      flagKey,
-                      userId,
-                      undefined,
-                      { sendFeatureFlagEvents: false },
-                    ),
-                }),
-            ),
-          );
       const runtimeCheckpoint = createAgentRuntimeCheckpoint({
-        enabled: runtimeCheckpointEnabled,
+        enabled:
+          !activeGoal &&
+          (await resolveAgentRuntimeCheckpointEnabled({
+            signal: userStopSignal.signal,
+            loadDecision: () =>
+              getPostHogBooleanFlagDecisionForUser(
+                AGENT_RUNTIME_CHECKPOINT_FLAG,
+                userId,
+                undefined,
+                { sendFeatureFlagEvents: false },
+              ),
+          })),
         maxDurationMs: agentLongMaxDurationMs,
         getElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
         onExposed: (timing) =>
@@ -2564,21 +2558,20 @@ export const agentLongTask = task({
             ...timing,
             $process_person_profile: false,
           }),
-        limitWrapUp: {
-          enabled: limitWrapUpEnabled,
-          onExposed: (exposure) =>
-            phLogger.event("agent_limit_wrapup_exposed", {
-              userId,
-              trigger_run_id: ctx.run.id,
-              chat_id: chatId,
-              flag_key: AGENT_LIMIT_WRAPUP_FLAG,
-              [`$feature/${AGENT_LIMIT_WRAPUP_FLAG}`]: true,
-              subscription_tier: subscription,
-              ...exposure,
-              $process_person_profile: false,
-            }),
-        },
       });
+      const limitWrapUp = activeGoal
+        ? undefined
+        : createAgentLimitWrapUp({
+            onExposed: (exposure) =>
+              phLogger.event("agent_limit_wrapup_exposed", {
+                userId,
+                trigger_run_id: ctx.run.id,
+                chat_id: chatId,
+                subscription_tier: subscription,
+                ...exposure,
+                $process_person_profile: false,
+              }),
+          });
       userStopSignal.signal.throwIfAborted();
       runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
         delayMs: AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS,
@@ -4341,6 +4334,7 @@ export const agentLongTask = task({
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               runtimeCheckpoint,
+              limitWrapUp,
               canRecoverBrowserHandoff,
               browserHandoffGoalObjective: activeGoal?.objective,
               getBrowserHandoffNotes,
@@ -4804,6 +4798,7 @@ export const agentLongTask = task({
                   configuredMaxSteps: state.configuredMaxSteps,
                   stepCount: state.agentStepCount,
                   stepLimitReached: state.stoppedDueToStepLimit,
+                  finalStepHasText: state.lastStepHasText,
                   todoRunMetrics: getTodoManager().getRunMetrics(),
                 }),
                 ...getProviderRecoveryAnalytics(outcome),
@@ -6206,6 +6201,7 @@ export const agentLongTask = task({
                             configuredMaxSteps: state.configuredMaxSteps,
                             stepCount: state.agentStepCount,
                             stepLimitReached: state.stoppedDueToStepLimit,
+                            finalStepHasText: state.lastStepHasText,
                             todoRunMetrics: getTodoManager().getRunMetrics(),
                           }),
                           ...getProviderRecoveryAnalytics(outcome),

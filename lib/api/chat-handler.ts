@@ -2753,6 +2753,7 @@ export const createChatHandler = () => {
                                       stepCount: state.agentStepCount,
                                       stepLimitReached:
                                         state.stoppedDueToStepLimit,
+                                      finalStepHasText: state.lastStepHasText,
                                       todoRunMetrics:
                                         getTodoManager().getRunMetrics(),
                                     }),
@@ -3162,6 +3163,7 @@ export const createChatHandler = () => {
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
                         stepLimitReached: state.stoppedDueToStepLimit,
+                        finalStepHasText: state.lastStepHasText,
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });
