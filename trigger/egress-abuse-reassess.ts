@@ -1,4 +1,6 @@
-import { logger, schemaTask } from "@trigger.dev/sdk";
+import { context } from "@opentelemetry/api";
+import { suppressTracing } from "@opentelemetry/core";
+import { logger, runs, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
@@ -45,6 +47,7 @@ export type ReassessmentReason =
   | "subagent_overlap"
   | "concurrent_run"
   // Read, but not assessable.
+  | "candidate_completion_unverified"
   | "no_command_evidence"
   | "evidence_gaps"
   | "privacy_guard"
@@ -91,12 +94,38 @@ const completed = (
   ...details,
 });
 
+// Trigger and the worker measure timestamps on different hosts.
+const COMPLETION_CLOCK_SKEW_MS = 60_000;
+
+async function candidateFinishedBeforeRead(
+  runId: string,
+  readStartedAt: number,
+) {
+  try {
+    // The SDK traces run identifiers by default. Use only its timing and
+    // lifecycle fields, without logging the lookup result.
+    const run = await context.with(suppressTracing(context.active()), () =>
+      runs.retrieve(runId, { retry: { maxAttempts: 1 } }),
+    );
+    return (
+      run.id === runId &&
+      run.taskIdentifier === "agent-long" &&
+      run.status === "COMPLETED" &&
+      (run.finishedAt?.getTime() ?? Infinity) <=
+        readStartedAt - COMPLETION_CLOCK_SKEW_MS
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function runEgressAbuseReassessment(
   payload: EgressAbuseReassessPayload,
 ): Promise<EgressAbuseReassessResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
   const { reference } = egressAbuseReassessPayloadSchema.parse(payload);
   const { client, serviceKey } = reviewClient();
+  const readStartedAt = Date.now();
   const read = await client.action(
     api.egressAbuseReassessmentActions.readCaseEvidence,
     { serviceKey, reference },
@@ -112,6 +141,14 @@ export async function runEgressAbuseReassessment(
         evidence.reason === "incomplete"
           ? "evidence_incomplete"
           : evidence.reason,
+    });
+  // The chat marker can be replaced while the original run is still writing.
+  // Completion after the snapshot started cannot validate that snapshot.
+  if (!(await candidateFinishedBeforeRead(read.candidateRunId, readStartedAt)))
+    return completed({
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "candidate_completion_unverified",
     });
   const unprepared = observationGaps(evidence, {
     itemsTruncated: false,

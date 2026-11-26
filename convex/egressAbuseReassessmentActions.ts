@@ -24,8 +24,8 @@ import {
  * serviceFunctions scopes to this one action outside the review module. It
  * audits the read, decrypts and validates the stored record, and returns the
  * bounded evidence of the one candidate run that record retained, with
- * placeholder locators. It never returns identifiers, and never changes the
- * case, an account, a restriction, a notice or a receipt.
+ * placeholder locators. The trusted worker gets the candidate run ID only
+ * to verify its completion. No case, account or enforcement state changes.
  */
 const caseEvidence = v.union(
   v.object({
@@ -34,6 +34,7 @@ const caseEvidence = v.union(
   }),
   v.object({
     status: v.literal("read"),
+    candidateRunId: v.string(),
     burstStart: v.number(),
     burstEnd: v.number(),
     evidence: candidateEvidence,
@@ -83,6 +84,7 @@ export const readCaseEvidence = action({
     if (evidence.status === "case_changed") return closed("case_changed");
     return {
       status: "read" as const,
+      candidateRunId: parsed.scope.runId,
       burstStart: parsed.scope.burstStart,
       burstEnd: parsed.scope.burstEnd,
       evidence,

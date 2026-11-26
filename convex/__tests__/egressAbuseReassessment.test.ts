@@ -203,6 +203,7 @@ it("reads only the retained candidate of an overlap case and adds one audit read
   const result = await reassess();
   expect(result).toEqual({
     status: "read",
+    candidateRunId: RUN,
     burstStart: BURST_START,
     burstEnd: BURST_START + MINUTE_MS,
     evidence: {
@@ -234,8 +235,8 @@ it("reads only the retained candidate of an overlap case and adds one audit read
       },
     },
   });
-  // Placeholders only: no account, chat, run, message or tool call identifier.
-  expect(exposes(result)).toEqual([]);
+  // The worker needs the run ID to verify completion; evidence uses placeholders.
+  expect(exposes(result)).toEqual([RUN]);
 
   // The case and its decision are unchanged; the only write is a fixed read.
   expect(convex.tables.abuse_cases).toEqual([before]);

@@ -2,7 +2,7 @@
 jest.mock("@trigger.dev/sdk", () => ({
   schemaTask: (definition: unknown) => definition,
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-  runs: { list: jest.fn() },
+  runs: { list: jest.fn(), retrieve: jest.fn() },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 jest.mock("@/lib/db/service-client", () => ({
@@ -1551,6 +1551,7 @@ describe("on-demand reassessment of a multiple_runs case", () => {
       evidenceLocators: { commands: [], messages: [] },
     });
     jest.clearAllMocks();
+    jest.mocked(runs.retrieve).mockResolvedValue(selectedRun as never);
     return structuredClone(convex.tables.abuse_cases[0]);
   }
 
@@ -1685,6 +1686,35 @@ describe("on-demand reassessment of a multiple_runs case", () => {
       advisory: "inconclusive",
       reason: "evidence_gaps",
       gaps: ["incomplete_tool_calls"],
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it.each([
+    ["is still executing", { status: "EXECUTING", finishedAt: undefined }],
+    [
+      "finishes after the read starts",
+      { finishedAt: new Date(Date.now() + MINUTE_MS) },
+    ],
+  ])("does not classify a replaced run that %s", async (_label, lifecycle) => {
+    const saved = await overlapCase();
+    convex.tables.chats.find(
+      ({ id }: any) => id === CHAT,
+    ).active_trigger_run_id = "run_successor";
+    jest.mocked(runs.retrieve).mockResolvedValueOnce({
+      ...selectedRun,
+      ...lifecycle,
+    } as never);
+    classifyAs(concerning);
+
+    const result = await reassess();
+
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "candidate_completion_unverified",
     });
     expect(generateText).not.toHaveBeenCalled();
     expectAdvisoryOnly(result, saved);
