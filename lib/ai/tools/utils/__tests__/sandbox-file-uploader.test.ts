@@ -129,6 +129,73 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
+  describe("with validated in-memory content", () => {
+    const originalFetch = globalThis.fetch;
+    let fetchMock: jest.Mock;
+    beforeEach(() => {
+      fetchMock = jest.fn(async () => ({ ok: true, status: 200 }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+    });
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test("uploads the exact bytes without reading the sandbox path", async () => {
+      const sandbox = makeSandbox(999);
+      const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/tmp/screenshot.png",
+          content,
+          mediaType: "image/png",
+          name: "screenshot.png",
+        }),
+      ).resolves.toMatchObject({ fileId: "file_123", sizeBytes: 6 });
+
+      // The path may have been replaced since validation; it is never touched.
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+        "screenshot.png",
+        "image/png",
+        "u1",
+        6,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe("https://s3.example/upload");
+      expect(init).toMatchObject({
+        method: "PUT",
+        headers: { "Content-Type": "image/png" },
+      });
+      expect(Buffer.from(init.body)).toEqual(content);
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ size: 6, mediaType: "image/png" }),
+      );
+    });
+
+    test("fails without registering a file when storage rejects the bytes", async () => {
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
+
+      const result = uploadSandboxFileToConvex({
+        sandbox: makeSandbox(999) as any,
+        userId: "u1",
+        fullPath: "/tmp/screenshot.png",
+        content: Buffer.from([1, 2, 3]),
+        mediaType: "image/png",
+      });
+
+      await expect(result).rejects.toThrow(
+        "Failed to upload file content: HTTP 403",
+      );
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    });
+  });
+
   test("a failing diagnostics observer cannot prevent a file upload", async () => {
     const sandbox = makeSandbox(10);
     await expect(

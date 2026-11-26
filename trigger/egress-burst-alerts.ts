@@ -3,13 +3,8 @@ import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
 import { reviewCaseKey, reviewWindowStart } from "@/lib/abuse/egress-review";
 import {
-  cooldownSuppresses,
-  readReviewCooldowns,
-} from "@/lib/abuse/egress-review-cooldown";
-import {
   ATTRIBUTION_REF,
   resolveAttribution,
-  resolveOwners,
 } from "@/lib/cloud-network/egress-attribution";
 import {
   egressBurstThreshold,
@@ -254,7 +249,7 @@ export async function runEgressBurstAlerts(
         failures.push({ kind: "review" });
       }
     }
-    await dispatchReviews(redis, reviews, failures, latest, threshold);
+    await dispatchReviews(redis, reviews, failures, latest);
   }
 
   if (failures.length) throw new EgressBurstAlertError(failures);
@@ -365,13 +360,15 @@ function decodeQueuedReview(
  * again. An entry leaves the queue after its dispatch is marked. Any store or
  * dispatch failure fails the run, and an entry too old for the review to
  * recheck its telemetry is removed only as a reported failure.
+ *
+ * The monitor applies no review cooldown: it sees only threshold-crossing
+ * minutes, while the review rereads the whole window before deciding.
  */
 async function dispatchReviews(
   redis: NonNullable<ReturnType<typeof createRedisClient>>,
   candidates: Candidate[],
   failures: Failure[],
   latest: number,
-  threshold: number,
 ) {
   const oldest = latest - REVIEW_QUEUE_RETENTION_MINUTES;
   try {
@@ -401,19 +398,14 @@ async function dispatchReviews(
     return;
   }
   const byCase = new Map<string, Candidate>();
-  /** Highest owner volume seen in each case window, for the cooldown. */
-  const peaks = new Map<string, number>();
   for (const candidate of candidates) {
-    if (candidate.owner === "overflow") continue;
+    if (candidate.owner === "overflow" || !candidate.complete) continue;
     const key = reviewCaseKey(
       candidate.region,
       candidate.owner,
       reviewWindowStart(candidate.minute),
     );
-    peaks.set(key, Math.max(peaks.get(key) ?? 0, candidate.connections));
-    if (!candidate.complete) continue;
-    // Review the strongest verified spike, including a replayed minute that
-    // caused the case to bypass a cooldown.
+    // Review the strongest verified spike, including a replayed minute.
     const earlier = byCase.get(key);
     if (!earlier || candidate.connections > earlier.connections)
       byCase.set(key, candidate);
@@ -430,13 +422,7 @@ async function dispatchReviews(
         ]);
         if (existing?.length !== fresh.length)
           throw new Error("Incomplete queue lookup");
-        const missing = await withoutCooldown(
-          redis,
-          fresh.filter((_, index) => existing[index] === null),
-          byCase,
-          peaks,
-          threshold,
-        );
+        const missing = fresh.filter((_, index) => existing[index] === null);
         const remaining = Math.max(0, REVIEW_QUEUE_CAPACITY - count);
         if (missing.length > remaining) failures.push({ kind: "review" });
         const [first, ...rest] = missing.slice(0, remaining).map((key) => ({
@@ -550,56 +536,6 @@ async function dispatchReviews(
       pending: pending.length,
       dispatched: Math.min(pending.length, MAX_REVIEWS),
     });
-}
-
-/**
- * Leaves out new cases whose verified account has an active review cooldown
- * and whose window is a routine spike. It reads only when there are new cases
- * to queue: one attribution read and one cooldown read for all of them. A
- * left-out case is not marked, so a later, materially higher minute of the
- * same window is checked again and queued. Any read failure queues every case;
- * the review repeats the check against the whole window before evidence or a
- * model call.
- */
-async function withoutCooldown(
-  redis: NonNullable<ReturnType<typeof createRedisClient>>,
-  keys: string[],
-  byCase: Map<string, Candidate>,
-  peaks: Map<string, number>,
-  threshold: number,
-) {
-  if (!keys.length) return keys;
-  try {
-    const userIds = await resolveOwners(
-      redis,
-      keys.map((key) => byCase.get(key)!),
-    );
-    const verified = userIds.flatMap((userId) => (userId ? [userId] : []));
-    const cooldowns = new Map(
-      (await readReviewCooldowns(redis, verified)).map(
-        (cooldown, index) => [verified[index], cooldown] as const,
-      ),
-    );
-    const kept = keys.filter((key, index) => {
-      const userId = userIds[index];
-      return !(
-        userId &&
-        cooldownSuppresses(
-          cooldowns.get(userId) ?? null,
-          peaks.get(key) ?? byCase.get(key)!.connections,
-          threshold,
-        )
-      );
-    });
-    if (kept.length < keys.length)
-      logger.info("Egress abuse reviews suppressed by cooldown", {
-        suppressed: keys.length - kept.length,
-      });
-    return kept;
-  } catch {
-    logger.warn("Egress abuse review cooldown check unavailable");
-    return keys;
-  }
 }
 
 export const egressBurstAlertsTask = schedules.task({

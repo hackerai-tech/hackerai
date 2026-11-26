@@ -170,6 +170,25 @@ const workLedgerSummaryValidator = v.object({
 });
 const isActiveStatus = (status: string): boolean =>
   ACTIVE_SUBAGENT_STATUSES.some((activeStatus) => activeStatus === status);
+/**
+ * Child spend already used or still committed under a parent run. An active
+ * child may spend up to its current cap on top of any prior continuation cost,
+ * which finalization adds to cost_dollars when it finishes.
+ */
+const committedChildCostDollars = (
+  rows: Array<{
+    status: string;
+    cost_dollars?: number;
+    cost_limit_dollars: number;
+  }>,
+): number =>
+  rows.reduce(
+    (total, row) =>
+      total +
+      (row.cost_dollars ?? 0) +
+      (isActiveStatus(row.status) ? row.cost_limit_dollars : 0),
+    0,
+  );
 const DELETION_CANCELLATION_REASONS = [
   "chat_deleted",
   "all_chats_deleted",
@@ -371,10 +390,7 @@ export const reserveForBackend = mutation({
     if (parentRuns.length >= MAX_SUBAGENTS_PER_PARENT_RUN) {
       return { outcome: "total_limit" as const };
     }
-    const parentCostDollars = parentRuns.reduce(
-      (total, row) => total + (row.cost_dollars ?? 0),
-      0,
-    );
+    const parentCostDollars = committedChildCostDollars(parentRuns);
     const childBudgetDollars =
       SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS -
       SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS;
@@ -2035,11 +2051,8 @@ export const resumeForBackend = mutation({
     const childBudgetDollars =
       SUBAGENT_ORCHESTRATION_BUDGET_DOLLARS -
       SUBAGENT_PARENT_SYNTHESIS_RESERVE_DOLLARS;
-    const spentDollars = rows.reduce(
-      (total, candidate) => total + (candidate.cost_dollars ?? 0),
-      0,
-    );
-    const remainingDollars = childBudgetDollars - spentDollars;
+    const remainingDollars =
+      childBudgetDollars - committedChildCostDollars(rows);
     if (remainingDollars <= 0) return { outcome: "spend_limit" as const };
     const now = Date.now();
     await ctx.db.patch(row._id, {

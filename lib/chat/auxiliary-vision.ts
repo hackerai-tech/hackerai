@@ -37,6 +37,8 @@ export const AUXILIARY_VISION_RECOVERY_TIMEOUT_MS = 120_000;
 export const AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS = 0.25;
 const LEGACY_AUXILIARY_VISION_SLUGS = [
   "deepseek/deepseek-v4.1-flash",
+  // Persisted before DEEPSEEK_V4_FLASH_VISION_SLUG moved to a pinned snapshot.
+  "deepseek/deepseek-v4-flash-vision-exp",
   DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
 ] as const;

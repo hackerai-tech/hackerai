@@ -119,6 +119,23 @@ const getRunningResearchMember = async (
   return { run, member };
 };
 
+/**
+ * The audited [start, end] update_time window of a pre-event member, or
+ * undefined when the run samples representative lifetime history.
+ */
+const getEvidenceWindow = (
+  run: Doc<"research_runs">,
+  member: Doc<"research_run_members">,
+): { startAt: number; endAt: number } | undefined => {
+  if ((run.sampling_mode ?? "representative") !== "pre_event") return undefined;
+  const endAt = member.evidence_anchor_at;
+  const days = run.evidence_window_days;
+  if (endAt === undefined || days === undefined) {
+    throw new ConvexError("Pre-event research evidence window is incomplete");
+  }
+  return { startAt: endAt - days * DAY_MS, endAt };
+};
+
 export const createRun = mutation({
   args: {
     serviceKey: v.string(),
@@ -409,30 +426,16 @@ export const listRepresentativeChats = query({
       "maxChats",
     );
 
-    const samplingMode = run.sampling_mode ?? "representative";
-    const evidenceWindowEndAt = member.evidence_anchor_at;
-    const evidenceWindowDays = run.evidence_window_days;
-    if (
-      samplingMode === "pre_event" &&
-      (evidenceWindowEndAt === undefined || evidenceWindowDays === undefined)
-    ) {
-      throw new ConvexError("Pre-event research evidence window is incomplete");
-    }
-    const evidenceWindowStartAt =
-      evidenceWindowEndAt !== undefined && evidenceWindowDays !== undefined
-        ? evidenceWindowEndAt - evidenceWindowDays * DAY_MS
-        : undefined;
+    const evidenceWindow = getEvidenceWindow(run, member);
 
     const queryChats = (minimumUpdatedAt?: number) =>
       ctx.db.query("chats").withIndex("by_user_and_updated", (q) => {
         const scoped = q.eq("user_id", args.userId);
-        const lowerBound =
-          minimumUpdatedAt ??
-          (samplingMode === "pre_event" ? evidenceWindowStartAt : undefined);
+        const lowerBound = minimumUpdatedAt ?? evidenceWindow?.startAt;
         if (lowerBound === undefined) return scoped;
         const afterLowerBound = scoped.gte("update_time", lowerBound);
-        return samplingMode === "pre_event"
-          ? afterLowerBound.lte("update_time", evidenceWindowEndAt!)
+        return evidenceWindow
+          ? afterLowerBound.lte("update_time", evidenceWindow.endAt)
           : afterLowerBound;
       });
     const oldest = await queryChats().order("asc").first();
@@ -501,7 +504,12 @@ export const getMessageExcerpt = query({
   }),
   handler: async (ctx, args) => {
     validateUserResearchServiceKey(args.serviceKey);
-    await getRunningResearchMember(ctx, args.analysisId, args.userId);
+    const { run, member } = await getRunningResearchMember(
+      ctx,
+      args.analysisId,
+      args.userId,
+    );
+    const evidenceWindow = getEvidenceWindow(run, member);
     assertIntegerInRange(
       args.maxMessages,
       MIN_MESSAGES_PER_CHAT,
@@ -519,14 +527,25 @@ export const getMessageExcerpt = query({
 
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
+    // Pre-event excerpts read only messages last updated inside the window.
+    const queryMessages = () =>
+      evidenceWindow
+        ? ctx.db
+            .query("messages")
+            .withIndex("by_chat_id_and_update_time", (q) =>
+              q
+                .eq("chat_id", args.chatId)
+                .gte("update_time", evidenceWindow.startAt)
+                .lte("update_time", evidenceWindow.endAt),
+            )
+        : ctx.db
+            .query("messages")
+            .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId));
     const readEnd = async (direction: "asc" | "desc", limit: number) => {
       const rows: Doc<"messages">[] = [];
       let bytesRead = 0;
       let byteLimited = false;
-      for await (const message of ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order(direction)) {
+      for await (const message of queryMessages().order(direction)) {
         rows.push(message);
         // Count the full stored document, including hidden/tool/reasoning
         // content and the lookahead, before applying any output filtering.

@@ -56,7 +56,60 @@ export function estimateRelayPayloadBytes(value: unknown): number {
     }
   }
   if (Array.isArray(payload.entries)) {
-    bytes += Buffer.byteLength(JSON.stringify(payload.entries), "utf8");
+    bytes += estimateJsonBytes(payload.entries);
+  }
+  return bytes;
+}
+
+/** Visits enough values for a full large directory listing. */
+const MAX_ESTIMATED_JSON_VALUES = 100_000;
+
+/**
+ * Approximate JSON size, iteratively and with bounded work, so a circular,
+ * deeply nested or oversized value yields a lower-bound estimate instead of
+ * throwing or stalling the relay subscription.
+ */
+function estimateJsonBytes(root: unknown): number {
+  let bytes = 0;
+  let remaining = MAX_ESTIMATED_JSON_VALUES;
+  const seen = new WeakSet<object>();
+  const pending: unknown[] = [root];
+  try {
+    while (pending.length > 0 && remaining-- > 0) {
+      const value = pending.pop();
+      if (typeof value === "string") {
+        bytes += Buffer.byteLength(value, "utf8") + 2;
+      } else if (typeof value === "number" || typeof value === "boolean") {
+        bytes += String(value).length;
+      } else if (value === null) {
+        bytes += 4;
+      } else if (typeof value === "object" && !seen.has(value)) {
+        seen.add(value);
+        if (Array.isArray(value)) {
+          // Brackets and separators.
+          bytes += 1 + Math.max(1, value.length);
+          for (
+            let index = 0;
+            index < value.length && pending.length < remaining;
+            index++
+          ) {
+            pending.push(value[index]);
+          }
+        } else {
+          const record = value as Record<string, unknown>;
+          const keys = Object.keys(record);
+          bytes += 1 + Math.max(1, keys.length);
+          for (const key of keys) {
+            if (pending.length >= remaining) break;
+            // Quoted key and colon.
+            bytes += Buffer.byteLength(key, "utf8") + 3;
+            pending.push(record[key]);
+          }
+        }
+      }
+    }
+  } catch {
+    // An accessor that throws ends the estimate with what was counted.
   }
   return bytes;
 }

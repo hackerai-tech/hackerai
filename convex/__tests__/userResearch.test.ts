@@ -76,7 +76,11 @@ const createCtx = (args: {
     })),
   };
 
-  const reads = { bytes: 0, messageIds: [] as string[] };
+  const reads = {
+    bytes: 0,
+    messageIds: [] as string[],
+    messageIndexes: [] as string[],
+  };
   const recordRead = (row: Row, table: string) => {
     reads.bytes += getDocumentSize(row as never);
     if (table === "messages") reads.messageIds.push(row._id);
@@ -88,7 +92,8 @@ const createCtx = (args: {
   const db = {
     query: jest.fn((table: string) => ({
       withIndex: jest.fn(
-        (_index: string, build: (q: Record<string, unknown>) => unknown) => {
+        (index: string, build: (q: Record<string, unknown>) => unknown) => {
+          if (table === "messages") reads.messageIndexes.push(index);
           const filters: Array<{
             field: string;
             operator: "eq" | "gte" | "lte";
@@ -375,6 +380,46 @@ describe("userResearch.getMessageExcerpt", () => {
       "Research excerpt read budget exhausted before eligible text was found",
     );
     expect(reads.messageIds).toHaveLength(8);
+  });
+
+  it("reads only messages updated inside a pre-event evidence window", async () => {
+    const { getMessageExcerpt } = await import("../userResearch");
+    const anchorAt = Date.UTC(2026, 7, 25);
+    const day = 24 * 60 * 60 * 1_000;
+    const { ctx, userId, chatId, tables, reads } = createCtx({
+      messageCount: 4,
+      samplingMode: "pre_event",
+      evidenceWindowDays: 60,
+      evidenceAnchorAt: anchorAt,
+    });
+    // Before the window, at both bounds, and after the audited event.
+    [anchorAt - 61 * day, anchorAt - 60 * day, anchorAt, anchorAt + 1].forEach(
+      (updateTime, index) => {
+        tables.messages[index].update_time = updateTime;
+      },
+    );
+
+    const result = await getMessageExcerpt.handler(ctx as never, {
+      serviceKey: "service-key",
+      analysisId: "analysis-1",
+      userId,
+      chatId,
+      maxMessages: 20,
+    });
+
+    expect(result).toEqual({
+      messages: [
+        { role: "assistant", text: "message 2" },
+        { role: "user", text: "message 3" },
+      ],
+      truncated: false,
+    });
+    expect(new Set(reads.messageIds)).toEqual(
+      new Set(["message-2", "message-3"]),
+    );
+    expect(new Set(reads.messageIndexes)).toEqual(
+      new Set(["by_chat_id_and_update_time"]),
+    );
   });
 
   it.each(["foreign", "deleting"])(

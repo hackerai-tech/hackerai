@@ -30,6 +30,10 @@ const PAID_DAILY_FREE_ALLOWANCE_AGENT_RESERVATION_TTL_MS =
  * Reserve the shared per-user allowance for one active rescue request. The
  * tokenized lease serializes Ask and Agent spending until settlement, while a
  * bounded TTL recovers a lease if the worker exits without cleanup.
+ *
+ * Without an explicit rescue, consent is an earlier reservation in the same
+ * UTC day. Checking it here, against the bucket being reserved, keeps a
+ * request that read yesterday's consent from opening a new day unasked.
  */
 const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
@@ -40,12 +44,17 @@ local costLimit = tonumber(ARGV[1])
 local counterTtlMs = tonumber(ARGV[2])
 local reservationTtlMs = tonumber(ARGV[3])
 local reservationToken = ARGV[4]
+local requireExistingConsent = ARGV[5] == "1"
 
 local currentRequests = tonumber(redis.call("GET", requestKey) or "0")
 local currentCost = tonumber(redis.call("GET", costKey) or "0")
 
 if currentCost >= costLimit then
   return {0, "cost_limit_reached", currentRequests, currentCost}
+end
+
+if requireExistingConsent and currentRequests < 1 then
+  return {0, "consent_required", currentRequests, currentCost}
 end
 
 -- An older worker may still own the date-scoped lease during rollout.
@@ -133,6 +142,13 @@ export type PaidDailyFreeAllowanceUnavailableReason =
   | "request_in_progress"
   | "cost_limit_reached";
 
+/**
+ * Why a reservation was refused. `consent_required` leaves the allowance
+ * available, so the client can offer the explicit opt-in again.
+ */
+export type PaidDailyFreeAllowanceBlockReason =
+  PaidDailyFreeAllowanceUnavailableReason | "consent_required";
+
 export interface PaidDailyFreeAllowanceStatus {
   type: "paid_daily_free_allowance";
   available: boolean;
@@ -153,7 +169,7 @@ export interface PaidDailyFreeAllowanceStatus {
 export interface PaidDailyFreeAllowanceReservation {
   allowed: boolean;
   status: PaidDailyFreeAllowanceStatus;
-  blockReason?: PaidDailyFreeAllowanceUnavailableReason;
+  blockReason?: PaidDailyFreeAllowanceBlockReason;
   /** Server-only Redis lease identity, present for production reservations. */
   redisReservation?: {
     bucket: string;
@@ -401,7 +417,15 @@ export function hasPaidDailyFreeAllowanceConsent(
 
 export async function reservePaidDailyFreeAllowanceRequest(
   ctx: PaidDailyFreeAllowanceContext,
+  options: {
+    /**
+     * Admit only after an earlier reservation today. Callers waive it only
+     * for a request carrying the explicit rescue opt-in.
+     */
+    requireExistingConsent?: boolean;
+  } = {},
 ): Promise<PaidDailyFreeAllowanceReservation> {
+  const requireExistingConsent = options.requireExistingConsent === true;
   const status = await getPaidDailyFreeAllowanceStatus(ctx);
   if (!status.available) {
     return { allowed: false, status, blockReason: status.unavailableReason };
@@ -409,6 +433,9 @@ export async function reservePaidDailyFreeAllowanceRequest(
 
   const redis = getRedisClient();
   if (!redis) {
+    if (requireExistingConsent && status.requestsUsed < 1) {
+      return { allowed: false, status, blockReason: "consent_required" };
+    }
     if (process.env.NODE_ENV !== "production") {
       return {
         allowed: true,
@@ -441,7 +468,7 @@ export async function reservePaidDailyFreeAllowanceRequest(
       : PAID_DAILY_FREE_ALLOWANCE_ASK_RESERVATION_TTL_MS;
   let result: [
     number,
-    PaidDailyFreeAllowanceUnavailableReason | "ok",
+    PaidDailyFreeAllowanceBlockReason | "ok",
     number,
     number,
   ];
@@ -449,13 +476,14 @@ export async function reservePaidDailyFreeAllowanceRequest(
     result = (await redis.eval(
       RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
       [requestsKey, costKey, reservationKey, legacyReservationKey],
-      [status.costLimitPoints, ttlMs, reservationTtlMs, reservationToken],
-    )) as [
-      number,
-      PaidDailyFreeAllowanceUnavailableReason | "ok",
-      number,
-      number,
-    ];
+      [
+        status.costLimitPoints,
+        ttlMs,
+        reservationTtlMs,
+        reservationToken,
+        requireExistingConsent ? "1" : "0",
+      ],
+    )) as [number, PaidDailyFreeAllowanceBlockReason | "ok", number, number];
   } catch {
     return {
       allowed: false,
@@ -477,9 +505,10 @@ export async function reservePaidDailyFreeAllowanceRequest(
     status.costLimitPoints - costUsedPoints,
   );
   const blockReason = allowed ? undefined : rawReason;
+  const consentRequired = blockReason === "consent_required";
   const nextStatus: PaidDailyFreeAllowanceStatus = {
     ...status,
-    available: allowed && costRemainingPoints > 0,
+    available: (allowed || consentRequired) && costRemainingPoints > 0,
     requestsUsed,
     costUsedPoints,
     costUsedDollars: pointsToDollars(costUsedPoints),
@@ -488,7 +517,8 @@ export async function reservePaidDailyFreeAllowanceRequest(
     resetTime: new Date(reset),
     resetTimestamp: reset,
     ...(blockReason &&
-      blockReason !== "ok" && {
+      blockReason !== "ok" &&
+      blockReason !== "consent_required" && {
         unavailableReason: blockReason,
       }),
   };

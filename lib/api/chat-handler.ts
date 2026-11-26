@@ -780,8 +780,10 @@ export const createChatHandler = () => {
           throw error;
         }
 
-        const allowanceReservation =
-          await reservePaidDailyFreeAllowanceRequest(allowanceContext);
+        const allowanceReservation = await reservePaidDailyFreeAllowanceRequest(
+          allowanceContext,
+          { requireExistingConsent: !limitRescue },
+        );
         error.metadata = {
           ...error.metadata,
           paidDailyFreeAllowance: paidDailyFreeAllowanceStatusToMetadata(
