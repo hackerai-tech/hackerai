@@ -22,6 +22,7 @@ import {
 } from "@/lib/goals/server";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
 import { scheduleQueuedMessageDispatch } from "./agent-queue-dispatch";
+import { recordLocalAutoContinueStop } from "./agent-local-auto-continue";
 import { captureAgentFollowUp } from "@/lib/analytics/agent-follow-up";
 import { trace } from "@opentelemetry/api";
 import { getAgentRunClockContext } from "@/lib/chat/agent-run-clock";
@@ -47,6 +48,7 @@ import {
 import {
   BrowserHandoffAbandonedError,
   manualAgentResumeFinishReason,
+  type AgentResumeTrigger,
 } from "@/lib/chat/manual-agent-resume";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
@@ -1631,8 +1633,12 @@ export type AgentLongPayload = {
   requestRegionClass?: RequestRegionClass;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
-  /** A user-initiated run resuming this saved manual-resume stop. */
+  /** A run resuming this saved manual-resume stop. */
   resumeFromFinishReason?: string;
+  /** Whether the user or the server started that resume (HAC-275). */
+  resumeTrigger?: AgentResumeTrigger;
+  /** The stopped run this automatic continuation resumes. */
+  localAutoContinueOfRunId?: string;
   regenerate?: boolean;
   isNewChat?: boolean;
   limitRescue?: LimitRescueRequest;
@@ -1810,6 +1816,7 @@ export const agentLongTask = task({
       isAutoContinue,
       isAutomaticContinuation,
       resumeFromFinishReason,
+      resumeTrigger,
       regenerate,
       isNewChat,
       limitRescue,
@@ -2063,6 +2070,7 @@ export const agentLongTask = task({
       endpoint,
       isAutoContinue: !!isAutoContinue,
       resumeFromFinishReason,
+      resumeTrigger,
       getFailureSignalContext: (error) =>
         agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
       setRunMetadata: (key, value) => {
@@ -3561,7 +3569,7 @@ export const agentLongTask = task({
 
             const resumeContext = regenerate
               ? ""
-              : getResumeSection(chat?.finish_reason);
+              : getResumeSection(chat?.finish_reason, resumeTrigger);
             if (resumeContext) {
               finalMessages = appendSystemReminderToLastUserMessage(
                 finalMessages,
@@ -6810,6 +6818,16 @@ export const agentLongTask = task({
         await compactionReporter.flush().catch(() => undefined);
       }
       await finishCloudSandboxLifecycle();
+      if (localConnectionLost() && !goalClaimed)
+        await recordLocalAutoContinueStop({
+          payload,
+          stoppedRunId: ctx.run.id,
+          runStartedAt: ctx.run.createdAt.getTime(),
+          stopCause: userStopSignal.signal.reason,
+          usageLimited:
+            !!terminalAgentState?.stoppedDueToBudgetExhaustion ||
+            !!terminalAgentState?.stoppedDueToAgentRunSpendCap,
+        });
       runCleanupMap.delete(ctx.run.id);
       if (goalClaimed) {
         await finishGoalRun(payload, ctx.run.id, {

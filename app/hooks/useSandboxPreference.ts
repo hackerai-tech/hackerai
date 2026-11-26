@@ -29,6 +29,10 @@ import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import {
+  createDesktopReturnReporter,
+  reportDesktopReturn,
+} from "@/app/services/local-auto-continue-client";
+import {
   readConvexAuthProviderState,
   type ConvexAuthProviderState,
 } from "@/lib/auth/convex-auth-diagnostics";
@@ -66,6 +70,10 @@ let bridgeStateListener:
 let bridgeRetryListener: (() => void) | null = null;
 let bridgeStatus: DesktopBridgeStatus = "idle";
 let bridgeEnvironmentId: string | undefined;
+// Page-lifetime: reports this page's reconnects so a stopped run can continue.
+const desktopReturnReporter = createDesktopReturnReporter({
+  report: reportDesktopReturn,
+});
 
 function publishBridgeState(
   active: boolean,
@@ -416,6 +424,7 @@ export function useSandboxPreference(
       bridgeRecoveryResumeAt = 0;
       // Never carry diagnostics from a signed-out user into another session.
       bridgeTelemetry.reset();
+      desktopReturnReporter.reset();
       syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeRetryListener = null;
@@ -512,6 +521,10 @@ export function useSandboxPreference(
                   ),
                   onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
+                    desktopReturnReporter.onState(
+                      state,
+                      bridge.getConnectionId(),
+                    );
                     if (state === "connected") {
                       bridgeRecoveryExhausted = false;
                       scheduleStableRecoveryReset(generation);
@@ -527,6 +540,7 @@ export function useSandboxPreference(
                   },
                   onTerminated: (reason) => {
                     if (generation !== bridgeGeneration) return;
+                    desktopReturnReporter.onTerminated();
                     if (activeBridge === bridge) activeBridge = null;
                     if (!isRecoverableDesktopTermination(reason)) {
                       bridgeRecoveryExhausted = false;

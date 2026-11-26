@@ -10,6 +10,7 @@ import {
 import type { Doc } from "./_generated/dataModel";
 import { SignJWT } from "jose";
 import { isEnvironmentPreference } from "../lib/sandbox/environment";
+import { readDesktopSessionIdentity } from "../lib/centrifugo/desktop-session";
 
 function validatePrivateArtifactNamespace(
   capabilities:
@@ -606,6 +607,11 @@ export const connectDesktop = mutation({
         operationChannels: v.optional(v.boolean()),
       }),
     ),
+    // The bridge's native launch and page document, read at its startup.
+    // Older binaries omit it; their stops never continue automatically.
+    nativeSession: v.optional(
+      v.object({ launchId: v.string(), pageGeneration: v.number() }),
+    ),
   },
   returns: v.object({
     connectionId: v.string(),
@@ -614,6 +620,7 @@ export const connectDesktop = mutation({
   }),
   handler: async (ctx, args) => {
     validatePrivateArtifactNamespace(args.capabilities);
+    const nativeSession = readDesktopSessionIdentity(args.nativeSession);
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new ConvexError({
@@ -664,6 +671,10 @@ export const connectDesktop = mutation({
       last_heartbeat: Date.now(),
       status: "connected",
       created_at: Date.now(),
+      ...(nativeSession && {
+        native_launch_id: nativeSession.launchId,
+        native_page_generation: nativeSession.pageGeneration,
+      }),
     });
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);

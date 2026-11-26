@@ -39,14 +39,23 @@ export function manualAgentResumeFinishReason(
   return undefined;
 }
 
+/** Who resumed a manual-resume stop: the user, or the server (HAC-275). */
+export type AgentResumeTrigger = "manual" | "automatic";
+
 /**
- * Content-free link from a user-resumed run to the stop it resumed. Only the
+ * Content-free link from a resumed run to the stop it resumed. Only the
  * closed manual-resume reasons are reported; anything else is omitted.
  */
-export function resumeAnalyticsProperties(previousFinishReason: unknown) {
+export function resumeAnalyticsProperties(
+  previousFinishReason: unknown,
+  trigger?: AgentResumeTrigger,
+) {
   return typeof previousFinishReason === "string" &&
     requiresManualAgentResume(previousFinishReason)
-    ? ({ resume_from_finish_reason: previousFinishReason } as const)
+    ? ({
+        resume_from_finish_reason: previousFinishReason,
+        resume_trigger: trigger === "automatic" ? "automatic" : "manual",
+      } as const)
     : undefined;
 }
 
