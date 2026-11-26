@@ -780,8 +780,10 @@ export const createChatHandler = () => {
           throw error;
         }
 
-        const allowanceReservation =
-          await reservePaidDailyFreeAllowanceRequest(allowanceContext);
+        const allowanceReservation = await reservePaidDailyFreeAllowanceRequest(
+          allowanceContext,
+          { requireExistingConsent: !limitRescue },
+        );
         error.metadata = {
           ...error.metadata,
           paidDailyFreeAllowance: paidDailyFreeAllowanceStatusToMetadata(
@@ -2751,6 +2753,7 @@ export const createChatHandler = () => {
                                       stepCount: state.agentStepCount,
                                       stepLimitReached:
                                         state.stoppedDueToStepLimit,
+                                      finalStepHasText: state.lastStepHasText,
                                       todoRunMetrics:
                                         getTodoManager().getRunMetrics(),
                                     }),
@@ -3160,6 +3163,7 @@ export const createChatHandler = () => {
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
                         stepLimitReached: state.stoppedDueToStepLimit,
+                        finalStepHasText: state.lastStepHasText,
                         todoRunMetrics: getTodoManager().getRunMetrics(),
                       }),
                     });

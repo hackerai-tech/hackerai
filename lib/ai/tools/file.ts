@@ -1270,11 +1270,14 @@ async function uploadViewPreviewFiles(args: {
   payload: SandboxViewPayload;
 }): Promise<{ files: ViewPreviewFile[]; url: string }> {
   const { context, sandbox, sourcePath, payload } = args;
+  if (!payload.data) throw new Error("View preview requires validated bytes.");
 
   const uploaded = await uploadSandboxFileToConvex({
     sandbox,
     userId: context.userID,
     fullPath: sourcePath,
+    // Upload the validated bytes; the sandbox path may have changed since.
+    content: Buffer.from(payload.data, "base64"),
     mediaType: payload.mediaType,
     name: getFilename(sourcePath),
     storageRegion: context.triggerRegion,
@@ -1468,11 +1471,9 @@ export const createFile = (
 
               let viewPayload: SandboxViewPayload;
               try {
-                viewPayload = await readSandboxFileForView(
-                  sandbox,
-                  path,
-                  !!getAuxiliaryVision(),
-                );
+                // Validate the complete bytes on every vision path before the
+                // preview upload can produce a URL a model would receive.
+                viewPayload = await readSandboxFileForView(sandbox, path, true);
               } catch (error) {
                 const classification = classifyFileViewError(error);
                 captureFileViewImageUsage({

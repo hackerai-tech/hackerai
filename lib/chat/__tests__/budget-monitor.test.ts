@@ -424,56 +424,90 @@ it("cuts off total serving cost at the remaining daily Free Agent budget", () =>
   );
 });
 
-describe("BudgetMonitor stop pressure", () => {
+describe("BudgetMonitor stop headroom", () => {
   const noExtraUsage = {
     ...baseSnapshot,
     monthlyRemainingAtStart: 20,
     extraUsageEnabledAtStart: false,
   };
 
-  it("reports projected usage only after a step when 100% would stop the run", () => {
+  it("reports headroom after each step from the latest step costs", () => {
     const monitor = new BudgetMonitor(noExtraUsage, makeWriter(), "pro");
-    // A run starting above the threshold has not yet consumed anything.
-    expect(monitor.getStopPressurePercent()).toBeUndefined();
+    // A run starting near its limit has no step cost to project from yet.
+    expect(monitor.getStopHeadroom()).toBeUndefined();
     monitor.checkAfterStep(0.0005); // 5 points → 85%
-    expect(monitor.getStopPressurePercent()).toBeCloseTo(85);
-    monitor.checkAfterStep(0.0011); // 11 points → 91%
-    expect(monitor.getStopPressurePercent()).toBeCloseTo(91);
+    expect(monitor.getStopHeadroom()).toEqual({
+      remainingPoints: 15,
+      recentStepCostPoints: 5,
+      usedPercent: 85,
+    });
+    monitor.checkAfterStep(0.0011); // a 6-point step
+    for (const cost of [0.0012, 0.0013, 0.0014]) monitor.checkAfterStep(cost);
+    // The expensive step has left the recent window.
+    expect(monitor.getStopHeadroom()).toEqual({
+      remainingPoints: 6,
+      recentStepCostPoints: 1,
+      usedPercent: 94,
+    });
   });
 
   it.each([
-    ["auto-reload", {}],
-    ["a positive balance", { extraUsageAutoReload: false }],
-  ])(
-    "reports no pressure when extra usage with %s absorbs overflow",
-    (_, overrides) => {
-      const monitor = new BudgetMonitor(
-        { ...baseSnapshot, ...overrides, monthlyRemainingAtStart: 20 },
-        makeWriter(),
-        "pro",
-      );
-      monitor.checkAfterStep(0.0011);
-      expect(monitor.getStopPressurePercent()).toBeUndefined();
-    },
-  );
-
-  it.each([
-    ["overflow is disallowed", { extraUsageOverflowAllowed: false }],
+    ["overflow is disallowed", { extraUsageOverflowAllowed: false }, 0],
+    ["the monthly cap is spent", { extraUsageMonthlyRemainingAtStart: 0 }, 0],
     [
-      "the monthly extra-usage cap is spent",
-      { extraUsageMonthlyRemainingAtStart: 0 },
-    ],
-    [
-      "the balance is empty without auto-reload",
+      "the balance is empty",
       { extraUsageAutoReload: false, extraUsageBalanceAtStart: 0 },
+      0,
     ],
-  ])("reports pressure when %s", (_, overrides) => {
+    [
+      "a balance covers some overflow",
+      { extraUsageAutoReload: false, extraUsageBalanceAtStart: 0.002 },
+      20,
+    ],
+    [
+      "a monthly cap limits auto-reload",
+      { extraUsageMonthlyRemainingAtStart: 0.001 },
+      10,
+    ],
+  ])("counts extra usage when %s", (_, overrides, overflowPoints) => {
     const monitor = new BudgetMonitor(
       { ...baseSnapshot, ...overrides, monthlyRemainingAtStart: 20 },
       makeWriter(),
       "pro",
     );
     monitor.checkAfterStep(0.0011);
-    expect(monitor.getStopPressurePercent()).toBeCloseTo(91);
+    expect(monitor.getStopHeadroom()?.remainingPoints).toBe(9 + overflowPoints);
+  });
+
+  it("reports no stop when uncapped auto-reload absorbs overflow", () => {
+    const monitor = new BudgetMonitor(
+      { ...baseSnapshot, monthlyRemainingAtStart: 20 },
+      makeWriter(),
+      "pro",
+    );
+    monitor.checkAfterStep(0.0011);
+    expect(monitor.getStopHeadroom()).toBeUndefined();
+  });
+
+  it.each([
+    ["included usage only", noExtraUsage],
+    [
+      "a partial extra-usage balance",
+      {
+        ...noExtraUsage,
+        extraUsageEnabledAtStart: true,
+        extraUsageAutoReload: false,
+        extraUsageBalanceAtStart: 0.0013,
+      },
+    ],
+  ])("runs out of headroom exactly when %s stops the run", (_, snapshot) => {
+    const monitor = new BudgetMonitor(snapshot, makeWriter(), "pro");
+    for (let step = 1; step <= 10; step++) {
+      const decision = monitor.checkAfterStep(step * 0.0006);
+      const { remainingPoints } = monitor.getStopHeadroom()!;
+      expect(decision.type).toBe(remainingPoints < 0 ? "abort" : "continue");
+      if (decision.type === "abort") return;
+    }
+    throw new Error("run never stopped");
   });
 });

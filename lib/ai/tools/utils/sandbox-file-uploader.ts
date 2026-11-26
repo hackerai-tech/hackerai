@@ -575,10 +575,37 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   }
 }
 
+/**
+ * Upload bytes already held by the server, so the stored object is exactly
+ * what the caller read and validated rather than the path's current content.
+ */
+async function uploadContentToUrl(args: {
+  content: Uint8Array<ArrayBuffer>;
+  uploadUrl: string;
+  mediaType: string;
+}): Promise<void> {
+  const response = await fetch(args.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": args.mediaType },
+    body: args.content,
+    signal: AbortSignal.timeout(SANDBOX_UPLOAD_TIMEOUT_MS),
+  });
+  // The URL is signed; keep it and the response body out of the error.
+  if (!response.ok) {
+    throw new Error(`Failed to upload file content: HTTP ${response.status}`);
+  }
+}
+
 export async function uploadSandboxFileToConvex(args: {
   sandbox: AnySandbox;
   userId: string;
   fullPath: string;
+  /**
+   * Exact bytes read from fullPath and validated by the caller. When present,
+   * the sandbox path is neither stated nor read again; fullPath only names
+   * the file.
+   */
+  content?: Uint8Array<ArrayBuffer>;
   mediaType?: string;
   name?: string;
   storageRegion?: S3StorageRegion;
@@ -614,14 +641,12 @@ export async function uploadSandboxFileToConvex(args: {
     );
   }
 
-  const { sandbox, userId, fullPath } = args;
+  const { sandbox, userId, fullPath, content } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
   recordPhase("file_metadata");
-  let fileSize = await getSandboxFileSize(
-    sandbox,
-    fullPath,
-    args.onNativeStatFailure,
-  );
+  let fileSize = content
+    ? content.byteLength
+    : await getSandboxFileSize(sandbox, fullPath, args.onNativeStatFailure);
   // Metadata discovery also resolves legacy relays that omit their platform.
   const name = args.name || getFileNameFromPath(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
@@ -680,16 +705,20 @@ export async function uploadSandboxFileToConvex(args: {
     const transferFailures: GeneratedFileTransferAttemptFailure[] = [];
     try {
       recordPhase("transfer");
-      await uploadGeneratedFileFromSandboxToUrl({
-        sandbox,
-        fullPath,
-        uploadUrl,
-        mediaType,
-        onFailure: (failure) => {
-          transferFailures.push(failure);
-          return args.onTransferAttemptFailure?.(failure);
-        },
-      });
+      if (content) {
+        await uploadContentToUrl({ content, uploadUrl, mediaType });
+      } else {
+        await uploadGeneratedFileFromSandboxToUrl({
+          sandbox,
+          fullPath,
+          uploadUrl,
+          mediaType,
+          onFailure: (failure) => {
+            transferFailures.push(failure);
+            return args.onTransferAttemptFailure?.(failure);
+          },
+        });
+      }
       break;
     } catch (error) {
       // Content-Length is signed before the sandbox reads the file. A growing

@@ -885,13 +885,14 @@ describe("file tool image view", () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
       .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
         return {
           stdout: JSON.stringify({
             path: "/tmp/screenshot.png",
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
+            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -928,6 +929,14 @@ describe("file tool image view", () => {
     });
 
     expect(commandRun).toHaveBeenCalledTimes(1);
+    // The preview stores the validated bytes, not a later read of the path.
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fullPath: "/tmp/screenshot.png",
+        content: Buffer.from(VALID_PNG_BASE64, "base64"),
+        mediaType: "image/png",
+      }),
+    );
     expect(mockGetSandboxUploadedFileUrl).not.toHaveBeenCalled();
     expect(result).not.toHaveProperty("url");
     expect(result).not.toHaveProperty("previewFiles.0.url");
@@ -969,13 +978,14 @@ describe("file tool image view", () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
       .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
         return {
           stdout: JSON.stringify({
             path: "/tmp/screenshot.png",
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
+            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -1022,6 +1032,40 @@ describe("file tool image view", () => {
     });
     expect(commandRun).toHaveBeenCalledTimes(1);
   });
+
+  test.each([
+    ["direct multimodal", "model-kimi-k3"],
+    ["Agent handoff", "model-deepseek-v4-pro"],
+  ])(
+    "rejects a malformed %s view before uploading a preview",
+    async (_label, modelName) => {
+      const commandRun = jest.fn(async () => ({
+        stdout: JSON.stringify({
+          path: "/tmp/broken.png",
+          mediaType: "image/png",
+          sizeBytes: 8,
+          kind: "image",
+          data: "iVBORw0KGgo=",
+        }),
+        stderr: "",
+        exitCode: 0,
+      }));
+      const tool = createFile(
+        makeContext(makeSandbox(commandRun), { modelName }),
+      );
+
+      await expect(
+        runTool(tool, {
+          action: "view",
+          path: "/tmp/broken.png",
+          brief: "Inspect the screenshot",
+        }),
+      ).resolves.toEqual({
+        error: "View inspection found invalid image data (missing_png_ihdr).",
+      });
+      expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+    },
+  );
 
   test("refreshes the signed URL for a persisted image tool result", async () => {
     mockGetSandboxUploadedFileUrl.mockResolvedValue(

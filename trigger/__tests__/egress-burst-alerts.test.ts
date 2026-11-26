@@ -722,59 +722,21 @@ describe("abuse review dispatch", () => {
       );
     });
 
-    it("leaves a routine spike unqueued and queues a later escalation in its window", async () => {
+    // The review rereads the whole window and is the only cooldown owner.
+    it("queues a routine spike for the review without reading the cooldown", async () => {
       await upload("us", MINUTE, [count(first, 17)]);
       await ok(runEgressBurstAlerts(at()));
-      expect(trigger()).not.toHaveBeenCalled();
-      expect(queued()).toEqual([]);
-      expect(volumeWarnings()).toHaveLength(1);
-
-      // Twice the cleared peak and twice the threshold.
-      await upload("eu", MINUTE + 1);
-      await upload("us", MINUTE + 1, [count(first, 18)]);
-      await ok(runEgressBurstAlerts(at(MINUTE + 1)));
-      expect(trigger()).toHaveBeenCalledTimes(1);
-      expect(trigger().mock.calls[0][1]).toEqual({
-        region: "us",
-        owner: first.owner,
-        minute: MINUTE + 1,
-      });
+      expect(dispatchedMinutes()).toEqual([MINUTE]);
+      expect(cooldownReads()).toEqual([]);
     });
 
-    it("queues the review when the cooldown cannot be read", async () => {
-      const mget = redis.mget.getMockImplementation()!;
-      redis.mget.mockImplementation(async (...keys: string[]) => {
-        if (keys.includes(reviewCooldownKey(first.userId)))
-          throw new Error("store down");
-        return mget(...keys);
-      });
-      await upload("us", MINUTE, [count(first, 9)]);
-      await ok(runEgressBurstAlerts(at()));
-      expect(trigger()).toHaveBeenCalledTimes(1);
-    });
-
-    it("queues the strongest verified minute when the cooldown was bypassed by replay", async () => {
+    it("queues the strongest verified minute, including a replayed one", async () => {
       await upload("us", MINUTE, [count(first, 18)]);
       await upload("eu", MINUTE + 6);
       await upload("us", MINUTE + 6, [count(first, 17)]);
       await ok(runEgressBurstAlerts(at(MINUTE + 6)));
       expect(dispatchedMinutes()).toEqual([MINUTE]);
-    });
-
-    it("reads no cooldown without a new case to queue", async () => {
-      await upload("eu", MINUTE - 1);
-      await upload("us", MINUTE - 1, [count(first, 2)]);
-      await ok(runEgressBurstAlerts(at(MINUTE - 1)));
       expect(cooldownReads()).toEqual([]);
-
-      // Dispatched without a cooldown; the next run finds it marked.
-      store.delete(reviewCooldownKey(first.userId));
-      await upload("us", MINUTE, [count(first, 9)]);
-      await ok(runEgressBurstAlerts(at()));
-      expect(trigger()).toHaveBeenCalledTimes(1);
-      const reads = cooldownReads().length;
-      await ok(runEgressBurstAlerts(at()));
-      expect(cooldownReads()).toHaveLength(reads);
     });
   });
 

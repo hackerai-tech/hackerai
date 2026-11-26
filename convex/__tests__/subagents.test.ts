@@ -277,6 +277,43 @@ describe("subagent continuation", () => {
     expect(runAfter).toHaveBeenCalled();
   });
 
+  it("caps a continuation by an active sibling's committed budget", async () => {
+    const { ctx, patch } = makeCtx({
+      parentRuns: [
+        {
+          _id: "run-1",
+          subagent_id: "sa_completed",
+          profile: "general",
+          status: "completed",
+          created_at: 123,
+          cost_dollars: 0.5,
+          cost_limit_dollars: 1,
+        },
+        // A resumed sibling: its prior cost plus its full current cap.
+        {
+          _id: "run-2",
+          subagent_id: "sa_running",
+          profile: "general",
+          status: "running",
+          cost_dollars: 1,
+          cost_limit_dollars: 1,
+        },
+      ],
+    });
+
+    await expect(
+      resumeForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        chatId: "chat-1",
+        parentTriggerRunId: "parent-run",
+        targetAgentId: "sa_completed",
+        followUp: "Check one more thing",
+      }),
+    ).resolves.toEqual({ outcome: "resumed", subagentId: "sa_completed" });
+    expect(patch.mock.calls[0]?.[1].cost_limit_dollars).toBeCloseTo(0.5);
+  });
+
   it("does not resume a child after account deletion starts", async () => {
     const { ctx, patch, runAfter } = makeCtx({
       deletionFenced: true,
@@ -444,6 +481,31 @@ describe("subagent reservation", () => {
       expect.objectContaining({ cost_limit_dollars: expect.any(Number) }),
     );
     expect(insert.mock.calls[0]?.[1].cost_limit_dollars).toBeCloseTo(0.6);
+  });
+
+  it("counts active siblings' caps toward the parent budget", async () => {
+    const { ctx, insert } = makeCtx({
+      parentRuns: [
+        { status: "completed", cost_dollars: 1.5, cost_limit_dollars: 1 },
+        { status: "queued", cost_limit_dollars: 1 },
+      ],
+    });
+    await expect(reserveForBackend.handler(ctx, args)).resolves.toMatchObject({
+      outcome: "created",
+    });
+    expect(insert.mock.calls[0]?.[1].cost_limit_dollars).toBeCloseTo(0.5);
+
+    // An active continuation commits its prior cost and its current cap.
+    const full = makeCtx({
+      parentRuns: [
+        { status: "completed", cost_dollars: 1, cost_limit_dollars: 1 },
+        { status: "finalizing", cost_dollars: 1, cost_limit_dollars: 1 },
+      ],
+    });
+    await expect(reserveForBackend.handler(full.ctx, args)).resolves.toEqual({
+      outcome: "spend_limit",
+    });
+    expect(full.insert).not.toHaveBeenCalled();
   });
 
   it("creates a depth-one queued validation child", async () => {
