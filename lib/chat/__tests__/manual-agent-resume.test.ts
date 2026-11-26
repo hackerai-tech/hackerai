@@ -58,6 +58,14 @@ describe("resumeAnalyticsProperties", () => {
   it("reports only closed manual-resume reasons", () => {
     expect(resumeAnalyticsProperties("local-connection-lost")).toEqual({
       resume_from_finish_reason: "local-connection-lost",
+      resume_trigger: "manual",
+    });
+    // HAC-275: the server's continuation is told apart from the user's.
+    expect(
+      resumeAnalyticsProperties("local-connection-lost", "automatic"),
+    ).toEqual({
+      resume_from_finish_reason: "local-connection-lost",
+      resume_trigger: "automatic",
     });
     expect(resumeAnalyticsProperties("stop")).toBeUndefined();
     expect(resumeAnalyticsProperties(undefined)).toBeUndefined();

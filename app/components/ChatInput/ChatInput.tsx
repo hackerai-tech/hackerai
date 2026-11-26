@@ -97,6 +97,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
+import { cancelLocalAutoContinue } from "@/app/services/local-auto-continue-client";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
@@ -1507,7 +1508,21 @@ const ChatInputContent = ({
               <DisconnectedComputerNotice
                 isNewChat={isNewChat}
                 sandboxPreference={sandboxPreference}
-                onSelect={setSandboxPreference}
+                onSelect={(preference, options) => {
+                  setSandboxPreference(preference, options);
+                  // Picking another environment overrides an automatic
+                  // continuation waiting for this chat's computer.
+                  if (
+                    !isNewChat &&
+                    chatId &&
+                    options?.remember !== false &&
+                    preference !== sandboxPreference
+                  )
+                    void cancelLocalAutoContinue(
+                      chatId,
+                      "environment_switched",
+                    );
+                }}
                 confirmEnvironmentChange={!isNewChat && hasMessages}
                 reconnectInstructions={
                   isDesktopPreference(sandboxPreference) &&

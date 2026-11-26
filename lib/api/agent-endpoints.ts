@@ -6,6 +6,8 @@ export const AGENT_REPLY_ENDPOINT = "/api/agent/reply" as const;
 export const AGENT_CANCEL_ENDPOINT = "/api/agent/cancel" as const;
 export const AGENT_STATUS_ENDPOINT = "/api/agent/status" as const;
 export const AGENT_PARTIAL_SAVE_ENDPOINT = "/api/agent/partial-save" as const;
+export const AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT =
+  "/api/agent/local-auto-continue" as const;
 
 export const LEGACY_AGENT_API_ENDPOINT = "/api/agent-long" as const;
 export const LEGACY_AGENT_RESUME_ENDPOINT = "/api/agent-long/resume" as const;

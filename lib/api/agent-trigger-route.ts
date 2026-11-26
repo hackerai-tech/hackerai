@@ -1,8 +1,9 @@
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
-import { api as goalApi } from "@/convex/_generated/api";
+import { api, api as goalApi } from "@/convex/_generated/api";
 import {
   createIsolatedConvexClient,
+  getConvexClient,
   isConvexOutcomeUnknownError,
   type ConvexCallScope,
 } from "@/lib/db/convex-client";
@@ -18,6 +19,8 @@ import {
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 import { requiresManualAgentResume } from "@/lib/chat/manual-agent-resume";
+import { STOPPED_RUN_ID } from "@/lib/chat/local-auto-continue";
+import { cancelLocalAutoContinuesForChat } from "@/lib/api/local-auto-continue-route";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -243,6 +246,8 @@ type AgentTriggerRequestBody = {
   limitRescue?: LimitRescueRequest;
   agentRunRequestId?: string;
   projectId?: string;
+  /** Only the server's automatic continuation of a claimed stop sends this. */
+  localAutoContinue?: { stoppedRunId: string };
 };
 
 export const buildAgentPermissionRunSnapshot = (mode: AgentPermissionMode) => ({
@@ -329,6 +334,25 @@ const parseAgentTriggerRequestBody = async (
     };
   }
 
+  const localAutoContinue = body.localAutoContinue as
+    { stoppedRunId?: unknown } | undefined;
+  if (
+    localAutoContinue !== undefined &&
+    (typeof localAutoContinue !== "object" ||
+      localAutoContinue === null ||
+      typeof localAutoContinue.stoppedRunId !== "string" ||
+      !STOPPED_RUN_ID.test(localAutoContinue.stoppedRunId) ||
+      body.isAutoContinue !== true ||
+      body.isAutomaticContinuation === true)
+  ) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid automatic continuation", {
+        status: 400,
+      }),
+    };
+  }
+
   if (body.goal !== undefined && !validGoalRequest(body.goal)) {
     return {
       ok: false,
@@ -365,6 +389,11 @@ const parseAgentTriggerRequestBody = async (
           ? body.agentRunRequestId
           : undefined,
       projectId: requireOptionalIdentifier("projectId", body.projectId),
+      ...(localAutoContinue && {
+        localAutoContinue: {
+          stoppedRunId: localAutoContinue.stoppedRunId as string,
+        },
+      }),
     },
   };
 };
@@ -467,6 +496,7 @@ export const createAgentTriggerPost = ({
         agentRunRequestId,
         projectId: requestedProjectId,
         goal: goalRequest,
+        localAutoContinue,
       } = parsedBody.body;
 
       diagnosticContext.chatId = chatId.slice(0, 128);
@@ -480,6 +510,22 @@ export const createAgentTriggerPost = ({
       } = await getUserIDAndPro(req);
       const freeQuotaSubject = freeUsageQuotaSubject ?? legacyQuotaSubject;
       diagnosticContext.userId = userId.slice(0, 128);
+      if (localAutoContinue) {
+        // Only the one claimed start of this stop may run as automatic.
+        stage = "local_auto_continue_claim";
+        const claim = await getConvexClient().query(
+          api.agentLocalAutoContinues.getClaim,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            stoppedRunId: localAutoContinue.stoppedRunId,
+          },
+        );
+        if (!claim || claim.userId !== userId || claim.chatId !== chatId)
+          return new NextResponse(
+            "This automatic continuation is no longer pending.",
+            { status: 409 },
+          );
+      }
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
@@ -939,12 +985,19 @@ export const createAgentTriggerPost = ({
         requestRegionClass,
         isAutoContinue,
         isAutomaticContinuation,
-        // Content-free analytics link: the user resumed a saved manual stop.
+        // Content-free analytics link: the run resumes a saved manual stop,
+        // by the user or by the server once its computer came back.
         ...(isAutoContinue &&
           !isAutomaticContinuation &&
           requiresManualAgentResume(existingChat?.finish_reason) && {
             resumeFromFinishReason: existingChat.finish_reason,
+            resumeTrigger: localAutoContinue
+              ? ("automatic" as const)
+              : ("manual" as const),
           }),
+        ...(localAutoContinue && {
+          localAutoContinueOfRunId: localAutoContinue.stoppedRunId,
+        }),
         regenerate,
         limitRescue,
         isNewChat,
@@ -1135,6 +1188,17 @@ export const createAgentTriggerPost = ({
         });
       // The associated worker owns this generation, even if response creation fails.
       reservedGoal = undefined;
+      // The user acted first: their message or Resume replaces any automatic
+      // continuation still waiting for this chat's computer.
+      if (
+        !localAutoContinue &&
+        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+      )
+        await cancelLocalAutoContinuesForChat({
+          userId,
+          chatId,
+          reason: isAutoContinue ? "manual_resume" : "user_message",
+        });
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,

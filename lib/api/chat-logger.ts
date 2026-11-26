@@ -16,7 +16,10 @@ import {
   localStopAnalyticsProperties,
   type LocalRunRecoverySummary,
 } from "@/lib/chat/local-connection-stop";
-import { resumeAnalyticsProperties } from "@/lib/chat/manual-agent-resume";
+import {
+  resumeAnalyticsProperties,
+  type AgentResumeTrigger,
+} from "@/lib/chat/manual-agent-resume";
 import {
   FREE_ASK_DEEPSEEK_1017_KEY,
   FREE_ASK_MODEL_OUTCOME_EVENT,
@@ -1458,6 +1461,7 @@ type AgentCompletionAnalyticsArgs = {
   localRecoverySummary?: LocalRunRecoverySummary;
   /** Added by run reporting: the manual-resume stop this run resumed. */
   resumeFromFinishReason?: string;
+  resumeTrigger?: AgentResumeTrigger;
 };
 
 export function captureAgentRun({
@@ -1523,6 +1527,7 @@ export function captureAgentRun({
   modelRecoveryHistory,
   localRecoverySummary,
   resumeFromFinishReason,
+  resumeTrigger,
 }: Omit<
   AgentCompletionAnalyticsArgs,
   | "endpoint"
@@ -1839,7 +1844,7 @@ export function captureAgentRun({
         localRecoverySummary,
         localConnectionLostError,
       ),
-      ...resumeAnalyticsProperties(resumeFromFinishReason),
+      ...resumeAnalyticsProperties(resumeFromFinishReason, resumeTrigger),
       ...modelRecoveryAnalyticsProperties(modelRecoveryHistory, outcome),
       ...getExperimentAnalyticsProperties(experiment),
     },
@@ -2075,6 +2080,7 @@ export function captureAgentCompletionAnalytics(
     modelRecoveryHistory: args.modelRecoveryHistory,
     localRecoverySummary: args.localRecoverySummary,
     resumeFromFinishReason: args.resumeFromFinishReason,
+    resumeTrigger: args.resumeTrigger,
   });
 }
 

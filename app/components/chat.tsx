@@ -2,6 +2,8 @@
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
+import { LocalAutoContinueNotice } from "./LocalAutoContinueNotice";
+import { cancelLocalAutoContinue } from "@/app/services/local-auto-continue-client";
 import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
@@ -948,6 +950,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const persistedGoal = useQuery(
     api.agentGoals.get,
     chatDataForCurrentChat ? { chatId } : "skip",
+  );
+  // Starting or running only; a waiting stop looks the same in both arms.
+  const localAutoContinue = useQuery(
+    api.agentLocalAutoContinues.getForChat,
+    isConvexAuthenticated && chatDataForCurrentChat ? { chatId } : "skip",
   );
   const browserHandoff = useQuery(
     api.browserHandoffs.getForUser,
@@ -2859,6 +2866,40 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       runActive: !hasLoadedCurrentChat || agentRunActive,
     });
 
+  // The server continued a run whose computer came back. Attach to it here,
+  // as a reload would; its resume message is hidden, so nothing is added.
+  const autoContinuedRunId =
+    localAutoContinue?.state === "started"
+      ? localAutoContinue.continuedRunId
+      : undefined;
+  const attachedAutoContinueRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !autoContinuedRunId ||
+      autoContinuedRunId !== activeTriggerRunId ||
+      agentLongRunId ||
+      status !== "ready" ||
+      attachedAutoContinueRunRef.current === autoContinuedRunId
+    )
+      return;
+    attachedAutoContinueRunRef.current = autoContinuedRunId;
+    void resumeStream();
+  }, [
+    activeTriggerRunId,
+    agentLongRunId,
+    autoContinuedRunId,
+    resumeStream,
+    status,
+  ]);
+  const showLocalAutoContinue =
+    localAutoContinue?.state === "starting" ||
+    (!!autoContinuedRunId && autoContinuedRunId === activeTriggerRunId);
+  const stopLocalAutoContinue = async () => {
+    await cancelLocalAutoContinue(chatId, "user_stop");
+    if (activeTriggerRunId || status === "streaming" || status === "submitted")
+      await handleStop();
+  };
+
   // The server sends the next queued message after a run finishes. Show that
   // message here and attach to the run it starts, as a reload would, so the
   // reply streams in this tab too.
@@ -3363,7 +3404,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       isMobile={isMobile}
                       tempChatFileDetails={tempChatFileDetails}
                       finishReason={chatDataForCurrentChat?.finish_reason}
-                      continueDisabledReason={computerSendDisabledReason}
+                      continueDisabledReason={
+                        showLocalAutoContinue
+                          ? "Continuing automatically."
+                          : computerSendDisabledReason
+                      }
                       stoppedComputerReconnected={stoppedComputerReconnected({
                         finishReason: chatDataForCurrentChat?.finish_reason,
                         savedSandboxPreference: storedSandboxType,
@@ -3430,6 +3475,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     pauseGoalOnSend={pauseGoalOnSend}
                     topNotice={
                       <>
+                        {showChatLayout && showLocalAutoContinue && (
+                          <LocalAutoContinueNotice
+                            onStop={stopLocalAutoContinue}
+                          />
+                        )}
                         {showChatLayout && (
                           <BrowserHandoffEntry
                             chatId={chatId}

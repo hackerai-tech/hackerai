@@ -52,8 +52,9 @@ interface FinishReasonNoticeProps {
   finishReason?: string;
   continueDisabledReason?: string;
   /**
-   * The computer this run stopped on is selected and connected again. Resume
-   * stays a user action; a lost connection never continues automatically.
+   * The computer this run stopped on is selected and connected again. Here
+   * Resume is the user's action; the server's one automatic continuation
+   * (HAC-275, test arm) shows its own notice and disables this button.
    */
   stoppedComputerReconnected?: boolean;
   status?: ChatStatus;

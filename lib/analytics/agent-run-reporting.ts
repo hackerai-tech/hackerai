@@ -14,7 +14,10 @@ import {
   localStopAnalyticsProperties,
   type LocalRunRecoverySummary,
 } from "@/lib/chat/local-connection-stop";
-import { resumeAnalyticsProperties } from "@/lib/chat/manual-agent-resume";
+import {
+  resumeAnalyticsProperties,
+  type AgentResumeTrigger,
+} from "@/lib/chat/manual-agent-resume";
 import { BROWSER_HANDOFF_ABANDONED_FINISH_REASON } from "@/lib/ai/browser-handoff/constants";
 
 type RunEvent =
@@ -250,6 +253,8 @@ export function createAgentRunReporting(context: {
   isAutoContinue?: boolean;
   /** The saved manual-resume stop this user-initiated run resumes. */
   resumeFromFinishReason?: string;
+  /** Whether the user or the server started that resume. */
+  resumeTrigger?: AgentResumeTrigger;
   getFailureSignalContext?: (
     error: unknown,
   ) => FailureSignalContext | undefined;
@@ -501,7 +506,10 @@ export function createAgentRunReporting(context: {
               ...(localStop && { localConnectionLostError: localStop }),
               ...(modelRecoveryHistory && { modelRecoveryHistory }),
               ...(localRecovery && { localRecoverySummary: localRecovery }),
-              ...(resumeFromFinishReason && { resumeFromFinishReason }),
+              ...(resumeFromFinishReason && {
+                resumeFromFinishReason,
+                resumeTrigger: context.resumeTrigger,
+              }),
             }
           : args,
       );
@@ -654,7 +662,10 @@ export function createAgentRunReporting(context: {
                     localRecoverySummary(),
                     localStop,
                   ),
-                  ...resumeAnalyticsProperties(context.resumeFromFinishReason),
+                  ...resumeAnalyticsProperties(
+                    context.resumeFromFinishReason,
+                    context.resumeTrigger,
+                  ),
                   ...modelRecoveryProperties,
                 }),
                 ...(event === "hackerai-usage_cost"

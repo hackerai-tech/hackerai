@@ -1,0 +1,95 @@
+import { AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT } from "@/lib/api/agent-endpoints";
+
+/**
+ * Delays between reports of one return. The worker records a stop a few
+ * seconds after its recovery window ends, so a return at that moment can
+ * arrive first; the later reports cover it. The server is idempotent.
+ */
+export const DESKTOP_RETURN_REPORT_DELAYS_MS = [
+  0, 3_000, 10_000, 30_000, 60_000,
+] as const;
+
+type Timer = ReturnType<typeof setTimeout>;
+
+/**
+ * Tells the server when this page's Desktop bridge is connected again after
+ * an outage, so a run that outage stopped can continue once (HAC-275). It
+ * only reports; the server decides. State lives for the page: a reload or a
+ * relaunch is a new native session no stop can match, so the page's first
+ * connection is never reported.
+ */
+export function createDesktopReturnReporter({
+  report,
+  schedule = (run, ms) => setTimeout(run, ms),
+  cancel = (timer) => clearTimeout(timer),
+}: {
+  report: (connectionId: string) => Promise<unknown>;
+  schedule?: (run: () => void, ms: number) => Timer;
+  cancel?: (timer: Timer) => void;
+}) {
+  let connectedBefore = false;
+  let interrupted = false;
+  let timers: Timer[] = [];
+  const stopReporting = () => {
+    for (const timer of timers) cancel(timer);
+    timers = [];
+  };
+  return {
+    /** Every bridge connection state, with the connection it belongs to. */
+    onState(state: string, connectionId: string | null | undefined) {
+      if (state !== "connected") {
+        if (connectedBefore) interrupted = true;
+        return;
+      }
+      if (!connectedBefore) {
+        connectedBefore = true;
+        return;
+      }
+      if (!interrupted || !connectionId) return;
+      interrupted = false;
+      stopReporting();
+      timers = DESKTOP_RETURN_REPORT_DELAYS_MS.map((delay) =>
+        schedule(() => {
+          void report(connectionId).catch(() => undefined);
+        }, delay),
+      );
+    },
+    /** The bridge ended; its replacement's connection is a return. */
+    onTerminated() {
+      if (connectedBefore) interrupted = true;
+      stopReporting();
+    },
+    /** Sign-out: nothing from this account may be reported for the next. */
+    reset() {
+      connectedBefore = false;
+      interrupted = false;
+      stopReporting();
+    },
+  };
+}
+
+export async function reportDesktopReturn(connectionId: string) {
+  const response = await fetch(AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "return", connectionId }),
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Return report failed: ${response.status}`);
+}
+
+/** The user acted first in this chat; nothing may continue automatically. */
+export function cancelLocalAutoContinue(
+  chatId: string,
+  reason: "environment_switched" | "user_stop",
+) {
+  return fetch(AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "cancel", chatId, reason }),
+    cache: "no-store",
+  }).then(
+    () => undefined,
+    () => undefined,
+  );
+}

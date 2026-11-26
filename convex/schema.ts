@@ -1,5 +1,9 @@
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { queuedMessageSettingsValidator } from "./lib/queuedMessageSettings";
+import {
+  localAutoContinueReasonValidator,
+  localAutoContinueStateValidator,
+} from "./lib/localAutoContinueValidators";
 import { nextActionsStateValidator } from "./lib/nextActionsState";
 import { usageModelSelectionValidator } from "./lib/usageModelSelection";
 import {
@@ -1762,6 +1766,10 @@ export default defineSchema({
         v.literal("command_unresponsive"),
       ),
     ),
+    // Desktop only: the registering bridge's native launch and page document.
+    // A reconnect with both unchanged is the same Desktop session.
+    native_launch_id: v.optional(v.string()),
+    native_page_generation: v.optional(v.number()),
   })
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
@@ -2398,6 +2406,41 @@ export default defineSchema({
     .index("by_chat_id", ["chat_id"])
     .index("by_chat_and_settled", ["chat_id", "settled_at"])
     .index("by_run_and_settled", ["run_id", "settled_at"]),
+
+  /**
+   * One row per Desktop Agent run that stopped because its computer left
+   * (HAC-275). It records whether that stop may continue automatically once,
+   * when the same Desktop session comes back, and what happened. The stopped
+   * run's ID is the idempotency key: only one caller can move a row out of
+   * `awaiting_return`, so a stop starts at most one continuation.
+   */
+  agent_local_auto_continues: defineTable({
+    stopped_run_id: v.string(),
+    chat_id: v.string(),
+    user_id: v.string(),
+    state: localAutoContinueStateValidator,
+    reason: v.optional(localAutoContinueReasonValidator),
+    stop_reason: v.optional(v.string()),
+    stopped_at: v.number(),
+    /** The chat's last_run_finished_at for the stopped run; a later one means a newer run. */
+    chat_finished_at: v.optional(v.number()),
+    connection_id: v.optional(v.string()),
+    environment_id: v.optional(v.string()),
+    native_launch_id: v.optional(v.string()),
+    native_page_generation: v.optional(v.number()),
+    /** The stopped run's settings, reused by the continuation. */
+    sandbox_preference: v.optional(v.string()),
+    agent_permission_mode: v.optional(v.string()),
+    selected_model: v.optional(v.string()),
+    variant: v.optional(v.union(v.literal("control"), v.literal("test"))),
+    returned_at: v.optional(v.number()),
+    claimed_at: v.optional(v.number()),
+    continued_run_id: v.optional(v.string()),
+    settled_at: v.optional(v.number()),
+  })
+    .index("by_stopped_run_id", ["stopped_run_id"])
+    .index("by_chat_and_stopped_at", ["chat_id", "stopped_at"])
+    .index("by_user_and_state", ["user_id", "state"]),
 
   /**
    * Follow-ups waiting for an Agent run to finish, for accounts with mid-run

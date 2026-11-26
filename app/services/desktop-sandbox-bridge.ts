@@ -654,6 +654,7 @@ interface DesktopBridgeConfig {
       operationChannels?: boolean;
       commandStdin?: boolean;
     };
+    nativeSession?: { launchId: string; pageGeneration: number };
   }) => Promise<{
     connectionId: string;
     centrifugoToken: string;
@@ -765,6 +766,19 @@ export class DesktopSandboxBridge {
     this.relayTelemetry =
       config.relayTelemetry ??
       new DesktopRelayTelemetry(captureAuthenticatedEvent);
+  }
+
+  /** Read after getOsInfo(), which proves this launch's native identity. */
+  private registrationNativeSession() {
+    const session = this.nativeSession;
+    return session
+      ? {
+          nativeSession: {
+            launchId: session.launchId,
+            pageGeneration: session.pageGeneration,
+          },
+        }
+      : {};
   }
 
   getConnectionId(): string | null {
@@ -1132,6 +1146,8 @@ export class DesktopSandboxBridge {
           operationChannels: true,
           ...(commandStdin && { commandStdin: true }),
         },
+        // Lets the server recognize this same session when it reconnects.
+        ...this.registrationNativeSession(),
       });
     } catch (error) {
       // Observe only: an authentication rejection before any connection ID

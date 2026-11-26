@@ -12,6 +12,7 @@ import { logger } from "@/lib/logger";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { goalServiceKey } from "@/lib/goals/server";
+import { cancelLocalAutoContinuesForChat } from "@/lib/api/local-auto-continue-route";
 
 const GOAL_PAUSE_WAIT_MS = 5_000;
 
@@ -164,6 +165,14 @@ export const createAgentCancelPost =
         runId: runId ?? undefined,
         approvalSessionId: approvalSessionId ?? undefined,
       };
+      // A Stop with no run yet ends an automatic continuation that is waiting
+      // or still starting. Once one runs, it is the run this Stop cancels.
+      if (!runId)
+        await cancelLocalAutoContinuesForChat({
+          userId,
+          chatId: chat.id,
+          reason: "user_stop",
+        });
       if (runId) {
         stage = "pause_goal";
         const goalPauseAbort = new AbortController();
