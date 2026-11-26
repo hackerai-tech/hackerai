@@ -425,6 +425,40 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(ptySessionManager.get("chat-1", session.sessionId)).toBeUndefined();
   });
 
+  test("reports an outcome that became unknown during the final checkpoint", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const handle = createCommandSessionHandle({ kill: async () => true });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "long scan",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+    const checkpoint = ptySessionManager.checkpoint.bind(ptySessionManager);
+    jest
+      .spyOn(ptySessionManager, "checkpoint")
+      .mockImplementationOnce(async (...args) => {
+        // The connection is lost while the result is being saved.
+        handle.resolveExit(null, true, true);
+        await new Promise((r) => setTimeout(r, 0));
+        return checkpoint(...args);
+      });
+
+    const viewed = (await runTool(tool, {
+      action: "view",
+      session: session.sessionId,
+    })) as { result: { executionOutcome?: string; error?: string } };
+
+    expect(viewed.result.executionOutcome).toBe("unknown");
+    expect(viewed.result.error).toContain("Do not rerun");
+    ptySessionManager.forget("chat-1", session.sessionId);
+  });
+
   test("failed command-session kill is reported and retained for retry", async () => {
     const { context, ptySessionManager } = makeContext({
       sandbox: makeFakeE2BSandbox(),

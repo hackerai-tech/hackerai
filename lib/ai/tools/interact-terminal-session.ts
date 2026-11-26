@@ -654,6 +654,18 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const result = await handler();
         if (session) {
           await ptySessionManager.checkpoint(session);
+          // The outcome can become unknown during the checkpoint wait: report
+          // it now, not on the next call. A running terminal is unchanged.
+          // A result that already reports it, or any error such as a refused
+          // send, keeps its own more specific message.
+          const exitedNow = await peekExited(session);
+          if (
+            (exitedNow?.outcomeUnknown || exitedNow?.outputIncomplete) &&
+            !("executionOutcome" in result.result) &&
+            !("outputIncomplete" in result.result) &&
+            result.result.error === undefined
+          )
+            Object.assign(result.result, terminalExitFields(exitedNow));
           Object.assign(
             result.result,
             terminalExecutionProvenance(
