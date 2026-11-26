@@ -350,6 +350,7 @@ import {
   prepareProviderDisconnectContinuation,
   type ProviderDisconnectContinuationRejection,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+  getProviderRetryUsageOptions,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
@@ -5626,9 +5627,13 @@ export const agentLongTask = task({
                           });
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.prepareModelRetry({
-                            isLoopRecovery: loopTriggeredRetry,
-                          });
+                          usageTracker.prepareModelRetry(
+                            getProviderRetryUsageOptions({
+                              loopRecovery: loopTriggeredRetry,
+                              nonDurableOutputLimit:
+                                shouldRetryNonDurableOutputLimit,
+                            }),
+                          );
                         } else if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -5662,9 +5667,13 @@ export const agentLongTask = task({
                           // Keep the refusal billing policy of a full retry:
                           // the transcript avoids repeating side effects, but
                           // the refused leg's model usage is not billed.
-                          usageTracker.prepareModelRetry({
-                            isLoopRecovery: loopTriggeredRetry,
-                          });
+                          usageTracker.prepareModelRetry(
+                            getProviderRetryUsageOptions({
+                              loopRecovery: loopTriggeredRetry,
+                              nonDurableOutputLimit:
+                                shouldRetryNonDurableOutputLimit,
+                            }),
+                          );
                         } else if (shouldRetryWithoutImageToolResults) {
                           const normalizedRetryMessages = imageRecovery.messages
                             .map((message) =>
@@ -5682,9 +5691,13 @@ export const agentLongTask = task({
                               normalizedRetryMessages,
                             );
                         } else {
-                          usageTracker.prepareModelRetry({
-                            isLoopRecovery: loopTriggeredRetry,
-                          });
+                          usageTracker.prepareModelRetry(
+                            getProviderRetryUsageOptions({
+                              loopRecovery: loopTriggeredRetry,
+                              nonDurableOutputLimit:
+                                shouldRetryNonDurableOutputLimit,
+                            }),
+                          );
                         }
                         if (
                           finishContinuation ||

@@ -22,62 +22,71 @@ describe("UsageTracker", () => {
     jest.clearAllMocks();
   });
 
-  it("keeps recorded primary work billable and budgeted after loop recovery", () => {
-    tracker.accumulateStep(
-      { inputTokens: 100, outputTokens: 20, raw: { cost: 0.6 } },
-      "primary",
-    );
-    tracker.nonModelCost = 0.1;
-    tracker.prepareModelRetry({ isLoopRecovery: true });
-    tracker.accumulateStep(
-      { inputTokens: 50, outputTokens: 10, raw: { cost: 0.4 } },
-      "fallback",
-    );
+  it.each([
+    { label: "loop recovery", retry: { isLoopRecovery: true } },
+    {
+      label: "a non-durable output-limit fallback",
+      retry: { preserveIncurredUsage: true },
+    },
+  ])(
+    "keeps recorded primary work billable and budgeted after $label",
+    ({ retry }) => {
+      tracker.accumulateStep(
+        { inputTokens: 100, outputTokens: 20, raw: { cost: 0.6 } },
+        "primary",
+      );
+      tracker.nonModelCost = 0.1;
+      tracker.prepareModelRetry(retry);
+      tracker.accumulateStep(
+        { inputTokens: 50, outputTokens: 10, raw: { cost: 0.4 } },
+        "fallback",
+      );
 
-    const cost = tracker.computeCostDollars("fallback");
-    expect(cost).toBeCloseTo(1.1);
-    expect(tracker.inputTokens).toBe(150);
-    expect(tracker.outputTokens).toBe(30);
-    expect(tracker.measurementProperties("fallback")).toMatchObject({
-      usage_discarded_retry_cost_dollars: 0,
-      usage_retry_resets: 0,
-    });
+      const cost = tracker.computeCostDollars("fallback");
+      expect(cost).toBeCloseTo(1.1);
+      expect(tracker.inputTokens).toBe(150);
+      expect(tracker.outputTokens).toBe(30);
+      expect(tracker.measurementProperties("fallback")).toMatchObject({
+        usage_discarded_retry_cost_dollars: 0,
+        usage_retry_resets: 0,
+      });
 
-    const rateLimitInfo = {
-      remaining: 0.4 * POINTS_PER_DOLLAR,
-      resetTime: new Date(),
-      limit: POINTS_PER_DOLLAR,
-      pointsDeducted: billableCostDollarsToPoints(0.6),
-    };
-    const usage = tracker.createUsageCostRecord({
-      selectedModel: "primary",
-      accountingModel: "fallback",
-      rateLimitInfo,
-    });
-    expect(usage.modelCostDollars).toBeCloseTo(1);
-    expect(usage.costDollars).toBeCloseTo(cost);
-    expect(
-      getUnsettledUsagePoints(
-        createUsageSettlementState(rateLimitInfo),
-        usage.costDollars,
-      ),
-    ).toBeCloseTo(billableCostDollarsToPoints(0.5));
+      const rateLimitInfo = {
+        remaining: 0.4 * POINTS_PER_DOLLAR,
+        resetTime: new Date(),
+        limit: POINTS_PER_DOLLAR,
+        pointsDeducted: billableCostDollarsToPoints(0.6),
+      };
+      const usage = tracker.createUsageCostRecord({
+        selectedModel: "primary",
+        accountingModel: "fallback",
+        rateLimitInfo,
+      });
+      expect(usage.modelCostDollars).toBeCloseTo(1);
+      expect(usage.costDollars).toBeCloseTo(cost);
+      expect(
+        getUnsettledUsagePoints(
+          createUsageSettlementState(rateLimitInfo),
+          usage.costDollars,
+        ),
+      ).toBeCloseTo(billableCostDollarsToPoints(0.5));
 
-    const monitor = new BudgetMonitor(
-      {
-        monthlyLimitPoints: POINTS_PER_DOLLAR,
-        monthlyRemainingAtStart: POINTS_PER_DOLLAR,
-        monthlyResetTime: new Date(),
-        extraUsageEnabledAtStart: false,
-        extraUsageHasBalanceAtStart: false,
-        extraUsageBalanceAtStart: 0,
-        extraUsageAutoReload: false,
-      },
-      { write: jest.fn() } as any,
-      "pro",
-    );
-    expect(monitor.checkAfterStep(cost).type).toBe("abort");
-  });
+      const monitor = new BudgetMonitor(
+        {
+          monthlyLimitPoints: POINTS_PER_DOLLAR,
+          monthlyRemainingAtStart: POINTS_PER_DOLLAR,
+          monthlyResetTime: new Date(),
+          extraUsageEnabledAtStart: false,
+          extraUsageHasBalanceAtStart: false,
+          extraUsageBalanceAtStart: 0,
+          extraUsageAutoReload: false,
+        },
+        { write: jest.fn() } as any,
+        "pro",
+      );
+      expect(monitor.checkAfterStep(cost).type).toBe("abort");
+    },
+  );
 
   it("retains primary token estimates when loop recovery changes models", () => {
     tracker.accumulateStep(
