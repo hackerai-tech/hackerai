@@ -2459,7 +2459,10 @@ export default defineSchema({
     user_id: v.string(),
     reason: v.union(v.literal("user_stop"), v.literal("environment_switched")),
     blocked_at: v.number(),
-  }).index("by_chat_id", ["chat_id"]),
+  })
+    .index("by_chat_id", ["chat_id"])
+    // Account deletion removes a user's rows.
+    .index("by_user_id", ["user_id"]),
 
   /**
    * Follow-ups waiting for an Agent run to finish, for accounts with mid-run

@@ -37,6 +37,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "local_sandbox_heartbeats",
+    "agent_local_auto_continues",
+    "agent_local_auto_continue_blocks",
     "cancellation_reason_details",
     "current_cancellation_reasons",
     "research_run_members",
@@ -519,6 +521,20 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "local_sandbox_heartbeats", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const localAutoContinuesBatch = await collectByIndexBatch<
+    Doc<"agent_local_auto_continues">
+  >(
+    ctx,
+    budget,
+    "agent_local_auto_continues",
+    "by_user_environment_state_stopped_at",
+    (q) => q.eq("user_id", userId),
+  );
+  const localAutoContinueBlocksBatch = await collectByIndexBatch<
+    Doc<"agent_local_auto_continue_blocks">
+  >(ctx, budget, "agent_local_auto_continue_blocks", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
     ctx,
     budget,
@@ -602,6 +618,8 @@ async function cleanupUserDataForUser(
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
     localSandboxHeartbeatsBatch,
+    localAutoContinuesBatch,
+    localAutoContinueBlocksBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     subscriptionPausesBatch,
@@ -768,6 +786,20 @@ async function cleanupUserDataForUser(
     stats,
     "local_sandbox_heartbeats",
     localSandboxHeartbeatsBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "agent_local_auto_continues",
+    localAutoContinuesBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "agent_local_auto_continue_blocks",
+    localAutoContinueBlocksBatch.docs,
     mode,
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);

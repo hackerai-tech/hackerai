@@ -69,6 +69,21 @@ describe("attaching to an automatic continuation", () => {
     expect(resumeStream).toHaveBeenCalledTimes(AUTO_CONTINUE_ATTACH_ATTEMPTS);
   });
 
+  it("retries when a reconnect fails without leaving error", async () => {
+    const { resumeStream, settle } = attach({ ...run, status: "error" });
+    for (
+      let attempt = 1;
+      attempt <= AUTO_CONTINUE_ATTACH_ATTEMPTS + 1;
+      attempt++
+    ) {
+      settle();
+      // Let the failed attempt settle; the status never changes.
+      await act(async () => {});
+    }
+
+    expect(resumeStream).toHaveBeenCalledTimes(AUTO_CONTINUE_ATTACH_ATTEMPTS);
+  });
+
   it("never attaches the same run again after it streamed", () => {
     const { resumeStream, view, settle } = attach({ ...run, status: "ready" });
     settle();

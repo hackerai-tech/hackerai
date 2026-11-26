@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatStatus } from "@/types";
 
 /** Attempts per continued run: the first attach, then retries after errors. */
@@ -10,7 +10,9 @@ const RETRY_BASE_MS = 1_000;
  * back (HAC-275), as a reload would. The chat may be `ready` or still show the
  * stream that the outage broke as `error`. A failed attach leaves the chat in
  * `error` and retries a few times with backoff; after a successful attach,
- * the run is never attached again.
+ * the run is never attached again. A reconnect can fail without leaving
+ * `error`, so each settled attempt re-checks rather than waiting for a status
+ * change.
  */
 export function useAttachAutoContinuedRun({
   continuedRunId,
@@ -27,6 +29,7 @@ export function useAttachAutoContinuedRun({
   resumeStream: () => Promise<void>;
 }) {
   const attempts = useRef<{ runId: string; count: number } | null>(null);
+  const [settledAttempts, setSettledAttempts] = useState(0);
   useEffect(() => {
     if (
       !continuedRunId ||
@@ -46,10 +49,19 @@ export function useAttachAutoContinuedRun({
     const timer = setTimeout(
       () => {
         attempts.current = { runId: continuedRunId, count: made + 1 };
-        void resumeStream();
+        void resumeStream()
+          .catch(() => undefined)
+          .finally(() => setSettledAttempts((count) => count + 1));
       },
       made === 0 ? 0 : RETRY_BASE_MS * 2 ** (made - 1),
     );
     return () => clearTimeout(timer);
-  }, [activeTriggerRunId, attachedRunId, continuedRunId, resumeStream, status]);
+  }, [
+    activeTriggerRunId,
+    attachedRunId,
+    continuedRunId,
+    resumeStream,
+    settledAttempts,
+    status,
+  ]);
 }

@@ -489,6 +489,40 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         last_heartbeat: 2,
       },
     ],
+    agent_local_auto_continues: [
+      {
+        _id: "auto-continue-user",
+        user_id: userId,
+        chat_id: "chat-user",
+        stopped_run_id: "run_user",
+        state: "awaiting_return",
+        stopped_at: 1,
+      },
+      {
+        _id: "auto-continue-other",
+        user_id: otherUserId,
+        chat_id: "chat-other",
+        stopped_run_id: "run_other",
+        state: "awaiting_return",
+        stopped_at: 1,
+      },
+    ],
+    agent_local_auto_continue_blocks: [
+      {
+        _id: "auto-continue-block-user",
+        user_id: userId,
+        chat_id: "chat-user",
+        reason: "user_stop",
+        blocked_at: 1,
+      },
+      {
+        _id: "auto-continue-block-other",
+        user_id: otherUserId,
+        chat_id: "chat-other",
+        reason: "user_stop",
+        blocked_at: 1,
+      },
+    ],
     local_sandbox_connections: [
       { _id: "connection-user", user_id: userId, connection_id: "conn-1" },
       {
@@ -947,6 +981,26 @@ describe("userDeletion", () => {
       connection_id: "conn-2",
       last_heartbeat: 2,
     });
+    expect(
+      row(tables, "agent_local_auto_continues", "auto-continue-user"),
+    ).toBeUndefined();
+    expect(
+      row(
+        tables,
+        "agent_local_auto_continue_blocks",
+        "auto-continue-block-user",
+      ),
+    ).toBeUndefined();
+    expect(
+      row(tables, "agent_local_auto_continues", "auto-continue-other"),
+    ).toBeTruthy();
+    expect(
+      row(
+        tables,
+        "agent_local_auto_continue_blocks",
+        "auto-continue-block-other",
+      ),
+    ).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();
