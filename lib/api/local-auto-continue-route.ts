@@ -131,15 +131,24 @@ async function storeUserCancel({
     });
     return undefined;
   }
-  // Stored either way. Read defensively: a Convex deployment older than this
-  // route returns only the settled rows, and a send must never fail here.
-  const cancelled = Array.isArray(result?.cancelled) ? result.cancelled : [];
+  // A Convex deployment older than this route returns only the settled rows
+  // and stores no durable block, so the action is not stored. Callers that
+  // only need best effort (a send) ignore this; Stop and a switch retry.
+  if (!Array.isArray(result?.cancelled) || !Array.isArray(result?.running)) {
+    warn("agent_local_auto_continue_cancel_failed", {
+      chat_id: chatId,
+      reason,
+      error: "unconfirmed_block",
+    });
+    return undefined;
+  }
+  const cancelled = result.cancelled;
   if (cancelled.length)
     await withTelemetry(async (telemetry) => {
       for (const decision of cancelled)
         recordOutcome(telemetry, userId, decision);
     }).catch(() => undefined);
-  return Array.isArray(result?.running) ? result.running : [];
+  return result.running;
 }
 
 /**

@@ -156,6 +156,8 @@ const db = {
 let transaction: Promise<unknown> = Promise.resolve();
 /** Calls that fail before committing, by function name, counted down. */
 const failures: Record<string, number> = {};
+/** Responses from an older Convex deployment, by function name. */
+const legacyResponses: Record<string, unknown> = {};
 async function call(reference: unknown, args: Record<string, unknown>) {
   const [moduleName, name] = getFunctionName(reference as never).split(":");
   if (moduleName !== "agentLocalAutoContinues")
@@ -164,6 +166,7 @@ async function call(reference: unknown, args: Record<string, unknown>) {
     failures[name]--;
     throw new Error("Convex unavailable");
   }
+  if (name in legacyResponses) return legacyResponses[name];
   const handlers = require("@/convex/agentLocalAutoContinues") as Record<
     string,
     { handler: (ctx: unknown, args: unknown) => Promise<unknown> }
@@ -350,6 +353,7 @@ const cancelReport = (
 beforeEach(() => {
   for (const key of Object.keys(tables)) delete tables[key];
   for (const key of Object.keys(failures)) delete failures[key];
+  for (const key of Object.keys(legacyResponses)) delete legacyResponses[key];
   now = NOW;
   jest.spyOn(Date, "now").mockImplementation(() => now);
   process.env.CONVEX_SERVICE_ROLE_KEY = "service-key";
@@ -498,6 +502,14 @@ describe("automatic continuation after a Desktop comes back", () => {
       ]);
     },
   );
+
+  it("does not report a Stop as stored when Convex predates durable blocks", async () => {
+    // The previous cancelForChat returned only the settled rows.
+    legacyResponses.cancelForChat = [];
+    const response = await cancelReport("user_stop");
+
+    expect(response.status).toBe(503);
+  });
 
   it("writes nothing for a user whose account deletion has started", async () => {
     tables.user_deletion_fences = [{ _id: "fence", user_id: "owner" }];

@@ -308,7 +308,7 @@ describe("agent cancel route", () => {
   it.each([
     [
       "stored",
-      [] as unknown,
+      { cancelled: [], running: [] } as unknown,
       200,
       { canceled: false, reason: "no_active_run" },
     ],
