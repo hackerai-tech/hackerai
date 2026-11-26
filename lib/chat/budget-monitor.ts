@@ -70,6 +70,20 @@ export interface BudgetAbortDetails {
   extraUsageAvailable: boolean;
 }
 
+/** How far this run is from the usage stop that `checkAfterStep` enforces. */
+export interface BudgetStopHeadroom {
+  /** Points the run can still spend before the stop. */
+  remainingPoints: number;
+  /** Largest of the latest checked step costs, in points. */
+  recentStepCostPoints: number;
+  /** Projected included-usage percent after the latest checked step. */
+  usedPercent: number;
+}
+
+/** Recent steps used to estimate the next one. Agent steps grow with context,
+ * so a short window follows the trend while absorbing one cheap step. */
+const RECENT_STEP_COST_WINDOW = 3;
+
 export type BudgetCheckDecision =
   | { type: "continue" }
   | { type: "abort"; details: BudgetAbortDetails }
@@ -120,7 +134,9 @@ export function captureBudgetSnapshot(args: {
 export class BudgetMonitor {
   private highestThresholdEmitted: number;
   private hasEmittedAgentRunSpendCap = false;
-  private lastUsedPercent: number | undefined;
+  private lastProjectedUsedPoints: number | undefined;
+  private lastUsedSinceStartPoints = 0;
+  private recentStepCostsPoints: number[] = [];
 
   constructor(
     private readonly snapshot: BudgetSnapshot,
@@ -186,7 +202,12 @@ export class BudgetMonitor {
       usedSinceStartPoints;
     const usedPercent =
       (projectedUsedPoints / snapshot.monthlyLimitPoints) * 100;
-    this.lastUsedPercent = usedPercent;
+    this.lastProjectedUsedPoints = projectedUsedPoints;
+    this.recentStepCostsPoints = [
+      ...this.recentStepCostsPoints,
+      Math.max(0, usedSinceStartPoints - this.lastUsedSinceStartPoints),
+    ].slice(-RECENT_STEP_COST_WINDOW);
+    this.lastUsedSinceStartPoints = usedSinceStartPoints;
 
     let abortDetails: BudgetAbortDetails | null = null;
 
@@ -203,14 +224,10 @@ export class BudgetMonitor {
         const guardrailAllowsOverflow =
           guardrailRemaining === undefined ||
           overflowDollars <= guardrailRemaining;
-        const balanceAllowsOverflow =
-          snapshot.extraUsageAutoReload ||
-          snapshot.extraUsageBalanceAtStart >= overflowDollars;
+        const overflowCapDollars = this.extraUsageOverflowCapDollars();
         const hasExtraCushion =
-          snapshot.extraUsageOverflowAllowed !== false &&
-          snapshot.extraUsageEnabledAtStart &&
-          guardrailAllowsOverflow &&
-          balanceAllowsOverflow;
+          overflowCapDollars !== undefined &&
+          overflowDollars <= overflowCapDollars;
 
         if (hasExtraCushion) {
           if (threshold <= this.highestThresholdEmitted) {
@@ -260,24 +277,39 @@ export class BudgetMonitor {
   }
 
   /**
-   * Projected usage percent after the latest checked step, only when reaching
-   * 100% would stop this run. Extra usage that can absorb overflow continues
-   * the run, so it reports no stop pressure.
+   * Distance to the usage stop after the latest checked step. Undefined before
+   * the first step, or when extra usage has no cap or balance that stops it.
    */
-  getStopPressurePercent(): number | undefined {
-    return this.extraUsageCanAbsorbOverflow()
-      ? undefined
-      : this.lastUsedPercent;
+  getStopHeadroom(): BudgetStopHeadroom | undefined {
+    const used = this.lastProjectedUsedPoints;
+    if (used === undefined) return undefined;
+    const overflowCapPoints =
+      (this.extraUsageOverflowCapDollars() ?? 0) * POINTS_PER_DOLLAR;
+    if (!Number.isFinite(overflowCapPoints)) return undefined;
+    return {
+      remainingPoints:
+        this.snapshot.monthlyLimitPoints + overflowCapPoints - used,
+      recentStepCostPoints: Math.max(0, ...this.recentStepCostsPoints),
+      usedPercent: (used / this.snapshot.monthlyLimitPoints) * 100,
+    };
   }
 
-  private extraUsageCanAbsorbOverflow(): boolean {
-    const remaining = this.snapshot.extraUsageMonthlyRemainingAtStart;
-    return (
-      this.snapshot.extraUsageOverflowAllowed !== false &&
-      this.snapshot.extraUsageEnabledAtStart &&
-      (this.snapshot.extraUsageAutoReload ||
-        this.snapshot.extraUsageBalanceAtStart > 0) &&
-      (remaining === undefined || remaining > 0)
+  /**
+   * Largest overflow past the included budget that extra usage absorbs, from
+   * the run-start snapshot. Undefined when extra usage cannot absorb any.
+   */
+  private extraUsageOverflowCapDollars(): number | undefined {
+    const { snapshot } = this;
+    if (
+      snapshot.extraUsageOverflowAllowed === false ||
+      !snapshot.extraUsageEnabledAtStart
+    )
+      return undefined;
+    return Math.min(
+      snapshot.extraUsageMonthlyRemainingAtStart ?? Infinity,
+      snapshot.extraUsageAutoReload
+        ? Infinity
+        : snapshot.extraUsageBalanceAtStart,
     );
   }
 
@@ -292,7 +324,7 @@ export class BudgetMonitor {
       this.snapshot.monthlyRemainingAtStart / POINTS_PER_DOLLAR;
     const extraUsageMonthlyRemainingDollars =
       this.snapshot.extraUsageMonthlyRemainingAtStart;
-    const extraUsageAvailable = this.extraUsageCanAbsorbOverflow();
+    const extraUsageAvailable = (this.extraUsageOverflowCapDollars() ?? 0) > 0;
 
     return {
       capReason: args.capReason,

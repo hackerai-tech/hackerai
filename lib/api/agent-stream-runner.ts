@@ -6,6 +6,10 @@ import { convertToModelMessagesWithSteers } from "@/lib/chat/agent-steer-model-m
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import {
+  AGENT_LIMIT_WRAPUP_NOTE_ID,
+  type AgentLimitWrapUp,
+} from "@/lib/chat/agent-limit-wrapup";
+import {
   createAgentSteerPart,
   type AgentSteerInbox,
 } from "@/lib/chat/agent-steer";
@@ -481,6 +485,8 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Whether the latest completed model step produced text, for limit stops. */
+  lastStepHasText: boolean;
   /** Provider-only continuation context; never a tool permission or persisted user claim. */
   hasCompletedAbliterationStep: boolean;
   /** Observation history survives provider retries, but never retains tool content. */
@@ -530,6 +536,7 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    lastStepHasText: false,
     hasCompletedAbliterationStep: false,
     toolLoopObserver: new ToolLoopObserver(),
     toolCycleRecoveryCount: 0,
@@ -864,6 +871,8 @@ const reportContextPressure = (
 
 export type AgentStreamContext = {
   runtimeCheckpoint?: import("@/lib/chat/agent-runtime-checkpoint").AgentRuntimeCheckpoint;
+  /** Agent only: asks the model to deliver files and report before a stop. */
+  limitWrapUp?: AgentLimitWrapUp;
   canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   browserHandoffGoalObjective?: string;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
@@ -1748,6 +1757,11 @@ export async function createAgentStream(
       }
     | undefined;
   let rejectedRequestRecoveryMessages: ModelMessage[] | undefined;
+  let limitWrapUpNotice: string | undefined;
+  const limitWrapUpNotes = () =>
+    limitWrapUpNotice
+      ? [{ id: AGENT_LIMIT_WRAPUP_NOTE_ID, text: limitWrapUpNotice }]
+      : [];
   const compactRejectedRequest = async (): Promise<string | undefined> => {
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
@@ -1813,6 +1827,7 @@ export async function createAgentStream(
     const handoffNotes = [
       ...((await ctx.getBrowserHandoffNotes?.()) ?? []),
       ...(ctx.steerInbox?.delivered() ?? []),
+      ...limitWrapUpNotes(),
     ];
     rejectedRequestRecoveryMessages = projectHandoffNotes(
       [
@@ -2247,6 +2262,7 @@ export async function createAgentStream(
     return inbox.delivered();
   };
   let preparedRuntimeCheckpoint = false;
+  let preparedLimitWrapUp = false;
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
     // copy of every provider request; response messages still drive persistence.
@@ -2266,6 +2282,10 @@ export async function createAgentStream(
       if (preparedRuntimeCheckpoint && !abortSignal.aborted) {
         ctx.runtimeCheckpoint?.recordExposure();
         preparedRuntimeCheckpoint = false;
+      }
+      if (preparedLimitWrapUp && !abortSignal.aborted) {
+        ctx.limitWrapUp?.recordExposure();
+        preparedLimitWrapUp = false;
       }
       if (!abortSignal.aborted && preparedToolCycleRecovery) {
         const recovery = preparedToolCycleRecovery;
@@ -2348,12 +2368,31 @@ export async function createAgentStream(
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      const localGenerationStepIndex =
+        Number.isInteger(stepNumber) && stepNumber >= 0
+          ? stepNumber
+          : steps.length;
+      const generationStepIndex =
+        generationStepOffset + localGenerationStepIndex;
+      // Near a step or usage stop, the wrap-up joins the private notes below.
+      // It stays where it first appeared, so the model keeps seeing it and later
+      // requests reuse the provider's cached prompt prefix.
+      limitWrapUpNotice =
+        ctx.mode === "agent" && !abortSignal.aborted
+          ? ctx.limitWrapUp?.prepare({
+              completedSteps: generationStepIndex,
+              maxSteps: configuredMaxSteps,
+              budget: ctx.budgetMonitor?.getStopHeadroom(),
+            })
+          : undefined;
+      preparedLimitWrapUp = limitWrapUpNotice !== undefined;
       // Saved handoff notes can change the user's instructions. If the read
       // fails, retry/fail this step rather than act with silently missing context.
       // Steers are user messages too, replayed at the step where they were read.
       const handoffNotes = [
         ...((await ctx.getBrowserHandoffNotes?.()) ?? []),
         ...(await readSteers(steps)),
+        ...limitWrapUpNotes(),
       ];
       const withHandoffNotes = (
         messages: ModelMessage[],
@@ -2368,19 +2407,11 @@ export async function createAgentStream(
       // Its system override applies to this request only, so the one-shot notice
       // is neither replayed on every step nor stored in compacted chat history.
       const runtime = await runtimePrompt();
-      const localGenerationStepIndex =
-        Number.isInteger(stepNumber) && stepNumber >= 0
-          ? stepNumber
-          : steps.length;
-      const generationStepIndex =
-        generationStepOffset + localGenerationStepIndex;
+      // The runtime checkpoint asks the model to keep working, so it never
+      // joins an active wrap-up.
       const checkpointNotice =
-        ctx.mode === "agent" && !abortSignal.aborted
-          ? ctx.runtimeCheckpoint?.takeNotice({
-              completedSteps: generationStepIndex,
-              maxSteps: configuredMaxSteps,
-              budgetUsedPercent: ctx.budgetMonitor?.getStopPressurePercent(),
-            })
+        ctx.mode === "agent" && !abortSignal.aborted && !limitWrapUpNotice
+          ? ctx.runtimeCheckpoint?.takeNotice()
           : undefined;
       preparedRuntimeCheckpoint = !!checkpointNotice;
       const nextRuntimeSection = runtime + (checkpointNotice ?? "");
@@ -3307,6 +3338,7 @@ export async function createAgentStream(
       }
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
+      state.lastStepHasText = Boolean(text?.trim());
       // Ledger reporting only: a served model in this step's provider fallback
       // chain is a confirmed fallback; any other served ID is normal routing.
       state.usageModelFallback = observeServedModelFallback(

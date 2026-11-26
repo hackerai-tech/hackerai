@@ -9,6 +9,7 @@ describe("agent step-limit telemetry", () => {
         configuredMaxSteps: 300,
         stepCount: 300,
         stepLimitReached: true,
+        finalStepHasText: true,
         todoRunMetrics: {
           initialTodoCount: 4,
           initialUnfinishedTodoCount: 2,
@@ -23,10 +24,11 @@ describe("agent step-limit telemetry", () => {
         },
       }),
     ).toEqual({
-      version: 1,
+      version: 2,
       configuredMaxSteps: 300,
       stepCount: 300,
       stepLimitReached: true,
+      finalStepHasText: true,
       initialTodoCount: 4,
       initialUnfinishedTodoCount: 2,
       finalTodoCount: 5,
