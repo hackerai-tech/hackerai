@@ -520,6 +520,48 @@ it("returns from a phone preview to the same Files view and reopens the retained
   expect(screen.getByText("desktop historical version")).toBeVisible();
 });
 
+it("returns each explicit Files open to This chat while keeping Activity, opened tabs and background updates intact", async () => {
+  const source = (name: "This chat" | "Workspace") =>
+    screen.getByRole("button", { name, exact: true });
+  const view = { ...props, selection: activity };
+  const { rerender } = render(<ComputerWorkspace {...view} />);
+  expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(source("Workspace"));
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+
+  // Header shortcut from Activity, with Workspace previously chosen.
+  rerender(<ComputerWorkspace {...view} selection={files} openRequest={2} />);
+  expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(source("This chat")).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("tab", { name: "report.txt" })).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "Activity" })).toBeInTheDocument();
+
+  // A background Activity update is not an open request: the source stays.
+  fireEvent.click(source("Workspace"));
+  rerender(<ComputerWorkspace {...view} openRequest={2} />);
+  expect(source("Workspace")).toHaveAttribute("aria-pressed", "true");
+
+  // Repeating the shortcut while already on Files returns to This chat.
+  rerender(<ComputerWorkspace {...view} selection={files} openRequest={3} />);
+  expect(source("This chat")).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+  expect(screen.getByText("Latest activity")).toBeVisible();
+});
+
 it("clears a deleted Activity entry without dismissing the selected Files tab", () => {
   const renderActivity = jest.fn((content: SidebarContent | null) => (
     <p>{content ? "Retained tool" : "No activity"}</p>

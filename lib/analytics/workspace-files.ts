@@ -13,6 +13,10 @@ type PreviewKind = "saved_attachment" | "captured_result" | "live_workspace";
 type DownloadKind = PreviewKind | "workspace_snapshot";
 
 type WorkspaceFilesEvents = {
+  /** The chat header rendered an enabled Files shortcut (once per chat per mounted header). */
+  workspace_files_header_exposed: Record<string, never>;
+  /** The chat header Files shortcut was activated. */
+  workspace_files_header_clicked: Record<string, never>;
   /** Computer became visible with the permanent Files tab offered. */
   workspace_files_exposed: Record<string, never>;
   /** The Files tab first became visible in a mounted chat workspace. */

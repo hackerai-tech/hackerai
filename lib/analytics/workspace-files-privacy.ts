@@ -1,4 +1,6 @@
 const workspaceFilesEvents = new Set([
+  "workspace_files_header_exposed",
+  "workspace_files_header_clicked",
   "workspace_files_exposed",
   "workspace_files_viewed",
   "workspace_file_preview",
