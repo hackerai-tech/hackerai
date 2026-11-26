@@ -26,6 +26,29 @@ jest.mock("../lib/userResearchAuth", () => ({
 }));
 
 type Row = { _id: string; _creationTime?: number; [key: string]: unknown };
+type FilterExpr = (row: Row) => unknown;
+
+const compareNumbers =
+  (left: FilterExpr, right: unknown, operator: "gte" | "lte"): FilterExpr =>
+  (row) => {
+    const value = left(row);
+    if (typeof value !== "number" || typeof right !== "number") return false;
+    return operator === "gte" ? value >= right : value <= right;
+  };
+
+// Minimal stand-in for Convex's FilterBuilder used by .filter(...).
+const filterBuilder = {
+  field:
+    (name: string): FilterExpr =>
+    (row) =>
+      row[name],
+  gte: (left: FilterExpr, right: unknown) => compareNumbers(left, right, "gte"),
+  lte: (left: FilterExpr, right: unknown) => compareNumbers(left, right, "lte"),
+  and:
+    (...exprs: FilterExpr[]): FilterExpr =>
+    (row) =>
+      exprs.every((expr) => expr(row) === true),
+};
 
 const createCtx = (args: {
   messageCount: number;
@@ -135,27 +158,46 @@ const createCtx = (args: {
             );
             return direction === "desc" ? sorted.reverse() : sorted;
           };
-          return {
-            unique: jest.fn(async () =>
-              rows[0] ? recordRead(rows[0], table) : null,
-            ),
+          const makeQuery = (matches: (row: Row) => boolean) => ({
+            unique: jest.fn(async () => {
+              const row = rows.find(matches);
+              return row ? recordRead(row, table) : null;
+            }),
             take: jest.fn(async (limit: number) =>
-              rows.slice(0, limit).map((row) => recordRead(row, table)),
+              rows
+                .filter(matches)
+                .slice(0, limit)
+                .map((row) => recordRead(row, table)),
+            ),
+            filter: jest.fn(
+              (buildFilter: (q: typeof filterBuilder) => FilterExpr) => {
+                const predicate = buildFilter(filterBuilder);
+                return makeQuery(
+                  (row) => matches(row) && predicate(row) === true,
+                );
+              },
             ),
             order: jest.fn((direction: "asc" | "desc") => ({
-              first: jest.fn(async () => ordered(direction)[0] ?? null),
+              first: jest.fn(
+                async () => ordered(direction).find(matches) ?? null,
+              ),
               take: jest.fn(async (limit: number) =>
                 ordered(direction)
+                  .filter(matches)
                   .slice(0, limit)
                   .map((row) => recordRead(row, table)),
               ),
               async *[Symbol.asyncIterator]() {
                 for (const row of ordered(direction)) {
-                  yield recordRead(row, table);
+                  // Convex reads every scanned row, including ones a
+                  // .filter() then discards.
+                  recordRead(row, table);
+                  if (matches(row)) yield row;
                 }
               },
             })),
-          };
+          });
+          return makeQuery(() => true);
         },
       ),
     })),
@@ -382,7 +424,7 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(reads.messageIds).toHaveLength(8);
   });
 
-  it("reads only messages updated inside a pre-event evidence window", async () => {
+  it("returns only messages updated inside a pre-event evidence window", async () => {
     const { getMessageExcerpt } = await import("../userResearch");
     const anchorAt = Date.UTC(2026, 7, 25);
     const day = 24 * 60 * 60 * 1_000;
@@ -414,12 +456,9 @@ describe("userResearch.getMessageExcerpt", () => {
       ],
       truncated: false,
     });
-    expect(new Set(reads.messageIds)).toEqual(
-      new Set(["message-2", "message-3"]),
-    );
-    expect(new Set(reads.messageIndexes)).toEqual(
-      new Set(["by_chat_id_and_update_time"]),
-    );
+    // The staged by_chat_id_and_update_time index cannot be queried until it
+    // is enabled, so the window is applied as a filter over by_chat_id.
+    expect(new Set(reads.messageIndexes)).toEqual(new Set(["by_chat_id"]));
   });
 
   it.each(["foreign", "deleting"])(

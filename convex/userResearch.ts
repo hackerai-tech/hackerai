@@ -528,19 +528,21 @@ export const getMessageExcerpt = query({
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
     // Pre-event excerpts read only messages last updated inside the window.
-    const queryMessages = () =>
-      evidenceWindow
-        ? ctx.db
-            .query("messages")
-            .withIndex("by_chat_id_and_update_time", (q) =>
-              q
-                .eq("chat_id", args.chatId)
-                .gte("update_time", evidenceWindow.startAt)
-                .lte("update_time", evidenceWindow.endAt),
-            )
-        : ctx.db
-            .query("messages")
-            .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId));
+    // Temporary: filter by_chat_id until the staged
+    // by_chat_id_and_update_time index finishes backfilling and is enabled.
+    const queryMessages = () => {
+      const chatMessages = ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId));
+      return evidenceWindow
+        ? chatMessages.filter((q) =>
+            q.and(
+              q.gte(q.field("update_time"), evidenceWindow.startAt),
+              q.lte(q.field("update_time"), evidenceWindow.endAt),
+            ),
+          )
+        : chatMessages;
+    };
     const readEnd = async (direction: "asc" | "desc", limit: number) => {
       const rows: Doc<"messages">[] = [];
       let bytesRead = 0;
