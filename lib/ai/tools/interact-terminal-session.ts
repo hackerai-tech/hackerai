@@ -15,7 +15,11 @@ import {
   capOutput,
   stripAnsi,
   peekExited,
+  terminalExitFields,
+  TERMINAL_OUTCOME_UNKNOWN_ERROR,
+  TERMINAL_OUTPUT_INCOMPLETE_ERROR,
 } from "./utils/pty-wait-utils";
+import { TerminalInputRefusedError } from "./utils/pty-exited-promise";
 import { translateInput } from "./utils/pty-keys";
 import {
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
@@ -173,6 +177,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         };
         return internal.exitedNaturally ?? null;
       };
+
+      // A dead terminal may still run: input is refused, never resent.
+      const refusedSendError = (): ActionResult =>
+        errorResult(`Input was not sent. ${TERMINAL_OUTCOME_UNKNOWN_ERROR}`);
 
       const exitedSendError = (
         sid: string,
@@ -341,7 +349,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // Fast-fail if the PTY already exited — otherwise sendInput on E2B
         // rejects with an opaque `[not_found] process with pid N not found`
         // that doesn't tell the model the session is dead.
-        const priorExit = peekSessionExit(session);
+        const priorExit =
+          (await peekExited(session)) ?? peekSessionExit(session);
+        if (priorExit && "outcomeUnknown" in priorExit)
+          return refusedSendError();
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
         const sandboxMismatch = await verifySessionSandboxIdentity(session);
@@ -384,9 +395,21 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         try {
           await session.handle.sendInput(bytes);
         } catch (err) {
+          if (err instanceof TerminalInputRefusedError)
+            return refusedSendError();
           // sendInput may have raced with a natural exit between the
           // pre-check and now — surface that explicitly when it's the cause.
-          const raceExit = peekSessionExit(session);
+          const raceExit =
+            (await peekExited(session)) ?? peekSessionExit(session);
+          // Delivery is unconfirmed: the input may already have run.
+          if (raceExit && "outcomeUnknown" in raceExit)
+            return {
+              result: {
+                output: "",
+                executionOutcome: "unknown",
+                error: `Input delivery was not confirmed. ${TERMINAL_OUTCOME_UNKNOWN_ERROR}`,
+              },
+            };
           if (raceExit) return exitedSendError(sessionId, raceExit, true);
           return errorResult(
             `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
@@ -417,6 +440,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             sessionSnapshot: snapshots.cleaned,
             rawSnapshot: snapshots.raw,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            // The terminal may have ended, or lost its outcome, during the
+            // wait; a still-active terminal adds nothing.
+            ...terminalExitFields(await peekExited(session)),
           },
         };
       };
@@ -453,7 +479,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           rawSnapshot: snapshots.raw,
         };
         if (session.bufferTruncated) out.bufferTruncated = true;
-        if (exited) out.exited = { exitCode: exited.exitCode };
+        Object.assign(out, terminalExitFields(exited));
         return { result: out };
       };
 
@@ -467,9 +493,6 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if (snapshot.byteLength > 0) emitTerminal(snapshot);
         await drainEmitQueue();
         const rawText = new TextDecoder().decode(snapshot);
-        const internal = session as {
-          exitedNaturally?: { exitCode: number | null } | null;
-        };
         return {
           result: {
             output: capOutput(stripAnsi(rawText)),
@@ -479,9 +502,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             ),
             rawSnapshot: rawText,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
-            ...(internal.exitedNaturally
-              ? { exited: internal.exitedNaturally }
-              : {}),
+            ...terminalExitFields(
+              (await peekExited(session)) ?? peekSessionExit(session),
+            ),
           },
         };
       };
@@ -527,6 +550,14 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           );
         }
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
+        if ("outcomeUnknown" in exit)
+          return {
+            result: {
+              output: "Kill was requested, but no exit was confirmed.",
+              exitCode: null,
+              ...terminalExitFields(exit),
+            },
+          };
         return {
           result: {
             output:
@@ -599,6 +630,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
                 updatedAt: record.updatedAt,
                 output: capOutput(stripAnsi(record.output)),
                 outputTruncated: record.outputTruncated,
+                ...(record.outputIncomplete && {
+                  outputIncomplete: true as const,
+                  warning: TERMINAL_OUTPUT_INCOMPLETE_ERROR,
+                }),
                 artifactPaths: record.artifactPaths,
                 note: "Historical execution record from the sandbox. No live handle is available. Inspect saved output and artifacts before deciding whether any work remains; this record does not authorize adopting a PID or automatically rerunning the command.",
                 ...(action === "send" || action === "kill"
@@ -619,6 +654,18 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const result = await handler();
         if (session) {
           await ptySessionManager.checkpoint(session);
+          // The outcome can become unknown during the checkpoint wait: report
+          // it now, not on the next call. A running terminal is unchanged.
+          // A result that already reports it, or any error such as a refused
+          // send, keeps its own more specific message.
+          const exitedNow = await peekExited(session);
+          if (
+            (exitedNow?.outcomeUnknown || exitedNow?.outputIncomplete) &&
+            !("executionOutcome" in result.result) &&
+            !("outputIncomplete" in result.result) &&
+            result.result.error === undefined
+          )
+            Object.assign(result.result, terminalExitFields(exitedNow));
           Object.assign(
             result.result,
             terminalExecutionProvenance(

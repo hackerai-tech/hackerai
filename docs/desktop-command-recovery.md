@@ -63,8 +63,9 @@ presence grace, 120 seconds. The backend keeps an unheard connection for at
 least 120 seconds after its last heartbeat, which can be up to one heartbeat
 interval (30 seconds) before the interruption, so a return late in the window
 can find the connection already disconnected and the run stops. Readiness after any
-outage still requires a fresh proof from the same launch and page plus
-reconciled commands, and nothing is re-sent.
+outage still requires a fresh proof from the same launch and page. Every
+in-flight command must then be either reconciled or settled as unknown (see
+below), and nothing is re-sent.
 
 Re-registering mints a connection that can never satisfy a waiting run and
 discards retained output. After a session challenge or targeted operation in
@@ -77,6 +78,50 @@ publishes an end notice on its own connection, so its run stops at once; a
 force quit or crash that runs no page code is bounded by the window instead.
 The notice can only end a run, and only the relay's publisher record makes it
 authoritative.
+
+## Unknown outcomes
+
+When the same session returns but cannot account for an operation, the run
+continues instead of stopping. This covers a command whose output the session
+no longer retains, and any open terminal, since terminal output is unsequenced
+and has no replay. Each such operation is settled as an unknown outcome before
+dispatch reopens. Its tool call reports `executionOutcome: "unknown"` with the
+same do-not-rerun guidance as Ask mode. A terminal refuses further input. The
+operation stays recorded for the run as unknown. It is never named in a later
+challenge and never published again.
+
+An operation can also lose its outcome while the host is verified. Causes
+include a delivery deadline, unavailable output, an unconfirmed Stop, a
+terminal transport failure, unconfirmed input, or a kill with no observed
+exit. The operation is recorded the same way, and no later dispatch is
+admitted until the same session answers a fresh challenge. That re-verification
+does not settle other operations, because their streams were not interrupted.
+The rejection carries the unknown outcome, so automatic retries, such as an
+attachment transfer's timeout retry or a re-staging after reconnect, never send
+it again. An exit that arrives while the host is unverified is still reported
+as an exit, with a warning that output sent before it may be missing.
+
+A Stop or kill never reports such a command as terminated. Its receiver is
+already closed, so no `command_cancel` is sent; the tool keeps the session and
+reports the outcome as unknown. The remaining fragments of a request whose
+outcome became unknown during publication are never sent.
+
+A host that never proved its session (a CLI host or an older binary) cannot
+answer such a challenge, so an unknown outcome still stops its run. A
+different launch or page still stops the run as before.
+
+Terminals are still killed at the end of each response. A live terminal
+handle belongs to the run's worker process, there is no protocol for a later
+run to reattach to it, and the native side does not reap idle terminals. When
+a kill gets no exit in time, the terminal's execution record says `unknown`
+(possibly still running) for later turns, and the completion check proceeds
+normally rather than reporting a lost connection. A terminal that fails while
+its connection stays usable keeps its route open until that kill is sent.
+
+A stop for `desktop_command_unreconciled` records a closed cause and the
+operation kind. Any stop while verification is open records whether that was
+an outage, the completion check, or re-verification. Runs also report how many
+operations they continued past with an unknown outcome.
 
 A native write larger than one relay message is sent as a truncating first
 chunk plus appends. If any chunk is unconfirmed, the result is unknown: the

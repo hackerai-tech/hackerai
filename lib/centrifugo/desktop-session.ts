@@ -15,6 +15,11 @@
  * existing fail-closed departure behavior.
  */
 
+import type {
+  LocalOperationKind,
+  LocalUnreconciledCause,
+} from "@/lib/chat/local-connection-stop";
+
 export const DESKTOP_SESSION_CHALLENGE = "desktop_session_challenge";
 export const DESKTOP_SESSION_PROOF = "desktop_session_proof";
 /**
@@ -65,11 +70,26 @@ export type DesktopSessionProof = Readonly<
 /** A command whose execution request publication began on this run. */
 export interface PublishedDesktopCommand {
   readonly commandId: string;
+  readonly kind: LocalOperationKind;
   /** Every output frame through the terminal was received in sequence. */
   outputComplete(): boolean;
   /** Ask the host to replay retained output from this receiver's cursor. */
   resumeOutput(): void;
+  /**
+   * The same session returned but cannot account for this operation's
+   * output. Settle its tool call as an unknown outcome and refuse any further
+   * execution on it (terminal input). It is never published again, and it
+   * stays recorded as unknown. Called by the observer before readiness
+   * resumes; it must not report back to the gate.
+   */
+  abandon(): void;
 }
+
+/** A published execution whose outcome became unknown; content-free. */
+export type UncertainExecution = Readonly<{
+  cause: LocalUnreconciledCause;
+  operation: LocalOperationKind;
+}>;
 
 /** Live readiness of the selected host; never a cached admission. */
 export interface DesktopDispatchGate {
@@ -78,14 +98,25 @@ export interface DesktopDispatchGate {
   /** Settles when ready, or rejects on loss, monitoring stop or abort. */
   waitUntilReady(signal?: AbortSignal): Promise<void>;
   /**
-   * Call before discarding ownership of an execution whose publication began
-   * but whose outcome is unknown (no terminal, no confirmed cancellation).
-   * It may still run, so the run stops for manual Resume and no dispatch is
-   * admitted again. A no-op once monitoring ended, keeping the first cause.
-   * Absent where a host can never recover (CLI), which keeps its behavior.
+   * Call when an execution whose publication began loses its outcome (no
+   * terminal, no confirmed cancellation). It may still run: its owner keeps
+   * it recorded as unknown, and no later dispatch is admitted until the same
+   * native session proves itself again. A host that never proved its session
+   * cannot, so the run stops for manual Resume. A no-op once monitoring
+   * ended, keeping the first cause. Absent for CLI hosts, which keep their
+   * behavior.
    */
-  failUncertainExecution?(): void;
+  reportUncertainExecution?(execution: UncertainExecution): void;
 }
+
+/**
+ * Only a watched Desktop run continues past an execution whose outcome is
+ * unknown. Its results must say so, and nothing may send that execution
+ * again. Ask, CLI and other hosts keep their results.
+ */
+export const continuesPastUnknownOutcome = (
+  gate: DesktopDispatchGate | undefined,
+): boolean => typeof gate?.reportUncertainExecution === "function";
 
 /**
  * Wait for readiness before slow pre-publication work. This is not itself an

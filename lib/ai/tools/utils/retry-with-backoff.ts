@@ -1,5 +1,6 @@
 import { createRetryLogger } from "@/lib/posthog/worker";
 import { isE2BPermanentError, isE2BRateLimitError } from "./e2b-errors";
+import { hasUnknownExecutionOutcome } from "./local-sandbox-errors";
 
 /** Logger used for retry/abort events; uses framework-agnostic logger (no @axiomhq/nextjs). */
 const retryLogger = createRetryLogger("retry-with-backoff");
@@ -80,6 +81,9 @@ export async function retryWithBackoff<T>(
     try {
       return await operation();
     } catch (error) {
+      // It may already have run: never retried, and never replaced by an
+      // abort, so its caller keeps reporting the outcome as unknown.
+      if (hasUnknownExecutionOutcome(error)) throw error;
       signal?.throwIfAborted();
       lastError = error;
 

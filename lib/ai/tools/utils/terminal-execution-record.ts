@@ -130,6 +130,8 @@ const recordSchema = z.object({
   updatedAt: z.number(),
   output: z.string().max(262_144),
   outputTruncated: z.boolean(),
+  /** The process exited while its host was unverified: output may be missing. */
+  outputIncomplete: z.literal(true).optional(),
   artifactPaths: z.array(z.string().max(4096)).max(32),
 });
 export type TerminalExecutionRecord = z.infer<typeof recordSchema>;

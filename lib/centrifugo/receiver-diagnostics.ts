@@ -22,7 +22,9 @@ export type ReceiverCleanupReason =
   | "presence_missing"
   | "dispatch_failed"
   | "disconnected"
-  | "client_error";
+  | "client_error"
+  // The same session returned without this command's output.
+  | "unreconciled";
 
 /** Which wait timed out after command publication started. */
 export type DispatchUncertainReason =

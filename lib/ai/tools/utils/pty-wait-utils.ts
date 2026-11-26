@@ -1,4 +1,34 @@
 import type { PtySession } from "./pty-session-manager";
+import type { PtyExitResult } from "./pty-exited-promise";
+
+/** The Ask-mode unknown-outcome wording, for a terminal the run continues past. */
+export const TERMINAL_OUTCOME_UNKNOWN_ERROR =
+  "Terminal outcome is unknown: the connection to this terminal was interrupted and its output could not be recovered. It may still be running, and it no longer accepts input. Do not rerun this command automatically; it may already have executed.";
+
+/** An exit observed while the connection was being re-verified. */
+export const TERMINAL_OUTPUT_INCOMPLETE_ERROR =
+  "Terminal output may be incomplete: this process exited while the connection to it was interrupted, so some of its output may be missing. It already ran; rerunning it would run it again.";
+
+/**
+ * Model-facing exit fields. A terminal whose outcome is unknown never reads
+ * as exited: it carries the unknown outcome and its do-not-rerun guidance.
+ * An exit whose output may be missing still reads as exited, with a warning.
+ */
+export function terminalExitFields(exit: PtyExitResult | null | undefined) {
+  if (!exit) return {};
+  if (exit.outcomeUnknown)
+    return {
+      executionOutcome: "unknown" as const,
+      error: TERMINAL_OUTCOME_UNKNOWN_ERROR,
+    };
+  if (exit.outputIncomplete)
+    return {
+      exited: { exitCode: exit.exitCode },
+      outputIncomplete: true as const,
+      error: TERMINAL_OUTPUT_INCOMPLETE_ERROR,
+    };
+  return { exited: { exitCode: exit.exitCode } };
+}
 
 /**
  * Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
@@ -127,8 +157,8 @@ export function capOutput(text: string, maxBytes: number = 8 * 1024): string {
  */
 export async function peekExited(
   session: PtySession,
-): Promise<{ exitCode: number | null } | null> {
-  const sentinel: { exitCode: number | null } = { exitCode: -0xdeadbeef };
+): Promise<PtyExitResult | null> {
+  const sentinel: PtyExitResult = { exitCode: -0xdeadbeef };
   const result = await Promise.race([
     session.handle.exited,
     new Promise<typeof sentinel>((r) => {

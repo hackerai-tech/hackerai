@@ -293,6 +293,7 @@ test.each([
     expect(cause()).toEqual({
       reason: "observer_recovery_expired",
       recoveryWindowMs: 15_000,
+      recoveryPhase: "outage",
       recoveryElapsedMs: 15_000,
       connectionId: SELECTED,
       hadPositivePresence: true,
@@ -753,6 +754,7 @@ describe("an observer interruption after the host was verified", () => {
       expect(cause()).toEqual({
         reason: "observer_recovery_expired",
         recoveryWindowMs: 15_000,
+        recoveryPhase: "outage",
         recoveryElapsedMs: 15_000,
         connectionId: SELECTED,
         hadPositivePresence: true,
@@ -894,6 +896,7 @@ describe("an observer interruption after the host was verified", () => {
     expect(cause()).toEqual({
       reason: "observer_recovery_expired",
       recoveryWindowMs: 15_000,
+      recoveryPhase: "outage",
       recoveryElapsedMs: 15_000,
       connectionId: SELECTED,
       hadPositivePresence: true,
@@ -1156,12 +1159,97 @@ describe("a Desktop session proof", () => {
     expect(cause()?.reason).toBe("selected_host_ended");
   });
 
-  test("an uncertain execution latches a loss that rejects readiness, but never relabels an earlier stop", async () => {
+  const uncertain = {
+    cause: "receiver_deadline",
+    operation: "command",
+  } as const;
+
+  test("an unknown outcome on a proven session admits no dispatch until the same session proves itself again, then the run continues", async () => {
+    // A healthy terminal whose stream was never interrupted.
+    const open = {
+      commandId: "open-terminal",
+      kind: "pty",
+      outputComplete: () => false,
+      resumeOutput: jest.fn(),
+      abandon: jest.fn(),
+    };
+    const { controller, onLost } = await start({
+      publishedCommands: () => [open],
+    });
+    const [baseline] = challenges();
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce, { retainedCommandIds: [] }),
+      info: fromHost,
+    });
+    expect(controller.isReady()).toBe(true);
+
+    controller.reportUncertainExecution!(uncertain);
+    // Cached readiness is gone before the report returns.
+    expect(controller.isReady()).toBe(false);
+    let admitted = false;
+    void controller.waitUntilReady().then(() => (admitted = true));
+    await flush();
+    const fresh = challenges().at(-1);
+    expect(fresh.nonce).not.toBe(baseline.nonce);
+    // Neither the previous answer nor another session reopens dispatch.
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce, { retainedCommandIds: [] }),
+      info: fromHost,
+    });
+    await flush();
+    expect(admitted).toBe(false);
+
+    mockSubscription.emit("publication", {
+      data: proof(fresh.nonce, { retainedCommandIds: [] }),
+      info: fromHost,
+    });
+    await flush();
+    expect(admitted).toBe(true);
+    expect(onLost).not.toHaveBeenCalled();
+    // Only the reporting operation lost its outcome: the healthy terminal
+    // is neither settled nor stopped by this re-verification.
+    expect(open.abandon).not.toHaveBeenCalled();
+    // Not an outage the run recovered from, but an operation it continued past.
+    expect(controller.recoverySummary()).toEqual({
+      recoveredOutages: 0,
+      unknownOutcomeOperations: 1,
+    });
+  });
+
+  test("a different session answering the re-verification stops the run", async () => {
+    const { controller, cause } = await start({ publishedCommands: () => [] });
+    const [baseline] = challenges();
+    mockSubscription.emit("publication", {
+      data: proof(baseline.nonce),
+      info: fromHost,
+    });
+    controller.reportUncertainExecution!(uncertain);
+    await flush();
+    mockSubscription.emit("publication", {
+      data: proof(challenges().at(-1).nonce, { pageGeneration: 2 }),
+      info: fromHost,
+    });
+    expect(cause()).toMatchObject({
+      reason: "desktop_session_replaced",
+      recoveryPhase: "reverification",
+    });
+    expect(cause()?.recoveryWindowMs).toBeUndefined();
+  });
+
+  test("an unknown outcome before any session proof stops the run with its cause, but never relabels an earlier stop", async () => {
     const { controller, cause } = await start({ publishedCommands: () => [] });
     const waiting = controller.waitUntilReady();
     expect(controller.isReady()).toBe(true);
-    controller.failUncertainExecution!();
-    expect(cause()?.reason).toBe("desktop_command_unreconciled");
+    // The baseline challenge is still unanswered: nothing can vouch for it.
+    controller.reportUncertainExecution!({
+      cause: "kill_unconfirmed",
+      operation: "pty",
+    });
+    expect(cause()).toMatchObject({
+      reason: "desktop_command_unreconciled",
+      unreconciledCause: "kill_unconfirmed",
+      unreconciledOperation: "pty",
+    });
     expect(controller.isReady()).toBe(false);
     await expect(waiting).resolves.toBeUndefined();
     await expect(controller.waitUntilReady()).rejects.toMatchObject({
@@ -1171,7 +1259,7 @@ describe("a Desktop session proof", () => {
     // After the run's own stop, a late uncertain cleanup changes nothing.
     const later = watch({ publishedCommands: () => [] });
     later.stop(new Error("user stop"));
-    later.controller.failUncertainExecution!();
+    later.controller.reportUncertainExecution!(uncertain);
     expect(later.onLost).not.toHaveBeenCalled();
     await expect(later.controller.waitUntilReady()).rejects.toThrow(
       "user stop",
@@ -1179,7 +1267,7 @@ describe("a Desktop session proof", () => {
   });
 
   test("a CLI host never receives a challenge and stops on departure", async () => {
-    expect(watch().controller.failUncertainExecution).toBeUndefined();
+    expect(watch().controller.reportUncertainExecution).toBeUndefined();
     const { cause } = await start();
     expect(mockSubscription.publish).not.toHaveBeenCalled();
     mockSubscription.emit("leave", { info: fromHost });

@@ -34,6 +34,8 @@ import {
   PtySessionManager,
   MAX_CONCURRENT_PTYS_PER_CHAT,
 } from "../utils/pty-session-manager";
+import type { PtyExitResult } from "../utils/pty-exited-promise";
+import { hasUncertainProviderToolOutcome } from "@/lib/chat/agent-long-provider-retry";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -421,6 +423,40 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       exitCode: null,
     });
     expect(ptySessionManager.get("chat-1", session.sessionId)).toBeUndefined();
+  });
+
+  test("reports an outcome that became unknown during the final checkpoint", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: makeFakeE2BSandbox(),
+    });
+    const handle = createCommandSessionHandle({ kill: async () => true });
+    const session = await ptySessionManager.create("chat-1", {
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "long scan",
+      createHandle: async () => handle,
+    });
+    const tool = createInteractTerminalSession(context);
+    const checkpoint = ptySessionManager.checkpoint.bind(ptySessionManager);
+    jest
+      .spyOn(ptySessionManager, "checkpoint")
+      .mockImplementationOnce(async (...args) => {
+        // The connection is lost while the result is being saved.
+        handle.resolveExit(null, true, true);
+        await new Promise((r) => setTimeout(r, 0));
+        return checkpoint(...args);
+      });
+
+    const viewed = (await runTool(tool, {
+      action: "view",
+      session: session.sessionId,
+    })) as { result: { executionOutcome?: string; error?: string } };
+
+    expect(viewed.result.executionOutcome).toBe("unknown");
+    expect(viewed.result.error).toContain("Do not rerun");
+    ptySessionManager.forget("chat-1", session.sessionId);
   });
 
   test("failed command-session kill is reported and retained for retry", async () => {
@@ -1004,5 +1040,144 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(result.result.exited).toEqual({ exitCode: 7 });
     // Critically — we did NOT attempt to write to the dead PID.
     expect(handle.sendInputCalls.length).toBe(before);
+  });
+
+  // A watched Desktop run continues past a terminal it can no longer account
+  // for. It may still be running, so it must never read as exited, never
+  // accept input, and never be replayed by an automatic provider retry.
+  test("a terminal whose outcome is unknown refuses input and never reads as exited", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let lose!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      lose = () =>
+        resolve({
+          exitCode: null,
+          observationFailed: true,
+          outcomeUnknown: true,
+        });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    lose();
+    await new Promise((r) => setTimeout(r, 0));
+    const tool = createInteractTerminalSession(context);
+    // Creation itself typed the command into the fixture's shell.
+    const before = handle.sendInputCalls.length;
+
+    const sent = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "rm -rf build\n",
+    })) as { result: Record<string, unknown> };
+    expect(sent.result.error).toMatch(/^Input was not sent\./);
+    expect(sent.result.error).toMatch(
+      /Do not rerun this command automatically/,
+    );
+    expect(sent.result).not.toHaveProperty("exited");
+    expect(handle.sendInputCalls).toHaveLength(before);
+
+    for (const action of ["wait", "view"]) {
+      const output = (await runTool(tool, {
+        action,
+        session: sessionId,
+        timeout: 0.1,
+      })) as { result: Record<string, unknown> };
+      expect(output.result).toMatchObject({ executionOutcome: "unknown" });
+      expect(output.result).not.toHaveProperty("exited");
+      expect(
+        hasUncertainProviderToolOutcome([
+          {
+            type: "tool-interact_terminal_session",
+            state: "output-available",
+            output,
+          },
+        ]),
+      ).toBe(true);
+    }
+  });
+
+  test("send reports an outcome lost while it waited for output; a live terminal stays ordinary", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let lose!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      lose = () =>
+        resolve({
+          exitCode: null,
+          observationFailed: true,
+          outcomeUnknown: true,
+        });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    const tool = createInteractTerminalSession(context);
+
+    const live = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "status\n",
+    })) as { result: Record<string, unknown> };
+    expect(live.result).not.toHaveProperty("executionOutcome");
+    expect(live.result).not.toHaveProperty("exited");
+    expect(live.result).not.toHaveProperty("error");
+
+    // The input was published; then the connection lost the terminal.
+    mockWaitForOutput.mockImplementationOnce(async () => {
+      lose();
+      await new Promise((r) => setTimeout(r, 0));
+      return new Uint8Array();
+    });
+    const sent = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "make deploy\n",
+    })) as { result: Record<string, unknown> };
+    expect(sent.result).toMatchObject({
+      executionOutcome: "unknown",
+      error: expect.stringContaining("Do not rerun this command automatically"),
+    });
+    expect(sent.result).not.toHaveProperty("exited");
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-interact_terminal_session",
+          state: "output-available",
+          output: sent,
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  // The process really exited, but while its host was unverified, so some of
+  // its unsequenced output may never have arrived.
+  test("an exit whose output may be incomplete reads as exited, with that warning", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let exit!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      exit = () => resolve({ exitCode: 0, outputIncomplete: true });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    exit();
+    await new Promise((r) => setTimeout(r, 0));
+    const tool = createInteractTerminalSession(context);
+
+    for (const action of ["wait", "view"]) {
+      const output = (await runTool(tool, {
+        action,
+        session: sessionId,
+        timeout: 0.1,
+      })) as { result: Record<string, unknown> };
+      expect(output.result).toMatchObject({
+        exited: { exitCode: 0 },
+        outputIncomplete: true,
+        error: expect.stringContaining("output may be incomplete"),
+      });
+      // Not an unknown outcome: the process is known to have exited.
+      expect(output.result).not.toHaveProperty("executionOutcome");
+      expect(output.result.error).not.toMatch(/may still be running/);
+    }
   });
 });

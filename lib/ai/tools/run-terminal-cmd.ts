@@ -62,6 +62,8 @@ import {
   capOutput,
   stripAnsi,
   peekExited,
+  terminalExitFields,
+  TERMINAL_OUTCOME_UNKNOWN_ERROR,
 } from "./utils/pty-wait-utils";
 import {
   captureAgentBrowserUsage,
@@ -85,6 +87,7 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import {
+  hasUnknownExecutionOutcome,
   isLocalCommandRelayUnsubscribedError,
   isLocalCommandDispatchError,
 } from "./utils/local-sandbox-errors";
@@ -98,6 +101,7 @@ import { phLogger } from "@/lib/posthog/server";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
+
 const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
@@ -113,6 +117,9 @@ const READINESS_RECONNECT_FAILED =
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
+  // A session whose outcome is unknown may or may not still be running.
+  if (result.executionOutcome === "unknown") return "Process outcome unknown";
+
   if (result.processStarted === true && typeof result.exitCode === "number") {
     return `Process exited with code ${result.exitCode}`;
   }
@@ -122,7 +129,7 @@ const getTerminalProcessStatus = (
     result.exited !== null &&
     typeof (result.exited as { exitCode?: unknown }).exitCode === "number"
   ) {
-    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}`;
+    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}${result.outputIncomplete === true ? "; its output may be incomplete" : ""}`;
   }
 
   if (typeof result.session === "string" && result.session) {
@@ -605,11 +612,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             session,
             buildPtyParserLogContext(session.sessionId),
           );
+          await ptySessionManager.checkpoint(session);
           // If the command finished during the quiet window (e.g. a one-shot
           // `echo … && whoami`), surface that so the agent doesn't try to
-          // `interact_terminal_session send` against a dead session.
+          // `interact_terminal_session send` against a dead session. Read it
+          // after the checkpoint, during which the outcome may be lost.
           const exited = await peekExited(session);
-          await ptySessionManager.checkpoint(session);
           return {
             result: {
               ...recoveryFields(session),
@@ -618,10 +626,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               sessionSnapshot: snapshots.cleaned,
               rawSnapshot: snapshots.raw,
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
-              ...(exited ? { exited: { exitCode: exited.exitCode } } : {}),
+              ...terminalExitFields(exited),
             },
           };
         } catch (err) {
+          // A creation published but never confirmed may already be running.
+          if (hasUnknownExecutionOutcome(err))
+            return {
+              result: {
+                output: "",
+                exitCode: null,
+                executionOutcome: "unknown",
+                error: `Local command outcome is unknown: ${resolveToolErrorMessage(err)}. Do not rerun this command automatically; it may already have executed.`,
+              },
+            };
           return {
             result: {
               output: "",
@@ -1095,6 +1113,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 );
 
               let terminated = false;
+              // A background Desktop command has no session to read this from.
+              let runOutcomeUnknown = false;
 
               if (commandHandle) {
                 try {
@@ -1114,8 +1134,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 try {
                   const executionResult = await runPromise;
                   terminated = executionResult.exitCode === 130;
-                } catch {
+                } catch (error) {
                   terminated = false;
+                  runOutcomeUnknown = hasUnknownExecutionOutcome(error);
                 }
               } else {
                 // Try to get PID from execution object first (cheap, no shell call)
@@ -1161,6 +1182,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   "termination_unconfirmed",
                 );
               }
+              // Read after the last await. A Stop that could not reach a
+              // command whose outcome became unknown reports that outcome.
+              const unknown =
+                !terminated &&
+                (runOutcomeUnknown ||
+                  (commandSession !== null &&
+                    (await peekExited(commandSession))?.outcomeUnknown ===
+                      true));
 
               resolve({
                 result: {
@@ -1168,9 +1197,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   output: result.output,
                   exitCode: terminated ? 130 : null,
                   ...(terminated ? { processStarted: true } : {}),
+                  ...(unknown && { executionOutcome: "unknown" as const }),
                   error: terminated
                     ? "Command execution aborted by user"
-                    : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
+                    : unknown
+                      ? `Command cancellation could not be confirmed. ${TERMINAL_OUTCOME_UNKNOWN_ERROR}`
+                      : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
                   ...(!terminated && commandSession
                     ? { session: commandSession.sessionId }
                     : {}),
@@ -1265,6 +1297,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     : "";
                   if (commandSession)
                     await ptySessionManager.checkpoint(commandSession);
+                  // Read after the last await: the outcome may be lost while
+                  // this result was prepared, and is then not "running".
+                  const exit = commandSession
+                    ? await peekExited(commandSession)
+                    : null;
                   resolve({
                     result: {
                       ...recoveryFields(commandSession),
@@ -1272,7 +1309,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         .filter(Boolean)
                         .join("\n"),
                       exitCode: null,
-                      status: "running",
+                      ...(exit?.outcomeUnknown
+                        ? terminalExitFields(exit)
+                        : { status: "running" }),
                       waitExpired: true,
                       timedOut: true,
                       ...(resumableSession && {
@@ -1574,6 +1613,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
                   !(error instanceof CommandExitError),
+                  // Published, and the run continues past it: an exposed
+                  // session must not read as exited.
+                  hasUnknownExecutionOutcome(error),
                 );
                 if (handler) {
                   handler.cleanup();
@@ -1668,19 +1710,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }));
         } // end of executeCommand
       } catch (error) {
-        const executionOutcome =
-          error &&
-          typeof error === "object" &&
-          "executionOutcome" in error &&
-          error.executionOutcome === "unknown"
-            ? "unknown"
-            : undefined;
         return {
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
             error: resolveToolErrorMessage(error),
-            ...(executionOutcome && { executionOutcome }),
+            ...(hasUnknownExecutionOutcome(error) && {
+              executionOutcome: "unknown" as const,
+            }),
           },
         };
       }

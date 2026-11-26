@@ -3559,7 +3559,9 @@ export async function createAgentStream(
         }
       }
       // Close terminals first: a confirmed exit is a known outcome, so an
-      // open healthy session never reads as uncertain work below.
+      // open healthy session never reads as uncertain work below. A kill
+      // whose exit is unconfirmed records the terminal as possibly running
+      // and only requires the same fresh proof; it is never a lost connection.
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>

@@ -26,6 +26,7 @@ import {
   CloudAcquisitionBudgetExhaustedError,
 } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import { phLogger } from "@/lib/posthog/server";
+import { LocalCommandDispatchError } from "@/lib/ai/tools/utils/local-sandbox-errors";
 import { resolveCloudAttachmentDnsPin } from "../cloud-attachment-dns";
 import {
   collectSandboxFiles,
@@ -1227,6 +1228,121 @@ describe("desktop-local sandbox file helpers", () => {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
       consoleErrorSpy.mockRestore();
+    }
+  });
+
+  // Staging again re-sends every attachment. A transfer that was published
+  // and may still be writing its destination must never be sent twice.
+  it.each([
+    ["alone", []],
+    [
+      "next to a failure that never reached the host",
+      ["2: [unknown] Request handshake timed out after 60000ms"],
+    ],
+  ])(
+    "never stages again after a transfer whose outcome is unknown (%s)",
+    async (_name, otherFailures) => {
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const downloadFromUrl = jest.fn(async (url: string) => {
+        if (url.endsWith("/published.png"))
+          throw new LocalCommandDispatchError(
+            new Error(LOCAL_COMMAND_NO_RESPONSE_MESSAGE),
+            true,
+            false,
+            true,
+          );
+        throw new Error(otherFailures[0]);
+      });
+      const ensureSandbox = jest.fn(async () => ({
+        files: { downloadFromUrl },
+        commands: { run: jest.fn() },
+        getConnectionId: () => "conn-desktop",
+      }));
+      const files = [
+        "https://example.com/published.png",
+        ...otherFailures.map(() => "https://example.com/unsent.png"),
+      ].map((url) => ({
+        kind: "url" as const,
+        url,
+        localPath: `/home/user/upload/${url.split("/").pop()}`,
+      }));
+
+      try {
+        const result = await uploadSandboxFiles(files, ensureSandbox, {
+          retryAfterReconnectOnTransientFailure: true,
+        });
+
+        expect(result.failedCount).toBe(files.length);
+        expect(result.retriedAfterReconnect).toBeUndefined();
+        expect(ensureSandbox).toHaveBeenCalledTimes(1);
+        expect(
+          downloadFromUrl.mock.calls.filter(([url]) =>
+            url.endsWith("/published.png"),
+          ),
+        ).toHaveLength(1);
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    },
+  );
+
+  it("never stages again after a fallback transfer whose outcome is unknown", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const downloadFromUrl = jest.fn(async (url: string, localPath: string) => {
+      if (url.endsWith("/unsent.png"))
+        throw new Error(
+          "2: [unknown] Request handshake timed out after 60000ms",
+        );
+      // The first path is unwritable; the fallback transfer was published.
+      if (localPath.startsWith("/home/user/upload/"))
+        throw new Error("curl: (23) Failure writing output: permission denied");
+      throw new LocalCommandDispatchError(
+        new Error(LOCAL_COMMAND_NO_RESPONSE_MESSAGE),
+        true,
+        false,
+        true,
+      );
+    });
+    const ensureSandbox = jest.fn(async () => ({
+      files: { downloadFromUrl },
+      commands: {
+        run: jest.fn(async () => ({
+          stdout: "/tmp/fallback-published.png",
+          stderr: "",
+          exitCode: 0,
+        })),
+      },
+      getConnectionId: () => "conn-desktop",
+    }));
+    const files = ["published.png", "unsent.png"].map((name) => ({
+      kind: "url" as const,
+      url: `https://example.com/${name}`,
+      localPath: `/home/user/upload/${name}`,
+    }));
+
+    try {
+      const result = await uploadSandboxFiles(files, ensureSandbox, {
+        retryAfterReconnectOnTransientFailure: true,
+      });
+
+      expect(result.failedCount).toBe(2);
+      expect(result.retriedAfterReconnect).toBeUndefined();
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(
+        downloadFromUrl.mock.calls.filter(
+          ([, localPath]) => localPath === "/tmp/fallback-published.png",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     }
   });
 

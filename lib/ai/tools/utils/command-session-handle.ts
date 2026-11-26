@@ -13,7 +13,15 @@ import { createResolvableExited } from "./pty-exited-promise";
 export interface CommandSessionHandle extends PtyHandle {
   emitText(text: string): void;
   setPid(pid: number): void;
-  resolveExit(exitCode: number | null, observationFailed?: boolean): void;
+  /**
+   * `outcomeUnknown`: the command was published and the run continues past
+   * it although it may still be running; wait and view must say so.
+   */
+  resolveExit(
+    exitCode: number | null,
+    observationFailed?: boolean,
+    outcomeUnknown?: boolean,
+  ): void;
 }
 
 export function createCommandSessionHandle(opts: {
@@ -24,13 +32,22 @@ export function createCommandSessionHandle(opts: {
   const { exited, resolveOnce } = createResolvableExited();
   let pid = 0;
   let hasExited = false;
+  let unknown = false;
 
-  const resolveExit = (exitCode: number | null, observationFailed = false) => {
+  const resolveExit = (
+    exitCode: number | null,
+    observationFailed = false,
+    outcomeUnknown = false,
+  ) => {
     if (hasExited) return;
-    hasExited = !observationFailed;
+    hasExited = !observationFailed && !outcomeUnknown;
+    unknown ||= outcomeUnknown;
     resolveOnce({
       exitCode,
-      ...(observationFailed ? { observationFailed: true as const } : {}),
+      ...(observationFailed || outcomeUnknown
+        ? { observationFailed: true as const }
+        : {}),
+      ...(outcomeUnknown ? { outcomeUnknown: true as const } : {}),
     });
   };
 
@@ -47,7 +64,9 @@ export function createCommandSessionHandle(opts: {
       // Non-interactive commands have no terminal geometry.
     },
     async kill(): Promise<void> {
-      if (hasExited) return;
+      // Unknown: no Stop can reach or confirm it. `exited` already says so,
+      // and callers report that instead of a termination.
+      if (hasExited || unknown) return;
       const terminated = await opts.kill();
       if (!terminated) {
         throw new Error("Failed to terminate non-interactive command session.");
