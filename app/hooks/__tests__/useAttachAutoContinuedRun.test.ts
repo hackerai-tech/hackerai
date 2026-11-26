@@ -102,11 +102,13 @@ describe("attaching to an automatic continuation", () => {
     expect(resumeStream).toHaveBeenCalledTimes(AUTO_CONTINUE_ATTACH_ATTEMPTS);
   });
 
-  it("never attaches the same run again after it streamed", () => {
+  it("never attaches the same run again after it streamed", async () => {
     const { resumeStream, view, settle } = attach({ ...run, status: "ready" });
     settle();
     view.rerender({ ...run, status: "streaming" });
     view.rerender({ ...run, status: "ready" });
+    // Let the attempt settle, so only the streamed run can prevent a retry.
+    await act(async () => {});
     settle();
 
     expect(resumeStream).toHaveBeenCalledTimes(1);

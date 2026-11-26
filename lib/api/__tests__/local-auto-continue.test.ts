@@ -205,7 +205,11 @@ const { recordLocalAutoContinueStop } =
   require("@/trigger/agent-local-auto-continue") as typeof import("@/trigger/agent-local-auto-continue");
 const { LocalConnectionLostError } =
   require("@/lib/chat/local-connection-stop") as typeof import("@/lib/chat/local-connection-stop");
-const { localAutoContinueMessageId } =
+const {
+  localAutoContinueMessageId,
+  localAutoContinueStopEligibility,
+  STOPPED_RUN_ID,
+} =
   require("@/lib/chat/local-auto-continue") as typeof import("@/lib/chat/local-auto-continue");
 
 const STOPPED_CONNECTION = "0b8a3f2e-6a3c-4c1e-9d3e-0f1a2b3c4d5e";
@@ -637,6 +641,32 @@ describe("automatic continuation after a Desktop comes back", () => {
     expect(startAgent).toHaveBeenCalledTimes(4);
   });
 
+  it("counts a continuation cancelled after it was admitted toward the cap", async () => {
+    for (const run of ["run_1", "run_2", "run_3"]) {
+      now += 1_000;
+      stoppedChat();
+      await recordStop(run);
+      await report();
+    }
+    expect(startAgent).toHaveBeenCalledTimes(3);
+    // The user stopped run_1's continuation while it started: still admitted.
+    const admitted = tables.agent_local_auto_continues.find(
+      (row) => row.stopped_run_id === "run_1",
+    )!;
+    expect(admitted.continued_run_id).toBeDefined();
+    admitted.state = "cancelled";
+
+    now += 1_000;
+    stoppedChat();
+    await recordStop("run_4");
+    await report();
+    expect(startAgent).toHaveBeenCalledTimes(3);
+    expect(events("agent_local_auto_continue_outcome").at(-1)).toMatchObject({
+      outcome: "suppressed",
+      reason: "cap",
+    });
+  });
+
   it("retries a transient start failure with the same message, never a refusal", async () => {
     startAgent
       .mockResolvedValueOnce(new NextResponse("busy", { status: 503 }))
@@ -809,6 +839,14 @@ describe("automatic continuation after a Desktop comes back", () => {
     await report();
 
     expect(startAgent).toHaveBeenCalledTimes(1);
+    // The other computer's stops are left for that computer.
+    expect(
+      tables.agent_local_auto_continues
+        .filter((row) =>
+          String(row.stopped_run_id).startsWith("run_elsewhere_"),
+        )
+        .every((row) => row.state === "awaiting_return"),
+    ).toBe(true);
   });
 
   it("settles a started run after a transient settlement failure, without starting again", async () => {
@@ -1105,4 +1143,27 @@ describe("automatic continuation after a Desktop comes back", () => {
       expect(cancelAgent).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("auto-continue identifiers and reasons", () => {
+  it.each(["", "constructor", "toString", "something_new"])(
+    "never continues an unrecognized stop reason %j",
+    (reason) => {
+      expect(localAutoContinueStopEligibility(reason)).toEqual({
+        eligible: false,
+        reason: "not_host_departure",
+      });
+    },
+  );
+
+  it("gives distinct stopped runs distinct message IDs, never truncated", () => {
+    const longest = "r".repeat(108);
+    const sibling = `${"r".repeat(107)}s`;
+    expect(STOPPED_RUN_ID.test(longest)).toBe(true);
+    expect(STOPPED_RUN_ID.test(`${longest}x`)).toBe(false);
+    expect(localAutoContinueMessageId(longest)).not.toBe(
+      localAutoContinueMessageId(sibling),
+    );
+    expect(localAutoContinueMessageId(longest).length).toBeLessThanOrEqual(128);
+  });
 });

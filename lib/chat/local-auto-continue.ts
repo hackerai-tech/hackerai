@@ -108,10 +108,12 @@ export function localAutoContinueStopEligibility(
 ): { eligible: true } | { eligible: false; reason: LocalAutoContinueReason } {
   const reason = stopReason as LocalStopReason | undefined;
   if (reason && HOST_DEPARTURE_REASONS.has(reason)) return { eligible: true };
-  return {
-    eligible: false,
-    reason: (reason && INELIGIBLE_STOP_REASONS[reason]) ?? "not_host_departure",
-  };
+  // Own properties only: "" or "constructor" must not map to a reason.
+  const known =
+    reason && Object.hasOwn(INELIGIBLE_STOP_REASONS, reason)
+      ? INELIGIBLE_STOP_REASONS[reason]
+      : undefined;
+  return { eligible: false, reason: known ?? "not_host_departure" };
 }
 
 /**
@@ -120,7 +122,9 @@ export function localAutoContinueStopEligibility(
  * the same Trigger run instead of a second one.
  */
 export function localAutoContinueMessageId(stoppedRunId: string): string {
-  return `local-auto-continue-${stoppedRunId}`.slice(0, 128);
+  // Never truncated: STOPPED_RUN_ID caps the run ID so this fits 128 chars,
+  // and distinct runs always get distinct message IDs.
+  return `local-auto-continue-${stoppedRunId}`;
 }
 
 /**
@@ -145,7 +149,7 @@ export function localAutoContinueSandboxPreference(
 }
 
 /** Trigger run IDs, as the start route and analytics accept them. */
-export const STOPPED_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export const STOPPED_RUN_ID = /^[A-Za-z0-9_-]{1,108}$/;
 
 /** Whether the chat's recent automatic starts leave room for one more. */
 export function localAutoContinueCapAllows(

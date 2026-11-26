@@ -520,7 +520,11 @@ export const claimReturn = mutation({
       .filter(
         (other) =>
           other.claimed_at !== undefined &&
-          (other.state === "starting" || other.state === "started"),
+          (other.state === "starting" ||
+            other.state === "started" ||
+            // A Stop during startup can cancel a run that was still admitted.
+            (other.state === "cancelled" &&
+              other.continued_run_id !== undefined)),
       )
       .map((other) => other.claimed_at!);
     if (!localAutoContinueCapAllows(recentStarts, now))
