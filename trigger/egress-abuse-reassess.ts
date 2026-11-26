@@ -1,6 +1,6 @@
 import { context } from "@opentelemetry/api";
 import { suppressTracing } from "@opentelemetry/core";
-import { logger, runs, schemaTask } from "@trigger.dev/sdk";
+import { logger, query, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
@@ -101,17 +101,37 @@ async function candidateFinishedBeforeRead(
   runId: string,
   readStartedAt: number,
 ) {
+  // Only a provider-issued run ID can enter the metadata query.
+  if (!/^run_[a-z0-9]+$/.test(runId)) return false;
   try {
-    // The SDK traces run identifiers by default. Use only its timing and
-    // lifecycle fields, without logging the lookup result.
-    const run = await context.with(suppressTracing(context.active()), () =>
-      runs.retrieve(runId, { retry: { maxAttempts: 1 } }),
+    // Retrieve only lifecycle fields. runs.retrieve also downloads archived
+    // payload/output packets. Suppress tracing of the exact-ID query.
+    const { results } = await context.with(
+      suppressTracing(context.active()),
+      () =>
+        query.execute<{
+          run_id: string;
+          task_identifier: string;
+          status: string;
+          completed_at_s: number | null;
+        }>(
+          `SELECT run_id, task_identifier, status, toUnixTimestamp(completed_at) AS completed_at_s FROM runs WHERE run_id = '${runId}' LIMIT 2`,
+          { scope: "environment", from: 1, to: readStartedAt },
+          { retry: { maxAttempts: 1 } },
+        ),
     );
+    const [run] = results;
+    const completedAtSeconds = run?.completed_at_s;
     return (
-      run.id === runId &&
-      run.taskIdentifier === "agent-long" &&
-      run.status === "COMPLETED" &&
-      (run.finishedAt?.getTime() ?? Infinity) <=
+      results.length === 1 &&
+      run.run_id === runId &&
+      run.task_identifier === "agent-long" &&
+      run.status === "Completed" &&
+      typeof completedAtSeconds === "number" &&
+      Number.isSafeInteger(completedAtSeconds) &&
+      completedAtSeconds > 0 &&
+      // TRQL rounds down to seconds. Check the latest time that could represent.
+      (completedAtSeconds + 1) * 1_000 <=
         readStartedAt - COMPLETION_CLOCK_SKEW_MS
     );
   } catch {

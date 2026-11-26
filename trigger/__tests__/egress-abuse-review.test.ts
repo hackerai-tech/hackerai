@@ -3,6 +3,7 @@ jest.mock("@trigger.dev/sdk", () => ({
   schemaTask: (definition: unknown) => definition,
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
   runs: { list: jest.fn(), retrieve: jest.fn() },
+  query: { execute: jest.fn() },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 jest.mock("@/lib/db/service-client", () => ({
@@ -26,7 +27,7 @@ jest.mock("@/convex/lib/serviceFunctions", () => ({
 
 import { getFunctionName } from "convex/server";
 import { generateText } from "ai";
-import { logger, runs } from "@trigger.dev/sdk";
+import { logger, query as triggerQuery, runs } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import * as reviewFunctions from "@/convex/egressAbuseReview";
 import * as enforcementFunctions from "@/convex/egressAbuseEnforcement";
@@ -1519,6 +1520,12 @@ describe("on-demand reassessment of a multiple_runs case", () => {
     otherCandidates: "unverified",
     determination: "advisory_only",
   };
+  const candidateLifecycle = {
+    run_id: RUN,
+    task_identifier: "agent-long",
+    status: "Completed",
+    completed_at_s: (BURST_START + 10 * MINUTE_MS) / 1_000,
+  };
 
   /**
    * The actual review keeps the linked run as its candidate, then abstains
@@ -1551,7 +1558,10 @@ describe("on-demand reassessment of a multiple_runs case", () => {
       evidenceLocators: { commands: [], messages: [] },
     });
     jest.clearAllMocks();
-    jest.mocked(runs.retrieve).mockResolvedValue(selectedRun as never);
+    jest.mocked(triggerQuery.execute).mockResolvedValue({
+      format: "json",
+      results: [candidateLifecycle],
+    });
     return structuredClone(convex.tables.abuse_cases[0]);
   }
 
@@ -1639,6 +1649,22 @@ describe("on-demand reassessment of a multiple_runs case", () => {
     expectAdvisoryOnly(result, saved);
   });
 
+  it("requests only lifecycle columns without downloading archived run packets", async () => {
+    await overlapCase();
+    classifyAs(concerning);
+
+    await expect(reassess()).resolves.toMatchObject({ advisory: "concern" });
+
+    expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
+    expect(triggerQuery.execute).toHaveBeenCalledWith(
+      `SELECT run_id, task_identifier, status, toUnixTimestamp(completed_at) AS completed_at_s FROM runs WHERE run_id = '${RUN}' LIMIT 2`,
+      { scope: "environment", from: 1, to: expect.any(Number) },
+      { retry: { maxAttempts: 1 } },
+    );
+    // The pinned SDK's runs.retrieve() automatically resolves payload/output.
+    expect(runs.retrieve).not.toHaveBeenCalled();
+  });
+
   it("reports corroborated legitimate work without clearing the case or granting a cooldown", async () => {
     const saved = await overlapCase({ command: "npm install && npm test" });
     classifyAs(legitimate);
@@ -1692,20 +1718,20 @@ describe("on-demand reassessment of a multiple_runs case", () => {
   });
 
   it.each([
-    ["is still executing", { status: "EXECUTING", finishedAt: undefined }],
+    ["is still executing", { status: "Executing", completed_at_s: null }],
     [
       "finishes after the read starts",
-      { finishedAt: new Date(Date.now() + MINUTE_MS) },
+      { completed_at_s: Math.ceil((Date.now() + MINUTE_MS) / 1_000) },
     ],
   ])("does not classify a replaced run that %s", async (_label, lifecycle) => {
     const saved = await overlapCase();
     convex.tables.chats.find(
       ({ id }: any) => id === CHAT,
     ).active_trigger_run_id = "run_successor";
-    jest.mocked(runs.retrieve).mockResolvedValueOnce({
-      ...selectedRun,
-      ...lifecycle,
-    } as never);
+    jest.mocked(triggerQuery.execute).mockResolvedValueOnce({
+      format: "json",
+      results: [{ ...candidateLifecycle, ...lifecycle }],
+    });
     classifyAs(concerning);
 
     const result = await reassess();

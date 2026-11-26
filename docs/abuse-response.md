@@ -541,8 +541,9 @@ without reading anything.
   unchanged before reading the run; a case resolved or erased in between
   returns `closed` / `case_changed`. Before classification, the worker also
   verifies that Trigger recorded the candidate as completed before the read
-  started, allowing one minute for clock skew. An unverified completion
-  returns `incomplete` / `candidate_completion_unverified`.
+  started, allowing one minute for clock skew. It requests only the run ID,
+  task, status, and completion timestamp from Trigger. An unverified
+  completion returns `incomplete` / `candidate_completion_unverified`.
 - **What it returns.** Closed enums only, never identifiers or content.
   `scope: retained_candidate_only`, `attribution: unverified` and
   `otherCandidates: unverified` mean that the other runs and which activity
