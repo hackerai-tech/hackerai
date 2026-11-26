@@ -20,6 +20,21 @@ describe("getResumeSection", () => {
     expect(section).toContain("without repeating completed work");
   });
 
+  it("never tells an automatic lost-connection continuation the user resumed", () => {
+    const manual = getResumeSection("local-connection-lost");
+    const automatic = getResumeSection("local-connection-lost", "automatic");
+
+    expect(manual).toContain("The user has now explicitly resumed");
+    expect(automatic).not.toContain("explicitly resumed");
+    expect(automatic).toContain("continued automatically");
+    expect(automatic).toContain("The user has not reviewed the stop");
+    // Both keep the rule that guards against replaying uncertain commands.
+    for (const section of [manual, automatic])
+      expect(section).toContain(
+        "Never replay an uncertain mutation automatically",
+      );
+  });
+
   it("instructs compaction-incomplete continuations to act instead of acknowledging", () => {
     const section = getResumeSection(
       POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,

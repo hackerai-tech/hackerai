@@ -48,7 +48,6 @@ export const LOCAL_AUTO_CONTINUE_REASONS = [
   "session_replaced",
   "session_unverified",
   "session_unproven",
-  "command_unreconciled",
   "not_host_departure",
   "usage_limit",
   "stop_too_old",
@@ -76,9 +75,11 @@ export type LocalAutoContinueCancelReason = Extract<
 >;
 
 /**
- * Stops the selected host caused by leaving, which may end when that same
- * session returns. An allowlist: a stop reason added later stays manual until
- * someone decides it is safe to continue unattended.
+ * Stops that may end when the same session returns. An allowlist: a stop
+ * reason added later stays manual until someone decides it is safe to continue
+ * unattended. An unreconciled command is included: the continuation has the
+ * same resume context as a manual Resume, which inspects the uncertain command
+ * and never replays it, and users already resume most of these stops.
  */
 const HOST_DEPARTURE_REASONS: ReadonlySet<LocalStopReason> = new Set([
   "selected_host_left",
@@ -86,6 +87,7 @@ const HOST_DEPARTURE_REASONS: ReadonlySet<LocalStopReason> = new Set([
   "selected_host_recovery_expired",
   "selected_connection_unavailable",
   "watched_connection_replaced",
+  "desktop_command_unreconciled",
 ]);
 
 const INELIGIBLE_STOP_REASONS: Partial<
@@ -96,8 +98,6 @@ const INELIGIBLE_STOP_REASONS: Partial<
   // Another launch or page now owns the computer, or never proved itself.
   desktop_session_replaced: "session_replaced",
   desktop_session_unverified: "session_unverified",
-  // The host already came back but could not account for a command.
-  desktop_command_unreconciled: "command_unreconciled",
 };
 
 /** Whether a lost-connection stop may continue once its computer returns. */

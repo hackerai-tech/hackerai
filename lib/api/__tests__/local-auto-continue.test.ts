@@ -281,6 +281,16 @@ afterEach(() => {
 });
 
 describe("automatic continuation after a Desktop comes back", () => {
+  it("continues an unreconciled-command stop once its session returns", async () => {
+    await recordStop("run_stopped", "desktop_command_unreconciled");
+    await report();
+
+    expect(startAgent).toHaveBeenCalledTimes(1);
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({ outcome: "started" }),
+    ]);
+  });
+
   it("starts one continuation however many reports of the return arrive", async () => {
     await recordStop();
     const responses = await Promise.all([report(), report(), report()]);

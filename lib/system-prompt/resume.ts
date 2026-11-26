@@ -7,11 +7,18 @@ import {
   POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 
-export const getResumeSection = (finishReason?: string): string => {
+export const getResumeSection = (
+  finishReason?: string,
+  resumeTrigger?: "manual" | "automatic",
+): string => {
   if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
+    const resumedBy =
+      resumeTrigger === "automatic"
+        ? "The same computer reconnected, so this run continued automatically from saved conversation progress. The user has not reviewed the stop."
+        : "The user has now explicitly resumed from saved conversation progress.";
     return `<resume_context>
 The previous Agent run stopped because its local computer connection was lost.
-The user has now explicitly resumed from saved conversation progress. Do not restart completed work.
+${resumedBy} Do not restart completed work.
 A command that was running when the connection disappeared may have completed or may still be running.
 Inspect its saved output and current state before taking further action. Never replay an uncertain mutation automatically.
 </resume_context>`;
