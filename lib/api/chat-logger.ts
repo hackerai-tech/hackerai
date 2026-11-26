@@ -1815,6 +1815,7 @@ export function captureAgentRun({
         configured_max_steps: stepLimitTelemetry.configuredMaxSteps,
         agent_step_count: stepLimitTelemetry.stepCount,
         step_limit_reached: stepLimitTelemetry.stepLimitReached,
+        final_step_has_text: stepLimitTelemetry.finalStepHasText,
         initial_todo_count: stepLimitTelemetry.initialTodoCount,
         initial_unfinished_todo_count:
           stepLimitTelemetry.initialUnfinishedTodoCount,

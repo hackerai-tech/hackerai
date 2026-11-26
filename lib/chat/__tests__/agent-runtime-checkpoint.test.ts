@@ -110,6 +110,23 @@ describe("Agent runtime checkpoint", () => {
     });
   });
 
+  it("re-evaluates a prepared notice that never reached the model", () => {
+    let elapsed = 900;
+    const onExposed = jest.fn();
+    const checkpoint = createAgentRuntimeCheckpoint({
+      enabled: true,
+      maxDurationMs: 1000,
+      getElapsedTimeMs: () => elapsed,
+      onExposed,
+    });
+    expect(checkpoint.takeNotice()).toBeDefined();
+    // A failed preparation is retried after the allowance ran out.
+    elapsed = 1000;
+    expect(checkpoint.takeNotice()).toBeUndefined();
+    checkpoint.recordExposure();
+    expect(onExposed).not.toHaveBeenCalled();
+  });
+
   it.each([NaN, Infinity, -1, 1000, 1100])(
     "does not nudge at invalid or exhausted elapsed time %s",
     (elapsed) => {
@@ -171,123 +188,5 @@ describe("Agent runtime checkpoint", () => {
     expect(
       createAgentRuntimeCheckpoint({ ...options, enabled: true }).takeNotice(),
     ).toBeDefined();
-  });
-});
-
-describe("Agent limit wrap-up", () => {
-  const atLimit = { completedSteps: 450, maxSteps: 500 };
-  const createWrapUp = ({
-    wrapUpEnabled = true,
-    runtimeEnabled = false,
-    elapsed = 0,
-  } = {}) => {
-    const onRuntimeExposed = jest.fn();
-    const onWrapUpExposed = jest.fn();
-    const checkpoint = createAgentRuntimeCheckpoint({
-      enabled: runtimeEnabled,
-      maxDurationMs: 1000,
-      getElapsedTimeMs: () => elapsed,
-      onExposed: onRuntimeExposed,
-      limitWrapUp: { enabled: wrapUpEnabled, onExposed: onWrapUpExposed },
-    });
-    return { checkpoint, onRuntimeExposed, onWrapUpExposed };
-  };
-
-  it("fires once at 90% of the step limit, with exposure only on model start", () => {
-    const { checkpoint, onWrapUpExposed } = createWrapUp();
-    expect(
-      checkpoint.takeNotice({ completedSteps: 449, maxSteps: 500 }),
-    ).toBeUndefined();
-    const notice = checkpoint.takeNotice(atLimit);
-    expect(notice).toContain("<agent_limit_wrapup>");
-    expect(notice).toContain("step limit");
-    expect(notice).toContain("get_terminal_files");
-    expect(onWrapUpExposed).not.toHaveBeenCalled();
-    checkpoint.recordExposure();
-    checkpoint.recordExposure();
-    expect(
-      checkpoint.takeNotice({ completedSteps: 460, maxSteps: 500 }),
-    ).toBeUndefined();
-    expect(onWrapUpExposed).toHaveBeenCalledTimes(1);
-    expect(onWrapUpExposed).toHaveBeenCalledWith({
-      trigger_kind: "step",
-      step_count_bucket: "450+",
-      budget_pct_bucket: "none",
-    });
-  });
-
-  it.each([
-    [89.9, undefined],
-    [90, "90-94"],
-    [99.5, "95-99"],
-  ] as const)(
-    "uses budget stop pressure %s before the step threshold",
-    (budgetUsedPercent, bucket) => {
-      const { checkpoint, onWrapUpExposed } = createWrapUp();
-      const notice = checkpoint.takeNotice({
-        completedSteps: 12,
-        maxSteps: 500,
-        budgetUsedPercent,
-      });
-      checkpoint.recordExposure();
-      if (!bucket) {
-        expect(notice).toBeUndefined();
-        expect(onWrapUpExposed).not.toHaveBeenCalled();
-        return;
-      }
-      expect(notice).toContain("usage limit");
-      expect(onWrapUpExposed).toHaveBeenCalledWith({
-        trigger_kind: "usage",
-        step_count_bucket: "10-49",
-        budget_pct_bucket: bucket,
-      });
-    },
-  );
-
-  it("re-evaluates a prepared notice that never reached the model", () => {
-    const { checkpoint, onWrapUpExposed } = createWrapUp();
-    expect(checkpoint.takeNotice(atLimit)).toBeDefined();
-    // A failed preparation is retried with fresh progress before dispatch.
-    expect(
-      checkpoint.takeNotice({ completedSteps: 10, maxSteps: 500 }),
-    ).toBeUndefined();
-    checkpoint.recordExposure();
-    expect(onWrapUpExposed).not.toHaveBeenCalled();
-    expect(checkpoint.takeNotice(atLimit)).toBeDefined();
-  });
-
-  it("stays silent when the flag is off, even with runtime checkpoint on", () => {
-    const { checkpoint, onWrapUpExposed } = createWrapUp({
-      wrapUpEnabled: false,
-    });
-    expect(
-      checkpoint.takeNotice({ ...atLimit, budgetUsedPercent: 99 }),
-    ).toBeUndefined();
-    checkpoint.recordExposure();
-    expect(onWrapUpExposed).not.toHaveBeenCalled();
-  });
-
-  it("supersedes a simultaneous runtime checkpoint and blocks it afterwards", () => {
-    const run = createWrapUp({ runtimeEnabled: true, elapsed: 950 });
-    expect(run.checkpoint.takeNotice(atLimit)).toContain(
-      "<agent_limit_wrapup>",
-    );
-    run.checkpoint.recordExposure();
-    expect(run.checkpoint.takeNotice(atLimit)).toBeUndefined();
-    expect(run.checkpoint.takeNotice()).toBeUndefined();
-    expect(run.onWrapUpExposed).toHaveBeenCalledTimes(1);
-    expect(run.onRuntimeExposed).not.toHaveBeenCalled();
-  });
-
-  it("does not follow an exposed runtime checkpoint", () => {
-    const run = createWrapUp({ runtimeEnabled: true, elapsed: 950 });
-    expect(
-      run.checkpoint.takeNotice({ completedSteps: 10, maxSteps: 500 }),
-    ).toContain("<agent_runtime_checkpoint>");
-    run.checkpoint.recordExposure();
-    expect(run.checkpoint.takeNotice(atLimit)).toBeUndefined();
-    run.checkpoint.recordExposure();
-    expect(run.onRuntimeExposed).toHaveBeenCalledTimes(1);
-    expect(run.onWrapUpExposed).not.toHaveBeenCalled();
   });
 });

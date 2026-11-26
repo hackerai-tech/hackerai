@@ -8,6 +8,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
 import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
 import { createAgentRuntimeCheckpoint } from "@/lib/chat/agent-runtime-checkpoint";
+import { createAgentLimitWrapUp } from "@/lib/chat/agent-limit-wrapup";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -989,10 +990,11 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each(["ask", "aborted"])(
-    "does not prepare a runtime notice for %s",
+    "does not prepare a runtime notice or limit wrap-up for %s",
     async (scenario) => {
       const takeNotice = jest.fn(() => "runtime notice");
       const recordExposure = jest.fn();
+      const prepare = jest.fn(() => "wrap-up note");
       const abortController = new AbortController();
       const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
         usedTokens: 1000,
@@ -1002,6 +1004,7 @@ describe("createAgentStream repeated compaction", () => {
         mode: scenario === "ask" ? "ask" : "agent",
         abortController,
         runtimeCheckpoint: { takeNotice, recordExposure },
+        limitWrapUp: { prepare, recordExposure },
         usageTracker: {},
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
       });
@@ -1011,30 +1014,34 @@ describe("createAgentStream repeated compaction", () => {
         state,
       )) as any;
       if (scenario === "aborted") abortController.abort();
-      await stream.prepareStep({
-        steps: [],
-        stepNumber: 0,
-        messages: stream.messages,
-      });
+      const prepared = await stream
+        .prepareStep({
+          steps: [],
+          stepNumber: 499,
+          messages: stream.messages,
+        })
+        .catch(() => undefined);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
       expect(takeNotice).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
       expect(recordExposure).not.toHaveBeenCalled();
+      expect(JSON.stringify(prepared ?? {})).not.toContain("wrap-up note");
     },
   );
 
   it.each([
-    ["step", 449, 1, undefined],
-    ["usage", 12, 0, 91],
+    ["step", 489, 1, undefined],
+    [
+      "usage",
+      12,
+      0,
+      { remainingPoints: 30, recentStepCostPoints: 12, usedPercent: 97 },
+    ],
   ] as const)(
-    "wraps up at the run's %s limit from cumulative steps and budget pressure",
-    async (kind, completedBeforeStream, stepNumber, pressure) => {
+    "wraps up near the %s limit with a kept note that leaves the cached prefix intact",
+    async (kind, completedBeforeStream, stepNumber, headroom) => {
       const onExposed = jest.fn();
-      const checkpoint = createAgentRuntimeCheckpoint({
-        enabled: false,
-        getElapsedTimeMs: () => 0,
-        onExposed: jest.fn(),
-        limitWrapUp: { enabled: true, onExposed },
-      });
-      let budgetPressure: number | undefined;
+      let budgetHeadroom: typeof headroom | undefined;
       const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
         usedTokens: 1000,
         maxTokens: 128000,
@@ -1042,8 +1049,8 @@ describe("createAgentStream repeated compaction", () => {
       // A retried stream resumes after steps completed by earlier streams.
       state.agentStepCount = completedBeforeStream;
       const context = createTestStreamContext({
-        runtimeCheckpoint: checkpoint,
-        budgetMonitor: { getStopPressurePercent: () => budgetPressure },
+        limitWrapUp: createAgentLimitWrapUp({ onExposed }),
+        budgetMonitor: { getStopHeadroom: () => budgetHeadroom },
         usageTracker: {},
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
       });
@@ -1053,23 +1060,134 @@ describe("createAgentStream repeated compaction", () => {
         state,
       )) as any;
       const step = { steps: [], stepNumber: 0, messages: stream.messages };
-      expect((await stream.prepareStep(step)).system).not.toContain(
+      const before = await stream.prepareStep(step);
+      expect(JSON.stringify(before.messages)).not.toContain(
         "<agent_limit_wrapup>",
       );
-      budgetPressure = pressure;
+      budgetHeadroom = headroom;
       const prepared = await stream.prepareStep({ ...step, stepNumber });
-      expect(prepared.system).toContain(`close to its ${kind} limit`);
+      // Only a tail message is added; the system prompt and earlier messages
+      // are unchanged, so this step reuses the provider's prompt cache.
+      expect(prepared.system).toBe(before.system);
+      expect(prepared.messages.slice(0, -1)).toEqual(before.messages);
+      expect(prepared.messages.at(-1)).toEqual({
+        role: "user",
+        content: expect.stringContaining(`close to its ${kind} limit`),
+      });
+      expect(state.finalMessages).toEqual([uiMessage("initial", "Inspect")]);
+      expect(onExposed).not.toHaveBeenCalled();
       stream.experimental_onStepStart({ model: { modelId: "test-model" } });
       expect(onExposed).toHaveBeenCalledWith(
         expect.objectContaining({ trigger_kind: kind }),
       );
+
+      // The model keeps seeing the note, at its original position, even after
+      // the usage pressure that triggered it is no longer reported.
+      budgetHeadroom = undefined;
+      const reply: ModelMessage = {
+        role: "assistant",
+        content: "Delivering files.",
+      };
+      const next = await stream.prepareStep({
+        ...step,
+        stepNumber: stepNumber + 1,
+        messages: [...stream.messages, reply],
+      });
+      expect(next.messages).toEqual([...prepared.messages, reply]);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+
+      // A replacement stream keeps one note and does not expose it again.
+      const retried = (await createAgentStream(
+        "test-model",
+        context as any,
+        state,
+      )) as any;
+      const retriedStep = await retried.prepareStep({
+        ...step,
+        messages: retried.messages,
+      });
       expect(
-        (await stream.prepareStep({ ...step, stepNumber: stepNumber + 1 }))
-          .system,
-      ).not.toContain("<agent_limit_wrapup>");
+        retriedStep.messages.filter((message: ModelMessage) =>
+          JSON.stringify(message).includes("<agent_limit_wrapup>"),
+        ),
+      ).toHaveLength(1);
+      retried.experimental_onStepStart({ model: { modelId: "test-model" } });
       expect(onExposed).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("wraps up after an exposed runtime checkpoint and then suppresses it", async () => {
+    const onRuntimeExposed = jest.fn();
+    const onWrapUpExposed = jest.fn();
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    state.agentStepCount = 480;
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        runtimeCheckpoint: createAgentRuntimeCheckpoint({
+          enabled: true,
+          maxDurationMs: 1000,
+          getElapsedTimeMs: () => 950,
+          onExposed: onRuntimeExposed,
+        }),
+        limitWrapUp: createAgentLimitWrapUp({ onExposed: onWrapUpExposed }),
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = { steps: [], stepNumber: 0, messages: stream.messages };
+    expect((await stream.prepareStep(step)).system).toContain(
+      "<agent_runtime_checkpoint>",
+    );
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    const wrapUp = await stream.prepareStep({ ...step, stepNumber: 10 });
+    expect(JSON.stringify(wrapUp.messages)).toContain("<agent_limit_wrapup>");
+    expect(wrapUp.system).not.toContain("<agent_runtime_checkpoint>");
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onRuntimeExposed).toHaveBeenCalledTimes(1);
+    expect(onWrapUpExposed).toHaveBeenCalledTimes(1);
+  });
+
+  it("records whether the latest completed step produced text", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { get_terminal_files: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    await stream.onStepFinish({
+      response: { modelId: "test-model" },
+      text: "Done: report delivered.",
+    });
+    expect(state.lastStepHasText).toBe(true);
+    await stream.onStepFinish({
+      response: { modelId: "test-model" },
+      text: " ",
+      toolCalls: [
+        {
+          toolCallId: "files-1",
+          toolName: "get_terminal_files",
+          input: { files: ["/tmp/report.md"] },
+        },
+      ],
+      toolResults: [{ toolCallId: "files-1", output: "delivered" }],
+    });
+    expect(state.lastStepHasText).toBe(false);
+  });
 
   it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
     let version: string | undefined;
