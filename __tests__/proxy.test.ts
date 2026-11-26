@@ -984,7 +984,7 @@ describe("proxy", () => {
   );
 
   it.each([true, false])(
-    "logs AuthKit's transient classification (%s) without changing its response",
+    "logs AuthKit's transient classification (%s) and keeps a transient session retryable",
     async (isTransient) => {
       const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
       const sessionCookie = isTransient
@@ -1036,13 +1036,16 @@ describe("proxy", () => {
         expect(String(warnSpy.mock.calls[0][0])).not.toContain(
           "private-refresh-cause",
         );
+        // A transient failure is not a session expiry, so it must not read as signed out.
         expect(mockNextResponseJson).toHaveBeenCalledWith(
-          {
-            code: "unauthorized:auth",
-            message: "You need to sign in before continuing.",
-            cause: "Session expired or invalid",
-          },
-          expect.objectContaining({ status: 401 }),
+          isTransient
+            ? { code: "rate_limited", message: "Please retry shortly." }
+            : {
+                code: "unauthorized:auth",
+                message: "You need to sign in before continuing.",
+                cause: "Session expired or invalid",
+              },
+          expect.objectContaining({ status: isTransient ? 503 : 401 }),
         );
         const responseInit = mockNextResponseJson.mock.calls[0][1] as {
           headers: Headers;
@@ -1369,6 +1372,111 @@ describe("proxy", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  describe("refresh that WorkOS could not answer", () => {
+    let warn: ReturnType<typeof jest.spyOn>;
+    beforeEach(() => {
+      warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => warn.mockRestore());
+
+    // AuthKit's shape after the bounded SDK gives up on a stalled refresh: no
+    // session, only its PKCE cookie, and the session cookie left in place.
+    function mockTransientRefresh(isTransient: boolean) {
+      mockAuthkit.mockImplementation((_request, options: any) => {
+        options.onSessionRefreshError({
+          error: Object.assign(new Error("Error: Request timeout"), {
+            name: "OauthException",
+            status: 408,
+            error: "Request timeout",
+          }),
+          isTransient,
+          refreshStage: "refresh_request",
+        });
+        return Promise.resolve({
+          session: { user: null },
+          headers: new Headers({
+            "set-cookie": "wos-auth-verifier=sealed-state; Path=/; HttpOnly",
+          }),
+          authorizationUrl: "https://auth.hackerai.co/login",
+        });
+      });
+    }
+
+    function expectSessionCookieKept(response: any, init: any) {
+      expect(response.cookies.delete).not.toHaveBeenCalledWith("wos-session");
+      expect(init.headers.get("set-cookie") ?? "").not.toContain(
+        "wos-session=",
+      );
+    }
+
+    it("asks API clients to retry instead of answering 401", async () => {
+      mockTransientRefresh(true);
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(
+        createRequest({ pathname: "/api/agent", hasSession: true }),
+      );
+
+      expect(mockNextResponseJson).toHaveBeenCalledTimes(1);
+      const [body, init] = mockNextResponseJson.mock.calls[0] as [
+        unknown,
+        { status: number; headers: Headers },
+      ];
+      expect(body).toEqual({
+        code: "rate_limited",
+        message: "Please retry shortly.",
+      });
+      expect(init.status).toBe(503);
+      expect(init.headers.get("retry-after")).toBe("5");
+      expectSessionCookieKept(response, init);
+      // The existing categorical refresh diagnostic identifies the timeout.
+      const fields = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(fields).toMatchObject({
+        event: "auth.session_refresh_failed",
+        is_transient: true,
+        auth_refresh_error_kind: "OauthException",
+        auth_refresh_error_status: 408,
+        auth_refresh_stage: "refresh_request",
+      });
+    });
+
+    it("lets a browser page load without a login redirect", async () => {
+      mockTransientRefresh(true);
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(
+        createRequest({
+          pathname: "/c/chat-1",
+          accept: "text/html",
+          hasSession: true,
+          userAgent: "Mozilla/5.0",
+        }),
+      );
+
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledTimes(1);
+      const init = mockNextResponseNext.mock.calls[0][0] as {
+        request: { headers: Headers };
+        headers: Headers;
+      };
+      // No session context is forwarded, so the page stays unauthenticated.
+      expect(init.request.headers.get("x-workos-session")).toBeNull();
+      expectSessionCookieKept(response, init);
+    });
+
+    it("still answers 401 when the refresh failure is terminal", async () => {
+      mockTransientRefresh(false);
+      const { default: proxy } = await import("../proxy");
+
+      await proxy(createRequest({ pathname: "/api/agent", hasSession: true }));
+
+      expect(mockNextResponseJson).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "unauthorized:auth" }),
+        expect.objectContaining({ status: 401 }),
+      );
+    });
   });
 
   describe("malformed session cookie recovery", () => {
