@@ -55,7 +55,9 @@ const getServerActionErrorMetadata = (
   const digest = getErrorDigest(error);
 
   return {
-    ...(actionId && /^[a-f0-9]{40}$/i.test(actionId)
+    // Next.js 16.4 server references include an argument metadata byte in
+    // addition to the hash, for a total of 42 hexadecimal characters.
+    ...(actionId && /^[a-f0-9]{42}$/i.test(actionId)
       ? { action_id: actionId }
       : {}),
     ...(contentType && contentType.length <= 128
