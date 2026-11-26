@@ -827,7 +827,8 @@ export default async function proxy(request: NextRequest) {
   // A rate limit or unavailable WorkOS is not a session expiry: don't redirect
   // to login or answer 401, which some clients treat as a sign-out.
   if (hadSessionCookie && (refreshHitRateLimit || refreshFailedTransiently)) {
-    if (!isBrowserRequest(request)) {
+    // An API handler reached without a session answers 401, whatever its Accept.
+    if (!isBrowserRequest(request) || pathname.startsWith("/api/")) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
       return withAttributionCookies(
@@ -838,7 +839,10 @@ export default async function proxy(request: NextRequest) {
         ),
       );
     }
-    // For browser requests, let through rather than forcing a confusing login redirect
+    // For browser requests, let through rather than forcing a confusing login
+    // redirect. AuthKit projected no session here, so any session header is the
+    // caller's own and must not reach withAuth(), which skips expiry checks.
+    requestHeaders.delete(SESSION_HEADER);
     return withAttributionCookies(
       request,
       NextResponse.next({
