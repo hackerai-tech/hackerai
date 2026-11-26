@@ -849,6 +849,7 @@ describe("onRequestError", () => {
   );
 
   it("adds bounded Server Action request metadata without sensitive headers", () => {
+    const actionId = "40" + "a".repeat(40);
     const error = Object.assign(
       new SyntaxError("Unexpected end of JSON input"),
       {
@@ -862,7 +863,7 @@ describe("onRequestError", () => {
         path: "/c/opaque-chat-id",
         method: "POST",
         headers: {
-          "next-action": "a".repeat(40),
+          "next-action": actionId,
           "content-type": "text/plain; charset=utf-8",
           "content-length": "0",
           "x-vercel-id": "iad1::opaque-request",
@@ -884,7 +885,7 @@ describe("onRequestError", () => {
         error,
         path: "/c/[id]",
         routeType: "action",
-        action_id: "a".repeat(40),
+        action_id: actionId,
         content_type: "text/plain",
         content_length: 0,
         vercel_request_id: "iad1::opaque-request",
@@ -897,32 +898,35 @@ describe("onRequestError", () => {
     expect(logged).not.toContain("opaque-chat-id");
   });
 
-  it("omits malformed Server Action metadata", () => {
-    onRequestError(
-      new Error("boom"),
-      {
-        path: "/api/chat",
-        method: "POST",
-        headers: {
-          "next-action": "not-an-action-id",
-          "content-length": "NaN",
-          "x-vercel-id": "not valid whitespace",
+  it.each(["not-an-action-id", "a".repeat(40), "g".repeat(42)])(
+    "omits malformed Server Action metadata for %s",
+    (actionId) => {
+      onRequestError(
+        new Error("boom"),
+        {
+          path: "/api/chat",
+          method: "POST",
+          headers: {
+            "next-action": actionId,
+            "content-length": "NaN",
+            "x-vercel-id": "not valid whitespace",
+          },
         },
-      },
-      {
-        routePath: "/c/[id]",
-        routeType: "action",
-        routerKind: "App Router",
-        revalidateReason: undefined,
-      },
-    );
+        {
+          routePath: "/c/[id]",
+          routeType: "action",
+          routerKind: "App Router",
+          revalidateReason: undefined,
+        },
+      );
 
-    const payload = mockPhLoggerError.mock.calls[0][1];
-    expect(payload).not.toHaveProperty("action_id");
-    expect(payload).not.toHaveProperty("content_length");
-    expect(payload).not.toHaveProperty("vercel_request_id");
-    expect(payload).not.toHaveProperty("error_digest");
-  });
+      const payload = mockPhLoggerError.mock.calls[0][1];
+      expect(payload).not.toHaveProperty("action_id");
+      expect(payload).not.toHaveProperty("content_length");
+      expect(payload).not.toHaveProperty("vercel_request_id");
+      expect(payload).not.toHaveProperty("error_digest");
+    },
+  );
 
   it("leaves non-action request logging unchanged", () => {
     onRequestError(
@@ -931,7 +935,7 @@ describe("onRequestError", () => {
         path: "/api/chat",
         method: "POST",
         headers: {
-          "next-action": "a".repeat(40),
+          "next-action": "40" + "a".repeat(40),
           "content-length": "123",
           "x-vercel-id": "iad1::opaque-request",
         },
