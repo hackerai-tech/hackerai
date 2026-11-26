@@ -67,8 +67,9 @@ export type ReviewItems = Pick<
 /**
  * `exact_run`: the one run linked to the burst's workspace. `account_activity`:
  * recent chats of the account with no link to the workspace or the burst.
- * `retained_candidate`: the one run a `multiple_runs` case kept, reassessed
- * on demand; other runs may have caused the burst.
+ * `retained_candidate`: the one run a `multiple_runs` or
+ * `account_runs_unverified` case kept, reassessed on demand; other runs may
+ * have caused the burst.
  */
 export type ReviewEvidenceMode =
   "exact_run" | "account_activity" | "retained_candidate";
@@ -869,7 +870,8 @@ type ClassifiedManualReason = Extract<
 >;
 
 /**
- * Advisory finding for one retained candidate run of a `multiple_runs` case.
+ * Advisory finding for one retained candidate run of a `multiple_runs` or
+ * `account_runs_unverified` case.
  * It describes that run only and is never a verdict on the burst: `neutral`
  * and `concern` need the same complete, cited evidence as a `no_case` or an
  * authorization request; anything less is `inconclusive`.

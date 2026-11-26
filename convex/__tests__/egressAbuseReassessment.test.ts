@@ -272,6 +272,10 @@ it("reads only the retained candidate of an overlap case and adds one audit read
 });
 
 describe("fails closed without returning evidence", () => {
+  const historyLimited = {
+    outcome: "manual_review",
+    reason: "account_runs_unverified",
+  } as const;
   const record = (change: (value: any) => void) => {
     const value: any = overlapRecord();
     change(value);
@@ -310,6 +314,23 @@ describe("fails closed without returning evidence", () => {
       "an overlap case that kept no candidate",
       () => recordCase(overlapRecord({ run: undefined })),
       "no_candidate",
+    ],
+    [
+      "a history-limited case that kept no candidate",
+      () =>
+        recordCase(overlapRecord({ decision: historyLimited, run: undefined })),
+      "no_candidate",
+    ],
+    [
+      "a history-limited record that claims read evidence",
+      () =>
+        recordCase(
+          record((value) => {
+            value.reason = historyLimited.reason;
+            value.evidenceMode = "exact_run";
+          }),
+        ),
+      "record_invalid",
     ],
     [
       "a record whose owner does not hash to the case",
