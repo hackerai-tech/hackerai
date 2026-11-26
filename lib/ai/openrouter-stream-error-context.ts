@@ -8,6 +8,11 @@ import {
   recordOpenRouterStreamErrorContext,
   type OpenRouterStreamErrorContext,
 } from "@/lib/utils/openrouter-stream-error-context";
+import { DEEPSEEK_1017_SLUG } from "@/lib/experiments/paid-deepseek-1017";
+import {
+  describeOpenRouterRequestJsonEscape,
+  isOpenRouterJsonEscapeRejection,
+} from "./openrouter-request-json-escape";
 
 type StreamResult = Awaited<
   ReturnType<
@@ -65,6 +70,7 @@ export function withOpenRouterStreamErrorContext(
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
     return model;
+  const inspectJsonEscape = model.modelId === DEEPSEEK_1017_SLUG;
   return wrapLanguageModel({
     model,
     middleware: {
@@ -73,6 +79,7 @@ export function withOpenRouterStreamErrorContext(
       wrapStream: async ({ doStream }) => {
         const result = await doStream();
         const call = {};
+        let jsonEscapeReported = false;
         let context: OpenRouterStreamErrorContext;
         try {
           context = headerContext(result.response?.headers);
@@ -90,12 +97,30 @@ export function withOpenRouterStreamErrorContext(
             new TransformStream<StreamPart, StreamPart>({
               transform(part, controller) {
                 try {
-                  if (part.type === "error")
+                  if (part.type === "error") {
                     recordOpenRouterStreamErrorContext(
                       part.error,
                       call,
                       context,
                     );
+                    if (
+                      inspectJsonEscape &&
+                      !jsonEscapeReported &&
+                      isOpenRouterJsonEscapeRejection(part.error)
+                    ) {
+                      jsonEscapeReported = true;
+                      console.warn(
+                        JSON.stringify({
+                          event: "openrouter_request_json_escape_diagnostic",
+                          diagnostic_version: 1,
+                          source: "sdk_request_body",
+                          ...describeOpenRouterRequestJsonEscape(
+                            result.request?.body,
+                          ),
+                        }),
+                      );
+                    }
+                  }
                 } catch {
                   // Diagnostics must not interfere with forwarding the original part.
                 }
