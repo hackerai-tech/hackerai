@@ -1,6 +1,6 @@
 "use server";
 
-import { workos } from "@/app/api/workos";
+import { WORKOS_REQUEST_TIMEOUT_MS, workos } from "@/app/api/workos";
 import { withAuth } from "@workos-inc/authkit-nextjs";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 
@@ -79,6 +79,8 @@ async function resolveBillingContext(
   const response = await fetch(
     `${workos.baseURL}/organizations/${organizationId}`,
     {
+      // Outside the SDK client, so it needs its own bound; no retry.
+      signal: AbortSignal.timeout(WORKOS_REQUEST_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${process.env.WORKOS_API_KEY}`,
         "content-type": "application/json",

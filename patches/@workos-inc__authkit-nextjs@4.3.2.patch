@@ -427,6 +427,22 @@ index d82fd847dc74bac022339c79d3c876ec58719864..f0465d6580fcb84cd5b9ab3f33311f5f
      }) => void | Promise<void>;
  }
  export interface AuthkitResponse {
+diff --git a/dist/esm/workos.js b/dist/esm/workos.js
+index 26264bcb36c25f8ba434446ea39c86677a540b11..b8de79d11d8fac49e7589b8e824a192e9440409c 100644
+--- a/dist/esm/workos.js
++++ b/dist/esm/workos.js
+@@ -6,6 +6,11 @@ const options = {
+     apiHostname: WORKOS_API_HOSTNAME,
+     https: WORKOS_API_HTTPS ? WORKOS_API_HTTPS === 'true' : true,
+     port: WORKOS_API_PORT ? parseInt(WORKOS_API_PORT) : undefined,
++    // HackerAI: fail a stalled request-path call fast instead of the SDK's
++    // 60s per attempt plus 3 retries. Keep equal to WORKOS_REQUEST_TIMEOUT_MS
++    // and WORKOS_REQUEST_MAX_RETRIES in app/api/workos.ts.
++    timeout: 4000,
++    maxRetries: 1,
+     appInfo: {
+         name: 'authkit/nextjs',
+         version: VERSION,
 diff --git a/src/actions.spec.ts b/src/actions.spec.ts
 index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b664cc97b71 100644
 --- a/src/actions.spec.ts
@@ -914,3 +930,19 @@ index 9cd410fc84198b027c3c9f112529a9d579c898dd..3eef8507a98ba196b3d001efd7451fcf
  
      const { url: authorizationUrl, sealedState } = await getAuthorizationUrl({
        returnPathname: getReturnPathname(request.url),
+diff --git a/src/workos.ts b/src/workos.ts
+index 104269afe921264f74e2e78ee5b8c9b38c95cd83..59d652073605e346b13eb65bfb5a06ee178b633a 100644
+--- a/src/workos.ts
++++ b/src/workos.ts
+@@ -8,6 +8,11 @@ const options = {
+   apiHostname: WORKOS_API_HOSTNAME,
+   https: WORKOS_API_HTTPS ? WORKOS_API_HTTPS === 'true' : true,
+   port: WORKOS_API_PORT ? parseInt(WORKOS_API_PORT) : undefined,
++  // HackerAI: fail a stalled request-path call fast instead of the SDK's
++  // 60s per attempt plus 3 retries. Keep equal to WORKOS_REQUEST_TIMEOUT_MS
++  // and WORKOS_REQUEST_MAX_RETRIES in app/api/workos.ts.
++  timeout: 4000,
++  maxRetries: 1,
+   appInfo: {
+     name: 'authkit/nextjs',
+     version: VERSION,

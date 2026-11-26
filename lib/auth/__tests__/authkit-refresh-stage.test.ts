@@ -23,6 +23,67 @@ const jose = jest.requireActual(
   errors: { JWTInvalid: new (...args: unknown[]) => Error };
 };
 
+// Jest maps @workos-inc/node to a stub; load the SDK copy AuthKit resolves.
+const workosSdk = jest.requireActual(
+  path.join(
+    fs.realpathSync(
+      path.join(
+        fs.realpathSync(
+          path.join(process.cwd(), "node_modules/@workos-inc/authkit-nextjs"),
+        ),
+        "../node",
+      ),
+    ),
+    "lib/index.cjs",
+  ),
+) as { WorkOS: new (...args: unknown[]) => unknown };
+
+type RefreshClient = {
+  userManagement: {
+    authenticateWithRefreshToken: (args: unknown) => Promise<unknown>;
+  };
+};
+
+/** Build AuthKit's patched WorkOS client from the shipped file next to `sessionFile`. */
+function loadAuthKitWorkOS(sessionFile: string): RefreshClient {
+  const file = sessionFile.replace(/session\.(ts|js)$/, "workos.$1");
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "node_modules/@workos-inc/authkit-nextjs", file),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const dependencies: Record<string, unknown> = {
+    "@workos-inc/node": workosSdk,
+    "./env-variables.js": { WORKOS_API_KEY: "sk_test_bounds" },
+    "./utils.js": { lazy: (fn: () => unknown) => fn },
+  };
+  const exports: { getWorkOS?: () => RefreshClient } = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: (name: string) => {
+      if (!(name in dependencies))
+        throw new Error(`Unexpected dependency ${name}`);
+      return dependencies[name];
+    },
+  });
+  return exports.getWorkOS!();
+}
+
+/** A WorkOS request that never answers until the SDK aborts it. */
+const hangUntilAborted = (_url: unknown, init?: RequestInit) =>
+  new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener(
+      "abort",
+      () => reject(new DOMException("aborted", "AbortError")),
+      { once: true },
+    );
+  });
+
 const encode = (value: object) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
 const jwt = (claims: object) =>
@@ -382,6 +443,93 @@ describe.each(["src/session.ts", "dist/esm/session.js"])(
       expect(outcome.result.authorizationUrl).toBeUndefined();
       expect(outcome.result.headers.getSetCookie()).toEqual([]);
       expect(outcome.result.headers.get("x-workos-session")).toBe("cookie");
+    });
+
+    describe("through AuthKit's bounded WorkOS client", () => {
+      beforeEach(() => jest.useFakeTimers());
+      afterEach(() => {
+        jest.useRealTimers();
+        jest.restoreAllMocks();
+      });
+
+      /** Route the session refresh through the real patched client and SDK. */
+      function refreshThroughClient() {
+        const client = loadAuthKitWorkOS(file);
+        const sdk = jest.fn((args: unknown) =>
+          client.userManagement.authenticateWithRefreshToken(args),
+        );
+        let outcome: Awaited<ReturnType<typeof refresh>> | undefined;
+        void refresh(
+          { accessToken: staleToken, refreshToken: "refresh_1", user },
+          sdk,
+        ).then((value) => (outcome = value));
+        return () => outcome;
+      }
+
+      it.each([
+        ["a stalled request", 408, () => hangUntilAborted],
+        [
+          "a 5xx response",
+          503,
+          () => async () =>
+            new Response(JSON.stringify({ message: "unavailable" }), {
+              status: 503,
+            }),
+        ],
+      ])(
+        "ends %s within 10s after one retry and keeps the session cookie",
+        async (_case, status, fetchImplementation) => {
+          const fetchMock = jest
+            .spyOn(globalThis, "fetch")
+            .mockImplementation(fetchImplementation());
+          const outcome = refreshThroughClient();
+
+          await jest.advanceTimersByTimeAsync(10_000);
+
+          // Previously 60s per attempt and 3 retries held the request for minutes.
+          expect(outcome()).toBeDefined();
+          await jest.advanceTimersByTimeAsync(60_000);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+          const [args] = outcome()!.onSessionRefreshError.mock.calls[0];
+          expect(args.error).toMatchObject({ status });
+          expect(args).toMatchObject({
+            isTransient: true,
+            refreshStage: "refresh_request",
+          });
+          expect(outcome()!.result.session).toEqual({ user: null });
+          // No session or access-token deletion: a later request can still refresh.
+          expect(outcome()!.result.headers.getSetCookie()).toEqual([
+            pkceCookie,
+          ]);
+        },
+      );
+
+      it("still completes a fast refresh with a single request", async () => {
+        const fetchMock = jest.spyOn(globalThis, "fetch").mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({
+                user: { object: "user", id: "user_1" },
+                access_token: freshToken,
+                refresh_token: "refresh_2",
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+        );
+        const outcome = refreshThroughClient();
+
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(outcome()!.onSessionRefreshError).not.toHaveBeenCalled();
+        expect(outcome()!.result.session).toMatchObject({
+          sessionId: "session_2",
+          accessToken: freshToken,
+        });
+        expect(outcome()!.result.headers.getSetCookie()).toEqual([
+          "wos-session=sealed-session; Path=/",
+        ]);
+      });
     });
 
     it("keeps each request's stage when refreshes overlap", async () => {

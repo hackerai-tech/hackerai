@@ -15,6 +15,7 @@ jest.mock("@workos-inc/authkit-nextjs", () => ({
 }));
 
 jest.mock("@/app/api/workos", () => ({
+  WORKOS_REQUEST_TIMEOUT_MS: 4_000,
   workos: {
     baseURL: "https://api.workos.test",
     userManagement: {
@@ -112,9 +113,10 @@ describe("read-only billing status for unscoped users", () => {
       organizationId: "org_single",
       stripeCustomerId: "cus_single",
     });
+    // This raw WorkOS request bypasses the SDK client, so it must carry its own bound.
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.workos.test/organizations/org_single",
-      expect.any(Object),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 

@@ -640,6 +640,9 @@ export default async function proxy(request: NextRequest) {
   }
 
   let refreshHitRateLimit = false;
+  // WorkOS timed out, failed at the network, or returned a 5xx after the
+  // bounded SDK retry. AuthKit keeps the session cookie for these.
+  let refreshFailedTransiently = false;
   let refreshEndedSession = false;
   const hadSessionCookie = request.cookies.has("wos-session");
 
@@ -700,6 +703,7 @@ export default async function proxy(request: NextRequest) {
           return;
         }
 
+        refreshFailedTransiently = isTransient;
         console.warn(
           JSON.stringify({
             timestamp: new Date().toISOString(),
@@ -820,9 +824,11 @@ export default async function proxy(request: NextRequest) {
     return response;
   }
 
-  // If rate-limited (not a real session expiry), don't redirect to login
-  if (hadSessionCookie && refreshHitRateLimit) {
-    if (!isBrowserRequest(request)) {
+  // A rate limit or unavailable WorkOS is not a session expiry: don't redirect
+  // to login or answer 401, which some clients treat as a sign-out.
+  if (hadSessionCookie && (refreshHitRateLimit || refreshFailedTransiently)) {
+    // An API handler reached without a session answers 401, whatever its Accept.
+    if (!isBrowserRequest(request) || pathname.startsWith("/api/")) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
       return withAttributionCookies(
@@ -833,7 +839,10 @@ export default async function proxy(request: NextRequest) {
         ),
       );
     }
-    // For browser requests, let through rather than forcing a confusing login redirect
+    // For browser requests, let through rather than forcing a confusing login
+    // redirect. AuthKit projected no session here, so any session header is the
+    // caller's own and must not reach withAuth(), which skips expiry checks.
+    requestHeaders.delete(SESSION_HEADER);
     return withAttributionCookies(
       request,
       NextResponse.next({
