@@ -2449,6 +2449,19 @@ export default defineSchema({
     ]),
 
   /**
+   * The latest Stop or environment switch in a chat that may hold a stopped
+   * Desktop run (HAC-275). Both live only on the client, so this row is their
+   * durable record: no run created before `blocked_at` continues
+   * automatically, whether its stop was recorded before or after the action.
+   */
+  agent_local_auto_continue_blocks: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+    reason: v.union(v.literal("user_stop"), v.literal("environment_switched")),
+    blocked_at: v.number(),
+  }).index("by_chat_id", ["chat_id"]),
+
+  /**
    * Follow-ups waiting for an Agent run to finish, for accounts with mid-run
    * steering. Kept on the server so a reload or another device still shows
    * them. The browser that queued a message sends it; saving the user message

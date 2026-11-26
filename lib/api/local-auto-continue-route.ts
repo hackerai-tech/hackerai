@@ -90,13 +90,13 @@ function warn(event: string, fields: Record<string, unknown>) {
   );
 }
 
+type RunningContinuation = { decision: Decision; continuedRunId: string };
+
 /**
- * The user acted in a chat before its stopped run continued automatically.
- * Never throws: a failure here must not block the user's own action. Returns
- * whether the cancellation was stored, so a caller whose only record of the
- * action is this write (Stop, an environment switch) can report a failure.
+ * Stores the user's action and returns the continuations that had already
+ * started, or undefined when it was not stored. Never throws.
  */
-export async function cancelLocalAutoContinuesForChat({
+async function storeUserCancel({
   userId,
   chatId,
   reason,
@@ -104,10 +104,13 @@ export async function cancelLocalAutoContinuesForChat({
   userId: string;
   chatId: string;
   reason: LocalAutoContinueCancelReason;
-}): Promise<boolean> {
-  let cancelled: Decision[];
+}): Promise<RunningContinuation[] | undefined> {
+  let result: Partial<{
+    cancelled: Decision[];
+    running: RunningContinuation[];
+  }> | null;
   try {
-    cancelled = await getConvexClient().mutation(
+    result = await getConvexClient().mutation(
       api.agentLocalAutoContinues.cancelForChat,
       { serviceKey: serviceKey(), userId, chatId, reason },
     );
@@ -117,14 +120,31 @@ export async function cancelLocalAutoContinuesForChat({
       reason,
       error: error instanceof Error ? error.name : typeof error,
     });
-    return false;
+    return undefined;
   }
-  if (Array.isArray(cancelled) && cancelled.length)
+  // Stored either way. Read defensively: a Convex deployment older than this
+  // route returns only the settled rows, and a send must never fail here.
+  const cancelled = Array.isArray(result?.cancelled) ? result.cancelled : [];
+  if (cancelled.length)
     await withTelemetry(async (telemetry) => {
       for (const decision of cancelled)
         recordOutcome(telemetry, userId, decision);
     }).catch(() => undefined);
-  return true;
+  return Array.isArray(result?.running) ? result.running : [];
+}
+
+/**
+ * The user acted in a chat before its stopped run continued automatically.
+ * Never throws: a failure here must not block the user's own action. Returns
+ * whether the cancellation was stored, so a caller whose only record of the
+ * action is this write (Stop, an environment switch) can report a failure.
+ */
+export async function cancelLocalAutoContinuesForChat(args: {
+  userId: string;
+  chatId: string;
+  reason: LocalAutoContinueCancelReason;
+}): Promise<boolean> {
+  return (await storeUserCancel(args)) !== undefined;
 }
 
 type RouteHandler = (req: NextRequest) => Promise<Response>;
@@ -164,9 +184,9 @@ async function retryQuickly(
 }
 
 /**
- * Stops the continuation this route started. Only that exact run: the
- * expected run ID makes a retry unable to stop a later one. A 409 means the
- * chat no longer runs it, so there is nothing left to stop.
+ * Stops one automatic continuation. Only that exact run: the expected run ID
+ * makes a retry unable to stop a later one. A 409 means the chat no longer
+ * runs it, so there is nothing left to stop.
  */
 async function stopStartedRun(
   req: NextRequest,
@@ -207,11 +227,7 @@ async function startContinuation(
   req: NextRequest,
   startAgent: RouteHandler,
   decision: Decision,
-  settings: {
-    sandboxPreference?: string;
-    agentPermissionMode?: string;
-    selectedModel?: string;
-  },
+  settings: ContinuationSettings,
   sleep: (ms: number) => Promise<void>,
 ): Promise<
   | { runId: string }
@@ -255,6 +271,139 @@ async function startContinuation(
   }
   return { failure: "start_error", status };
 }
+
+type ContinuationSettings = {
+  sandboxPreference?: string;
+  agentPermissionMode?: string;
+  selectedModel?: string;
+};
+
+/**
+ * A continuation the server had to stop may still run. Recorded once per stop
+ * (the event UUID is derived from it), never as a completed stop.
+ */
+function recordStopFailed(
+  telemetry: Telemetry,
+  userId: string,
+  decision: Decision,
+  extra: { reason?: LocalAutoContinueReason; continuedRunId: string },
+) {
+  telemetry.outcome("stop_failed", {
+    ...eventContext(userId, decision),
+    ...extra,
+  });
+}
+
+/**
+ * Starts one claimed continuation and settles its claim. A run the user
+ * stopped while it started, or one whose start cannot be recorded, is stopped
+ * here. If that fails too, it is still the chat's active run, which the chat's
+ * own Stop ends; a run the user stopped stays on its row, so the chat keeps
+ * showing it (see `getForChat`). No background retry: the user's Stop already
+ * reaches it, and a retry could race the user's next run.
+ */
+async function startClaimed({
+  req,
+  startAgent,
+  cancelAgent,
+  sleep,
+  userId,
+  decision,
+  settings,
+  telemetry,
+}: {
+  req: NextRequest;
+  startAgent: RouteHandler;
+  cancelAgent: RouteHandler;
+  sleep: (ms: number) => Promise<void>;
+  userId: string;
+  decision: Decision;
+  settings: ContinuationSettings;
+  telemetry: Telemetry;
+}) {
+  // Idempotent, so a lost response or a transient failure retries with the
+  // run already in hand and never starts another one.
+  const settle = async (
+    result:
+      | { continuedRunId: string }
+      | { failureReason: "admission_refused" | "start_error" },
+  ) => {
+    let outcome:
+      { cancelled: boolean; reason?: LocalAutoContinueReason } | undefined;
+    await retryQuickly(async () => {
+      outcome = await getConvexClient().mutation(
+        api.agentLocalAutoContinues.settleStart,
+        {
+          serviceKey: serviceKey(),
+          userId,
+          stoppedRunId: decision.stoppedRunId,
+          ...result,
+        },
+      );
+      return true;
+    }, sleep);
+    return outcome;
+  };
+
+  const started = await startContinuation(
+    req,
+    startAgent,
+    decision,
+    settings,
+    sleep,
+  );
+  if (!("runId" in started)) {
+    await settle({ failureReason: started.failure });
+    recordOutcome(telemetry, userId, {
+      ...decision,
+      state: "start_failed",
+      reason: started.failure,
+    });
+    return;
+  }
+  const continuedRunId = started.runId;
+  const settled = await settle({ continuedRunId });
+  if (settled && !settled.cancelled) {
+    recordOutcome(
+      telemetry,
+      userId,
+      { ...decision, state: "started" },
+      { continuedRunId },
+    );
+    return;
+  }
+  // Unrecorded, a Stop the user pressed while it started would go unseen, so
+  // fail closed: stop the run rather than ignore a Stop.
+  if (!settled)
+    warn("agent_local_auto_continue_settle_failed", {
+      chat_id: decision.chatId,
+      stopped_run_id: decision.stoppedRunId,
+      continued_run_id: continuedRunId,
+    });
+  const stopped = await stopStartedRun(
+    req,
+    cancelAgent,
+    decision.chatId,
+    continuedRunId,
+    sleep,
+  );
+  if (!stopped)
+    recordStopFailed(telemetry, userId, decision, {
+      reason: settled ? settled.reason : "start_error",
+      continuedRunId,
+    });
+  // A cancelled stop reported its outcome when the user acted.
+  else if (!settled)
+    recordOutcome(
+      telemetry,
+      userId,
+      { ...decision, state: "start_failed", reason: "start_error" },
+      { continuedRunId },
+    );
+}
+
+/** Pages of one computer's waiting stops read per report, 50 stops each. */
+const RETURN_PAGES = 5;
 
 type ReportBody =
   | { action: "return"; connectionId: string }
@@ -323,129 +472,103 @@ export const createLocalAutoContinuePost =
     }
 
     if (body.action === "cancel") {
+      const retry = () =>
+        NextResponse.json({ ok: false, retryable: true }, { status: 503 });
       // This write is the only record of a Stop or an environment switch, so
       // the caller must learn when it was not stored and try again.
-      const stored = await cancelLocalAutoContinuesForChat({
+      const running = await storeUserCancel({
         userId,
         chatId: body.chatId,
         reason: body.reason,
       });
-      return stored
-        ? NextResponse.json({ ok: true })
-        : NextResponse.json({ ok: false, retryable: true }, { status: 503 });
+      if (!running) return retry();
+      if (!running.length) return NextResponse.json({ ok: true });
+      // A continuation that already started would keep running on the
+      // computer the user stopped or left. Stop exactly that run; a retry of
+      // this request stops it again until it is gone.
+      const stopped = await withTelemetry(async (telemetry) => {
+        let all = true;
+        for (const { decision, continuedRunId } of running) {
+          if (
+            await stopStartedRun(
+              req,
+              cancelAgent,
+              decision.chatId,
+              continuedRunId,
+              sleep,
+            )
+          )
+            continue;
+          all = false;
+          recordStopFailed(telemetry, userId, decision, {
+            reason: body.reason,
+            continuedRunId,
+          });
+        }
+        return all;
+      });
+      return stopped ? NextResponse.json({ ok: true }) : retry();
     }
 
     const convex = getConvexClient();
-    const { candidates, settled } = await convex.mutation(
-      api.agentLocalAutoContinues.observeReturn,
-      { serviceKey: serviceKey(), userId, connectionId: body.connectionId },
-    );
-    if (!candidates.length && !settled.length)
+    const observe = (cursor: string | null) =>
+      convex.mutation(api.agentLocalAutoContinues.observeReturn, {
+        serviceKey: serviceKey(),
+        userId,
+        connectionId: body.connectionId,
+        cursor,
+      });
+    let page = await observe(null);
+    if (!page.candidates.length && !page.settled.length && page.isDone)
       return NextResponse.json({ pending: false });
 
     return withTelemetry(async (telemetry, posthog) => {
-      for (const decision of settled)
-        recordOutcome(telemetry, userId, decision);
-      if (!candidates.length) return NextResponse.json({ pending: false });
-      const variant = await getLocalAutoContinueVariant(userId, posthog);
+      let variant: LocalAutoContinueVariant | undefined | null = null;
       let pending = false;
-      for (const { stoppedRunId } of candidates) {
-        const claim = await convex.mutation(
-          api.agentLocalAutoContinues.claimReturn,
-          {
-            serviceKey: serviceKey(),
-            userId,
-            stoppedRunId,
-            connectionId: body.connectionId,
-            ...(variant ? { variant } : {}),
-          },
-        );
-        if (!claim.claimed) {
-          pending ||= claim.pending;
-          continue;
-        }
-        const { decision } = claim;
-        if (claim.exposed && decision.variant)
-          telemetry.exposed({
-            ...eventContext(userId, decision),
-            variant: decision.variant,
-          });
-        if (decision.state !== "starting") {
+      // Stops the caller cannot claim yet stay waiting, so read past them.
+      for (let pages = 1; ; pages++) {
+        for (const decision of page.settled)
           recordOutcome(telemetry, userId, decision);
-          continue;
-        }
-        const started = await startContinuation(
-          req,
-          startAgent,
-          decision,
-          claim.settings,
-          sleep,
-        );
-        // Idempotent, so a lost response or a transient failure retries
-        // with the run already in hand and never starts another one.
-        let cancelled = false;
-        const settledStart = await retryQuickly(async () => {
-          ({ cancelled } = await convex.mutation(
-            api.agentLocalAutoContinues.settleStart,
+        for (const { stoppedRunId } of page.candidates) {
+          if (variant === null)
+            variant = await getLocalAutoContinueVariant(userId, posthog);
+          const claim = await convex.mutation(
+            api.agentLocalAutoContinues.claimReturn,
             {
               serviceKey: serviceKey(),
               userId,
               stoppedRunId,
-              ...("runId" in started
-                ? { continuedRunId: started.runId }
-                : { failureReason: started.failure }),
+              connectionId: body.connectionId,
+              ...(variant ? { variant } : {}),
             },
-          ));
-          return true;
-        }, sleep);
-        if ("runId" in started) {
-          if (!settledStart) {
-            // Unrecorded, a Stop the user pressed while it started would go
-            // unseen, so fail closed: stop the run rather than ignore a Stop.
-            warn("agent_local_auto_continue_settle_failed", {
-              chat_id: decision.chatId,
-              stopped_run_id: stoppedRunId,
-              continued_run_id: started.runId,
-            });
-            await stopStartedRun(
-              req,
-              cancelAgent,
-              decision.chatId,
-              started.runId,
-              sleep,
-            );
-            recordOutcome(
-              telemetry,
-              userId,
-              { ...decision, state: "start_failed", reason: "start_error" },
-              { continuedRunId: started.runId },
-            );
-            continue;
-          }
-          if (cancelled) {
-            // The user stopped it while it was starting.
-            await stopStartedRun(
-              req,
-              cancelAgent,
-              decision.chatId,
-              started.runId,
-              sleep,
-            );
-            continue;
-          }
-          recordOutcome(
-            telemetry,
-            userId,
-            { ...decision, state: "started" },
-            { continuedRunId: started.runId },
           );
-        } else {
-          recordOutcome(telemetry, userId, {
-            ...decision,
-            state: "start_failed",
-            reason: started.failure,
+          if (!claim.claimed) {
+            pending ||= claim.pending;
+            continue;
+          }
+          const { decision } = claim;
+          if (claim.exposed && decision.variant)
+            telemetry.exposed({
+              ...eventContext(userId, decision),
+              variant: decision.variant,
+            });
+          if (decision.state !== "starting") {
+            recordOutcome(telemetry, userId, decision);
+            continue;
+          }
+          await startClaimed({
+            req,
+            startAgent,
+            cancelAgent,
+            sleep,
+            userId,
+            decision,
+            settings: claim.settings,
+            telemetry,
           });
         }
+        if (page.isDone || pages >= RETURN_PAGES) break;
+        page = await observe(page.continueCursor);
       }
       return NextResponse.json({ pending });
     });

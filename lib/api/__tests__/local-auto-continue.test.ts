@@ -58,24 +58,48 @@ function index(table: string) {
         },
       };
       build?.(q);
-      let rows = () =>
-        (tables[table] ?? []).filter(
-          (row) =>
-            Object.entries(equals).every(
-              ([key, value]) => row[key] === value,
-            ) && ranges.every((range) => range(row)),
-        );
+      const matches = (row: Row) =>
+        Object.entries(equals).every(([key, value]) => row[key] === value) &&
+        ranges.every((range) => range(row));
+      let direction: "asc" | "desc" | undefined;
+      // Every row in index order, including rows outside this range.
+      const ordered = () => {
+        const all = [...(tables[table] ?? [])];
+        if (direction)
+          all.sort(
+            (a, b) =>
+              (Number(a.stopped_at ?? a._creationTime) -
+                Number(b.stopped_at ?? b._creationTime)) *
+              (direction === "desc" ? -1 : 1),
+          );
+        return all;
+      };
+      const rows = () => ordered().filter(matches);
       const result = {
-        order(direction: "asc" | "desc") {
-          const unordered = rows;
-          rows = () =>
-            unordered().sort(
-              (a, b) =>
-                (Number(a.stopped_at ?? a._creationTime) -
-                  Number(b.stopped_at ?? b._creationTime)) *
-                (direction === "desc" ? -1 : 1),
-            );
+        order(value: "asc" | "desc") {
+          direction = value;
           return result;
+        },
+        // A Convex cursor is a position in the index: rows that leave the
+        // range between pages do not shift the next page.
+        paginate: async ({
+          cursor,
+          numItems,
+        }: {
+          cursor: string | null;
+          numItems: number;
+        }) => {
+          const all = ordered();
+          const start = cursor
+            ? all.findIndex((row) => row._id === cursor) + 1
+            : 0;
+          const rest = all.slice(start).filter(matches);
+          const page = rest.slice(0, numItems);
+          return {
+            page,
+            isDone: rest.length <= numItems,
+            continueCursor: page.at(-1)?._id ?? cursor ?? "",
+          };
         },
         first: async () => rows()[0] ?? null,
         unique: async () => {
@@ -211,6 +235,7 @@ const payload = {
   userLocation: {},
 } as never;
 
+/** The worker's report; the run was created a minute before it stopped. */
 function recordStop(
   stoppedRunId = "run_stopped",
   reason: string = "selected_host_recovery_expired",
@@ -219,6 +244,7 @@ function recordStop(
   return recordLocalAutoContinueStop({
     payload,
     stoppedRunId,
+    runStartedAt: now - 60_000,
     stopCause: new LocalConnectionLostError(reason as never, {
       connectionId: STOPPED_CONNECTION,
     }),
@@ -795,5 +821,153 @@ describe("automatic continuation after a Desktop comes back", () => {
 
     expect(startAgent).not.toHaveBeenCalled();
     expect(tables.agent_local_auto_continues[0].state).toBe("awaiting_return");
+  });
+
+  it.each(["environment_switched", "user_stop"] as const)(
+    "honors a %s stored before the stop was recorded",
+    async (reason) => {
+      // The run released its chat; the user acts before its stop report.
+      expect((await cancelReport(reason)).status).toBe(200);
+      await recordStop();
+      await report();
+
+      expect(startAgent).not.toHaveBeenCalled();
+      expect(events("agent_local_auto_continue_outcome")).toEqual([
+        expect.objectContaining({ outcome: "cancelled", reason }),
+      ]);
+    },
+  );
+
+  it("still continues a run created after the user's last switch", async () => {
+    await cancelReport("environment_switched");
+    // Later, the user ran this chat on the computer again and it left.
+    now += 5 * 60_000;
+    stoppedChat();
+    await recordStop();
+    await report();
+
+    expect(startAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a continuation that already started when the user switches away", async () => {
+    await recordStop();
+    await report();
+    expect(startAgent).toHaveBeenCalledTimes(1);
+
+    expect((await cancelReport("environment_switched")).status).toBe(200);
+    expect(
+      await Promise.all(cancelAgent.mock.calls.map(([req]) => req.json())),
+    ).toEqual([{ chatId: "chat", expectedTriggerRunId: "run_continued" }]);
+  });
+
+  it("reports a switch whose stop of the started run failed, then stops it on retry", async () => {
+    await recordStop();
+    await report();
+    cancelAgent
+      .mockResolvedValueOnce(new NextResponse("unavailable", { status: 503 }))
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(new NextResponse("unavailable", { status: 503 }));
+
+    const failed = await cancelReport("environment_switched");
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toEqual({ ok: false, retryable: true });
+    expect(events("agent_local_auto_continue_outcome").at(-1)).toMatchObject({
+      outcome: "stop_failed",
+      reason: "environment_switched",
+      continued_run_id: "run_continued",
+    });
+
+    expect((await cancelReport("environment_switched")).status).toBe(200);
+    // Every attempt names only that run.
+    expect(
+      await Promise.all(cancelAgent.mock.calls.map(([req]) => req.json())),
+    ).toEqual(
+      Array(4).fill({ chatId: "chat", expectedTriggerRunId: "run_continued" }),
+    );
+  });
+
+  it("reports a failed stop of a run cancelled while starting, and keeps showing it", async () => {
+    startAgent.mockImplementation(async () => {
+      await cancelLocalAutoContinuesForChat({
+        userId: "owner",
+        chatId: "chat",
+        reason: "user_stop",
+      });
+      return NextResponse.json({ runId: "run_continued" });
+    });
+    cancelAgent.mockResolvedValue(
+      new NextResponse("unavailable", { status: 503 }),
+    );
+    await recordStop();
+    await report();
+
+    expect(
+      events("agent_local_auto_continue_outcome").map((event) => [
+        event.outcome,
+        event.reason,
+        event.continued_run_id,
+      ]),
+    ).toEqual([
+      ["cancelled", "user_stop", undefined],
+      ["stop_failed", "user_stop", "run_continued"],
+    ]);
+    // The chat still shows it with Stop while it is the chat's run.
+    expect(await chatNotice()).toEqual({
+      state: "started",
+      stoppedRunId: "run_stopped",
+      continuedRunId: "run_continued",
+    });
+  });
+
+  it("reports an unrecorded start whose stop failed as stop_failed, not start_failed", async () => {
+    failures.settleStart = 10;
+    cancelAgent.mockResolvedValue(
+      new NextResponse("unavailable", { status: 503 }),
+    );
+    await recordStop();
+    await report();
+
+    expect(cancelAgent).toHaveBeenCalledTimes(3);
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({
+        outcome: "stop_failed",
+        reason: "start_error",
+        continued_run_id: "run_continued",
+      }),
+    ]);
+  });
+
+  it("reaches an older stop behind more than 50 of this computer's stops that must wait", async () => {
+    now = NOW - 120_000;
+    stoppedChat();
+    await recordStop();
+    now = NOW;
+    for (let i = 0; i < 60; i++) {
+      tables.agent_local_auto_continues.push({
+        _id: `busy-${i}`,
+        stopped_run_id: `run_busy_${i}`,
+        chat_id: `busy-${i}`,
+        user_id: "owner",
+        state: "awaiting_return",
+        stopped_at: now - 60_000 + i,
+        environment_id: "computer-1",
+        native_launch_id: LAUNCH,
+        native_page_generation: 0,
+        sandbox_preference: "desktop",
+      });
+      // Each stopped run still owns its chat, so its claim must wait.
+      tables.chats.push({
+        _id: `busy-chat-${i}`,
+        id: `busy-${i}`,
+        user_id: "owner",
+        finish_reason: "local-connection-lost",
+        active_trigger_run_id: `run_busy_${i}`,
+      });
+    }
+
+    expect(await (await report()).json()).toEqual({ pending: true });
+    expect((await startBodies()).map((body) => body.localAutoContinue)).toEqual(
+      [{ stoppedRunId: "run_stopped" }],
+    );
   });
 });

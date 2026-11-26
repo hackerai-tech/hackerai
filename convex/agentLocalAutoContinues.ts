@@ -40,6 +40,7 @@ const cancelReasonValidator = v.union(
   v.literal("manual_resume"),
   v.literal("environment_switched"),
 );
+type BlockReason = Doc<"agent_local_auto_continue_blocks">["reason"];
 // A claimed start can only belong to a stop this recent.
 const RECENT_STOP_MS =
   LOCAL_AUTO_CONTINUE_MAX_STOP_AGE_MS +
@@ -96,6 +97,28 @@ async function userMessagedSince(ctx: Ctx, row: Row) {
   return newer.some((message) => message.role === "user");
 }
 
+/**
+ * The user's Stop or environment switch that applies to a run created at
+ * `runStartedAt`. `cancelForChat` settles the stops recorded before the
+ * action in the same transaction; this covers the ones recorded after it.
+ */
+async function userBlock(
+  ctx: Ctx,
+  chatId: string,
+  userId: string,
+  runStartedAt: number | undefined,
+): Promise<BlockReason | undefined> {
+  const block = await ctx.db
+    .query("agent_local_auto_continue_blocks")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
+    .unique();
+  if (!block || block.user_id !== userId) return undefined;
+  // A stop without its run's start (an older worker) honors any block.
+  return runStartedAt === undefined || block.blocked_at >= runStartedAt
+    ? block.reason
+    : undefined;
+}
+
 const sameSession = (row: Row, connection: Doc<"local_sandbox_connections">) =>
   row.native_launch_id === connection.native_launch_id &&
   row.native_page_generation === connection.native_page_generation &&
@@ -148,6 +171,8 @@ export const recordStop = mutation({
     chatId: v.string(),
     userId: v.string(),
     stopReason: v.optional(v.string()),
+    /** When Trigger created the stopped run. */
+    runStartedAt: v.optional(v.number()),
     connectionId: v.optional(v.string()),
     usageLimited: v.boolean(),
     sandboxPreference: v.optional(v.string()),
@@ -189,6 +214,13 @@ export const recordStop = mutation({
         chat.active_trigger_run_id === args.stoppedRunId) &&
       chat.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
       !laterStopRecorded;
+    // The user stopped or left this computer while this run was theirs.
+    const blocked = await userBlock(
+      ctx,
+      args.chatId,
+      args.userId,
+      args.runStartedAt,
+    );
     const reason: LocalAutoContinueReason | undefined = !eligibility.eligible
       ? eligibility.reason
       : args.usageLimited
@@ -204,7 +236,7 @@ export const recordStop = mutation({
             ? laterStopRecorded
               ? "superseded"
               : "chat_changed"
-            : undefined;
+            : blocked;
     // An earlier stop that never continued is replaced by this newer one. A
     // stale report never replaces the stop of a run that came after it.
     if (latestRun) {
@@ -218,7 +250,9 @@ export const recordStop = mutation({
       chat_id: args.chatId,
       user_id: args.userId,
       state: reason
-        ? reason === "chat_changed" || reason === "superseded"
+        ? reason === "chat_changed" ||
+          reason === "superseded" ||
+          reason === blocked
           ? "cancelled"
           : "ineligible"
         : "awaiting_return",
@@ -247,14 +281,16 @@ export const recordStop = mutation({
   },
 });
 
-/** Bounds one report's work; a 30-minute window holds far fewer stops. */
+/** Bounds one report's work per page; the caller reads a few pages. */
 const RETURN_BATCH = 50;
 
 /**
- * A Desktop connection reported that it is connected again. Returns the
- * user's waiting stops from that same native session, newest first. The same
- * computer under a new launch or page can never be the stopped session again,
- * so its waiting stops become ineligible here, as do stops too old to
+ * A Desktop connection reported that it is connected again. Returns one page
+ * of the user's waiting stops from that same native session, newest first;
+ * pass `continueCursor` back for the next. Candidates the caller cannot claim
+ * yet stay waiting, so a page never hides the older stops behind them. The
+ * same computer under a new launch or page can never be the stopped session
+ * again, so its waiting stops become ineligible here, as do stops too old to
  * continue. Only this computer's recent stops are read, so stops elsewhere
  * cannot crowd them out.
  */
@@ -263,10 +299,13 @@ export const observeReturn = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     connectionId: v.string(),
+    cursor: v.optional(v.union(v.string(), v.null())),
   },
   returns: v.object({
     candidates: v.array(v.object({ stoppedRunId: v.string() })),
     settled: v.array(decisionValidator),
+    continueCursor: v.string(),
+    isDone: v.boolean(),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -277,7 +316,7 @@ export const observeReturn = mutation({
     );
     const environmentId = connection?.environment_id;
     if (!connection || connection.status !== "connected" || !environmentId)
-      return { candidates: [], settled: [] };
+      return { candidates: [], settled: [], continueCursor: "", isDone: true };
     const now = Date.now();
     const oldest = now - LOCAL_AUTO_CONTINUE_MAX_STOP_AGE_MS;
     const waiting = (range: "recent" | "expired") =>
@@ -292,11 +331,14 @@ export const observeReturn = mutation({
             ? scoped.gt("stopped_at", oldest)
             : scoped.lte("stopped_at", oldest);
         })
-        .order("desc")
-        .take(RETURN_BATCH);
+        .order("desc");
+    const recent = await waiting("recent").paginate({
+      cursor: args.cursor ?? null,
+      numItems: RETURN_BATCH,
+    });
     const candidates = [];
     const settled = [];
-    for (const row of await waiting("recent")) {
+    for (const row of recent.page) {
       if (sameSession(row, connection)) {
         candidates.push({ stoppedRunId: row.stopped_run_id });
       } else {
@@ -306,13 +348,22 @@ export const observeReturn = mutation({
         );
       }
     }
-    for (const row of await waiting("expired")) {
+    // Once per report, on its first page.
+    const expired = args.cursor
+      ? []
+      : await waiting("expired").take(RETURN_BATCH);
+    for (const row of expired) {
       await finish(ctx, row, "ineligible", "stop_too_old", now);
       settled.push(
         decision(row, { state: "ineligible", reason: "stop_too_old" }),
       );
     }
-    return { candidates, settled };
+    return {
+      candidates,
+      settled,
+      continueCursor: recent.continueCursor,
+      isDone: recent.isDone,
+    };
   },
 });
 
@@ -437,7 +488,9 @@ export const claimReturn = mutation({
 
 /**
  * Settles a claimed start. When the user cancelled while it started, returns
- * `cancelled: true` so the caller stops the run it just created.
+ * `cancelled: true` and the user's action, so the caller stops the run it just
+ * created. That run stays recorded on the row, so the chat keeps showing it
+ * while it still runs (see `getForChat`).
  */
 export const settleStart = mutation({
   args: {
@@ -449,7 +502,10 @@ export const settleStart = mutation({
       v.union(v.literal("admission_refused"), v.literal("start_error")),
     ),
   },
-  returns: v.object({ cancelled: v.boolean() }),
+  returns: v.object({
+    cancelled: v.boolean(),
+    reason: v.optional(localAutoContinueReasonValidator),
+  }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const row = await rowFor(ctx, args.stoppedRunId);
@@ -466,7 +522,7 @@ export const settleStart = mutation({
     }
     if (row.state === "cancelled" && args.continuedRunId) {
       await ctx.db.patch(row._id, { continued_run_id: args.continuedRunId });
-      return { cancelled: true };
+      return { cancelled: true, ...(row.reason ? { reason: row.reason } : {}) };
     }
     return { cancelled: false };
   },
@@ -475,7 +531,10 @@ export const settleStart = mutation({
 /**
  * The user acted first: stopped, sent a message, resumed manually or picked
  * another environment. Waiting and in-flight stops of that chat never
- * continue automatically. Returns the rows it settled, for telemetry.
+ * continue automatically. A Stop or an environment switch is also stored as
+ * the chat's block, so a stop recorded later honors it too. Returns the rows
+ * it settled, for telemetry, and the continuations that already started, for
+ * the caller to stop.
  */
 export const cancelForChat = mutation({
   args: {
@@ -484,23 +543,49 @@ export const cancelForChat = mutation({
     chatId: v.string(),
     reason: cancelReasonValidator,
   },
-  returns: v.array(decisionValidator),
+  returns: v.object({
+    cancelled: v.array(decisionValidator),
+    running: v.array(
+      v.object({ decision: decisionValidator, continuedRunId: v.string() }),
+    ),
+  }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const now = Date.now();
+    if (args.reason === "user_stop" || args.reason === "environment_switched") {
+      if (!(await getOwnedChat(ctx, args.chatId, args.userId)))
+        return { cancelled: [], running: [] };
+      const block = await ctx.db
+        .query("agent_local_auto_continue_blocks")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .unique();
+      if (block)
+        await ctx.db.patch(block._id, { reason: args.reason, blocked_at: now });
+      else
+        await ctx.db.insert("agent_local_auto_continue_blocks", {
+          chat_id: args.chatId,
+          user_id: args.userId,
+          reason: args.reason,
+          blocked_at: now,
+        });
+    }
     const cancelled = [];
+    const running = [];
     for (const row of await recentRowsForChat(ctx, args.chatId, now)) {
-      if (
-        row.user_id === args.userId &&
-        (row.state === "awaiting_return" || row.state === "starting")
-      ) {
+      if (row.user_id !== args.userId) continue;
+      if (row.state === "awaiting_return" || row.state === "starting") {
         await finish(ctx, row, "cancelled", args.reason, now);
         cancelled.push(
           decision(row, { state: "cancelled", reason: args.reason }),
         );
+      } else if (row.state === "started" && row.continued_run_id) {
+        running.push({
+          decision: decision(row),
+          continuedRunId: row.continued_run_id,
+        });
       }
     }
-    return cancelled;
+    return { cancelled, running };
   },
 });
 
@@ -577,7 +662,13 @@ export const getForChat = query({
         state: "starting" as const,
         stoppedRunId: latest.stopped_run_id,
       };
-    if (latest.state === "started")
+    // A continuation the user cancelled while it started is shown too: if
+    // stopping it failed, it is still the chat's run and Stop must reach it.
+    // The page shows it only while it is the chat's active run.
+    if (
+      latest.state === "started" ||
+      (latest.state === "cancelled" && latest.continued_run_id)
+    )
       return {
         state: "started" as const,
         stoppedRunId: latest.stopped_run_id,

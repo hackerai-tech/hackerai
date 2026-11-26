@@ -15,11 +15,14 @@ import type { AgentLongPayload } from "./agent-long";
 export async function recordLocalAutoContinueStop({
   payload,
   stoppedRunId,
+  runStartedAt,
   stopCause,
   usageLimited,
 }: {
   payload: AgentLongPayload;
   stoppedRunId: string;
+  /** When the stopped run was created: a later Stop or switch applies to it. */
+  runStartedAt?: number;
   stopCause: unknown;
   usageLimited: boolean;
 }) {
@@ -40,6 +43,7 @@ export async function recordLocalAutoContinueStop({
         chatId: payload.chatId,
         userId: payload.userId,
         ...(diagnostic && { stopReason: diagnostic.reason }),
+        ...(runStartedAt !== undefined && { runStartedAt }),
         ...(diagnostic?.connectionId && {
           connectionId: diagnostic.connectionId,
         }),

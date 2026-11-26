@@ -6824,6 +6824,7 @@ export const agentLongTask = task({
         await recordLocalAutoContinueStop({
           payload,
           stoppedRunId: ctx.run.id,
+          runStartedAt: ctx.run.createdAt.getTime(),
           stopCause: userStopSignal.signal.reason,
           usageLimited:
             !!terminalAgentState?.stoppedDueToBudgetExhaustion ||

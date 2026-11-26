@@ -46,10 +46,13 @@ export type LocalAutoContinueEventContext = {
   variant?: LocalAutoContinueVariant;
 };
 
-export type LocalAutoContinueOutcome = Exclude<
-  LocalAutoContinueState,
-  "awaiting_return" | "starting"
->;
+export type LocalAutoContinueOutcome =
+  | Exclude<LocalAutoContinueState, "awaiting_return" | "starting">
+  /**
+   * Not a row state: the server could not stop a continuation it had to stop
+   * (the user's Stop or switch, or an unrecorded start). It may still run.
+   */
+  | "stop_failed";
 
 const baseProperties = (context: LocalAutoContinueEventContext) => ({
   telemetry_version: 1,
