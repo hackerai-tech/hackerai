@@ -461,6 +461,35 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(new Set(reads.messageIndexes)).toEqual(new Set(["by_chat_id"]));
   });
 
+  it("bounds reads of out-of-window pre-event messages", async () => {
+    const { getMessageExcerpt } = await import("../userResearch");
+    const anchorAt = Date.UTC(2026, 7, 25);
+    const day = 24 * 60 * 60 * 1_000;
+    const { ctx, userId, chatId, tables, reads } = createCtx({
+      messageCount: 20,
+      samplingMode: "pre_event",
+      evidenceWindowDays: 60,
+      evidenceAnchorAt: anchorAt,
+    });
+    for (const message of tables.messages) {
+      message.update_time = anchorAt - 61 * day;
+      message.parts = [{ type: "reasoning", text: "x".repeat(900_000) }];
+    }
+
+    await expect(
+      getMessageExcerpt.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        userId,
+        chatId,
+        maxMessages: 20,
+      }),
+    ).rejects.toThrow(
+      "Research excerpt read budget exhausted before eligible text was found",
+    );
+    expect(reads.messageIds).toHaveLength(8);
+  });
+
   it.each(["foreign", "deleting"])(
     "does not read %s chat messages",
     async (state) => {

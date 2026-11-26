@@ -527,31 +527,34 @@ export const getMessageExcerpt = query({
 
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
-    // Pre-event excerpts read only messages last updated inside the window.
-    // Temporary: filter by_chat_id until the staged
+    // Temporary: scan by_chat_id until the staged
     // by_chat_id_and_update_time index finishes backfilling and is enabled.
-    const queryMessages = () => {
-      const chatMessages = ctx.db
+    // Apply the evidence window after reading each document so out-of-window
+    // rows count toward our byte guard before Convex's transaction limit.
+    const queryMessages = () =>
+      ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId));
-      return evidenceWindow
-        ? chatMessages.filter((q) =>
-            q.and(
-              q.gte(q.field("update_time"), evidenceWindow.startAt),
-              q.lte(q.field("update_time"), evidenceWindow.endAt),
-            ),
-          )
-        : chatMessages;
-    };
     const readEnd = async (direction: "asc" | "desc", limit: number) => {
       const rows: Doc<"messages">[] = [];
       let bytesRead = 0;
       let byteLimited = false;
       for await (const message of queryMessages().order(direction)) {
-        rows.push(message);
         // Count the full stored document, including hidden/tool/reasoning
-        // content and the lookahead, before applying any output filtering.
+        // content, out-of-window rows, and the lookahead, before filtering.
         bytesRead += getDocumentSize(message);
+        if (
+          evidenceWindow &&
+          (message.update_time < evidenceWindow.startAt ||
+            message.update_time > evidenceWindow.endAt)
+        ) {
+          if (bytesRead >= EXCERPT_END_READ_BYTES) {
+            byteLimited = true;
+            break;
+          }
+          continue;
+        }
+        rows.push(message);
         if (rows.length >= limit) break;
         if (bytesRead >= EXCERPT_END_READ_BYTES) {
           byteLimited = true;
