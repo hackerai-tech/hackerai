@@ -26,13 +26,17 @@ describe("workspace reader filesystem boundary", () => {
     mkdirSync(root);
   });
   afterEach(() => rmSync(fixture, { recursive: true, force: true }));
-  const read = (input: Record<string, unknown>) =>
+  // `program` replaces the reader with a harness that runs it.
+  const read = (
+    input: Record<string, unknown>,
+    program = [WORKSPACE_READER_PYTHON],
+  ) =>
     JSON.parse(
       execFileSync(
         "python3",
         [
           "-c",
-          WORKSPACE_READER_PYTHON,
+          ...program,
           Buffer.from(
             JSON.stringify({
               action: "list",
@@ -163,10 +167,16 @@ describe("workspace reader filesystem boundary", () => {
     const linked = join(fixture, "linked");
     symlinkSync(root, linked);
     root = linked;
-    expect(read({})).toEqual({
+    const symlinkRoot = {
       error: "unreadable_path",
       phase: "root",
       category: "not_directory_or_symlink",
+    };
+    expect(read({})).toEqual(symlinkRoot);
+    // A symlink is also rejected where the root is only traversed.
+    expect(read({ path: "outside-dir" })).toEqual(symlinkRoot);
+    expect(read({ action: "download", path: "link" })).toEqual({
+      error: "unreadable_path",
     });
   });
 
@@ -206,6 +216,120 @@ describe("workspace reader filesystem boundary", () => {
       }
     },
   );
+
+  describe("folder permissions", () => {
+    let gate: string;
+    let inner: string;
+    let reports: string;
+    let report: string;
+    beforeEach(() => {
+      // fixture/gate/workspace/inner/reports/report.txt
+      gate = join(fixture, "gate");
+      root = join(gate, "workspace");
+      inner = join(root, "inner");
+      reports = join(inner, "reports");
+      report = join(reports, "report.txt");
+      mkdirSync(reports, { recursive: true });
+      writeFileSync(report, "fixture");
+    });
+    afterEach(() => {
+      // Restore traversal and listing before the enclosing fixture cleanup.
+      for (const folder of [gate, root, inner, reports])
+        chmodSync(folder, 0o755);
+    });
+    const denied = (phase: string) => ({
+      error: "unreadable_path",
+      phase,
+      category: "permission",
+    });
+    const reportContents = (action = "download") =>
+      Buffer.from(
+        read({ action, path: "inner/reports/report.txt" }).data ?? "",
+        "base64",
+      ).toString();
+    // Root bypasses folder permissions, so these cannot fail there.
+    const unprivileged = process.getuid?.() === 0 ? it.skip : it;
+
+    unprivileged(
+      "lists and reads a workspace below folders that allow only search",
+      () => {
+        chmodSync(gate, 0o111);
+        chmodSync(inner, 0o111);
+        expect(read({}).entries).toEqual([
+          expect.objectContaining({ name: "inner", kind: "directory" }),
+        ]);
+        expect(read({ path: "inner/reports" }).entries).toEqual([
+          expect.objectContaining({ name: "report.txt", kind: "file" }),
+        ]);
+        expect(reportContents("download")).toBe("fixture");
+        expect(reportContents("preview")).toBe("fixture");
+      },
+    );
+
+    unprivileged(
+      "denies folders the reader cannot search or list, and unreadable files",
+      () => {
+        chmodSync(gate, 0o600);
+        expect(read({})).toEqual(denied("root"));
+        chmodSync(gate, 0o755);
+
+        chmodSync(inner, 0o600);
+        expect(read({ path: "inner/reports" })).toEqual(denied("directory"));
+        expect(
+          read({ action: "download", path: "inner/reports/report.txt" }),
+        ).toEqual({ error: "unreadable_path" });
+        chmodSync(inner, 0o755);
+
+        // A folder that can be searched but not read hides its listing only.
+        chmodSync(reports, 0o311);
+        expect(read({ path: "inner/reports" })).toEqual(denied("directory"));
+        expect(reportContents()).toBe("fixture");
+        chmodSync(root, 0o311);
+        expect(read({})).toEqual(denied("root"));
+        chmodSync(root, 0o755);
+
+        chmodSync(report, 0o200);
+        expect(
+          read({ action: "download", path: "inner/reports/report.txt" }),
+        ).toEqual({ error: "unreadable_path" });
+      },
+    );
+
+    // An open search handle must not outlive a later permission change.
+    const REVOKE_AFTER_OPEN = String.raw`
+import os, sys
+reader, folder = sys.argv[1], sys.argv[2]
+sys.argv = sys.argv[:1] + sys.argv[3:]
+real_open = os.open
+def open_then_revoke(name, *args, **kwargs):
+    fd = real_open(name, *args, **kwargs)
+    if name == os.path.basename(folder):
+        os.chmod(folder, 0o600)
+    return fd
+os.open = open_then_revoke
+exec(reader, dict(__name__='__main__'))
+`;
+    unprivileged(
+      "denies a folder whose search permission is revoked after it opens",
+      () => {
+        const revoking = (folder: string) => [
+          REVOKE_AFTER_OPEN,
+          WORKSPACE_READER_PYTHON,
+          folder,
+        ];
+        expect(read({ path: "inner/reports" }, revoking(inner))).toEqual(
+          denied("directory"),
+        );
+        chmodSync(inner, 0o755);
+        expect(
+          read(
+            { action: "download", path: "inner/reports/report.txt" },
+            revoking(reports),
+          ),
+        ).toEqual({ error: "unreadable_path" });
+      },
+    );
+  });
 
   it.each([
     [
