@@ -2616,6 +2616,61 @@ exit 7
     ptySessionManager.forget("chat-1", result.result.session!);
   });
 
+  test("reports an unknown outcome when a background Desktop cancel fails", async () => {
+    const abortController = new AbortController();
+    let commandStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      commandStarted = resolve;
+    });
+    const run = jest.fn(
+      async (_command: string, opts?: { signal?: AbortSignal }) => {
+        commandStarted();
+        // The connection is lost while the cancel is pending.
+        return new Promise<never>((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () =>
+            reject(
+              Object.assign(new Error("lost"), {
+                executionOutcome: "unknown" as const,
+              }),
+            ),
+          );
+        });
+      },
+    );
+    const { context } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: { run },
+      },
+    });
+    const resultPromise = runTool(
+      createRunTerminalCmd(context),
+      {
+        command: "long scan",
+        brief: "background scan",
+        is_background: true,
+        interactive: false,
+        timeout: 30,
+      },
+      abortController.signal,
+    ) as Promise<{
+      result: {
+        exitCode?: number | null;
+        error?: string;
+        executionOutcome?: string;
+      };
+    }>;
+
+    await started;
+    abortController.abort();
+    const { result } = await resultPromise;
+
+    expect(result.exitCode).toBeNull();
+    expect(result.executionOutcome).toBe("unknown");
+    expect(result.error).toContain("Do not rerun");
+  });
+
   test.each(
     [false, true].flatMap((background) =>
       ["transient setup", "permanent setup", "ambiguous publish"].map(

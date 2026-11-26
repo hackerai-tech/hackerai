@@ -1113,6 +1113,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 );
 
               let terminated = false;
+              // A background Desktop command has no session to read this from.
+              let runOutcomeUnknown = false;
 
               if (commandHandle) {
                 try {
@@ -1132,8 +1134,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 try {
                   const executionResult = await runPromise;
                   terminated = executionResult.exitCode === 130;
-                } catch {
+                } catch (error) {
                   terminated = false;
+                  runOutcomeUnknown = hasUnknownExecutionOutcome(error);
                 }
               } else {
                 // Try to get PID from execution object first (cheap, no shell call)
@@ -1183,8 +1186,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // command whose outcome became unknown reports that outcome.
               const unknown =
                 !terminated &&
-                commandSession !== null &&
-                (await peekExited(commandSession))?.outcomeUnknown === true;
+                (runOutcomeUnknown ||
+                  (commandSession !== null &&
+                    (await peekExited(commandSession))?.outcomeUnknown ===
+                      true));
 
               resolve({
                 result: {
