@@ -81,7 +81,10 @@ describe("pruneToolOutputs", () => {
         ),
       ];
       const result = pruneToolOutputs(messages, 1, NO_MIN);
-      const placeholder = (result.messages[0].parts[0] as any).output;
+      const output = (result.messages[0].parts[0] as any).output;
+      // The exec's session is a start receipt kept beside its summary.
+      const placeholder =
+        toolName === "run_terminal_cmd" ? output.result.output : output;
       expect(placeholder).toContain(
         toolName === "run_terminal_cmd"
           ? "ran 'bounded command'"

@@ -1,5 +1,6 @@
 import { getDocumentSize, v } from "convex/values";
 import { verifyServiceArgs } from "../lib/db/service-proof";
+import { hasTerminalStartReceipt } from "../lib/chat/compaction/terminal-start-receipt";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./lib/serviceFunctions";
 import { boundedAbuseCiphertext } from "./lib/abuseResponse";
@@ -217,18 +218,8 @@ type TerminalPart = {
   state?: unknown;
   toolCallId?: unknown;
   input?: { command?: unknown; action?: unknown; input?: unknown };
-  output?: { result?: Record<string, unknown> };
+  output?: unknown;
 };
-
-function commandWasStarted(part: TerminalPart) {
-  const receipt = part.output?.result;
-  if (!receipt || receipt.approvalDenied === true) return false;
-  return (
-    receipt.processStarted === true ||
-    (typeof receipt.pid === "number" && receipt.pid > 0) ||
-    (typeof receipt.session === "string" && receipt.session.length > 0)
-  );
-}
 
 type Command = {
   messageId: string;
@@ -271,7 +262,7 @@ export function startedCommands(row: Doc<"messages">) {
     const value = part.input?.command;
     if (
       part.state !== "output-available" ||
-      !commandWasStarted(part) ||
+      !hasTerminalStartReceipt(part.output) ||
       typeof part.toolCallId !== "string" ||
       !part.toolCallId ||
       part.toolCallId.length > 128 ||

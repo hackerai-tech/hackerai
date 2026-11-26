@@ -56,6 +56,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { pruneToolOutputs } from "@/lib/chat/compaction/prune-tool-outputs";
 import { MAX_COMMAND_EXECUTION_TIME } from "../utils/sandbox-command-options";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
@@ -744,6 +745,50 @@ exit 7
       startedAt: "fixture-start",
       finishedAt: "fixture-end",
       elapsedMs: 123,
+    });
+  });
+
+  test("replays a compacted start receipt as the plain summary text", async () => {
+    const { context } = makeContext({ sandbox: null });
+    const tool = createRunTerminalCmd(context);
+    const [compacted] = pruneToolOutputs(
+      [
+        {
+          id: "assistant-fixture",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "fixture-call",
+              state: "output-available",
+              input: { command: "printf fixture" },
+              output: {
+                result: { processStarted: true, pid: 7, exitCode: 0 },
+              },
+            },
+          ],
+        },
+      ] as UIMessage[],
+      0,
+      0,
+    ).messages;
+    const part = compacted.parts[0] as { output: unknown };
+    expect(part.output).toMatchObject({ result: { processStarted: true } });
+
+    const history = await convertToModelMessages([compacted], {
+      tools: { run_terminal_cmd: tool },
+    });
+    // Identical to the model text of the former string placeholder.
+    expect(history[1]).toMatchObject({
+      role: "tool",
+      content: [
+        {
+          output: {
+            type: "text",
+            value: "[Terminal: ran 'printf fixture', exit code 0]",
+          },
+        },
+      ],
     });
   });
 

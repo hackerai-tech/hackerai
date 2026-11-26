@@ -98,6 +98,7 @@ import {
 import type { AnySandbox } from "@/types";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { phLogger } from "@/lib/posthog/server";
+import { compactTerminalReceiptSummary } from "@/lib/chat/compaction/terminal-start-receipt";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -1731,6 +1732,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
+      }
+      // A compacted result reads exactly like its plain summary placeholder.
+      const compactSummary = compactTerminalReceiptSummary(output);
+      if (compactSummary !== undefined) {
+        return { type: "text", value: compactSummary };
       }
       const result = (output as { result?: unknown }).result;
       if (typeof result !== "object" || result === null) {
