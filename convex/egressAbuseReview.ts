@@ -6,6 +6,7 @@ import { boundedAbuseCiphertext } from "./lib/abuseResponse";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { egressReviewReceiptFields } from "./lib/abuseValidators";
 import { insertReceipt } from "./lib/egressReceipts";
+import { authorizeEgressReview } from "./lib/egressReviewAuth";
 
 // Read-only evidence lookups and a create-or-preserve case write for the
 // automated egress burst review. Authorized only by the dedicated review key,
@@ -32,18 +33,6 @@ const REFERENCE =
   /^AB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 export const ACTIVE_SUBAGENT = new Set(["queued", "running", "finalizing"]);
-
-function authorize(serviceKey: string) {
-  const expected = process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY;
-  if (
-    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED !== "true" ||
-    !expected ||
-    serviceKey !== expected ||
-    expected === process.env.CONVEX_SERVICE_ROLE_KEY ||
-    expected === process.env.CONVEX_USER_RESEARCH_SERVICE_KEY
-  )
-    throw new Error("Unauthorized: Invalid egress abuse review service key");
-}
 
 const runArgs = {
   serviceKey: v.string(),
@@ -169,7 +158,7 @@ export const matchRun = query({
   },
   returns: v.object({ status: overlapValidator }),
   handler: async (ctx, args) => {
-    authorize(args.serviceKey);
+    authorizeEgressReview(args.serviceKey);
     assertBurst(args);
     if (args.runKind === "parent") {
       const run = await inspectParentRun(ctx, args);
@@ -197,7 +186,7 @@ export const matchRun = query({
   },
 });
 
-const unavailableReason = v.union(
+export const unavailableReason = v.union(
   v.literal("run_mismatch"),
   v.literal("subagent_overlap"),
   v.literal("concurrent_run"),
@@ -302,13 +291,13 @@ export function startedCommands(row: Doc<"messages">) {
   return { commands, incomplete };
 }
 
-const userMessageValidator = v.object({
+export const userMessageValidator = v.object({
   messageId: v.string(),
   observedAt: v.optional(v.number()),
   text: v.string(),
   truncated: v.boolean(),
 });
-const commandValidator = v.object({
+export const commandValidator = v.object({
   messageId: v.string(),
   toolCallId: v.string(),
   tool: v.union(
@@ -318,7 +307,7 @@ const commandValidator = v.object({
   text: v.string(),
   truncated: v.boolean(),
 });
-const coverageValidator = v.object({
+export const coverageValidator = v.object({
   rawReads: v.number(),
   historyTruncated: v.boolean(),
   userMessagesOmitted: v.number(),
@@ -327,10 +316,25 @@ const coverageValidator = v.object({
   runActive: v.boolean(),
 });
 
+type RunScope = Burst & { userId: string; chatId: string; runId: string };
+
 /** Re-read the same bounded evidence at the point of enforcement. */
-export async function collectRunEvidence(
+export const collectRunEvidence = (ctx: QueryCtx, args: RunScope) =>
+  readExactRun(ctx, args, { crossRootGuard: true });
+
+/**
+ * The same bounded read of one run without the account-wide cross-root
+ * guard, for an advisory reassessment that never attributes the burst to the
+ * run or acts on it. Ownership, run timing, the deletion fence, subagent
+ * overlap, coverage and content exclusion are unchanged.
+ */
+export const collectCandidateRunEvidence = (ctx: QueryCtx, args: RunScope) =>
+  readExactRun(ctx, args, { crossRootGuard: false });
+
+async function readExactRun(
   ctx: QueryCtx,
-  args: Burst & { userId: string; chatId: string; runId: string },
+  args: RunScope,
+  { crossRootGuard }: { crossRootGuard: boolean },
 ) {
   assertBurst(args);
   const unavailable = (
@@ -371,14 +375,16 @@ export async function collectRunEvidence(
     return unavailable("subagent_overlap");
   // Another root run active now may have shared the account's workspace.
   // This reads run markers only, never chat content.
-  const roots = await ctx.db
-    .query("chats")
-    .withIndex("by_user_and_active_trigger_run", (q) =>
-      q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
-    )
-    .take(MAX_ACTIVE_ROOTS + 1);
-  if (roots.some((chat) => chat.active_trigger_run_id !== args.runId))
-    return unavailable("concurrent_run");
+  if (crossRootGuard) {
+    const roots = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_active_trigger_run", (q) =>
+        q.eq("user_id", args.userId).gt("active_trigger_run_id", ""),
+      )
+      .take(MAX_ACTIVE_ROOTS + 1);
+    if (roots.some((chat) => chat.active_trigger_run_id !== args.runId))
+      return unavailable("concurrent_run");
+  }
 
   const lastRunRow = run.runRows[run.runRows.length - 1]._creationTime;
   let laterEditedMessages = 0;
@@ -456,7 +462,7 @@ export const readRunEvidence = query({
     }),
   ),
   handler: async (ctx, args) => {
-    authorize(args.serviceKey);
+    authorizeEgressReview(args.serviceKey);
     return collectRunEvidence(ctx, args);
   },
 });
@@ -662,7 +668,7 @@ export const readAccountActivity = query({
     }),
   ),
   handler: async (ctx, args) => {
-    authorize(args.serviceKey);
+    authorizeEgressReview(args.serviceKey);
     const { serviceKey: _serviceKey, attributionProof, ...subject } = args;
     const deployment = process.env.CONVEX_CLOUD_URL;
     if (
@@ -790,7 +796,7 @@ export const recordCase = mutation({
     outcome: v.union(v.literal("created"), v.literal("existing")),
   }),
   handler: async (ctx, args) => {
-    authorize(args.serviceKey);
+    authorizeEgressReview(args.serviceKey);
     if (!REFERENCE.test(args.reference) || !DIGEST.test(args.digest))
       throw new Error("Invalid review case identity");
     boundedAbuseCiphertext(args.ciphertext, true);
@@ -846,7 +852,7 @@ export const recordReceipt = mutation({
     outcome: v.union(v.literal("created"), v.literal("existing")),
   }),
   handler: async (ctx, { serviceKey, ...receipt }) => {
-    authorize(serviceKey);
+    authorizeEgressReview(serviceKey);
     if (
       !DIGEST.test(receipt.digest) ||
       receipt.decision === "block_applied" ||

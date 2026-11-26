@@ -86,10 +86,13 @@ function wrapBuilder<T>(builder: T): T {
         const deployment = process.env.CONVEX_CLOUD_URL;
         if (!deployment || metadata.componentPath)
           throw new Error("Invalid service deployment identity");
-        // Narrow workers get their own key, valid only for their module.
+        // Narrow workers get their own key, valid only for their module. The
+        // review key also authorizes exactly one advisory reassessment action.
         const secret = metadata.name.startsWith("userResearch:")
           ? process.env.CONVEX_USER_RESEARCH_SERVICE_KEY
-          : metadata.name.startsWith("egressAbuseReview:")
+          : metadata.name.startsWith("egressAbuseReview:") ||
+              metadata.name ===
+                "egressAbuseReassessmentActions:readCaseEvidence"
             ? process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY
             : metadata.name.startsWith("egressAbuseEnforcement:")
               ? process.env.CONVEX_EGRESS_ABUSE_ENFORCEMENT_SERVICE_KEY

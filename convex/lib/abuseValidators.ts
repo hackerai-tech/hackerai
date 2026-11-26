@@ -207,7 +207,7 @@ export const abuseResponseSummary = v.object({
 
 // Automated egress enforcement. Closed vocabularies only; never evidence text,
 // recipients or model payloads.
-const literals = <T extends string>(values: readonly T[]) =>
+export const literals = <T extends string>(values: readonly T[]) =>
   v.union(...values.map((value) => v.literal(value)));
 export const enforcementDecision = literals(ENFORCEMENT_DECISIONS);
 export const enforcementReason = literals(ENFORCEMENT_REASONS);

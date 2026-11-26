@@ -2,7 +2,8 @@
 jest.mock("@trigger.dev/sdk", () => ({
   schemaTask: (definition: unknown) => definition,
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-  runs: { list: jest.fn() },
+  runs: { list: jest.fn(), retrieve: jest.fn() },
+  query: { execute: jest.fn() },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 jest.mock("@/lib/db/service-client", () => ({
@@ -19,14 +20,19 @@ jest.mock("ai", () => ({
 jest.mock("@/convex/lib/serviceFunctions", () => ({
   mutation: (config: unknown) => config,
   query: (config: unknown) => config,
+  action: (config: unknown) => config,
+  internalQuery: (config: unknown) => config,
+  internalMutation: (config: unknown) => config,
 }));
 
 import { getFunctionName } from "convex/server";
 import { generateText } from "ai";
-import { logger, runs } from "@trigger.dev/sdk";
+import { logger, query as triggerQuery, runs } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
 import * as reviewFunctions from "@/convex/egressAbuseReview";
 import * as enforcementFunctions from "@/convex/egressAbuseEnforcement";
+import * as reassessmentFunctions from "@/convex/egressAbuseReassessment";
+import * as reassessmentActions from "@/convex/egressAbuseReassessmentActions";
 import { database } from "@/__mocks__/abuse-database";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { createServiceConvexClient } from "@/lib/db/service-client";
@@ -47,6 +53,10 @@ import {
   egressAbuseReviewTask,
   runEgressAbuseReview,
 } from "../egress-abuse-review";
+import {
+  egressAbuseReassessTask,
+  runEgressAbuseReassessment,
+} from "../egress-abuse-reassess";
 
 const [first, second, europe] = fixture.vectors;
 const REVIEW_KEY = "synthetic-egress-review-key";
@@ -269,14 +279,19 @@ beforeEach(async () => {
   const modules: Record<string, any> = {
     egressAbuseReview: reviewFunctions,
     egressAbuseEnforcement: enforcementFunctions,
+    egressAbuseReassessment: reassessmentFunctions,
+    egressAbuseReassessmentActions: reassessmentActions,
   };
-  const call = (reference: unknown, args: unknown) => {
+  const call = (reference: unknown, args: unknown): any => {
     const [module, name] = getFunctionName(reference as never).split(":");
-    return modules[module][name].handler(convex, args);
+    // An action's internal calls run the actual handlers too.
+    const ctx = { ...convex, runQuery: call, runMutation: call };
+    return modules[module][name].handler(ctx, args);
   };
   jest.mocked(createServiceConvexClient).mockReturnValue({
     query: jest.fn(call),
     mutation: jest.fn(call),
+    action: jest.fn(call),
   } as never);
   await upload([[first, 900]]);
   await registerAttributedWorkspace("us", first, first.userId, first.sandboxId);
@@ -1486,5 +1501,287 @@ describe("account cooldown after a corroborated legitimate review", () => {
     expect(kv.has(reviewCooldownKey(first.userId))).toBe(false);
     await nextWindow({ [NEXT]: 900 });
     await expect(run(NEXT)).resolves.toMatchObject({ status: "completed" });
+  });
+});
+
+describe("on-demand reassessment of a multiple_runs case", () => {
+  const reassess = () => runEgressAbuseReassessment({ reference });
+  const legitimate = {
+    verdict: "clearly_legitimate",
+    activity: "ordinary_development",
+    authorization: "not_stated",
+    commandIndices: [1],
+    messageIndices: [1],
+  };
+  const advisory = {
+    status: "completed",
+    scope: "retained_candidate_only",
+    attribution: "unverified",
+    otherCandidates: "unverified",
+    determination: "advisory_only",
+  };
+  const candidateLifecycle = {
+    run_id: RUN,
+    task_identifier: "agent-long",
+    status: "Completed",
+    completed_at_s: (BURST_START + 10 * MINUTE_MS) / 1_000,
+  };
+
+  /**
+   * The actual review keeps the linked run as its candidate, then abstains
+   * because another root chat of the account is still marked active.
+   */
+  async function overlapCase(options: Parameters<typeof seedRun>[2] = {}) {
+    await seedRun(RUN, CHAT, options);
+    await convex.db.insert("chats", {
+      id: "chat_other",
+      user_id: first.userId,
+      active_trigger_run_id: "run_other",
+    });
+    await convex.db.insert("messages", {
+      id: "chat_other-user",
+      chat_id: "chat_other",
+      user_id: first.userId,
+      role: "user",
+      parts: [{ type: "text", text: "UNRELATED CHAT TEXT" }],
+    });
+    await link();
+    await expect(run()).resolves.toMatchObject({
+      outcome: "manual_review",
+      reason: "multiple_runs",
+      case: "created",
+      diagnostic: { detail: "concurrent_run_evidence" },
+    });
+    expect(caseRecord()).toMatchObject({
+      version: 3,
+      run: { chatId: CHAT, runId: RUN },
+      evidenceLocators: { commands: [], messages: [] },
+    });
+    jest.clearAllMocks();
+    jest.mocked(triggerQuery.execute).mockResolvedValue({
+      format: "json",
+      results: [candidateLifecycle],
+    });
+    return structuredClone(convex.tables.abuse_cases[0]);
+  }
+
+  /** Nothing outside the audit read changed, and nothing identifying left. */
+  function expectAdvisoryOnly(result: unknown, saved: unknown) {
+    expect(convex.tables.abuse_cases).toEqual([saved]);
+    expect(
+      convex.tables.abuse_events.map(({ actor, kind }: any) => [actor, kind]),
+    ).toEqual([
+      ["egress_abuse_review", "received"],
+      ["egress_abuse_reassessment", "read"],
+    ]);
+    expect(mutationCalls()).toHaveLength(0);
+    expect(kv.has(reviewCooldownKey(first.userId))).toBe(false);
+    expect(convex.tables.egress_review_receipts).toHaveLength(1);
+    for (const table of [
+      "user_suspensions",
+      "abuse_block_notices",
+      "abuse_notifications",
+    ])
+      expect(convex.tables[table] ?? []).toHaveLength(0);
+    const exposed = JSON.stringify([
+      result,
+      jest.mocked(logger.info).mock.calls,
+      jest.mocked(logger.warn).mock.calls,
+    ]);
+    for (const raw of [
+      first.userId,
+      first.sandboxId,
+      CHAT,
+      RUN,
+      `${CHAT}-user`,
+      "call-1",
+      "203.0.113",
+      "masscan",
+      "Find open ports",
+      "UNRELATED",
+    ])
+      expect(exposed).not.toContain(raw);
+  }
+
+  it("accepts only a case reference", () => {
+    const { schema } = egressAbuseReassessTask as any;
+    expect(schema.safeParse({ reference }).success).toBe(true);
+    for (const payload of [
+      { reference, chatId: CHAT },
+      { reference, userId: first.userId },
+      { reference: "AB-not-a-reference" },
+      { region: "us", owner: first.owner, minute: MINUTE },
+    ])
+      expect(schema.safeParse(payload).success).toBe(false);
+  });
+
+  it("reports cited concerning activity of the retained run as advisory only", async () => {
+    const saved = await overlapCase();
+    classifyAs(concerning);
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "complete",
+      advisory: "concern",
+      reason: "concerning_corroborated",
+      classification: {
+        activity: "network_scanning",
+        authorization: "not_stated",
+      },
+      model: {
+        key: "model-grok-4.6",
+        promptVersion: "egress-retained-candidate-review-v1",
+      },
+    });
+    // One scrubbed, tool-less, ZDR classification of the candidate only:
+    // no intent confirmation, block, draft or other chat.
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const request = jest.mocked(generateText).mock.calls[0][0] as any;
+    expect(request.tools).toBeUndefined();
+    expect(request.providerOptions.openrouter.provider).toEqual({ zdr: true });
+    expect(request.prompt).toContain(
+      "no record shows that this run used the alerting workspace",
+    );
+    expect(request.prompt).toContain("[T1:public-ip]/24");
+    expect(request.prompt).not.toContain("203.0.113");
+    expect(request.prompt).not.toContain("UNRELATED");
+    expect(caseRecord().draft).toBeNull();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("requests only lifecycle columns without downloading archived run packets", async () => {
+    await overlapCase();
+    classifyAs(concerning);
+
+    await expect(reassess()).resolves.toMatchObject({ advisory: "concern" });
+
+    expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
+    expect(triggerQuery.execute).toHaveBeenCalledWith(
+      `SELECT run_id, task_identifier, status, toUnixTimestamp(completed_at) AS completed_at_s FROM runs WHERE run_id = '${RUN}' LIMIT 2`,
+      { scope: "environment", from: 1, to: expect.any(Number) },
+      { retry: { maxAttempts: 1 } },
+    );
+    // The pinned SDK's runs.retrieve() automatically resolves payload/output.
+    expect(runs.retrieve).not.toHaveBeenCalled();
+  });
+
+  it("reports corroborated legitimate work without clearing the case or granting a cooldown", async () => {
+    const saved = await overlapCase({ command: "npm install && npm test" });
+    classifyAs(legitimate);
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "complete",
+      advisory: "neutral",
+      reason: "legitimate_corroborated",
+      classification: {
+        activity: "ordinary_development",
+        authorization: "not_stated",
+      },
+      model: expect.any(Object),
+    });
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("makes no determination from uncorroborated concern", async () => {
+    const saved = await overlapCase();
+    classifyAs({ ...concerning, authorization: "unclear" });
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "complete",
+      advisory: "inconclusive",
+      reason: "concerning_uncorroborated",
+      model: expect.any(Object),
+    });
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("does not classify incomplete candidate evidence", async () => {
+    const saved = await overlapCase();
+    // A later failed tool call of the same run leaves its commands incomplete.
+    const row = convex.tables.messages.find(
+      ({ id }: any) => id === `${CHAT}-assistant`,
+    );
+    row.parts.push({ ...terminal("call-2", SCAN), state: "output-error" });
+    classifyAs(concerning);
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "evidence_gaps",
+      gaps: ["incomplete_tool_calls"],
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it.each([
+    ["is still executing", { status: "Executing", completed_at_s: null }],
+    [
+      "finishes after the read starts",
+      { completed_at_s: Math.ceil((Date.now() + MINUTE_MS) / 1_000) },
+    ],
+  ])("does not classify a replaced run that %s", async (_label, lifecycle) => {
+    const saved = await overlapCase();
+    convex.tables.chats.find(
+      ({ id }: any) => id === CHAT,
+    ).active_trigger_run_id = "run_successor";
+    jest.mocked(triggerQuery.execute).mockResolvedValueOnce({
+      format: "json",
+      results: [{ ...candidateLifecycle, ...lifecycle }],
+    });
+    classifyAs(concerning);
+
+    const result = await reassess();
+
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "candidate_completion_unverified",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("reports an unavailable candidate without reading other chats", async () => {
+    const saved = await overlapCase();
+    convex.tables.chats.find(({ id }: any) => id === CHAT).deletion_started_at =
+      Date.now();
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "unavailable",
+      advisory: "inconclusive",
+      reason: "candidate_unavailable",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("returns a closed result for an overlap case that kept no candidate", async () => {
+    await seedRun();
+    await seedRun("run_parent2", "chat_two");
+    await link();
+    await link("run_parent2", "parent", "chat_two");
+    await expect(run()).resolves.toMatchObject({
+      reason: "multiple_runs",
+      diagnostic: { detail: "competing_links" },
+    });
+    jest.clearAllMocks();
+    await expect(reassess()).resolves.toEqual({
+      status: "closed",
+      reason: "no_candidate",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("is off with the review switch", async () => {
+    await overlapCase();
+    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "false";
+    await expect(reassess()).resolves.toEqual({ status: "disabled" });
+    expect(convex.tables.abuse_events).toHaveLength(1);
   });
 });
