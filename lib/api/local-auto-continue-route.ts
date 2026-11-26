@@ -100,10 +100,13 @@ async function storeUserCancel({
   userId,
   chatId,
   reason,
+  actionId,
 }: {
   userId: string;
   chatId: string;
   reason: LocalAutoContinueCancelReason;
+  /** Stable across the client's retries of one Stop or switch. */
+  actionId?: string;
 }): Promise<RunningContinuation[] | undefined> {
   let result: Partial<{
     cancelled: Decision[];
@@ -112,7 +115,13 @@ async function storeUserCancel({
   try {
     result = await getConvexClient().mutation(
       api.agentLocalAutoContinues.cancelForChat,
-      { serviceKey: serviceKey(), userId, chatId, reason },
+      {
+        serviceKey: serviceKey(),
+        userId,
+        chatId,
+        reason,
+        ...(actionId !== undefined && { actionId }),
+      },
     );
   } catch (error) {
     warn("agent_local_auto_continue_cancel_failed", {
@@ -414,6 +423,7 @@ type ReportBody =
         LocalAutoContinueCancelReason,
         "environment_switched" | "user_stop"
       >;
+      actionId?: string;
     };
 
 const IDENTIFIER = /^[A-Za-z0-9_-]{1,128}$/;
@@ -431,9 +441,16 @@ function parseBody(raw: unknown): ReportBody | undefined {
     body.action === "cancel" &&
     typeof body.chatId === "string" &&
     IDENTIFIER.test(body.chatId) &&
-    (body.reason === "environment_switched" || body.reason === "user_stop")
+    (body.reason === "environment_switched" || body.reason === "user_stop") &&
+    (body.actionId === undefined ||
+      (typeof body.actionId === "string" && IDENTIFIER.test(body.actionId)))
   )
-    return { action: "cancel", chatId: body.chatId, reason: body.reason };
+    return {
+      action: "cancel",
+      chatId: body.chatId,
+      reason: body.reason,
+      ...(body.actionId !== undefined && { actionId: body.actionId }),
+    };
 }
 
 /**
@@ -480,6 +497,7 @@ export const createLocalAutoContinuePost =
         userId,
         chatId: body.chatId,
         reason: body.reason,
+        actionId: body.actionId,
       });
       if (!running) return retry();
       if (!running.length) return NextResponse.json({ ok: true });
@@ -511,12 +529,14 @@ export const createLocalAutoContinuePost =
     }
 
     const convex = getConvexClient();
-    const observe = (cursor: string | null) =>
+    // Later pages pass back the first page's bound with its cursor.
+    const observe = (cursor: string | null, stoppedAfter?: number) =>
       convex.mutation(api.agentLocalAutoContinues.observeReturn, {
         serviceKey: serviceKey(),
         userId,
         connectionId: body.connectionId,
         cursor,
+        ...(stoppedAfter !== undefined && { stoppedAfter }),
       });
     let page = await observe(null);
     if (!page.candidates.length && !page.settled.length && page.isDone)
@@ -568,7 +588,7 @@ export const createLocalAutoContinuePost =
           });
         }
         if (page.isDone || pages >= RETURN_PAGES) break;
-        page = await observe(page.continueCursor);
+        page = await observe(page.continueCursor, page.stoppedAfter);
       }
       return NextResponse.json({ pending });
     });

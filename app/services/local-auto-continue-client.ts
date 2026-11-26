@@ -94,18 +94,21 @@ export class LocalAutoContinueCancelError extends Error {
  * The user acted first in this chat; nothing may continue automatically.
  * Resolves only once the server stored that. Network failures and 5xx
  * responses retry briefly; then it rejects, so the caller can tell the user
- * and offer a retry. A 4xx is a final refusal.
+ * and offer a retry. A 4xx is a final refusal. Each call is one user action:
+ * its retries share one ID, so the server applies the action once and a
+ * retry cannot block a run the user started after acting.
  */
 export async function cancelLocalAutoContinue(
   chatId: string,
   reason: "environment_switched" | "user_stop",
   { sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) } = {},
 ): Promise<void> {
+  const actionId = crypto.randomUUID();
   for (let attempt = 0; ; attempt++) {
     const status = await fetch(AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "cancel", chatId, reason }),
+      body: JSON.stringify({ action: "cancel", chatId, reason, actionId }),
       cache: "no-store",
     }).then(
       (response) => response.status,

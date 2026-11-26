@@ -34,15 +34,17 @@ let nextId = 0;
 
 function index(table: string) {
   return {
-    withIndex: (_name: string, build?: (q: unknown) => unknown) => {
+    withIndex: (name: string, build?: (q: unknown) => unknown) => {
       const equals: Record<string, unknown> = {};
       const ranges: Array<(row: Row) => boolean> = [];
+      const bounds: string[] = [];
       const q = {
         eq(field: string, value: unknown) {
           equals[field] = value;
           return q;
         },
         gt(field: string, value: number) {
+          bounds.push(`${field}>${value}`);
           ranges.push(
             (row) =>
               typeof row[field] === "number" && (row[field] as number) > value,
@@ -50,6 +52,7 @@ function index(table: string) {
           return q;
         },
         lte(field: string, value: number) {
+          bounds.push(`${field}<=${value}`);
           ranges.push(
             (row) =>
               typeof row[field] === "number" && (row[field] as number) <= value,
@@ -81,7 +84,8 @@ function index(table: string) {
           return result;
         },
         // A Convex cursor is a position in the index: rows that leave the
-        // range between pages do not shift the next page.
+        // range between pages do not shift the next page. It is valid only
+        // for the index range it was read from.
         paginate: async ({
           cursor,
           numItems,
@@ -89,16 +93,29 @@ function index(table: string) {
           cursor: string | null;
           numItems: number;
         }) => {
+          const range = JSON.stringify([name, equals, bounds, direction]);
+          let after: string | null = null;
+          if (cursor) {
+            const position = JSON.parse(cursor) as {
+              range: string;
+              after: string | null;
+            };
+            if (position.range !== range) throw new Error("InvalidCursor");
+            after = position.after;
+          }
           const all = ordered();
-          const start = cursor
-            ? all.findIndex((row) => row._id === cursor) + 1
+          const start = after
+            ? all.findIndex((row) => row._id === after) + 1
             : 0;
           const rest = all.slice(start).filter(matches);
           const page = rest.slice(0, numItems);
           return {
             page,
             isDone: rest.length <= numItems,
-            continueCursor: page.at(-1)?._id ?? cursor ?? "",
+            continueCursor: JSON.stringify({
+              range,
+              after: page.at(-1)?._id ?? after,
+            }),
           };
         },
         first: async () => rows()[0] ?? null,
@@ -252,6 +269,12 @@ function recordStop(
   });
 }
 
+/** The Agent start route: the new run owns the chat before it responds. */
+function startedRun(runId = "run_continued") {
+  tables.chats[0].active_trigger_run_id = runId;
+  return NextResponse.json({ runId });
+}
+
 const startAgent = jest.fn<(req: NextRequest) => Promise<Response>>();
 const cancelAgent = jest.fn<(req: NextRequest) => Promise<Response>>();
 const POST = createLocalAutoContinuePost({
@@ -308,11 +331,19 @@ function messageSince(role: "user" | "assistant", at = now + 1) {
   });
 }
 
-const cancelReport = (reason: "environment_switched" | "user_stop") =>
+const cancelReport = (
+  reason: "environment_switched" | "user_stop",
+  actionId?: string,
+) =>
   POST(
     new NextRequest("http://localhost/api/agent/local-auto-continue", {
       method: "POST",
-      body: JSON.stringify({ action: "cancel", chatId: "chat", reason }),
+      body: JSON.stringify({
+        action: "cancel",
+        chatId: "chat",
+        reason,
+        ...(actionId && { actionId }),
+      }),
     }),
   );
 
@@ -325,11 +356,7 @@ beforeEach(() => {
   mockCapture.mockReset();
   mockFlag.mockReset();
   variant("test");
-  startAgent
-    .mockReset()
-    .mockImplementation(async () =>
-      NextResponse.json({ runId: "run_continued" }),
-    );
+  startAgent.mockReset().mockImplementation(async () => startedRun());
   cancelAgent.mockReset().mockResolvedValue(NextResponse.json({}));
   // The stopped connection, and the same Desktop session registering again.
   connection(STOPPED_CONNECTION, { status: "disconnected" });
@@ -588,7 +615,7 @@ describe("automatic continuation after a Desktop comes back", () => {
   it("retries a transient start failure with the same message, never a refusal", async () => {
     startAgent
       .mockResolvedValueOnce(new NextResponse("busy", { status: 503 }))
-      .mockResolvedValueOnce(NextResponse.json({ runId: "run_continued" }));
+      .mockImplementationOnce(async () => startedRun());
     await recordStop();
     await report();
 
@@ -620,7 +647,7 @@ describe("automatic continuation after a Desktop comes back", () => {
         chatId: "chat",
         reason: "user_stop",
       });
-      return NextResponse.json({ runId: "run_continued" });
+      return startedRun();
     });
     await recordStop();
     await report();
@@ -797,7 +824,7 @@ describe("automatic continuation after a Desktop comes back", () => {
         chatId: "chat",
         reason: "user_stop",
       });
-      return NextResponse.json({ runId: "run_continued" });
+      return startedRun();
     });
     cancelAgent
       .mockResolvedValueOnce(new NextResponse("unavailable", { status: 503 }))
@@ -893,7 +920,7 @@ describe("automatic continuation after a Desktop comes back", () => {
         chatId: "chat",
         reason: "user_stop",
       });
-      return NextResponse.json({ runId: "run_continued" });
+      return startedRun();
     });
     cancelAgent.mockResolvedValue(
       new NextResponse("unavailable", { status: 503 }),
@@ -917,6 +944,13 @@ describe("automatic continuation after a Desktop comes back", () => {
       stoppedRunId: "run_stopped",
       continuedRunId: "run_continued",
     });
+
+    // The user's next Stop from the notice stops exactly that run.
+    cancelAgent.mockReset().mockResolvedValue(NextResponse.json({}));
+    expect((await cancelReport("user_stop")).status).toBe(200);
+    expect(
+      await Promise.all(cancelAgent.mock.calls.map(([req]) => req.json())),
+    ).toEqual([{ chatId: "chat", expectedTriggerRunId: "run_continued" }]);
   });
 
   it("reports an unrecorded start whose stop failed as stop_failed, not start_failed", async () => {
@@ -964,10 +998,86 @@ describe("automatic continuation after a Desktop comes back", () => {
         active_trigger_run_id: `run_busy_${i}`,
       });
     }
+    // Time passes while the report reads its pages.
+    jest.spyOn(Date, "now").mockImplementation(() => (now += 10));
 
     expect(await (await report()).json()).toEqual({ pending: true });
     expect((await startBodies()).map((body) => body.localAutoContinue)).toEqual(
       [{ stoppedRunId: "run_stopped" }],
     );
   });
+
+  it("keeps showing a running continuation after a late stop report for its chat", async () => {
+    await recordStop();
+    await report();
+    // An earlier run's delayed report lands while the continuation runs.
+    now += 1_000;
+    await recordStop("run_late");
+
+    expect(await chatNotice()).toEqual({
+      state: "started",
+      stoppedRunId: "run_stopped",
+      continuedRunId: "run_continued",
+    });
+  });
+
+  it("keeps showing a starting continuation after a late stop report for its chat", async () => {
+    let notice: unknown;
+    startAgent.mockImplementation(async () => {
+      now += 1_000;
+      await recordStop("run_late");
+      notice = await chatNotice();
+      return startedRun();
+    });
+    await recordStop();
+    await report();
+
+    expect(notice).toEqual({ state: "starting", stoppedRunId: "run_stopped" });
+  });
+
+  it("stops a continuation that outlived its stop's window when the user switches away", async () => {
+    await recordStop();
+    await report();
+    // The continuation is still the chat's run long after its stop.
+    now += 60 * 60_000;
+
+    expect((await cancelReport("environment_switched")).status).toBe(200);
+    expect(
+      await Promise.all(cancelAgent.mock.calls.map(([req]) => req.json())),
+    ).toEqual([{ chatId: "chat", expectedTriggerRunId: "run_continued" }]);
+  });
+
+  it.each([
+    ["before", "the same switch retried", true],
+    ["after", "the same switch retried", true],
+    ["before", "a new switch", false],
+    ["after", "a new switch", false],
+  ] as const)(
+    "with a newer run's stop recorded %s it, %s decides that run",
+    async (order, action, continues) => {
+      expect(
+        (await cancelReport("environment_switched", "switch-1")).status,
+      ).toBe(200);
+      // Later, the user ran this chat on the computer again and it left.
+      now += 5 * 60_000;
+      stoppedChat();
+      const actionId = action === "a new switch" ? "switch-2" : "switch-1";
+      if (order === "before") await recordStop("run_newer");
+      expect(
+        (await cancelReport("environment_switched", actionId)).status,
+      ).toBe(200);
+      if (order === "after") await recordStop("run_newer");
+      await report();
+
+      expect(
+        (await startBodies()).map((body) => body.localAutoContinue),
+      ).toEqual(continues ? [{ stoppedRunId: "run_newer" }] : []);
+      if (!continues) return;
+      // A late retry of the first switch cannot stop that run's continuation.
+      expect(
+        (await cancelReport("environment_switched", "switch-1")).status,
+      ).toBe(200);
+      expect(cancelAgent).not.toHaveBeenCalled();
+    },
+  );
 });

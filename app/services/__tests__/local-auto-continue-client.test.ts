@@ -124,6 +124,23 @@ describe("cancelLocalAutoContinue", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("sends one action ID with every retry of an action, and a new one per action", async () => {
+    fetchMock
+      .mockImplementationOnce(() => respond(503))
+      .mockImplementation(() => respond(200));
+    await cancelLocalAutoContinue("chat", "user_stop", { sleep });
+    await cancelLocalAutoContinue("chat", "user_stop", { sleep });
+
+    const ids = fetchMock.mock.calls.map(
+      ([, init]) => JSON.parse(String(init?.body)).actionId,
+    );
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toEqual(expect.any(String));
+    // The server applies a retried action once; a new press is a new action.
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[0]);
+  });
+
   it("rejects after its retries so the caller can tell the user", async () => {
     fetchMock.mockImplementation(() => respond(503));
 

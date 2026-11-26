@@ -2442,6 +2442,8 @@ export default defineSchema({
   })
     .index("by_stopped_run_id", ["stopped_run_id"])
     .index("by_chat_and_stopped_at", ["chat_id", "stopped_at"])
+    // The continuation behind a chat's active run, however old its stop.
+    .index("by_continued_run_id", ["continued_run_id"])
     // A returning computer reads only its own recent waiting stops.
     .index("by_user_environment_state_stopped_at", [
       "user_id",
@@ -2461,6 +2463,8 @@ export default defineSchema({
     user_id: v.string(),
     reason: v.union(v.literal("user_stop"), v.literal("environment_switched")),
     blocked_at: v.number(),
+    /** The client's ID for that action; its retries keep `blocked_at`. */
+    action_id: v.optional(v.string()),
   })
     .index("by_chat_id", ["chat_id"])
     // Account deletion removes a user's rows.
