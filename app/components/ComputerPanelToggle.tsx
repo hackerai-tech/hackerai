@@ -1,14 +1,10 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import useSWR from "swr";
-import { PanelRight } from "lucide-react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Folder } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
+import { trackWorkspaceFiles } from "@/lib/analytics/workspace-files";
 
 export function useWorkspaceFilesEnabled(chatId?: string): boolean {
   const { data } = useSWR(
@@ -29,29 +25,48 @@ export function useWorkspaceFilesEnabled(chatId?: string): boolean {
   return data?.enabled === true;
 }
 
-export function ComputerPanelToggle({ chatId }: { chatId?: string }) {
-  const { sidebarOpen, setSidebarOpen, closeSidebar } = useGlobalState();
+/**
+ * Header entry to the Computer panel. Always opens Files / This chat rather
+ * than toggling; Activity and opened file tabs stay inside the panel.
+ */
+export function WorkspaceFilesShortcut({ chatId }: { chatId?: string }) {
+  const { sidebarOpen, openSidebar } = useGlobalState();
   const enabled = useWorkspaceFilesEnabled(chatId);
-  if (!enabled || !chatId) return null;
-  const label = sidebarOpen ? "Close Computer" : "Open Computer";
+  const shown = enabled && !!chatId;
+
+  // Refs survive effect replay, so each chat reports once per mounted header.
+  const exposedChats = useRef(new Set<string>());
+  useEffect(() => {
+    if (
+      shown &&
+      !exposedChats.current.has(chatId) &&
+      trackWorkspaceFiles("workspace_files_header_exposed", {})
+    ) {
+      exposedChats.current.add(chatId);
+    }
+  }, [shown, chatId]);
+
+  if (!shown || !chatId) return null;
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={() =>
-              sidebarOpen ? closeSidebar() : setSidebarOpen(true)
-            }
-            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring ${sidebarOpen ? "bg-muted text-foreground" : "text-muted-foreground"}`}
-            aria-label={label}
-            aria-expanded={sidebarOpen}
-          >
-            <PanelRight size={18} aria-hidden />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{label} — activity and files</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <button
+      type="button"
+      aria-label="Open files"
+      data-testid="files-shortcut-button"
+      onClick={() => {
+        trackWorkspaceFiles("workspace_files_header_clicked", {});
+        openSidebar({
+          kind: "workspace-files",
+          chatId,
+          toolCallId: `workspace-files:${chatId}`,
+        });
+      }}
+      className={`inline-flex h-[34px] shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-medium transition-colors hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-md:-my-1.5 max-md:h-11 max-md:w-11 max-md:px-0 ${sidebarOpen ? "bg-muted" : ""}`}
+    >
+      <Folder
+        className="h-4 w-4 -ms-0.5 max-md:ms-0 max-md:size-5"
+        aria-hidden
+      />
+      <span className="max-md:hidden">Files</span>
+    </button>
   );
 }

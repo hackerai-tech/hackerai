@@ -106,6 +106,8 @@ export function ComputerWorkspace({
   const backButton = useRef<HTMLButtonElement>(null);
   const pickedPreviewId = useRef<string | null>(null);
   const [lastRequest, setLastRequest] = useState<number | null>(null);
+  // Counts explicit Files opens so the panel can return to This chat.
+  const [filesRequest, setFilesRequest] = useState(0);
   const [previousSelection, setPreviousSelection] = useState(selection);
   const ownedUrls = useRef(new Map<string, string>());
   // Saved files from pages outside the loaded history; Activity keeps using `messages`.
@@ -197,8 +199,10 @@ export function ComputerWorkspace({
   }
   if (open && selection && lastRequest !== openRequest) {
     setLastRequest(openRequest);
-    if (isSidebarWorkspaceFiles(selection)) openFiles();
-    else {
+    if (isSidebarWorkspaceFiles(selection)) {
+      setFilesRequest((count) => count + 1);
+      openFiles();
+    } else {
       setActivity(selection);
       const capture =
         isSidebarFile(selection) &&
@@ -565,6 +569,7 @@ export function ComputerWorkspace({
                 chatId={chatId}
                 messages={fileMessages}
                 savedFilesLoading={saved.loading}
+                openRequest={filesRequest}
                 onOpenCapturedFile={openCaptured}
                 onOpenWorkspaceFile={openWorkspace}
               />

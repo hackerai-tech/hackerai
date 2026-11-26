@@ -14,7 +14,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ComputerPanelToggle } from "./ComputerPanelToggle";
+import { WorkspaceFilesShortcut } from "./ComputerPanelToggle";
 import { ShareDialog } from "./ShareDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
@@ -273,6 +273,20 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
+              {isMobile && isInChat && showSidebarToggle && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Start new task"
+                  onClick={handleNewChat}
+                  className="h-7 w-7"
+                >
+                  <SquarePen className="size-5" />
+                </Button>
+              )}
+              {isExistingChat && id && user && (
+                <WorkspaceFilesShortcut chatId={id} />
+              )}
               {/* Share button stays in the desktop layout so title loading does not shift it. */}
               <button
                 aria-label="Share"
@@ -289,20 +303,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   Share
                 </div>
               </button>
-              {isMobile && isInChat && showSidebarToggle && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Start new task"
-                  onClick={handleNewChat}
-                  className="h-7 w-7"
-                >
-                  <SquarePen className="size-5" />
-                </Button>
-              )}
-              {isExistingChat && id && user && (
-                <ComputerPanelToggle chatId={id} />
-              )}
             </div>
           </div>
         </div>

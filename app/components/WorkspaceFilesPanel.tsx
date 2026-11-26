@@ -810,15 +810,23 @@ export function WorkspaceFilesPanel({
   onOpenCapturedFile,
   onOpenWorkspaceFile,
   savedFilesLoading = false,
+  openRequest = 0,
 }: {
   messages: any[];
   chatId: string;
   onOpenCapturedFile?: (file: CapturedFile) => void;
   onOpenWorkspaceFile?: (file: LoadedWorkspaceFile) => void;
   savedFilesLoading?: boolean;
+  /** Changes on each explicit Files open, which returns the view to This chat. */
+  openRequest?: number;
 }) {
   const { sandboxPreference } = useGlobalState();
   const [tab, setTab] = useState<"chat" | "workspace">("chat");
+  const [seenRequest, setSeenRequest] = useState(openRequest);
+  if (seenRequest !== openRequest) {
+    setSeenRequest(openRequest);
+    setTab("chat");
+  }
   return (
     <div className="flex min-h-0 flex-1 flex-col sm:pt-3">
       <div
