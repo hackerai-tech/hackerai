@@ -19,7 +19,10 @@
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
-import { awaitDispatchReadiness } from "@/lib/centrifugo/desktop-session";
+import {
+  awaitDispatchReadiness,
+  continuesPastUnknownOutcome,
+} from "@/lib/centrifugo/desktop-session";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -211,8 +214,7 @@ export async function createCentrifugoPtyHandle(
   const gate = sandbox.getDispatchGate();
   // A watched Desktop run continues past a terminal whose outcome is unknown,
   // so its tools must say so. Ask, CLI and other hosts keep their results.
-  const continuesPastUnknown =
-    typeof gate?.reportUncertainExecution === "function";
+  const continuesPastUnknown = continuesPastUnknownOutcome(gate);
   // Ends readiness waits on kill or teardown; never a published operation.
   const dispatchAbort = new AbortController();
   let registration: PublishedOperationRegistration | undefined;
@@ -436,8 +438,11 @@ export async function createCentrifugoPtyHandle(
 
     // Transport failure handler: pre-ready we reject the create promise;
     // post-ready we resolve `exited` as a failed observation so awaiters of
-    // handle.exited don't hang forever on a dropped subscription.
-    const failTransport = (message: string) => {
+    // handle.exited don't hang forever on a dropped subscription. The shell
+    // may still run: while the connection is usable, the route stays open
+    // until kill() sends pty_kill and tears it down (the session is kept
+    // until then). A failed connection cannot carry the kill.
+    const failTransport = (message: string, connectionUsable = false) => {
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
@@ -445,7 +450,8 @@ export async function createCentrifugoPtyHandle(
         reject(creationFailure(message));
       } else {
         console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
-        cleanup("transport_failed");
+        if (connectionUsable) loseOutcome("transport_failed");
+        else cleanup("transport_failed");
       }
     };
 
@@ -491,12 +497,22 @@ export async function createCentrifugoPtyHandle(
             break;
           }
 
-          case "pty_exit":
+          case "pty_exit": {
             // A terminal already settled as unknown stays recorded as such.
             if (!outcomeUnknown) outcomeKnown = true;
-            resolveExitedOnce({ exitCode: msg.exitCode });
+            // Unsequenced output sent before an exit seen while the host is
+            // unverified may never have arrived. The exit itself is real.
+            const outputIncomplete =
+              continuesPastUnknown &&
+              registration !== undefined &&
+              gate?.isReady() === false;
+            resolveExitedOnce({
+              exitCode: msg.exitCode,
+              ...(outputIncomplete && { outputIncomplete: true as const }),
+            });
             cleanup("exit_unverified");
             break;
+          }
 
           case "pty_error":
             if (!settled) {
@@ -508,7 +524,8 @@ export async function createCentrifugoPtyHandle(
               console.error(
                 `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
               );
-              cleanup("transport_failed");
+              // The host still answers on this route: keep it for pty_kill.
+              loseOutcome("transport_failed");
             }
             break;
         }
@@ -526,7 +543,10 @@ export async function createCentrifugoPtyHandle(
     });
 
     subscription.on("error", (ctx) => {
-      failTransport(`subscription error: ${ctx.error?.message ?? "unknown"}`);
+      failTransport(
+        `subscription error: ${ctx.error?.message ?? "unknown"}`,
+        true,
+      );
     });
 
     subscription.on("subscribed", () => {

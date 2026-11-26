@@ -13,7 +13,15 @@ import { createResolvableExited } from "./pty-exited-promise";
 export interface CommandSessionHandle extends PtyHandle {
   emitText(text: string): void;
   setPid(pid: number): void;
-  resolveExit(exitCode: number | null, observationFailed?: boolean): void;
+  /**
+   * `outcomeUnknown`: the command was published and the run continues past
+   * it although it may still be running; wait and view must say so.
+   */
+  resolveExit(
+    exitCode: number | null,
+    observationFailed?: boolean,
+    outcomeUnknown?: boolean,
+  ): void;
 }
 
 export function createCommandSessionHandle(opts: {
@@ -25,12 +33,19 @@ export function createCommandSessionHandle(opts: {
   let pid = 0;
   let hasExited = false;
 
-  const resolveExit = (exitCode: number | null, observationFailed = false) => {
+  const resolveExit = (
+    exitCode: number | null,
+    observationFailed = false,
+    outcomeUnknown = false,
+  ) => {
     if (hasExited) return;
-    hasExited = !observationFailed;
+    hasExited = !observationFailed && !outcomeUnknown;
     resolveOnce({
       exitCode,
-      ...(observationFailed ? { observationFailed: true as const } : {}),
+      ...(observationFailed || outcomeUnknown
+        ? { observationFailed: true as const }
+        : {}),
+      ...(outcomeUnknown ? { outcomeUnknown: true as const } : {}),
     });
   };
 

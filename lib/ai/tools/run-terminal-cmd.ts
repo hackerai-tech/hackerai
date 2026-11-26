@@ -86,6 +86,7 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import {
+  hasUnknownExecutionOutcome,
   isLocalCommandRelayUnsubscribedError,
   isLocalCommandDispatchError,
 } from "./utils/local-sandbox-errors";
@@ -100,12 +101,6 @@ import { phLogger } from "@/lib/posthog/server";
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
 
-/** An error whose execution may already have happened. */
-const hasUnknownExecutionOutcome = (error: unknown): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "executionOutcome" in error &&
-  error.executionOutcome === "unknown";
 const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
@@ -121,6 +116,9 @@ const READINESS_RECONNECT_FAILED =
 const getTerminalProcessStatus = (
   result: Record<string, unknown>,
 ): string | undefined => {
+  // A session whose outcome is unknown may or may not still be running.
+  if (result.executionOutcome === "unknown") return "Process outcome unknown";
+
   if (result.processStarted === true && typeof result.exitCode === "number") {
     return `Process exited with code ${result.exitCode}`;
   }
@@ -130,7 +128,7 @@ const getTerminalProcessStatus = (
     result.exited !== null &&
     typeof (result.exited as { exitCode?: unknown }).exitCode === "number"
   ) {
-    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}`;
+    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}${result.outputIncomplete === true ? "; its output may be incomplete" : ""}`;
   }
 
   if (typeof result.session === "string" && result.session) {
@@ -1592,6 +1590,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
                   !(error instanceof CommandExitError),
+                  // Published, and the run continues past it: an exposed
+                  // session must not read as exited.
+                  hasUnknownExecutionOutcome(error),
                 );
                 if (handler) {
                   handler.cleanup();

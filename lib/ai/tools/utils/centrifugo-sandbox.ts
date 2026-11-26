@@ -51,6 +51,7 @@ import { abortableDelay } from "@/lib/utils/abortable-delay";
 import {
   DESKTOP_SESSION_CHALLENGE,
   DESKTOP_SESSION_PROOF,
+  continuesPastUnknownOutcome,
   type DesktopDispatchGate,
   type PublishedDesktopCommand,
 } from "@/lib/centrifugo/desktop-session";
@@ -112,6 +113,7 @@ import {
   type NativePathResolutionFailure,
   type NativePathReceiverMode,
   getLocalFileRequestFailure,
+  hasUnknownExecutionOutcome,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
 
@@ -367,7 +369,10 @@ const redactTransferDetails = (
   return redacted;
 };
 
+// A published operation whose outcome is unknown may still run on the host:
+// sending it again could duplicate it, so it is never retried.
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
+  !hasUnknownExecutionOutcome(error) &&
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
 
 /**
@@ -1385,6 +1390,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       const result = await new Promise<CommandResult>((resolve, fail) => {
         let commandPublicationStarted = false;
+        // Settled as unknown on a run that continues past it.
+        let outcomeUnknown = false;
         const reject = (
           error: unknown,
           retryable = false,
@@ -1397,6 +1404,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 error,
                 commandPublicationStarted,
                 retryable && !commandPublicationStarted,
+                outcomeUnknown,
               );
           // Every rejection follows cleanup; never fabricate a reason.
           if (cleanupReason)
@@ -1555,12 +1563,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           // Published, but neither a terminal nor a confirmed cancellation
           // arrived: execution may continue. Keep it recorded as unknown, and
           // let no later dispatch proceed past it without a fresh proof.
-          if (!terminalReceived && reason !== "canceled")
+          if (!terminalReceived && reason !== "canceled") {
             registration?.markUnknown(
               unreconciledCause(reason),
               reason === "unreconciled",
             );
-          else registration?.release();
+            outcomeUnknown =
+              registration !== undefined && continuesPastUnknownOutcome(gate);
+          } else registration?.release();
           dispatchAbort.abort();
           clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the

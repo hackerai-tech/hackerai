@@ -73,6 +73,9 @@ class LoopbackCentrifugo {
   /** Reject a client publication of this type after receiving it. */
   rejectPublish?: string;
 
+  /** Reply to the next subscribe with this error, once. */
+  subscribeError?: { code: number; message: string; temporary?: boolean };
+
   next(match: (frame: Frame) => boolean): Promise<Frame> {
     const existing = this.frames.find(match);
     if (existing) return Promise.resolve(existing);
@@ -96,6 +99,13 @@ class LoopbackCentrifugo {
 
   push(channel: string, data: Record<string, unknown>): void {
     this.send(this.sockets.length - 1, { push: { channel, pub: { data } } });
+  }
+
+  /** Server-side unsubscribe; a code from 2500 makes the client resubscribe. */
+  unsubscribe(channel: string, code: number): void {
+    this.send(this.sockets.length - 1, {
+      push: { channel, unsubscribe: { code, reason: "loopback" } },
+    });
   }
 
   async stop(): Promise<void> {
@@ -129,6 +139,10 @@ class LoopbackCentrifugo {
           index,
           command.connect ? { id, connect: result } : { id, refresh: result },
         );
+      } else if (command.subscribe && this.subscribeError) {
+        const error = this.subscribeError;
+        this.subscribeError = undefined;
+        this.send(index, { id, error });
       } else if (command.subscribe) {
         this.send(index, { id, subscribe: {} });
       } else if (command.unsubscribe) {
@@ -336,6 +350,35 @@ describe("local relay PTY connection token refresh", () => {
     expect(server.sockets).toHaveLength(1);
   }, 10_000);
 
+  it("still sends the end-of-response kill after a subscription error once ready", async () => {
+    const handle = await openPty();
+    const [create] = server.publications("pty_create");
+    // The relay resubscribes the session's channel and refuses it once; the
+    // connection itself stays up.
+    server.subscribeError = { code: 100, message: "busy", temporary: true };
+    server.unsubscribe(channelOf(create), 2500);
+    await expect(within(handle.exited, "failed observation")).resolves.toEqual({
+      exitCode: null,
+      observationFailed: true,
+    });
+
+    const killed = handle.kill();
+    let settled = false;
+    void killed.then(() => (settled = true));
+    // The SDK resubscribes on its own (fake) backoff timer.
+    for (let step = 0; step < 30 && !settled; step++) {
+      await ioSettles();
+      await jest.advanceTimersByTimeAsync(500);
+    }
+    await within(killed, "kill settles");
+    expect(server.publications("pty_kill")).toEqual([
+      expect.objectContaining({ sessionId: create.sessionId }),
+    ]);
+    // The kill tears the session down; nothing is created again.
+    await within(server.socketClosed(0), "client disconnect");
+    expect(server.publications("pty_create")).toHaveLength(1);
+  });
+
   it("issues no token after kill tears the session down", async () => {
     const handle = await openPty();
 
@@ -475,6 +518,7 @@ describe("run readiness for interactive terminals", () => {
     await expect(within(input, "input rejection")).rejects.toBeDefined();
     await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
       exitCode: 130,
+      outputIncomplete: true,
     });
     await killed;
     expect(server.publications("pty_kill")).toHaveLength(1);
@@ -493,36 +537,52 @@ describe("run readiness for interactive terminals", () => {
     ]);
   });
 
-  it("records a session as unknown when its exit arrives while the host is unverified", async () => {
-    runPtyRunner();
-    const sandbox = createSandbox();
-    const readiness = controllableGate();
-    readiness.open();
-    sandbox.setDispatchGate(readiness.gate);
-    const handle = await within(
-      createCentrifugoPtyHandle(sandbox, {
-        command: "bounded-shell",
-        cols: 80,
-        rows: 24,
-      }),
-      "pty_ready",
-    );
-    const [create] = server.publications("pty_create");
-    readiness.close();
-    server.push(channelOf(create), {
-      type: "pty_exit",
-      sessionId: create.sessionId,
-      exitCode: 0,
-    });
-    await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
-      exitCode: 0,
-    });
-    expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledWith({
-      cause: "exit_unverified",
-      operation: "pty",
-    });
-    expect(sandbox.getPublishedCommands()).toEqual([]);
-  });
+  it.each([
+    [
+      "a run that continues past it reports the output as incomplete",
+      true,
+      { outputIncomplete: true },
+    ],
+    ["a CLI host keeps its exit result", false, {}],
+  ])(
+    "an exit that arrives while the host is unverified keeps its exit code: %s",
+    async (_name, reports, flags) => {
+      runPtyRunner();
+      const sandbox = createSandbox();
+      const readiness = controllableGate({ reports });
+      readiness.open();
+      sandbox.setDispatchGate(readiness.gate);
+      const handle = await within(
+        createCentrifugoPtyHandle(sandbox, {
+          command: "bounded-shell",
+          cols: 80,
+          rows: 24,
+        }),
+        "pty_ready",
+      );
+      const [create] = server.publications("pty_create");
+      readiness.close();
+      server.push(channelOf(create), {
+        type: "pty_exit",
+        sessionId: create.sessionId,
+        exitCode: 0,
+      });
+      // The exit is real, but unsequenced output sent before it may be lost.
+      await expect(within(handle.exited, "pty_exit")).resolves.toEqual({
+        exitCode: 0,
+        ...flags,
+      });
+      if (reports)
+        expect(readiness.gate.reportUncertainExecution).toHaveBeenCalledWith({
+          cause: "exit_unverified",
+          operation: "pty",
+        });
+      expect(sandbox.getPublishedCommands()).toEqual([]);
+      expect(sandbox.getUnknownOperations()).toEqual([
+        expect.objectContaining({ kind: "pty", cause: "exit_unverified" }),
+      ]);
+    },
+  );
 
   it("settles a terminal as unknown when input delivery fails after publication began, refusing any further input", async () => {
     runPtyRunner();

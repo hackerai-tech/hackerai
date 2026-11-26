@@ -46,6 +46,7 @@ import {
   getLocalCopyFailureContext,
   type LocalCopyFailureContext,
 } from "@/lib/ai/tools/utils/local-copy-failure-context";
+import { hasUnknownExecutionOutcome } from "@/lib/ai/tools/utils/local-sandbox-errors";
 
 import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
@@ -165,6 +166,8 @@ type SandboxUploadFailureDetail = {
   reason: SandboxUploadFailureReason;
   localCopyFailureReason?: LocalCopyFailureReason;
   transientSandboxCommand: boolean;
+  /** Published, and it may still run: staging again could duplicate it. */
+  executionOutcome?: "unknown";
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
   commandFailureContext?: AttachmentCommandFailureContext;
@@ -1563,6 +1566,9 @@ const summarizeSandboxUploadFailure = (
         localCopyFailureReason: classifyLocalCopyFailure(error),
       }),
     transientSandboxCommand: isTransientSandboxCommandError(error),
+    ...(hasUnknownExecutionOutcome(error) && {
+      executionOutcome: "unknown" as const,
+    }),
     sandboxReadinessReason,
     // Probe attribution is diagnostic only; acquisition and retry policy keep
     // their existing classification and budget.
@@ -1862,11 +1868,16 @@ const uploadSandboxFilesOnce = async (
   };
 };
 
+// Staging again re-sends every attachment, so one operation whose outcome is
+// unknown rules out the whole retry.
 const hasTransientSandboxCommandFailure = (
   result: SandboxUploadResult,
 ): boolean =>
-  result.failureDetails?.some((detail) => detail.transientSandboxCommand) ??
-  false;
+  !result.failureDetails?.some(
+    (detail) => detail.executionOutcome === "unknown",
+  ) &&
+  (result.failureDetails?.some((detail) => detail.transientSandboxCommand) ??
+    false);
 
 export const getSandboxUploadFailureMetadata = (
   result: SandboxUploadResult,

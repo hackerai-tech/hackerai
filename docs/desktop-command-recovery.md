@@ -96,6 +96,10 @@ terminal transport failure, unconfirmed input, or a kill with no observed
 exit. The operation is recorded the same way, and no later dispatch is
 admitted until the same session answers a fresh challenge. That re-verification
 does not settle other operations, because their streams were not interrupted.
+The rejection carries the unknown outcome, so automatic retries, such as an
+attachment transfer's timeout retry or a re-staging after reconnect, never send
+it again. An exit that arrives while the host is unverified is still reported
+as an exit, with a warning that output sent before it may be missing.
 
 A host that never proved its session (a CLI host or an older binary) cannot
 answer such a challenge, so an unknown outcome still stops its run. A
@@ -106,7 +110,8 @@ handle belongs to the run's worker process, there is no protocol for a later
 run to reattach to it, and the native side does not reap idle terminals. When
 a kill gets no exit in time, the terminal's execution record says `unknown`
 (possibly still running) for later turns, and the completion check proceeds
-normally rather than reporting a lost connection.
+normally rather than reporting a lost connection. A terminal that fails while
+its connection stays usable keeps its route open until that kill is sent.
 
 A stop for `desktop_command_unreconciled` records a closed cause and the
 operation kind. Any stop while verification is open records whether that was

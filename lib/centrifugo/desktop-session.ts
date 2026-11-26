@@ -110,6 +110,15 @@ export interface DesktopDispatchGate {
 }
 
 /**
+ * Only a watched Desktop run continues past an execution whose outcome is
+ * unknown. Its results must say so, and nothing may send that execution
+ * again. Ask, CLI and other hosts keep their results.
+ */
+export const continuesPastUnknownOutcome = (
+  gate: DesktopDispatchGate | undefined,
+): boolean => typeof gate?.reportUncertainExecution === "function";
+
+/**
  * Wait for readiness before slow pre-publication work. This is not itself an
  * admission: its caller resumes after an await, so the publication site must
  * read isReady() again in the same tick as its publish.

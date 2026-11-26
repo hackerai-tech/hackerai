@@ -18,6 +18,12 @@ export interface PtyExitResult {
    * transports whose runs continue past such a terminal.
    */
   outcomeUnknown?: true;
+  /**
+   * The process exited, but this exit arrived while the host was unverified,
+   * so unsequenced output sent before it may be missing. Set only by
+   * transports whose runs continue past such a terminal.
+   */
+  outputIncomplete?: true;
 }
 
 /** Input was not sent: the terminal's outcome is unknown. */

@@ -1062,4 +1062,88 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       ).toBe(true);
     }
   });
+
+  test("send reports an outcome lost while it waited for output; a live terminal stays ordinary", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let lose!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      lose = () =>
+        resolve({
+          exitCode: null,
+          observationFailed: true,
+          outcomeUnknown: true,
+        });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    const tool = createInteractTerminalSession(context);
+
+    const live = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "status\n",
+    })) as { result: Record<string, unknown> };
+    expect(live.result).not.toHaveProperty("executionOutcome");
+    expect(live.result).not.toHaveProperty("exited");
+    expect(live.result).not.toHaveProperty("error");
+
+    // The input was published; then the connection lost the terminal.
+    mockWaitForOutput.mockImplementationOnce(async () => {
+      lose();
+      await new Promise((r) => setTimeout(r, 0));
+      return new Uint8Array();
+    });
+    const sent = (await runTool(tool, {
+      action: "send",
+      session: sessionId,
+      input: "make deploy\n",
+    })) as { result: Record<string, unknown> };
+    expect(sent.result).toMatchObject({
+      executionOutcome: "unknown",
+      error: expect.stringContaining("Do not rerun this command automatically"),
+    });
+    expect(sent.result).not.toHaveProperty("exited");
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-interact_terminal_session",
+          state: "output-available",
+          output: sent,
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  // The process really exited, but while its host was unverified, so some of
+  // its unsequenced output may never have arrived.
+  test("an exit whose output may be incomplete reads as exited, with that warning", async () => {
+    const e2b = makeFakeE2BSandbox();
+    const handle = makeFakeHandle();
+    let exit!: () => void;
+    handle.exited = new Promise<PtyExitResult>((resolve) => {
+      exit = () => resolve({ exitCode: 0, outputIncomplete: true });
+    }) as FakeHandle["exited"];
+    const { context } = makeContext({ sandbox: e2b });
+    const sessionId = await createSession(context, handle);
+    exit();
+    await new Promise((r) => setTimeout(r, 0));
+    const tool = createInteractTerminalSession(context);
+
+    for (const action of ["wait", "view"]) {
+      const output = (await runTool(tool, {
+        action,
+        session: sessionId,
+        timeout: 0.1,
+      })) as { result: Record<string, unknown> };
+      expect(output.result).toMatchObject({
+        exited: { exitCode: 0 },
+        outputIncomplete: true,
+        error: expect.stringContaining("output may be incomplete"),
+      });
+      // Not an unknown outcome: the process is known to have exited.
+      expect(output.result).not.toHaveProperty("executionOutcome");
+      expect(output.result.error).not.toMatch(/may still be running/);
+    }
+  });
 });

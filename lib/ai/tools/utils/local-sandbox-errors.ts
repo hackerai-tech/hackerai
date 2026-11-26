@@ -77,16 +77,30 @@ export function getLocalFileRequestFailure(
 /** Transport evidence used to retry only commands that never reached publication. */
 export class LocalCommandDispatchError extends Error {
   readonly code = "LOCAL_COMMAND_DISPATCH_ERROR";
+  /** Published, and the run continues past it: it may already have run. */
+  readonly executionOutcome?: "unknown";
 
   constructor(
     cause: unknown,
     readonly dispatched: boolean,
     readonly retryable: boolean = false,
+    outcomeUnknown = false,
   ) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "LocalCommandDispatchError";
+    if (outcomeUnknown) this.executionOutcome = "unknown";
   }
 }
+
+/**
+ * The execution may already have happened. No caller may send it again
+ * automatically, whatever its error text says.
+ */
+export const hasUnknownExecutionOutcome = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "executionOutcome" in error &&
+  error.executionOutcome === "unknown";
 
 export const isLocalCommandDispatchError = (
   error: unknown,

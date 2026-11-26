@@ -849,19 +849,51 @@ test("Stop before publication ends a readiness wait at once without dispatching"
 
 describe("a published execution whose outcome becomes unknown", () => {
   /**
+   * Withholds every session proof from the run's observer until released.
+   * Install it before the outcome is lost: the host answers at once.
+   */
+  function holdProofs() {
+    const observer = relay.observer()!;
+    const deliver = observer.push.bind(observer);
+    const held: Frame[] = [];
+    const intercept = jest
+      .spyOn(observer, "push")
+      .mockImplementation((frame) => {
+        const push = frame.push as { pub?: { data?: Frame } } | undefined;
+        if (push?.pub?.data?.type === "desktop_session_proof") held.push(frame);
+        else deliver(frame);
+      });
+    return {
+      held,
+      release() {
+        intercept.mockRestore();
+        for (const frame of held.splice(0)) deliver(frame);
+      },
+    };
+  }
+
+  /**
    * Later work waits for a fresh proof of the same session, then runs once;
    * the uncertain execution itself is never sent again.
    */
   async function expectDispatchAfterFreshProof(
     run: Awaited<ReturnType<typeof startRun>>,
-    proofsBefore: number,
+    proofs: ReturnType<typeof holdProofs>,
   ) {
     const executed = run.host.executions.length;
+    const published = commandsPublished();
+    // The host has answered the fresh challenge, but the run has not seen it.
+    await until(() => proofs.held.length > 0);
     const next = run.sandbox.commands.run("printf after");
+    // Within one proof timeout, so the held answer stays the current one.
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(run.watch.isReady()).toBe(false);
+    expect(commandsPublished()).toBe(published);
+    expect(run.host.executions).toHaveLength(executed);
+
+    proofs.release();
     await until(() => run.host.executions.length === executed + 1);
-    expect(relay.published("desktop_session_proof").length).toBeGreaterThan(
-      proofsBefore,
-    );
+    expect(commandsPublished()).toBe(published + 1);
     run.host
       .output(run.host.executions[executed])
       .append({ type: "exit", exitCode: 0 });
@@ -874,7 +906,7 @@ describe("a published execution whose outcome becomes unknown", () => {
   test("a receiver failure without a terminal requires a fresh same-session proof, then the run continues", async () => {
     const run = await startRun();
     const { commandId, outcome, done } = await runCommand(run);
-    const proofs = relay.published("desktop_session_proof").length;
+    const proofs = holdProofs();
     run.host.reportUnavailable(commandId);
     await until(() => !!outcome.error);
     await done;
@@ -897,7 +929,7 @@ describe("a published execution whose outcome becomes unknown", () => {
       cols: 80,
       rows: 24,
     });
-    const proofs = relay.published("desktop_session_proof").length;
+    const proofs = holdProofs();
     run.host.reportTerminalError(run.host.terminals[0]);
     await expect(handle.exited).resolves.toMatchObject({
       observationFailed: true,
@@ -905,11 +937,18 @@ describe("a published execution whose outcome becomes unknown", () => {
     });
     await expectDispatchAfterFreshProof(run, proofs);
     expect(run.host.terminals).toHaveLength(1);
+    // The host may still run the shell: the end-of-response kill reaches it.
+    await handle.kill();
+    expect(relay.published("pty_kill")).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ sessionId: run.host.terminals[0] }),
+      }),
+    ]);
   });
 
   test("an error before PTY readiness does not prove native execution never started", async () => {
     const run = await startRun(startHost({ ptyCreationError: true }));
-    const proofs = relay.published("desktop_session_proof").length;
+    const proofs = holdProofs();
     await expect(
       createCentrifugoPtyHandle(run.sandbox, {
         command: "bounded-shell",
@@ -922,6 +961,64 @@ describe("a published execution whose outcome becomes unknown", () => {
     });
     await expectDispatchAfterFreshProof(run, proofs);
     expect(run.host.terminals).toHaveLength(1);
+  });
+
+  test("a published download that reaches its receiver deadline is never sent again", async () => {
+    const run = await startRun();
+    const commandText = (commandId: string) =>
+      String(
+        relay
+          .published("command")
+          .find(({ data }) => data.commandId === commandId)?.data.command,
+      );
+    const downloads = () =>
+      run.host.executions.filter((id) =>
+        commandText(id).includes("curl -fsSL"),
+      );
+    const failure = run.sandbox.files
+      .downloadFromUrl(
+        "https://example.com/report.bin",
+        "/tmp/hackerai-upload/report.bin",
+      )
+      .then(
+        () => new Error("the download unexpectedly succeeded"),
+        (error: unknown) => error,
+      );
+    // Answer the read-only setup probes; the download itself never returns.
+    for (const [probe, stdout] of [
+      ["echo $BASH_VERSION", "5.2.21\n"],
+      ["command -v curl", "/usr/bin/curl\n"],
+      ["curl --help all", ""],
+    ]) {
+      const index = run.host.executions.length;
+      await until(() => run.host.executions.length > index);
+      const commandId = run.host.executions[index];
+      expect(commandText(commandId)).toContain(probe);
+      run.host.output(commandId).append({ type: "stdout", data: stdout });
+      run.host.output(commandId).append({ type: "exit", exitCode: 0 });
+    }
+    await until(() => downloads().length === 1);
+    const [download] = downloads();
+
+    // No terminal before the receiver deadline: the download may still be
+    // writing its destination on the host.
+    await jest.advanceTimersByTimeAsync(160_000);
+    await expect(failure).resolves.toMatchObject({
+      message: expect.stringContaining("Command timeout after"),
+      executionOutcome: "unknown",
+    });
+    expect(run.sandbox.getUnknownOperations()).toEqual([
+      expect.objectContaining({
+        operationId: download,
+        cause: "receiver_deadline",
+      }),
+    ]);
+    // The same session proves itself again and the run continues, but the
+    // download is never retried.
+    await until(() => run.watch.isReady());
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(downloads()).toEqual([download]);
+    expect(run.onLost).not.toHaveBeenCalled();
   });
 
   test("a terminal torn down during a whole outage is never forgotten before the session proof", async () => {

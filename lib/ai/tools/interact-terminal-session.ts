@@ -439,6 +439,9 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             sessionSnapshot: snapshots.cleaned,
             rawSnapshot: snapshots.raw,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            // The terminal may have ended, or lost its outcome, during the
+            // wait; a still-active terminal adds nothing.
+            ...terminalExitFields(await peekExited(session)),
           },
         };
       };
