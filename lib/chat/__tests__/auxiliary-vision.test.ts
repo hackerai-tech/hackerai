@@ -419,6 +419,7 @@ describe("auxiliary vision", () => {
 
   it.each([
     "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4-flash-vision-exp",
     DEEPSEEK_V4_FLASH_VISION_SLUG,
     GLM_5_3_FLASH_SLUG,
   ])(

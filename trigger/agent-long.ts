@@ -2775,7 +2775,9 @@ export const agentLongTask = task({
               }
 
               const allowanceReservation =
-                await reservePaidDailyFreeAllowanceRequest(allowanceContext);
+                await reservePaidDailyFreeAllowanceRequest(allowanceContext, {
+                  requireExistingConsent: !limitRescue,
+                });
               error.metadata = {
                 ...error.metadata,
                 paidDailyFreeAllowance: paidDailyFreeAllowanceStatusToMetadata(

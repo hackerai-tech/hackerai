@@ -27,15 +27,24 @@ describe("paid daily free allowance", () => {
     get: jest.fn(async (key: string) => readRedisKey(key) ?? null),
     eval: jest.fn(
       async (_script: string, keys: string[], args: Array<number | string>) => {
-        if (args.length === 4) {
+        if (args.length === 5) {
           // Mirrors the atomic tokenized lease shared by Ask and Agent.
           const [requestsKey, costKey, reservationKey] = keys;
-          const [costLimitRaw, _counterTtlMs, reservationTtlMs, token] = args;
+          const [
+            costLimitRaw,
+            _counterTtlMs,
+            reservationTtlMs,
+            token,
+            requireExistingConsent,
+          ] = args;
           const costLimit = Number(costLimitRaw);
           const requestsUsed = Number(redisStore.get(requestsKey) ?? 0);
           const costUsed = Number(redisStore.get(costKey) ?? 0);
           if (costUsed >= costLimit) {
             return [0, "cost_limit_reached", requestsUsed, costUsed];
+          }
+          if (requireExistingConsent === "1" && requestsUsed < 1) {
+            return [0, "consent_required", requestsUsed, costUsed];
           }
           if (
             readRedisKey(reservationKey) != null ||
@@ -214,6 +223,34 @@ describe("paid daily free allowance", () => {
         await mod.getPaidDailyFreeAllowanceStatus(agentContext),
       ),
     ).toBe(false);
+  });
+
+  it("requires consent in the reserved day unless the request is an explicit rescue", async () => {
+    const mod = getIsolatedModule();
+    const first = await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+    await mod.recordPaidDailyFreeAllowanceCost(agentContext.userId, 0, first);
+    const yesterday = await mod.getPaidDailyFreeAllowanceStatus(askContext);
+    expect(mod.hasPaidDailyFreeAllowanceConsent(yesterday)).toBe(true);
+
+    // The UTC day ends between the consent read and the reservation.
+    jest.setSystemTime(new Date("2026-06-12T00:00:01.000Z"));
+    const blocked = await mod.reservePaidDailyFreeAllowanceRequest(askContext, {
+      requireExistingConsent: true,
+    });
+    expect(blocked).toMatchObject({
+      allowed: false,
+      blockReason: "consent_required",
+      // Still offered, so the client can ask for today's opt-in.
+      status: { available: true, requestsUsed: 0 },
+    });
+    expect(blocked.status).not.toHaveProperty("unavailableReason");
+    expect(blocked).not.toHaveProperty("redisReservation");
+
+    await expect(
+      mod.reservePaidDailyFreeAllowanceRequest(askContext, {
+        requireExistingConsent: false,
+      }),
+    ).resolves.toMatchObject({ allowed: true, status: { requestsUsed: 1 } });
   });
 
   it("still rejects an explicit paid model after opting into the allowance", async () => {

@@ -3377,9 +3377,32 @@ describe("CentrifugoSandbox", () => {
     const entries = Array.from({ length: 2_000 }, (_, index) => ({
       name: `${index}-${"x".repeat(600)}`,
     }));
-    expect(
-      estimateRelayPayloadBytes({ type: "file_list_result", entries }),
-    ).toBeGreaterThan(1024 * 1024);
+    const estimate = estimateRelayPayloadBytes({
+      type: "file_list_result",
+      entries,
+    });
+    expect(estimate).toBeGreaterThan(1024 * 1024);
+    const serialized = Buffer.byteLength(JSON.stringify(entries));
+    expect(Math.abs(estimate - 128 - serialized)).toBeLessThan(
+      serialized * 0.01,
+    );
+  });
+
+  it("estimates circular and deeply nested file-list entries without throwing", () => {
+    const circular: Record<string, unknown> = { name: "loop" };
+    circular.self = circular;
+    let deep: unknown = { name: "leaf" };
+    for (let depth = 0; depth < 200_000; depth++) deep = [deep];
+    expect(() => JSON.stringify([deep])).toThrow();
+
+    for (const entries of [[circular], [deep]]) {
+      const estimate = estimateRelayPayloadBytes({
+        type: "file_list_result",
+        entries,
+      });
+      expect(Number.isFinite(estimate)).toBe(true);
+      expect(estimate).toBeGreaterThan(128);
+    }
   });
 
   describe("attachment cancellation", () => {
