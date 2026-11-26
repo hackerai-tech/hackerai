@@ -32,6 +32,7 @@ export function createCommandSessionHandle(opts: {
   const { exited, resolveOnce } = createResolvableExited();
   let pid = 0;
   let hasExited = false;
+  let unknown = false;
 
   const resolveExit = (
     exitCode: number | null,
@@ -40,6 +41,7 @@ export function createCommandSessionHandle(opts: {
   ) => {
     if (hasExited) return;
     hasExited = !observationFailed && !outcomeUnknown;
+    unknown ||= outcomeUnknown;
     resolveOnce({
       exitCode,
       ...(observationFailed || outcomeUnknown
@@ -62,7 +64,9 @@ export function createCommandSessionHandle(opts: {
       // Non-interactive commands have no terminal geometry.
     },
     async kill(): Promise<void> {
-      if (hasExited) return;
+      // Unknown: no Stop can reach or confirm it. `exited` already says so,
+      // and callers report that instead of a termination.
+      if (hasExited || unknown) return;
       const terminated = await opts.kill();
       if (!terminated) {
         throw new Error("Failed to terminate non-interactive command session.");

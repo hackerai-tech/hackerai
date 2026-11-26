@@ -1724,7 +1724,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           triggeredBySignal = false,
         ): Promise<boolean> => {
           cancelTriggeredBySignal ||= triggeredBySignal;
-          if (settled) return Promise.resolve(true);
+          // Settled. A command whose outcome is unknown may still run, so
+          // Stop never reports it terminated. It also sends no command_cancel:
+          // the receiver is already closed, and nothing about an unknown
+          // operation is published again. Stop reports it unconfirmed and
+          // the caller keeps reporting its outcome as unknown.
+          if (settled) return Promise.resolve(!outcomeUnknown);
           if (cancelAttemptPromise) return cancelAttemptPromise;
 
           cancelAttemptPromise = new Promise<boolean>((resolveAttempt) => {
@@ -2190,9 +2195,24 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);
               } else {
+                let first = true;
                 for (const fragment of fragmentCentrifugoMessage(
                   commandMessage as unknown as Record<string, unknown>,
                 )) {
+                  // As in isolated dispatch: each later fragment waits for a
+                  // verified host, and none follows once the command settled
+                  // (for example as unknown). A partial request is never
+                  // restarted or completed.
+                  if (!first) {
+                    while (gate && !gate.isReady())
+                      await gate.waitUntilReady(dispatchAbort.signal);
+                    dispatchAbort.signal.throwIfAborted();
+                    if (settled)
+                      throw new Error(
+                        "Command ended before dispatch completed",
+                      );
+                  }
+                  first = false;
                   await subscription!.publish(fragment);
                 }
               }

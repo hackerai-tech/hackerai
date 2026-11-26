@@ -570,7 +570,8 @@ export async function createCentrifugoPtyHandle(
             userId,
             connectionId,
             createPayload as unknown as Record<string, unknown>,
-            () => !cleanedUp,
+            // Settled as unknown between fragments: the rest is never sent.
+            () => !cleanedUp && !outcomeUnknown,
             subscription!,
             markPublished,
             undefined,

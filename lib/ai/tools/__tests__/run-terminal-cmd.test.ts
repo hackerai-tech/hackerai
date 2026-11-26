@@ -2869,13 +2869,211 @@ exit 7
       });
       expect(result).not.toHaveProperty("exited");
     }
+    // No Stop can reach it, and kill claims none.
+    const killed = await interact(
+      { action: "kill", session: started.result.session },
+      { toolCallId: "unknown-kill", messages: [] },
+    );
+    expect(killed.result).toMatchObject({
+      executionOutcome: "unknown",
+      error: expect.stringContaining("Do not rerun this command automatically"),
+    });
+    expect(killed.result.output).not.toMatch(/Successfully killed|Failed/);
     // Never sent again (the other call prunes old execution records).
     expect(
       run.mock.calls.filter(([command]) =>
         String(command).includes("bounded long command"),
       ),
     ).toHaveLength(1);
-    context.ptySessionManager.forget(context.chatId, started.result.session!);
+  });
+
+  /** Runs `onLoss` inside the first checkpoint after the session exists. */
+  const loseOutcomeAtResultCheckpoint = (
+    ptySessionManager: PtySessionManager,
+    onLoss: () => Promise<void> | void,
+  ) => {
+    const create = ptySessionManager.create.bind(ptySessionManager);
+    const checkpoint = ptySessionManager.checkpoint.bind(ptySessionManager);
+    let armed = false;
+    jest
+      .spyOn(ptySessionManager, "create")
+      .mockImplementation(async (...args) => {
+        const session = await create(...args);
+        armed = true;
+        return session;
+      });
+    jest
+      .spyOn(ptySessionManager, "checkpoint")
+      .mockImplementation(async (session, reason) => {
+        if (armed) {
+          armed = false;
+          await onLoss();
+        }
+        return checkpoint(session, reason);
+      });
+  };
+
+  test("a timeout result reports an outcome lost while it was being prepared", async () => {
+    let rejectRun!: (error: unknown) => void;
+    const run = jest.fn(async (command: string) => {
+      if (!command.includes("bounded long command"))
+        return { stdout: "", stderr: "", exitCode: 0 };
+      return new Promise<never>((_resolve, reject) => {
+        rejectRun = reject;
+      });
+    });
+    const { context, ptySessionManager } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: { run },
+      },
+    });
+    loseOutcomeAtResultCheckpoint(ptySessionManager, async () => {
+      rejectRun(
+        new LocalCommandDispatchError(
+          new Error("Command timeout after 155000ms"),
+          true,
+          false,
+          true,
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const tool = createRunTerminalCmd(context);
+    const output = (await runTool(tool, {
+      command: "bounded long command",
+      brief: "expose a timeout session",
+      is_background: false,
+      timeout: 0.01,
+    })) as { result: Record<string, unknown> };
+
+    expect(output.result).toMatchObject({
+      timedOut: true,
+      session: expect.any(String),
+      executionOutcome: "unknown",
+      error: expect.stringContaining("Do not rerun this command automatically"),
+    });
+    expect(output.result).not.toHaveProperty("status");
+    const { value } = (await getModelOutput(tool, output)) as {
+      value: string;
+    };
+    expect(value).toContain("Process outcome unknown");
+    expect(value).not.toContain("Process running");
+    ptySessionManager.forget(context.chatId, output.result.session as string);
+  });
+
+  test("an interactive result reports an outcome lost during its final checkpoint", async () => {
+    const { context, ptySessionManager } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        commands: { run: jest.fn() },
+        getUserId: () => "user-1",
+        getConnectionId: () => "conn-1",
+        getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+        getWorkingDirectory: () => "/tmp/project",
+        isWindows: () => false,
+      },
+    });
+    const lost = makeFakeHandle();
+    let loseOutcome!: () => void;
+    lost.exited = new Promise((resolve) => {
+      loseOutcome = () =>
+        resolve({
+          exitCode: null,
+          observationFailed: true,
+          outcomeUnknown: true,
+        });
+    }) as FakeHandle["exited"];
+    mockCreateCentrifugoPtyHandle.mockResolvedValueOnce(lost);
+    loseOutcomeAtResultCheckpoint(ptySessionManager, () => loseOutcome());
+    const tool = createRunTerminalCmd(context);
+    const output = (await runTool(tool, {
+      command: "python3",
+      brief: "open a REPL",
+      is_background: false,
+      interactive: true,
+      timeout: 0.1,
+    })) as { result: Record<string, unknown> };
+
+    expect(output.result).toMatchObject({
+      session: expect.any(String),
+      executionOutcome: "unknown",
+    });
+    const { value } = (await getModelOutput(tool, output)) as {
+      value: string;
+    };
+    expect(value).toMatch(/^Process outcome unknown\n/);
+    await ptySessionManager.closeAll(context.chatId);
+  });
+
+  test("a Stop that cannot reach a command whose outcome became unknown reports that outcome", async () => {
+    let rejectRun!: (error: unknown) => void;
+    const run = jest.fn(
+      async (
+        command: string,
+        opts?: { onCancelReady?: (cancel: () => Promise<boolean>) => void },
+      ) => {
+        if (!command.includes("bounded long command"))
+          return { stdout: "", stderr: "", exitCode: 0 };
+        opts?.onCancelReady?.(async () => {
+          // The outcome is lost before any Stop is confirmed.
+          rejectRun(
+            new LocalCommandDispatchError(
+              new Error("Desktop output could not be recovered"),
+              true,
+              false,
+              true,
+            ),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return false;
+        });
+        return new Promise<never>((_resolve, reject) => {
+          rejectRun = reject;
+        });
+      },
+    );
+    const { context, ptySessionManager } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: { run },
+      },
+    });
+    const controller = new AbortController();
+    const pending = runTool(
+      createRunTerminalCmd(context),
+      {
+        command: "bounded long command",
+        brief: "stop a long command",
+        is_background: false,
+        timeout: 30,
+      },
+      controller.signal,
+    );
+    const started = () =>
+      run.mock.calls.some(([command]) =>
+        String(command).includes("bounded long command"),
+      );
+    for (let tick = 0; tick < 200 && !started(); tick++)
+      await new Promise((resolve) => setImmediate(resolve));
+    expect(started()).toBe(true);
+    controller.abort();
+
+    const { result } = (await pending) as { result: Record<string, unknown> };
+    expect(result).toMatchObject({
+      exitCode: null,
+      executionOutcome: "unknown",
+      session: expect.any(String),
+      error: expect.stringContaining("Do not rerun this command automatically"),
+    });
+    expect(result).not.toHaveProperty("processStarted");
+    // Retained: it may still be running.
+    expect(
+      ptySessionManager.get(context.chatId, result.session as string),
+    ).toBeDefined();
+    ptySessionManager.forget(context.chatId, result.session as string);
   });
 
   test("labels a live interactive session running, but never one whose outcome is unknown", async () => {

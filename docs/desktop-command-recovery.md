@@ -101,6 +101,11 @@ attachment transfer's timeout retry or a re-staging after reconnect, never send
 it again. An exit that arrives while the host is unverified is still reported
 as an exit, with a warning that output sent before it may be missing.
 
+A Stop or kill never reports such a command as terminated. Its receiver is
+already closed, so no `command_cancel` is sent; the tool keeps the session and
+reports the outcome as unknown. The remaining fragments of a request whose
+outcome became unknown during publication are never sent.
+
 A host that never proved its session (a CLI host or an older binary) cannot
 answer such a challenge, so an unknown outcome still stops its run. A
 different launch or page still stops the run as before.

@@ -655,6 +655,149 @@ describe("CentrifugoSandbox", () => {
         ]);
       },
     );
+
+    it("never sends the rest of a terminal's creation once its outcome is unknown", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const readiness = controllableGate();
+      sandbox.setDispatchGate(readiness.gate);
+      // Large enough for several actual transport fragments.
+      const created = createCentrifugoPtyHandle(sandbox, {
+        command: `printf '${"x".repeat(80_000)}'`,
+        cols: 80,
+        rows: 24,
+      }).catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      let releaseFirst!: () => void;
+      control.publish = jest
+        .fn()
+        .mockImplementationOnce(
+          () => new Promise<void>((resolve) => (releaseFirst = resolve)),
+        )
+        .mockResolvedValue(undefined);
+      mockClients[0].newSubscription.mockImplementationOnce(() => {
+        mockSubscriptions.push(control);
+        return control;
+      });
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      readiness.close();
+      releaseFirst();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+
+      // The same session returned without this terminal: it is settled as
+      // unknown before later dispatch is admitted again.
+      sandbox.getPublishedCommands()[0].abandon();
+      readiness.open();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(
+        control.publish.mock.calls.map(([fragment]) => fragment.index),
+      ).toEqual([0]);
+      await expect(created).resolves.toMatchObject({
+        executionOutcome: "unknown",
+      });
+      expect(sandbox.getUnknownOperations()).toEqual([
+        expect.objectContaining({
+          kind: "pty",
+          cause: "host_returned_unretained",
+        }),
+      ]);
+    });
+
+    it("a receiver without operation channels sends no later stdin fragment while unverified or once settled", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, commandStdin: true },
+        },
+        defaultConfig,
+      );
+      const readiness = controllableGate();
+      sandbox.setDispatchGate(readiness.gate);
+      const result = sandbox.commands
+        .run("cat > bounded-record", { stdin: Buffer.alloc(100_000, "s") })
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      let releaseFirst!: () => void;
+      reply.publish
+        .mockImplementationOnce(
+          () => new Promise<void>((resolve) => (releaseFirst = resolve)),
+        )
+        .mockResolvedValue(undefined);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      readiness.close();
+      releaseFirst();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(reply.publish).toHaveBeenCalledTimes(1);
+
+      sandbox.getPublishedCommands()[0].abandon();
+      readiness.open();
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(
+        reply.publish.mock.calls.map(([fragment]) => fragment.index),
+      ).toEqual([0]);
+      await expect(result).resolves.toMatchObject({
+        executionOutcome: "unknown",
+      });
+    });
+  });
+
+  it("never reports a command whose outcome became unknown as stopped, and sends it no Stop", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    // A watched Desktop run: it continues past an unknown outcome.
+    sandbox.setDispatchGate({
+      isReady: () => true,
+      waitUntilReady: async () => {},
+      reportUncertainExecution: jest.fn(),
+    } as never);
+    let cancel!: () => Promise<boolean>;
+    const result = sandbox.commands
+      .run("bounded long command", {
+        onCancelReady: (fn) => {
+          cancel = fn;
+        },
+      })
+      .catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+
+    // The same session returned without this command's output.
+    sandbox.getPublishedCommands()[0].abandon();
+    await expect(result).resolves.toMatchObject({
+      executionOutcome: "unknown",
+    });
+    await expect(cancel()).resolves.toBe(false);
+    expect(reply.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "command_cancel" }),
+    );
   });
 
   it.each(["setup timeout", "publish denied"])(

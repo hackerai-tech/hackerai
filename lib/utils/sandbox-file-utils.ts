@@ -1445,7 +1445,13 @@ const stageSandboxFile = async (
         new Error(
           `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
         ),
-        { exitCode: extractCommandExitCode(fallbackError) },
+        {
+          exitCode: extractCommandExitCode(fallbackError),
+          // Either transfer may still be writing: staging must not repeat.
+          ...([transferError, fallbackError].some(
+            hasUnknownExecutionOutcome,
+          ) && { executionOutcome: "unknown" as const }),
+        },
       );
       copyAttachmentCommandFailureContext(fallbackError, combinedError);
       copyAttachmentDownloadFailureContext(fallbackError, combinedError);

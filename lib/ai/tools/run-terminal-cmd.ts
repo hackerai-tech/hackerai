@@ -63,6 +63,7 @@ import {
   stripAnsi,
   peekExited,
   terminalExitFields,
+  TERMINAL_OUTCOME_UNKNOWN_ERROR,
 } from "./utils/pty-wait-utils";
 import {
   captureAgentBrowserUsage,
@@ -611,11 +612,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             session,
             buildPtyParserLogContext(session.sessionId),
           );
+          await ptySessionManager.checkpoint(session);
           // If the command finished during the quiet window (e.g. a one-shot
           // `echo … && whoami`), surface that so the agent doesn't try to
-          // `interact_terminal_session send` against a dead session.
+          // `interact_terminal_session send` against a dead session. Read it
+          // after the checkpoint, during which the outcome may be lost.
           const exited = await peekExited(session);
-          await ptySessionManager.checkpoint(session);
           return {
             result: {
               ...recoveryFields(session),
@@ -1177,6 +1179,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   "termination_unconfirmed",
                 );
               }
+              // Read after the last await. A Stop that could not reach a
+              // command whose outcome became unknown reports that outcome.
+              const unknown =
+                !terminated &&
+                commandSession !== null &&
+                (await peekExited(commandSession))?.outcomeUnknown === true;
 
               resolve({
                 result: {
@@ -1184,9 +1192,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   output: result.output,
                   exitCode: terminated ? 130 : null,
                   ...(terminated ? { processStarted: true } : {}),
+                  ...(unknown && { executionOutcome: "unknown" as const }),
                   error: terminated
                     ? "Command execution aborted by user"
-                    : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
+                    : unknown
+                      ? `Command cancellation could not be confirmed. ${TERMINAL_OUTCOME_UNKNOWN_ERROR}`
+                      : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
                   ...(!terminated && commandSession
                     ? { session: commandSession.sessionId }
                     : {}),
@@ -1281,6 +1292,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     : "";
                   if (commandSession)
                     await ptySessionManager.checkpoint(commandSession);
+                  // Read after the last await: the outcome may be lost while
+                  // this result was prepared, and is then not "running".
+                  const exit = commandSession
+                    ? await peekExited(commandSession)
+                    : null;
                   resolve({
                     result: {
                       ...recoveryFields(commandSession),
@@ -1288,7 +1304,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         .filter(Boolean)
                         .join("\n"),
                       exitCode: null,
-                      status: "running",
+                      ...(exit?.outcomeUnknown
+                        ? terminalExitFields(exit)
+                        : { status: "running" }),
                       waitExpired: true,
                       timedOut: true,
                       ...(resumableSession && {
