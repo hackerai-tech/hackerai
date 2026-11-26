@@ -229,6 +229,18 @@ type Candidate = {
   latest: number;
 };
 
+// Redis returns textual scores and marks, which the REST SDK can decode as
+// numbers. Reject other shapes rather than coercing an absent value to zero.
+function parseTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number")
+    return Number.isSafeInteger(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const timestamp = Number(value);
+  return Number.isSafeInteger(timestamp) && String(timestamp) === value
+    ? timestamp
+    : undefined;
+}
+
 async function readWorkspace(
   redis: Redis,
   region: E2BCluster,
@@ -245,7 +257,7 @@ async function readWorkspace(
   const limitations = new Set<RunTimelineLimitation>();
   const candidates: Candidate[] = [];
   const [entries, mark] = Array.isArray(reply) ? reply : [];
-  if (!Array.isArray(entries) || entries.length % 2 || typeof mark !== "string")
+  if (!Array.isArray(entries) || entries.length % 2)
     return { candidates, limitations: new Set(["invalid_record" as const]) };
   if (entries.length / 2 > MAX_TIMELINE_RUNS) limitations.add("capped");
   // The newest latest time of any evicted run. One in this window may have
@@ -253,28 +265,23 @@ async function readWorkspace(
   // whose first time is after the burst, while it had been running across
   // the burst; retention would have kept the original record only if it
   // acquired again within the retention of its latest time.
-  let evicted: number | undefined;
-  if (mark) {
-    evicted = Number(mark);
-    if (!Number.isSafeInteger(evicted)) {
-      limitations.add("invalid_record");
-      evicted = undefined;
-    } else if (evicted >= windowStart) limitations.add("evicted_in_window");
-  }
+  const evicted = parseTimestamp(mark);
+  if (evicted === undefined && mark !== "") limitations.add("invalid_record");
+  if (evicted !== undefined && evicted >= windowStart)
+    limitations.add("evicted_in_window");
   for (let index = 0; index < entries.length; index += 2) {
-    const [kind, chatId, runId, firstText, extra] = String(
-      entries[index],
-    ).split("|");
-    const first = Number(firstText);
-    const latest = Number(entries[index + 1]);
+    const member = entries[index];
+    const [kind, chatId, runId, firstText, extra] =
+      typeof member === "string" ? member.split("|") : [];
+    const first = parseTimestamp(firstText);
+    const latest = parseTimestamp(entries[index + 1]);
     if (
       extra !== undefined ||
       (kind !== "p" && kind !== "s") ||
       !ACQUISITION_IDENTIFIER.test(chatId ?? "") ||
       !ACQUISITION_IDENTIFIER.test(runId ?? "") ||
-      !Number.isSafeInteger(first) ||
-      firstText !== String(first) ||
-      !Number.isSafeInteger(latest) ||
+      first === undefined ||
+      latest === undefined ||
       latest < first
     ) {
       limitations.add("invalid_record");

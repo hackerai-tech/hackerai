@@ -515,14 +515,16 @@ cooldown, notice or restriction, and never calls the model.
   latest acquisition. Reconnects move only that run's latest time, so a busy
   run cannot crowd out another. A workspace keeps at most 32 runs; past that
   the least recently acquiring run is evicted and the newest evicted time is
-  kept. Records follow the acquisition-link retention. Writes and reads are
-  best effort and bounded to 1.5 seconds; a failure never delays or fails an
-  acquisition or a review.
+  kept. Records follow the acquisition-link retention. Acquisitions do not
+  wait for the write. The review reads in parallel and may wait for diagnostics
+  at the end of the attempt, within the 1.5-second read budget.
 - **What it lists.** For each verified workspace of a burst (at most four),
   the runs first acquired before the burst ended and acquired again no
   earlier than six hours before it began. Proxy telemetry identifies a
   workspace, not a run, so a listed run could have used the workspace; it is
-  never named as the cause. The assessment is `none`, `one_possible`,
+  never named as the cause. Acquisition times alone do not establish continuous
+  activity, and the best-effort index can miss an acquisition. The assessment
+  describes recorded candidates only and is `none`, `one_possible`,
   `several` (parents and subagents are counted separately), `incomplete` or
   `unavailable`. `incomplete` carries closed limitations
   (`evicted_in_window`, `invalid_record`, `capped`, `workspaces_capped`,

@@ -137,3 +137,17 @@ it("treats a malformed reply as an unreadable record", async () => {
     summary: { assessment: "incomplete", limitations: ["invalid_record"] },
   });
 });
+
+it("keeps recorded candidates when the Redis client decodes an eviction timestamp as a number", async () => {
+  redis.eval.mockResolvedValueOnce([["p|chat_1|run_1|1000", 1000], 1000]);
+  const read = await readFor(["sbx_1"]);
+  expect(read.summary).toMatchObject({
+    status: "read",
+    assessment: "incomplete",
+    parents: 1,
+    limitations: ["evicted_in_window"],
+  });
+  expect(read.lists({ kind: "parent", chatId: "chat_1", runId: "run_1" })).toBe(
+    true,
+  );
+});
