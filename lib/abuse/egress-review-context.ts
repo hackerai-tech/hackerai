@@ -35,7 +35,8 @@ export const ACQUISITION_LINK_RETENTION_S =
  */
 export const MAX_ACQUISITION_LINKS = 16;
 const RECORD_BUDGET_MS = 1_500;
-const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
+/** Chat, run, account and workspace identifiers safe to store in a member. */
+export const ACQUISITION_IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 export type AcquisitionRunKind = "parent" | "subagent";
 /** One successful acquisition of a workspace by a run. */
@@ -115,8 +116,8 @@ function decodeMember(value: unknown, score: unknown): AcquisitionLink | null {
   if (
     extra !== undefined ||
     (kind !== "p" && kind !== "s") ||
-    !IDENTIFIER.test(chatId ?? "") ||
-    !IDENTIFIER.test(runId ?? "") ||
+    !ACQUISITION_IDENTIFIER.test(chatId ?? "") ||
+    !ACQUISITION_IDENTIFIER.test(runId ?? "") ||
     !Number.isSafeInteger(acquiredAt) ||
     time !== String(acquiredAt)
   )
@@ -160,10 +161,10 @@ export function recordEgressReviewAcquisition(input: {
     if (
       !chatId ||
       !runId ||
-      !IDENTIFIER.test(userId) ||
-      !IDENTIFIER.test(sandboxId) ||
-      !IDENTIFIER.test(chatId) ||
-      !IDENTIFIER.test(runId)
+      !ACQUISITION_IDENTIFIER.test(userId) ||
+      !ACQUISITION_IDENTIFIER.test(sandboxId) ||
+      !ACQUISITION_IDENTIFIER.test(chatId) ||
+      !ACQUISITION_IDENTIFIER.test(runId)
     )
       return;
     const redis = createRedisClient();
