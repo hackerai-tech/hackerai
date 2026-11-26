@@ -182,6 +182,32 @@ describe("service registration boundary", () => {
     );
   });
 
+  it("extends the burst review key to exactly one reassessment action", async () => {
+    const registered = (action as any)({
+      args: { serviceKey: v.string() },
+      returns: v.null(),
+      handler: async () => null,
+    });
+    const invoke = async (name: string, serviceKey: string) => {
+      const signed = await signServiceArgs(
+        { deployment, name, type: "action" },
+        { serviceKey },
+      );
+      return registered.handler(context(name, "action"), signed);
+    };
+    const reassess = "egressAbuseReassessmentActions:readCaseEvidence";
+    await expect(invoke(reassess, egressReviewSecret)).resolves.toBeNull();
+    await expect(invoke(reassess, secret)).rejects.toThrow(unauthorized);
+    for (const name of [
+      "egressAbuseReassessmentActions:other",
+      "egressAbuseReassessment:openCase",
+      "abuseCases:read",
+    ])
+      await expect(invoke(name, egressReviewSecret)).rejects.toThrow(
+        unauthorized,
+      );
+  });
+
   it("limits the enforcement and notice dispatcher keys to their own modules", async () => {
     const enforcementSecret = "synthetic-enforcement-credential";
     const dispatchSecret = "synthetic-dispatch-credential";

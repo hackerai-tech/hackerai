@@ -42,6 +42,7 @@ import {
   type ManualReason,
   type ReviewDecision,
   type ReviewEvidence,
+  type PreparedReview,
   type ReviewItems,
   type CaseEnforcementRecord,
 } from "@/lib/abuse/egress-review";
@@ -150,6 +151,27 @@ export type ObservationGap =
   | "incomplete_tool_calls"
   | "prompt_items_truncated"
   | "prompt_items_omitted";
+/** Every way the read evidence or its prompt falls short of complete. */
+export function observationGaps(
+  evidence: ReviewItems,
+  prepared: Pick<PreparedReview, "itemsTruncated" | "itemsOmitted">,
+): ObservationGap[] {
+  const { coverage } = evidence;
+  return (
+    [
+      ["no_user_messages", !evidence.userMessages.length],
+      ["run_active", coverage.runActive],
+      ["history_truncated", coverage.historyTruncated],
+      ["user_messages_omitted", coverage.userMessagesOmitted],
+      ["commands_omitted", coverage.commandsOmitted],
+      ["incomplete_tool_calls", coverage.incompleteToolCalls],
+      ["prompt_items_truncated", prepared.itemsTruncated],
+      ["prompt_items_omitted", prepared.itemsOmitted],
+    ] as const
+  )
+    .filter(([, present]) => present)
+    .map(([gap]) => gap);
+}
 export type ReviewDiagnostic = {
   detail?: ReviewDiagnosticDetail;
   /** Verified sandboxes counted in the burst minute. */
@@ -320,7 +342,7 @@ class EgressReviewPendingError extends Error {
   }
 }
 
-function reviewClient() {
+export function reviewClient() {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL?.trim();
   const serviceKey = process.env.CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY?.trim();
   if (!convexUrl || !serviceKey)
@@ -335,7 +357,7 @@ function reviewClient() {
 }
 
 /** False when the existing privacy guard rejects the prepared prompt. */
-function passesPrivacyGuard(prompt: string) {
+export function passesPrivacyGuard(prompt: string) {
   try {
     assertResearchPromptIsSafe(prompt, (category) => {
       logger.warn("Egress abuse review privacy guard rejected evidence", {
@@ -349,7 +371,7 @@ function passesPrivacyGuard(prompt: string) {
 }
 
 /** Structured enums and indices only: no tools, no telemetry of content. */
-async function classifyEvidence<T = EgressReviewClassification>(
+export async function classifyEvidence<T = EgressReviewClassification>(
   prompt: string,
   schema: z.ZodType<T> = egressReviewClassificationSchema as never,
 ): Promise<T | "classifier_invalid" | "classifier_unavailable"> {
@@ -911,21 +933,7 @@ async function reviewBurst(
       prepared.itemsOmitted ||
       !evidence.userMessages.length,
   };
-  const { coverage } = evidence;
-  const gaps = (
-    [
-      ["no_user_messages", !evidence.userMessages.length],
-      ["run_active", coverage.runActive],
-      ["history_truncated", coverage.historyTruncated],
-      ["user_messages_omitted", coverage.userMessagesOmitted],
-      ["commands_omitted", coverage.commandsOmitted],
-      ["incomplete_tool_calls", coverage.incompleteToolCalls],
-      ["prompt_items_truncated", prepared.itemsTruncated],
-      ["prompt_items_omitted", prepared.itemsOmitted],
-    ] as const
-  )
-    .filter(([, present]) => present)
-    .map(([gap]) => gap);
+  const gaps = observationGaps(evidence, prepared);
   if (gaps.length) {
     diagnostic.detail = "evidence_gaps";
     diagnostic.gaps = [...gaps];

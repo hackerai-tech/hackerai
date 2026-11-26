@@ -465,7 +465,8 @@ and its cases follow the review, hold and erasure rules in this runbook.
 The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
-create or preserve a review case but cannot create notices or restrictions.
+create or preserve a review case but cannot create notices or restrictions,
+and the one [reassessment](#reassessing-a-multiple_runs-case) action.
 The Agent worker and Convex deployment must share the same
 `CONVEX_SERVICE_ROLE_KEY` for signing and verifying the account-activity
 attribution proof. This key must differ from the dedicated review key. A
@@ -500,6 +501,61 @@ a pilot workspace with a linked Agent run. Trigger `egress-burst-alerts` manuall
 with a `timestamp` two minutes after the synthetic minute. Confirm the monitor
 logs a `High connection volume` warning and the delayed `egress-abuse-review`
 returns a `completed` or `preserved` receipt after the run history has settled.
+
+### Reassessing a `multiple_runs` case
+
+A `multiple_runs` case records the one linked candidate chat and run but
+reads none of its evidence, because another run may have shared the
+workspace. Rerunning `egress-abuse-review` does not help: the telemetry it
+re-verifies expires after two hours, and the existing case is preserved.
+To get advisory context on that candidate, trigger `egress-abuse-reassess`
+manually with only the case reference:
+
+```json
+{ "reference": "AB-…" }
+```
+
+It is never scheduled or queued automatically. It needs the review toggle,
+`CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY`, `ABUSE_EVIDENCE_KEYS` and the
+research model configuration, and makes one attempt; rerun it if needed.
+Deploy the Convex functions before the worker; until then the task fails
+without reading anything.
+
+- **Which cases.** An open (`new` or `reviewing`), uncontained, unerased case
+  created by the automated review (its `received` event actor is
+  `egress_abuse_review`) within the last seven days. The decrypted record must
+  be a version 3 `manual_review` / `multiple_runs` record with a verified
+  account, exactly one counted workspace, a positive connection count, a
+  consistent burst minute and window, and a region, owner reference and
+  window that hash to the case's reference and stored digest. Anything else
+  returns `closed` with `case_unavailable`, `source_mismatch`,
+  `record_invalid`, `not_overlap_case` or `no_candidate` (a case such as
+  `competing_links` that kept no candidate), and reads no chat.
+- **What it reads.** Only the retained candidate run, through the same
+  bounded exact-run read as the review: ownership, the deletion fence, the
+  run's persisted timing overlapping the burst, subagent overlap, size
+  limits and content exclusion all apply. It omits only the account-wide
+  check for other active root runs, so the marker that caused the original
+  abstention no longer blocks the read. Each invocation adds one `read` event
+  with actor `egress_abuse_reassessment`. Convex rechecks that the case is
+  unchanged before reading the run; a case resolved or erased in between
+  returns `closed` / `case_changed`.
+- **What it returns.** Closed enums only, never identifiers or content.
+  `scope: retained_candidate_only`, `attribution: unverified` and
+  `otherCandidates: unverified` mean that the other runs and which activity
+  caused the burst were not checked. `coverage` is `complete`, `incomplete`
+  (with `gaps`) or `unavailable` (with `reason` `candidate_unavailable`,
+  `run_mismatch`, `evidence_incomplete` or `subagent_overlap`). Complete
+  evidence is scrubbed, guarded and classified like the review, and the
+  `advisory` is `neutral` (the `no_case` standard held), `concern` (the
+  authorization request standard held) or `inconclusive`. Incomplete
+  evidence is never classified. `classification` (activity and
+  authorization) appears only with `neutral` or `concern`.
+- **What it means.** `determination: advisory_only`: the finding describes
+  the candidate run, not the burst. It does not resolve, annotate or change
+  the case or its decision, block or unblock the account, grant a cooldown,
+  draft or send mail, or write a receipt. Record any conclusion in the case
+  yourself after reviewing the chat and run the case records.
 
 ### Automatic enforcement
 
