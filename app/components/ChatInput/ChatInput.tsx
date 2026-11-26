@@ -100,6 +100,24 @@ import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { cancelLocalAutoContinue } from "@/app/services/local-auto-continue-client";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
+/**
+ * Picking another environment while the stopped computer is away must stick:
+ * if the server did not store it, say so and let the user try again.
+ */
+function cancelForEnvironmentSwitch(chatId: string): Promise<void> {
+  return cancelLocalAutoContinue(chatId, "environment_switched").catch(() => {
+    toast.error("Couldn't save your environment choice", {
+      id: `local-auto-continue-cancel:${chatId}`,
+      description:
+        "If your computer reconnects, the stopped run may still continue there.",
+      action: {
+        label: "Retry",
+        onClick: () => void cancelForEnvironmentSwitch(chatId),
+      },
+    });
+  });
+}
+
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
   interruptedPredictionTurn?: { chatId: string } | null;
@@ -1518,10 +1536,7 @@ const ChatInputContent = ({
                     options?.remember !== false &&
                     preference !== sandboxPreference
                   )
-                    void cancelLocalAutoContinue(
-                      chatId,
-                      "environment_switched",
-                    );
+                    void cancelForEnvironmentSwitch(chatId);
                 }}
                 confirmEnvironmentChange={!isNewChat && hasMessages}
                 reconnectInstructions={

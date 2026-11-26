@@ -305,6 +305,40 @@ describe("agent cancel route", () => {
     );
   });
 
+  it.each([
+    [
+      "stored",
+      [] as unknown,
+      200,
+      { canceled: false, reason: "no_active_run" },
+    ],
+    [
+      "not stored",
+      new Error("Convex unavailable"),
+      503,
+      { canceled: false, reason: "cancel_not_stored", retryable: true },
+    ],
+  ] as const)(
+    "acknowledges a Stop before an automatic continuation runs only when it is %s",
+    async (_case, outcome, status, body) => {
+      const { createAgentCancelPost } = await import("../agent-cancel-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        finish_reason: "local-connection-lost",
+      } as never);
+      if (outcome instanceof Error)
+        mockPauseGoal.mockRejectedValueOnce(outcome);
+      else mockPauseGoal.mockResolvedValueOnce(outcome as never);
+
+      const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+        request(),
+      );
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual(body);
+    },
+  );
+
   it("reports an explicit null when a stale cancellation has no active run", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
     mockGetChatById.mockResolvedValue({

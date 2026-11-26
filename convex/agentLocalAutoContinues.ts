@@ -18,6 +18,7 @@ import {
   LOCAL_AUTO_CONTINUE_MAX_STOP_AGE_MS,
   LOCAL_AUTO_CONTINUE_START_LEASE_MS,
   localAutoContinueCapAllows,
+  localAutoContinueSandboxPreference,
   localAutoContinueStopEligibility,
   type LocalAutoContinueReason,
 } from "../lib/chat/local-auto-continue";
@@ -77,6 +78,22 @@ async function desktopSession(ctx: Ctx, userId: string, connectionId: string) {
   )
     return undefined;
   return connection;
+}
+
+/**
+ * Whether the user saved a message (a send, a manual Resume) in the chat
+ * after this stop released it. Read from the messages themselves, so a user
+ * action holds even when its cancellation write or its run start failed.
+ */
+async function userMessagedSince(ctx: Ctx, row: Row) {
+  const since = row.chat_finished_at ?? row.stopped_at;
+  const newer = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_id", (q) =>
+      q.eq("chat_id", row.chat_id).gt("_creationTime", since),
+    )
+    .take(20);
+  return newer.some((message) => message.role === "user");
 }
 
 const sameSession = (row: Row, connection: Doc<"local_sandbox_connections">) =>
@@ -152,36 +169,63 @@ export const recordStop = mutation({
       !!chat &&
       chat.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
       chat.active_trigger_run_id === undefined;
+    const chatRows = await recentRowsForChat(ctx, args.chatId, now);
+    // A late report: a later run's stop already recorded the chat's current
+    // finish, so that finish is not this run's.
+    const laterStopRecorded =
+      chatReleased &&
+      chat.last_run_finished_at !== undefined &&
+      chatRows.some(
+        (other) =>
+          other.stopped_run_id !== args.stoppedRunId &&
+          other.chat_finished_at !== undefined &&
+          other.chat_finished_at >= chat.last_run_finished_at!,
+      );
+    // Whether this run is still the chat's latest: no other run owns it or
+    // changed its finish since this one stopped.
+    const latestRun =
+      !!chat &&
+      (chat.active_trigger_run_id === undefined ||
+        chat.active_trigger_run_id === args.stoppedRunId) &&
+      chat.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+      !laterStopRecorded;
     const reason: LocalAutoContinueReason | undefined = !eligibility.eligible
       ? eligibility.reason
       : args.usageLimited
         ? "usage_limit"
-        : !connection
+        : !connection ||
+            // The continuation must be able to target exactly this computer.
+            !localAutoContinueSandboxPreference(
+              args.sandboxPreference,
+              connection.environment_id,
+            )
           ? "session_unproven"
-          : !chat ||
-              (chat.active_trigger_run_id !== undefined &&
-                chat.active_trigger_run_id !== args.stoppedRunId) ||
-              chat.finish_reason !== LOCAL_CONNECTION_LOST_FINISH_REASON
-            ? "chat_changed"
+          : !latestRun
+            ? laterStopRecorded
+              ? "superseded"
+              : "chat_changed"
             : undefined;
-    // An earlier stop that never continued is replaced by this newer one.
-    for (const older of await recentRowsForChat(ctx, args.chatId, now)) {
-      if (older.state === "awaiting_return")
-        await finish(ctx, older, "cancelled", "superseded", now);
+    // An earlier stop that never continued is replaced by this newer one. A
+    // stale report never replaces the stop of a run that came after it.
+    if (latestRun) {
+      for (const older of chatRows) {
+        if (older.state === "awaiting_return")
+          await finish(ctx, older, "cancelled", "superseded", now);
+      }
     }
     const id = await ctx.db.insert("agent_local_auto_continues", {
       stopped_run_id: args.stoppedRunId,
       chat_id: args.chatId,
       user_id: args.userId,
       state: reason
-        ? reason === "chat_changed"
+        ? reason === "chat_changed" || reason === "superseded"
           ? "cancelled"
           : "ineligible"
         : "awaiting_return",
       ...(reason ? { reason, settled_at: now } : {}),
       ...(args.stopReason ? { stop_reason: args.stopReason } : {}),
       stopped_at: now,
-      ...(chatReleased && chat.last_run_finished_at !== undefined
+      ...(chatReleased && latestRun && chat.last_run_finished_at !== undefined
         ? { chat_finished_at: chat.last_run_finished_at }
         : {}),
       ...(args.connectionId ? { connection_id: args.connectionId } : {}),
@@ -203,11 +247,16 @@ export const recordStop = mutation({
   },
 });
 
+/** Bounds one report's work; a 30-minute window holds far fewer stops. */
+const RETURN_BATCH = 50;
+
 /**
  * A Desktop connection reported that it is connected again. Returns the
- * user's waiting stops from that same native session. The same computer under
- * a new launch or page can never be the stopped session again, so its waiting
- * stops become ineligible here.
+ * user's waiting stops from that same native session, newest first. The same
+ * computer under a new launch or page can never be the stopped session again,
+ * so its waiting stops become ineligible here, as do stops too old to
+ * continue. Only this computer's recent stops are read, so stops elsewhere
+ * cannot crowd them out.
  */
 export const observeReturn = mutation({
   args: {
@@ -217,7 +266,7 @@ export const observeReturn = mutation({
   },
   returns: v.object({
     candidates: v.array(v.object({ stoppedRunId: v.string() })),
-    replaced: v.array(decisionValidator),
+    settled: v.array(decisionValidator),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -226,31 +275,44 @@ export const observeReturn = mutation({
       args.userId,
       args.connectionId,
     );
-    if (!connection || connection.status !== "connected")
-      return { candidates: [], replaced: [] };
+    const environmentId = connection?.environment_id;
+    if (!connection || connection.status !== "connected" || !environmentId)
+      return { candidates: [], settled: [] };
     const now = Date.now();
-    const waiting = await ctx.db
-      .query("agent_local_auto_continues")
-      .withIndex("by_user_and_state", (q) =>
-        q.eq("user_id", args.userId).eq("state", "awaiting_return"),
-      )
-      .take(50);
+    const oldest = now - LOCAL_AUTO_CONTINUE_MAX_STOP_AGE_MS;
+    const waiting = (range: "recent" | "expired") =>
+      ctx.db
+        .query("agent_local_auto_continues")
+        .withIndex("by_user_environment_state_stopped_at", (q) => {
+          const scoped = q
+            .eq("user_id", args.userId)
+            .eq("environment_id", environmentId)
+            .eq("state", "awaiting_return");
+          return range === "recent"
+            ? scoped.gt("stopped_at", oldest)
+            : scoped.lte("stopped_at", oldest);
+        })
+        .order("desc")
+        .take(RETURN_BATCH);
     const candidates = [];
-    const replaced = [];
-    for (const row of waiting) {
+    const settled = [];
+    for (const row of await waiting("recent")) {
       if (sameSession(row, connection)) {
         candidates.push({ stoppedRunId: row.stopped_run_id });
-      } else if (
-        row.environment_id !== undefined &&
-        row.environment_id === connection.environment_id
-      ) {
+      } else {
         await finish(ctx, row, "ineligible", "session_replaced", now);
-        replaced.push(
+        settled.push(
           decision(row, { state: "ineligible", reason: "session_replaced" }),
         );
       }
     }
-    return { candidates, replaced };
+    for (const row of await waiting("expired")) {
+      await finish(ctx, row, "ineligible", "stop_too_old", now);
+      settled.push(
+        decision(row, { state: "ineligible", reason: "stop_too_old" }),
+      );
+    }
+    return { candidates, settled };
   },
 });
 
@@ -299,10 +361,12 @@ export const claimReturn = mutation({
     )
       return { claimed: false as const, pending: false };
     const now = Date.now();
+    const sandboxPreference = localAutoContinueSandboxPreference(
+      row.sandbox_preference,
+      row.environment_id,
+    );
     const settings = {
-      ...(row.sandbox_preference
-        ? { sandboxPreference: row.sandbox_preference }
-        : {}),
+      ...(sandboxPreference ? { sandboxPreference } : {}),
       ...(row.agent_permission_mode
         ? { agentPermissionMode: row.agent_permission_mode }
         : {}),
@@ -329,6 +393,9 @@ export const claimReturn = mutation({
     };
     if (now - row.stopped_at > LOCAL_AUTO_CONTINUE_MAX_STOP_AGE_MS)
       return settle("ineligible", "stop_too_old", false);
+    // Never start on a generic preference that could pick another Desktop.
+    if (!sandboxPreference)
+      return settle("ineligible", "session_unproven", false);
     const chat = await getOwnedChat(ctx, row.chat_id, args.userId);
     // The stopped run has not released its chat yet; ask again shortly.
     if (chat?.active_trigger_run_id === row.stopped_run_id)
@@ -343,6 +410,9 @@ export const claimReturn = mutation({
         chat.last_run_finished_at !== row.chat_finished_at)
     )
       return settle("cancelled", "chat_changed", false);
+    // The user's own message wins, even if cancelling this stop failed.
+    if (await userMessagedSince(ctx, row))
+      return settle("cancelled", "user_message", false);
     const returned = {
       returned_at: now,
       ...(args.variant ? { variant: args.variant } : {}),
@@ -443,13 +513,22 @@ export const getClaim = query({
       chatId: v.string(),
       userId: v.string(),
       claimedAt: v.number(),
+      /** The only sandbox this start may use: the computer that came back. */
+      sandboxPreference: v.string(),
     }),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const row = await rowFor(ctx, args.stoppedRunId);
+    const sandboxPreference = row
+      ? localAutoContinueSandboxPreference(
+          row.sandbox_preference,
+          row.environment_id,
+        )
+      : undefined;
     if (
       !row ||
+      !sandboxPreference ||
       row.state !== "starting" ||
       row.claimed_at === undefined ||
       Date.now() - row.claimed_at > LOCAL_AUTO_CONTINUE_START_LEASE_MS
@@ -459,6 +538,7 @@ export const getClaim = query({
       chatId: row.chat_id,
       userId: row.user_id,
       claimedAt: row.claimed_at,
+      sandboxPreference,
     };
   },
 });

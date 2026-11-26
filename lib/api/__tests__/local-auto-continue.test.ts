@@ -49,6 +49,13 @@ function index(table: string) {
           );
           return q;
         },
+        lte(field: string, value: number) {
+          ranges.push(
+            (row) =>
+              typeof row[field] === "number" && (row[field] as number) <= value,
+          );
+          return q;
+        },
       };
       build?.(q);
       let rows = () =>
@@ -64,7 +71,8 @@ function index(table: string) {
           rows = () =>
             unordered().sort(
               (a, b) =>
-                (Number(a.stopped_at) - Number(b.stopped_at)) *
+                (Number(a.stopped_at ?? a._creationTime) -
+                  Number(b.stopped_at ?? b._creationTime)) *
                 (direction === "desc" ? -1 : 1),
             );
           return result;
@@ -105,10 +113,16 @@ const db = {
 
 // Convex runs mutations as serializable transactions; model that with a queue.
 let transaction: Promise<unknown> = Promise.resolve();
+/** Calls that fail before committing, by function name, counted down. */
+const failures: Record<string, number> = {};
 async function call(reference: unknown, args: Record<string, unknown>) {
   const [moduleName, name] = getFunctionName(reference as never).split(":");
   if (moduleName !== "agentLocalAutoContinues")
     throw new Error(`unexpected Convex call ${moduleName}`);
+  if (failures[name]) {
+    failures[name]--;
+    throw new Error("Convex unavailable");
+  }
   const handlers = require("@/convex/agentLocalAutoContinues") as Record<
     string,
     { handler: (ctx: unknown, args: unknown) => Promise<unknown> }
@@ -256,8 +270,29 @@ const events = (name: string) =>
 const variant = (value: "control" | "test") =>
   mockFlag.mockResolvedValue({ enabled: true, variant: value });
 
+/** A message saved in the stopped chat after its stop. */
+function messageSince(role: "user" | "assistant", at = now + 1) {
+  (tables.messages ??= []).push({
+    _id: `message-${++nextId}`,
+    _creationTime: at,
+    id: `message-${nextId}`,
+    chat_id: "chat",
+    user_id: "owner",
+    role,
+  });
+}
+
+const cancelReport = (reason: "environment_switched" | "user_stop") =>
+  POST(
+    new NextRequest("http://localhost/api/agent/local-auto-continue", {
+      method: "POST",
+      body: JSON.stringify({ action: "cancel", chatId: "chat", reason }),
+    }),
+  );
+
 beforeEach(() => {
   for (const key of Object.keys(tables)) delete tables[key];
+  for (const key of Object.keys(failures)) delete failures[key];
   now = NOW;
   jest.spyOn(Date, "now").mockImplementation(() => now);
   process.env.CONVEX_SERVICE_ROLE_KEY = "service-key";
@@ -304,7 +339,8 @@ describe("automatic continuation after a Desktop comes back", () => {
       chatId: "chat",
       isAutoContinue: true,
       localAutoContinue: { stoppedRunId: "run_stopped" },
-      sandboxPreference: "desktop",
+      // The computer that came back, never any connected Desktop.
+      sandboxPreference: "desktop-environment:computer-1",
       agentPermissionMode: "full_access",
       selectedModel: "auto",
       messages: [{ id: localAutoContinueMessageId("run_stopped") }],
@@ -571,6 +607,185 @@ describe("automatic continuation after a Desktop comes back", () => {
     expect(
       events("agent_local_auto_continue_outcome").map((event) => event.outcome),
     ).toEqual(["cancelled"]);
+  });
+
+  it("does not continue on a reload of the same launch", async () => {
+    connection("reloaded-page", { native_page_generation: 1 });
+    await recordStop();
+    await report("reloaded-page");
+    await report();
+
+    expect(startAgent).not.toHaveBeenCalled();
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({
+        outcome: "ineligible",
+        reason: "session_replaced",
+      }),
+    ]);
+  });
+
+  it.each([
+    ["names another computer", "desktop-environment:computer-9", {}],
+    ["ran on a Desktop without an environment", "desktop", { env: true }],
+  ] as const)(
+    "never continues a stop that %s, so it cannot be bound",
+    async (_case, sandboxPreference, { env }: { env?: boolean }) => {
+      if (env)
+        for (const row of tables.local_sandbox_connections)
+          row.environment_id = undefined;
+      await recordLocalAutoContinueStop({
+        payload: { ...(payload as object), sandboxPreference } as never,
+        stoppedRunId: "run_stopped",
+        stopCause: new LocalConnectionLostError(
+          "selected_host_recovery_expired",
+          { connectionId: STOPPED_CONNECTION },
+        ),
+        usageLimited: false,
+      });
+      await report();
+
+      expect(startAgent).not.toHaveBeenCalled();
+      expect(events("agent_local_auto_continue_outcome")).toEqual([
+        expect.objectContaining({
+          outcome: "ineligible",
+          reason: "session_unproven",
+        }),
+      ]);
+    },
+  );
+
+  it("does not continue after the user saved a message, even if cancelling failed", async () => {
+    await recordStop();
+    // The start route saved the user's message, but its cancellation write
+    // and its dispatch both failed.
+    failures.cancelForChat = 1;
+    expect(
+      await cancelLocalAutoContinuesForChat({
+        userId: "owner",
+        chatId: "chat",
+        reason: "user_message",
+      }),
+    ).toBe(false);
+    messageSince("user");
+    await report();
+
+    expect(startAgent).not.toHaveBeenCalled();
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({ outcome: "cancelled", reason: "user_message" }),
+    ]);
+  });
+
+  it.each(["environment_switched", "user_stop"] as const)(
+    "reports an unstored %s as retryable, then honors the retry",
+    async (reason) => {
+      await recordStop();
+      failures.cancelForChat = 1;
+      const failed = await cancelReport(reason);
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toEqual({ ok: false, retryable: true });
+
+      expect((await cancelReport(reason)).status).toBe(200);
+      await report();
+      expect(startAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never lets a late stop report replace a later run's waiting stop", async () => {
+    // Run B stopped and recorded first; run A's report arrives afterwards.
+    await recordStop("run_later");
+    await recordStop("run_earlier");
+
+    const rows = Object.fromEntries(
+      tables.agent_local_auto_continues.map((row) => [row.stopped_run_id, row]),
+    );
+    expect(rows.run_later.state).toBe("awaiting_return");
+    expect(rows.run_earlier).toMatchObject({
+      state: "cancelled",
+      reason: "superseded",
+    });
+    expect(rows.run_earlier.chat_finished_at).toBeUndefined();
+
+    await report();
+    expect((await startBodies()).map((body) => body.localAutoContinue)).toEqual(
+      [{ stoppedRunId: "run_later" }],
+    );
+  });
+
+  it("finds this computer's stop behind many waiting stops elsewhere", async () => {
+    for (let i = 0; i < 60; i++)
+      tables.agent_local_auto_continues = [
+        ...(tables.agent_local_auto_continues ?? []),
+        {
+          _id: `elsewhere-${i}`,
+          stopped_run_id: `run_elsewhere_${i}`,
+          chat_id: `chat-${i}`,
+          user_id: "owner",
+          state: "awaiting_return",
+          stopped_at: now - 60_000,
+          environment_id: "computer-2",
+          native_launch_id: "b".repeat(32),
+          native_page_generation: 0,
+        },
+      ];
+    await recordStop();
+    await report();
+
+    expect(startAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a started run after a transient settlement failure, without starting again", async () => {
+    failures.settleStart = 1;
+    await recordStop();
+    await report();
+
+    expect(startAgent).toHaveBeenCalledTimes(1);
+    expect(cancelAgent).not.toHaveBeenCalled();
+    expect(await chatNotice()).toMatchObject({
+      state: "started",
+      continuedRunId: "run_continued",
+    });
+  });
+
+  it("stops the started run when its settlement cannot be recorded", async () => {
+    failures.settleStart = 10;
+    await recordStop();
+    await report();
+
+    expect(startAgent).toHaveBeenCalledTimes(1);
+    expect(
+      await Promise.all(cancelAgent.mock.calls.map(([req]) => req.json())),
+    ).toEqual([{ chatId: "chat", expectedTriggerRunId: "run_continued" }]);
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({
+        outcome: "start_failed",
+        reason: "start_error",
+        continued_run_id: "run_continued",
+      }),
+    ]);
+  });
+
+  it("retries stopping a run the user stopped while it was starting", async () => {
+    startAgent.mockImplementation(async () => {
+      await cancelLocalAutoContinuesForChat({
+        userId: "owner",
+        chatId: "chat",
+        reason: "user_stop",
+      });
+      return NextResponse.json({ runId: "run_continued" });
+    });
+    cancelAgent
+      .mockResolvedValueOnce(new NextResponse("unavailable", { status: 503 }))
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(NextResponse.json({ canceled: true }));
+    await recordStop();
+    await report();
+
+    const bodies = await Promise.all(
+      cancelAgent.mock.calls.map(([req]) => req.json()),
+    );
+    expect(bodies).toEqual(
+      Array(3).fill({ chatId: "chat", expectedTriggerRunId: "run_continued" }),
+    );
   });
 
   it("ignores a return reported for another user's connection", async () => {

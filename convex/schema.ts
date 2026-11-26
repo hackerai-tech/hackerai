@@ -2440,7 +2440,13 @@ export default defineSchema({
   })
     .index("by_stopped_run_id", ["stopped_run_id"])
     .index("by_chat_and_stopped_at", ["chat_id", "stopped_at"])
-    .index("by_user_and_state", ["user_id", "state"]),
+    // A returning computer reads only its own recent waiting stops.
+    .index("by_user_environment_state_stopped_at", [
+      "user_id",
+      "environment_id",
+      "state",
+      "stopped_at",
+    ]),
 
   /**
    * Follow-ups waiting for an Agent run to finish, for accounts with mid-run

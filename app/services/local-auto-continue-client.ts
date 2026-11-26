@@ -39,6 +39,9 @@ export function createDesktopReturnReporter({
     onState(state: string, connectionId: string | null | undefined) {
       if (state !== "connected") {
         if (connectedBefore) interrupted = true;
+        // The server may still list the old connection as connected; a
+        // report now could claim a stop while this computer is away.
+        stopReporting();
         return;
       }
       if (!connectedBefore) {
@@ -78,18 +81,41 @@ export async function reportDesktopReturn(connectionId: string) {
   if (!response.ok) throw new Error(`Return report failed: ${response.status}`);
 }
 
-/** The user acted first in this chat; nothing may continue automatically. */
-export function cancelLocalAutoContinue(
+const CANCEL_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+
+export class LocalAutoContinueCancelError extends Error {
+  constructor() {
+    super("The automatic continuation could not be cancelled.");
+    this.name = "LocalAutoContinueCancelError";
+  }
+}
+
+/**
+ * The user acted first in this chat; nothing may continue automatically.
+ * Resolves only once the server stored that. Network failures and 5xx
+ * responses retry briefly; then it rejects, so the caller can tell the user
+ * and offer a retry. A 4xx is a final refusal.
+ */
+export async function cancelLocalAutoContinue(
   chatId: string,
   reason: "environment_switched" | "user_stop",
-) {
-  return fetch(AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "cancel", chatId, reason }),
-    cache: "no-store",
-  }).then(
-    () => undefined,
-    () => undefined,
-  );
+  { sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) } = {},
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const status = await fetch(AGENT_LOCAL_AUTO_CONTINUE_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "cancel", chatId, reason }),
+      cache: "no-store",
+    }).then(
+      (response) => response.status,
+      () => undefined,
+    );
+    if (status !== undefined && status >= 200 && status < 300) return;
+    const retryable = status === undefined || status >= 500;
+    const delay = CANCEL_RETRY_DELAYS_MS[attempt];
+    if (!retryable || delay === undefined)
+      throw new LocalAutoContinueCancelError();
+    await sleep(delay);
+  }
 }

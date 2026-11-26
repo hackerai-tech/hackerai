@@ -13,6 +13,7 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { goalServiceKey } from "@/lib/goals/server";
 import { cancelLocalAutoContinuesForChat } from "@/lib/api/local-auto-continue-route";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 
 const GOAL_PAUSE_WAIT_MS = 5_000;
 
@@ -167,12 +168,21 @@ export const createAgentCancelPost =
       };
       // A Stop with no run yet ends an automatic continuation that is waiting
       // or still starting. Once one runs, it is the run this Stop cancels.
-      if (!runId)
-        await cancelLocalAutoContinuesForChat({
+      // Only a lost-connection stop can have one, and an unstored Stop is not
+      // acknowledged: the caller retries it.
+      if (
+        !runId &&
+        chat.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+        !(await cancelLocalAutoContinuesForChat({
           userId,
           chatId: chat.id,
           reason: "user_stop",
-        });
+        }))
+      )
+        return NextResponse.json(
+          { canceled: false, reason: "cancel_not_stored", retryable: true },
+          { status: 503 },
+        );
       if (runId) {
         stage = "pause_goal";
         const goalPauseAbort = new AbortController();

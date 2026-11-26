@@ -520,7 +520,14 @@ export const createAgentTriggerPost = ({
             stoppedRunId: localAutoContinue.stoppedRunId,
           },
         );
-        if (!claim || claim.userId !== userId || claim.chatId !== chatId)
+        // Bound to the computer that came back: a generic Desktop
+        // preference could otherwise select another connected one.
+        if (
+          !claim ||
+          claim.userId !== userId ||
+          claim.chatId !== chatId ||
+          claim.sandboxPreference !== sandboxPreference
+        )
           return new NextResponse(
             "This automatic continuation is no longer pending.",
             { status: 409 },
@@ -884,6 +891,19 @@ export const createAgentTriggerPost = ({
         ),
       );
       initialPersistenceStep = undefined;
+      // The user acted first: once their message or Resume is saved, it
+      // replaces any automatic continuation still waiting for this chat's
+      // computer, even if dispatch below fails. The claim also refuses after
+      // a newer user message, so a failed cancellation cannot undo this.
+      if (
+        !localAutoContinue &&
+        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+      )
+        await cancelLocalAutoContinuesForChat({
+          userId,
+          chatId,
+          reason: isAutoContinue ? "manual_resume" : "user_message",
+        });
 
       if (!existingChat) await reserveGoal();
       if (reservedGoal && goalRequest?.action === "start") {
@@ -1188,17 +1208,6 @@ export const createAgentTriggerPost = ({
         });
       // The associated worker owns this generation, even if response creation fails.
       reservedGoal = undefined;
-      // The user acted first: their message or Resume replaces any automatic
-      // continuation still waiting for this chat's computer.
-      if (
-        !localAutoContinue &&
-        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
-      )
-        await cancelLocalAutoContinuesForChat({
-          userId,
-          chatId,
-          reason: isAutoContinue ? "manual_resume" : "user_message",
-        });
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,

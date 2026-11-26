@@ -1,4 +1,5 @@
 import type { LocalStopReason } from "./local-connection-stop";
+import { environmentPreference } from "../sandbox/environment";
 
 /**
  * Automatic continuation of a Desktop Agent run after its own computer comes
@@ -119,6 +120,27 @@ export function localAutoContinueStopEligibility(
  */
 export function localAutoContinueMessageId(stoppedRunId: string): string {
   return `local-auto-continue-${stoppedRunId}`.slice(0, 128);
+}
+
+/**
+ * The continuation's sandbox: exactly the computer whose session came back.
+ * A generic "desktop" preference would let the run pick whichever Desktop is
+ * newest, so it is narrowed to that computer. Undefined when the stopped run
+ * cannot be bound to it: then the stop never continues automatically.
+ */
+export function localAutoContinueSandboxPreference(
+  stoppedPreference: string | undefined,
+  environmentId: string | undefined,
+): string | undefined {
+  if (!environmentId) return undefined;
+  const bound = environmentPreference({
+    connectionId: "",
+    environmentId,
+    isDesktop: true,
+  });
+  return stoppedPreference === "desktop" || stoppedPreference === bound
+    ? bound
+    : undefined;
 }
 
 /** Trigger run IDs, as the start route and analytics accept them. */

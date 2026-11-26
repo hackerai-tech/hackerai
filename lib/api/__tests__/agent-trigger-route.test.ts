@@ -778,26 +778,36 @@ describe("web request correlation at Agent dispatch", () => {
       });
       mockGoalMutation.mockResolvedValue([]);
     });
-    const automatic = { stoppedRunId: "run_stopped" };
+    const automatic = {
+      isAutoContinue: true,
+      localAutoContinue: { stoppedRunId: "run_stopped" },
+      sandboxPreference: "desktop-environment:computer-1",
+    };
+    const claim = {
+      chatId: "chat-1",
+      userId: "user-1",
+      claimedAt: 1,
+      sandboxPreference: "desktop-environment:computer-1",
+    };
 
     it("starts an automatic continuation only with the server's claim", async () => {
       mockGoalQuery.mockResolvedValue(null);
-      const refused = await start("/api/agent", "full_access", requestId, {
-        isAutoContinue: true,
-        localAutoContinue: automatic,
-      });
+      const refused = await start(
+        "/api/agent",
+        "full_access",
+        requestId,
+        automatic,
+      );
       expect(refused.status).toBe(409);
       expect(mockTriggerTask).not.toHaveBeenCalled();
 
-      mockGoalQuery.mockResolvedValue({
-        chatId: "chat-1",
-        userId: "user-1",
-        claimedAt: 1,
-      });
-      const started = await start("/api/agent", "full_access", requestId, {
-        isAutoContinue: true,
-        localAutoContinue: automatic,
-      });
+      mockGoalQuery.mockResolvedValue(claim);
+      const started = await start(
+        "/api/agent",
+        "full_access",
+        requestId,
+        automatic,
+      );
       expect(started.status).toBe(200);
       // The manual Resume's resume context, labeled as the server's.
       expect(mockTriggerTask.mock.calls[0][1]).toMatchObject({
@@ -809,18 +819,38 @@ describe("web request correlation at Agent dispatch", () => {
       expect(callsTo("agentLocalAutoContinues:cancelForChat")).toEqual([]);
     });
 
-    it("rejects a claim made for another user's chat", async () => {
-      mockGoalQuery.mockResolvedValue({
-        chatId: "chat-1",
-        userId: "someone-else",
-        claimedAt: 1,
-      });
-      const response = await start("/api/agent", "full_access", requestId, {
-        isAutoContinue: true,
-        localAutoContinue: automatic,
-      });
-      expect(response.status).toBe(409);
-      expect(mockTriggerTask).not.toHaveBeenCalled();
+    it.each([
+      ["another user's chat", { userId: "someone-else" }, {}],
+      // A generic preference could select whichever Desktop is connected.
+      ["any connected Desktop", {}, { sandboxPreference: "desktop" }],
+      [
+        "another computer",
+        {},
+        { sandboxPreference: "desktop-environment:computer-2" },
+      ],
+    ] as const)(
+      "refuses an automatic start for %s",
+      async (_case, claimOverride, bodyOverride) => {
+        mockGoalQuery.mockResolvedValue({ ...claim, ...claimOverride });
+        const response = await start("/api/agent", "full_access", requestId, {
+          ...automatic,
+          ...bodyOverride,
+        });
+        expect(response.status).toBe(409);
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+      },
+    );
+
+    it("cancels a waiting continuation once the message is saved, even if dispatch fails", async () => {
+      mockTriggerTask.mockRejectedValue(new Error("Trigger unavailable"));
+      await start("/api/agent", "full_access", requestId);
+      expect(mockTriggerTask).toHaveBeenCalledTimes(1);
+      expect(callsTo("agentLocalAutoContinues:cancelForChat")).toEqual([
+        [
+          expect.anything(),
+          expect.objectContaining({ chatId: "chat-1", reason: "user_message" }),
+        ],
+      ]);
     });
 
     it.each([

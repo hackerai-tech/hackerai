@@ -4,6 +4,7 @@ import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import { LocalAutoContinueNotice } from "./LocalAutoContinueNotice";
 import { cancelLocalAutoContinue } from "@/app/services/local-auto-continue-client";
+import { useAttachAutoContinuedRun } from "@/app/hooks/useAttachAutoContinuedRun";
 import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
@@ -2872,32 +2873,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     localAutoContinue?.state === "started"
       ? localAutoContinue.continuedRunId
       : undefined;
-  const attachedAutoContinueRunRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      !autoContinuedRunId ||
-      autoContinuedRunId !== activeTriggerRunId ||
-      agentLongRunId ||
-      status !== "ready" ||
-      attachedAutoContinueRunRef.current === autoContinuedRunId
-    )
-      return;
-    attachedAutoContinueRunRef.current = autoContinuedRunId;
-    void resumeStream();
-  }, [
+  useAttachAutoContinuedRun({
+    continuedRunId: autoContinuedRunId,
     activeTriggerRunId,
-    agentLongRunId,
-    autoContinuedRunId,
-    resumeStream,
+    attachedRunId: agentLongRunId,
     status,
-  ]);
+    resumeStream,
+  });
   const showLocalAutoContinue =
     localAutoContinue?.state === "starting" ||
     (!!autoContinuedRunId && autoContinuedRunId === activeTriggerRunId);
+  // Stopping the running continuation enforces Stop by itself. Before one
+  // runs, only the stored cancellation does, so its failure reaches the notice.
   const stopLocalAutoContinue = async () => {
-    await cancelLocalAutoContinue(chatId, "user_stop");
-    if (activeTriggerRunId || status === "streaming" || status === "submitted")
+    const cancelled = cancelLocalAutoContinue(chatId, "user_stop");
+    if (
+      activeTriggerRunId ||
+      status === "streaming" ||
+      status === "submitted"
+    ) {
+      void cancelled.catch(() => undefined);
       await handleStop();
+      return;
+    }
+    await cancelled;
   };
 
   // The server sends the next queued message after a run finishes. Show that
