@@ -202,8 +202,13 @@ describe("E2B cloud acquisition", () => {
   it("acquires normally when the diagnostic link stores fail", async () => {
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
     process.env.E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED = "true";
+    const burstEnd = 1_800_000_000_000;
+    const clock = jest.spyOn(Date, "now").mockReturnValue(burstEnd - 1);
     mockFailingStore = {
       eval: jest.fn(() => {
+        // The first write starts just before the boundary and the next can
+        // start after it, but both describe the same acquisition.
+        clock.mockReturnValue(burstEnd);
         throw new Error("store down");
       }),
     };
@@ -221,12 +226,18 @@ describe("E2B cloud acquisition", () => {
       expect(setSandbox).toHaveBeenCalledWith(result.sandbox);
       expect(failedEvents()).toEqual([]);
       // The acquisition link and the run timeline both tried and failed.
-      const keys = mockFailingStore.eval.mock.calls.map(([, [key]]) => key);
-      expect(keys).toEqual([
-        expect.stringMatching(/^egress-review:v2:/),
-        expect.stringMatching(/^egress-review:timeline:v1:/),
+      const writes = mockFailingStore.eval.mock.calls.map(
+        ([, [key], [, timestamp]]) => [key, timestamp],
+      );
+      expect(writes).toEqual([
+        [expect.stringMatching(/^egress-review:v2:/), String(burstEnd - 1)],
+        [
+          expect.stringMatching(/^egress-review:timeline:v1:/),
+          String(burstEnd - 1),
+        ],
       ]);
     } finally {
+      clock.mockRestore();
       mockFailingStore = null;
     }
   });

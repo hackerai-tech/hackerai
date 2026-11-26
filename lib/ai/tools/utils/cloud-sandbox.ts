@@ -262,6 +262,7 @@ export async function ensureCloudSandboxConnection(options: {
     options.signal?.throwIfAborted();
     // Ownership and network are verified; synchronous, never throw or wait.
     const acquisition = {
+      now: Date.now(),
       region: workspaceCluster,
       userId: options.userId,
       sandboxId: result.sandbox.sandboxId,
