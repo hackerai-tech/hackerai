@@ -608,13 +608,8 @@ export default defineSchema({
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
-    // Staged so deploys do not block on backfilling the large messages table.
-    // Enable it (and switch pre-event research excerpts to it) once the
-    // backfill completes; staged indexes cannot be queried.
-    .index("by_chat_id_and_update_time", {
-      fields: ["chat_id", "update_time"],
-      staged: true,
-    })
+    // Bounds pre-event research excerpts to their audited evidence window.
+    .index("by_chat_id_and_update_time", ["chat_id", "update_time"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
     .searchIndex("search_content", {

@@ -26,29 +26,6 @@ jest.mock("../lib/userResearchAuth", () => ({
 }));
 
 type Row = { _id: string; _creationTime?: number; [key: string]: unknown };
-type FilterExpr = (row: Row) => unknown;
-
-const compareNumbers =
-  (left: FilterExpr, right: unknown, operator: "gte" | "lte"): FilterExpr =>
-  (row) => {
-    const value = left(row);
-    if (typeof value !== "number" || typeof right !== "number") return false;
-    return operator === "gte" ? value >= right : value <= right;
-  };
-
-// Minimal stand-in for Convex's FilterBuilder used by .filter(...).
-const filterBuilder = {
-  field:
-    (name: string): FilterExpr =>
-    (row) =>
-      row[name],
-  gte: (left: FilterExpr, right: unknown) => compareNumbers(left, right, "gte"),
-  lte: (left: FilterExpr, right: unknown) => compareNumbers(left, right, "lte"),
-  and:
-    (...exprs: FilterExpr[]): FilterExpr =>
-    (row) =>
-      exprs.every((expr) => expr(row) === true),
-};
 
 const createCtx = (args: {
   messageCount: number;
@@ -149,13 +126,19 @@ const createCtx = (args: {
             }),
           );
           const ordered = (direction: "asc" | "desc") => {
-            const sorted = [...rows].sort(
-              (a, b) =>
-                (((table === "chats" ? a.update_time : a._creationTime) as
-                  number | undefined) ?? 0) -
-                (((table === "chats" ? b.update_time : b._creationTime) as
-                  number | undefined) ?? 0),
-            );
+            const sortFields =
+              table === "chats" || index === "by_chat_id_and_update_time"
+                ? ["update_time", "_creationTime"]
+                : ["_creationTime"];
+            const sorted = [...rows].sort((a, b) => {
+              for (const field of sortFields) {
+                const difference =
+                  ((a[field] as number | undefined) ?? 0) -
+                  ((b[field] as number | undefined) ?? 0);
+                if (difference !== 0) return difference;
+              }
+              return 0;
+            });
             return direction === "desc" ? sorted.reverse() : sorted;
           };
           const makeQuery = (matches: (row: Row) => boolean) => ({
@@ -169,14 +152,6 @@ const createCtx = (args: {
                 .slice(0, limit)
                 .map((row) => recordRead(row, table)),
             ),
-            filter: jest.fn(
-              (buildFilter: (q: typeof filterBuilder) => FilterExpr) => {
-                const predicate = buildFilter(filterBuilder);
-                return makeQuery(
-                  (row) => matches(row) && predicate(row) === true,
-                );
-              },
-            ),
             order: jest.fn((direction: "asc" | "desc") => ({
               first: jest.fn(
                 async () => ordered(direction).find(matches) ?? null,
@@ -188,12 +163,8 @@ const createCtx = (args: {
                   .map((row) => recordRead(row, table)),
               ),
               async *[Symbol.asyncIterator]() {
-                for (const row of ordered(direction)) {
-                  // Convex reads every scanned row, including ones a
-                  // .filter() then discards.
-                  recordRead(row, table);
-                  if (matches(row)) yield row;
-                }
+                for (const row of ordered(direction).filter(matches))
+                  yield recordRead(row, table);
               },
             })),
           });
@@ -424,7 +395,7 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(reads.messageIds).toHaveLength(8);
   });
 
-  it("returns only messages updated inside a pre-event evidence window", async () => {
+  it("reads only messages updated inside a pre-event evidence window", async () => {
     const { getMessageExcerpt } = await import("../userResearch");
     const anchorAt = Date.UTC(2026, 7, 25);
     const day = 24 * 60 * 60 * 1_000;
@@ -456,38 +427,47 @@ describe("userResearch.getMessageExcerpt", () => {
       ],
       truncated: false,
     });
-    // The staged by_chat_id_and_update_time index cannot be queried until it
-    // is enabled, so the window is applied as a filter over by_chat_id.
-    expect(new Set(reads.messageIndexes)).toEqual(new Set(["by_chat_id"]));
+    expect(new Set(reads.messageIds)).toEqual(
+      new Set(["message-2", "message-3"]),
+    );
+    expect(new Set(reads.messageIndexes)).toEqual(
+      new Set(["by_chat_id_and_update_time"]),
+    );
   });
 
-  it("bounds reads of out-of-window pre-event messages", async () => {
+  it("selects pre-event excerpt ends in update-time index order", async () => {
     const { getMessageExcerpt } = await import("../userResearch");
     const anchorAt = Date.UTC(2026, 7, 25);
     const day = 24 * 60 * 60 * 1_000;
-    const { ctx, userId, chatId, tables, reads } = createCtx({
-      messageCount: 20,
+    const { ctx, userId, chatId, tables } = createCtx({
+      messageCount: 22,
       samplingMode: "pre_event",
       evidenceWindowDays: 60,
       evidenceAnchorAt: anchorAt,
     });
-    for (const message of tables.messages) {
-      message.update_time = anchorAt - 61 * day;
-      message.parts = [{ type: "reasoning", text: "x".repeat(900_000) }];
-    }
+    // Update order intentionally differs from creation order. With a twenty
+    // message limit, messages 1 and 22 are the two middle rows and omitted.
+    const updateOrder = [
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 22, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21,
+    ];
+    updateOrder.forEach((messageNumber, updateRank) => {
+      tables.messages[messageNumber - 1].update_time =
+        anchorAt + (-55 + updateRank) * day;
+    });
 
-    await expect(
-      getMessageExcerpt.handler(ctx as never, {
-        serviceKey: "service-key",
-        analysisId: "analysis-1",
-        userId,
-        chatId,
-        maxMessages: 20,
-      }),
-    ).rejects.toThrow(
-      "Research excerpt read budget exhausted before eligible text was found",
+    const result = await getMessageExcerpt.handler(ctx as never, {
+      serviceKey: "service-key",
+      analysisId: "analysis-1",
+      userId,
+      chatId,
+      maxMessages: 20,
+    });
+
+    expect(result.messages.map((message) => message.text)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `message ${index + 2}`),
     );
-    expect(reads.messageIds).toHaveLength(8);
+    expect(result.truncated).toBe(true);
   });
 
   it.each(["foreign", "deleting"])(
