@@ -2580,7 +2580,7 @@ describe("on-demand burst-activity assessment of a historical case", () => {
       },
       model: {
         key: "model-grok-4.6",
-        promptVersion: "egress-retained-candidate-review-v3",
+        promptVersion: "egress-burst-activity-review-v1",
       },
     });
     expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
@@ -2597,31 +2597,43 @@ describe("on-demand burst-activity assessment of a historical case", () => {
     expectAdvisoryOnly(result, saved);
   });
 
-  it("calls no model when earlier turns of the chat were not read", async () => {
+  it("shows earlier scope with the current user request and only the candidate's commands", async () => {
     await seedActivity();
     await message(
       {
         id: "earlier-user",
         role: "user",
-        parts: [{ type: "text", text: "Scope is my own lab." }],
+        parts: [
+          { type: "text", text: "The previous task was for my own lab." },
+        ],
       },
       at(-60),
     );
-    await runMessage("earlier-run", "run_earlier", at(-59), at(-57), "ls");
+    await runMessage(
+      "earlier-run",
+      "run_earlier",
+      at(-59),
+      at(-57),
+      "printf UNRELATED_EARLIER_COMMAND",
+    );
     const saved = await burstCase();
+    classifyAs(concerning);
 
     const result = await assess();
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ...base,
       selection: "complete",
       otherOverlappingRuns: 0,
-      coverage: "incomplete",
-      advisory: "inconclusive",
-      reason: "evidence_gaps",
-      gaps: ["user_messages_omitted"],
+      coverage: "complete",
+      advisory: "concern",
+      reason: "concerning_corroborated",
     });
-    expect(generateText).not.toHaveBeenCalled();
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+    expect(prompt).toContain("[M1] (Earlier context) The previous task");
+    expect(prompt).toContain("[M2] (Current request) Find open ports");
+    expect(prompt).not.toContain("UNRELATED_EARLIER_COMMAND");
     expectAdvisoryOnly(result, saved);
   });
 

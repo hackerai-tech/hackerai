@@ -269,6 +269,7 @@ export function startedCommands(
 export const userMessageValidator = v.object({
   messageId: v.string(),
   observedAt: v.optional(v.number()),
+  priorTurn: v.optional(v.boolean()),
   text: v.string(),
   truncated: v.boolean(),
 });
@@ -648,8 +649,8 @@ async function readChatActivity(
       lateRunId = later.trigger_run_id;
   }
 
-  // Only one run's commands and the user turn that preceded it can support a
-  // finding. An older run's stated scope does not authorize this one.
+  // Only the selected run's commands support the finding. Historical triage
+  // can also show earlier user turns as context for the selected request.
   const selected = candidates
     .filter(([, run]) => run.commands.length)
     .sort(([, a], [, b]) => b.start - a.start)[0];
@@ -668,12 +669,21 @@ async function readChatActivity(
   const users = rows.flatMap((row) => {
     if (row.role !== "user" || row.is_hidden || row._creationTime > start)
       return [];
-    if (row._creationTime <= previousAssistant || row.update_time > start) {
+    const priorTurn = row._creationTime <= previousAssistant;
+    if ((!burst && priorTurn) || row.update_time > start) {
       omittedContext++;
       return [];
     }
     const text = userText(row.parts);
-    return text ? [{ messageId: row.id, ...clip(text) }] : [];
+    return text
+      ? [
+          {
+            messageId: row.id,
+            ...(priorTurn ? { priorTurn } : {}),
+            ...clip(text),
+          },
+        ]
+      : [];
   });
 
   // Context before the window is never read out, so a chat that has any is
@@ -698,7 +708,10 @@ async function readChatActivity(
     chat: {
       chatId: chat.id,
       runIds: [runId],
-      userMessages: keptUsers,
+      userMessages:
+        burst && keptUsers.every((message) => message.priorTurn)
+          ? []
+          : keptUsers,
       commands: keptCommands,
       coverage: {
         rawReads: scannedRows,
@@ -788,7 +801,7 @@ async function collectAccountActivity(
  * but only messages created by `MAX_BURST_SAVE_DELAY_MS` after the burst,
  * and returns at most one candidate: the most recently started finished run
  * whose persisted timing overlaps the burst and that started a terminal
- * command, with its own commands and the user turn before its start. The
+ * command, with its own commands and pre-start user messages. The
  * candidate is never shown to have caused the burst. Content exclusions,
  * edited-after-start exclusion and the deletion fence are unchanged.
  */

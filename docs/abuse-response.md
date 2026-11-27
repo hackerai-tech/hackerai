@@ -687,8 +687,10 @@ unchanged.
   use up the limits. It skips chats created after the burst without reading them.
   It keeps one candidate: the most recently started run that started a
   terminal command, has complete persisted timing that overlaps the burst,
-  and is not marked active. It returns only that run's commands and the user
-  turn before the run started. A subagent of that run that may have
+  and is not marked active. It returns that run's commands and the pre-start
+  user messages, with earlier turns marked as context for the current
+  request. If no current user request survives the read, it withholds the
+  context. A subagent of that run that may have
   overlapped returns `subagent_overlap` without content. The worker verifies
   completion with Trigger, as above, before classification.
 - **What it returns.** Closed enums and counts only: `scope:
@@ -702,8 +704,8 @@ advisory_only`, and `otherOverlappingRuns` (runs that also overlap but were
   another run that may have spanned the burst (`late_save_possible`). A later
   row of the candidate itself counts as an omitted command. Coverage,
   `advisory`, `classification` and the model follow the retained-candidate
-  rules. Earlier turns, edits after the run started, truncation and any
-  other gap make the evidence `incomplete`. The model is never called on
+  rules. Edits after the run started, truncation and other evidence gaps
+  make the evidence `incomplete`. The model is never called on
   incomplete evidence, and at most once per task.
 - **Limits.** Chat discovery lists the 20 chats the account updated most
   recently. For an account that kept working after the burst, the run may

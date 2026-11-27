@@ -372,7 +372,7 @@ it("marks the candidate incomplete when its run saved another row later", async 
   expect(JSON.stringify(evidence)).not.toContain("LATE COMMAND");
 });
 
-it("keeps only the candidate's own commands and turn, omitting earlier and edited text", async () => {
+it("keeps the candidate's commands and withholds context alone when the request changed", async () => {
   await seedBurst();
   await userRow("msg-earlier-user", CHAT, at(-60), "EARLIER SCOPE TEXT");
   await runRow(
@@ -393,7 +393,7 @@ it("keeps only the candidate's own commands and turn, omitting earlier and edite
     status: "found",
     userMessages: [],
     commands: [{ text: COMMAND }],
-    coverage: { userMessagesOmitted: 2, commandsOmitted: 0 },
+    coverage: { userMessagesOmitted: 1, commandsOmitted: 0 },
   });
   expect(exposes(evidence)).toEqual([RUN]);
 });

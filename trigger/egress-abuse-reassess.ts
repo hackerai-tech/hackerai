@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
 import {
   decideRetainedCandidate,
+  EGRESS_BURST_ACTIVITY_PROMPT_VERSION,
   EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
   prepareReview,
   retainedCandidateClassificationSchema,
@@ -380,7 +381,7 @@ async function runBurstActivityAssessment(
   const prepared = prepareReview(
     candidate,
     { start: read.burstStart, end: read.burstEnd },
-    "retained_candidate",
+    "burst_activity",
   );
   // Partial evidence is never classified, so it cannot become a finding.
   const gaps = observationGaps(candidate, prepared);
@@ -399,7 +400,7 @@ async function runBurstActivityAssessment(
     });
   const model = {
     key: USER_RESEARCH_MODEL_KEY,
-    promptVersion: EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
+    promptVersion: EGRESS_BURST_ACTIVITY_PROMPT_VERSION,
   };
   const classification = await classifyEvidence(
     prepared.prompt,
