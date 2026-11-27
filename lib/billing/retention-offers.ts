@@ -3,6 +3,7 @@ import type Stripe from "stripe";
 import {
   CANCELLATION_REASON_OPTIONS,
   type CancellationReasonCategory,
+  type CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
 import type { SubscriptionTier } from "@/types";
 
@@ -105,6 +106,7 @@ export type DowngradeOfferIneligibilityReason =
   | "subscription_not_active"
   | "cancellation_already_scheduled"
   | "reason_not_applicable"
+  | "insufficient_included_usage"
   | "multi_seat"
   | "downgrade_already_scheduled"
   | "missing_period_end";
@@ -118,6 +120,12 @@ export type DowngradeOfferEligibilityInput = {
   cancelAtPeriodEnd: boolean;
   quantity?: number | null;
   reasonCategory: CancellationReasonCategory;
+  /**
+   * Optional follow-up answer. Someone who says the plan does not include
+   * enough usage is never offered a plan with a smaller allowance, whatever
+   * the main reason.
+   */
+  reasonSubcategory?: CancellationReasonSubcategory;
   /** A Stripe schedule is already attached (a pending plan change). */
   downgradeAlreadyScheduled: boolean;
   /** Defaults to the price-related reasons. */
@@ -164,6 +172,9 @@ export function evaluateDowngradeOfferEligibility(
   if (!reasons.has(input.reasonCategory)) {
     return { eligible: false, reason: "reason_not_applicable" };
   }
+  if (input.reasonSubcategory === "insufficient_included_usage") {
+    return { eligible: false, reason: "insufficient_included_usage" };
+  }
   if (input.downgradeAlreadyScheduled) {
     return { eligible: false, reason: "downgrade_already_scheduled" };
   }
@@ -171,6 +182,22 @@ export function evaluateDowngradeOfferEligibility(
     return { eligible: false, reason: "missing_period_end" };
   }
   return { eligible: true, target };
+}
+
+const OFFER_IMPRESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
+ * Opaque client-generated UUID for one downgrade offer impression. It joins
+ * the impression to the server-side schedule event and is used for analytics
+ * only; anything else is dropped rather than blocking the plan change.
+ */
+export function parseRetentionOfferImpressionId(
+  value: unknown,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return OFFER_IMPRESSION_ID_PATTERN.test(normalized) ? normalized : undefined;
 }
 
 export function retentionDowngradeFromMetadata(

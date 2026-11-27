@@ -225,6 +225,28 @@ describe("evaluateDowngradeOfferEligibility", () => {
     ).toEqual({ eligible: false, reason: "reason_not_applicable" });
   });
 
+  it("never offers a smaller allowance to someone short on included usage", () => {
+    for (const reasonCategory of ["too_expensive", "other"] as const) {
+      expect(
+        evaluateDowngradeOfferEligibility(
+          downgradeInput({
+            reasonCategory,
+            reasonSubcategory: "insufficient_included_usage",
+            reasonPolicy: "all_reasons",
+          }),
+        ),
+      ).toEqual({ eligible: false, reason: "insufficient_included_usage" });
+    }
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({
+          reasonCategory: "too_expensive",
+          reasonSubcategory: "too_expensive_low_frequency",
+        }),
+      ).eligible,
+    ).toBe(true);
+  });
+
   it("requires a paid-through date to schedule the switch", () => {
     expect(
       evaluateDowngradeOfferEligibility(
