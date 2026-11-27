@@ -27,6 +27,118 @@ function finite(value: number | undefined, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Revenue receipts started mid-day on 2026-05-31 (UTC), so earlier days cannot
+// be recomputed from the ledger and must stay unknown rather than zero.
+export const TEAM_EXTRA_USAGE_REVENUE_FIRST_COMPLETE_DAY = "2026-06-01";
+
+// Bounds one day's recompute read. A day above it stays unknown instead of
+// publishing a partial total.
+export const TEAM_EXTRA_USAGE_REVENUE_MAX_RECEIPTS_PER_DAY = 250;
+
+export type TeamExtraUsageRevenueDayResult =
+  | {
+      day: string;
+      status: "written" | "unchanged";
+      netRevenueDollars: number;
+      revenueEventCount: number;
+    }
+  | {
+      day: string;
+      status: "unknown";
+      reason: "too_many_receipts" | "non_usd_receipt" | "invalid_amount";
+    };
+
+export function utcDayStartMs(day: string): number {
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(day)
+    ? Date.parse(`${day}T00:00:00.000Z`)
+    : NaN;
+  if (!Number.isFinite(start) || utcDay(start) !== day) {
+    throw new Error(`Invalid UTC day: ${day}`);
+  }
+  return start;
+}
+
+/**
+ * Recompute one UTC day of Team Extra Usage revenue from every canonical
+ * organization-grain receipt and store the exact total. The read covers the
+ * whole day's index range, so a concurrent receipt insert conflicts with this
+ * transaction and Convex retries it; the stored row never misses or repeats a
+ * receipt. A day that cannot be computed exactly is removed so it reads as
+ * unknown.
+ */
+export async function recomputeTeamExtraUsageRevenueDay(
+  ctx: MutationCtx,
+  day: string,
+): Promise<TeamExtraUsageRevenueDayResult> {
+  const dayStart = utcDayStartMs(day);
+  const receipts = await ctx.db
+    .query("revenue_events")
+    .withIndex("by_source_and_occurred_at", (q) =>
+      q
+        .eq("source", "team_extra_usage")
+        .gte("occurred_at", dayStart)
+        .lt("occurred_at", dayStart + DAY_MS),
+    )
+    .take(TEAM_EXTRA_USAGE_REVENUE_MAX_RECEIPTS_PER_DAY + 1);
+
+  const existing = await ctx.db
+    .query("team_extra_usage_revenue_daily")
+    .withIndex("by_day", (q) => q.eq("day", day))
+    .unique();
+
+  const markUnknown = async (
+    reason: "too_many_receipts" | "non_usd_receipt" | "invalid_amount",
+  ): Promise<TeamExtraUsageRevenueDayResult> => {
+    if (existing) await ctx.db.delete(existing._id);
+    return { day, status: "unknown", reason };
+  };
+
+  if (receipts.length > TEAM_EXTRA_USAGE_REVENUE_MAX_RECEIPTS_PER_DAY) {
+    return await markUnknown("too_many_receipts");
+  }
+
+  const seenKeys = new Set<string>();
+  let netRevenueDollars = 0;
+  let revenueEventCount = 0;
+  for (const receipt of receipts) {
+    // User-grain rows already flow through user-grain unit_economics_daily.
+    if (receipt.entity_type !== "organization") continue;
+    if (seenKeys.has(receipt.idempotency_key)) continue;
+    seenKeys.add(receipt.idempotency_key);
+    if (receipt.currency.toLowerCase() !== "usd") {
+      return await markUnknown("non_usd_receipt");
+    }
+    if (!Number.isFinite(receipt.net_revenue_dollars)) {
+      return await markUnknown("invalid_amount");
+    }
+    netRevenueDollars += receipt.net_revenue_dollars;
+    revenueEventCount += 1;
+  }
+
+  if (
+    existing &&
+    existing.net_revenue_dollars === netRevenueDollars &&
+    existing.revenue_event_count === revenueEventCount
+  ) {
+    return { day, status: "unchanged", netRevenueDollars, revenueEventCount };
+  }
+
+  const next = {
+    day,
+    net_revenue_dollars: netRevenueDollars,
+    revenue_event_count: revenueEventCount,
+    updated_at: Date.now(),
+  };
+  if (existing) {
+    await ctx.db.patch(existing._id, next);
+  } else {
+    await ctx.db.insert("team_extra_usage_revenue_daily", next);
+  }
+  return { day, status: "written", netRevenueDollars, revenueEventCount };
+}
+
 export async function applyUnitEconomicsDelta(
   ctx: MutationCtx,
   args: {
@@ -327,17 +439,26 @@ export async function recordRevenueEventInternal(
     created_at: Date.now(),
   });
 
+  const day = utcDay(occurredAt);
   await applyUnitEconomicsDelta(ctx, {
     entityType: args.entityType,
     entityId: args.entityId,
     userId: args.userId,
     organizationId: args.organizationId,
-    day: utcDay(occurredAt),
+    day,
     grossRevenueDollars,
     netRevenueDollars,
     mrrDollars,
     revenueEventCount: 1,
   });
+
+  if (
+    args.source === "team_extra_usage" &&
+    args.entityType === "organization" &&
+    day >= TEAM_EXTRA_USAGE_REVENUE_FIRST_COMPLETE_DAY
+  ) {
+    await recomputeTeamExtraUsageRevenueDay(ctx, day);
+  }
 
   return { alreadyRecorded: false };
 }

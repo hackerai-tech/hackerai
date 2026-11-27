@@ -71,6 +71,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
+    "team_extra_usage_revenue_daily",
     // Unresolved Stripe writes must stay fenced even during account deletion.
     "billing_operations",
     "processed_webhooks",
