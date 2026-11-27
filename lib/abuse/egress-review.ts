@@ -21,10 +21,11 @@ export const EGRESS_REVIEW_PROMPT_VERSION = "egress-abuse-review-v2";
 export const EGRESS_ACCOUNT_ACTIVITY_PROMPT_VERSION =
   "egress-account-activity-review-v1";
 export const EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION =
-  "egress-retained-candidate-review-v2";
+  "egress-retained-candidate-review-v3";
 export const EGRESS_REVIEW_ACTOR = "egress_abuse_review";
 export const EGRESS_REVIEW_SENDER = "abuse@hackerai.co";
 const MAX_ITEM_CHARS = 1_500;
+const MAX_RETAINED_COMMAND_CHARS = 4_000;
 const MAX_PROMPT_MESSAGES = 30;
 const MAX_PROMPT_COMMANDS = 60;
 const MAX_CITATIONS = 10;
@@ -438,7 +439,7 @@ export function createEvidenceScrubber() {
   };
   const kind = (id: number) => targets.get(id)?.kind;
 
-  const scrub = (value: string): ScrubbedItem => {
+  const scrub = (value: string, maxChars = MAX_ITEM_CHARS): ScrubbedItem => {
     const seen = new Set<number>();
     let text = value
       .replace(CONTROL, "")
@@ -489,9 +490,9 @@ export function createEvidenceScrubber() {
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
-    const truncated = text.length > MAX_ITEM_CHARS;
+    const truncated = text.length > maxChars;
     if (truncated)
-      text = `${text.slice(0, MAX_ITEM_CHARS).replace(/[\uD800-\uDBFF]$/, "")} [truncated]`;
+      text = `${text.slice(0, maxChars).replace(/[\uD800-\uDBFF]$/, "")} [truncated]`;
     return { text, truncated, targets: seen };
   };
 
@@ -569,8 +570,19 @@ export function prepareReview(
       truncated: scrubbed.truncated || message.truncated,
     };
   });
+  // A scoped advisory with fewer commands can spend more of the same total
+  // command budget on each item. Automated review keeps its original limit.
+  const maxCommandChars =
+    mode === "retained_candidate" && commandSource.length > 0
+      ? Math.min(
+          MAX_RETAINED_COMMAND_CHARS,
+          Math.floor(
+            (MAX_PROMPT_COMMANDS * MAX_ITEM_CHARS) / commandSource.length,
+          ),
+        )
+      : MAX_ITEM_CHARS;
   const commands = commandSource.map((command) => {
-    const scrubbed = scrubber.scrub(command.text);
+    const scrubbed = scrubber.scrub(command.text, maxCommandChars);
     return { ...scrubbed, truncated: scrubbed.truncated || command.truncated };
   });
   const { coverage } = evidence;
