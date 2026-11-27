@@ -28,12 +28,27 @@ export const ACQUISITION_LINK_TTL_S = 6 * 60 * 60;
 export const ACQUISITION_LINK_RETENTION_S =
   ACQUISITION_LINK_TTL_S + TELEMETRY_RETENTION_S + 30 * 60;
 /**
- * Acquisition records kept per workspace, across all runs. One more is
- * retained so a reader can tell that older records were trimmed and treat the
- * set as incomplete. Repeated acquisitions by one run are coalesced on write,
- * so this bounds distinct runs and long-lived runs rather than reconnects.
+ * Acquisition records kept per workspace, across all runs. Repeated
+ * acquisitions by one run are coalesced on write, so this bounds distinct runs
+ * and long-lived runs rather than reconnects. The review separately abstains
+ * when more than 16 distinct runs fall inside its window.
  */
-export const MAX_ACQUISITION_LINKS = 16;
+export const MAX_ACQUISITION_RECORDS = 48;
+/**
+ * The previous writer kept 16 records plus one more as a trim sentinel and
+ * wrote no metadata, so an unmarked set above this size may have lost records
+ * anywhere and is never read as complete.
+ */
+const LEGACY_RECORD_LIMIT = 16;
+/** Members at most a writer leaves: the records plus one metadata member. */
+const MAX_STORED_MEMBERS = MAX_ACQUISITION_RECORDS + 1;
+/**
+ * The one metadata member, `m|<bound>` at score 0, below every positive
+ * acquisition time and retention cutoff. Every record a writer dropped other
+ * than by retention or coalescing has a time at or before the bound; 0 means
+ * none. The previous writer's time prune removes it before its rank trim.
+ */
+const MARK_PREFIX = "m|";
 const RECORD_BUDGET_MS = 1_500;
 /** Chat, run, account and workspace identifiers safe to store in a member. */
 export const ACQUISITION_IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -81,21 +96,54 @@ const runPrefix = (kind: AcquisitionRunKind, chatId: string, runId: string) =>
  * covered, and the run keeps at most a few records per look-back.
  *
  * Only members whose time equals a safe integer score are considered; anything
- * else stays and keeps the set incomplete for the reader. Retention trimming runs
- * first, and the rank trim still keeps one record past the bound so the
- * reader can see that older records were dropped.
+ * else stays and keeps the set incomplete for the reader.
+ *
+ * The metadata member is read and set aside first, then retention trimming
+ * runs. Past the record bound the oldest records are evicted, and the bound
+ * becomes the newest evicted time: a rank trim removes only records ranked
+ * below every survivor, ties included, so none of them is newer. A set
+ * without metadata above the previous writer's size may be one it trimmed:
+ * its oldest record before this write bounds what that writer evicted, since
+ * a later out-of-order record can rank below it. Unreadable or duplicate
+ * metadata says nothing, so the bound becomes the newest time present or now.
+ * A bound at or before the retention cutoff can no longer reach a review
+ * window, which already relies on retention-trimmed records being out of
+ * range. Metadata is written while the set is above the previous writer's
+ * size, so a reader can tell it from a set that writer trimmed, or while the
+ * bound is still in range.
  */
 const RECORD_ACQUISITION = `
 local key, prefix, now = KEYS[1], ARGV[1], tonumber(ARGV[2])
+local cutoff, keep, legacy = tonumber(ARGV[3]), tonumber(ARGV[5]), tonumber(ARGV[6])
+local maxSafe = 9007199254740991
+local entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
+local marks, bound, newest = 0, nil, now
+for i = 1, #entries, 2 do
+  local score = tonumber(entries[i + 1]) or maxSafe
+  if score > newest then newest = score end
+  if string.sub(entries[i], 1, 2) == 'm|' then
+    marks = marks + 1
+    local text = string.sub(entries[i], 3)
+    if entries[i + 1] == '0' and text:match('^%d+$') and (text == '0' or text:sub(1, 1) ~= '0')
+      and tonumber(text) <= maxSafe then
+      bound = tonumber(text)
+    end
+    redis.call('ZREM', key, entries[i])
+  end
+end
+if marks > 1 or (marks == 1 and not bound) then bound = newest end
 redis.call('ZREMRANGEBYSCORE', key, '-inf', ARGV[3])
+if marks == 0 and redis.call('ZCARD', key) > legacy then
+  bound = tonumber(redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')[2]) or maxSafe
+end
 local member = prefix .. ARGV[2]
 if not redis.call('ZSCORE', key, member) then
-  local entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
+  entries = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')
   local latest, latestAt, previousAt
   for i = 1, #entries, 2 do
     local scoreText = entries[i + 1]
     local score = tonumber(scoreText)
-    if score and scoreText:match('^-?%d+$') and math.abs(score) <= 9007199254740991
+    if score and scoreText:match('^-?%d+$') and math.abs(score) <= maxSafe
       and entries[i] == prefix .. scoreText then
       previousAt, latest, latestAt = latestAt, entries[i], score
     end
@@ -105,8 +153,21 @@ if not redis.call('ZSCORE', key, member) then
   end
   redis.call('ZADD', key, now, member)
 end
-redis.call('ZREMRANGEBYRANK', key, 0, -tonumber(ARGV[5]))
-redis.call('EXPIRE', key, ARGV[6])
+local extra = redis.call('ZCARD', key) - keep
+if extra > 0 then
+  local removed = redis.call('ZRANGE', key, 0, extra - 1, 'WITHSCORES')
+  redis.call('ZREMRANGEBYRANK', key, 0, extra - 1)
+  for i = 2, #removed, 2 do
+    local score = tonumber(removed[i]) or maxSafe
+    if not bound or score > bound then bound = score end
+  end
+end
+if bound and bound <= cutoff then bound = nil end
+if bound or redis.call('ZCARD', key) > legacy then
+  bound = math.min(math.ceil(bound or 0), maxSafe)
+  redis.call('ZADD', key, 0, 'm|' .. string.format('%.0f', bound))
+end
+redis.call('EXPIRE', key, ARGV[7])
 return 1`;
 
 function decodeMember(value: unknown, score: unknown): AcquisitionLink | null {
@@ -180,7 +241,8 @@ export function recordEgressReviewAcquisition(input: {
         String(now),
         String(now - ACQUISITION_LINK_RETENTION_S * 1_000),
         String(ACQUISITION_LINK_TTL_S * 1_000),
-        String(MAX_ACQUISITION_LINKS + 2),
+        String(MAX_ACQUISITION_RECORDS),
+        String(LEGACY_RECORD_LIMIT),
         String(ACQUISITION_LINK_RETENTION_S),
       ],
     );
@@ -200,13 +262,29 @@ export function recordEgressReviewAcquisition(input: {
   }
 }
 
+/** The metadata bound, or null when the member is not valid metadata. */
+function decodeMark(value: string, score: unknown): number | null {
+  const text = value.slice(MARK_PREFIX.length);
+  const bound = Number(text);
+  return (score === 0 || score === "0") &&
+    /^(?:0|[1-9]\d*)$/.test(text) &&
+    Number.isSafeInteger(bound)
+    ? bound
+    : null;
+}
+
 /**
  * Acquisitions recorded for one verified workspace since `since`, oldest
  * first; a run that acquired more than once may have several records.
- * `complete` is false when older records were trimmed or a stored member is
- * unreadable, so the caller cannot mistake a partial set for the only
- * plausible run; `incomplete` says which, and `stored` counts the raw
- * records, for closed diagnostics only.
+ * `complete` is false when a record at or after `since` may have been
+ * trimmed, or a stored member is unreadable, so the caller cannot mistake a
+ * partial set for the only plausible run; `incomplete` says which, and
+ * `stored` counts the raw records, for closed diagnostics only.
+ *
+ * Trimmed history is complete only for a window starting strictly after the
+ * writer's metadata bound. A set without metadata is complete only within the
+ * previous writer's size, and more members than a writer leaves are
+ * unreadable.
  */
 export async function readAcquisitionLinks(
   redis: Redis,
@@ -220,23 +298,33 @@ export async function readAcquisitionLinks(
   incomplete?: "invalid" | "trimmed";
   stored: number;
 }> {
+  // One past the most a writer leaves, so an overfull set is visible.
   const raw = await redis.zrange<unknown[]>(
     linkKey(region, userId, sandboxId),
     0,
-    -1,
+    MAX_STORED_MEMBERS,
     { withScores: true },
   );
   const links: AcquisitionLink[] = [];
-  let invalid = raw.length % 2 !== 0;
+  let invalid = raw.length % 2 !== 0 || raw.length / 2 > MAX_STORED_MEMBERS;
+  let marks = 0;
+  let bound: number | null = null;
   for (let index = 0; index + 1 < raw.length; index += 2) {
-    const link = decodeMember(raw[index], raw[index + 1]);
+    const [member, score] = [raw[index], raw[index + 1]];
+    if (typeof member === "string" && member.startsWith(MARK_PREFIX)) {
+      marks++;
+      bound = decodeMark(member, score);
+      continue;
+    }
+    const link = decodeMember(member, score);
     if (!link) invalid = true;
     else if (link.acquiredAt >= since) links.push(link);
   }
-  const stored = Math.floor(raw.length / 2);
+  if (marks > 1 || (marks === 1 && bound === null)) invalid = true;
+  const stored = Math.floor(raw.length / 2) - marks;
   const incomplete = invalid
     ? ("invalid" as const)
-    : stored > MAX_ACQUISITION_LINKS
+    : (bound === null ? stored > LEGACY_RECORD_LIMIT : bound >= since)
       ? ("trimmed" as const)
       : undefined;
   return {

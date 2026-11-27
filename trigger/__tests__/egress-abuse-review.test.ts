@@ -1311,11 +1311,25 @@ describe("closed diagnostics for abstentions", () => {
     });
   });
 
-  it("names link history that was trimmed past its bound", async () => {
+  it("names link history the previous writer trimmed past its bound", async () => {
+    // That writer left 17 records and no metadata.
     for (let index = 0; index <= 16; index++) await link(`run_${index}`);
     await expect(run()).resolves.toMatchObject({
       reason: "acquisition_incomplete",
       diagnostic: { detail: "link_history_trimmed", storedLinks: 17 },
+    });
+  });
+
+  it("still abstains on more than 16 runs in complete expanded history", async () => {
+    for (let index = 0; index <= 16; index++) await link(`run_${index}`);
+    // Metadata the current writer adds above 16 records: nothing was evicted.
+    const [key] = [...sets.keys()].filter((name) =>
+      name.startsWith("egress-review:v2:"),
+    );
+    sets.get(key)!.set("m|0", 0);
+    await expect(run()).resolves.toMatchObject({
+      reason: "acquisition_incomplete",
+      diagnostic: { detail: "too_many_runs", storedLinks: 17, runLinks: 17 },
     });
   });
 });
