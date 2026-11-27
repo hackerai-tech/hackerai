@@ -42,12 +42,14 @@ import {
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
   readDesktopStreamFenceRendererCancelDiagnostic,
+  readDesktopStreamFenceWindowsLeaderWaitDiagnostic,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
   type DesktopInvocationSpawnHintDiagnostic,
   type DesktopInvocationUnknownDiagnostic,
   type DesktopStreamFenceDiagnostic,
   type DesktopStreamFenceRendererCancelDiagnostic,
+  type DesktopStreamFenceWindowsLeaderWaitDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 
 interface DesktopAckContext {
@@ -103,7 +105,10 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
    * command's renderer cancel attempt pair rides the same carrier. A Darwin
    * stop's source and final group probe ride it only beside `tree_unconfirmed`. */
   streamFence?: DesktopStreamFenceDiagnostic &
-    Partial<DesktopStreamFenceRendererCancelDiagnostic>;
+    Partial<
+      DesktopStreamFenceRendererCancelDiagnostic &
+        DesktopStreamFenceWindowsLeaderWaitDiagnostic
+    >;
 };
 
 const emptyCounts = () => ({
@@ -412,6 +417,11 @@ export class DesktopAckTelemetry {
           streamFence,
           context.triggerRunId === undefined,
         );
+      const windowsLeaderWait =
+        readDesktopStreamFenceWindowsLeaderWaitDiagnostic(
+          result.streamFence,
+          streamFence,
+        );
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -461,6 +471,7 @@ export class DesktopAckTelemetry {
           ...invocationUnknown,
           ...streamFence,
           ...streamFenceRendererCancel,
+          ...windowsLeaderWait,
         },
         dedupeKey,
       );

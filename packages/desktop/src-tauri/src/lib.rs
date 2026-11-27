@@ -1481,6 +1481,8 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // macOS a stop request's first source and its tree-only leg's final
     // group probe class.
     include_stream_fence_darwin_stop: Option<serde_json::Value>,
+    // Only literal true beside the origin and cleanup opt-ins.
+    include_stream_fence_windows_leader_wait: Option<serde_json::Value>,
 }
 
 impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
@@ -1561,6 +1563,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             include_stream_fence_darwin_stop: CommandArg::from_command(item(
                 "includeStreamFenceDarwinStop",
             ))?,
+            include_stream_fence_windows_leader_wait: CommandArg::from_command(item(
+                "includeStreamFenceWindowsLeaderWait",
+            ))?,
         })
     }
 }
@@ -1637,6 +1642,7 @@ fn authorized_stream_rejection(
     include_stream_fence_cancel_wait_owner_phase: bool,
     include_stream_fence_stop_request_source: bool,
     include_stream_fence_darwin_stop: bool,
+    include_stream_fence_windows_leader_wait: bool,
 ) -> tauri::ipc::InvokeError {
     let fence_rejection =
         include_stream_fence_origin && error == stream_lifecycle::STOP_UNCONFIRMED;
@@ -1654,6 +1660,12 @@ fn authorized_stream_rejection(
     });
     if let Some(cleanup) = receipts.cleanup.filter(|_| include_stream_fence_cleanup) {
         rejection["streamFenceCleanup"] = serde_json::json!(cleanup);
+        if let Some(leader_wait) = receipts
+            .windows_leader_wait
+            .filter(|_| include_stream_fence_windows_leader_wait)
+        {
+            rejection["streamFenceWindowsLeaderWait"] = serde_json::json!(leader_wait);
+        }
         // The fence records a taskkill failure only with its own stop
         // request's or timeout's `tree_unconfirmed` leg.
         if let Some(taskkill) = receipts
@@ -1732,6 +1744,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_cancel_wait_owner_phase,
         include_stream_fence_stop_request_source,
         include_stream_fence_darwin_stop,
+        include_stream_fence_windows_leader_wait,
     } = request;
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1844,6 +1857,8 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         include_stream_fence_stop_request_source == Some(serde_json::Value::Bool(true));
     let include_stream_fence_darwin_stop =
         include_stream_fence_darwin_stop == Some(serde_json::Value::Bool(true));
+    let include_stream_fence_windows_leader_wait =
+        include_stream_fence_windows_leader_wait == Some(serde_json::Value::Bool(true));
     let keep_awake = window.try_state::<keep_awake::KeepAwake>();
     let _awake = keep_awake.as_deref().map(keep_awake::KeepAwake::activity);
     execute_stream_command(
@@ -1870,6 +1885,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             include_stream_fence_cancel_wait_owner_phase,
             include_stream_fence_stop_request_source,
             include_stream_fence_darwin_stop,
+            include_stream_fence_windows_leader_wait,
         )
     })
 }
@@ -3911,6 +3927,7 @@ mod tests {
                         phase,
                         source,
                         darwin,
+                        false,
                     )
                     .0,
                     *expected,
@@ -3940,6 +3957,7 @@ mod tests {
                     true,
                     true,
                     true,
+                    false,
                 )
                 .0,
                 with_cleanup(failure),
@@ -4432,6 +4450,7 @@ mod tests {
                             opted_in,
                             opted_in,
                             opted_in,
+                            false,
                         )
                         .0
                     })
@@ -4463,6 +4482,7 @@ mod tests {
                 true,
                 true,
                 true,
+                false,
             )
             .0,
             serde_json::json!(stream_lifecycle::STOP_UNCONFIRMED)

@@ -742,6 +742,16 @@ const STREAM_FENCE_TASKKILL_KEY = "streamFenceWindowsTaskkill";
 const STREAM_FENCE_OWNER_PHASE_KEY = "streamFenceCancelWaitOwnerPhase";
 const STREAM_FENCE_STOP_REQUEST_SOURCE_KEY = "streamFenceStopRequestSource";
 const STREAM_FENCE_DARWIN_STOP_KEY = "streamFenceDarwinStop";
+const STREAM_FENCE_WINDOWS_LEADER_WAIT_KEY = "streamFenceWindowsLeaderWait";
+const STREAM_FENCE_WINDOWS_LEADER_WAIT_KEYS = ["version", "state"] as const;
+const STREAM_FENCE_WINDOWS_LEADER_STATES = [
+  "signaled",
+  "unsignaled",
+  "handle_unavailable",
+  "probe_failed",
+] as const;
+export type DesktopStreamFenceWindowsLeaderState =
+  (typeof STREAM_FENCE_WINDOWS_LEADER_STATES)[number];
 const STREAM_FENCE_DARWIN_STOP_KEYS = [
   "version",
   "source",
@@ -784,6 +794,7 @@ export interface NativeStreamFenceRejection {
    * `tree_unconfirmed` cleanup failure without any taskkill sibling, for the
    * closed v1 `streamFenceDarwinStop` sibling. */
   readonly darwinStop?: NativeStreamFenceDarwinStop;
+  readonly windowsLeaderState?: DesktopStreamFenceWindowsLeaderState;
 }
 
 /** The closed v1 Darwin stop in `receipt`, exactly `{ version: 1, source,
@@ -873,14 +884,16 @@ function parseStreamFenceCleanup(
     : null;
 }
 
-/** Recheck the timeout and its tree-only cleanup after reading the optional
- * taskkill receipt. The cleanup must still match after reading the fence.
- * Never throws; a getter never runs. */
-function nativeTimeoutTreePairsUnchanged(error: object): boolean {
+/** Recheck the timeout and its cleanup after reading an optional receipt.
+ * The cleanup must still match after reading the fence. */
+function nativeTimeoutCleanupUnchanged(
+  error: object,
+  failure: DesktopStreamFenceCleanupFailure,
+): boolean {
   const cleanup = parseStreamFenceCleanup(
     readOwnDataValues(error, [STREAM_FENCE_CLEANUP_KEY])?.[0],
   );
-  if (cleanup !== STREAM_FENCE_TASKKILL_FAILURE) return false;
+  if (cleanup !== failure) return false;
   const fence = readClosedOwnData(
     readOwnDataValues(error, [STREAM_FENCE_REJECTION_KEYS[1]])?.[0],
     STREAM_FENCE_ORIGIN_KEYS,
@@ -891,7 +904,7 @@ function nativeTimeoutTreePairsUnchanged(error: object): boolean {
   return (
     parseStreamFenceCleanup(
       readOwnDataValues(error, [STREAM_FENCE_CLEANUP_KEY])?.[0],
-    ) === STREAM_FENCE_TASKKILL_FAILURE
+    ) === failure
   );
 }
 
@@ -934,6 +947,8 @@ export function parseNativeStreamFenceRejection(
     sibling && own?.includes(STREAM_FENCE_TASKKILL_KEY) === true;
   const darwinSibling =
     sibling && own?.includes(STREAM_FENCE_DARWIN_STOP_KEY) === true;
+  const leaderWaitSibling =
+    own?.includes(STREAM_FENCE_WINDOWS_LEADER_WAIT_KEY) === true;
   const phaseSibling = own?.includes(STREAM_FENCE_OWNER_PHASE_KEY) === true;
   const sourceSibling =
     own?.includes(STREAM_FENCE_STOP_REQUEST_SOURCE_KEY) === true;
@@ -944,6 +959,7 @@ export function parseNativeStreamFenceRejection(
         (sibling ? 1 : 0) +
         (taskkillSibling ? 1 : 0) +
         (darwinSibling ? 1 : 0) +
+        (leaderWaitSibling ? 1 : 0) +
         (phaseSibling ? 1 : 0) +
         (sourceSibling ? 1 : 0) ||
     !STREAM_FENCE_REJECTION_KEYS.every((key) => own.includes(key))
@@ -993,7 +1009,10 @@ export function parseNativeStreamFenceRejection(
   const windowsTaskkill =
     parsedTaskkill &&
     origin === STREAM_FENCE_TIMEOUT_ORIGIN &&
-    !nativeTimeoutTreePairsUnchanged(error as object)
+    !nativeTimeoutCleanupUnchanged(
+      error as object,
+      STREAM_FENCE_TASKKILL_FAILURE,
+    )
       ? null
       : parsedTaskkill;
   const cancelWaitOwnerPhase =
@@ -1028,6 +1047,24 @@ export function parseNativeStreamFenceRejection(
           ])?.[0],
         )
       : null;
+  const leaderWait =
+    leaderWaitSibling &&
+    origin === STREAM_FENCE_TIMEOUT_ORIGIN &&
+    cleanupFailure === "leader_wait_timed_out"
+      ? readClosedOwnData(
+          readOwnDataValues(error as object, [
+            STREAM_FENCE_WINDOWS_LEADER_WAIT_KEY,
+          ])?.[0],
+          STREAM_FENCE_WINDOWS_LEADER_WAIT_KEYS,
+        )
+      : null;
+  const windowsLeaderState =
+    leaderWait?.[0] === 1 &&
+    nativeTimeoutCleanupUnchanged(error as object, "leader_wait_timed_out")
+      ? STREAM_FENCE_WINDOWS_LEADER_STATES.find(
+          (known) => known === leaderWait[1],
+        )
+      : undefined;
   return Object.freeze({
     message: STOP_UNCONFIRMED_MESSAGE,
     origin,
@@ -1036,6 +1073,7 @@ export function parseNativeStreamFenceRejection(
     ...(cancelWaitOwnerPhase && { cancelWaitOwnerPhase }),
     ...(stopRequestSource && { stopRequestSource }),
     ...(darwinStop && { darwinStop }),
+    ...(windowsLeaderState && { windowsLeaderState }),
   });
 }
 
@@ -1190,6 +1228,16 @@ const STREAM_FENCE_RENDERER_CANCEL_PROPERTIES = [
   "desktop_stream_fence_renderer_cancel_attempt",
 ] as const satisfies readonly (keyof DesktopStreamFenceRendererCancelDiagnostic)[];
 
+export interface DesktopStreamFenceWindowsLeaderWaitDiagnostic {
+  readonly desktop_stream_fence_windows_leader_wait_version: 1;
+  readonly desktop_stream_fence_windows_leader_wait_state: DesktopStreamFenceWindowsLeaderState;
+}
+
+const WINDOWS_LEADER_WAIT_PROPERTIES = [
+  "desktop_stream_fence_windows_leader_wait_version",
+  "desktop_stream_fence_windows_leader_wait_state",
+] as const satisfies readonly (keyof DesktopStreamFenceWindowsLeaderWaitDiagnostic)[];
+
 /** Every group: the final whitelist strips every one and re-adds only the
  * validated copy. */
 export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
@@ -1202,6 +1250,7 @@ export const DESKTOP_STREAM_FENCE_PROPERTIES: ReadonlySet<string> = new Set([
   ...STREAM_FENCE_DARWIN_STOP_PROPERTIES,
   ...STREAM_FENCE_OWNER_PHASE_PROPERTIES,
   ...STREAM_FENCE_RENDERER_CANCEL_PROPERTIES,
+  ...WINDOWS_LEADER_WAIT_PROPERTIES,
 ]);
 
 /** The Windows taskkill group's own properties. Any one present, valid or not,
@@ -1800,6 +1849,58 @@ export function readDesktopStreamFenceRendererCancelDiagnostic(
     )
       return null;
     return desktopStreamFenceRendererCancelDiagnostic(fence, runless, attempt);
+  } catch {
+    return null;
+  }
+}
+
+/** Refine only an acknowledged owner timeout with a leader-only wait failure. */
+export function desktopStreamFenceWindowsLeaderWaitDiagnostic(
+  fence: DesktopStreamFenceDiagnostic | null,
+  state: unknown,
+): DesktopStreamFenceWindowsLeaderWaitDiagnostic | null {
+  if (
+    fence?.desktop_stream_fence_origin !== STREAM_FENCE_TIMEOUT_ORIGIN ||
+    fence.desktop_stream_fence_cleanup_failure !== "leader_wait_timed_out"
+  )
+    return null;
+  const known = STREAM_FENCE_WINDOWS_LEADER_STATES.find(
+    (value) => value === state,
+  );
+  return known
+    ? Object.freeze({
+        desktop_stream_fence_windows_leader_wait_version: 1,
+        desktop_stream_fence_windows_leader_wait_state: known,
+      })
+    : null;
+}
+
+/** Read the two closed fields and recheck the parent pairs before retaining them. */
+export function readDesktopStreamFenceWindowsLeaderWaitDiagnostic(
+  source: unknown,
+  fence: DesktopStreamFenceDiagnostic | null,
+): DesktopStreamFenceWindowsLeaderWaitDiagnostic | null {
+  if (
+    fence?.desktop_stream_fence_origin !== STREAM_FENCE_TIMEOUT_ORIGIN ||
+    fence.desktop_stream_fence_cleanup_failure !== "leader_wait_timed_out" ||
+    typeof source !== "object" ||
+    source === null
+  )
+    return null;
+  try {
+    const [version, state] = ownDataValuesOrUndefined(
+      source,
+      WINDOWS_LEADER_WAIT_PROPERTIES,
+    );
+    if (version !== 1) return null;
+    const parentKeys = [
+      ...STREAM_FENCE_PROPERTIES,
+      ...STREAM_FENCE_CLEANUP_PROPERTIES,
+    ] as const;
+    const rechecked = ownDataValuesOrUndefined(source, parentKeys);
+    if (!parentKeys.every((key, index) => rechecked[index] === fence[key]))
+      return null;
+    return desktopStreamFenceWindowsLeaderWaitDiagnostic(fence, state);
   } catch {
     return null;
   }
