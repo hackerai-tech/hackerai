@@ -126,13 +126,19 @@ const createCtx = (args: {
             }),
           );
           const ordered = (direction: "asc" | "desc") => {
-            const sorted = [...rows].sort(
-              (a, b) =>
-                (((table === "chats" ? a.update_time : a._creationTime) as
-                  number | undefined) ?? 0) -
-                (((table === "chats" ? b.update_time : b._creationTime) as
-                  number | undefined) ?? 0),
-            );
+            const sortFields =
+              table === "chats" || index === "by_chat_id_and_update_time"
+                ? ["update_time", "_creationTime"]
+                : ["_creationTime"];
+            const sorted = [...rows].sort((a, b) => {
+              for (const field of sortFields) {
+                const difference =
+                  ((a[field] as number | undefined) ?? 0) -
+                  ((b[field] as number | undefined) ?? 0);
+                if (difference !== 0) return difference;
+              }
+              return 0;
+            });
             return direction === "desc" ? sorted.reverse() : sorted;
           };
           const makeQuery = (matches: (row: Row) => boolean) => ({
@@ -427,6 +433,41 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(new Set(reads.messageIndexes)).toEqual(
       new Set(["by_chat_id_and_update_time"]),
     );
+  });
+
+  it("selects pre-event excerpt ends in update-time index order", async () => {
+    const { getMessageExcerpt } = await import("../userResearch");
+    const anchorAt = Date.UTC(2026, 7, 25);
+    const day = 24 * 60 * 60 * 1_000;
+    const { ctx, userId, chatId, tables } = createCtx({
+      messageCount: 22,
+      samplingMode: "pre_event",
+      evidenceWindowDays: 60,
+      evidenceAnchorAt: anchorAt,
+    });
+    // Update order intentionally differs from creation order. With a twenty
+    // message limit, messages 1 and 22 are the two middle rows and omitted.
+    const updateOrder = [
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 22, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21,
+    ];
+    updateOrder.forEach((messageNumber, updateRank) => {
+      tables.messages[messageNumber - 1].update_time =
+        anchorAt + (-55 + updateRank) * day;
+    });
+
+    const result = await getMessageExcerpt.handler(ctx as never, {
+      serviceKey: "service-key",
+      analysisId: "analysis-1",
+      userId,
+      chatId,
+      maxMessages: 20,
+    });
+
+    expect(result.messages.map((message) => message.text)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `message ${index + 2}`),
+    );
+    expect(result.truncated).toBe(true);
   });
 
   it.each(["foreign", "deleting"])(
