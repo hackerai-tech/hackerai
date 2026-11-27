@@ -593,6 +593,43 @@ describe("downgradeSubscriptionAction", () => {
       });
     });
 
+    describe("wall-clock limit", () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it("falls back to the regular rate when Stripe's preview never settles", async () => {
+        // A trickling body or stalled transport never trips Stripe's
+        // per-request inactivity timeout.
+        mockCreateInvoicePreview.mockReturnValue(new Promise(() => {}));
+        let settled = false;
+        const result = preview().finally(() => {
+          settled = true;
+        });
+
+        await jest.advanceTimersByTimeAsync(3_999);
+        expect(settled).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        await expect(result).resolves.toEqual({
+          status: "unavailable",
+          reason: "preview_failed",
+        });
+        expect(jest.getTimerCount()).toBe(0);
+      });
+
+      it("clears the limit once Stripe returns the preview", async () => {
+        mockCreateInvoicePreview.mockResolvedValue(previewInvoice() as never);
+
+        await expect(preview()).resolves.toMatchObject({
+          status: "verified",
+        });
+        expect(jest.getTimerCount()).toBe(0);
+      });
+    });
+
     it("skips the preview when a subscription discount would not carry over", async () => {
       await expect(preview({ discounts: ["di_1"] })).resolves.toEqual({
         status: "unavailable",

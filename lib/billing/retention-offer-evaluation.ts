@@ -186,6 +186,8 @@ export async function evaluateRetentionOffersForUser(args: {
   };
 }
 
+const RENEWAL_PREVIEW_DEADLINE_MS = 4_000;
+
 export type DowngradeRenewalPreview =
   | { status: "verified"; charge: RetentionDowngradeRenewalCharge }
   | { status: "unavailable"; reason: string };
@@ -277,21 +279,32 @@ export async function previewDowngradeRenewalCharge(args: {
   }
 
   let preview: Stripe.Invoice;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
-    preview = await stripe.invoices.createPreview(
-      {
-        customer: args.stripeCustomerId,
-        subscription: subscription.id,
-        subscription_details: {
-          items: [
-            { id: subscription.itemId, price: target.priceId, quantity: 1 },
-          ],
-          proration_behavior: "none",
+    preview = await Promise.race([
+      stripe.invoices.createPreview(
+        {
+          customer: args.stripeCustomerId,
+          subscription: subscription.id,
+          subscription_details: {
+            items: [
+              { id: subscription.itemId, price: target.priceId, quantity: 1 },
+            ],
+            proration_behavior: "none",
+          },
         },
-      },
-      // A slow estimate must not keep the customer waiting to cancel.
-      { timeout: 4_000, maxNetworkRetries: 0 },
-    );
+        // A slow estimate must not keep the customer waiting to cancel.
+        { timeout: RENEWAL_PREVIEW_DEADLINE_MS, maxNetworkRetries: 0 },
+      ),
+      // Stripe's timeout resets on socket activity, so a trickling body could
+      // outlast it; this bounds the total wait.
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error("renewal_preview_deadline_exceeded")),
+          RENEWAL_PREVIEW_DEADLINE_MS,
+        );
+      }),
+    ]);
   } catch (error) {
     phLogger.warn("retention_downgrade_renewal_preview_failed", {
       stripe_subscription_id: subscription.id,
@@ -299,6 +312,8 @@ export async function previewDowngradeRenewalCharge(args: {
       error,
     });
     return { status: "unavailable", reason: "preview_failed" };
+  } finally {
+    clearTimeout(deadline);
   }
 
   const reason = renewalPreviewMismatch(preview, {

@@ -2580,6 +2580,95 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
+  it("keeps subscription_changed identity stable when Stripe retries a failed delivery", async () => {
+    const tierChangeEvent = (id: string) => ({
+      id,
+      type: "customer.subscription.updated",
+      created: 1_790_000_000,
+      data: {
+        object: {
+          id: "sub_team_change",
+          customer: "cus_team_change",
+          metadata: {},
+          items: {
+            data: [
+              {
+                current_period_end: 1_790_000_000 + 30 * 24 * 60 * 60,
+                price: {
+                  id: "price_pro_plus",
+                  lookup_key: "pro-plus-monthly-plan",
+                },
+              },
+            ],
+          },
+        },
+        previous_attributes: {
+          items: {
+            data: [
+              { price: { id: "price_pro", lookup_key: "pro-monthly-plan" } },
+            ],
+          },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_team_change",
+      metadata: { workOSOrganizationId: "org_team_change" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest
+        .fn()
+        .mockResolvedValue([
+          { userId: "user_owner" },
+          { userId: "user_member" },
+        ]),
+    } as never);
+    // The first delivery fails after capture, so Stripe redelivers the event.
+    mockStashTierChangeBucketState.mockRejectedValueOnce(
+      new Error("redis unavailable") as never,
+    );
+
+    const { POST } = await import("../route");
+    mockConstructEvent.mockReturnValue(tierChangeEvent("evt_tier_change"));
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "redis unavailable",
+    );
+    await expect(POST(makeWebhookRequest())).resolves.toMatchObject({
+      status: 200,
+    });
+    mockConstructEvent.mockReturnValue(tierChangeEvent("evt_tier_change_2"));
+    await expect(POST(makeWebhookRequest())).resolves.toMatchObject({
+      status: 200,
+    });
+
+    const identities = mockPostHogEvent.mock.calls
+      .filter(([name]) => name === "subscription_changed")
+      .map(([, fields]) => {
+        const { userId, eventUuid, $insert_id } = fields as Record<
+          string,
+          unknown
+        >;
+        return { userId, eventUuid, $insert_id };
+      });
+    expect(identities).toHaveLength(6);
+    const [owner, member, ownerRetry, memberRetry, ownerNext, memberNext] =
+      identities;
+    expect(ownerRetry).toEqual(owner);
+    expect(memberRetry).toEqual(member);
+    expect(owner).toMatchObject({
+      userId: "user_owner",
+      eventUuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
+      $insert_id: expect.any(String),
+    });
+    expect(member.userId).toBe("user_member");
+    const distinct = [owner, member, ownerNext, memberNext];
+    expect(new Set(distinct.map((id) => id.eventUuid)).size).toBe(4);
+    expect(new Set(distinct.map((id) => id.$insert_id)).size).toBe(4);
+  });
+
   describe("monthly-to-annual allowance transition", () => {
     const day = 24 * 60 * 60;
     const switchedAt = 1_790_000_000;

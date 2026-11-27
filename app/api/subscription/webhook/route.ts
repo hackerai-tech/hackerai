@@ -3,6 +3,7 @@ import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
+import { v5 as uuidv5 } from "uuid";
 import {
   freezeRateLimitBucketForDelinquency,
   resetRateLimitBucketAfterPayment,
@@ -2532,6 +2533,7 @@ async function restoreAnnualScheduleAfterSubscriptionUpdate({
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
+  stripeEventId: string,
   eventOccurredAtMs: number,
 ): Promise<void> {
   if (
@@ -2665,8 +2667,13 @@ async function handleSubscriptionUpdated(
     "checkoutSurface",
   );
   for (const uid of userIds) {
+    // Capture precedes the bucket writes below, so a failed delivery that
+    // Stripe retries must deduplicate to the same event per user.
+    const insertId = `subscription_changed:${stripeEventId}:${uid}`;
     phLogger.event("subscription_changed", {
       userId: uid,
+      eventUuid: uuidv5(insertId, uuidv5.URL),
+      $insert_id: insertId,
       from_tier: previousTier,
       to_tier: currentTier,
       direction,
@@ -3283,6 +3290,7 @@ async function handleSubscriptionWebhook(
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
           Partial<Stripe.Subscription> | undefined,
+        event.id,
         stripeEventOccurredAtMs(event),
       );
       break;
