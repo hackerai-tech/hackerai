@@ -1952,6 +1952,143 @@ describe("on-demand reassessment of a retained candidate", () => {
     expect(generateText).not.toHaveBeenCalled();
   });
 
+  describe("of competing links with one Convex overlap", () => {
+    const OTHER = "run_parent2";
+    const OTHER_CHAT = "chat_two";
+    /** A linked root run whose stored rows never recorded when it ended. */
+    async function seedUnplacedRun() {
+      await convex.db.insert("chats", {
+        id: OTHER_CHAT,
+        user_id: first.userId,
+      });
+      await convex.db.insert("messages", {
+        id: `${OTHER_CHAT}-user`,
+        chat_id: OTHER_CHAT,
+        user_id: first.userId,
+        role: "user",
+        parts: [{ type: "text", text: "UNRELATED CHAT TEXT" }],
+      });
+      await convex.db.insert("messages", {
+        id: `${OTHER_CHAT}-assistant`,
+        chat_id: OTHER_CHAT,
+        user_id: first.userId,
+        role: "assistant",
+        trigger_run_id: OTHER,
+        generation_started_at: BURST_START - 45 * MINUTE_MS,
+        parts: [terminal("call-1", "npm test")],
+      });
+      await link(OTHER, "parent", OTHER_CHAT);
+    }
+    const reviewQueries = () =>
+      jest
+        .mocked(createServiceConvexClient)
+        .mock.results.flatMap(({ value }) => value.query.mock.calls)
+        .map(([fn]: any) => getFunctionName(fn));
+
+    it("keeps the overlapping run as the case's candidate without reading or classifying evidence", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      classifyAs(concerning);
+      await expect(run()).resolves.toEqual({
+        status: "completed",
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        case: "created",
+        enforcement: "keep_active",
+        enforcementReason: "coverage_incomplete",
+        diagnostic: {
+          detail: "competing_links",
+          sandboxes: 1,
+          storedLinks: 2,
+          runLinks: 2,
+          plausibleRuns: 2,
+        },
+      });
+      expect(caseRecord()).toMatchObject({
+        evidenceMode: "none",
+        run: { chatId: CHAT, runId: RUN },
+        coverage: null,
+        classification: null,
+        evidenceLocators: { commands: [], messages: [] },
+        draft: null,
+      });
+      expect(recordCaseCalls()[0][1].receipt).toMatchObject({
+        evidenceMode: "none",
+        coverage: "not_read",
+      });
+      expect(reviewQueries()).toEqual([
+        "egressAbuseReview:matchRun",
+        "egressAbuseReview:matchRun",
+      ]);
+      expect(runs.list).not.toHaveBeenCalled();
+      expect(generateText).not.toHaveBeenCalled();
+      const saved = structuredClone(convex.tables.abuse_cases[0]);
+
+      // The existing on-demand task reads that candidate only, as advisory.
+      jest.clearAllMocks();
+      jest.mocked(triggerQuery.execute).mockResolvedValue({
+        format: "json",
+        results: [candidateLifecycle],
+      });
+      const result = await reassess();
+      expect(result).toEqual({
+        ...advisory,
+        coverage: "complete",
+        advisory: "concern",
+        reason: "concerning_corroborated",
+        classification: {
+          activity: "network_scanning",
+          authorization: "not_stated",
+        },
+        model: expect.any(Object),
+      });
+      expect(triggerQuery.execute).toHaveBeenCalledWith(
+        expect.stringContaining(`WHERE run_id = '${RUN}'`),
+        expect.any(Object),
+        expect.any(Object),
+      );
+      const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+      expect(prompt).not.toContain("npm test");
+      expectAdvisoryOnly(result, saved);
+    });
+
+    it("keeps no candidate when the same run is also linked from another chat", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      // The same run ID under another chat, long before the burst.
+      await convex.db.insert("chats", {
+        id: "chat_three",
+        user_id: first.userId,
+      });
+      await convex.db.insert("messages", {
+        id: "chat_three-assistant",
+        chat_id: "chat_three",
+        user_id: first.userId,
+        role: "assistant",
+        trigger_run_id: RUN,
+        generation_started_at: BURST_START - 3 * 60 * MINUTE_MS,
+        generation_time_ms: MINUTE_MS,
+        parts: [],
+      });
+      await link(RUN, "parent", "chat_three", BURST_START - 3 * 60 * MINUTE_MS);
+      await expect(run()).resolves.toMatchObject({
+        reason: "multiple_runs",
+        diagnostic: {
+          detail: "competing_links",
+          runLinks: 3,
+          plausibleRuns: 2,
+        },
+      });
+      expect(caseRecord().run).toBeNull();
+      await expect(reassess()).resolves.toEqual({
+        status: "closed",
+        reason: "no_candidate",
+      });
+    });
+  });
+
   it("is off with the review switch", async () => {
     await overlapCase();
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "false";

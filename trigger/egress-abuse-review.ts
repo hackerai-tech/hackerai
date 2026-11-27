@@ -923,7 +923,21 @@ async function reviewBurst(
   diagnostic.plausibleRuns = plausible.length;
   if (plausible.length > 1) {
     diagnostic.detail = "competing_links";
-    return manual("multiple_runs");
+    // The only link Convex places in the burst is kept as an advisory
+    // candidate for the audited, on-demand reassessment. Its competitors
+    // remain possible causes, so the case stays manual and nothing is read.
+    const overlapping = plausible.filter(({ status }) => status === "overlaps");
+    const candidate = overlapping.length === 1 ? overlapping[0].link : null;
+    const uniqueLink =
+      candidate &&
+      [...links.values()].filter(({ runId }) => runId === candidate.runId)
+        .length === 1;
+    return manual(
+      "multiple_runs",
+      candidate && uniqueLink
+        ? { run: { chatId: candidate.chatId, runId: candidate.runId } }
+        : undefined,
+    );
   }
   if (!plausible.length) return manual("no_matching_run");
   const [{ link, status }] = plausible;
