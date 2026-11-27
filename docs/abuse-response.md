@@ -518,9 +518,9 @@ Reviews are dispatched through the persistent queue described under
 The scheduled burst monitor reads connection counters. Only the separate
 review and reassessment tasks can submit evidence to the classifier. Their
 `Egress review classifier usage` diagnostics record each SDK invocation and
-available input tokens, output tokens and OpenRouter-reported charge. An
-invocation with no reported charge leaves spend coverage incomplete. The
-classifier keeps full AI telemetry disabled.
+any charge reported by OpenRouter, including responses later rejected by
+structured output validation. An invocation with no reported charge leaves
+spend coverage incomplete. The classifier keeps full AI telemetry disabled.
 
 New cases and their sanitized `egress_review_receipts` commit together. A
 completed review with no case writes its receipt on a best-effort basis.

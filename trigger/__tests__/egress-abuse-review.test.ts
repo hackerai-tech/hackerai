@@ -270,20 +270,21 @@ describe("egress classifier usage", () => {
       )
       .map(([, fields]) => fields);
 
-  it("reports only the provider charge and token counts even for an invalid classification", async () => {
-    jest.mocked(generateText).mockResolvedValueOnce({
-      output: { privateText: "fixture output" },
-      totalUsage: { inputTokens: 500, outputTokens: 120 },
-      providerMetadata: {
-        openrouter: {
-          provider: "fixture provider",
-          usage: { cost: 0.00172, reasoning: "fixture reasoning" },
+  it("records the provider charge before the SDK rejects structured output", async () => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: {
+            provider: "fixture provider",
+            usage: { cost: 0.00172, reasoning: "fixture reasoning" },
+          },
         },
-      },
-    } as never);
+      } as never);
+      throw new Error("fixture invalid output");
+    });
 
     await expect(classifyEvidence("fixture prompt")).resolves.toBe(
-      "classifier_invalid",
+      "classifier_unavailable",
     );
     const [started, reported] = usageLogs();
     expect(usageLogs()).toHaveLength(2);
@@ -294,9 +295,30 @@ describe("egress classifier usage", () => {
     expect(reported).toEqual({
       phase: "reported",
       startedAtMs: started?.startedAtMs,
-      inputTokens: 500,
-      outputTokens: 120,
       chargedUsd: 0.00172,
+    });
+  });
+
+  it.each([
+    ["omitted", undefined, null],
+    ["zero", 0, 0],
+  ])("distinguishes a %s provider charge", async (_label, cost, expected) => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: { usage: cost === undefined ? {} : { cost } },
+        },
+      } as never);
+      return { output: concerning } as never;
+    });
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+    expect(usageLogs()).toHaveLength(2);
+    expect(usageLogs()[1]).toEqual({
+      phase: "reported",
+      startedAtMs: usageLogs()[0]?.startedAtMs,
+      chargedUsd: expected,
     });
   });
 

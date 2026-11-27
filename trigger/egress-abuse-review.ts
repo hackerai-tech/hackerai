@@ -404,8 +404,6 @@ function logClassifierUsage(
     | { phase: "started" }
     | {
         phase: "reported";
-        inputTokens: number | null;
-        outputTokens: number | null;
         chargedUsd: number | null;
       }
   ),
@@ -423,7 +421,7 @@ function nonnegativeNumber(value: unknown): number | null {
     : null;
 }
 
-/** Structured enums and indices, with only numeric usage in diagnostics. */
+/** Structured enums and indices, with only the provider charge in diagnostics. */
 export async function classifyEvidence<T = EgressReviewClassification>(
   prompt: string,
   schema: z.ZodType<T> = egressReviewClassificationSchema as never,
@@ -440,19 +438,19 @@ export async function classifyEvidence<T = EgressReviewClassification>(
       maxOutputTokens: 2_000,
       maxRetries: 1,
       prompt,
-    });
-    const modelUsage = result.totalUsage ?? result.usage;
-    const billing = result.providerMetadata?.openrouter?.usage;
-    const charge =
-      billing !== null && typeof billing === "object" && "cost" in billing
-        ? billing.cost
-        : undefined;
-    logClassifierUsage({
-      phase: "reported",
-      startedAtMs,
-      inputTokens: nonnegativeNumber(modelUsage?.inputTokens),
-      outputTokens: nonnegativeNumber(modelUsage?.outputTokens),
-      chargedUsd: nonnegativeNumber(charge),
+      // The SDK may reject a billed response during structured output validation.
+      onFinish: ({ providerMetadata }) => {
+        const billing = providerMetadata?.openrouter?.usage;
+        const charge =
+          billing !== null && typeof billing === "object" && "cost" in billing
+            ? billing.cost
+            : undefined;
+        logClassifierUsage({
+          phase: "reported",
+          startedAtMs,
+          chargedUsd: nonnegativeNumber(charge),
+        });
+      },
     });
     const parsed = schema.safeParse(result.output);
     return parsed.success ? parsed.data : "classifier_invalid";
