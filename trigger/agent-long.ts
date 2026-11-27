@@ -13,7 +13,6 @@ import type { GoalJudgment } from "@/lib/goals/contracts";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
 import { createRunSteerInbox } from "@/lib/chat/agent-steer-backend";
-import { isAgentSteeringEnabled } from "@/lib/experiments/agent-steering.server";
 import {
   getGoal,
   goalServiceKey,
@@ -4314,31 +4313,28 @@ export const agentLongTask = task({
                   }
                 : null;
 
-            // Only rollout users can send steers; others skip the per-step read.
-            const steerInbox = (await isAgentSteeringEnabled(userId, posthog))
-              ? createRunSteerInbox({
+            const steerInbox = createRunSteerInbox({
+              userId,
+              chatId,
+              runId: ctx.run.id,
+              onError: (error) =>
+                triggerLogger.warn("[agent-long] steer claim failed", {
+                  event: "agent_steer_claim_failed",
+                  chatId,
+                  runId: ctx.run.id,
+                  error_name:
+                    error instanceof Error ? error.name : "UnknownError",
+                }),
+              onClaimed: (steers) =>
+                void captureAgentFollowUp("steer_read", {
                   userId,
                   chatId,
                   runId: ctx.run.id,
-                  onError: (error) =>
-                    triggerLogger.warn("[agent-long] steer claim failed", {
-                      event: "agent_steer_claim_failed",
-                      chatId,
-                      runId: ctx.run.id,
-                      error_name:
-                        error instanceof Error ? error.name : "UnknownError",
-                    }),
-                  onClaimed: (steers) =>
-                    void captureAgentFollowUp("steer_read", {
-                      userId,
-                      chatId,
-                      runId: ctx.run.id,
-                      subscription,
-                      steerCount: steers.length,
-                      dedupeKey: steers.map((steer) => steer.id).join(","),
-                    }),
-                })
-              : undefined;
+                  subscription,
+                  steerCount: steers.length,
+                  dedupeKey: steers.map((steer) => steer.id).join(","),
+                }),
+            });
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               runtimeCheckpoint,

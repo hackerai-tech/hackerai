@@ -2,7 +2,7 @@ import {
   EXPERIMENT_TASK_OUTCOME_FLAG,
   PAID_TASK_OUTCOME_FLAG,
 } from "../feedback/task-outcome";
-import { AGENT_CONTEXT_FEEDBACK_FLAG } from "../feedback/agent-context";
+import { AGENT_CONTEXT_FEEDBACK_SURVEY_KEY } from "../feedback/agent-context";
 import { MAX_GROK_46_KEY } from "../experiments/max-grok-46";
 
 /** Shared allowlist: never pass the full database row or user content to PostHog. */
@@ -40,7 +40,7 @@ export function taskOutcomeProperties(row: {
       row.experiment_key === MAX_GROK_46_KEY
         ? MAX_GROK_46_KEY
         : row.survey_kind === "agent_context"
-          ? AGENT_CONTEXT_FEEDBACK_FLAG
+          ? AGENT_CONTEXT_FEEDBACK_SURVEY_KEY
           : row.survey_kind === "current_experiment"
             ? EXPERIMENT_TASK_OUTCOME_FLAG
             : PAID_TASK_OUTCOME_FLAG,
