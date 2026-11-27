@@ -527,14 +527,19 @@ export const getMessageExcerpt = query({
 
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
-    // Temporary: scan by_chat_id until the staged
-    // by_chat_id_and_update_time index finishes backfilling and is enabled.
-    // Apply the evidence window after reading each document so out-of-window
-    // rows count toward our byte guard before Convex's transaction limit.
+    // Convex appends _creationTime to every index, so the existing chat index
+    // can seek directly to the audited window without another large-table
+    // backfill. The update_time check below also excludes messages whose
+    // content was edited outside that window.
     const queryMessages = () =>
-      ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId));
+      ctx.db.query("messages").withIndex("by_chat_id", (q) => {
+        const chatRange = q.eq("chat_id", args.chatId);
+        return evidenceWindow
+          ? chatRange
+              .gte("_creationTime", evidenceWindow.startAt)
+              .lte("_creationTime", evidenceWindow.endAt)
+          : chatRange;
+      });
     const readEnd = async (direction: "asc" | "desc", limit: number) => {
       const rows: Doc<"messages">[] = [];
       let bytesRead = 0;
