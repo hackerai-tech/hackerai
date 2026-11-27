@@ -707,10 +707,11 @@ advisory_only`, and `otherOverlappingRuns` (runs that also overlap but were
   rules. Edits after the run started, truncation and other evidence gaps
   make the evidence `incomplete`. The model is never called on
   incomplete evidence, and at most once per task.
-- **Limits.** Chat discovery lists the 20 chats the account updated most
-  recently. For an account that kept working after the burst, the run may
-  fall outside that list; the result then reports `chat_scan_truncated`. The
-  late-save check looks at one row, so it can miss a run that saved behind a
+- **Limits.** Chat discovery checks up to 80 chat records in update order.
+  It skips chats created after the burst and reads messages in up to 20
+  remaining chats. A run beyond those limits may be missed, which the
+  result reports as `chat_scan_truncated`. The late-save check looks at
+  one row, so it can miss a run that saved behind a
   queued user message. The finding describes one run and never establishes
   which activity caused the burst; it does not change the case, the account,
   a cooldown or a receipt.
