@@ -50,6 +50,7 @@ import {
   telemetryBatchSchema,
 } from "@/lib/cloud-network/egress-telemetry";
 import {
+  classifyEvidence,
   egressAbuseReviewTask,
   runEgressAbuseReview,
 } from "../egress-abuse-review";
@@ -259,6 +260,90 @@ const caseRecord = () =>
     reference,
     convex.tables.abuse_cases[0].ciphertext,
   ) as any;
+
+describe("egress classifier usage", () => {
+  const usageLogs = () =>
+    jest
+      .mocked(logger.info)
+      .mock.calls.filter(
+        ([title]) => title === "Egress review classifier usage",
+      )
+      .map(([, fields]) => fields);
+
+  it("records the provider charge before the SDK rejects structured output", async () => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: {
+            provider: "fixture provider",
+            usage: { cost: 0.00172, reasoning: "fixture reasoning" },
+          },
+        },
+      } as never);
+      throw new Error("fixture invalid output");
+    });
+
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_unavailable",
+    );
+    const [started, reported] = usageLogs();
+    expect(usageLogs()).toHaveLength(2);
+    expect(started).toEqual({
+      phase: "started",
+      startedAtMs: expect.any(Number),
+    });
+    expect(reported).toEqual({
+      phase: "reported",
+      startedAtMs: started?.startedAtMs,
+      chargedUsd: 0.00172,
+    });
+  });
+
+  it.each([
+    ["omitted", undefined, null],
+    ["zero", 0, 0],
+  ])("distinguishes a %s provider charge", async (_label, cost, expected) => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: { usage: cost === undefined ? {} : { cost } },
+        },
+      } as never);
+      return { output: concerning } as never;
+    });
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+    expect(usageLogs()).toHaveLength(2);
+    expect(usageLogs()[1]).toEqual({
+      phase: "reported",
+      startedAtMs: usageLogs()[0]?.startedAtMs,
+      chargedUsd: expected,
+    });
+  });
+
+  it("counts a failed invocation without inventing usage or logging its error", async () => {
+    jest
+      .mocked(generateText)
+      .mockRejectedValueOnce(new Error("fixture prompt"));
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_unavailable",
+    );
+    expect(usageLogs()).toEqual([
+      { phase: "started", startedAtMs: expect.any(Number) },
+    ]);
+  });
+
+  it("keeps the classifier working when usage logging fails", async () => {
+    jest.mocked(logger.info).mockImplementationOnce(() => {
+      throw new Error("logging unavailable");
+    });
+    classifyAs(concerning);
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+  });
+});
 
 beforeEach(async () => {
   jest.clearAllMocks();

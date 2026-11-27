@@ -515,6 +515,13 @@ Enable the toggle in the web app, the Agent worker, and the Convex deployment.
 Reviews are dispatched through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
 
+The scheduled burst monitor reads connection counters. Only the separate
+review and reassessment tasks can submit evidence to the classifier. Their
+`Egress review classifier usage` diagnostics record each SDK invocation and
+any charge reported by OpenRouter, including responses later rejected by
+structured output validation. An invocation with no reported charge leaves
+spend coverage incomplete. The classifier keeps full AI telemetry disabled.
+
 New cases and their sanitized `egress_review_receipts` commit together. A
 completed review with no case writes its receipt on a best-effort basis.
 Retries preserve existing cases and receipts, and cases created by older
