@@ -11,7 +11,10 @@ import {
 } from "@/lib/suspensions";
 import { getChatById } from "@/lib/db/actions";
 import { ChatSDKError, ERROR_SURFACES, ERROR_TYPES } from "@/lib/errors";
-import { phLogger } from "@/lib/posthog/server";
+import {
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
 import { getExecutionRegionForVercelRequest } from "@/lib/api/trigger-region";
 import { CloudWorkspaceUnavailableError } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { getAttachmentDownloadFailureContext } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
@@ -23,6 +26,7 @@ import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostic
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
   WORKSPACE_ACCESS_STEPS,
+  WORKSPACE_FILES_FLAG,
   workspaceRequest,
   WorkspaceFileError,
   type WorkspaceAccessProgress,
@@ -41,6 +45,7 @@ type Stage =
   | "auth"
   | "history_access"
   | "chat"
+  | "feature_flag"
   | "cost_gate"
   | "rate_limit"
   | "environment"
@@ -85,6 +90,15 @@ async function authorize(
           ? "chat_not_owned"
           : "chat_deleting",
     );
+  progress.stage = "feature_flag";
+  const enabled = await getPostHogBooleanFlagDecisionForUser(
+    WORKSPACE_FILES_FLAG,
+    session.userId,
+    undefined,
+    { sendFeatureFlagEvents: false },
+  );
+  if (enabled !== true)
+    throw new AuthorizationRejection("unavailable", 404, "flag_unavailable");
   return { ...session, chat };
 }
 
