@@ -757,7 +757,8 @@ days, notice counts, and action items with only a reference:
 as `summary` but sends nothing. It reads a JSON array of 1–100 unique
 case digests on stdin. It prints one disposition per digest, in input order.
 `blocked` requires an applied-block receipt. `confirmed_abuse_pending` requires
-an `enforcement_pending` receipt with an intent kind.
+an `enforcement_pending` receipt with an intent kind and a disabled or
+unavailable enforcement service. A server refusal leaves the result undetermined.
 `confirmed_legitimate` requires a corroborated `keep_active` receipt. Both
 confirmed states also require complete exact-run coverage. Any other receipt
 is `undetermined`. `missing` means no receipt was found or it passed

@@ -521,7 +521,10 @@ function disposition(
   if (
     receipt.decision === "enforcement_pending" &&
     exactRun &&
-    receipt.intentKind !== undefined
+    receipt.intentKind !== undefined &&
+    receipt.refusal === undefined &&
+    (receipt.reason === "enforcement_disabled" ||
+      receipt.reason === "enforcement_unavailable")
   )
     return "confirmed_abuse_pending";
   if (

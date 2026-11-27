@@ -36,11 +36,10 @@ const exactRun = {
 } as const;
 const pendingBlock = {
   decision: "enforcement_pending",
-  reason: "enforcement_refused",
+  reason: "enforcement_unavailable",
   reviewReason: "concerning_unauthorized",
   ...exactRun,
   caseOutcome: "created",
-  refusal: "run_active",
   intentKind: "credential_theft",
   reference: REFERENCE,
 } as const;
@@ -79,6 +78,11 @@ async function receiptStore() {
   });
   await write(9, { ...legitimate, evidenceMode: "none", coverage: "not_read" });
   await write(12, { ...legitimate, reason: "inconclusive" });
+  await write(13, {
+    ...pendingBlock,
+    reason: "enforcement_refused",
+    refusal: "evidence_mismatch",
+  });
   // Past retention but not yet purged.
   await write(10, legitimate, now - RECEIPT_TTL_MS - 1);
   const convex = {
@@ -97,7 +101,7 @@ const handler = (notices.reviewDispositions as any).handler;
 describe("abuseBlockNotices:reviewDispositions", () => {
   it("reports only strict persisted receipts as confirmed, in input order", async () => {
     const { ctx } = await receiptStore();
-    const order = [11, 10, 12, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+    const order = [11, 10, 12, 13, 9, 8, 7, 6, 5, 4, 3, 2, 1];
     await expect(
       handler(ctx, {
         serviceKey: DISPATCH_KEY,
@@ -106,6 +110,7 @@ describe("abuseBlockNotices:reviewDispositions", () => {
     ).resolves.toEqual([
       "missing",
       "missing",
+      "undetermined",
       "undetermined",
       "undetermined",
       "undetermined",
