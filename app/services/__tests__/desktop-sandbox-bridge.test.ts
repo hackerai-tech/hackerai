@@ -12590,6 +12590,85 @@ describe("native authorization send receipt", () => {
       expect(fenceKeys(byCommand.none)).toEqual([]);
     });
 
+    describe("Windows leader wait receipt", () => {
+      const owner = { version: 1, origin: "owner_timeout" };
+      const cleanup = { version: 1, failure: "leader_wait_timed_out" };
+      const receipt = { version: 1, state: "signaled" };
+      const ownerGroup = {
+        desktop_stream_fence_version: 1,
+        desktop_stream_fence_origin: "owner_timeout",
+        desktop_stream_fence_cleanup_version: 1,
+        desktop_stream_fence_cleanup_failure: "leader_wait_timed_out",
+      };
+      const versionKey = "desktop_stream_fence_windows_leader_wait_version";
+      const stateKey = "desktop_stream_fence_windows_leader_wait_state";
+
+      it.each([
+        ["windows", receipt, true],
+        ["windows", { ...receipt, pid: "PRIVATE", state: "signaled" }, false],
+        ["windows", { ...receipt, state: "PRIVATE" }, false],
+        ["darwin", receipt, false],
+      ] as const)(
+        "preserves the product error and forwards only an eligible closed receipt on %s",
+        async (nativeOs, nativeReceipt, accepted) => {
+          const { calls, replies } = await run(
+            () =>
+              Promise.reject({
+                ...fenced(owner),
+                streamFenceCleanup: cleanup,
+                streamFenceWindowsLeaderWait: nativeReceipt,
+              }),
+            { version: "0.0.98", nativeOs },
+          );
+          expect(calls).toHaveLength(1);
+          expect(calls[0].includeStreamFenceWindowsLeaderWait).toBe(
+            nativeOs === "windows" ? true : undefined,
+          );
+          expect(calls[0].message).not.toHaveProperty(
+            "includeStreamFenceWindowsLeaderWait",
+          );
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({
+              type: "error",
+              message: stopUnconfirmed,
+            }),
+          ]);
+          const [final] = finals();
+          expect(final.properties).toMatchObject(ownerGroup);
+          if (accepted) {
+            expect(final.properties).toMatchObject({
+              [versionKey]: 1,
+              [stateKey]: "signaled",
+            });
+          } else {
+            expect(final.properties).not.toHaveProperty(versionKey);
+            expect(final.properties).not.toHaveProperty(stateKey);
+          }
+          const unacknowledged = sanitizeDesktopAckEvent({
+            ...final,
+            properties: { ...final.properties, terminalAcknowledged: false },
+          });
+          expect(unacknowledged.properties).not.toHaveProperty(stateKey);
+          const invalidParent = sanitizeDesktopAckEvent({
+            ...final,
+            properties: {
+              ...final.properties,
+              desktop_stream_fence_cleanup_failure: "leader_wait_failed",
+              [versionKey]: 1,
+              [stateKey]: "signaled",
+            },
+          });
+          expect(
+            invalidParent.properties?.desktop_stream_fence_cleanup_failure,
+          ).toBe("leader_wait_failed");
+          expect(invalidParent.properties).not.toHaveProperty(stateKey);
+          expect(
+            JSON.stringify([final, unacknowledged, invalidParent]),
+          ).not.toContain("PRIVATE");
+        },
+      );
+    });
+
     describe("stop cleanup failure", () => {
       const stop = { version: 1, origin: "owner_stop_requested" };
       const stopGroup = {

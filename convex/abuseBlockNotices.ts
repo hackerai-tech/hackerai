@@ -7,13 +7,19 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./lib/serviceFunctions";
-import { blockNoticeFailure, noticeResult } from "./lib/abuseValidators";
+import {
+  blockNoticeFailure,
+  literals,
+  noticeResult,
+} from "./lib/abuseValidators";
 import { lateRestrictionSource } from "./lib/abuseResponse";
 import { enforcementEnabled } from "./egressAbuseEnforcement";
 import {
   ENFORCEMENT_REASONS,
   REVIEW_COVERAGE,
+  REVIEW_DISPOSITIONS,
   type EnforcementDecision,
+  type ReviewDisposition,
 } from "../lib/abuse/egress-outcomes";
 
 // Pull/ack outbox for automated block notices. A local dispatcher with its
@@ -489,6 +495,81 @@ export const summary = query({
         failed.truncated ||
         recent.length > SUMMARY_SCAN,
     };
+  },
+});
+
+// --- Digest review dispositions --------------------------------------------
+
+const MAX_DISPOSITION_DIGESTS = 100;
+const DISPOSITION_READ_CONCURRENCY = 10;
+const DIGEST = /^[a-f0-9]{64}$/;
+
+/**
+ * Only the strictest receipts the writers persist count as confirmed; every
+ * other combination stays undetermined. See `trigger/egress-abuse-review.ts`
+ * and `egressAbuseEnforcement:applyBlock` for the writers.
+ */
+function disposition(
+  receipt: Doc<"egress_review_receipts"> | null,
+  now: number,
+): ReviewDisposition {
+  // The purge is incremental, so an expired row can still be read.
+  if (!receipt || receipt.expiresAt <= now) return "missing";
+  const exactRun =
+    receipt.evidenceMode === "exact_run" && receipt.coverage === "complete";
+  if (receipt.decision === "block_applied") return "blocked";
+  if (
+    receipt.decision === "enforcement_pending" &&
+    exactRun &&
+    receipt.intentKind !== undefined &&
+    receipt.refusal === undefined &&
+    (receipt.reason === "enforcement_disabled" ||
+      receipt.reason === "enforcement_unavailable")
+  )
+    return "confirmed_abuse_pending";
+  if (
+    receipt.decision === "keep_active" &&
+    exactRun &&
+    receipt.reason === "legitimate_corroborated" &&
+    receipt.reviewReason === "legitimate_corroborated"
+  )
+    return "confirmed_legitimate";
+  return "undetermined";
+}
+
+/**
+ * Closed dispositions for case digests the caller already holds, in input
+ * order. Returns no reference, account, case content or receipt field.
+ */
+export const reviewDispositions = query({
+  args: { serviceKey: v.string(), digests: v.array(v.string()) },
+  returns: v.array(literals(REVIEW_DISPOSITIONS)),
+  handler: async (ctx, args) => {
+    authorize(args.serviceKey);
+    const { digests } = args;
+    if (
+      digests.length < 1 ||
+      digests.length > MAX_DISPOSITION_DIGESTS ||
+      new Set(digests).size !== digests.length ||
+      !digests.every((digest) => DIGEST.test(digest))
+    )
+      throw new Error("Invalid review digests");
+    const now = Date.now();
+    const result: ReviewDisposition[] = [];
+    for (let i = 0; i < digests.length; i += DISPOSITION_READ_CONCURRENCY) {
+      const chunk = digests.slice(i, i + DISPOSITION_READ_CONCURRENCY);
+      // One receipt per digest window (`insertReceipt`); first matches it.
+      const receipts = await Promise.all(
+        chunk.map((digest) =>
+          ctx.db
+            .query("egress_review_receipts")
+            .withIndex("by_digest", (q) => q.eq("digest", digest))
+            .first(),
+        ),
+      );
+      result.push(...receipts.map((receipt) => disposition(receipt, now)));
+    }
+    return result;
   },
 });
 

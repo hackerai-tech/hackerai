@@ -1,7 +1,8 @@
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { internalMutation, internalQuery } from "./lib/serviceFunctions";
 import {
+  collectBurstActivity,
   collectCandidateRunEvidence,
   commandValidator,
   coverageValidator,
@@ -10,9 +11,10 @@ import {
   userMessageValidator,
 } from "./egressAbuseReview";
 
-// Internal reads for the advisory reassessment of one `multiple_runs` or
-// `account_runs_unverified` egress review case. Only
-// `egressAbuseReassessmentActions:readCaseEvidence` calls them, after its own
+// Internal reads for the advisory reassessments of one egress review case:
+// the retained candidate of a `multiple_runs` or `account_runs_unverified`
+// case, or the account's activity around any case's burst. Only the
+// `egressAbuseReassessmentActions` actions call them, after their own
 // authorization; the evidence scope comes from the decrypted case record,
 // never from the caller. Nothing here changes a case, its status or revision,
 // a restriction, a notice or a receipt: the only write is one audit `read`
@@ -150,23 +152,123 @@ export const readCandidateEvidence = internalQuery({
       };
     const read = await collectCandidateRunEvidence(ctx, scope);
     if (read.status === "unavailable") return read;
-    const rows = new Map<string, string>();
-    const placeholder = (id: string) => {
-      if (!rows.has(id)) rows.set(id, `r${rows.size + 1}`);
-      return rows.get(id)!;
-    };
     return {
       status: "ok" as const,
-      userMessages: read.userMessages.map((message) => ({
-        ...message,
-        messageId: placeholder(message.messageId),
-      })),
-      commands: read.commands.map((command, index) => ({
-        ...command,
-        messageId: placeholder(command.messageId),
-        toolCallId: `c${index + 1}`,
-      })),
+      ...withPlaceholders(read),
       coverage: read.coverage,
+    };
+  },
+});
+
+/** Replaces message and tool call IDs with per-read placeholders. */
+function withPlaceholders(read: {
+  userMessages: Infer<typeof userMessageValidator>[];
+  commands: Infer<typeof commandValidator>[];
+}) {
+  const rows = new Map<string, string>();
+  const placeholder = (id: string) => {
+    if (!rows.has(id)) rows.set(id, `r${rows.size + 1}`);
+    return rows.get(id)!;
+  };
+  return {
+    userMessages: read.userMessages.map((message) => ({
+      ...message,
+      messageId: placeholder(message.messageId),
+    })),
+    commands: read.commands.map((command, index) => ({
+      ...command,
+      messageId: placeholder(command.messageId),
+      toolCallId: `c${index + 1}`,
+    })),
+  };
+}
+
+/** How the candidate was chosen; closed counts only. */
+export const burstSelectionValidator = v.object({
+  chatsScanned: v.number(),
+  /** Chats created after the burst, skipped without reading messages. */
+  chatsAfterBurst: v.number(),
+  scanTruncated: v.boolean(),
+  /** Runs other than the candidate whose persisted timing overlaps the burst. */
+  otherOverlappingRuns: v.number(),
+  /** Runs whose persisted timing could not place them against the burst. */
+  unplacedRuns: v.number(),
+  /** A run that may have spanned the burst saved after the read range. */
+  lateSave: v.boolean(),
+});
+
+export const burstActivityEvidence = v.union(
+  v.object({
+    status: v.literal("unavailable"),
+    reason: v.literal("account_unavailable"),
+  }),
+  v.object({
+    status: v.literal("ok"),
+    candidate: v.union(
+      v.object({ status: v.literal("none") }),
+      v.object({ status: v.literal("subagent_overlap") }),
+      v.object({
+        status: v.literal("found"),
+        runId: v.string(),
+        userMessages: v.array(userMessageValidator),
+        commands: v.array(commandValidator),
+        coverage: coverageValidator,
+      }),
+    ),
+    selection: burstSelectionValidator,
+  }),
+);
+
+export const burstActivityRead = v.union(
+  v.object({ status: v.literal("case_changed") }),
+  burstActivityEvidence,
+);
+
+/**
+ * Re-checks that the case is unchanged since the audited read, then reads the
+ * verified account's burst-mode activity: at most one candidate run whose
+ * persisted timing overlaps the burst. Message and tool call IDs are replaced
+ * by per-read placeholders; only the candidate's run ID is returned, for the
+ * trusted worker's completion check.
+ */
+export const readBurstActivity = internalQuery({
+  args: {
+    caseId: v.id("abuse_cases"),
+    revision: v.number(),
+    updatedAt: v.number(),
+    userId: v.string(),
+    burstStart: v.number(),
+    burstEnd: v.number(),
+  },
+  returns: burstActivityRead,
+  handler: async (ctx, { caseId, revision, updatedAt, ...scope }) => {
+    const row = await ctx.db.get(caseId);
+    if (
+      !row ||
+      !eligible(row, Date.now()) ||
+      row.revision !== revision ||
+      row.updatedAt !== updatedAt
+    )
+      return { status: "case_changed" as const };
+    const read = await collectBurstActivity(ctx, scope);
+    if (read.status === "unavailable")
+      return {
+        status: "unavailable" as const,
+        reason: "account_unavailable" as const,
+      };
+    const { candidate, selection } = read;
+    return {
+      status: "ok" as const,
+      selection,
+      candidate:
+        candidate.status === "found"
+          ? {
+              status: "found" as const,
+              runId: candidate.runId,
+              ...withPlaceholders(candidate),
+              coverage: candidate.coverage,
+            }
+          : candidate,
     };
   },
 });

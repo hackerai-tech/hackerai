@@ -3,6 +3,7 @@ import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
+import { v5 as uuidv5 } from "uuid";
 import {
   freezeRateLimitBucketForDelinquency,
   resetRateLimitBucketAfterPayment,
@@ -2532,6 +2533,7 @@ async function restoreAnnualScheduleAfterSubscriptionUpdate({
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
+  stripeEventId: string,
   eventOccurredAtMs: number,
 ): Promise<void> {
   if (
@@ -2665,8 +2667,13 @@ async function handleSubscriptionUpdated(
     "checkoutSurface",
   );
   for (const uid of userIds) {
+    // Capture precedes the bucket writes below, so a failed delivery that
+    // Stripe retries must deduplicate to the same event per user.
+    const insertId = `subscription_changed:${stripeEventId}:${uid}`;
     phLogger.event("subscription_changed", {
       userId: uid,
+      eventUuid: uuidv5(insertId, uuidv5.URL),
+      $insert_id: insertId,
       from_tier: previousTier,
       to_tier: currentTier,
       direction,
@@ -2676,6 +2683,14 @@ async function handleSubscriptionUpdated(
       source: checkoutSource,
       plan: currentLookupKey,
       billing_interval: priceBillingInterval(currentPrice),
+      // Stable identifiers so a scheduled change (for example a retention
+      // downgrade) can be matched to the exact subscription and target price
+      // that took effect, and ordered by when Stripe applied it.
+      stripe_subscription_id: subscription.id,
+      stripe_price_id: currentPrice?.id,
+      previous_stripe_price_id:
+        typeof previousPriceId === "string" ? previousPriceId : undefined,
+      occurred_at: new Date(eventOccurredAtMs).toISOString(),
       // Only update the person property when we resolved the new tier. A null
       // currentTier means Stripe's lookup_key + product fallbacks both failed,
       // and coercing to "free" would silently move possibly-paid users out of
@@ -3275,6 +3290,7 @@ async function handleSubscriptionWebhook(
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
           Partial<Stripe.Subscription> | undefined,
+        event.id,
         stripeEventOccurredAtMs(event),
       );
       break;

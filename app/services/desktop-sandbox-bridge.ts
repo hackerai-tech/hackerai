@@ -80,6 +80,7 @@ import {
   desktopInvocationUnknownDiagnostic,
   desktopStreamFenceDiagnostic,
   desktopStreamFenceRendererCancelDiagnostic,
+  desktopStreamFenceWindowsLeaderWaitDiagnostic,
   parseNativeStreamFenceRejection,
   type DesktopInvocationAdmissionDiagnostic,
   type DesktopInvocationRejectionDiagnostic,
@@ -89,6 +90,7 @@ import {
   type DesktopStreamFenceCleanupFailure,
   type DesktopStreamFenceOrigin,
   type DesktopStreamFenceStopRequestSource,
+  type DesktopStreamFenceWindowsLeaderState,
   type NativeStreamFenceDarwinStop,
   type NativeStreamFenceWindowsTaskkill,
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
@@ -1991,6 +1993,7 @@ export class DesktopSandboxBridge {
     let streamFenceStopRequestSource: DesktopStreamFenceStopRequestSource | null =
       null;
     let streamFenceDarwinStop: NativeStreamFenceDarwinStop | null = null;
+    let windowsLeaderState: DesktopStreamFenceWindowsLeaderState | null = null;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
@@ -2062,6 +2065,10 @@ export class DesktopSandboxBridge {
                 streamFenceDarwinStop,
               )
             : null;
+        const windowsLeaderWait = desktopStreamFenceWindowsLeaderWaitDiagnostic(
+          streamFence,
+          windowsLeaderState,
+        );
         const rendererCancel =
           cancelAttempts &&
           desktopStreamFenceRendererCancelDiagnostic(
@@ -2089,7 +2096,11 @@ export class DesktopSandboxBridge {
                 ...(invocationSpawnHint && { invocationSpawnHint }),
                 ...(invocationUnknown && { invocationUnknown }),
                 ...(streamFence && {
-                  streamFence: { ...streamFence, ...rendererCancel },
+                  streamFence: {
+                    ...streamFence,
+                    ...rendererCancel,
+                    ...windowsLeaderWait,
+                  },
                 }),
               }),
             ...(invocationRejected &&
@@ -2396,6 +2407,7 @@ export class DesktopSandboxBridge {
               ...(streamFenceWindowsOffered && {
                 includeStreamFenceCancelWaitOwnerPhase: true,
                 includeStreamFenceStopRequestSource: true,
+                includeStreamFenceWindowsLeaderWait: true,
               }),
               // Only with the origin and cleanup opt-ins, and only to Darwin
               // Desktop. An older native app ignores it and keeps the cleanup.
@@ -2432,6 +2444,9 @@ export class DesktopSandboxBridge {
             : null;
           streamFenceDarwinStop = streamFenceDarwinOffered
             ? (fenceRejection?.darwinStop ?? null)
+            : null;
+          windowsLeaderState = streamFenceWindowsOffered
+            ? (fenceRejection?.windowsLeaderState ?? null)
             : null;
           if (invocationTrace.adapter) {
             // One read of the message yields every class.

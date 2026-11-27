@@ -29,6 +29,7 @@ function parseDowngradeSubscriptionInput(
       reasonSubcategory: body.cancellationReason.reasonSubcategory,
       reasonDetails: body.cancellationReason.reasonDetails,
     },
+    offerImpressionId: body.offerImpressionId,
   };
 }
 

@@ -152,6 +152,11 @@ function shownOfferTypes(offers: RetentionOffers): RetentionOfferType[] {
   return types;
 }
 
+/** One opaque id per downgrade offer impression, joined to the server event. */
+function createOfferImpressionId(): string | undefined {
+  return globalThis.crypto?.randomUUID?.();
+}
+
 function formatMoney(amount?: number, currency?: string) {
   if (amount === undefined) return null;
   try {
@@ -193,6 +198,9 @@ export const CancelSubscriptionDialog = ({
     useState<PauseDurationMonths>(1);
   const [selectedOffer, setSelectedOffer] =
     useState<RetentionOfferType>("pause");
+  const [downgradeImpressionId, setDowngradeImpressionId] = useState<
+    string | undefined
+  >(undefined);
   const [step, setStep] = useState<CancellationStep>("reason");
   const openRef = useRef(open);
   const wasOpenRef = useRef(false);
@@ -228,6 +236,7 @@ export const CancelSubscriptionDialog = ({
       setOffers(null);
       setSelectedPauseMonths(1);
       setSelectedOffer("pause");
+      setDowngradeImpressionId(undefined);
       setStep("reason");
       return;
     }
@@ -279,7 +288,10 @@ export const CancelSubscriptionDialog = ({
     requestIdRef.current = requestId;
     let nextOffers: RetentionOffers | null = null;
     try {
-      nextOffers = await getRetentionOffers({ reasonCategory });
+      nextOffers = await getRetentionOffers({
+        reasonCategory,
+        reasonSubcategory,
+      });
     } catch {
       // Offers are optional. Fall through to the plain cancellation flow.
       nextOffers = null;
@@ -291,7 +303,11 @@ export const CancelSubscriptionDialog = ({
 
     const offerTypes = nextOffers ? shownOfferTypes(nextOffers) : [];
     if (nextOffers && offerTypes.length > 0) {
+      const impressionId = offerTypes.includes("downgrade")
+        ? createOfferImpressionId()
+        : undefined;
       setOffers(nextOffers);
+      setDowngradeImpressionId(impressionId);
       setSelectedOffer(offerTypes[0]);
       setStep("offer");
       captureAuthenticatedEvent(
@@ -305,6 +321,12 @@ export const CancelSubscriptionDialog = ({
           downgrade_offered: offerTypes.includes("downgrade"),
           downgrade_target_tier: nextOffers.downgrade.eligible
             ? nextOffers.downgrade.targetTier
+            : undefined,
+          downgrade_offer_impression_id: impressionId,
+          downgrade_charge_display: nextOffers.downgrade.eligible
+            ? nextOffers.downgrade.renewalCharge
+              ? "stripe_invoice_preview"
+              : "regular_rate"
             : undefined,
           pause_effective_at: nextOffers.pause.pauseEffectiveAt
             ? new Date(nextOffers.pause.pauseEffectiveAt).toISOString()
@@ -327,12 +349,19 @@ export const CancelSubscriptionDialog = ({
           reason_category: reasonCategory,
           reason_subcategory: reasonSubcategory,
           offers_shown: shownOfferTypes(offers),
+          downgrade_offer_impression_id: downgradeImpressionId,
           ...OFFER_ANALYTICS_CONTEXT,
         }),
       );
     }
     setStep("confirm");
-  }, [offers, reasonCategory, reasonSubcategory, subscription]);
+  }, [
+    downgradeImpressionId,
+    offers,
+    reasonCategory,
+    reasonSubcategory,
+    subscription,
+  ]);
 
   const handleAcceptPause = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();
@@ -402,6 +431,9 @@ export const CancelSubscriptionDialog = ({
           reasonSubcategory,
           reasonDetails: trimmedReasonDetails,
         },
+        ...(downgradeImpressionId && {
+          offerImpressionId: downgradeImpressionId,
+        }),
       });
       if (!openRef.current || requestIdRef.current !== requestId) {
         return;
@@ -421,7 +453,13 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [onDowngradeApplied, reasonCategory, reasonDetails, reasonSubcategory]);
+  }, [
+    downgradeImpressionId,
+    onDowngradeApplied,
+    reasonCategory,
+    reasonDetails,
+    reasonSubcategory,
+  ]);
 
   const handleAcceptSelectedOffer = useCallback(() => {
     if (selectedOffer === "downgrade") {
@@ -506,6 +544,7 @@ export const CancelSubscriptionDialog = ({
       setReasonCategory(nextReasonCategory);
       setReasonSubcategory("");
       setOffers(null);
+      setDowngradeImpressionId(undefined);
       setShowValidation(false);
       captureAuthenticatedEvent(
         PAID_FUNNEL_EVENTS.cancellationReasonSelected,
@@ -525,6 +564,11 @@ export const CancelSubscriptionDialog = ({
 
       const nextReasonSubcategory = value as CancellationReasonSubcategory;
       setReasonSubcategory(nextReasonSubcategory);
+      // The follow-up answer can change which offers apply.
+      if (nextReasonSubcategory !== reasonSubcategory) {
+        setOffers(null);
+        setDowngradeImpressionId(undefined);
+      }
       setShowValidation(false);
       captureAuthenticatedEvent(
         PAID_FUNNEL_EVENTS.cancellationReasonFollowUpSelected,
@@ -536,7 +580,7 @@ export const CancelSubscriptionDialog = ({
         }),
       );
     },
-    [reasonCategory, subscription],
+    [reasonCategory, reasonSubcategory, subscription],
   );
 
   const handleBack = useCallback(() => {
@@ -626,6 +670,16 @@ export const CancelSubscriptionDialog = ({
     downgradeOffer?.currency,
   );
   const downgradeEffectiveDate = formatLongDate(downgradeOffer?.effectiveAt);
+  const downgradeRenewalCharge = downgradeOffer?.renewalCharge;
+  const downgradeChargeAmount = formatMoney(
+    downgradeRenewalCharge?.amountDollars,
+    downgradeRenewalCharge?.currency,
+  );
+  const downgradeChargeDate =
+    formatLongDate(downgradeRenewalCharge?.chargeAt) ?? downgradeEffectiveDate;
+  const isLowRecurringUse =
+    reasonSubcategory === "too_expensive_low_frequency" ||
+    reasonCategory === "not_using_enough";
   const primaryOfferLabel =
     selectedOffer === "downgrade" && downgradeTargetName
       ? `Switch to ${downgradeTargetName}`
@@ -775,17 +829,62 @@ export const CancelSubscriptionDialog = ({
                     <span className="min-w-0 flex-1">
                       <span className="block text-base font-semibold text-foreground">
                         {`Switch to ${downgradeTargetName}`}
-                        {downgradeTargetPrice ? (
-                          <span className="font-normal text-muted-foreground">
-                            {` · ${downgradeTargetPrice}/month`}
-                          </span>
-                        ) : null}
                       </span>
                       <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                        {isLowRecurringUse
+                          ? "A lighter plan for the months you use it less. "
+                          : ""}
                         {downgradeEffectiveDate
                           ? `Keep ${planName} until ${downgradeEffectiveDate}, then renew as ${downgradeTargetName}. Nothing changes today.`
                           : `Keep ${planName} until your renewal, then switch to ${downgradeTargetName}. Nothing changes today.`}
                       </span>
+                      {downgradeChargeAmount || downgradeTargetPrice ? (
+                        <span
+                          className="mt-3 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 rounded-md border border-border bg-background/60 px-3 py-2.5"
+                          data-testid="downgrade-renewal-summary"
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-xs text-muted-foreground">
+                              {downgradeChargeAmount
+                                ? "Estimated next charge"
+                                : `${downgradeTargetName} regular price`}
+                            </span>
+                            <span className="block text-2xl leading-tight font-semibold text-foreground tabular-nums">
+                              {downgradeChargeAmount ?? (
+                                <>
+                                  {downgradeTargetPrice}
+                                  <span className="text-sm font-normal text-muted-foreground">
+                                    /month
+                                  </span>
+                                </>
+                              )}
+                            </span>
+                          </span>
+                          {downgradeChargeDate ? (
+                            <span className="shrink-0 text-right">
+                              <span className="block text-xs text-muted-foreground">
+                                {downgradeChargeAmount
+                                  ? "Charged on"
+                                  : "Starts"}
+                              </span>
+                              <span className="block text-sm font-medium text-foreground">
+                                {downgradeChargeDate}
+                              </span>
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
+                      {downgradeChargeAmount || downgradeTargetPrice ? (
+                        <span className="mt-2 block text-xs leading-5 text-muted-foreground">
+                          {downgradeChargeAmount
+                            ? `Stripe's estimate as of today, including any tax and account credit.${
+                                downgradeTargetPrice
+                                  ? ` ${downgradeTargetName} is ${downgradeTargetPrice}/month.`
+                                  : ""
+                              }`
+                            : "Regular monthly rate, before any tax, discounts, or account credit. Your invoice shows the exact charge."}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 ) : null}

@@ -405,11 +405,14 @@ and its cases follow the review, hold and erasure rules in this runbook.
 - **Bounded account history.** Truncated chat history leaves overlap
   uncertain. The worker allows 20 minutes for Trigger run history to settle,
   then reads up to four pages of 50 account-tagged `agent-long` runs in its own
-  environment. It uses only status and timing, with one minute of clock skew,
-  and discards any metadata returned by Trigger. A run that could have
-  overlapped creates a `multiple_runs` case, even if its workspace link is
-  missing. A missing selected run, exceeded page limit, or unreliable result
-  creates an `account_runs_unverified` case. Both require manual review.
+  environment. It checks run IDs, tags, status and timing with one minute of
+  clock skew. If one linked run overlaps and another has unknown timing, the
+  worker can rule the other run out when Trigger confirms the same run and
+  chat, timestamps consistent with the workspace acquisition, and completion
+  before the burst. This requires complete account history and proof for every
+  unplaced link. A run that could have overlapped creates a `multiple_runs`
+  case, even if its workspace link is missing. A missing selected run, exceeded
+  page limit, or unreliable result keeps the case in manual review.
 - **Acquisition links.** Each workspace keeps at most 48 link records across
   runs; the review still abstains with `too_many_runs` when more than 16
   distinct runs fall inside its window. Past 48 the oldest records are
@@ -441,9 +444,9 @@ and its cases follow the review, hold and erasure rules in this runbook.
   `competing_links`, `concurrent_root_run`, `root_page_limit`,
   `root_lookup_failed`, `selected_run_absent`, `run_overlap_unknown` or
   `evidence_gaps` with its `gaps` list), alongside counts of verified
-  sandboxes, stored link records, linked runs and plausible runs. It never
-  holds identifiers, content or provider errors and does not change the case
-  or receipt.
+  sandboxes, stored link records, linked runs and plausible runs.
+  `competingLinksRuledOut` counts unplaced links the Trigger check ruled out
+  before the evidence read. These diagnostics contain closed values and counts.
 - **Account cooldown.** A `no_case` decision, which requires complete
   exact-run evidence and corroborated legitimate work, stores a 24-hour
   cooldown for the verified account with the cleared minute's connection
@@ -497,7 +500,9 @@ The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions,
-and the one [reassessment](#reassessing-a-retained-candidate) action.
+and the two reassessment actions ([retained
+candidate](#reassessing-a-retained-candidate) and [burst
+activity](#reassessing-burst-activity)).
 The Agent worker and Convex deployment must share the same
 `CONVEX_SERVICE_ROLE_KEY` for signing and verifying the account-activity
 attribution proof. This key must differ from the dedicated review key. A
@@ -511,6 +516,13 @@ as a manual case without account evidence. Later attempts preserve that case.
 Enable the toggle in the web app, the Agent worker, and the Convex deployment.
 Reviews are dispatched through the persistent queue described under
 [Burst alerts](cloud-network-access.md#burst-alerts).
+
+The scheduled burst monitor reads connection counters. Only the separate
+review and reassessment tasks can submit evidence to the classifier. Their
+`Egress review classifier usage` diagnostics record each SDK invocation and
+any charge reported by OpenRouter, including responses later rejected by
+structured output validation. An invocation with no reported charge leaves
+spend coverage incomplete. The classifier keeps full AI telemetry disabled.
 
 New cases and their sanitized `egress_review_receipts` commit together. A
 completed review with no case writes its receipt on a best-effort basis.
@@ -646,6 +658,63 @@ without reading anything.
   draft or send mail, or write a receipt. Record any conclusion in the case
   yourself after reviewing the chat and run the case records.
 
+### Reassessing burst activity
+
+For an older case whose review read no usable evidence, such as an unlinked
+`no_acquisition_link` case, request advisory context on the account's
+activity around the burst:
+
+```json
+{ "reference": "AB-…", "scope": "burst_activity" }
+```
+
+It uses the same task, switch, credentials, single attempt and audit `read`
+event as the retained-candidate reassessment. Without `scope`, the task is
+unchanged.
+
+- **Which cases.** The same open, uncontained, unerased, seven-day-old
+  automated review cases. The decrypted record must be version 3,
+  `manual_review` (any manual reason) or `authorization_request`, bind its
+  region, owner, window, burst minute, integer connection count and review
+  time to the case as above, and name a verified account. A recorded
+  enforcement decision returns `closed` / `enforcement_recorded`; a case
+  without a verified account returns `account_unverified`. Nothing else in
+  the record is read.
+- **What it reads.** The account-activity read from the verified account
+  only, with the same chat discovery, deletion fence, content exclusions and
+  chat, row and byte limits. It reads messages created from 24 hours before
+  the burst minute to 31 minutes after it ends, so later conversation cannot
+  use up the limits. It skips chats created after the burst without reading them.
+  It keeps one candidate: the most recently started run that started a
+  terminal command, has complete persisted timing that overlaps the burst,
+  and is not marked active. It returns that run's commands and the pre-start
+  user messages, with earlier turns marked as context for the current
+  request. If no current user request survives the read, it withholds the
+  context. A subagent of that run that may have
+  overlapped returns `subagent_overlap` without content. The worker verifies
+  completion with Trigger, as above, before classification.
+- **What it returns.** Closed enums and counts only: `scope:
+burst_activity`, `attribution: unverified`, `determination:
+advisory_only`, and `otherOverlappingRuns` (runs that also overlap but were
+  not read). An account being deleted returns `selection` and `coverage`
+  `unavailable` with `account_unavailable`. `selection` is `incomplete`, with
+  `selectionGaps`, when the chat
+  scan hit a limit (`chat_scan_truncated`), a run had no usable timing
+  (`unplaced_runs`), or the first row saved after the read range belongs to
+  another run that may have spanned the burst (`late_save_possible`). A later
+  row of the candidate itself counts as an omitted command. Coverage,
+  `advisory`, `classification` and the model follow the retained-candidate
+  rules. Edits after the run started, truncation and other evidence gaps
+  make the evidence `incomplete`. The model is never called on
+  incomplete evidence, and at most once per task.
+- **Limits.** Chat discovery lists the 20 chats the account updated most
+  recently. For an account that kept working after the burst, the run may
+  fall outside that list; the result then reports `chat_scan_truncated`. The
+  late-save check looks at one row, so it can miss a run that saved behind a
+  queued user message. The finding describes one run and never establishes
+  which activity caused the burst; it does not change the case, the account,
+  a cooldown or a receipt.
+
 ### Automatic enforcement
 
 A block requires every one of these, in order. Anything else keeps the account
@@ -748,6 +817,19 @@ reason and coverage, active and lifted automated blocks from the last 30
 days, notice counts, and action items with only a reference:
 `review_block` (no operator note since the block), `review_pending_enforcement`,
 `notice_backlog`, `notice_failed` and `reconcile_uncertain_notice`.
+
+**Digest dispositions.** `scripts/egress-review-dispositions.ts
+--expect-convex-url <deployment URL>` uses the same environment and key
+as `summary` but sends nothing. It reads a JSON array of 1–100 unique
+case digests on stdin. It prints one disposition per digest, in input order.
+`blocked` requires an applied-block receipt. `confirmed_abuse_pending` requires
+an `enforcement_pending` receipt with an intent kind and a disabled or
+unavailable enforcement service. A server refusal leaves the result undetermined.
+`confirmed_legitimate` requires a corroborated `keep_active` receipt. Both
+confirmed states also require complete exact-run coverage. Any other receipt
+is `undetermined`. `missing` means no receipt was found or it passed
+its 30-day retention. The output never includes references or other
+identifiers.
 
 **Recovery.**
 

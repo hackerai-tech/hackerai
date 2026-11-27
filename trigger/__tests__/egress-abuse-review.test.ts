@@ -36,11 +36,16 @@ import * as reassessmentActions from "@/convex/egressAbuseReassessmentActions";
 import { database } from "@/__mocks__/abuse-database";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { createServiceConvexClient } from "@/lib/db/service-client";
-import { decryptAbuseEvidence } from "@/lib/abuse/evidence-crypto";
+import {
+  decryptAbuseEvidence,
+  encryptAbuseEvidence,
+} from "@/lib/abuse/evidence-crypto";
 import { recordEgressReviewAcquisition } from "@/lib/abuse/egress-review-context";
 import { reviewCooldownKey } from "@/lib/abuse/egress-review-cooldown";
 import {
+  buildCaseRecord,
   reviewCaseKey,
+  reviewDigest,
   reviewReference,
   reviewWindowStart,
 } from "@/lib/abuse/egress-review";
@@ -50,6 +55,7 @@ import {
   telemetryBatchSchema,
 } from "@/lib/cloud-network/egress-telemetry";
 import {
+  classifyEvidence,
   egressAbuseReviewTask,
   runEgressAbuseReview,
 } from "../egress-abuse-review";
@@ -259,6 +265,90 @@ const caseRecord = () =>
     reference,
     convex.tables.abuse_cases[0].ciphertext,
   ) as any;
+
+describe("egress classifier usage", () => {
+  const usageLogs = () =>
+    jest
+      .mocked(logger.info)
+      .mock.calls.filter(
+        ([title]) => title === "Egress review classifier usage",
+      )
+      .map(([, fields]) => fields);
+
+  it("records the provider charge before the SDK rejects structured output", async () => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: {
+            provider: "fixture provider",
+            usage: { cost: 0.00172, reasoning: "fixture reasoning" },
+          },
+        },
+      } as never);
+      throw new Error("fixture invalid output");
+    });
+
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_unavailable",
+    );
+    const [started, reported] = usageLogs();
+    expect(usageLogs()).toHaveLength(2);
+    expect(started).toEqual({
+      phase: "started",
+      startedAtMs: expect.any(Number),
+    });
+    expect(reported).toEqual({
+      phase: "reported",
+      startedAtMs: started?.startedAtMs,
+      chargedUsd: 0.00172,
+    });
+  });
+
+  it.each([
+    ["omitted", undefined, null],
+    ["zero", 0, 0],
+  ])("distinguishes a %s provider charge", async (_label, cost, expected) => {
+    jest.mocked(generateText).mockImplementationOnce(async ({ onFinish }) => {
+      await onFinish?.({
+        providerMetadata: {
+          openrouter: { usage: cost === undefined ? {} : { cost } },
+        },
+      } as never);
+      return { output: concerning } as never;
+    });
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+    expect(usageLogs()).toHaveLength(2);
+    expect(usageLogs()[1]).toEqual({
+      phase: "reported",
+      startedAtMs: usageLogs()[0]?.startedAtMs,
+      chargedUsd: expected,
+    });
+  });
+
+  it("counts a failed invocation without inventing usage or logging its error", async () => {
+    jest
+      .mocked(generateText)
+      .mockRejectedValueOnce(new Error("fixture prompt"));
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_unavailable",
+    );
+    expect(usageLogs()).toEqual([
+      { phase: "started", startedAtMs: expect.any(Number) },
+    ]);
+  });
+
+  it("keeps the classifier working when usage logging fails", async () => {
+    jest.mocked(logger.info).mockImplementationOnce(() => {
+      throw new Error("logging unavailable");
+    });
+    classifyAs(concerning);
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+  });
+});
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -2059,6 +2149,120 @@ describe("on-demand reassessment of a retained candidate", () => {
         .mock.results.flatMap(({ value }) => value.query.mock.calls)
         .map(([fn]: any) => getFunctionName(fn));
 
+    const otherRoot = (timing: Parameters<typeof rootRun>[1]) => ({
+      ...rootRun(OTHER, timing),
+      tags: [`user_${first.userId}`, `chat_${OTHER_CHAT}`],
+    });
+
+    it("reviews only the overlapping run when Trigger proves the unplaced run ended before the burst", async () => {
+      await seedRun(RUN, CHAT, {
+        command: "pnpm build",
+        message: "Build my development project",
+      });
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        otherRoot({
+          started: BURST_START - 45 * MINUTE_MS,
+          finished: BURST_START - 5 * MINUTE_MS,
+        }),
+      ]);
+      classifyAs({
+        verdict: "clearly_legitimate",
+        activity: "ordinary_development",
+        authorization: "not_stated",
+        commandIndices: [1],
+        messageIndices: [1],
+      });
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "no_case",
+        reason: "legitimate_corroborated",
+        diagnostic: { competingLinksRuledOut: 1 },
+      });
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(generateText).toHaveBeenCalledTimes(1);
+      const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+      expect(prompt).toContain("Build my development project");
+      expect(prompt).not.toContain("UNRELATED CHAT TEXT");
+      expect(recordCaseCalls()).toHaveLength(0);
+    });
+
+    it.each([
+      ["finished during the burst", { finished: BURST_START + 30_000 }],
+      [
+        "skew makes its finish uncertain",
+        { finished: BURST_START - MINUTE_MS },
+      ],
+      [
+        "claims it finished before acquiring the workspace",
+        { finished: BURST_START - 20 * MINUTE_MS },
+      ],
+      [
+        "is not terminal despite a finish timestamp",
+        { status: "EXECUTING", finished: BURST_START - 5 * MINUTE_MS },
+      ],
+    ])("keeps the case manual when the unplaced run %s", async (_, timing) => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        otherRoot({ started: BURST_START - 45 * MINUTE_MS, ...timing }),
+      ]);
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
+    it("keeps the case manual if Trigger history ends mid-scan after returning both linked runs", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns(
+        [
+          selectedRun,
+          otherRoot({
+            started: BURST_START - 45 * MINUTE_MS,
+            finished: BURST_START - 5 * MINUTE_MS,
+          }),
+        ],
+        true,
+      );
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
+    it("cannot rule out an unplaced link using a run attributed to a different chat", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        rootRun(OTHER, {
+          started: BURST_START - 45 * MINUTE_MS,
+          finished: BURST_START - 5 * MINUTE_MS,
+        }),
+      ]);
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
     it("keeps the overlapping run as the case's candidate without reading or classifying evidence", async () => {
       await seedRun();
       await link();
@@ -2095,7 +2299,7 @@ describe("on-demand reassessment of a retained candidate", () => {
         "egressAbuseReview:matchRun",
         "egressAbuseReview:matchRun",
       ]);
-      expect(runs.list).not.toHaveBeenCalled();
+      expect(runs.list).toHaveBeenCalledTimes(1);
       expect(generateText).not.toHaveBeenCalled();
       const saved = structuredClone(convex.tables.abuse_cases[0]);
 
@@ -2168,5 +2372,314 @@ describe("on-demand reassessment of a retained candidate", () => {
     process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "false";
     await expect(reassess()).resolves.toEqual({ status: "disabled" });
     expect(convex.tables.abuse_events).toHaveLength(1);
+  });
+});
+
+describe("on-demand burst-activity assessment of a historical case", () => {
+  // Three days old: telemetry and Trigger history checks have long expired.
+  const window = reviewWindowStart(
+    Math.floor(Date.now() / MINUTE_MS) - 3 * 24 * 60,
+  );
+  const burstStart = (window + 7) * MINUTE_MS;
+  const caseKey = reviewCaseKey("us", first.owner, window);
+  const burstReference = reviewReference(caseKey);
+  const at = (minutes: number) => burstStart + minutes * MINUTE_MS;
+  const assess = () =>
+    runEgressAbuseReassessment({
+      reference: burstReference,
+      scope: "burst_activity",
+    });
+  const base = {
+    status: "completed",
+    scope: "burst_activity",
+    attribution: "unverified",
+    determination: "advisory_only",
+  };
+
+  /** An unlinked review case, stored half an hour after the burst. */
+  async function burstCase() {
+    const record = buildCaseRecord({
+      reference: burstReference,
+      observation: {
+        region: "us",
+        ownerRef: first.owner,
+        burstMinute: window + 7,
+        windowStart: window,
+        connections: 900,
+        workspaces: 1,
+      },
+      decision: { outcome: "manual_review", reason: "no_acquisition_link" },
+      userId: first.userId,
+      sandboxIds: [first.sandboxId],
+      accountActivity: { status: "unavailable" },
+      reviewedAt: at(30),
+    });
+    await (reviewFunctions.recordCase as any).handler(convex, {
+      serviceKey: REVIEW_KEY,
+      reference: burstReference,
+      digest: reviewDigest(caseKey),
+      ciphertext: encryptAbuseEvidence(burstReference, record),
+    });
+    const row = convex.tables.abuse_cases[0];
+    row.createdAt = row.updatedAt = at(31);
+    return structuredClone(row);
+  }
+
+  const message = (row: Record<string, unknown>, created: number) =>
+    convex.db.insert("messages", {
+      chat_id: CHAT,
+      user_id: first.userId,
+      update_time: created,
+      _creationTime: created,
+      ...row,
+    });
+  const runMessage = (
+    id: string,
+    runId: string,
+    start: number,
+    saved: number,
+    command: string,
+  ) =>
+    message(
+      {
+        id,
+        role: "assistant",
+        trigger_run_id: runId,
+        terminal_evidence_state: "complete",
+        generation_started_at: start,
+        generation_time_ms: saved - start,
+        parts: [terminal(`call-${id}`, command)],
+      },
+      saved,
+    );
+
+  /** A run that spanned the burst, then a later run and later turns. */
+  async function seedActivity({ start = at(-5) } = {}) {
+    await convex.db.insert("chats", {
+      id: CHAT,
+      user_id: first.userId,
+      update_time: Date.now() - MINUTE_MS,
+      _creationTime: at(-120),
+    });
+    await message(
+      {
+        id: `${CHAT}-user`,
+        role: "user",
+        parts: [{ type: "text", text: "Find open ports for me." }],
+      },
+      start - MINUTE_MS,
+    );
+    const saved = Math.max(at(11), start + 2 * MINUTE_MS);
+    await runMessage(`${CHAT}-assistant`, RUN, start, saved, SCAN);
+    await message(
+      {
+        id: "later-user",
+        role: "user",
+        parts: [{ type: "text", text: "UNRELATED LATER TEXT" }],
+      },
+      at(12),
+    );
+    await runMessage("later-run", "run_later", at(13), at(15), "LATER CMD");
+    for (let index = 0; index < 100; index++)
+      await message(
+        {
+          id: `newer-${index}`,
+          role: "user",
+          parts: [{ type: "text", text: "UNRELATED NEWER TEXT" }],
+        },
+        at(180) + index,
+      );
+    jest.mocked(triggerQuery.execute).mockResolvedValue({
+      format: "json",
+      results: [
+        {
+          run_id: RUN,
+          task_identifier: "agent-long",
+          status: "Completed",
+          completed_at_s: saved / 1_000,
+        },
+      ],
+    } as never);
+  }
+
+  /** Nothing outside the audit read changed, and nothing identifying left. */
+  function expectAdvisoryOnly(result: unknown, saved: unknown) {
+    expect(convex.tables.abuse_cases).toEqual([saved]);
+    expect(
+      convex.tables.abuse_events.map(({ actor, kind }: any) => [actor, kind]),
+    ).toEqual([
+      ["egress_abuse_review", "received"],
+      ["egress_abuse_reassessment", "read"],
+    ]);
+    expect(mutationCalls()).toHaveLength(0);
+    expect(kv.has(reviewCooldownKey(first.userId))).toBe(false);
+    for (const table of [
+      "egress_review_receipts",
+      "user_suspensions",
+      "abuse_block_notices",
+      "abuse_notifications",
+    ])
+      expect(convex.tables[table] ?? []).toHaveLength(0);
+    const exposed = JSON.stringify([
+      result,
+      jest.mocked(logger.info).mock.calls,
+      jest.mocked(logger.warn).mock.calls,
+    ]);
+    for (const raw of [
+      first.userId,
+      first.sandboxId,
+      CHAT,
+      RUN,
+      `${CHAT}-user`,
+      "call-",
+      "203.0.113",
+      "masscan",
+      "Find open ports",
+      "UNRELATED",
+      "LATER CMD",
+    ])
+      expect(exposed).not.toContain(raw);
+  }
+
+  it("accepts only a reference and the burst-activity scope", () => {
+    const { schema } = egressAbuseReassessTask as any;
+    expect(
+      schema.safeParse({ reference: burstReference, scope: "burst_activity" })
+        .success,
+    ).toBe(true);
+    for (const payload of [
+      { reference: burstReference, scope: "retained_candidate" },
+      { reference: burstReference, scope: "account" },
+      { reference: burstReference, scope: "burst_activity", chatId: CHAT },
+      {
+        reference: burstReference,
+        scope: "burst_activity",
+        burstStart,
+      },
+    ])
+      expect(schema.safeParse(payload).success).toBe(false);
+  });
+
+  it("classifies the overlapping run once and reports it as advisory only", async () => {
+    await seedActivity();
+    const saved = await burstCase();
+    classifyAs(concerning);
+
+    const result = await assess();
+
+    expect(result).toEqual({
+      ...base,
+      selection: "complete",
+      otherOverlappingRuns: 0,
+      coverage: "complete",
+      advisory: "concern",
+      reason: "concerning_corroborated",
+      classification: {
+        activity: "network_scanning",
+        authorization: "not_stated",
+      },
+      model: {
+        key: "model-grok-4.6",
+        promptVersion: "egress-burst-activity-review-v1",
+      },
+    });
+    expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(triggerQuery.execute).mock.calls[0][0]).toContain(
+      `run_id = '${RUN}'`,
+    );
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const { prompt, tools } = jest.mocked(generateText).mock.calls[0][0] as any;
+    expect(tools).toBeUndefined();
+    expect(prompt).toContain("Find open ports");
+    expect(prompt).toContain("[T1:public-ip]/24");
+    for (const excluded of ["203.0.113", "UNRELATED", "LATER CMD"])
+      expect(prompt).not.toContain(excluded);
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("shows earlier scope with the current user request and only the candidate's commands", async () => {
+    await seedActivity();
+    await message(
+      {
+        id: "earlier-user",
+        role: "user",
+        parts: [
+          { type: "text", text: "The previous task was for my own lab." },
+        ],
+      },
+      at(-60),
+    );
+    await runMessage(
+      "earlier-run",
+      "run_earlier",
+      at(-59),
+      at(-57),
+      "printf UNRELATED_EARLIER_COMMAND",
+    );
+    const saved = await burstCase();
+    classifyAs(concerning);
+
+    const result = await assess();
+
+    expect(result).toMatchObject({
+      ...base,
+      selection: "complete",
+      otherOverlappingRuns: 0,
+      coverage: "complete",
+      advisory: "concern",
+      reason: "concerning_corroborated",
+    });
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+    expect(prompt).toContain("[M1] (Earlier context) The previous task");
+    expect(prompt).toContain("[M2] (Current request) Find open ports");
+    expect(prompt).not.toContain("UNRELATED_EARLIER_COMMAND");
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("calls no model when Trigger does not confirm the run finished before the read", async () => {
+    await seedActivity();
+    const saved = await burstCase();
+    jest
+      .mocked(triggerQuery.execute)
+      .mockResolvedValue({ format: "json", results: [] } as never);
+
+    const result = await assess();
+
+    expect(result).toMatchObject({
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "candidate_completion_unverified",
+    });
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("reads no Trigger history and calls no model without an overlapping run", async () => {
+    await seedActivity({ start: at(20) });
+    const saved = await burstCase();
+
+    const result = await assess();
+
+    expect(result).toEqual({
+      ...base,
+      selection: "complete",
+      otherOverlappingRuns: 0,
+      coverage: "unavailable",
+      advisory: "inconclusive",
+      reason: "no_overlapping_run",
+    });
+    expect(triggerQuery.execute).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("leaves the default retained-candidate scope unchanged", async () => {
+    await seedActivity();
+    await burstCase();
+    await expect(
+      runEgressAbuseReassessment({ reference: burstReference }),
+    ).resolves.toEqual({ status: "closed", reason: "not_overlap_case" });
+    expect(generateText).not.toHaveBeenCalled();
   });
 });

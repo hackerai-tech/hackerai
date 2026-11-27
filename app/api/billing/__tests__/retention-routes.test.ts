@@ -70,12 +70,16 @@ describe("retention offer API routes", () => {
     const { POST } = await import("../retention-offers/route");
 
     const response = await POST(
-      request({ reasonCategory: "not_using_enough" }) as never,
+      request({
+        reasonCategory: "too_expensive",
+        reasonSubcategory: "insufficient_included_usage",
+      }) as never,
     );
 
     expect(response.status).toBe(200);
     expect(mockGetRetentionOffers).toHaveBeenCalledWith({
-      reasonCategory: "not_using_enough",
+      reasonCategory: "too_expensive",
+      reasonSubcategory: "insufficient_included_usage",
     });
   });
 
@@ -144,11 +148,15 @@ describe("retention offer API routes", () => {
     } as never);
     const { POST } = await import("../downgrade/route");
 
-    const response = await POST(request({ cancellationReason }) as never);
+    const offerImpressionId = "3f1c2b9a-6d4e-4a7b-9c2d-1e0f5a6b7c8d";
+    const response = await POST(
+      request({ cancellationReason, offerImpressionId }) as never,
+    );
 
     expect(response.status).toBe(200);
     expect(mockDowngradeSubscription).toHaveBeenCalledWith({
       cancellationReason,
+      offerImpressionId,
     });
 
     const rejected = await POST(request({}) as never);

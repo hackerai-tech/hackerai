@@ -471,11 +471,47 @@ async fn tracked<F: Future>(check: F, phase: Option<&OwnerPhase>, bit: u8) -> F:
     output
 }
 
+/// Nonblocking observation of the original Windows leader's process handle
+/// after its async wait timed out and its Job reported no active members.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum LeaderHandleState {
+    Signaled,
+    Unsignaled,
+    HandleUnavailable,
+    ProbeFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct FenceWindowsLeaderWaitReceipt {
+    version: u8,
+    state: LeaderHandleState,
+}
+
+#[cfg(windows)]
+fn observe_leader_handle(child: &Child) -> LeaderHandleState {
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    let Some(handle) = child.raw_handle() else {
+        return LeaderHandleState::HandleUnavailable;
+    };
+    // SAFETY: The borrowed child retains its process handle for this
+    // zero-timeout call. Waiting on a process handle does not reap it.
+    match unsafe { WaitForSingleObject(HANDLE(handle), 0) } {
+        WAIT_OBJECT_0 => LeaderHandleState::Signaled,
+        WAIT_TIMEOUT => LeaderHandleState::Unsignaled,
+        _ => LeaderHandleState::ProbeFailed,
+    }
+}
+
 /// The admission fence's closed receipts, read together from its first outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FenceReceipts {
     pub(crate) origin: FenceOriginReceipt,
     pub(crate) cleanup: Option<FenceCleanupReceipt>,
+    pub(crate) windows_leader_wait: Option<FenceWindowsLeaderWaitReceipt>,
     pub(crate) windows_taskkill: Option<FenceWindowsTaskkillReceipt>,
     /// The same failure's version 2 receipt, when it has one.
     pub(crate) windows_taskkill_root_report: Option<FenceWindowsTaskkillReceipt>,
@@ -497,6 +533,7 @@ struct Fence {
     // Only an explicit stop request or an owner's own timeout records the
     // leg that was unconfirmed.
     cleanup: Option<CleanupFailure>,
+    windows_leader_wait: Option<LeaderHandleState>,
     // Only a stop request or an owner's own timeout whose sole unconfirmed
     // leg was the tree stop records how the Windows taskkill path failed.
     taskkill: Option<TaskkillFailure>,
@@ -572,6 +609,7 @@ impl From<FenceOrigin> for Fence {
         Self {
             origin,
             cleanup: None,
+            windows_leader_wait: None,
             taskkill: None,
             stop_source: None,
             group_probe: None,
@@ -740,6 +778,13 @@ impl StreamLifecycle {
                 version: 1,
                 failure,
             }),
+            windows_leader_wait: fence
+                .windows_leader_wait
+                .filter(|_| {
+                    fence.origin == FenceOrigin::OwnerTimeout
+                        && fence.cleanup == Some(CleanupFailure::LeaderWaitTimedOut)
+                })
+                .map(|state| FenceWindowsLeaderWaitReceipt { version: 1, state }),
             windows_taskkill: fence.taskkill.map(FenceWindowsTaskkillReceipt::from),
             windows_taskkill_root_report: fence
                 .taskkill
@@ -1053,11 +1098,19 @@ pub(crate) async fn run(
         Ended::TimedOut => {
             phase.publish(OwnerPhase::OWNER_CLEANUP);
             let killed = graceful_kill_owned(&mut child, &tree).await;
+            let fence = Fence::owner_timeout(killed);
+            #[cfg(windows)]
+            let fence = fence.map(|mut fence| {
+                if fence.cleanup == Some(CleanupFailure::LeaderWaitTimedOut) {
+                    fence.windows_leader_wait = Some(observe_leader_handle(&child));
+                }
+                fence
+            });
             phase.publish(OwnerPhase::TERMINAL_DELIVERY);
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Command timed out after {}ms", timeout.as_millis()),
             });
-            Fence::owner_timeout(killed)
+            fence
         }
         Ended::StopRequested(source) => {
             let (fence, status) = terminate_owned(&mut child, &tree, Some(&phase)).await;
@@ -3471,6 +3524,12 @@ mod windows_tests {
                     .await,
             );
             wait_for_launcher_exit(&owned.child);
+            // Observing the signaled handle must leave the child's exit
+            // available for the normal wait below.
+            assert_eq!(
+                observe_leader_handle(&owned.child),
+                LeaderHandleState::Signaled
+            );
             // The Job's count can lag its last member's exit.
             let deadline = Instant::now() + Duration::from_secs(10);
             while owned.tree.active() != Some(0) {
@@ -3492,6 +3551,10 @@ mod windows_tests {
                 Fence::owner_timeout(graceful_kill_owned(&mut child, &tree).await)
             };
             assert_eq!(completion.unconfirmed, None, "stop request: {stop_request}");
+            assert_eq!(
+                observe_leader_handle(&child),
+                LeaderHandleState::HandleUnavailable
+            );
         }
         assert_eq!(lifecycle.fence_receipts(), None);
         next_command_runs(&lifecycle).await;

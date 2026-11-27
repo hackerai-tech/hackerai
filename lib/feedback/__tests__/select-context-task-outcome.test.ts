@@ -1,5 +1,5 @@
 import { selectContextTaskOutcomeSurvey } from "../select-context-task-outcome";
-import { AGENT_CONTEXT_FEEDBACK_FLAG } from "../agent-context";
+import { AGENT_CONTEXT_FEEDBACK_SURVEY_KEY } from "../agent-context";
 const mutation = jest.fn();
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation }),
@@ -29,10 +29,7 @@ describe("context feedback delivery", () => {
     if (oldKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
     else process.env.CONVEX_SERVICE_ROLE_KEY = oldKey;
   });
-  const ph = (enabled = true) => ({
-    getFeatureFlagResult: jest.fn(async () => ({ enabled })),
-    capture: jest.fn(),
-  });
+  const ph = () => ({ capture: jest.fn() });
   it.each(["hackerai-max", "hackerai-pro"])(
     "freezes both variants of %s without reevaluating context or emitting false exposure",
     async (selectedModelOverride) => {
@@ -44,12 +41,6 @@ describe("context feedback delivery", () => {
           variant,
           posthog,
         });
-        expect(posthog.getFeatureFlagResult).toHaveBeenCalledTimes(1);
-        expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith(
-          AGENT_CONTEXT_FEEDBACK_FLAG,
-          "user",
-          expect.objectContaining({ sendFeatureFlagEvents: false }),
-        );
         expect(mutation).toHaveBeenLastCalledWith(
           expect.anything(),
           expect.objectContaining({
@@ -66,7 +57,7 @@ describe("context feedback delivery", () => {
             event: "task_outcome_survey_selected",
             properties: expect.objectContaining({
               survey_kind: "agent_context",
-              survey_key: AGENT_CONTEXT_FEEDBACK_FLAG,
+              survey_key: AGENT_CONTEXT_FEEDBACK_SURVEY_KEY,
               experiment_variant: variant,
             }),
           }),
@@ -94,12 +85,23 @@ describe("context feedback delivery", () => {
       ...patch,
       posthog,
     } as Parameters<typeof selectContextTaskOutcomeSurvey>[0]);
-    expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
     expect(mutation).not.toHaveBeenCalled();
   });
-  it("fails closed on disabled delivery, unselected history and unavailable service", async () => {
-    await selectContextTaskOutcomeSurvey({ ...base, posthog: ph(false) });
-    expect(mutation).not.toHaveBeenCalled();
+  it("reserves eligible feedback when analytics is unavailable", async () => {
+    const survey = await selectContextTaskOutcomeSurvey({
+      ...base,
+      posthog: null,
+    });
+    expect(survey?.linkMessage).toEqual(expect.any(Function));
+    expect(mutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        survey_kind: "agent_context",
+        user_id: "user",
+      }),
+    );
+  });
+  it("fails closed on unselected history and unavailable service", async () => {
     mutation.mockResolvedValue(null);
     const posthog = ph();
     expect(

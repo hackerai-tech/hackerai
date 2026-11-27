@@ -22,8 +22,13 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => null);
     const reasonCategory = isRecord(body) ? body.reasonCategory : undefined;
+    const reasonSubcategory = isRecord(body)
+      ? body.reasonSubcategory
+      : undefined;
 
-    return NextResponse.json(await getRetentionOffers({ reasonCategory }));
+    return NextResponse.json(
+      await getRetentionOffers({ reasonCategory, reasonSubcategory }),
+    );
   } catch (error) {
     return billingRouteErrorResponse(error);
   }

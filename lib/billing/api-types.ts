@@ -94,6 +94,8 @@ export type CancelSubscriptionResult = {
 
 export type GetRetentionOffersInput = {
   reasonCategory: CancellationReasonCategory;
+  /** Optional follow-up answer; it can rule an offer out. */
+  reasonSubcategory?: CancellationReasonSubcategory;
 };
 
 export type RetentionPauseOption = {
@@ -118,8 +120,23 @@ export type RetentionDowngradeOffer =
       currency?: string;
       /** When the cheaper plan takes effect: the current paid-through date (ms). */
       effectiveAt?: number;
+      /**
+       * Stripe's preview of the first invoice on the cheaper plan, present
+       * only when it was verified against the target price, currency and
+       * renewal date. Otherwise show `targetAmountDollars` as the regular
+       * monthly rate, not as the charge.
+       */
+      renewalCharge?: RetentionDowngradeRenewalCharge;
     }
   | { eligible: false; reason: DowngradeOfferIneligibilityReason };
+
+export type RetentionDowngradeRenewalCharge = {
+  /** Invoice amount due, including tax, discounts and account credit. */
+  amountDollars: number;
+  currency: string;
+  /** When Stripe would attempt the charge: the cheaper plan's start (ms). */
+  chargeAt: number;
+};
 
 export type RetentionOffers = {
   offersEnabled: boolean;
@@ -131,6 +148,8 @@ export type RetentionOffers = {
 
 export type DowngradeSubscriptionInput = {
   cancellationReason: CancellationReasonInput;
+  /** Opaque UUID of the offer impression being accepted. Analytics only. */
+  offerImpressionId?: string;
 };
 
 export type DowngradeSubscriptionResult = {
