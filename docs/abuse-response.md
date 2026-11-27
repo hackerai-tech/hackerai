@@ -405,11 +405,14 @@ and its cases follow the review, hold and erasure rules in this runbook.
 - **Bounded account history.** Truncated chat history leaves overlap
   uncertain. The worker allows 20 minutes for Trigger run history to settle,
   then reads up to four pages of 50 account-tagged `agent-long` runs in its own
-  environment. It uses only status and timing, with one minute of clock skew,
-  and discards any metadata returned by Trigger. A run that could have
-  overlapped creates a `multiple_runs` case, even if its workspace link is
-  missing. A missing selected run, exceeded page limit, or unreliable result
-  creates an `account_runs_unverified` case. Both require manual review.
+  environment. It checks run IDs, tags, status and timing with one minute of
+  clock skew. If one linked run overlaps and another has unknown timing, the
+  worker can rule the other run out when Trigger confirms the same run and
+  chat, timestamps consistent with the workspace acquisition, and completion
+  before the burst. This requires complete account history and proof for every
+  unplaced link. A run that could have overlapped creates a `multiple_runs`
+  case, even if its workspace link is missing. A missing selected run, exceeded
+  page limit, or unreliable result keeps the case in manual review.
 - **Acquisition links.** Each workspace keeps at most 48 link records across
   runs; the review still abstains with `too_many_runs` when more than 16
   distinct runs fall inside its window. Past 48 the oldest records are
@@ -441,9 +444,9 @@ and its cases follow the review, hold and erasure rules in this runbook.
   `competing_links`, `concurrent_root_run`, `root_page_limit`,
   `root_lookup_failed`, `selected_run_absent`, `run_overlap_unknown` or
   `evidence_gaps` with its `gaps` list), alongside counts of verified
-  sandboxes, stored link records, linked runs and plausible runs. It never
-  holds identifiers, content or provider errors and does not change the case
-  or receipt.
+  sandboxes, stored link records, linked runs and plausible runs.
+  `competingLinksRuledOut` counts unplaced links the Trigger check ruled out
+  before the evidence read. These diagnostics contain closed values and counts.
 - **Account cooldown.** A `no_case` decision, which requires complete
   exact-run evidence and corroborated legitimate work, stores a 24-hour
   cooldown for the verified account with the cleared minute's connection
