@@ -345,6 +345,28 @@ it("reads only the overlapping run of a historical burst, not later activity", a
     expect(convex.tables[table] ?? []).toHaveLength(0);
 });
 
+it("finds an overlapping run even when later chats dominate update order", async () => {
+  await seedBurst();
+  for (let index = 0; index < 25; index++) {
+    await chat(`chat-after-${index}`, at(40) + index, {
+      update_time: Date.now() - 1_000 - index,
+    });
+  }
+  await recordCase();
+
+  const { evidence } = await reassess();
+  expect(evidence.candidate).toMatchObject({
+    status: "found",
+    runId: RUN,
+    commands: [{ text: COMMAND }],
+  });
+  expect(evidence.selection).toMatchObject({
+    chatsScanned: 1,
+    chatsAfterBurst: 26,
+    scanTruncated: false,
+  });
+});
+
 it("reports a run that saved after the read range instead of no activity", async () => {
   await seedBurst({ saved: at(45) });
   await recordCase();

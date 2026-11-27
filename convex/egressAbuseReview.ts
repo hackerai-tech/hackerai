@@ -465,6 +465,7 @@ const ACTIVITY_LOOKBACK_MS = 24 * 60 * 60_000;
 /** Account activity is read only for a recent burst, never an old window. */
 const MAX_ACTIVITY_BURST_AGE_MS = 24 * 60 * 60_000;
 const MAX_ACTIVITY_CHAT_SCAN = 20;
+const MAX_BURST_CHAT_DISCOVERY = 4 * MAX_ACTIVITY_CHAT_SCAN;
 const MAX_ACTIVITY_CHATS = 3;
 const MAX_ACTIVITY_ROWS_PER_CHAT = 80;
 const MAX_ACTIVITY_CHAT_BYTES = 1_536 * 1024;
@@ -739,24 +740,52 @@ async function collectAccountActivity(
   burst?: BurstScope,
 ) {
   // A chat active during the window was updated at or after its start.
-  const chats = await ctx.db
+  const chatQuery = ctx.db
     .query("chats")
     .withIndex("by_user_and_updated", (q) =>
       q.eq("user_id", window.userId).gte("update_time", window.windowStart),
     )
-    .order("desc")
-    .take(MAX_ACTIVITY_CHAT_SCAN + 1);
-  let scanTruncated = chats.length > MAX_ACTIVITY_CHAT_SCAN;
+    .order("desc");
+  let scanTruncated = false;
   const budget = { bytes: 0 };
-  const scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
-  for (const chat of scanned) budget.bytes += getDocumentSize(chat);
+  let chatsAfterBurst = 0;
+  let scanned: Doc<"chats">[];
+  if (burst) {
+    scanned = [];
+    for await (const chat of chatQuery) {
+      if (scanned.length + chatsAfterBurst >= MAX_BURST_CHAT_DISCOVERY) {
+        scanTruncated = true;
+        break;
+      }
+      budget.bytes += getDocumentSize(chat);
+      if (budget.bytes >= MAX_ACTIVITY_BYTES) {
+        scanTruncated = true;
+        break;
+      }
+      // A chat created later cannot have hosted an overlapping run. Skip its
+      // metadata without using one of the bounded message reads.
+      if (chat._creationTime > burst.burstEnd + CLOCK_SKEW_MS) {
+        chatsAfterBurst++;
+        continue;
+      }
+      if (scanned.length >= MAX_ACTIVITY_CHAT_SCAN) {
+        scanTruncated = true;
+        break;
+      }
+      scanned.push(chat);
+    }
+  } else {
+    const chats = await chatQuery.take(MAX_ACTIVITY_CHAT_SCAN + 1);
+    scanTruncated = chats.length > MAX_ACTIVITY_CHAT_SCAN;
+    scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
+    for (const chat of scanned) budget.bytes += getDocumentSize(chat);
+  }
 
   const found: NonNullable<
     Awaited<ReturnType<typeof readChatActivity>>["activity"]
   >[] = [];
   let chatsScanned = 0;
   let chatsWithoutCommands = 0;
-  let chatsAfterBurst = 0;
   const timing: BurstTiming = {
     overlappingRuns: 0,
     unplacedRuns: 0,
@@ -764,11 +793,6 @@ async function collectAccountActivity(
   };
   for (const chat of scanned) {
     if (chat.user_id !== window.userId || chat.deletion_started_at) continue;
-    // A run starts after its chat exists, so none of this chat's overlapped.
-    if (burst && chat._creationTime > burst.burstEnd + CLOCK_SKEW_MS) {
-      chatsAfterBurst++;
-      continue;
-    }
     if (budget.bytes >= MAX_ACTIVITY_BYTES) {
       scanTruncated = true;
       break;
