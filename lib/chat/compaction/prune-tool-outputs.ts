@@ -1,5 +1,9 @@
 import type { UIMessage } from "ai";
 import { safeCountTokens } from "@/lib/token-utils";
+import {
+  dropReceiptUnlessExecRetained,
+  isStartedTerminalExec,
+} from "./terminal-start-receipt";
 
 /**
  * Default rolling token budget for tool outputs (protection window).
@@ -86,6 +90,7 @@ interface ToolPart {
   state?: string;
   input?: any;
   output?: any;
+  terminalStartReceipt?: unknown;
 }
 
 /** Keep mutation outcomes without retaining file contents or arbitrary error text. */
@@ -351,6 +356,21 @@ const buildPlaceholder = (part: ToolPart): string => {
 const isCompactPlaceholderOutput = (output: unknown): output is string =>
   typeof output === "string" && COMPACT_PLACEHOLDER_PATTERN.test(output);
 
+/**
+ * Replaces a completed part's full result with its placeholder. A started
+ * exec keeps its start receipt beside it (see terminal-start-receipt.ts); an
+ * already compact part, with any receipt it kept, is returned unchanged.
+ */
+const withCompactOutput = (part: ToolPart): ToolPart => {
+  if (isCompactPlaceholderOutput(part.output)) return part;
+  const { terminalStartReceipt: _receipt, ...rest } = part;
+  return {
+    ...rest,
+    output: buildPlaceholder(part),
+    ...(isStartedTerminalExec(part) ? { terminalStartReceipt: true } : {}),
+  };
+};
+
 const isPrunableToolPart = (part: ToolPart): boolean => {
   const toolName = part.type?.startsWith(TOOL_TYPE_PREFIX)
     ? part.type.slice(TOOL_TYPE_PREFIX.length)
@@ -571,15 +591,15 @@ const compactToolPartForStorage = (
     return part;
   }
 
-  return {
-    ...part,
+  return dropReceiptUnlessExecRetained(part, {
+    ...(PROTECTED_TOOLS.has(toolName)
+      ? {
+          ...part,
+          output: compactProtectedToolOutputForStorage(toolName, part.output),
+        }
+      : withCompactOutput(part)),
     input: compactToolPartInputForStorage(toolName, part.input),
-    output: PROTECTED_TOOLS.has(toolName)
-      ? compactProtectedToolOutputForStorage(toolName, part.output)
-      : isCompactPlaceholderOutput(part.output)
-        ? part.output
-        : buildPlaceholder(part),
-  };
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -822,13 +842,13 @@ const compactNonCompletedPartForStorage = (
 ): UIMessage["parts"][number] => {
   const toolPart = part as ToolPart;
   if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
-    return {
+    return dropReceiptUnlessExecRetained(toolPart, {
       ...toolPart,
       input: compactToolPartInputForStorage(
         toolPart.type.slice(TOOL_TYPE_PREFIX.length),
         toolPart.input,
       ),
-    } as UIMessage["parts"][number];
+    }) as UIMessage["parts"][number];
   }
 
   if ("data" in part) {
@@ -873,7 +893,7 @@ const fitSinglePartToByteLimit = (
 
   const toolPart = part as ToolPart;
   if (toolPart.type?.startsWith(TOOL_TYPE_PREFIX)) {
-    const minimalToolPart = {
+    const minimalToolPart = dropReceiptUnlessExecRetained(toolPart, {
       type: toolPart.type,
       toolCallId: toolPart.toolCallId,
       state: toolPart.state,
@@ -886,7 +906,7 @@ const fitSinglePartToByteLimit = (
             ),
           }
         : {}),
-    } as UIMessage["parts"][number];
+    }) as UIMessage["parts"][number];
     if (estimateSizeBytes([minimalToolPart]) <= byteLimit) {
       return minimalToolPart;
     }
@@ -1185,13 +1205,7 @@ export function pruneToolOutputs(
     const newParts = msg.parts.map((part, pi) => {
       if (!toPrune.has(`${mi}:${pi}`)) return part;
 
-      const toolPart = part as ToolPart;
-      const placeholder = buildPlaceholder(toolPart);
-
-      return {
-        ...toolPart,
-        output: placeholder,
-      } as typeof part;
+      return withCompactOutput(part as ToolPart) as typeof part;
     });
 
     return { ...msg, parts: newParts } as typeof msg;

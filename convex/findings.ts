@@ -985,8 +985,19 @@ export const deleteFinding = mutation({
         (part: any) => part?.toolCallId !== finding.tool_call_id,
       );
       if (scrubbedParts.length !== message.parts.length) {
+        // Removing a terminal call leaves the worker's attestation incomplete.
+        const removedTerminalCall = message.parts.some(
+          (part: any) =>
+            part?.toolCallId === finding.tool_call_id &&
+            (part.type === "tool-run_terminal_cmd" ||
+              part.type === "tool-interact_terminal_session"),
+        );
         await ctx.db.patch(message._id, {
           parts: scrubbedParts,
+          ...(removedTerminalCall &&
+          message.terminal_evidence_state === "complete"
+            ? { terminal_evidence_state: "incomplete" as const }
+            : {}),
           update_time: Date.now(),
         });
       }

@@ -138,6 +138,7 @@ async function seed(ctx: any, chat: Record<string, unknown> = {}) {
     user_id: USER,
     role: "assistant",
     trigger_run_id: RUN,
+    terminal_evidence_state: "complete",
     generation_started_at: burst.burstStart - 5 * MINUTE_MS,
     generation_time_ms: 10 * MINUTE_MS,
     parts: [
@@ -356,6 +357,40 @@ describe("applyBlock", () => {
       "evidence_mismatch",
     ],
     [
+      "a row saved before terminal evidence provenance",
+      async (ctx: any) => {
+        delete ctx.tables.messages[1].terminal_evidence_state;
+      },
+      "evidence_mismatch",
+    ],
+    [
+      "a browser snapshot of the run",
+      async (ctx: any) => {
+        ctx.tables.messages[1].terminal_evidence_state = "unverified";
+      },
+      "evidence_mismatch",
+    ],
+    [
+      "a worker save whose storage compaction lost terminal evidence",
+      async (ctx: any) => {
+        ctx.tables.messages[1].terminal_evidence_state = "incomplete";
+      },
+      "evidence_mismatch",
+    ],
+    [
+      "a compacted start receipt on a row the worker did not attest",
+      async (ctx: any) => {
+        const row = ctx.tables.messages[1];
+        delete row.terminal_evidence_state;
+        row.parts[0] = {
+          ...row.parts[0],
+          output: "[Terminal: ran 'synthetic placeholder', exit code 0]",
+          terminalStartReceipt: true,
+        };
+      },
+      "evidence_mismatch",
+    ],
+    [
       "an unfinished assistant row",
       async (ctx: any) => {
         delete ctx.tables.messages[1].generation_time_ms;
@@ -418,6 +453,18 @@ describe("applyBlock", () => {
     expect(ctx.tables.local_sandbox_tokens[0].token).toBe(
       "synthetic-local-token",
     );
+  });
+
+  it("accepts a compacted start receipt on a worker-attested row", async () => {
+    const ctx = database();
+    await seed(ctx);
+    const row = ctx.tables.messages[1];
+    row.parts[0] = {
+      ...row.parts[0],
+      output: "[Terminal: ran 'synthetic placeholder', exit code 0]",
+      terminalStartReceipt: true,
+    };
+    await expect(apply(ctx)).resolves.toMatchObject({ outcome: "applied" });
   });
 
   it("refuses an old or future burst as retroactive", async () => {

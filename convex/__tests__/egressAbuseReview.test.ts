@@ -100,6 +100,7 @@ async function seedChat(ctx: any, overrides: Record<string, unknown> = {}) {
     user_id: USER,
     role: "assistant",
     trigger_run_id: RUN,
+    terminal_evidence_state: "complete",
     generation_started_at: BURST.burstStart - 5 * MINUTE_MS,
     generation_time_ms: 10 * MINUTE_MS,
     parts: [
@@ -307,6 +308,24 @@ describe("readRunEvidence", () => {
       expect(serialized).not.toContain(excluded);
   });
 
+  it.each([
+    ["saved before terminal evidence provenance", undefined, 1, 4],
+    ["saved from a browser snapshot", "unverified", 0, 1],
+    ["saved by a worker whose compaction lost evidence", "incomplete", 1, 4],
+  ])(
+    "counts a run row %s as incomplete",
+    async (_label, provenance, commands, incomplete) => {
+      const ctx = reviewDatabase();
+      await seedChat(ctx);
+      ctx.tables.messages.find(
+        ({ id }: any) => id === "m-assistant",
+      ).terminal_evidence_state = provenance;
+      const result = await invoke("readRunEvidence", ctx, runArgs);
+      expect(result.commands).toHaveLength(commands);
+      expect(result.coverage.incompleteToolCalls).toBe(incomplete);
+    },
+  );
+
   it("abstains when a subagent of the run may have shared the workspace", async () => {
     const ctx = reviewDatabase();
     await seedChat(ctx);
@@ -435,6 +454,26 @@ describe("readAccountActivity", () => {
       ],
     });
   }
+
+  it.each([
+    ["a compacted start receipt on a row saved before provenance", undefined],
+    ["a browser snapshot", "unverified"],
+  ])("reads no command from %s", async (_label, provenance) => {
+    const ctx = reviewDatabase();
+    await seedActivity(ctx, "chat_main", burstStart - 10 * MINUTE_MS);
+    const row = ctx.tables.messages.find(
+      ({ id }: any) => id === "chat_main-assistant",
+    );
+    row.terminal_evidence_state = provenance;
+    row.parts[1] = {
+      ...row.parts[1],
+      output: "[Terminal: ran 'COMMAND chat_main', exit code 0]",
+      terminalStartReceipt: true,
+    };
+    const result = await read(ctx);
+    expect(result.chats).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("COMMAND chat_main");
+  });
 
   it("returns only owned chats whose runs started commands in the window, without other content", async () => {
     const ctx = reviewDatabase();

@@ -422,6 +422,132 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  describe("terminal evidence provenance", () => {
+    const workerSave = (overrides: Record<string, unknown> = {}) => ({
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant" as const,
+      mode: "agent" as const,
+      triggerRunId: "run-1",
+      parts: [{ type: "text", text: "worker parts" }],
+      terminalEvidenceState: "complete" as const,
+      ...overrides,
+    });
+    const inserted = () => mockCtx.db.insert.mock.calls[0][1];
+    const patched = () => mockCtx.db.patch.mock.calls.at(-1)?.[1];
+
+    it.each(["complete", "incomplete"] as const)(
+      "stores the worker's %s attestation with the parts it inserts",
+      async (state) => {
+        setupExistingMessage(null);
+        const { saveMessage } = await import("../messages");
+        await saveMessage.handler(
+          mockCtx,
+          workerSave({ terminalEvidenceState: state }),
+        );
+        expect(inserted()).toMatchObject({
+          trigger_run_id: "run-1",
+          terminal_evidence_state: state,
+        });
+      },
+    );
+
+    it.each([
+      ["a browser snapshot", { clientSnapshot: true }],
+      ["crash recovery", { expectedActiveTriggerRunId: "run-1" }],
+      ["a save without a run", { triggerRunId: undefined }],
+      ["an empty run ID", { triggerRunId: "" }],
+      ["an Ask save", { mode: "ask" }],
+      ["a missing mode", { mode: undefined }],
+    ])("never accepts the attestation from %s", async (_label, overrides) => {
+      setupExistingMessage(null, {
+        _id: "chat-doc",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        active_trigger_run_id: "run-1",
+      });
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, workerSave(overrides));
+      expect(inserted().terminal_evidence_state).toBe("unverified");
+    });
+
+    it("marks unattested snapshots and recovery, leaving other writers unknown", async () => {
+      const { saveMessage } = await import("../messages");
+      const unattested = { terminalEvidenceState: undefined };
+      setupExistingMessage(null);
+      await saveMessage.handler(
+        mockCtx,
+        workerSave({ ...unattested, clientSnapshot: true }),
+      );
+      expect(inserted().terminal_evidence_state).toBe("unverified");
+
+      mockCtx.db.insert.mockClear();
+      await saveMessage.handler(mockCtx, workerSave(unattested));
+      expect(inserted().terminal_evidence_state).toBeUndefined();
+    });
+
+    it.each([
+      ["the worker", {}, "complete"],
+      ["crash recovery", { expectedActiveTriggerRunId: "run-1" }, "unverified"],
+      ["an unattested writer", { terminalEvidenceState: undefined }, undefined],
+    ])(
+      "replaces the provenance with the parts %s replaces",
+      async (_label, overrides, state) => {
+        setupExistingMessage(
+          makeMessage({
+            role: "assistant",
+            trigger_run_id: "run-1",
+            finish_reason: "trigger_crashed_client_saved",
+            terminal_evidence_state: "unverified",
+          }),
+          {
+            _id: "chat-doc",
+            id: CHAT_ID,
+            user_id: USER_ID,
+            active_trigger_run_id: "run-1",
+          },
+        );
+        const { saveMessage } = await import("../messages");
+        await saveMessage.handler(mockCtx, workerSave(overrides));
+        expect(patched()).toMatchObject({
+          parts: [{ type: "text", text: "worker parts" }],
+        });
+        expect(patched()).toHaveProperty("terminal_evidence_state", state);
+      },
+    );
+
+    it.each([
+      [
+        "adds its run ID to a row saved without one",
+        { finish_reason: undefined, trigger_run_id: undefined },
+      ],
+      ["completes a final row", { finish_reason: "stop" }],
+    ])(
+      "keeps the row's provenance when the worker only %s",
+      async (_label, existing) => {
+        setupExistingMessage(
+          makeMessage({
+            role: "assistant",
+            trigger_run_id: "run-1",
+            terminal_evidence_state: "unverified",
+            ...existing,
+          }),
+        );
+        const { saveMessage } = await import("../messages");
+        await saveMessage.handler(
+          mockCtx,
+          workerSave({ finishReason: "stop", generationTimeMs: 5 }),
+        );
+        for (const [, patch] of mockCtx.db.patch.mock.calls) {
+          expect(patch).not.toHaveProperty("parts");
+          expect(patch).not.toHaveProperty("terminal_evidence_state");
+        }
+      },
+    );
+  });
+
   it("rejects changing an existing message to a different Trigger run", async () => {
     const existing = makeMessage({
       role: "assistant",
@@ -1600,6 +1726,22 @@ describe("client stop-save routing provenance", () => {
     expect(document.content.length).toBeLessThan(text.length);
     expect(document.content.endsWith("🙂")).toBe(true);
     expect(getDocumentSize(document)).toBeLessThanOrEqual(960 * 1024);
+  });
+
+  it("marks browser-saved assistant parts as unverified terminal evidence", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    for (const role of ["assistant", "user"] as const) {
+      const ctx = makeClientContext();
+      await saveAssistantMessage.handler(ctx as any, {
+        id: `client-${role}`,
+        chatId: CHAT_ID,
+        role,
+        parts: [{ type: "text", text: "browser parts" }],
+      });
+      expect(ctx.db.insert.mock.calls[0][1].terminal_evidence_state).toBe(
+        role === "assistant" ? "unverified" : undefined,
+      );
+    }
   });
 
   it("rejects aggregate oversized parts before native insert with bounded diagnostics", async () => {

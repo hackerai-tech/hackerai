@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage } from "ai";
+import { getFunctionName } from "convex/server";
 import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 
 const loadSaveMessageWithMocks = async () => {
@@ -1502,6 +1503,129 @@ describe("saveMessage", () => {
         triggerRunId: "run-1",
       }),
     );
+  });
+
+  describe("terminal evidence attestation", () => {
+    const BULK = "inert-output ".repeat(3_000);
+    const terminal = (toolCallId: string) => ({
+      type: "tool-run_terminal_cmd",
+      toolCallId,
+      state: "output-available",
+      input: { command: "printf inert-fixture" },
+      output: {
+        result: { processStarted: true, pid: 7, exitCode: 0, output: BULK },
+      },
+    });
+    const severeCompaction = (softLimitBytes: number) => {
+      const actual = jest.requireActual<
+        typeof import("@/lib/chat/compaction/prune-tool-outputs")
+      >("@/lib/chat/compaction/prune-tool-outputs");
+      return (message: any) =>
+        actual.compactMessageForStorage(message, {
+          softLimitBytes,
+          toolOutputTokenBudget: 0,
+        });
+    };
+    const save = (saveMessage: any, parts: unknown[], attest = true) =>
+      saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: { id: "message-1", role: "assistant", parts },
+        mode: "agent",
+        triggerRunId: "run-1",
+        ...(attest ? { attestTerminalEvidence: true } : {}),
+      });
+
+    it("attests complete evidence for parts saved as produced", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      await save(saveMessage, [terminal("call-1")]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([terminal("call-1")]);
+      expect(args.terminalEvidenceState).toBe("complete");
+    });
+
+    it("attests complete evidence after both prune stages trim other parts", async () => {
+      const { saveMessage, mockMutation, mockCompactMessageForStorage } =
+        await loadSaveMessageWithMocks();
+      mockCompactMessageForStorage.mockImplementation(
+        severeCompaction(900) as any,
+      );
+      await save(saveMessage, [
+        { type: "text", text: BULK },
+        terminal("call-1"),
+      ]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([
+        {
+          ...terminal("call-1"),
+          output: "[Terminal: ran 'printf inert-fixture', exit code 0]",
+          terminalStartReceipt: true,
+        },
+      ]);
+      expect(args.terminalEvidenceState).toBe("complete");
+    });
+
+    it("attests incomplete evidence when the hard limit drops a terminal call", async () => {
+      const { saveMessage, mockMutation, mockCompactMessageForStorage } =
+        await loadSaveMessageWithMocks();
+      mockCompactMessageForStorage.mockImplementation(
+        severeCompaction(2_000) as any,
+      );
+      await save(saveMessage, [
+        terminal("call-1"),
+        { type: "text", text: BULK },
+      ]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([expect.objectContaining({ type: "text" })]);
+      expect(args.terminalEvidenceState).toBe("incomplete");
+    });
+
+    it("saves the same parts without attestation when an older validator rejects it", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation
+        .mockRejectedValueOnce(
+          new Error(
+            "ArgumentValidationError: Object contains extra field `terminalEvidenceState` that is not in the validator.\n\nObject: {…}",
+          ) as never,
+        )
+        .mockResolvedValueOnce(null as never);
+
+      await expect(save(saveMessage, [terminal("call-1")])).resolves.toBeNull();
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      const [first, fallback] = mockMutation.mock.calls;
+      for (const [mutation] of [first, fallback]) {
+        expect(getFunctionName(mutation as never)).toBe("messages:saveMessage");
+      }
+      expect(first[1]).toEqual({
+        ...(fallback[1] as Record<string, unknown>),
+        terminalEvidenceState: "complete",
+      });
+      expect(fallback[1]).not.toHaveProperty("terminalEvidenceState");
+    });
+
+    it("does not drop attestation for a different argument validation failure", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation.mockRejectedValueOnce(
+        new Error(
+          "ArgumentValidationError: Object contains extra field `otherField` that is not in the validator.",
+        ) as never,
+      );
+
+      await expect(save(saveMessage, [terminal("call-1")])).rejects.toThrow();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      expect(mockMutation.mock.calls[0]?.[1]).toHaveProperty(
+        "terminalEvidenceState",
+        "complete",
+      );
+    });
+
+    it("sends no attestation unless the worker asks for one", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      await save(saveMessage, [terminal("call-1")], false);
+      expect(mockMutation.mock.calls[0]?.[1]).not.toHaveProperty(
+        "terminalEvidenceState",
+      );
+    });
   });
 
   it("sanitizes assistant parts before storage compaction", async () => {

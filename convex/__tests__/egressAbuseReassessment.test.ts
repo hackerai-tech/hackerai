@@ -271,6 +271,43 @@ it("reads only the retained candidate of an overlap case and adds one audit read
   ).resolves.toEqual({ status: "unavailable", reason: "concurrent_run" });
 });
 
+it.each([
+  ["a browser snapshot", { terminal_evidence_state: "unverified" }, 0, 1],
+  [
+    "a worker save that lost terminal evidence",
+    { terminal_evidence_state: "incomplete" },
+    1,
+    1,
+  ],
+  [
+    "a compacted start receipt on a row saved before provenance",
+    {
+      parts: [
+        {
+          ...terminal("call-real-id", COMMAND, "output-available"),
+          output: `[Terminal: ran '${COMMAND}', exit code 0]`,
+          terminalStartReceipt: true,
+        },
+      ],
+    },
+    0,
+    1,
+  ],
+])(
+  "reads the candidate's %s as incomplete",
+  async (_label, change, commands, incomplete) => {
+    await seedCandidate();
+    Object.assign(
+      convex.tables.messages.find(({ id }: any) => id === "msg-assistant"),
+      change,
+    );
+    await recordCase();
+    const { evidence } = await reassess();
+    expect(evidence.commands).toHaveLength(commands);
+    expect(evidence.coverage.incompleteToolCalls).toBe(incomplete);
+  },
+);
+
 describe("fails closed without returning evidence", () => {
   const historyLimited = {
     outcome: "manual_review",

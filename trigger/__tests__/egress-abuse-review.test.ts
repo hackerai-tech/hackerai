@@ -238,6 +238,7 @@ async function seedRun(
     user_id: first.userId,
     role: "assistant",
     trigger_run_id: runId,
+    terminal_evidence_state: "complete",
     generation_started_at: BURST_START - 5 * MINUTE_MS,
     ...(options.active ? {} : { generation_time_ms: 15 * MINUTE_MS }),
     parts: [terminal("call-1", options.command ?? SCAN)],
@@ -639,6 +640,35 @@ it("skips clearly corroborated legitimate work without creating a case", async (
   expect(convex.tables.abuse_cases ?? []).toHaveLength(0);
   expect(recordCaseCalls()).toHaveLength(0);
 });
+
+it.each([
+  ["saved before terminal evidence provenance", undefined],
+  ["saved from a browser snapshot", "unverified"],
+  ["whose storage compaction lost terminal evidence", "incomplete"],
+])(
+  "never clears or grants a cooldown for a run row %s",
+  async (_label, provenance) => {
+    await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+    convex.tables.messages.find(
+      ({ id }: any) => id === `${CHAT}-assistant`,
+    ).terminal_evidence_state = provenance;
+    await link();
+    classifyAs({
+      verdict: "clearly_legitimate",
+      activity: "ordinary_development",
+      authorization: "not_stated",
+      commandIndices: [1],
+      messageIndices: [1],
+    });
+    const result = await run();
+    expect(result).toMatchObject({
+      status: "completed",
+      outcome: "manual_review",
+    });
+    expect(result.diagnostic?.cooldownGrant).toBeUndefined();
+    expect(convex.tables.abuse_cases).toHaveLength(1);
+  },
+);
 
 it("dedupes a sustained burst into the window's case and preserves operator review", async () => {
   await seedRun();
@@ -1082,6 +1112,21 @@ describe("automatic enforcement", () => {
       command: "synthetic recorded disruptive action against 203.0.113.0/24",
     });
     await link();
+  });
+
+  it("never blocks a run whose storage compaction lost terminal evidence", async () => {
+    enable();
+    convex.tables.messages.find(
+      ({ id }: any) => id === `${CHAT}-assistant`,
+    ).terminal_evidence_state = "incomplete";
+    classifyAs({ ...concerning, activity: "denial_of_service" });
+    await expect(run()).resolves.toMatchObject({
+      status: "completed",
+      outcome: "manual_review",
+      enforcement: "keep_active",
+    });
+    expect(restrictions()).toEqual([]);
+    expect(convex.tables.abuse_block_notices ?? []).toEqual([]);
   });
 
   it("blocks the exact run's account and queues one notice when confirmed", async () => {
