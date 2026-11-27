@@ -2703,6 +2703,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("Ask, Agent and subagent tools meter Reader usage on their own tracker", () => {
+    // Each run settles and reports its own UsageTracker; a missing hook drops
+    // that entry point's Reader calls from usage_reader_* reporting.
+    for (const src of [chatHandlerSrc, taskSrc, subagentSrc]) {
+      const toolsIdx = src.indexOf("} = createTools(");
+      expect(toolsIdx).toBeGreaterThan(-1);
+      expect(src.slice(toolsIdx, toolsIdx + 6_000)).toContain(
+        "onReaderUsage: (usage) => usageTracker.recordReaderUsage(usage)",
+      );
+    }
+  });
+
   test("agent-long validates European Trigger placement before processing payload data", () => {
     const runIdx = taskSrc.indexOf(
       "run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal })",

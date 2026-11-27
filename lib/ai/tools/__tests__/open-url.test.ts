@@ -102,13 +102,16 @@ describe("open_url", () => {
   });
 
   it("reuses one scoped snapshot for continuation, and honors cancellation before a cache hit", async () => {
+    const onReaderUsage = jest.fn();
     const content =
       "Title: Reference\n\nMarkdown Content:\n" +
       "Important technical details.\n".repeat(7000);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValue({ ok: true, text: async () => content });
-    const tool = createOpenUrlTool();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "x-usage-tokens": "100" }),
+      text: async () => content,
+    });
+    const tool = createOpenUrlTool({ onReaderUsage });
     const first = (await runTool(tool, {
       url: "https://example.com/reference",
       brief: "Read",
@@ -120,6 +123,7 @@ describe("open_url", () => {
       brief: "Continue",
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(onReaderUsage.mock.calls).toEqual([[{ usageTokens: 100 }]]);
     const controller = new AbortController();
     controller.abort();
     await expect(
@@ -130,12 +134,16 @@ describe("open_url", () => {
     ).resolves.toBe("Error: Operation aborted");
     expect(global.fetch).toHaveBeenCalledTimes(1);
     // A different instance does not reuse another chat's document.
-    await runTool(createOpenUrlTool(), {
+    await runTool(createOpenUrlTool({ onReaderUsage }), {
       url: "https://example.com/reference",
       cursor,
       brief: "Resume",
     });
     expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(onReaderUsage.mock.calls).toEqual([
+      [{ usageTokens: 100 }],
+      [{ usageTokens: 100 }],
+    ]);
   });
 
   it("refetches an expired snapshot and rejects a continuation when the page changed", async () => {

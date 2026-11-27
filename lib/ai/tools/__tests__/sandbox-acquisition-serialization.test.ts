@@ -87,6 +87,7 @@ jest.mock("@/lib/logger", () => ({
 
 import { createTools } from "..";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createOpenUrlTool } from "../open-url";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { E2B_COST_PER_MS } from "../utils/e2b-cost";
 
@@ -172,6 +173,36 @@ describe("sandbox acquisition serialization", () => {
     expect(execute).toHaveBeenCalledTimes(2);
     expect(mockNetworkQuery).not.toHaveBeenCalled();
   });
+
+  it.each(["ask", "agent"] as const)(
+    "hands the runtime Reader meter to open_url in %s mode",
+    (mode) => {
+      const originalKey = process.env.JINA_API_KEY;
+      process.env.JINA_API_KEY = "test-key";
+      try {
+        const onReaderUsage = jest.fn();
+        const args: Parameters<typeof createTools> = [
+          "user-1",
+          "chat-1",
+          {} as never,
+          mode,
+          {} as never,
+        ];
+        args[22] = { onReaderUsage };
+        createTools(...args);
+        const contexts = jest
+          .mocked(createOpenUrlTool)
+          .mock.calls.map(([context]) => context);
+        expect(contexts.length).toBeGreaterThan(0);
+        for (const context of contexts) {
+          expect(context?.onReaderUsage).toBe(onReaderUsage);
+        }
+      } finally {
+        if (originalKey === undefined) delete process.env.JINA_API_KEY;
+        else process.env.JINA_API_KEY = originalKey;
+      }
+    },
+  );
 
   it.each([
     ["agent", "e2b", true],

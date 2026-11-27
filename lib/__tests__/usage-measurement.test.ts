@@ -249,3 +249,56 @@ it("distinguishes missing telemetry from explicit zero reads and unfinished call
     usage_cache_covered_read_tokens: 0,
   });
 });
+
+it("meters Reader calls without changing customer amounts or settlement", () => {
+  const withoutReader = new UsageTracker();
+  const withReader = new UsageTracker();
+  for (const tracker of [withoutReader, withReader]) {
+    tracker.accumulateStep(
+      { inputTokens: 100, outputTokens: 10, raw: { cost: 0.5 } },
+      "model",
+    );
+    tracker.nonModelCost = 0.25;
+  }
+  withReader.recordReaderUsage({ usageTokens: 1200 });
+  withReader.recordReaderUsage({ usageTokens: 0 });
+  withReader.recordReaderUsage({ usageTokens: undefined });
+
+  const record = (tracker: UsageTracker) =>
+    tracker.createUsageCostRecord({
+      selectedModel: "model",
+      configuredModelId: "model",
+      rateLimitInfo: { remaining: 0, resetTime: new Date(0), limit: 0 },
+    });
+  expect(record(withReader)).toEqual(record(withoutReader));
+  expect(withReader.providerCost).toBe(withoutReader.providerCost);
+  expect(withReader.hasUsage).toBe(withoutReader.hasUsage);
+
+  // Reader work already happened, so a model fallback must not erase it.
+  withReader.prepareModelRetry();
+  expect(withReader.measurementProperties("model")).toMatchObject({
+    usage_reader_provider_calls: 3,
+    usage_reader_reported_tokens: 1200,
+    usage_reader_unreported_calls: 1,
+  });
+});
+
+it("distinguishes a reported zero Reader count from a missing one", () => {
+  const zero = new UsageTracker();
+  zero.recordReaderUsage({ usageTokens: 0 });
+  const missing = new UsageTracker();
+  missing.recordReaderUsage({ usageTokens: undefined });
+
+  expect(zero.hasIncurredMeasurement).toBe(true);
+  expect(zero.hasUsage).toBe(false);
+  expect(zero.measurementProperties("model")).toMatchObject({
+    usage_reader_provider_calls: 1,
+    usage_reader_reported_tokens: 0,
+    usage_reader_unreported_calls: 0,
+  });
+  expect(missing.measurementProperties("model")).toMatchObject({
+    usage_reader_provider_calls: 1,
+    usage_reader_reported_tokens: 0,
+    usage_reader_unreported_calls: 1,
+  });
+});

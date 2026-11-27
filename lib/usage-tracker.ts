@@ -203,9 +203,34 @@ export class UsageTracker {
   /** First model step of the current leg, set by beginModelLeg(). */
   private modelLegStartStep?: number;
 
+  // Jina Reader requests actually sent by this run's own tools. Measurement
+  // only: no rate is known, so these never enter cost or deductions, and model
+  // retries do not reset them because the provider work already happened.
+  private readerProviderCalls = 0;
+  private readerUnreportedCalls = 0;
+  private readerReportedTokens = 0;
+
   recordModelCall(): void {
     this.modelCallsStarted++;
   }
+
+  recordReaderUsage({ usageTokens }: { usageTokens: number | undefined }) {
+    this.readerProviderCalls++;
+    if (
+      typeof usageTokens === "number" &&
+      Number.isSafeInteger(usageTokens) &&
+      usageTokens >= 0
+    ) {
+      this.readerReportedTokens += usageTokens;
+    } else {
+      this.readerUnreportedCalls++;
+    }
+  }
+
+  get hasReaderMeasurement(): boolean {
+    return this.readerProviderCalls > 0;
+  }
+
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   /**
@@ -472,7 +497,8 @@ export class UsageTracker {
 
   /**
    * Measurement only: true when a model call started, a model record (including
-   * a discarded retry) or non-model cost was observed. Never decide billing here.
+   * a discarded retry), non-model cost or Reader usage was observed.
+   * Never decide billing here.
    */
   get hasIncurredMeasurement(): boolean {
     return (
@@ -480,7 +506,8 @@ export class UsageTracker {
       this.discardedModelSteps.length > 0 ||
       this.modelStepCosts.length > 0 ||
       this.summarizationStepCosts.length > 0 ||
-      this.nonModelCost > 0
+      this.nonModelCost > 0 ||
+      this.hasReaderMeasurement
     );
   }
 
@@ -568,6 +595,9 @@ export class UsageTracker {
         (sum, step) => sum + step.cacheReadTokens,
         0,
       ),
+      usage_reader_provider_calls: this.readerProviderCalls,
+      usage_reader_reported_tokens: this.readerReportedTokens,
+      usage_reader_unreported_calls: this.readerUnreportedCalls,
     };
   }
 

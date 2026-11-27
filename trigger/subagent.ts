@@ -736,7 +736,9 @@ export const subagentTask = task({
         selectedModel,
         responseModel,
       );
-      if (usageSettled || (!usageTracker.hasUsage && costDollars === 0)) {
+      if (usageSettled) return { costDollars, billingFailure: false };
+      if (!usageTracker.hasUsage && costDollars === 0) {
+        if (usageTracker.hasReaderMeasurement) reportIncompleteUsageCost();
         return { costDollars, billingFailure: false };
       }
       if (row.subscription === "free") {
@@ -1270,6 +1272,7 @@ export const subagentTask = task({
                 chargeSandboxRuntime: false,
                 triggerRegion,
                 environment: ctx.environment.type,
+                onReaderUsage: (usage) => usageTracker.recordReaderUsage(usage),
               },
             );
             cleanupBrowserSessions = cleanupToolBrowsers;
