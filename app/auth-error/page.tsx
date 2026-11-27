@@ -62,6 +62,13 @@ const DEFAULT_ERROR = {
 
 type SearchParams = Promise<{ code?: string }>;
 
+/**
+ * Only an HTTP status may be echoed. Anyone can link to this page, so showing
+ * arbitrary query text would let a third party put their own message, such as
+ * a fake support number, on a hackerai.co page.
+ */
+const DISPLAYABLE_CODE = /^[1-5]\d\d$/;
+
 export default async function AuthErrorPage({
   searchParams,
 }: {
@@ -69,6 +76,8 @@ export default async function AuthErrorPage({
 }) {
   const { code } = await searchParams;
   const errorInfo = ERROR_MESSAGES[code as ErrorCode] ?? DEFAULT_ERROR;
+  const displayCode =
+    typeof code === "string" && DISPLAYABLE_CODE.test(code) ? code : undefined;
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -83,9 +92,9 @@ export default async function AuthErrorPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {code && (
+          {displayCode && (
             <p className="text-center text-xs text-muted-foreground">
-              Error code: {code}
+              Error code: {displayCode}
             </p>
           )}
         </CardContent>
