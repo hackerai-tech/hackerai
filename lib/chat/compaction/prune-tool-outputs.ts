@@ -1,8 +1,6 @@
 import type { UIMessage } from "ai";
 import { safeCountTokens } from "@/lib/token-utils";
 import {
-  compactTerminalReceipt,
-  compactTerminalReceiptSummary,
   dropReceiptUnlessExecRetained,
   isStartedTerminalExec,
 } from "./terminal-start-receipt";
@@ -357,19 +355,19 @@ const buildPlaceholder = (part: ToolPart): string => {
 const isCompactPlaceholderOutput = (output: unknown): output is string =>
   typeof output === "string" && COMPACT_PLACEHOLDER_PATTERN.test(output);
 
-/** A placeholder, or a terminal summary that kept its start receipt. */
-const isCompactToolOutput = (output: unknown): boolean =>
-  isCompactPlaceholderOutput(output) ||
-  isCompactPlaceholderOutput(compactTerminalReceiptSummary(output));
-
-/** The compact output that replaces a completed part's full result. */
-const compactToolOutput = (part: ToolPart): unknown => {
-  if (isCompactToolOutput(part.output)) return part.output;
-  const placeholder = buildPlaceholder(part);
-  return isStartedTerminalExec(part)
-    ? compactTerminalReceipt(placeholder)
-    : placeholder;
-};
+/**
+ * Replaces a completed part's full result with its placeholder. A started
+ * exec keeps its start receipt beside it (see terminal-start-receipt.ts); an
+ * already compact part, with any receipt it kept, is returned unchanged.
+ */
+const withCompactOutput = (part: ToolPart): ToolPart =>
+  isCompactPlaceholderOutput(part.output)
+    ? part
+    : {
+        ...part,
+        output: buildPlaceholder(part),
+        ...(isStartedTerminalExec(part) ? { terminalStartReceipt: true } : {}),
+      };
 
 const isPrunableToolPart = (part: ToolPart): boolean => {
   const toolName = part.type?.startsWith(TOOL_TYPE_PREFIX)
@@ -592,11 +590,13 @@ const compactToolPartForStorage = (
   }
 
   return dropReceiptUnlessExecRetained(part, {
-    ...part,
+    ...(PROTECTED_TOOLS.has(toolName)
+      ? {
+          ...part,
+          output: compactProtectedToolOutputForStorage(toolName, part.output),
+        }
+      : withCompactOutput(part)),
     input: compactToolPartInputForStorage(toolName, part.input),
-    output: PROTECTED_TOOLS.has(toolName)
-      ? compactProtectedToolOutputForStorage(toolName, part.output)
-      : compactToolOutput(part),
   });
 };
 
@@ -1138,7 +1138,7 @@ export function pruneToolOutputs(
         !PROTECTED_TOOLS.has(toolName) &&
         (part.state === "output-available" || part.state === "output-error") &&
         part.output != null &&
-        !isCompactToolOutput(part.output)
+        !isCompactPlaceholderOutput(part.output)
       ) {
         toolEntries.push({
           msgIdx: mi,
@@ -1203,12 +1203,7 @@ export function pruneToolOutputs(
     const newParts = msg.parts.map((part, pi) => {
       if (!toPrune.has(`${mi}:${pi}`)) return part;
 
-      const toolPart = part as ToolPart;
-
-      return {
-        ...toolPart,
-        output: compactToolOutput(toolPart),
-      } as typeof part;
+      return withCompactOutput(part as ToolPart) as typeof part;
     });
 
     return { ...msg, parts: newParts } as typeof msg;

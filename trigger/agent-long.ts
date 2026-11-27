@@ -4867,6 +4867,7 @@ export const agentLongTask = task({
                   chatId,
                   userId,
                   triggerRunId: ctx.run.id,
+                  attestTerminalEvidence: true,
                   message: processed,
                   extraFileIds: newFileIds,
                   usage: state.streamUsage,
@@ -5722,6 +5723,7 @@ export const agentLongTask = task({
                               chatId,
                               userId,
                               triggerRunId: ctx.run.id,
+                              attestTerminalEvidence: true,
                               message: summarizationTracker.withSteerParts(
                                 loopContinuation &&
                                   message.id === loopRecoverySourceMessageId
@@ -5965,6 +5967,7 @@ export const agentLongTask = task({
                                         chatId,
                                         userId,
                                         triggerRunId: ctx.run.id,
+                                        attestTerminalEvidence: true,
                                         message:
                                           summarizationTracker.withSteerParts(
                                             message,
@@ -6383,6 +6386,7 @@ export const agentLongTask = task({
                               processed.role === "assistant"
                                 ? ctx.run.id
                                 : undefined,
+                            attestTerminalEvidence: true,
                             message: processed,
                             extraFileIds: newFileIds,
                             model: state.responseModel || configuredModelId,

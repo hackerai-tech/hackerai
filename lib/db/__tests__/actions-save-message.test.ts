@@ -1504,6 +1504,90 @@ describe("saveMessage", () => {
     );
   });
 
+  describe("terminal evidence attestation", () => {
+    const BULK = "inert-output ".repeat(3_000);
+    const terminal = (toolCallId: string) => ({
+      type: "tool-run_terminal_cmd",
+      toolCallId,
+      state: "output-available",
+      input: { command: "printf inert-fixture" },
+      output: {
+        result: { processStarted: true, pid: 7, exitCode: 0, output: BULK },
+      },
+    });
+    const severeCompaction = (softLimitBytes: number) => {
+      const actual = jest.requireActual<
+        typeof import("@/lib/chat/compaction/prune-tool-outputs")
+      >("@/lib/chat/compaction/prune-tool-outputs");
+      return (message: any) =>
+        actual.compactMessageForStorage(message, {
+          softLimitBytes,
+          toolOutputTokenBudget: 0,
+        });
+    };
+    const save = (saveMessage: any, parts: unknown[], attest = true) =>
+      saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: { id: "message-1", role: "assistant", parts },
+        mode: "agent",
+        triggerRunId: "run-1",
+        ...(attest ? { attestTerminalEvidence: true } : {}),
+      });
+
+    it("attests complete evidence for parts saved as produced", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      await save(saveMessage, [terminal("call-1")]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([terminal("call-1")]);
+      expect(args.terminalEvidenceState).toBe("complete");
+    });
+
+    it("attests complete evidence after both prune stages trim other parts", async () => {
+      const { saveMessage, mockMutation, mockCompactMessageForStorage } =
+        await loadSaveMessageWithMocks();
+      mockCompactMessageForStorage.mockImplementation(
+        severeCompaction(900) as any,
+      );
+      await save(saveMessage, [
+        { type: "text", text: BULK },
+        terminal("call-1"),
+      ]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([
+        {
+          ...terminal("call-1"),
+          output: "[Terminal: ran 'printf inert-fixture', exit code 0]",
+          terminalStartReceipt: true,
+        },
+      ]);
+      expect(args.terminalEvidenceState).toBe("complete");
+    });
+
+    it("attests incomplete evidence when the hard limit drops a terminal call", async () => {
+      const { saveMessage, mockMutation, mockCompactMessageForStorage } =
+        await loadSaveMessageWithMocks();
+      mockCompactMessageForStorage.mockImplementation(
+        severeCompaction(2_000) as any,
+      );
+      await save(saveMessage, [
+        terminal("call-1"),
+        { type: "text", text: BULK },
+      ]);
+      const args = mockMutation.mock.calls[0]?.[1] as any;
+      expect(args.parts).toEqual([expect.objectContaining({ type: "text" })]);
+      expect(args.terminalEvidenceState).toBe("incomplete");
+    });
+
+    it("sends no attestation unless the worker asks for one", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      await save(saveMessage, [terminal("call-1")], false);
+      expect(mockMutation.mock.calls[0]?.[1]).not.toHaveProperty(
+        "terminalEvidenceState",
+      );
+    });
+  });
+
   it("sanitizes assistant parts before storage compaction", async () => {
     const { saveMessage, mockCompactMessageForStorage } =
       await loadSaveMessageWithMocks();

@@ -35,6 +35,7 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import { compactMessageForStorage } from "@/lib/chat/compaction/prune-tool-outputs";
+import { terminalEvidenceAfterCompaction } from "@/lib/chat/compaction/terminal-start-receipt";
 import type {
   AgentToolApprovalPendingRequest,
   SubscriptionTier,
@@ -1175,6 +1176,7 @@ export async function saveMessage({
   triggerRunId,
   expectedActiveTriggerRunId,
   clientSnapshot,
+  attestTerminalEvidence,
   signal,
   usage,
   updateOnly,
@@ -1200,6 +1202,12 @@ export async function saveMessage({
   triggerRunId?: string;
   expectedActiveTriggerRunId?: string;
   clientSnapshot?: boolean;
+  /**
+   * Set only by the Agent worker for its own run's assistant messages, whose
+   * parts it produced: the save records whether storage compaction kept every
+   * terminal call the egress review reads (see terminal-start-receipt.ts).
+   */
+  attestTerminalEvidence?: boolean;
   signal?: AbortSignal;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
@@ -1262,6 +1270,10 @@ export async function saveMessage({
       any
     >[];
     persistenceDiagnostics = getMessagePersistenceDiagnostics(partsForSave);
+    const terminalEvidenceState =
+      attestTerminalEvidence && message.role === "assistant"
+        ? terminalEvidenceAfterCompaction(convexSafeParts, partsForSave)
+        : undefined;
     if (
       message.role === "assistant" &&
       persistenceDiagnostics.parts_size_bytes > LARGE_MESSAGE_SAVE_WARNING_BYTES
@@ -1312,6 +1324,7 @@ export async function saveMessage({
       triggerRunId,
       expectedActiveTriggerRunId,
       ...(clientSnapshot ? { clientSnapshot: true } : {}),
+      ...(terminalEvidenceState ? { terminalEvidenceState } : {}),
       usage: usageForSave,
       updateOnly,
       isHidden,

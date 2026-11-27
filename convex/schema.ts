@@ -586,6 +586,18 @@ export default defineSchema({
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     trigger_run_id: v.optional(v.string()),
+    // Private provenance of an assistant row's current parts for the egress
+    // review: the Agent worker attested them (`complete`, or `incomplete`
+    // when storage compaction lost terminal evidence), or a browser snapshot
+    // or crash recovery wrote them (`unverified`). Absent on older rows and
+    // other writers; never copied to another chat.
+    terminal_evidence_state: v.optional(
+      v.union(
+        v.literal("complete"),
+        v.literal("incomplete"),
+        v.literal("unverified"),
+      ),
+    ),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
     // Private takeover context is retained in model history, never client history.

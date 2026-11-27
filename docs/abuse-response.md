@@ -368,6 +368,21 @@ and its cases follow the review, hold and erasure rules in this runbook.
   deleted chat, or incomplete records), it opens a manual case without calling
   the model. An incomplete telemetry minute or a replay below the current
   threshold creates no case.
+- **Evidence provenance.** Each assistant row records who saved its current
+  parts (`terminal_evidence_state`). The Agent worker attests its own run's
+  saves: `complete`, or `incomplete` when storage compaction dropped or
+  clipped a terminal command or interactive send. Browser snapshots, browser
+  saves and crash recovery are `unverified`; adding a run ID or finish
+  metadata to an existing row never changes it, and branched or forked chats
+  do not copy it. Compaction keeps a terminal command's start only as a
+  `terminalStartReceipt` flag beside the unchanged summary, and readers accept
+  that flag only on attested rows. The exact-run review and the enforcement
+  re-read count any run row that is not attested `complete` as an incomplete
+  tool call, so such a run stays a manual case and cannot be blocked or cleared.
+  Rows saved before this field existed keep their structured receipts for the
+  advisory reassessment and account activity; those reads count `unverified`
+  and `incomplete` rows as incomplete too. Deploy Convex before the Agent
+  worker: an older Convex deployment rejects the worker's attested saves.
 - **Without an acquisition link.** When the verified workspace has no
   recorded acquisition before the burst, the review still opens a manual case
   and attaches bounded account activity as operator context. Messages do not

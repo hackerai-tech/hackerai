@@ -1,6 +1,6 @@
 import { getDocumentSize, v } from "convex/values";
 import { verifyServiceArgs } from "../lib/db/service-proof";
-import { hasTerminalStartReceipt } from "../lib/chat/compaction/terminal-start-receipt";
+import { readTerminalCall } from "../lib/chat/compaction/terminal-start-receipt";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query, type QueryCtx } from "./lib/serviceFunctions";
 import { boundedAbuseCiphertext } from "./lib/abuseResponse";
@@ -213,14 +213,6 @@ function userText(parts: unknown[]) {
     .trim();
 }
 
-type TerminalPart = {
-  type?: unknown;
-  state?: unknown;
-  toolCallId?: unknown;
-  input?: { command?: unknown; action?: unknown; input?: unknown };
-  output?: unknown;
-};
-
 type Command = {
   messageId: string;
   toolCallId: string;
@@ -233,50 +225,42 @@ type Command = {
  * Inputs of one assistant row's terminal commands that have a recorded start
  * receipt. Never tool output, reasoning, text, or interactive input; any
  * call that cannot be read that way is counted as incomplete.
+ *
+ * `terminal_evidence_state` records who saved the row's current parts. Only
+ * parts the Agent worker attested may use the compacted start sidecar, and a
+ * worker save whose storage compaction lost terminal evidence, a browser
+ * snapshot, or crash recovery always counts as incomplete. Rows saved before
+ * the state existed keep their structured receipts but never prove complete
+ * evidence where `requireAttestation` is set.
  */
-export function startedCommands(row: Doc<"messages">) {
+export function startedCommands(
+  row: Doc<"messages">,
+  { requireAttestation }: { requireAttestation: boolean },
+) {
   const commands: Command[] = [];
+  const provenance = row.terminal_evidence_state;
   if (
     row.is_hidden ||
     row.is_browser_handoff ||
-    row.finish_reason === "trigger_crashed_client_saved"
+    row.finish_reason === "trigger_crashed_client_saved" ||
+    provenance === "unverified"
   )
     return { commands, incomplete: 1 };
-  let incomplete = 0;
-  for (const raw of row.parts) {
-    const part = (raw ?? {}) as TerminalPart;
-    const tool =
-      part.type === "tool-run_terminal_cmd"
-        ? ("run_terminal_cmd" as const)
-        : part.type === "tool-interact_terminal_session"
-          ? ("interact_terminal_session" as const)
-          : undefined;
-    if (!tool) continue;
-    // Interactive keystrokes may contain a password, a reply, or a
-    // command. Leave the run for an operator without reading this input.
-    if (tool === "interact_terminal_session") {
-      if (part.input?.action === "send") incomplete++;
-      continue;
-    }
-    if (part.input?.action && part.input.action !== "exec") continue;
-    const value = part.input?.command;
-    if (
-      part.state !== "output-available" ||
-      !hasTerminalStartReceipt(part.output) ||
-      typeof part.toolCallId !== "string" ||
-      !part.toolCallId ||
-      part.toolCallId.length > 128 ||
-      typeof value !== "string" ||
-      !value.trim()
-    ) {
+  const attested = provenance === "complete" || provenance === "incomplete";
+  let incomplete =
+    provenance === "incomplete" || (requireAttestation && !attested) ? 1 : 0;
+  for (const part of row.parts) {
+    const call = readTerminalCall(part, { acceptSidecar: attested });
+    if (!call) continue;
+    if (!call.started) {
       incomplete++;
       continue;
     }
     commands.push({
       messageId: row.id,
-      toolCallId: part.toolCallId,
-      tool,
-      ...clip(value),
+      toolCallId: call.toolCallId,
+      tool: "run_terminal_cmd",
+      ...clip(call.command),
     });
   }
   return { commands, incomplete };
@@ -311,21 +295,25 @@ type RunScope = Burst & { userId: string; chatId: string; runId: string };
 
 /** Re-read the same bounded evidence at the point of enforcement. */
 export const collectRunEvidence = (ctx: QueryCtx, args: RunScope) =>
-  readExactRun(ctx, args, { crossRootGuard: true });
+  readExactRun(ctx, args, { crossRootGuard: true, requireAttestation: true });
 
 /**
  * The same bounded read of one run without the account-wide cross-root
  * guard, for an advisory reassessment that never attributes the burst to the
  * run or acts on it. Ownership, run timing, the deletion fence, subagent
- * overlap, coverage and content exclusion are unchanged.
+ * overlap, coverage and content exclusion are unchanged. Rows saved before
+ * terminal evidence provenance existed still show their structured receipts.
  */
 export const collectCandidateRunEvidence = (ctx: QueryCtx, args: RunScope) =>
-  readExactRun(ctx, args, { crossRootGuard: false });
+  readExactRun(ctx, args, { crossRootGuard: false, requireAttestation: false });
 
 async function readExactRun(
   ctx: QueryCtx,
   args: RunScope,
-  { crossRootGuard }: { crossRootGuard: boolean },
+  {
+    crossRootGuard,
+    requireAttestation,
+  }: { crossRootGuard: boolean; requireAttestation: boolean },
 ) {
   assertBurst(args);
   const unavailable = (
@@ -409,7 +397,7 @@ async function readExactRun(
   const commands: Command[] = [];
   let incompleteToolCalls = 0;
   for (const row of run.runRows) {
-    const read = startedCommands(row);
+    const read = startedCommands(row, { requireAttestation });
     commands.push(...read.commands);
     incompleteToolCalls += read.incomplete;
   }
@@ -544,7 +532,8 @@ async function readChatActivity(
       activity.incomplete++;
       continue;
     }
-    const read = startedCommands(row);
+    // Advisory context only: older rows keep their structured receipts.
+    const read = startedCommands(row, { requireAttestation: false });
     activity.start = Math.min(start, activity.start);
     activity.commands.push(...read.commands);
     activity.incomplete += read.incomplete;

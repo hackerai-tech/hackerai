@@ -702,6 +702,10 @@ export const saveMessage = mutation({
     triggerRunId: v.optional(v.string()),
     expectedActiveTriggerRunId: v.optional(v.string()),
     clientSnapshot: v.optional(v.boolean()),
+    /** The Agent worker's attestation for the parts of this save. */
+    terminalEvidenceState: v.optional(
+      v.union(v.literal("complete"), v.literal("incomplete")),
+    ),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
@@ -709,6 +713,23 @@ export const saveMessage = mutation({
   returns: v.union(v.null(), v.literal("stale_run")),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    // Provenance of the parts this save writes (schema: terminal_evidence_state).
+    // Only a canonical Agent worker save of its own run can attest them; a
+    // browser snapshot, crash recovery or a malformed claim is unverified.
+    const terminalEvidenceState =
+      args.role !== "assistant"
+        ? undefined
+        : args.terminalEvidenceState !== undefined &&
+            args.mode === "agent" &&
+            !!args.triggerRunId &&
+            !args.clientSnapshot &&
+            args.expectedActiveTriggerRunId === undefined
+          ? args.terminalEvidenceState
+          : args.terminalEvidenceState !== undefined ||
+              args.clientSnapshot ||
+              args.expectedActiveTriggerRunId !== undefined
+            ? ("unverified" as const)
+            : undefined;
     // Recovery may only write while this exact crashed run still owns the chat.
     // This check shares the message transaction, so a concurrent new run wins.
     if (args.expectedActiveTriggerRunId !== undefined) {
@@ -901,6 +922,8 @@ export const saveMessage = mutation({
           if (getMessageDocumentSize(base) > MESSAGE_DOCUMENT_TARGET_BYTES)
             throw new Error("Recovered Agent message is too large to save");
           patch.parts = partsForSave;
+          // Replacement parts never keep the replaced parts' provenance.
+          patch.terminal_evidence_state = terminalEvidenceState;
           patch.content = fitSearchContentToDocument(
             base,
             extractTextFromParts(partsForSave),
@@ -1030,6 +1053,7 @@ export const saveMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         trigger_run_id: args.triggerRunId,
+        terminal_evidence_state: terminalEvidenceState,
         usage: args.usage,
         is_hidden: args.isHidden,
       };
@@ -1584,6 +1608,10 @@ export const saveAssistantMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: stripClientAbliterationRouting(args.usage),
+        // Browser-supplied parts never attest terminal evidence.
+        ...(args.role === "assistant"
+          ? { terminal_evidence_state: "unverified" as const }
+          : {}),
       };
       const baseDocumentSizeBytes = getMessageDocumentSize(messageDocumentBase);
       if (baseDocumentSizeBytes > MESSAGE_DOCUMENT_TARGET_BYTES) {
