@@ -30,8 +30,10 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import {
   getSandboxArtifactDirectory,
+  isCentrifugoSandbox,
   isCloudSandbox,
 } from "@/lib/ai/tools/utils/sandbox-types";
+import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
 import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
@@ -1099,6 +1101,37 @@ export const compactModelMessagesInRun = async ({
   }
 };
 
+const FAILED_TRANSCRIPT_CLEANUP_TIMEOUT_MS = 5_000;
+
+/** Clean up only the file created by this Desktop transcript attempt. */
+const confirmFailedTranscriptRemoved = async (
+  sandbox: CentrifugoSandbox,
+  path: string,
+): Promise<boolean> => {
+  const signal = AbortSignal.timeout(FAILED_TRANSCRIPT_CLEANUP_TIMEOUT_MS);
+  const stat = () =>
+    sandbox.files.stat(path, {
+      signal,
+      timeoutMs: FAILED_TRANSCRIPT_CLEANUP_TIMEOUT_MS,
+    });
+
+  try {
+    const { kind } = await stat();
+    if (kind === "missing") return true;
+    if (kind !== "file") return false;
+
+    try {
+      await sandbox.files.remove(path, { signal });
+      return true;
+    } catch {
+      // Native remove reports an error if the file disappeared since stat.
+      return (await stat()).kind === "missing";
+    }
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Writes a JSON transcript of the summarized messages to the sandbox.
  * Native Desktop uses the selected project; other local clients use /tmp.
@@ -1106,6 +1139,9 @@ export const compactModelMessagesInRun = async ({
  * Content is written as a Buffer (not a string) so that ConvexSandbox's binary
  * chunking path is used, avoiding the shell argument size limits that occur when
  * large strings are embedded in heredoc commands.
+ *
+ * Each attempt writes a fresh path and never reuses or appends to a failed one.
+ * Native Desktop retries require confirmed cleanup of the previous attempt.
  *
  * Returns the file path if saved, or null on failure.
  */
@@ -1116,6 +1152,7 @@ const saveTranscriptToSandbox = async (
 ): Promise<string | null> => {
   const maxRetries = 2;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    let desktopWritePath: string | undefined;
     try {
       const transcriptId = uuidv4();
       const dir = getSandboxArtifactDirectory(sandbox, "agent-transcripts");
@@ -1139,6 +1176,7 @@ const saveTranscriptToSandbox = async (
         // chunking in ConvexSandbox, avoiding shell argument size limits that
         // occur when large strings are embedded in heredoc commands.
         const buf = new TextEncoder().encode(content);
+        if (sandbox.supportsNativeFileRelay()) desktopWritePath = path;
         await sandbox.files.write(path, buf.buffer as ArrayBuffer);
       }
 
@@ -1150,6 +1188,17 @@ const saveTranscriptToSandbox = async (
         errorMsg.includes("connection closed") ||
         errorMsg.includes("connection lost") ||
         errorMsg.includes("program not found");
+      if (
+        desktopWritePath &&
+        isCentrifugoSandbox(sandbox) &&
+        !(await confirmFailedTranscriptRemoved(sandbox, desktopWritePath))
+      ) {
+        console.warn(
+          "[Summarization] Could not confirm cleanup of a failed Desktop transcript; stopping retries.",
+        );
+        return null;
+      }
+
       if (isPublishError && !isUnrecoverable && attempt < maxRetries) {
         console.warn(
           `[Summarization] Transcript save failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`,
