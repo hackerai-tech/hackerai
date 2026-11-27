@@ -21,12 +21,12 @@ The Vercel job runs daily and re-reads the previous 35 complete billing days
 because billing data can be corrected after first publication. Vercel billing
 days close at midnight `America/Los_Angeles`, and the charges API returns whole
 Pacific days for the requested range, so the request bounds are Pacific
-midnights (07:00 or 08:00 UTC, depending on DST). The replacement ends at the
-latest day present in the export: if the newest day is not yet published, rows
-an earlier run stored for it are kept. An export with no charges in the window
-fails the run instead of deleting recorded costs. The Convex job runs at minute
-59 each hour and keeps UTC days. Both jobs are idempotent; unchanged rows are not patched,
-which avoids unnecessary warehouse sync churn.
+midnights (07:00 or 08:00 UTC, depending on DST). The collector replaces the
+contiguous range of days present in the export and keeps existing costs outside
+that range. An empty export or a gap within that range fails the run before
+replacing recorded costs. The Convex job runs at minute 59 each hour and keeps
+UTC days. Both jobs are idempotent and leave unchanged rows alone to avoid
+unnecessary warehouse sync churn.
 
 ## Cost semantics
 

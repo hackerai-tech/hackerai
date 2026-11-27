@@ -314,6 +314,25 @@ export function mapConvexUsageToRows(
     .sort((a, b) => a.serviceName.localeCompare(b.serviceName));
 }
 
+export function completedUtcDayWindow(
+  now: number,
+  days: number,
+): { from: string; to: string; startDay: string; endDay: string } {
+  if (!Number.isInteger(days) || days < 1) {
+    throw new Error("days must be a positive integer");
+  }
+  const end = new Date(now);
+  end.setUTCHours(0, 0, 0, 0);
+  const start = new Date(end.getTime() - days * DAY_MS);
+  const lastCompleteDay = new Date(end.getTime() - DAY_MS);
+  return {
+    from: start.toISOString(),
+    to: end.toISOString(),
+    startDay: start.toISOString().slice(0, 10),
+    endDay: lastCompleteDay.toISOString().slice(0, 10),
+  };
+}
+
 /** Vercel closes billing days at local midnight in this time zone. */
 const VERCEL_BILLING_TIME_ZONE = "America/Los_Angeles";
 
@@ -379,12 +398,9 @@ export function completedVercelBillingDayWindow(
 }
 
 /**
- * Chooses the rows and replacement bounds for a Vercel sync. The replacement
- * ends at the latest day present in the export, so a feed that has not yet
- * published the newest requested day keeps rows an earlier run recorded for
- * it. Earlier days are still fully replaced, including corrections and
- * zero-cost charges. An export with no charges in the window is rejected
- * rather than treated as a request to delete every recorded day.
+ * Replace only the observed range of complete billing days. A missing day
+ * can represent an incomplete export, so keep existing costs outside this
+ * range and reject an export with missing days within it.
  */
 export function selectVercelReplacement(
   fetchedRows: PlatformCostRow[],
@@ -400,11 +416,18 @@ export function selectVercelReplacement(
       "Vercel billing response has no charges in the reconciliation window",
     );
   }
-  const endDay = rows.reduce(
-    (latest, row) => (row.day > latest ? row.day : latest),
-    window.startDay,
-  );
-  return { rows, startDay: window.startDay, endDay };
+  const days = [...new Set(rows.map((row) => row.day))].sort();
+  const startDay = days[0];
+  const endDay = days[days.length - 1];
+  if (
+    Date.parse(endDay) - Date.parse(startDay) !==
+    (days.length - 1) * DAY_MS
+  ) {
+    throw new Error(
+      "Vercel billing response has missing days within its range",
+    );
+  }
+  return { rows, startDay, endDay };
 }
 
 export function convexUsageBaseUrl(configuredUrl: string): string {

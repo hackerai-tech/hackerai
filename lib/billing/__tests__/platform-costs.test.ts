@@ -1,4 +1,5 @@
 import {
+  completedUtcDayWindow,
   completedVercelBillingDayWindow,
   convexUsageBaseUrl,
   filterRowsToDayWindow,
@@ -185,6 +186,17 @@ describe("platform cost normalization", () => {
     expect(rows[0]).not.toHaveProperty("billedCostDollars");
   });
 
+  it("keeps the completed UTC reconciliation window for other vendors", () => {
+    expect(
+      completedUtcDayWindow(Date.parse("2026-09-01T13:45:00.000Z"), 35),
+    ).toEqual({
+      from: "2026-07-28T00:00:00.000Z",
+      to: "2026-09-01T00:00:00.000Z",
+      startDay: "2026-07-28",
+      endDay: "2026-08-31",
+    });
+  });
+
   it.each([
     {
       name: "includes the latest billing day at the daily standard-time run",
@@ -235,7 +247,7 @@ describe("platform cost normalization", () => {
   it("labels whole Pacific billing days inside the requested window", async () => {
     const window = completedVercelBillingDayWindow(
       Date.parse("2026-11-27T12:17:00.000Z"),
-      35,
+      2,
     );
     const base = {
       BillingCurrency: "USD",
@@ -248,13 +260,13 @@ describe("platform cost normalization", () => {
       jsonlStream([
         {
           ...base,
-          ChargePeriodStart: "2026-10-22T07:00:00.000Z",
-          ChargePeriodEnd: "2026-10-23T07:00:00.000Z",
+          ChargePeriodStart: "2026-11-24T08:00:00.000Z",
+          ChargePeriodEnd: "2026-11-25T08:00:00.000Z",
         },
         {
           ...base,
-          ChargePeriodStart: "2026-10-23T07:00:00.000Z",
-          ChargePeriodEnd: "2026-10-24T07:00:00.000Z",
+          ChargePeriodStart: "2026-11-25T08:00:00.000Z",
+          ChargePeriodEnd: "2026-11-26T08:00:00.000Z",
         },
         {
           ...base,
@@ -266,10 +278,10 @@ describe("platform cost normalization", () => {
 
     expect(selectVercelReplacement(rows, window)).toEqual({
       rows: [
-        expect.objectContaining({ day: "2026-10-23" }),
+        expect.objectContaining({ day: "2026-11-25" }),
         expect.objectContaining({ day: "2026-11-26" }),
       ],
-      startDay: "2026-10-23",
+      startDay: "2026-11-25",
       endDay: "2026-11-26",
     });
   });
@@ -289,13 +301,22 @@ describe("platform cost normalization", () => {
       sourceChargeCount: 1,
     });
 
-    it("keeps an unpublished latest day out of the replacement", () => {
+    it("keeps unobserved days at either boundary out of the replacement", () => {
       expect(
         selectVercelReplacement(
           [row("2026-11-24", 3), row("2026-11-25", 2)],
           window,
         ),
-      ).toMatchObject({ startDay: "2026-10-23", endDay: "2026-11-25" });
+      ).toMatchObject({ startDay: "2026-11-24", endDay: "2026-11-25" });
+    });
+
+    it("rejects a missing day between published days", () => {
+      expect(() =>
+        selectVercelReplacement(
+          [row("2026-11-24", 3), row("2026-11-26", 2)],
+          window,
+        ),
+      ).toThrow("missing days within its range");
     });
 
     it("replaces a latest day published with only zero-cost charges", () => {
