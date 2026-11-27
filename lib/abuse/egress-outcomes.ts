@@ -68,6 +68,16 @@ export const EVIDENCE_MODES = [
 export const REVIEW_COVERAGE = ["complete", "incomplete", "not_read"] as const;
 export type ReviewCoverageState = (typeof REVIEW_COVERAGE)[number];
 
+/** Per-digest review result reported to the daily digest; no identifiers. */
+export const REVIEW_DISPOSITIONS = [
+  "blocked",
+  "confirmed_abuse_pending",
+  "confirmed_legitimate",
+  "undetermined",
+  "missing",
+] as const;
+export type ReviewDisposition = (typeof REVIEW_DISPOSITIONS)[number];
+
 /** Why the server refused an automated block; nothing was changed. */
 export const BLOCK_REFUSALS = [
   /** The Convex kill switch is off; nothing was read or written. */
