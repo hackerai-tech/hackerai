@@ -182,7 +182,7 @@ describe("service registration boundary", () => {
     );
   });
 
-  it("extends the burst review key to exactly one reassessment action", async () => {
+  it("extends the burst review key to exactly the two reassessment actions", async () => {
     const registered = (action as any)({
       args: { serviceKey: v.string() },
       returns: v.null(),
@@ -195,12 +195,17 @@ describe("service registration boundary", () => {
       );
       return registered.handler(context(name, "action"), signed);
     };
-    const reassess = "egressAbuseReassessmentActions:readCaseEvidence";
-    await expect(invoke(reassess, egressReviewSecret)).resolves.toBeNull();
-    await expect(invoke(reassess, secret)).rejects.toThrow(unauthorized);
+    for (const reassess of [
+      "egressAbuseReassessmentActions:readCaseEvidence",
+      "egressAbuseReassessmentActions:readBurstActivityEvidence",
+    ]) {
+      await expect(invoke(reassess, egressReviewSecret)).resolves.toBeNull();
+      await expect(invoke(reassess, secret)).rejects.toThrow(unauthorized);
+    }
     for (const name of [
       "egressAbuseReassessmentActions:other",
       "egressAbuseReassessment:openCase",
+      "egressAbuseReassessment:readBurstActivity",
       "abuseCases:read",
     ])
       await expect(invoke(name, egressReviewSecret)).rejects.toThrow(

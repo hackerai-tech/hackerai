@@ -307,6 +307,34 @@ export const collectRunEvidence = (ctx: QueryCtx, args: RunScope) =>
 export const collectCandidateRunEvidence = (ctx: QueryCtx, args: RunScope) =>
   readExactRun(ctx, args, { crossRootGuard: false, requireAttestation: false });
 
+/**
+ * Subagents of a run share its workspace, but their commands are not stored
+ * as chat messages: callers abstain whenever one may have overlapped.
+ */
+async function subagentMayOverlap(ctx: QueryCtx, args: RunScope) {
+  const children = await ctx.db
+    .query("subagent_runs")
+    .withIndex("by_user_chat_and_parent_run", (q) =>
+      q
+        .eq("user_id", args.userId)
+        .eq("chat_id", args.chatId)
+        .eq("parent_trigger_run_id", args.runId),
+    )
+    .take(MAX_SUBAGENT_SCAN + 1);
+  return (
+    children.length > MAX_SUBAGENT_SCAN ||
+    children.some(
+      (child) =>
+        overlap(
+          args,
+          child.started_at ?? child.created_at,
+          child.completed_at ??
+            (ACTIVE_SUBAGENT.has(child.status) ? "open" : undefined),
+        ) !== "disjoint",
+    )
+  );
+}
+
 async function readExactRun(
   ctx: QueryCtx,
   args: RunScope,
@@ -328,29 +356,7 @@ async function readExactRun(
   if (!run.runRows.length || run.runStart === undefined)
     return unavailable("incomplete");
 
-  // Subagents of this run share its workspace, but their commands are not
-  // stored as chat messages: abstain whenever one may have overlapped.
-  const children = await ctx.db
-    .query("subagent_runs")
-    .withIndex("by_user_chat_and_parent_run", (q) =>
-      q
-        .eq("user_id", args.userId)
-        .eq("chat_id", args.chatId)
-        .eq("parent_trigger_run_id", args.runId),
-    )
-    .take(MAX_SUBAGENT_SCAN + 1);
-  if (
-    children.length > MAX_SUBAGENT_SCAN ||
-    children.some(
-      (child) =>
-        overlap(
-          args,
-          child.started_at ?? child.created_at,
-          child.completed_at ??
-            (ACTIVE_SUBAGENT.has(child.status) ? "open" : undefined),
-        ) !== "disjoint",
-    )
-  )
+  if (await subagentMayOverlap(ctx, args))
     return unavailable("subagent_overlap");
   // Another root run active now may have shared the account's workspace.
   // This reads run markers only, never chat content.
@@ -448,9 +454,10 @@ export const readRunEvidence = query({
 
 // --- Account activity --------------------------------------------------------
 //
-// Used only when no server-recorded acquisition links the burst's verified
-// workspace to a chat and run. Messages do not record a workspace, so nothing
-// read here shows which activity, if any, caused the burst.
+// Used when no server-recorded acquisition links the burst's verified
+// workspace to a chat and run, and by the on-demand burst-activity
+// reassessment of an existing case. Messages do not record a workspace, so
+// nothing read here shows which activity, if any, caused the burst.
 
 /** Context before the burst; later rows count only if they started by its end. */
 const ACTIVITY_LOOKBACK_MS = 24 * 60 * 60_000;
@@ -464,12 +471,61 @@ const MAX_ACTIVITY_CHAT_BYTES = 1_536 * 1024;
 const MAX_ACTIVITY_BYTES = 6 * 1024 * 1024;
 const MAX_ACTIVITY_USER_MESSAGES = 15;
 const MAX_ACTIVITY_COMMANDS = 40;
+/**
+ * Burst mode: an assistant row is saved when its run saves, so a run that
+ * spanned the burst may store its row after it. Rows created later than this,
+ * plus clock skew, after the burst minute are not read.
+ */
+export const MAX_BURST_SAVE_DELAY_MS = 30 * 60_000;
 
 type ActivityWindow = {
   userId: string;
   windowStart: number;
   windowEnd: number;
 };
+
+/**
+ * Burst mode of the account activity read. Messages are read only up to
+ * `latestSave`, so rows saved after the burst cannot consume the bounded
+ * reads, and a run is selected only when its persisted timing overlaps the
+ * burst and its chat no longer marks it active. Online mode reads every row
+ * since the start of the window and selects runs that finished in it.
+ */
+type BurstScope = Burst & { latestSave: number };
+
+type RunActivity = {
+  /** Earliest start of the run's rows that were read. */
+  start: number;
+  end: number;
+  /** Earliest recorded start of any of its rows, read or not. */
+  earliest: number;
+  /** Some row has no recorded start. */
+  unstarted: boolean;
+  /** Some row has no recorded duration. */
+  untimed: boolean;
+  commands: Command[];
+  incomplete: number;
+};
+
+/** Burst timing of the runs one chat read showed; closed counts only. */
+type BurstTiming = {
+  overlappingRuns: number;
+  unplacedRuns: number;
+  lateSave: boolean;
+};
+
+function burstOverlap(
+  burst: BurstScope,
+  run: RunActivity,
+  active: boolean,
+): Overlap {
+  if (run.unstarted) return "unknown";
+  return overlap(
+    burst,
+    run.earliest,
+    active ? "open" : run.untimed ? undefined : run.end,
+  );
+}
 
 /**
  * One owned chat's started commands from Agent runs that ran in the window,
@@ -481,6 +537,7 @@ async function readChatActivity(
   window: ActivityWindow,
   chat: Doc<"chats">,
   budget: { bytes: number },
+  burst?: BurstScope,
 ) {
   const rows: Doc<"messages">[] = [];
   let truncated = false;
@@ -488,9 +545,12 @@ async function readChatActivity(
   let scannedRows = 0;
   for await (const row of ctx.db
     .query("messages")
-    .withIndex("by_chat_id", (q) =>
-      q.eq("chat_id", chat.id).gte("_creationTime", window.windowStart),
-    )
+    .withIndex("by_chat_id", (q) => {
+      const range = q
+        .eq("chat_id", chat.id)
+        .gte("_creationTime", window.windowStart);
+      return burst ? range.lte("_creationTime", burst.latestSave) : range;
+    })
     .order("desc")) {
     const size = getDocumentSize(row);
     if (
@@ -508,10 +568,7 @@ async function readChatActivity(
   }
   rows.reverse();
 
-  const runs = new Map<
-    string,
-    { start: number; commands: Command[]; incomplete: number }
-  >();
+  const runs = new Map<string, RunActivity>();
   for (const row of rows) {
     const start = row.generation_started_at;
     const duration = row.generation_time_ms;
@@ -519,15 +576,25 @@ async function readChatActivity(
     if (row.role !== "assistant" || !id) continue;
     const activity = runs.get(id) ?? {
       start: Infinity,
+      end: -Infinity,
+      earliest: Infinity,
+      unstarted: false,
+      untimed: false,
       commands: [],
       incomplete: 0,
     };
     runs.set(id, activity);
+    if (typeof start === "number")
+      activity.earliest = Math.min(activity.earliest, start);
+    else activity.unstarted = true;
+    if (typeof duration !== "number") activity.untimed = true;
     if (
       typeof start !== "number" ||
       typeof duration !== "number" ||
-      start + duration < window.windowStart ||
-      start + duration > window.windowEnd
+      // Burst mode places the whole run by its timing instead.
+      (!burst &&
+        (start + duration < window.windowStart ||
+          start + duration > window.windowEnd))
     ) {
       activity.incomplete++;
       continue;
@@ -535,15 +602,59 @@ async function readChatActivity(
     // Advisory context only: older rows keep their structured receipts.
     const read = startedCommands(row, { requireAttestation: false });
     activity.start = Math.min(start, activity.start);
+    activity.end = Math.max(start + duration, activity.end);
     activity.commands.push(...read.commands);
     activity.incomplete += read.incomplete;
   }
+
+  const timing: BurstTiming = {
+    overlappingRuns: 0,
+    unplacedRuns: 0,
+    lateSave: false,
+  };
+  let candidates = [...runs];
+  if (burst) {
+    candidates = candidates.filter(([id, run]) => {
+      const active = chat.active_trigger_run_id === id;
+      const status = burstOverlap(burst, run, active);
+      if (status === "unknown") timing.unplacedRuns++;
+      if (status === "overlaps") timing.overlappingRuns++;
+      // Only a finished run with complete persisted timing can be selected.
+      return status === "overlaps" && !active && !run.untimed;
+    });
+  }
+  // A run that spanned the burst can save rows after the read range. The
+  // first row past it shows whether the next save could belong to such a run.
+  let lateRunId: string | undefined;
+  if (burst && !truncated && budget.bytes < MAX_ACTIVITY_BYTES) {
+    const later = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) =>
+        q.eq("chat_id", chat.id).gt("_creationTime", burst.latestSave),
+      )
+      .order("asc")
+      .first();
+    if (later) budget.bytes += getDocumentSize(later);
+    const laterStart = later?.generation_started_at;
+    if (
+      later?.user_id === window.userId &&
+      later.role === "assistant" &&
+      later.trigger_run_id &&
+      !(
+        typeof laterStart === "number" &&
+        laterStart > burst.burstEnd + CLOCK_SKEW_MS
+      )
+    )
+      lateRunId = later.trigger_run_id;
+  }
+
   // Only one run's commands and the user turn that preceded it can support a
   // finding. An older run's stated scope does not authorize this one.
-  const selected = [...runs]
+  const selected = candidates
     .filter(([, run]) => run.commands.length)
     .sort(([, a], [, b]) => b.start - a.start)[0];
-  if (!selected) return { activity: null, truncated };
+  timing.lateSave = lateRunId !== undefined && lateRunId !== selected?.[0];
+  if (!selected) return { activity: null, truncated, timing };
   const [runId, { start, commands, incomplete }] = selected;
   const previousAssistant =
     rows.findLast(
@@ -593,13 +704,156 @@ async function readChatActivity(
         rawReads: scannedRows,
         historyTruncated: earlierHistory,
         userMessagesOmitted: omittedContext + users.length - keptUsers.length,
-        commandsOmitted: commands.length - keptCommands.length,
+        // A later row of the selected run was not read.
+        commandsOmitted:
+          commands.length - keptCommands.length + (lateRunId === runId ? 1 : 0),
         incompleteToolCalls: incomplete,
         runActive: chat.active_trigger_run_id === runId,
       },
     },
   };
-  return { activity, truncated };
+  return { activity, truncated, timing };
+}
+
+/**
+ * Reads chats the account updated since the start of the window, newest
+ * first, within the shared chat, row and byte limits. In burst mode, chats
+ * created after the burst are skipped without reading their messages.
+ */
+async function collectAccountActivity(
+  ctx: QueryCtx,
+  window: ActivityWindow,
+  burst?: BurstScope,
+) {
+  // A chat active during the window was updated at or after its start.
+  const chats = await ctx.db
+    .query("chats")
+    .withIndex("by_user_and_updated", (q) =>
+      q.eq("user_id", window.userId).gte("update_time", window.windowStart),
+    )
+    .order("desc")
+    .take(MAX_ACTIVITY_CHAT_SCAN + 1);
+  let scanTruncated = chats.length > MAX_ACTIVITY_CHAT_SCAN;
+  const budget = { bytes: 0 };
+  const scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
+  for (const chat of scanned) budget.bytes += getDocumentSize(chat);
+
+  const found: NonNullable<
+    Awaited<ReturnType<typeof readChatActivity>>["activity"]
+  >[] = [];
+  let chatsScanned = 0;
+  let chatsWithoutCommands = 0;
+  let chatsAfterBurst = 0;
+  const timing: BurstTiming = {
+    overlappingRuns: 0,
+    unplacedRuns: 0,
+    lateSave: false,
+  };
+  for (const chat of scanned) {
+    if (chat.user_id !== window.userId || chat.deletion_started_at) continue;
+    // A run starts after its chat exists, so none of this chat's overlapped.
+    if (burst && chat._creationTime > burst.burstEnd + CLOCK_SKEW_MS) {
+      chatsAfterBurst++;
+      continue;
+    }
+    if (budget.bytes >= MAX_ACTIVITY_BYTES) {
+      scanTruncated = true;
+      break;
+    }
+    chatsScanned++;
+    const read = await readChatActivity(ctx, window, chat, budget, burst);
+    scanTruncated ||= read.truncated;
+    timing.overlappingRuns += read.timing.overlappingRuns;
+    timing.unplacedRuns += read.timing.unplacedRuns;
+    timing.lateSave ||= read.timing.lateSave;
+    if (read.activity) found.push(read.activity);
+    else if (!read.truncated) chatsWithoutCommands++;
+  }
+  // The chats whose commands started closest to the end of the burst.
+  found.sort((a, b) => b.latestCommandStart - a.latestCommandStart);
+  return {
+    found,
+    chatsScanned,
+    chatsWithoutCommands,
+    chatsAfterBurst,
+    scanTruncated,
+    timing,
+  };
+}
+
+/**
+ * Burst mode for the on-demand advisory reassessment of one existing case,
+ * whose caller derives the account and burst from the decrypted record. It
+ * reads the same account-owned chats and limits as `readAccountActivity`,
+ * but only messages created by `MAX_BURST_SAVE_DELAY_MS` after the burst,
+ * and returns at most one candidate: the most recently started finished run
+ * whose persisted timing overlaps the burst and that started a terminal
+ * command, with its own commands and the user turn before its start. The
+ * candidate is never shown to have caused the burst. Content exclusions,
+ * edited-after-start exclusion and the deletion fence are unchanged.
+ */
+export async function collectBurstActivity(
+  ctx: QueryCtx,
+  args: Burst & { userId: string },
+) {
+  assertBurst(args);
+  if (await isUserDeletionFenced(ctx.db, args.userId))
+    return { status: "unavailable" as const };
+  const burst: BurstScope = {
+    burstStart: args.burstStart,
+    burstEnd: args.burstEnd,
+    latestSave: args.burstEnd + MAX_BURST_SAVE_DELAY_MS + CLOCK_SKEW_MS,
+  };
+  const scan = await collectAccountActivity(
+    ctx,
+    {
+      userId: args.userId,
+      windowStart: args.burstStart - ACTIVITY_LOOKBACK_MS,
+      windowEnd: args.burstEnd + CLOCK_SKEW_MS,
+    },
+    burst,
+  );
+  const [best] = scan.found;
+  const selection = {
+    chatsScanned: scan.chatsScanned,
+    chatsAfterBurst: scan.chatsAfterBurst,
+    scanTruncated: scan.scanTruncated,
+    otherOverlappingRuns: scan.timing.overlappingRuns - (best ? 1 : 0),
+    unplacedRuns: scan.timing.unplacedRuns,
+    lateSave: scan.timing.lateSave,
+  };
+  if (!best)
+    return {
+      status: "ok" as const,
+      candidate: { status: "none" as const },
+      selection,
+    };
+  const { chatId, runIds, userMessages, commands, coverage } = best.chat;
+  const [runId] = runIds;
+  if (
+    await subagentMayOverlap(ctx, {
+      ...burst,
+      userId: args.userId,
+      chatId,
+      runId,
+    })
+  )
+    return {
+      status: "ok" as const,
+      candidate: { status: "subagent_overlap" as const },
+      selection,
+    };
+  return {
+    status: "ok" as const,
+    candidate: {
+      status: "found" as const,
+      runId,
+      userMessages,
+      commands,
+      coverage,
+    },
+    selection,
+  };
 }
 
 /**
@@ -686,43 +940,8 @@ export const readAccountActivity = query({
       windowStart: args.burstStart - ACTIVITY_LOOKBACK_MS,
       windowEnd: args.burstEnd + CLOCK_SKEW_MS,
     };
-    // A chat active during the window was updated at or after its start.
-    const chats = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_updated", (q) =>
-        q.eq("user_id", args.userId).gte("update_time", window.windowStart),
-      )
-      .order("desc")
-      .take(MAX_ACTIVITY_CHAT_SCAN + 1);
-    let scanTruncated = chats.length > MAX_ACTIVITY_CHAT_SCAN;
-    const budget = { bytes: 0 };
-    const scanned = chats.slice(0, MAX_ACTIVITY_CHAT_SCAN);
-    for (const chat of scanned) budget.bytes += getDocumentSize(chat);
-
-    const found: NonNullable<
-      Awaited<ReturnType<typeof readChatActivity>>["activity"]
-    >[] = [];
-    let chatsScanned = 0;
-    let chatsWithoutCommands = 0;
-    for (const chat of scanned) {
-      if (chat.user_id !== args.userId || chat.deletion_started_at) continue;
-      if (budget.bytes >= MAX_ACTIVITY_BYTES) {
-        scanTruncated = true;
-        break;
-      }
-      chatsScanned++;
-      const { activity, truncated } = await readChatActivity(
-        ctx,
-        window,
-        chat,
-        budget,
-      );
-      scanTruncated ||= truncated;
-      if (activity) found.push(activity);
-      else if (!truncated) chatsWithoutCommands++;
-    }
-    // The chats whose commands started closest to the end of the burst.
-    found.sort((a, b) => b.latestCommandStart - a.latestCommandStart);
+    const { found, chatsScanned, chatsWithoutCommands, scanTruncated } =
+      await collectAccountActivity(ctx, window);
     const kept = found.slice(0, MAX_ACTIVITY_CHATS);
     return {
       status: "ok" as const,

@@ -13,6 +13,7 @@ import {
 } from "@/lib/abuse/egress-review";
 import {
   CASE_REFERENCE,
+  type BurstActivityClosedReason,
   type ReassessmentClosedReason,
 } from "@/lib/abuse/egress-reassessment";
 import { USER_RESEARCH_MODEL_KEY } from "@/lib/research/user-research";
@@ -32,9 +33,18 @@ import {
 // caused the burst, stay unverified. It never blocks or unblocks an account,
 // grants a cooldown, drafts or sends mail, or changes the case or its
 // decision; its only write is the audit `read` event Convex adds for the read.
+//
+// With `scope: "burst_activity"`, it instead reads the verified account's
+// activity around the burst of any v3 manual or authorization-request case
+// without a recorded enforcement decision, and assesses at most one finished
+// run whose persisted timing overlaps the burst, under the same guarantees.
 
 export const egressAbuseReassessPayloadSchema = z
-  .object({ reference: z.string().regex(CASE_REFERENCE) })
+  .object({
+    reference: z.string().regex(CASE_REFERENCE),
+    // Omitted: the retained candidate, unchanged.
+    scope: z.literal("burst_activity").optional(),
+  })
   .strict();
 export type EgressAbuseReassessPayload = z.infer<
   typeof egressAbuseReassessPayloadSchema
@@ -59,7 +69,10 @@ export type ReassessmentReason =
 
 export type EgressAbuseReassessResult =
   | { status: "disabled" }
-  | { status: "closed"; reason: ReassessmentClosedReason }
+  | {
+      status: "closed";
+      reason: ReassessmentClosedReason | BurstActivityClosedReason;
+    }
   | {
       status: "completed";
       /** Only the one candidate run the case retained was read. */
@@ -80,9 +93,57 @@ export type EgressAbuseReassessResult =
         "activity" | "authorization"
       >;
       model?: { key: string; promptVersion: string };
-    };
+    }
+  | BurstActivityResult;
 
-type Completed = Extract<EgressAbuseReassessResult, { status: "completed" }>;
+export type BurstActivityReason =
+  // Nothing assessable was read.
+  | "account_unavailable"
+  | "no_overlapping_run"
+  | "subagent_overlap"
+  // Read, but not assessable.
+  | "candidate_completion_unverified"
+  | "no_command_evidence"
+  | "evidence_gaps"
+  | "privacy_guard"
+  | "classifier_unavailable"
+  | "classifier_invalid"
+  // Classified complete evidence.
+  | ReturnType<typeof decideRetainedCandidate>["reason"];
+
+/** Why another run might have been the better candidate. */
+export type BurstSelectionGap =
+  "chat_scan_truncated" | "unplaced_runs" | "late_save_possible";
+
+export type BurstActivityResult = {
+  status: "completed";
+  /** One run whose persisted timing overlaps the burst, at most. */
+  scope: "burst_activity";
+  /** Whether this run caused the burst is not established. */
+  attribution: "unverified";
+  /** Never a verdict on the burst, and never acted on. */
+  determination: "advisory_only";
+  /** Whether every chat and run the bounded read could reach was placed. */
+  selection: "complete" | "incomplete" | "unavailable";
+  selectionGaps?: BurstSelectionGap[];
+  /** Other runs whose persisted timing overlaps the burst; not read. */
+  otherOverlappingRuns?: number;
+  coverage: "complete" | "incomplete" | "unavailable";
+  advisory: "neutral" | "concern" | "inconclusive";
+  reason: BurstActivityReason;
+  gaps?: ObservationGap[];
+  /** Set only when the advisory finding is grounded in cited evidence. */
+  classification?: Pick<
+    EgressReviewClassification,
+    "activity" | "authorization"
+  >;
+  model?: { key: string; promptVersion: string };
+};
+
+type Completed = Extract<
+  EgressAbuseReassessResult,
+  { scope: "retained_candidate_only" }
+>;
 const completed = (
   details: Pick<Completed, "coverage" | "advisory" | "reason"> &
     Partial<Completed>,
@@ -144,7 +205,8 @@ export async function runEgressAbuseReassessment(
   payload: EgressAbuseReassessPayload,
 ): Promise<EgressAbuseReassessResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
-  const { reference } = egressAbuseReassessPayloadSchema.parse(payload);
+  const { reference, scope } = egressAbuseReassessPayloadSchema.parse(payload);
+  if (scope === "burst_activity") return runBurstActivityAssessment(reference);
   const { client, serviceKey } = reviewClient();
   const readStartedAt = Date.now();
   const read = await client.action(
@@ -224,6 +286,138 @@ export async function runEgressAbuseReassessment(
     prepared,
   );
   return completed({
+    coverage: "complete",
+    advisory,
+    reason,
+    model,
+    ...(advisory === "inconclusive"
+      ? {}
+      : {
+          classification: {
+            activity: classification.activity,
+            authorization: classification.authorization,
+          },
+        }),
+  });
+}
+
+/**
+ * One verified account's activity around a case's burst. The selected run is
+ * checked for completion, scrubbed, guarded and classified like the retained
+ * candidate, at most once, and only when its evidence is complete.
+ */
+async function runBurstActivityAssessment(
+  reference: string,
+): Promise<EgressAbuseReassessResult> {
+  const { client, serviceKey } = reviewClient();
+  const readStartedAt = Date.now();
+  const read = await client.action(
+    api.egressAbuseReassessmentActions.readBurstActivityEvidence,
+    { serviceKey, reference },
+  );
+  if (read.status === "closed")
+    return { status: "closed", reason: read.reason };
+  const base = {
+    status: "completed",
+    scope: "burst_activity",
+    attribution: "unverified",
+    determination: "advisory_only",
+  } as const;
+  const { evidence } = read;
+  if (evidence.status === "unavailable")
+    return {
+      ...base,
+      selection: "unavailable",
+      coverage: "unavailable",
+      advisory: "inconclusive",
+      reason: evidence.reason,
+    };
+  const { selection, candidate } = evidence;
+  const selectionGaps = (
+    [
+      ["chat_scan_truncated", selection.scanTruncated],
+      ["unplaced_runs", selection.unplacedRuns > 0],
+      ["late_save_possible", selection.lateSave],
+    ] as const
+  )
+    .filter(([, present]) => present)
+    .map(([gap]) => gap);
+  const done = (
+    details: Pick<BurstActivityResult, "coverage" | "advisory" | "reason"> &
+      Partial<BurstActivityResult>,
+  ): BurstActivityResult => ({
+    ...base,
+    selection: selectionGaps.length ? "incomplete" : "complete",
+    ...(selectionGaps.length ? { selectionGaps } : {}),
+    otherOverlappingRuns: selection.otherOverlappingRuns,
+    ...details,
+  });
+  if (candidate.status !== "found")
+    return done({
+      coverage: "unavailable",
+      advisory: "inconclusive",
+      reason:
+        candidate.status === "none" ? "no_overlapping_run" : candidate.status,
+    });
+  // The chat marker can be cleared while the run is still writing.
+  if (!(await candidateFinishedBeforeRead(candidate.runId, readStartedAt)))
+    return done({
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "candidate_completion_unverified",
+    });
+  const unprepared = observationGaps(candidate, {
+    itemsTruncated: false,
+    itemsOmitted: false,
+  });
+  if (!candidate.commands.length)
+    return done({
+      coverage: unprepared.length ? "incomplete" : "complete",
+      advisory: "inconclusive",
+      reason: "no_command_evidence",
+      ...(unprepared.length ? { gaps: unprepared } : {}),
+    });
+  const prepared = prepareReview(
+    candidate,
+    { start: read.burstStart, end: read.burstEnd },
+    "retained_candidate",
+  );
+  // Partial evidence is never classified, so it cannot become a finding.
+  const gaps = observationGaps(candidate, prepared);
+  if (gaps.length)
+    return done({
+      coverage: "incomplete",
+      advisory: "inconclusive",
+      reason: "evidence_gaps",
+      gaps,
+    });
+  if (!passesPrivacyGuard(prepared.prompt))
+    return done({
+      coverage: "complete",
+      advisory: "inconclusive",
+      reason: "privacy_guard",
+    });
+  const model = {
+    key: USER_RESEARCH_MODEL_KEY,
+    promptVersion: EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
+  };
+  const classification = await classifyEvidence(
+    prepared.prompt,
+    retainedCandidateClassificationSchema(prepared),
+  );
+  if (typeof classification === "string")
+    return done({
+      coverage: "complete",
+      advisory: "inconclusive",
+      reason: classification,
+      model,
+    });
+  const { advisory, reason } = decideRetainedCandidate(
+    classification,
+    candidate,
+    prepared,
+  );
+  return done({
     coverage: "complete",
     advisory,
     reason,

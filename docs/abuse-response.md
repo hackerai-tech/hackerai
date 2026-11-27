@@ -500,7 +500,9 @@ The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions,
-and the one [reassessment](#reassessing-a-retained-candidate) action.
+and the two reassessment actions ([retained
+candidate](#reassessing-a-retained-candidate) and [burst
+activity](#reassessing-burst-activity)).
 The Agent worker and Convex deployment must share the same
 `CONVEX_SERVICE_ROLE_KEY` for signing and verifying the account-activity
 attribution proof. This key must differ from the dedicated review key. A
@@ -655,6 +657,61 @@ without reading anything.
   the case or its decision, block or unblock the account, grant a cooldown,
   draft or send mail, or write a receipt. Record any conclusion in the case
   yourself after reviewing the chat and run the case records.
+
+### Reassessing burst activity
+
+For an older case whose review read no usable evidence, such as an unlinked
+`no_acquisition_link` case, request advisory context on the account's
+activity around the burst:
+
+```json
+{ "reference": "AB-…", "scope": "burst_activity" }
+```
+
+It uses the same task, switch, credentials, single attempt and audit `read`
+event as the retained-candidate reassessment. Without `scope`, the task is
+unchanged.
+
+- **Which cases.** The same open, uncontained, unerased, seven-day-old
+  automated review cases. The decrypted record must be version 3,
+  `manual_review` (any manual reason) or `authorization_request`, bind its
+  region, owner, window, burst minute, integer connection count and review
+  time to the case as above, and name a verified account. A recorded
+  enforcement decision returns `closed` / `enforcement_recorded`; a case
+  without a verified account returns `account_unverified`. Nothing else in
+  the record is read.
+- **What it reads.** The account-activity read from the verified account
+  only, with the same chat discovery, deletion fence, content exclusions and
+  chat, row and byte limits. It reads messages created from 24 hours before
+  the burst minute to 31 minutes after it ends, so later conversation cannot
+  use up the limits. It skips chats created after the burst without reading them.
+  It keeps one candidate: the most recently started run that started a
+  terminal command, has complete persisted timing that overlaps the burst,
+  and is not marked active. It returns only that run's commands and the user
+  turn before the run started. A subagent of that run that may have
+  overlapped returns `subagent_overlap` without content. The worker verifies
+  completion with Trigger, as above, before classification.
+- **What it returns.** Closed enums and counts only: `scope:
+burst_activity`, `attribution: unverified`, `determination:
+advisory_only`, and `otherOverlappingRuns` (runs that also overlap but were
+  not read). An account being deleted returns `selection` and `coverage`
+  `unavailable` with `account_unavailable`. `selection` is `incomplete`, with
+  `selectionGaps`, when the chat
+  scan hit a limit (`chat_scan_truncated`), a run had no usable timing
+  (`unplaced_runs`), or the first row saved after the read range belongs to
+  another run that may have spanned the burst (`late_save_possible`). A later
+  row of the candidate itself counts as an omitted command. Coverage,
+  `advisory`, `classification` and the model follow the retained-candidate
+  rules. Earlier turns, edits after the run started, truncation and any
+  other gap make the evidence `incomplete`. The model is never called on
+  incomplete evidence, and at most once per task.
+- **Limits.** Chat discovery lists the 20 chats the account updated most
+  recently. For an account that kept working after the burst, the run may
+  fall outside that list; the result then reports `chat_scan_truncated`. The
+  late-save check looks at one row, so it can miss a run that saved behind a
+  queued user message. The finding describes one run and never establishes
+  which activity caused the burst; it does not change the case, the account,
+  a cooldown or a receipt.
 
 ### Automatic enforcement
 
