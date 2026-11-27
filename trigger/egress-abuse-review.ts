@@ -399,11 +399,37 @@ export function passesPrivacyGuard(prompt: string) {
   }
 }
 
-/** Structured enums and indices only: no tools, no telemetry of content. */
+function logClassifierUsage(
+  fields: { startedAtMs: number } & (
+    | { phase: "started" }
+    | {
+        phase: "reported";
+        inputTokens: number | null;
+        outputTokens: number | null;
+        chargedUsd: number | null;
+      }
+  ),
+) {
+  try {
+    logger.info("Egress review classifier usage", fields);
+  } catch {
+    // Usage reporting must never affect the review result.
+  }
+}
+
+function nonnegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+/** Structured enums and indices, with only numeric usage in diagnostics. */
 export async function classifyEvidence<T = EgressReviewClassification>(
   prompt: string,
   schema: z.ZodType<T> = egressReviewClassificationSchema as never,
 ): Promise<T | "classifier_invalid" | "classifier_unavailable"> {
+  const startedAtMs = Date.now();
+  logClassifierUsage({ phase: "started", startedAtMs });
   try {
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
@@ -414,6 +440,19 @@ export async function classifyEvidence<T = EgressReviewClassification>(
       maxOutputTokens: 2_000,
       maxRetries: 1,
       prompt,
+    });
+    const modelUsage = result.totalUsage ?? result.usage;
+    const billing = result.providerMetadata?.openrouter?.usage;
+    const charge =
+      billing !== null && typeof billing === "object" && "cost" in billing
+        ? billing.cost
+        : undefined;
+    logClassifierUsage({
+      phase: "reported",
+      startedAtMs,
+      inputTokens: nonnegativeNumber(modelUsage?.inputTokens),
+      outputTokens: nonnegativeNumber(modelUsage?.outputTokens),
+      chargedUsd: nonnegativeNumber(charge),
     });
     const parsed = schema.safeParse(result.output);
     return parsed.success ? parsed.data : "classifier_invalid";

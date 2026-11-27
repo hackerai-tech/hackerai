@@ -50,6 +50,7 @@ import {
   telemetryBatchSchema,
 } from "@/lib/cloud-network/egress-telemetry";
 import {
+  classifyEvidence,
   egressAbuseReviewTask,
   runEgressAbuseReview,
 } from "../egress-abuse-review";
@@ -259,6 +260,68 @@ const caseRecord = () =>
     reference,
     convex.tables.abuse_cases[0].ciphertext,
   ) as any;
+
+describe("egress classifier usage", () => {
+  const usageLogs = () =>
+    jest
+      .mocked(logger.info)
+      .mock.calls.filter(
+        ([title]) => title === "Egress review classifier usage",
+      )
+      .map(([, fields]) => fields);
+
+  it("reports only the provider charge and token counts even for an invalid classification", async () => {
+    jest.mocked(generateText).mockResolvedValueOnce({
+      output: { privateText: "fixture output" },
+      totalUsage: { inputTokens: 500, outputTokens: 120 },
+      providerMetadata: {
+        openrouter: {
+          provider: "fixture provider",
+          usage: { cost: 0.00172, reasoning: "fixture reasoning" },
+        },
+      },
+    } as never);
+
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_invalid",
+    );
+    const [started, reported] = usageLogs();
+    expect(usageLogs()).toHaveLength(2);
+    expect(started).toEqual({
+      phase: "started",
+      startedAtMs: expect.any(Number),
+    });
+    expect(reported).toEqual({
+      phase: "reported",
+      startedAtMs: started?.startedAtMs,
+      inputTokens: 500,
+      outputTokens: 120,
+      chargedUsd: 0.00172,
+    });
+  });
+
+  it("counts a failed invocation without inventing usage or logging its error", async () => {
+    jest
+      .mocked(generateText)
+      .mockRejectedValueOnce(new Error("fixture prompt"));
+    await expect(classifyEvidence("fixture prompt")).resolves.toBe(
+      "classifier_unavailable",
+    );
+    expect(usageLogs()).toEqual([
+      { phase: "started", startedAtMs: expect.any(Number) },
+    ]);
+  });
+
+  it("keeps the classifier working when usage logging fails", async () => {
+    jest.mocked(logger.info).mockImplementationOnce(() => {
+      throw new Error("logging unavailable");
+    });
+    classifyAs(concerning);
+    await expect(classifyEvidence("fixture prompt")).resolves.toEqual(
+      concerning,
+    );
+  });
+});
 
 beforeEach(async () => {
   jest.clearAllMocks();
