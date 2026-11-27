@@ -186,6 +186,8 @@ export type ReviewDiagnostic = {
   runLinks?: number;
   /** Linked parent runs that could have been active during the burst. */
   plausibleRuns?: number;
+  /** Initially unplaced links ruled out by the complete Trigger root check. */
+  competingLinksRuledOut?: number;
   /** Linked runs whose chat was unavailable. */
   unavailableLinks?: number;
   gaps?: ObservationGap[];
@@ -254,6 +256,7 @@ async function checkAccountRootRuns(
   userId: string,
   runId: string,
   burst: { burstStart: number; burstEnd: number },
+  unplacedLinks: readonly AcquisitionLink[],
 ): Promise<RootRunCheck> {
   const unverified = (detail: ReviewDiagnosticDetail) =>
     ({ status: "unverified", detail }) as const;
@@ -305,6 +308,10 @@ async function checkAccountRootRuns(
   }
   let selected = false;
   let concurrent = false;
+  const unplacedByRun = new Map(
+    unplacedLinks.map((link) => [link.runId, link]),
+  );
+  const ruledOut = new Set<string>();
   for (const row of rows) {
     if (row.taskIdentifier !== AGENT_TASK || !row.tags?.includes(tag))
       return unverified("root_row_mismatch");
@@ -333,9 +340,27 @@ async function checkAccountRootRuns(
       (finishedAt !== undefined && finishedAt < earliest) ||
       (startedAt === undefined && TERMINAL_RUN_STATUSES.has(row.status));
     if (!disjoint) concurrent = true;
+
+    const link = unplacedByRun.get(row.id);
+    // A workspace acquisition needs an actual execution in the linked chat.
+    // Only a corroborated terminal run before the burst can rule it out.
+    if (
+      link &&
+      row.tags.includes(`chat_${link.chatId}`) &&
+      TERMINAL_RUN_STATUSES.has(row.status) &&
+      startedAt !== undefined &&
+      startedAt <= link.acquiredAt + CLOCK_SKEW_MS &&
+      finishedAt !== undefined &&
+      finishedAt >= link.acquiredAt - CLOCK_SKEW_MS &&
+      finishedAt < earliest
+    )
+      ruledOut.add(row.id);
   }
   if (!selected) return unverified("selected_run_absent");
-  return { status: concurrent ? "concurrent" : "sole" };
+  if (concurrent) return { status: "concurrent" };
+  if (ruledOut.size !== unplacedLinks.length)
+    return unverified("competing_links");
+  return { status: "sole" };
 }
 
 /** Retried by Trigger while a still-active run's evidence may grow. */
@@ -921,27 +946,32 @@ async function reviewBurst(
     ({ link, status }) => link.kind === "parent" && status !== "disjoint",
   );
   diagnostic.plausibleRuns = plausible.length;
-  if (plausible.length > 1) {
-    diagnostic.detail = "competing_links";
-    // The only link Convex places in the burst is kept as an advisory
-    // candidate for the audited, on-demand reassessment. Its competitors
-    // remain possible causes, so the case stays manual and nothing is read.
-    const overlapping = plausible.filter(({ status }) => status === "overlaps");
-    const candidate = overlapping.length === 1 ? overlapping[0].link : null;
-    const uniqueLink =
-      candidate &&
-      [...links.values()].filter(({ runId }) => runId === candidate.runId)
-        .length === 1;
-    return manual(
-      "multiple_runs",
-      candidate && uniqueLink
-        ? { run: { chatId: candidate.chatId, runId: candidate.runId } }
-        : undefined,
-    );
-  }
   if (!plausible.length) return manual("no_matching_run");
-  const [{ link, status }] = plausible;
-  shadow.selected = link;
+
+  let selected = plausible[0];
+  let unplacedLinks: AcquisitionLink[] = [];
+  if (plausible.length > 1) {
+    const [overlap, second] = plausible.filter(
+      ({ status }) => status === "overlaps",
+    );
+    if (
+      !overlap ||
+      second ||
+      [...links.values()].some(
+        (link) => link !== overlap.link && link.runId === overlap.link.runId,
+      )
+    ) {
+      diagnostic.detail = "competing_links";
+      return manual("multiple_runs");
+    }
+    selected = overlap;
+    unplacedLinks = plausible
+      .filter((match) => match.status === "unknown")
+      .map((match) => match.link);
+  }
+
+  const { link, status } = selected;
+  if (!unplacedLinks.length) shadow.selected = link;
   const run = { chatId: link.chatId, runId: link.runId };
   if (status !== "overlaps") {
     diagnostic.detail = "run_overlap_unknown";
@@ -952,8 +982,22 @@ async function reviewBurst(
     return pending("account_runs_unverified", { run });
   }
   // A competing run's link may be missing or expired; rule out every other
-  // root run of the account before reading this run's evidence.
-  const roots = await checkAccountRootRuns(userId, link.runId, burst);
+  // root run of the account and verify any unplaced link before reading evidence.
+  const roots = await checkAccountRootRuns(
+    userId,
+    link.runId,
+    burst,
+    unplacedLinks,
+  );
+  if (unplacedLinks.length) {
+    if (roots.status !== "sole") {
+      // Keep the one candidate available for an audited advisory reassessment.
+      diagnostic.detail = "competing_links";
+      return manual("multiple_runs", { run });
+    }
+    diagnostic.competingLinksRuledOut = unplacedLinks.length;
+    shadow.selected = link;
+  }
   if (roots.status === "concurrent") {
     diagnostic.detail = "concurrent_root_run";
     return manual("multiple_runs", { run });

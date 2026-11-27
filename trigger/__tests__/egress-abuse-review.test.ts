@@ -2059,6 +2059,120 @@ describe("on-demand reassessment of a retained candidate", () => {
         .mock.results.flatMap(({ value }) => value.query.mock.calls)
         .map(([fn]: any) => getFunctionName(fn));
 
+    const otherRoot = (timing: Parameters<typeof rootRun>[1]) => ({
+      ...rootRun(OTHER, timing),
+      tags: [`user_${first.userId}`, `chat_${OTHER_CHAT}`],
+    });
+
+    it("reviews only the overlapping run when Trigger proves the unplaced run ended before the burst", async () => {
+      await seedRun(RUN, CHAT, {
+        command: "pnpm build",
+        message: "Build my development project",
+      });
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        otherRoot({
+          started: BURST_START - 45 * MINUTE_MS,
+          finished: BURST_START - 5 * MINUTE_MS,
+        }),
+      ]);
+      classifyAs({
+        verdict: "clearly_legitimate",
+        activity: "ordinary_development",
+        authorization: "not_stated",
+        commandIndices: [1],
+        messageIndices: [1],
+      });
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "no_case",
+        reason: "legitimate_corroborated",
+        diagnostic: { competingLinksRuledOut: 1 },
+      });
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(generateText).toHaveBeenCalledTimes(1);
+      const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+      expect(prompt).toContain("Build my development project");
+      expect(prompt).not.toContain("UNRELATED CHAT TEXT");
+      expect(recordCaseCalls()).toHaveLength(0);
+    });
+
+    it.each([
+      ["finished during the burst", { finished: BURST_START + 30_000 }],
+      [
+        "skew makes its finish uncertain",
+        { finished: BURST_START - MINUTE_MS },
+      ],
+      [
+        "claims it finished before acquiring the workspace",
+        { finished: BURST_START - 20 * MINUTE_MS },
+      ],
+      [
+        "is not terminal despite a finish timestamp",
+        { status: "EXECUTING", finished: BURST_START - 5 * MINUTE_MS },
+      ],
+    ])("keeps the case manual when the unplaced run %s", async (_, timing) => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        otherRoot({ started: BURST_START - 45 * MINUTE_MS, ...timing }),
+      ]);
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
+    it("keeps the case manual if Trigger history ends mid-scan after returning both linked runs", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns(
+        [
+          selectedRun,
+          otherRoot({
+            started: BURST_START - 45 * MINUTE_MS,
+            finished: BURST_START - 5 * MINUTE_MS,
+          }),
+        ],
+        true,
+      );
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
+    it("cannot rule out an unplaced link using a run attributed to a different chat", async () => {
+      await seedRun();
+      await link();
+      await seedUnplacedRun();
+      listRootRuns([
+        selectedRun,
+        rootRun(OTHER, {
+          started: BURST_START - 45 * MINUTE_MS,
+          finished: BURST_START - 5 * MINUTE_MS,
+        }),
+      ]);
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "multiple_runs",
+        diagnostic: { detail: "competing_links" },
+      });
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
     it("keeps the overlapping run as the case's candidate without reading or classifying evidence", async () => {
       await seedRun();
       await link();
@@ -2095,7 +2209,7 @@ describe("on-demand reassessment of a retained candidate", () => {
         "egressAbuseReview:matchRun",
         "egressAbuseReview:matchRun",
       ]);
-      expect(runs.list).not.toHaveBeenCalled();
+      expect(runs.list).toHaveBeenCalledTimes(1);
       expect(generateText).not.toHaveBeenCalled();
       const saved = structuredClone(convex.tables.abuse_cases[0]);
 
