@@ -753,7 +753,10 @@ async function collectAccountActivity(
   if (burst) {
     scanned = [];
     for await (const chat of chatQuery) {
-      if (scanned.length + chatsAfterBurst >= MAX_BURST_CHAT_DISCOVERY) {
+      if (
+        scanned.length >= MAX_ACTIVITY_CHAT_SCAN ||
+        scanned.length + chatsAfterBurst >= MAX_BURST_CHAT_DISCOVERY
+      ) {
         scanTruncated = true;
         break;
       }
@@ -767,10 +770,6 @@ async function collectAccountActivity(
       if (chat._creationTime > burst.burstEnd + CLOCK_SKEW_MS) {
         chatsAfterBurst++;
         continue;
-      }
-      if (scanned.length >= MAX_ACTIVITY_CHAT_SCAN) {
-        scanTruncated = true;
-        break;
       }
       scanned.push(chat);
     }
