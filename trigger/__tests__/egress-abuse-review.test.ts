@@ -1593,7 +1593,7 @@ describe("account cooldown after a corroborated legitimate review", () => {
   });
 });
 
-describe("on-demand reassessment of a multiple_runs case", () => {
+describe("on-demand reassessment of a retained candidate", () => {
   const reassess = () => runEgressAbuseReassessment({ reference });
   const legitimate = {
     verdict: "clearly_legitimate",
@@ -1617,10 +1617,22 @@ describe("on-demand reassessment of a multiple_runs case", () => {
   };
 
   /**
-   * The actual review keeps the linked run as its candidate, then abstains
-   * because another root chat of the account is still marked active.
+   * The actual review keeps the linked run as its candidate while another
+   * root chat of the account is still marked active, then abstains: by
+   * default because that marker withholds the exact-run read, or, when
+   * `arrangeHistory` exceeds the bounded Trigger history, before that read.
    */
-  async function overlapCase(options: Parameters<typeof seedRun>[2] = {}) {
+  async function retainedCase(
+    options: Parameters<typeof seedRun>[2] = {},
+    expected: {
+      reason: string;
+      detail: string;
+      arrangeHistory?: () => void;
+    } = {
+      reason: "multiple_runs",
+      detail: "concurrent_run_evidence",
+    },
+  ) {
     await seedRun(RUN, CHAT, options);
     await convex.db.insert("chats", {
       id: "chat_other",
@@ -1635,15 +1647,20 @@ describe("on-demand reassessment of a multiple_runs case", () => {
       parts: [{ type: "text", text: "UNRELATED CHAT TEXT" }],
     });
     await link();
+    expected.arrangeHistory?.();
     await expect(run()).resolves.toMatchObject({
       outcome: "manual_review",
-      reason: "multiple_runs",
+      reason: expected.reason,
       case: "created",
-      diagnostic: { detail: "concurrent_run_evidence" },
+      diagnostic: { detail: expected.detail },
     });
     expect(caseRecord()).toMatchObject({
       version: 3,
+      reason: expected.reason,
+      evidenceMode: "none",
+      observation: { workspacesCounted: 1 },
       run: { chatId: CHAT, runId: RUN },
+      coverage: null,
       evidenceLocators: { commands: [], messages: [] },
     });
     jest.clearAllMocks();
@@ -1653,6 +1670,8 @@ describe("on-demand reassessment of a multiple_runs case", () => {
     });
     return structuredClone(convex.tables.abuse_cases[0]);
   }
+  const overlapCase = (options?: Parameters<typeof seedRun>[2]) =>
+    retainedCase(options);
 
   /** Nothing outside the audit read changed, and nothing identifying left. */
   function expectAdvisoryOnly(result: unknown, saved: unknown) {
@@ -1735,6 +1754,44 @@ describe("on-demand reassessment of a multiple_runs case", () => {
     expect(request.prompt).not.toContain("203.0.113");
     expect(request.prompt).not.toContain("UNRELATED");
     expect(caseRecord().draft).toBeNull();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("assesses only the retained candidate of a history-limited case", async () => {
+    const saved = await retainedCase(
+      {},
+      {
+        reason: "account_runs_unverified",
+        detail: "root_page_limit",
+        arrangeHistory: () => {
+          const page: any = {
+            data: [selectedRun],
+            hasNextPage: () => true,
+            getNextPage: async () => page,
+          };
+          jest.mocked(runs.list).mockReturnValue(page);
+        },
+      },
+    );
+    classifyAs(concerning);
+    const result = await reassess();
+    expect(result).toEqual({
+      ...advisory,
+      coverage: "complete",
+      advisory: "concern",
+      reason: "concerning_corroborated",
+      classification: {
+        activity: "network_scanning",
+        authorization: "not_stated",
+      },
+      model: expect.any(Object),
+    });
+    // The other active root chat stays unread; Trigger history is not re-read.
+    expect(generateText).toHaveBeenCalledTimes(1);
+    const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+    expect(prompt).toContain("Find open ports");
+    expect(prompt).not.toContain("UNRELATED");
+    expect(runs.list).not.toHaveBeenCalled();
     expectAdvisoryOnly(result, saved);
   });
 

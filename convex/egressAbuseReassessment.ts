@@ -10,12 +10,13 @@ import {
   userMessageValidator,
 } from "./egressAbuseReview";
 
-// Internal reads for the advisory reassessment of one `multiple_runs` egress
-// review case. Only `egressAbuseReassessmentActions:readCaseEvidence` calls
-// them, after its own authorization; the evidence scope comes from the
-// decrypted case record, never from the caller. Nothing here changes a case,
-// its status or revision, a restriction, a notice or a receipt: the only write
-// is one audit `read` event with a fixed actor.
+// Internal reads for the advisory reassessment of one `multiple_runs` or
+// `account_runs_unverified` egress review case. Only
+// `egressAbuseReassessmentActions:readCaseEvidence` calls them, after its own
+// authorization; the evidence scope comes from the decrypted case record,
+// never from the caller. Nothing here changes a case, its status or revision,
+// a restriction, a notice or a receipt: the only write is one audit `read`
+// event with a fixed actor.
 
 /** The fixed actor of the audit `read` event each reassessment adds. */
 export const EGRESS_REASSESSMENT_ACTOR = "egress_abuse_reassessment";

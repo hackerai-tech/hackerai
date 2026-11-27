@@ -466,7 +466,7 @@ The review uses `CONVEX_EGRESS_ABUSE_REVIEW_SERVICE_KEY` in the Agent worker and
 Convex. Generate it independently of the general and research service keys.
 It authorizes only the `egressAbuseReview` functions, which can
 create or preserve a review case but cannot create notices or restrictions,
-and the one [reassessment](#reassessing-a-multiple_runs-case) action.
+and the one [reassessment](#reassessing-a-retained-candidate) action.
 The Agent worker and Convex deployment must share the same
 `CONVEX_SERVICE_ROLE_KEY` for signing and verifying the account-activity
 attribution proof. This key must differ from the dedicated review key. A
@@ -551,12 +551,15 @@ shadow line with `selectedRun: "listed"`. To stop it, unset the shadow toggle in
 both processes; its keys (`egress-review:timeline:v1:*`) expire on their own
 and nothing else reads them.
 
-### Reassessing a `multiple_runs` case
+### Reassessing a retained candidate
 
-A `multiple_runs` case records the one linked candidate chat and run but
-reads none of its evidence, because another run may have shared the
-workspace. Rerunning `egress-abuse-review` does not help: the telemetry it
-re-verifies expires after two hours, and the existing case is preserved.
+A `multiple_runs` or `account_runs_unverified` case can record the one linked
+candidate chat and run but read none of its evidence, because another run may
+have shared the workspace or the account's other runs could not be ruled out
+(for example, Trigger history beyond the page limit). The record does not say
+which check failed. Rerunning `egress-abuse-review` does not help: the
+telemetry it re-verifies expires after two hours, and the existing case is
+preserved.
 To get advisory context on that candidate, trigger `egress-abuse-reassess`
 manually with only the case reference:
 
@@ -573,9 +576,10 @@ without reading anything.
 - **Which cases.** An open (`new` or `reviewing`), uncontained, unerased case
   created by the automated review (its `received` event actor is
   `egress_abuse_review`) within the last seven days. The decrypted record must
-  be a version 3 `manual_review` / `multiple_runs` record with a verified
-  account, exactly one counted workspace, a positive connection count, a
-  consistent burst minute and window, and a region, owner reference and
+  be a version 3 `manual_review` record with reason `multiple_runs` or
+  `account_runs_unverified`, no evidence read, a verified account, exactly
+  one counted workspace, a positive connection count, a consistent burst
+  minute and window, and a region, owner reference and
   window that hash to the case's reference and stored digest. Anything else
   returns `closed` with `case_unavailable`, `source_mismatch`,
   `record_invalid`, `not_overlap_case` or `no_candidate` (a case such as
@@ -584,8 +588,9 @@ without reading anything.
   bounded exact-run read as the review: ownership, the deletion fence, the
   run's persisted timing overlapping the burst, subagent overlap, size
   limits and content exclusion all apply. It omits only the account-wide
-  check for other active root runs, so the marker that caused the original
-  abstention no longer blocks the read. Each invocation adds one `read` event
+  check for other active root runs and does not list Trigger run history, so
+  neither the marker nor the history check that caused the original
+  abstention blocks the read. Each invocation adds one `read` event
   with actor `egress_abuse_reassessment`. Convex rechecks that the case is
   unchanged before reading the run; a case resolved or erased in between
   returns `closed` / `case_changed`. Before classification, the worker also

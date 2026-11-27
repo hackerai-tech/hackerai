@@ -24,11 +24,11 @@ import {
   type ObservationGap,
 } from "./egress-abuse-review";
 
-// On-demand advisory reassessment of one existing `multiple_runs` egress
-// review case, started by an operator with only its reference. It reads the
-// one candidate run the case retained, through the same scrubber, privacy
-// guard, classifier and policy as the review, and reports closed enums about
-// that run only. The other runs that may have been active, and which activity
+// On-demand advisory reassessment of one existing `multiple_runs` or
+// `account_runs_unverified` egress review case, started by an operator with
+// only its reference. It reads the one candidate run the case retained,
+// through the same scrubber, privacy guard, classifier and policy as the
+// review, and reports closed enums about that run only. The other runs that may have been active, and which activity
 // caused the burst, stay unverified. It never blocks or unblocks an account,
 // grants a cooldown, drafts or sends mail, or changes the case or its
 // decision; its only write is the audit `read` event Convex adds for the read.

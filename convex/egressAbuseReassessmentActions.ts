@@ -19,10 +19,10 @@ import {
 } from "../lib/abuse/egress-reassessment";
 
 /**
- * Advisory reassessment input for one existing `multiple_runs` egress review
- * case, by reference only. Authorized by the dedicated review key, which
- * serviceFunctions scopes to this one action outside the review module. It
- * audits the read, decrypts and validates the stored record, and returns the
+ * Advisory reassessment input for one existing `multiple_runs` or
+ * `account_runs_unverified` egress review case, by reference only. Authorized
+ * by the dedicated review key, which serviceFunctions scopes to this one
+ * action outside the review module. It audits the read, decrypts and validates the stored record, and returns the
  * bounded evidence of the one candidate run that record retained, with
  * placeholder locators. The trusted worker gets the candidate run ID only
  * to verify its completion. No case, account or enforcement state changes.

@@ -7,9 +7,10 @@ import {
 } from "./egress-case-identity";
 
 // Validation for the on-demand, advisory reassessment of one existing
-// `multiple_runs` egress review case. The stored record is the only source of
-// the evidence scope: nothing here accepts a user, chat, run or window from
-// the caller. Relative imports only: the Convex action bundles this module.
+// `multiple_runs` or `account_runs_unverified` egress review case. The stored
+// record is the only source of the evidence scope: nothing here accepts a
+// user, chat, run or window from the caller. Relative imports only: the Convex
+// action bundles this module.
 
 /** The automated review that must have created the case. */
 const EGRESS_REVIEW_SOURCE = "egress_abuse_review";
@@ -29,7 +30,7 @@ export const REASSESSMENT_CLOSED_REASONS = [
   "source_mismatch",
   /** The record could not be decrypted, parsed or bound to the case. */
   "record_invalid",
-  /** Not a manual `multiple_runs` case. */
+  /** Not a manual `multiple_runs` or `account_runs_unverified` case. */
   "not_overlap_case",
   /** The case kept no candidate chat and run. */
   "no_candidate",
@@ -52,14 +53,25 @@ const utc = z.string().refine((value) => {
   const ms = Date.parse(value);
   return Number.isFinite(ms) && new Date(ms).toISOString() === value;
 });
+/**
+ * Manual cases whose review kept one candidate run but read none of its
+ * evidence because other root runs of the account were active or could not
+ * be ruled out (for example, Trigger history beyond the page limit). The
+ * record does not say which; neither attributes the burst to the candidate.
+ */
+const RETAINED_CANDIDATE_REASONS = [
+  "multiple_runs",
+  "account_runs_unverified",
+] as const;
+
 const emptyLocators = z
   .object({ commands: z.tuple([]), messages: z.tuple([]) })
   .strict();
 
 /**
- * The exact v3 record the review writes for a `multiple_runs` manual case:
- * no evidence was read, so it holds no coverage, classification, locators,
- * model, account activity, enforcement or draft.
+ * The exact v3 record the review writes for these manual cases: no evidence
+ * was read, so it holds no coverage, classification, locators, model, account
+ * activity, enforcement or draft.
  */
 const overlapCaseSchema = z
   .object({
@@ -67,7 +79,7 @@ const overlapCaseSchema = z
     version: z.literal(3),
     reviewedAt: utc,
     outcome: z.literal("manual_review"),
-    reason: z.literal("multiple_runs"),
+    reason: z.enum(RETAINED_CANDIDATE_REASONS),
     rationale: z.string().max(1_000),
     evidenceMode: z.literal("none"),
     observation: z
@@ -122,7 +134,7 @@ type Parsed =
 
 /**
  * Derives the evidence scope from one decrypted case record. The record must
- * be a positive, single-workspace `multiple_runs` case with one retained
+ * be a positive, single-workspace retained-candidate case with one retained
  * candidate, a consistent window, and a region, owner and window that hash to
  * this case's reference and stored digest.
  */
@@ -135,7 +147,10 @@ export function parseRetainedCandidateCase(
     return { ok: false, reason: "record_invalid" };
   if (head.source !== EGRESS_REVIEW_SOURCE)
     return { ok: false, reason: "source_mismatch" };
-  if (head.outcome !== "manual_review" || head.reason !== "multiple_runs")
+  if (
+    head.outcome !== "manual_review" ||
+    !(RETAINED_CANDIDATE_REASONS as readonly unknown[]).includes(head.reason)
+  )
     return { ok: false, reason: "not_overlap_case" };
   const parsed = overlapCaseSchema.safeParse(record);
   if (!parsed.success) return { ok: false, reason: "record_invalid" };
