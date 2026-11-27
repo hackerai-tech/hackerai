@@ -2,8 +2,14 @@ import type Stripe from "stripe";
 
 import { stripe } from "@/app/api/stripe";
 import { api } from "@/convex/_generated/api";
-import type { RetentionOffers } from "@/lib/billing/api-types";
-import type { CancellationReasonCategory } from "@/lib/billing/cancellation-reasons";
+import type {
+  RetentionDowngradeRenewalCharge,
+  RetentionOffers,
+} from "@/lib/billing/api-types";
+import type {
+  CancellationReasonCategory,
+  CancellationReasonSubcategory,
+} from "@/lib/billing/cancellation-reasons";
 import {
   getCurrentSubscriptionContext,
   type CurrentSubscriptionContext,
@@ -22,6 +28,7 @@ import {
   getPauseOfferFlagState,
   type RetentionOfferFlagState,
 } from "@/lib/billing/retention-offers.server";
+import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 
@@ -118,6 +125,7 @@ export async function evaluateRetentionOffersForUser(args: {
   userId: string;
   stripeCustomerId: string;
   reasonCategory: CancellationReasonCategory;
+  reasonSubcategory?: CancellationReasonSubcategory;
   subscription?: CurrentSubscriptionContext;
 }): Promise<RetentionOfferEvaluation> {
   const subscription =
@@ -149,6 +157,7 @@ export async function evaluateRetentionOffersForUser(args: {
 
   const downgrade = evaluateDowngradeOfferEligibility({
     ...shared,
+    reasonSubcategory: args.reasonSubcategory,
     offersEnabled: downgradePolicy.state === "enabled",
     reasonPolicy: downgradePolicy.reasonPolicy,
     downgradeAlreadyScheduled: Boolean(subscription.scheduleId),
@@ -177,8 +186,147 @@ export async function evaluateRetentionOffersForUser(args: {
   };
 }
 
+export type DowngradeRenewalPreview =
+  | { status: "verified"; charge: RetentionDowngradeRenewalCharge }
+  | { status: "unavailable"; reason: string };
+
+function invoiceLinePriceId(line: Stripe.InvoiceLineItem): string | undefined {
+  return stripeObjectId(line.pricing?.price_details?.price) ?? undefined;
+}
+
+/** Why a preview cannot be tied to the scheduled renewal, if it cannot. */
+function renewalPreviewMismatch(
+  preview: Stripe.Invoice,
+  expected: { target: DowngradeTargetPrice; periodEndSeconds: number },
+): string | undefined {
+  if (
+    !expected.target.currency ||
+    preview.currency !== expected.target.currency
+  ) {
+    return "currency_mismatch";
+  }
+  if (preview.lines?.has_more) return "incomplete_lines";
+  if (
+    preview.automatic_tax?.enabled &&
+    preview.automatic_tax.status !== "complete"
+  ) {
+    return "tax_incomplete";
+  }
+
+  const lines = preview.lines?.data ?? [];
+  if (
+    lines.some(
+      (line) =>
+        line.parent?.subscription_item_details?.proration === true ||
+        line.parent?.invoice_item_details?.proration === true,
+    )
+  ) {
+    return "unexpected_proration";
+  }
+
+  const subscriptionLines = lines.filter(
+    (line) => line.parent?.type === "subscription_item_details",
+  );
+  const targetLine = subscriptionLines[0];
+  if (
+    subscriptionLines.length !== 1 ||
+    !targetLine ||
+    invoiceLinePriceId(targetLine) !== expected.target.priceId ||
+    targetLine.quantity !== 1
+  ) {
+    return "target_line_mismatch";
+  }
+  if (
+    targetLine.period?.start !== expected.periodEndSeconds ||
+    !(targetLine.period.end > targetLine.period.start)
+  ) {
+    return "cycle_date_mismatch";
+  }
+  if (!Number.isInteger(preview.amount_due) || preview.amount_due < 0) {
+    return "invalid_amount";
+  }
+  return undefined;
+}
+
+/**
+ * Read-only Stripe preview of the first invoice on the cheaper plan. It
+ * mirrors the scheduled phase: same subscription item, target price, one
+ * seat and no proration at the paid-through date. The result is used only
+ * when every check ties it to that exact renewal; otherwise the offer falls
+ * back to the regular monthly rate.
+ */
+export async function previewDowngradeRenewalCharge(args: {
+  stripeCustomerId: string;
+  subscription: CurrentSubscriptionContext;
+  target: DowngradeTargetPrice;
+}): Promise<DowngradeRenewalPreview> {
+  const { subscription, target } = args;
+  const periodEndMs = subscription.currentPeriodEndMs;
+  const items = subscription.subscription.items?.data ?? [];
+  if (!subscription.itemId || !periodEndMs || items.length !== 1) {
+    return { status: "unavailable", reason: "unsupported_subscription_shape" };
+  }
+  // The scheduled phase does not carry subscription- or item-level discounts
+  // forward (only the customer's), so a preview of the live subscription
+  // would understate the charge.
+  if (
+    (subscription.subscription.discounts?.length ?? 0) > 0 ||
+    (items[0]?.discounts?.length ?? 0) > 0
+  ) {
+    return { status: "unavailable", reason: "subscription_discount" };
+  }
+
+  let preview: Stripe.Invoice;
+  try {
+    preview = await stripe.invoices.createPreview(
+      {
+        customer: args.stripeCustomerId,
+        subscription: subscription.id,
+        subscription_details: {
+          items: [
+            { id: subscription.itemId, price: target.priceId, quantity: 1 },
+          ],
+          proration_behavior: "none",
+        },
+      },
+      // A slow estimate must not keep the customer waiting to cancel.
+      { timeout: 4_000, maxNetworkRetries: 0 },
+    );
+  } catch (error) {
+    phLogger.warn("retention_downgrade_renewal_preview_failed", {
+      stripe_subscription_id: subscription.id,
+      target_stripe_price_id: target.priceId,
+      error,
+    });
+    return { status: "unavailable", reason: "preview_failed" };
+  }
+
+  const reason = renewalPreviewMismatch(preview, {
+    target,
+    periodEndSeconds: Math.floor(periodEndMs / 1000),
+  });
+  if (reason) {
+    phLogger.warn("retention_downgrade_renewal_preview_rejected", {
+      stripe_subscription_id: subscription.id,
+      target_stripe_price_id: target.priceId,
+      reason,
+    });
+    return { status: "unavailable", reason };
+  }
+
+  return {
+    status: "verified",
+    charge: {
+      amountDollars: preview.amount_due / 100,
+      currency: preview.currency,
+      chargeAt: periodEndMs,
+    },
+  };
+}
+
 export function buildRetentionOffers(
   evaluation: RetentionOfferEvaluation,
+  renewalPreview?: DowngradeRenewalPreview,
 ): RetentionOffers {
   const { pause, downgrade, downgradeTarget, subscription } = evaluation;
   const periodEndMs = subscription.currentPeriodEndMs;
@@ -218,6 +366,9 @@ export function buildRetentionOffers(
               currency: downgradeTarget.currency,
             }),
             ...(periodEndMs && { effectiveAt: periodEndMs }),
+            ...(renewalPreview?.status === "verified" && {
+              renewalCharge: renewalPreview.charge,
+            }),
           }
         : {
             eligible: false,
@@ -232,6 +383,7 @@ export function buildRetentionOffers(
 export function retentionOfferEvaluationProperties(
   evaluation: RetentionOfferEvaluation,
   reasonCategory: CancellationReasonCategory,
+  reasonSubcategory?: CancellationReasonSubcategory,
 ) {
   const { pause, downgrade, downgradeTarget, subscription } = evaluation;
   return {
@@ -241,6 +393,7 @@ export function retentionOfferEvaluationProperties(
     billing_interval: subscription.billingInterval,
     subscription_status: subscription.status,
     reason_category: reasonCategory,
+    reason_subcategory: reasonSubcategory,
     pause_offer_flag_state: evaluation.flagState,
     pause_offered: pause.eligible,
     pause_ineligibility_reason: pause.eligible ? undefined : pause.reason,

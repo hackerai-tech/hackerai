@@ -16,6 +16,7 @@ import {
 import { evaluateRetentionOffersForUser } from "@/lib/billing/retention-offer-evaluation";
 import {
   RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
+  parseRetentionOfferImpressionId,
   retentionDowngradeMetadata,
 } from "@/lib/billing/retention-offers";
 import { scheduleDowngradeAtPeriodEnd } from "@/lib/billing/subscription-schedule";
@@ -25,6 +26,8 @@ import { phLogger } from "@/lib/posthog/server";
 
 type DowngradeSubscriptionInput = {
   cancellationReason?: CancellationReasonInputLike;
+  /** Client UUID of the accepted offer impression. Analytics only. */
+  offerImpressionId?: unknown;
 };
 
 function parseCreatedAtMs(value: unknown): number | undefined {
@@ -51,12 +54,16 @@ export default async function downgradeSubscriptionAction(
   const cancellationReason = parseCancellationReasonInput(
     input.cancellationReason,
   );
+  const offerImpressionId = parseRetentionOfferImpressionId(
+    input.offerImpressionId,
+  );
   const { organizationId, user, stripeCustomerId } =
     await getBillingActionContext();
   const evaluation = await evaluateRetentionOffersForUser({
     userId: user.id,
     stripeCustomerId,
     reasonCategory: cancellationReason.reasonCategory,
+    reasonSubcategory: cancellationReason.reasonSubcategory,
   });
   const { subscription, downgrade, downgradeTarget } = evaluation;
   const billingFields = {
@@ -204,6 +211,7 @@ export default async function downgradeSubscriptionAction(
     stripe_subscription_schedule_id: scheduled.scheduleId,
     stripe_price_id: subscription.priceId,
     target_stripe_price_id: downgradeTarget.priceId,
+    downgrade_offer_impression_id: offerImpressionId,
     ...proMonthlyPricingExperimentProperties(subscription.pricingExperiment),
   });
 

@@ -46,8 +46,27 @@ const CancelSubscriptionDialog = require("../CancelSubscriptionDialog")
 const PAUSE_EFFECTIVE_AT = Date.UTC(2026, 9, 1, 12);
 const PAUSE_RESUME_AT = Date.UTC(2026, 11, 1, 12);
 
+const OFFER_IMPRESSION_ID = "3f1c2b9a-6d4e-4a7b-9c2d-1e0f5a6b7c8d";
+const mockRandomUUID = jest.fn(() => OFFER_IMPRESSION_ID);
+Object.defineProperty(globalThis.crypto, "randomUUID", {
+  value: mockRandomUUID,
+  configurable: true,
+});
+
+function longDate(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(timestamp));
+}
+
 function retentionOffers(
-  overrides: { pause?: boolean; downgrade?: boolean } = {},
+  overrides: {
+    pause?: boolean;
+    downgrade?: boolean;
+    renewalCharge?: boolean;
+  } = {},
 ) {
   const pause = overrides.pause ?? true;
   const downgrade = overrides.downgrade ?? false;
@@ -61,6 +80,13 @@ function retentionOffers(
           currentAmountDollars: 60,
           currency: "usd",
           effectiveAt: PAUSE_EFFECTIVE_AT,
+          ...(overrides.renewalCharge && {
+            renewalCharge: {
+              amountDollars: 27.5,
+              currency: "usd",
+              chargeAt: PAUSE_EFFECTIVE_AT,
+            },
+          }),
         }
       : { eligible: false, reason: "no_downgrade_target" },
     offersEnabled: true,
@@ -215,6 +241,7 @@ describe("CancelSubscriptionDialog", () => {
     ).toBeVisible();
     expect(mockGetRetentionOffers).toHaveBeenCalledWith({
       reasonCategory: "not_using_enough",
+      reasonSubcategory: "too_expensive_low_frequency",
     });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.retentionOfferImpressed,
@@ -290,7 +317,7 @@ describe("CancelSubscriptionDialog", () => {
 
   it("offers a downgrade next to the pause and switches the plan", async () => {
     mockGetRetentionOffers.mockResolvedValue(
-      retentionOffers({ downgrade: true }) as never,
+      retentionOffers({ downgrade: true, renewalCharge: true }) as never,
     );
     mockDowngradeSubscription.mockResolvedValue({
       scheduled: true,
@@ -317,10 +344,27 @@ describe("CancelSubscriptionDialog", () => {
     expect(
       await screen.findByRole("heading", { name: "Keep your setup for less?" }),
     ).toBeVisible();
+    expect(mockGetRetentionOffers).toHaveBeenCalledWith({
+      reasonCategory: "not_using_enough",
+      reasonSubcategory: "too_expensive_low_frequency",
+    });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.retentionOfferImpressed,
-      expect.objectContaining({ offers_shown: ["downgrade", "pause"] }),
+      expect.objectContaining({
+        offers_shown: ["downgrade", "pause"],
+        downgrade_offer_impression_id: OFFER_IMPRESSION_ID,
+        downgrade_charge_display: "stripe_invoice_preview",
+      }),
     );
+    // Stripe's verified estimate and its date are in the offer card, with the
+    // regular rate kept separate from the charge.
+    const summary = screen.getByTestId("downgrade-renewal-summary");
+    expect(summary).toHaveTextContent("Estimated next charge");
+    expect(summary).toHaveTextContent("$27.50");
+    expect(summary).toHaveTextContent(
+      `Charged on${longDate(PAUSE_EFFECTIVE_AT)}`,
+    );
+    expect(screen.getByText(/Pro is \$25\/month\./)).toBeVisible();
     // Downgrade is listed first and preselected.
     expect(
       screen.getByRole("radio", { name: /switch to pro/i }),
@@ -337,6 +381,7 @@ describe("CancelSubscriptionDialog", () => {
         reasonSubcategory: "too_expensive_low_frequency",
         reasonDetails: "Busy with a contract for a while",
       },
+      offerImpressionId: OFFER_IMPRESSION_ID,
     });
     expect(mockPauseSubscription).not.toHaveBeenCalled();
     expect(
@@ -349,6 +394,76 @@ describe("CancelSubscriptionDialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(mockReloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  });
+
+  it("shows the regular rate without a preview and keeps every cancel exit", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true, pause: false }) as never,
+    );
+    mockCancelSubscription.mockResolvedValue({
+      canceled: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: PAUSE_EFFECTIVE_AT,
+      alreadyScheduled: false,
+    } as never);
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+    await screen.findByRole("heading", {
+      name: "Switch to a cheaper plan instead?",
+    });
+    const summary = screen.getByTestId("downgrade-renewal-summary");
+    expect(summary).toHaveTextContent("Pro regular price");
+    expect(summary).toHaveTextContent("$25/month");
+    expect(summary).toHaveTextContent(`Starts${longDate(PAUSE_EFFECTIVE_AT)}`);
+    expect(summary).not.toHaveTextContent("Estimated next charge");
+    expect(
+      screen.getByText(/Regular monthly rate, before any tax/),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "No thanks, continue to cancel" }),
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionOfferDeclined,
+      expect.objectContaining({
+        offers_shown: ["downgrade"],
+        downgrade_offer_impression_id: OFFER_IMPRESSION_ID,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Confirm & Cancel" }));
+
+    expect(mockCancelSubscription).toHaveBeenCalledTimes(1);
+    expect(mockDowngradeSubscription).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("heading", { name: "Cancellation scheduled" }),
+    ).toBeVisible();
+  });
+
+  it("re-evaluates offers when the follow-up answer changes", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true }) as never,
+    );
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+    await screen.findByRole("heading", { name: "Keep your setup for less?" });
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("radio", { name: /something else/i }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByRole("heading", { name: "Keep your setup for less?" });
+
+    expect(mockGetRetentionOffers).toHaveBeenCalledTimes(2);
+    expect(mockGetRetentionOffers).toHaveBeenLastCalledWith({
+      reasonCategory: "not_using_enough",
+      reasonSubcategory: "other",
+    });
   });
 
   it("lets the user pick the pause instead of the downgrade", async () => {

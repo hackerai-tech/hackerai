@@ -2473,9 +2473,11 @@ describe("POST /api/subscription/webhook", () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const periodStart = nowSeconds - 18 * 24 * 60 * 60;
     const periodEnd = nowSeconds + 12 * 24 * 60 * 60;
+    const SUBSCRIPTION_UPDATED_AT = nowSeconds - 60;
     mockConstructEvent.mockReturnValue({
       id: "evt_subscription_updated_upgrade",
       type: "customer.subscription.updated",
+      created: SUBSCRIPTION_UPDATED_AT,
       data: {
         object: {
           id: "sub_upgrade",
@@ -2562,6 +2564,20 @@ describe("POST /api/subscription/webhook", () => {
       mockApplyProratedTierChangeBucket.mock.calls[0][2].proratedRatio,
     ).toBeCloseTo(13 / 30, 4);
     expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    // A scheduled change is matched to its exact subscription and target
+    // price, ordered by when Stripe applied it.
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_changed",
+      expect.objectContaining({
+        userId: "user_upgrade",
+        from_tier: "pro",
+        to_tier: "pro-plus",
+        stripe_subscription_id: "sub_upgrade",
+        stripe_price_id: "price_pro_plus",
+        previous_stripe_price_id: "price_pro",
+        occurred_at: new Date(SUBSCRIPTION_UPDATED_AT * 1000).toISOString(),
+      }),
+    );
   });
 
   describe("monthly-to-annual allowance transition", () => {

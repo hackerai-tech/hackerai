@@ -12,6 +12,7 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockListPrices = jest.fn();
+const mockCreateInvoicePreview = jest.fn();
 const mockCreateSchedule = jest.fn();
 const mockUpdateSchedule = jest.fn();
 const mockReleaseSchedule = jest.fn();
@@ -30,6 +31,7 @@ jest.mock("@/app/api/stripe", () => ({
       update: mockUpdateSubscription,
     },
     prices: { list: mockListPrices },
+    invoices: { createPreview: mockCreateInvoicePreview },
     subscriptionSchedules: {
       create: mockCreateSchedule,
       update: mockUpdateSchedule,
@@ -105,6 +107,8 @@ function proPlusSubscription(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+const OFFER_IMPRESSION_ID = "3f1c2b9a-6d4e-4a7b-9c2d-1e0f5a6b7c8d";
 
 const validInput = {
   cancellationReason: {
@@ -186,7 +190,12 @@ describe("downgradeSubscriptionAction", () => {
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
 
-    await expect(downgradeSubscriptionAction(validInput)).resolves.toEqual({
+    await expect(
+      downgradeSubscriptionAction({
+        ...validInput,
+        offerImpressionId: OFFER_IMPRESSION_ID.toUpperCase(),
+      }),
+    ).resolves.toEqual({
       scheduled: true,
       effectiveAt: PERIOD_END_SECONDS * 1000,
       fromTier: "pro-plus",
@@ -257,7 +266,50 @@ describe("downgradeSubscriptionAction", () => {
       PAID_FUNNEL_EVENTS.retentionDowngradeScheduled,
       expect.objectContaining({
         effective_at: new Date(PERIOD_END_SECONDS * 1000).toISOString(),
+        downgrade_offer_impression_id: OFFER_IMPRESSION_ID,
+        stripe_subscription_id: "sub_pp",
+        target_stripe_price_id: "price_pro",
       }),
+    );
+    // Attribution stays out of Stripe; it is analytics only.
+    expect(JSON.stringify(mockUpdateSchedule.mock.calls)).not.toContain(
+      OFFER_IMPRESSION_ID,
+    );
+  });
+
+  it("drops a malformed impression id without blocking the switch", async () => {
+    const { default: downgradeSubscriptionAction } =
+      await import("../downgrade-subscription");
+
+    await expect(
+      downgradeSubscriptionAction({
+        ...validInput,
+        offerImpressionId: "not-a-uuid",
+      }),
+    ).resolves.toMatchObject({ scheduled: true });
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionDowngradeScheduled,
+      expect.objectContaining({ downgrade_offer_impression_id: undefined }),
+    );
+  });
+
+  it("refuses a switch when the plan does not include enough usage, even under a price reason", async () => {
+    const { default: downgradeSubscriptionAction } =
+      await import("../downgrade-subscription");
+
+    await expect(
+      downgradeSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "too_expensive",
+          reasonSubcategory: "insufficient_included_usage",
+          reasonDetails: "Paying more than it is worth for the usage",
+        },
+      }),
+    ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
+    expect(mockCreateSchedule).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "retention_downgrade_rejected",
+      expect.objectContaining({ reason: "insufficient_included_usage" }),
     );
   });
 
@@ -416,5 +468,137 @@ describe("downgradeSubscriptionAction", () => {
       expect.objectContaining({ reason: "no_downgrade_target" }),
     );
     expect(mockCreateSchedule).not.toHaveBeenCalled();
+  });
+
+  describe("renewal charge preview", () => {
+    function previewInvoice(overrides: Record<string, unknown> = {}) {
+      return {
+        currency: "usd",
+        amount_due: 2750,
+        lines: {
+          has_more: false,
+          data: [
+            {
+              quantity: 1,
+              period: {
+                start: PERIOD_END_SECONDS,
+                end: PERIOD_END_SECONDS + 30 * 86_400,
+              },
+              pricing: { price_details: { price: "price_pro" } },
+              parent: {
+                type: "subscription_item_details",
+                subscription_item_details: { proration: false },
+              },
+            },
+          ],
+        },
+        ...overrides,
+      };
+    }
+
+    async function preview(
+      subscriptionOverrides: Record<string, unknown> = {},
+    ) {
+      mockListSubscriptions.mockResolvedValue({
+        data: [proPlusSubscription(subscriptionOverrides)],
+      } as never);
+      const { evaluateRetentionOffersForUser, previewDowngradeRenewalCharge } =
+        await import("@/lib/billing/retention-offer-evaluation");
+      const evaluation = await evaluateRetentionOffersForUser({
+        userId: "user_123",
+        stripeCustomerId: "cus_123",
+        reasonCategory: "not_using_enough",
+        reasonSubcategory: "too_expensive_low_frequency",
+      });
+      return previewDowngradeRenewalCharge({
+        stripeCustomerId: "cus_123",
+        subscription: evaluation.subscription,
+        target: evaluation.downgradeTarget!,
+      });
+    }
+
+    it("uses Stripe's amount for the renewal on the cheaper price", async () => {
+      mockCreateInvoicePreview.mockResolvedValue(previewInvoice() as never);
+
+      await expect(preview()).resolves.toEqual({
+        status: "verified",
+        charge: {
+          amountDollars: 27.5,
+          currency: "usd",
+          chargeAt: PERIOD_END_SECONDS * 1000,
+        },
+      });
+      expect(mockCreateInvoicePreview).toHaveBeenCalledWith(
+        {
+          customer: "cus_123",
+          subscription: "sub_pp",
+          subscription_details: {
+            items: [{ id: "si_pp", price: "price_pro", quantity: 1 }],
+            proration_behavior: "none",
+          },
+        },
+        { timeout: 4_000, maxNetworkRetries: 0 },
+      );
+      expect(mockCreateSchedule).not.toHaveBeenCalled();
+      expect(mockUpdateSubscription).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["currency_mismatch", { currency: "eur" }],
+      [
+        "tax_incomplete",
+        {
+          automatic_tax: { enabled: true, status: "requires_location_inputs" },
+        },
+      ],
+      [
+        "cycle_date_mismatch",
+        {
+          lines: {
+            has_more: false,
+            data: [
+              {
+                ...previewInvoice().lines.data[0],
+                period: {
+                  start: PERIOD_END_SECONDS + 86_400,
+                  end: PERIOD_END_SECONDS + 31 * 86_400,
+                },
+              },
+            ],
+          },
+        },
+      ],
+      [
+        "target_line_mismatch",
+        {
+          lines: {
+            has_more: false,
+            data: [
+              {
+                ...previewInvoice().lines.data[0],
+                pricing: { price_details: { price: "price_pro_plus" } },
+              },
+            ],
+          },
+        },
+      ],
+    ])("falls back to the regular rate on %s", async (reason, overrides) => {
+      mockCreateInvoicePreview.mockResolvedValue(
+        previewInvoice(overrides) as never,
+      );
+
+      await expect(preview()).resolves.toEqual({
+        status: "unavailable",
+        reason,
+      });
+    });
+
+    it("skips the preview when a subscription discount would not carry over", async () => {
+      await expect(preview({ discounts: ["di_1"] })).resolves.toEqual({
+        status: "unavailable",
+        reason: "subscription_discount",
+      });
+      expect(mockCreateInvoicePreview).not.toHaveBeenCalled();
+    });
   });
 });

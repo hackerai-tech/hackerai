@@ -2676,6 +2676,14 @@ async function handleSubscriptionUpdated(
       source: checkoutSource,
       plan: currentLookupKey,
       billing_interval: priceBillingInterval(currentPrice),
+      // Stable identifiers so a scheduled change (for example a retention
+      // downgrade) can be matched to the exact subscription and target price
+      // that took effect, and ordered by when Stripe applied it.
+      stripe_subscription_id: subscription.id,
+      stripe_price_id: currentPrice?.id,
+      previous_stripe_price_id:
+        typeof previousPriceId === "string" ? previousPriceId : undefined,
+      occurred_at: new Date(eventOccurredAtMs).toISOString(),
       // Only update the person property when we resolved the new tier. A null
       // currentTier means Stripe's lookup_key + product fallbacks both failed,
       // and coercing to "free" would silently move possibly-paid users out of
