@@ -3297,6 +3297,7 @@ export const agentLongTask = task({
                 notesRelevantRecallEnabled: await notesRecallAssignment,
                 findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
+                onReaderUsage: (usage) => usageTracker.recordReaderUsage(usage),
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>
                   stopSignal.abort("browser_ownership_lost"),

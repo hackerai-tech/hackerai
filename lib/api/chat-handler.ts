@@ -1009,6 +1009,7 @@ export const createChatHandler = () => {
                   notesEnabled && (await notesRecallAssignment),
                 findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
+                onReaderUsage: (usage) => usageTracker.recordReaderUsage(usage),
               },
             );
 

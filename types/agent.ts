@@ -223,6 +223,15 @@ export type ToolFailureLogger = (
   event: ToolFailureLogEvent,
 ) => void | Promise<void>;
 
+/**
+ * Reports one Jina Reader request that was actually sent. `usageTokens` is the
+ * provider's `x-usage-tokens` count, or undefined when it was missing,
+ * unusable, or the request failed in transport. Measurement only; never billing.
+ */
+export type ReaderUsageReporter = (usage: {
+  usageTokens: number | undefined;
+}) => void;
+
 export type AgentToolApprovalGrant = "full_access" | "target_prefix";
 export type AgentToolApprovalGrantKind =
   "terminal_command" | "terminal_interaction" | "file_change";
@@ -752,6 +761,8 @@ export interface ToolContext {
   onToolCost?: (costDollars: number) => void;
   /** Callback to report handled provider/tool failures to the request's host runtime. */
   onToolFailure?: ToolFailureLogger;
+  /** Measurement-only hook for each Jina Reader request actually sent. */
+  onReaderUsage?: ReaderUsageReporter;
   /** Optional approval gate for mutating or command-executing agent tools. */
   requestToolApproval?: AgentToolApprovalRequester;
   /** Collect bounded read-only evidence for the separate automatic reviewer. */

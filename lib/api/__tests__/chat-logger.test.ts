@@ -1891,6 +1891,11 @@ describe("captureUsageCost", () => {
       usageSettlementId: "settlement_child",
       triggerRunId: "run_child",
       subagent: { id: "sa_1", parentTriggerRunId: "run_parent" },
+      usageMeasurement: {
+        usage_reader_provider_calls: 1,
+        usage_reader_reported_tokens: 400,
+        usage_reader_unreported_calls: 0,
+      },
       triggerRunUsage: {
         totalCostDollars: 0.02,
         computeCostDollars: 0.02,
@@ -1911,6 +1916,9 @@ describe("captureUsageCost", () => {
       parent_trigger_run_id: "run_parent",
       trigger_run_id: "run_child",
       trigger_cost_is_final: false,
+      usage_reader_provider_calls: 1,
+      usage_reader_reported_tokens: 400,
+      usage_reader_unreported_calls: 0,
     });
   });
 
@@ -1927,6 +1935,9 @@ describe("captureUsageCost", () => {
         usage_known_incurred_cost_dollars: 1.25,
         usage_trigger_run_cost_dollars: 0.25,
         usage_discarded_retry_cost_dollars: 0.5,
+        usage_reader_provider_calls: 1,
+        usage_reader_reported_tokens: 0,
+        usage_reader_unreported_calls: 1,
       },
       latestTriggerCostDollars: 0.375,
       failureStage: "settlement",
@@ -1940,6 +1951,9 @@ describe("captureUsageCost", () => {
         model_cost_dollars: null,
         non_model_cost_dollars: null,
         usage_discarded_retry_cost_dollars: 0.5,
+        usage_reader_provider_calls: 1,
+        usage_reader_reported_tokens: 0,
+        usage_reader_unreported_calls: 1,
         // 1.25 known, with the 0.25 settled snapshot replaced by 0.375.
         known_incurred_cost_lower_bound_dollars: 1.375,
         known_trigger_cost_dollars: 0.375,

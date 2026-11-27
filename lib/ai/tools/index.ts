@@ -55,6 +55,7 @@ import type {
   AgentToolApprovalRequester,
   AgentActiveTimeMeasurer,
   SandboxManager,
+  ReaderUsageReporter,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -97,6 +98,7 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  onReaderUsage?: ReaderUsageReporter;
   /** Parent Agent runs only: stop after an abandoned handoff was committed.
    * Omitting it keeps an uncontrolled handoff holding the run. */
   onBrowserHandoffAbandoned?: () => void;
@@ -332,6 +334,7 @@ export const createTools = (
     appendMetadataStream,
     onToolCost,
     onToolFailure,
+    onReaderUsage: runtimePolicy.onReaderUsage,
     requestToolApproval,
     autoReviewEvidenceEnabled,
     measureAgentActiveTime,

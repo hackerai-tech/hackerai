@@ -38,6 +38,7 @@ type OpenUrlLogContext = Partial<
     | "chatId"
     | "getCurrentModelName"
     | "modelName"
+    | "onReaderUsage"
     | "onToolFailure"
     | "triggerRunId"
     | "userID"
@@ -46,6 +47,20 @@ type OpenUrlLogContext = Partial<
 
 type OpenUrlProviderPhase =
   "awaiting_headers" | "reading_body" | "discarding_error_body";
+
+/**
+ * Reads Jina Reader's per-request token count. Only a plain nonnegative safe
+ * integer is usable; blank, signed, fractional, exponent, list and oversized
+ * values are unreported rather than guessed. An explicit 0 stays 0.
+ */
+export const parseReaderUsageTokens = (
+  headers: Headers | undefined,
+): number | undefined => {
+  const value = headers?.get("x-usage-tokens")?.trim();
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const tokens = Number(value);
+  return Number.isSafeInteger(tokens) ? tokens : undefined;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -180,15 +195,26 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           startedAt,
         );
 
-        // Make the request to Jina AI reader
-        const response = await fetch(jinaUrl, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${process.env.JINA_API_KEY}`,
-            ...JINA_CONTENT_HEADERS,
-          },
-          signal: abortSignal,
-        });
+        let response: Response | undefined;
+        try {
+          response = await fetch(jinaUrl, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${process.env.JINA_API_KEY}`,
+              ...JINA_CONTENT_HEADERS,
+            },
+            signal: abortSignal,
+          });
+        } finally {
+          // Meter only the fetch attempt, even when headers never arrive.
+          try {
+            context?.onReaderUsage?.({
+              usageTokens: parseReaderUsageTokens(response?.headers),
+            });
+          } catch {
+            // Measurement must never change the tool result.
+          }
+        }
 
         if (!response.ok) {
           // Provider error pages can be arbitrarily large and may reflect request
