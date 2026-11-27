@@ -6,6 +6,10 @@ import { ConvexProviderWithAuth } from "convex/react";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import type { NoUserInfo, UserInfo } from "@workos-inc/authkit-nextjs";
 import { useAuthFromAuthKit } from "@/lib/auth/use-auth-from-authkit";
+import {
+  CONVEX_CONNECT_TIMEOUT_MS,
+  withConnectTimeout,
+} from "@/lib/utils/websocket-connect-timeout";
 
 const PRERENDER_CONVEX_URL = "https://placeholder.convex.cloud";
 
@@ -28,7 +32,12 @@ export function ConvexClientProvider({
       throw new Error("NEXT_PUBLIC_CONVEX_URL is not configured");
     }
 
-    return new ConvexReactClient(convexUrl);
+    return new ConvexReactClient(convexUrl, {
+      webSocketConstructor:
+        typeof WebSocket === "undefined"
+          ? undefined
+          : withConnectTimeout(WebSocket, CONVEX_CONNECT_TIMEOUT_MS),
+    });
   });
 
   return (
