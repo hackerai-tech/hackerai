@@ -34,6 +34,7 @@ import {
   readDesktopInvocationUnknownDiagnostic,
   readDesktopStreamFenceDiagnostic,
   readDesktopStreamFenceRendererCancelDiagnostic,
+  readDesktopStreamFenceWindowsLeaderWaitDiagnostic,
 } from "./desktop-invocation-rejection-diagnostics";
 import {
   DESKTOP_STREAM_CANCEL_NONCONFIRMATION_EVENT,
@@ -406,6 +407,10 @@ export function sanitizeDesktopAckEvent<
       invocationUnknown,
       acknowledgement?.value === true,
     );
+    const windowsLeaderWait = readDesktopStreamFenceWindowsLeaderWaitDiagnostic(
+      event.properties,
+      streamFence,
+    );
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -487,6 +492,7 @@ export function sanitizeDesktopAckEvent<
     if (streamFence) Object.assign(event.properties, streamFence);
     if (streamFenceRendererCancel)
       Object.assign(event.properties, streamFenceRendererCancel);
+    if (windowsLeaderWait) Object.assign(event.properties, windowsLeaderWait);
   }
   delete event.$set;
   delete event.$set_once;
