@@ -1619,7 +1619,7 @@ export function resolveAgentTierToProviderKey(
     case "hackerai-pro":
       return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
-      return "model-grok-4.6";
+      return GROK_4_6_BEDROCK_MODEL_KEY;
   }
 }
 
