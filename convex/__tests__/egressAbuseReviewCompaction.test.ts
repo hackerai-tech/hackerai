@@ -253,6 +253,10 @@ describe("terminal start receipts through compaction", () => {
   const ineligible: Array<[string, Part]> = [
     ["a denied approval", terminalPart({}, { approvalDenied: true })],
     [
+      "a denied approval with a stale receipt",
+      terminalPart({ terminalStartReceipt: true }, { approvalDenied: true }),
+    ],
+    [
       "a result without start state",
       terminalPart({}, { processStarted: undefined, pid: undefined }),
     ],

@@ -90,6 +90,7 @@ interface ToolPart {
   state?: string;
   input?: any;
   output?: any;
+  terminalStartReceipt?: unknown;
 }
 
 /** Keep mutation outcomes without retaining file contents or arbitrary error text. */
@@ -360,14 +361,15 @@ const isCompactPlaceholderOutput = (output: unknown): output is string =>
  * exec keeps its start receipt beside it (see terminal-start-receipt.ts); an
  * already compact part, with any receipt it kept, is returned unchanged.
  */
-const withCompactOutput = (part: ToolPart): ToolPart =>
-  isCompactPlaceholderOutput(part.output)
-    ? part
-    : {
-        ...part,
-        output: buildPlaceholder(part),
-        ...(isStartedTerminalExec(part) ? { terminalStartReceipt: true } : {}),
-      };
+const withCompactOutput = (part: ToolPart): ToolPart => {
+  if (isCompactPlaceholderOutput(part.output)) return part;
+  const { terminalStartReceipt: _receipt, ...rest } = part;
+  return {
+    ...rest,
+    output: buildPlaceholder(part),
+    ...(isStartedTerminalExec(part) ? { terminalStartReceipt: true } : {}),
+  };
+};
 
 const isPrunableToolPart = (part: ToolPart): boolean => {
   const toolName = part.type?.startsWith(TOOL_TYPE_PREFIX)
