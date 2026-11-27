@@ -1,12 +1,13 @@
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
-export type EarlyRenewalNoticeTier = "pro" | "pro-plus" | "ultra";
+export type EarlyRenewalNoticeTier = "pro" | "pro-plus" | "ultra" | "team";
 
 const PLAN_NAMES: Record<EarlyRenewalNoticeTier, string> = {
   pro: "Pro",
   "pro-plus": "Pro+",
   ultra: "Ultra",
+  team: "Team",
 };
 
 export type EarlyRenewalNotice = {
@@ -41,9 +42,10 @@ export function getEarlyRenewalNotice(
     return null;
   }
   // The plan comes from the live Stripe price, never the session token, so a
-  // stale entitlement cannot claim the wrong plan. Team billing is excluded.
+  // stale entitlement cannot claim the wrong plan. Team status only reaches
+  // here after the server confirmed an admin or owner membership.
   const tier = planLookupKeyToTier(status.stripePriceLookupKey);
-  if (tier !== "pro" && tier !== "pro-plus" && tier !== "ultra") return null;
+  if (!tier) return null;
   return {
     tier,
     planName: PLAN_NAMES[tier],

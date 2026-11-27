@@ -493,6 +493,63 @@ describe("blocked-chat renewal recovery eligibility", () => {
     expect(status.renewalPaymentFailure).toBe("insufficient_funds");
     expect(JSON.stringify(status)).not.toContain("Private issuer detail");
   });
+  const withPaymentIntent = (invoice: Record<string, unknown> = {}) => ({
+    ...subscription,
+    latest_invoice: {
+      ...subscription.latest_invoice,
+      ...invoice,
+      payments: {
+        data: [
+          {
+            is_default: true,
+            payment: { type: "payment_intent", payment_intent: "pi_renewal" },
+          },
+        ],
+      },
+    },
+  });
+  it("identifies an active bank verification even before Stripe records an error", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [withPaymentIntent()],
+    } as never);
+    mockRetrievePaymentIntent.mockResolvedValue({
+      id: "pi_renewal",
+      status: "requires_action",
+      last_payment_error: null,
+    } as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect((await getStatus()).renewalPaymentFailure).toBe(
+      "authentication_required",
+    );
+  });
+  it("exposes Stripe's next automatic retry only while it is in the future", async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    mockRetrievePaymentIntent.mockResolvedValue({
+      id: "pi_renewal",
+      status: "requires_payment_method",
+      last_payment_error: {
+        code: "card_declined",
+        decline_code: "insufficient_funds",
+      },
+    } as never);
+    const { default: getStatus } = await import("../subscription-status");
+
+    const futureRetry = nowSeconds + 3 * 86_400;
+    mockListSubscriptions.mockResolvedValue({
+      data: [withPaymentIntent({ next_payment_attempt: futureRetry })],
+    } as never);
+    expect(await getStatus()).toMatchObject({
+      renewalPaymentFailure: "insufficient_funds",
+      renewalNextPaymentAttempt: futureRetry * 1000,
+    });
+
+    for (const next_payment_attempt of [nowSeconds - 60, null]) {
+      mockListSubscriptions.mockResolvedValue({
+        data: [withPaymentIntent({ next_payment_attempt })],
+      } as never);
+      expect(await getStatus()).not.toHaveProperty("renewalNextPaymentAttempt");
+    }
+  });
   it("keeps the unpaid status when attempt details cannot be retrieved", async () => {
     mockListSubscriptions.mockResolvedValue({
       data: [
