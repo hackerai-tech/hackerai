@@ -1324,7 +1324,6 @@ export async function saveMessage({
       triggerRunId,
       expectedActiveTriggerRunId,
       ...(clientSnapshot ? { clientSnapshot: true } : {}),
-      ...(terminalEvidenceState ? { terminalEvidenceState } : {}),
       usage: usageForSave,
       updateOnly,
       isHidden,
@@ -1338,12 +1337,15 @@ export async function saveMessage({
       signal || clientSnapshot
         ? createServiceConvexClient(getConvexUrl(), { signal })
         : getConvexClient();
-    for (let attemptIndex = 0; ; attemptIndex++) {
+    let saveArgs = terminalEvidenceState
+      ? { ...mutationArgs, terminalEvidenceState }
+      : mutationArgs;
+    for (let attemptIndex = 0; ;) {
       signal?.throwIfAborted();
       try {
         const result = await client.mutation(
           api.messages.saveMessage,
-          mutationArgs,
+          saveArgs,
         );
         if (attemptIndex > 0) {
           try {
@@ -1375,6 +1377,20 @@ export async function saveMessage({
         return result;
       } catch (error) {
         signal?.throwIfAborted();
+        // An older Convex validator rejects this field before writing. Try
+        // once without it; the save then carries no enforcement attestation.
+        if (
+          saveArgs !== mutationArgs &&
+          error instanceof Error &&
+          error.message
+            .split("\n\n", 1)[0]
+            ?.includes(
+              "ArgumentValidationError: Object contains extra field `terminalEvidenceState` that is not in the validator.",
+            )
+        ) {
+          saveArgs = mutationArgs;
+          continue;
+        }
         const retryReason = getRetryableSaveMessageErrorReason(error);
         const retryDelayMs = SAVE_MESSAGE_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
@@ -1409,6 +1425,7 @@ export async function saveMessage({
         );
         if (signal) await abortableDelay(retryDelayMs, signal);
         else await waitForRetryDelay(retryDelayMs);
+        attemptIndex++;
       }
     }
   } catch (error) {

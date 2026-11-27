@@ -382,7 +382,9 @@ and its cases follow the review, hold and erasure rules in this runbook.
   Rows saved before this field existed keep their structured receipts for the
   advisory reassessment and account activity; those reads count `unverified`
   and `incomplete` rows as incomplete too. Deploy Convex before the Agent
-  worker: an older Convex deployment rejects the worker's attested saves.
+  worker so new saves can attest their evidence immediately. If the older
+  Convex validator rejects the new field before writing, the worker retries
+  once without the attestation so chat persistence can continue.
 - **Without an acquisition link.** When the verified workspace has no
   recorded acquisition before the burst, the review still opens a manual case
   and attaches bounded account activity as operator context. Messages do not

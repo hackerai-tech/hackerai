@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage } from "ai";
+import { getFunctionName } from "convex/server";
 import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 
 const loadSaveMessageWithMocks = async () => {
@@ -1577,6 +1578,45 @@ describe("saveMessage", () => {
       const args = mockMutation.mock.calls[0]?.[1] as any;
       expect(args.parts).toEqual([expect.objectContaining({ type: "text" })]);
       expect(args.terminalEvidenceState).toBe("incomplete");
+    });
+
+    it("saves the same parts without attestation when an older validator rejects it", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation
+        .mockRejectedValueOnce(
+          new Error(
+            "ArgumentValidationError: Object contains extra field `terminalEvidenceState` that is not in the validator.\n\nObject: {…}",
+          ) as never,
+        )
+        .mockResolvedValueOnce(null as never);
+
+      await expect(save(saveMessage, [terminal("call-1")])).resolves.toBeNull();
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      const [first, fallback] = mockMutation.mock.calls;
+      for (const [mutation] of [first, fallback]) {
+        expect(getFunctionName(mutation as never)).toBe("messages:saveMessage");
+      }
+      expect(first[1]).toEqual({
+        ...(fallback[1] as Record<string, unknown>),
+        terminalEvidenceState: "complete",
+      });
+      expect(fallback[1]).not.toHaveProperty("terminalEvidenceState");
+    });
+
+    it("does not drop attestation for a different argument validation failure", async () => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation.mockRejectedValueOnce(
+        new Error(
+          "ArgumentValidationError: Object contains extra field `otherField` that is not in the validator.",
+        ) as never,
+      );
+
+      await expect(save(saveMessage, [terminal("call-1")])).rejects.toThrow();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      expect(mockMutation.mock.calls[0]?.[1]).toHaveProperty(
+        "terminalEvidenceState",
+        "complete",
+      );
     });
 
     it("sends no attestation unless the worker asks for one", async () => {

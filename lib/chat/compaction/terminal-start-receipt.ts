@@ -46,6 +46,11 @@ const isCompletedExec = (part: TerminalPart): boolean => {
   );
 };
 
+const hasCompactStartReceipt = (part: TerminalPart): boolean =>
+  part.terminalStartReceipt === true &&
+  typeof part.output === "string" &&
+  isCompletedExec(part);
+
 /** A completed exec whose structured result has an accepted receipt. */
 export const isStartedTerminalExec = (part: TerminalPart): boolean =>
   isCompletedExec(part) && hasTerminalStartReceipt(part.output);
@@ -84,8 +89,7 @@ export function dropReceiptUnlessExecRetained<T extends TerminalPart>(
     current.command === original.command &&
     current.action === original.action;
   const sidecarFits =
-    !("terminalStartReceipt" in after) ||
-    (after.terminalStartReceipt === true && isCompletedExec(after));
+    !("terminalStartReceipt" in after) || hasCompactStartReceipt(after);
   if (inputRetained && sidecarFits) return after;
   const { terminalStartReceipt: _receipt, ...part } = after;
   return (
@@ -124,7 +128,7 @@ export function readTerminalCall(
     part.state !== "output-available" ||
     !(
       hasTerminalStartReceipt(part.output) ||
-      (acceptSidecar && part.terminalStartReceipt === true)
+      (acceptSidecar && hasCompactStartReceipt(part))
     ) ||
     typeof part.toolCallId !== "string" ||
     !part.toolCallId ||

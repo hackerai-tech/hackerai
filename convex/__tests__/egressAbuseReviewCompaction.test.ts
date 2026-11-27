@@ -292,6 +292,7 @@ describe("terminal start receipts through compaction", () => {
     ["an errored call", { state: "output-error" }],
     ["a non-exec action", { input: { command: COMMAND, action: "kill" } }],
     ["a malformed receipt", { terminalStartReceipt: "yes" }],
+    ["a denied result", { output: { result: { approvalDenied: true } } }],
   ])("removes a receipt left on %s", (_label, overrides) => {
     const original = message({
       ...terminalPart(),
@@ -299,6 +300,7 @@ describe("terminal start receipts through compaction", () => {
       terminalStartReceipt: true,
       ...overrides,
     });
+    expect(review(original).commands).toEqual([]);
     const compacted = severe(message(bulkText, ...original.parts), 1_200);
 
     expect(compacted.parts.at(-1)).not.toHaveProperty("terminalStartReceipt");
