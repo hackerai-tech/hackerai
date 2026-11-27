@@ -23,6 +23,7 @@ import {
   SUMMARY_TODO_MAX_ITEMS,
 } from "../constants";
 import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
+import { IncompleteFileWriteError } from "@/lib/ai/tools/utils/incomplete-file-write";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
@@ -2151,6 +2152,187 @@ describe("checkAndSummarizeIfNeeded", () => {
       if (project) expect(sandbox.commands.run).not.toHaveBeenCalled();
     },
   );
+
+  describe("Desktop transcript retry after a failed chunked write", () => {
+    const transcriptDirectory =
+      "/Users/test/My Project/.hackerai/agent-transcripts/";
+    const chunkPublishFailure = () =>
+      new IncompleteFileWriteError(1, 3, "write", {
+        cause: new Error("Failed to publish desktop file request: timeout"),
+      });
+
+    /** Desktop project files in memory; native file_remove errors when missing. */
+    const createDesktopSandbox = (disk: Map<string, string>) => ({
+      sandboxKind: "centrifugo",
+      getWorkingDirectory: () => "/Users/test/My Project",
+      supportsNativeFileRelay: () => true,
+      isWindows: () => false,
+      commands: { run: jest.fn<() => Promise<any>>() },
+      files: {
+        write: jest.fn(async (path: string, content: ArrayBuffer) => {
+          disk.set(path, new TextDecoder().decode(content));
+        }),
+        remove: jest.fn(async (path: string) => {
+          if (!disk.delete(path)) {
+            throw new Error("Remove error: No such file or directory");
+          }
+        }),
+        stat: jest.fn(async (path: string) => ({
+          type: "file_stat_result" as const,
+          requestId: "stat",
+          path,
+          kind: (disk.has(path) ? "file" : "missing") as
+            "file" | "missing" | "not_file",
+        })),
+      },
+    });
+
+    const summarizeWithDesktopTranscript = async (
+      sandbox: ReturnType<typeof createDesktopSandbox>,
+    ) => {
+      const backgroundWork: Promise<void>[] = [];
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: fourMessagesAboveThreshold,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: "chat-desktop-transcript-retry",
+        ensureSandbox: async () => sandbox as any,
+        registerBackgroundWork: (work) => backgroundWork.push(work),
+      });
+      const settled = Promise.all(backgroundWork);
+      // Past the fixed retry delay, so an unwanted retry would also run.
+      await jest.advanceTimersByTimeAsync(2_000);
+      await settled;
+      return result;
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ["nextTick", "queueMicrotask"] });
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "Fast summary",
+        usage: { inputTokens: 10, outputTokens: 2 },
+      });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it.each([
+      ["removes the partial file", true],
+      ["confirms no file was created", false],
+    ])(
+      "%s before retrying and points only at the finished transcript",
+      async (_case, leavesPartialFile) => {
+        const disk = new Map<string, string>();
+        const sandbox = createDesktopSandbox(disk);
+        sandbox.files.write.mockImplementationOnce(async (path, content) => {
+          if (leavesPartialFile) {
+            disk.set(path, new TextDecoder().decode(content).slice(0, 12));
+          }
+          throw chunkPublishFailure();
+        });
+
+        const result = await summarizeWithDesktopTranscript(sandbox);
+
+        expect(result.summaryText).toContain("Fast summary");
+        const [failedPath, retriedPath] = sandbox.files.write.mock.calls.map(
+          ([path]) => path,
+        );
+        expect(retriedPath).not.toBe(failedPath);
+        expect([...disk.keys()]).toEqual([retriedPath]);
+        expect(retriedPath.startsWith(transcriptDirectory)).toBe(true);
+        expect(JSON.parse(disk.get(retriedPath)!)).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: "msg-1" })]),
+        );
+        expect(mockAttachChatSummaryTranscript).toHaveBeenCalledTimes(1);
+        expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
+          expect.objectContaining({
+            transcriptPath: retriedPath,
+            summaryText: expect.stringContaining(retriedPath),
+          }),
+        );
+      },
+    );
+
+    it("removes the final incomplete file when every write attempt fails", async () => {
+      const disk = new Map<string, string>();
+      const sandbox = createDesktopSandbox(disk);
+      sandbox.files.write.mockImplementation(async (path) => {
+        disk.set(path, "[\n  {");
+        throw chunkPublishFailure();
+      });
+
+      const result = await summarizeWithDesktopTranscript(sandbox);
+
+      expect(sandbox.files.write).toHaveBeenCalledTimes(3);
+      expect(disk.size).toBe(0);
+      expect(result.summaryText).toContain("Fast summary");
+      expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+    });
+
+    it("leaves a non-file at the failed path alone", async () => {
+      const sandbox = createDesktopSandbox(new Map());
+      sandbox.files.write.mockRejectedValueOnce(chunkPublishFailure());
+      sandbox.files.stat.mockImplementation(async (path) => ({
+        type: "file_stat_result",
+        requestId: "stat",
+        path,
+        kind: "not_file",
+      }));
+
+      await summarizeWithDesktopTranscript(sandbox);
+
+      expect(sandbox.files.remove).not.toHaveBeenCalled();
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["the partial file remains", () => undefined],
+      [
+        "absence cannot be checked",
+        () => {
+          throw new Error(
+            "Desktop file bridge transport failed (native_ipc, timeout)",
+          );
+        },
+      ],
+    ])(
+      "stops retrying without a transcript pointer when %s",
+      async (_case, statFailure) => {
+        const disk = new Map<string, string>();
+        const sandbox = createDesktopSandbox(disk);
+        sandbox.files.write.mockImplementationOnce(async (path) => {
+          disk.set(path, "[\n  {");
+          throw chunkPublishFailure();
+        });
+        sandbox.files.remove.mockRejectedValue(
+          new Error("Remove error: Permission denied"),
+        );
+        const stat = sandbox.files.stat.getMockImplementation()!;
+        sandbox.files.stat.mockImplementation(async (path) => {
+          statFailure();
+          return stat(path);
+        });
+
+        const result = await summarizeWithDesktopTranscript(sandbox);
+
+        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+        expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+        expect(result.summaryText).toContain("Fast summary");
+        expect(result.summaryText).not.toContain("Transcript location:");
+        expect(mockSaveChatSummary).toHaveBeenCalledWith(
+          expect.objectContaining({
+            summaryText: expect.stringContaining("Fast summary"),
+          }),
+        );
+      },
+    );
+  });
 
   it("should skip database persistence when chatId is absent", async () => {
     mockGenerateText.mockResolvedValue({
