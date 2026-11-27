@@ -20,6 +20,7 @@ import type {
 } from "ai";
 import { NoSuchModelError } from "ai";
 import { buildPromptCacheOptions } from "@/lib/ai/prompt-cache";
+import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import type {
   ChatMode,
   ExtraUsageConfig,
@@ -843,6 +844,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
   "model-glm-5.3",
   "model-grok-4.6",
+  GROK_4_6_BEDROCK_MODEL_KEY,
 ]);
 const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
   "model-deepseek-v4-pro-0813",
@@ -949,10 +951,12 @@ export function getRetryFallbackModel(
   selectedModelOverride?: SelectedModel,
   _media: { hasImageInputs?: boolean } = {},
 ): ModelName {
-  // Every Max Agent route, including Grok text, recovers on DeepSeek 1017 with
-  // its own literal max reasoning rather than a lower-reasoning GLM attempt.
-  // Durable Agent runs first try Grok on Bedrock (getMaxAgentFirstRecoveryModel).
-  if (mode === "agent" && selectedModelOverride === "hackerai-max")
+  // Max serves Grok 4.6 only through Amazon Bedrock. Every Max route recovers
+  // on DeepSeek 1017 with its own literal max reasoning.
+  if (
+    (mode === "agent" && selectedModelOverride === "hackerai-max") ||
+    modelName === GROK_4_6_BEDROCK_MODEL_KEY
+  )
     return DEEPSEEK_1017_MODEL_KEY;
   if (
     modelName === "model-glm-5.3-flash-agent" ||
