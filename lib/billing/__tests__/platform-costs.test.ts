@@ -1,10 +1,12 @@
 import {
-  completedUtcDayWindow,
+  completedVercelBillingDayWindow,
   convexUsageBaseUrl,
   filterRowsToDayWindow,
   mapConvexUsageToRows,
   parseConvexDeploymentUsage,
   parseVercelFocusStream,
+  selectVercelReplacement,
+  type PlatformCostRow,
 } from "../platform-costs";
 
 function jsonlStream(lines: unknown[], splitAt?: number) {
@@ -183,14 +185,132 @@ describe("platform cost normalization", () => {
     expect(rows[0]).not.toHaveProperty("billedCostDollars");
   });
 
-  it("returns a completed UTC reconciliation window", () => {
-    expect(
-      completedUtcDayWindow(Date.parse("2026-09-01T13:45:00.000Z"), 35),
-    ).toEqual({
-      from: "2026-07-28T00:00:00.000Z",
-      to: "2026-09-01T00:00:00.000Z",
-      startDay: "2026-07-28",
-      endDay: "2026-08-31",
+  it.each([
+    {
+      name: "includes the latest billing day at the daily standard-time run",
+      now: "2026-11-27T12:17:00.000Z",
+      expected: {
+        from: "2026-10-23T07:00:00.000Z",
+        to: "2026-11-27T08:00:00.000Z",
+        startDay: "2026-10-23",
+        endDay: "2026-11-26",
+      },
+    },
+    {
+      name: "ends at daylight-time midnight on the fall-back day",
+      now: "2026-11-01T12:17:00.000Z",
+      expected: {
+        from: "2026-09-27T07:00:00.000Z",
+        to: "2026-11-01T07:00:00.000Z",
+        startDay: "2026-09-27",
+        endDay: "2026-10-31",
+      },
+    },
+    {
+      name: "starts at standard-time midnight across spring-forward",
+      now: "2027-03-15T12:17:00.000Z",
+      expected: {
+        from: "2027-02-08T08:00:00.000Z",
+        to: "2027-03-15T07:00:00.000Z",
+        startDay: "2027-02-08",
+        endDay: "2027-03-14",
+      },
+    },
+    {
+      name: "excludes a billing day that has not closed",
+      now: "2026-11-27T07:59:59.999Z",
+      expected: {
+        from: "2026-10-22T07:00:00.000Z",
+        to: "2026-11-26T08:00:00.000Z",
+        startDay: "2026-10-22",
+        endDay: "2026-11-25",
+      },
+    },
+  ])("Vercel billing window $name", ({ now, expected }) => {
+    expect(completedVercelBillingDayWindow(Date.parse(now), 35)).toEqual(
+      expected,
+    );
+  });
+
+  it("labels whole Pacific billing days inside the requested window", async () => {
+    const window = completedVercelBillingDayWindow(
+      Date.parse("2026-11-27T12:17:00.000Z"),
+      35,
+    );
+    const base = {
+      BillingCurrency: "USD",
+      ChargeCategory: "Usage",
+      ServiceName: "Fluid compute",
+      ServiceCategory: "Compute",
+      BilledCost: 1,
+    };
+    const rows = await parseVercelFocusStream(
+      jsonlStream([
+        {
+          ...base,
+          ChargePeriodStart: "2026-10-22T07:00:00.000Z",
+          ChargePeriodEnd: "2026-10-23T07:00:00.000Z",
+        },
+        {
+          ...base,
+          ChargePeriodStart: "2026-10-23T07:00:00.000Z",
+          ChargePeriodEnd: "2026-10-24T07:00:00.000Z",
+        },
+        {
+          ...base,
+          ChargePeriodStart: "2026-11-26T08:00:00.000Z",
+          ChargePeriodEnd: "2026-11-27T08:00:00.000Z",
+        },
+      ]),
+    );
+
+    expect(selectVercelReplacement(rows, window)).toEqual({
+      rows: [
+        expect.objectContaining({ day: "2026-10-23" }),
+        expect.objectContaining({ day: "2026-11-26" }),
+      ],
+      startDay: "2026-10-23",
+      endDay: "2026-11-26",
+    });
+  });
+
+  describe("Vercel replacement bounds", () => {
+    const window = { startDay: "2026-10-23", endDay: "2026-11-26" };
+    const row = (day: string, billedCostDollars: number): PlatformCostRow => ({
+      day,
+      serviceName: "Fluid compute",
+      serviceCategory: "Compute",
+      chargeCategory: "Usage",
+      billingCurrency: "USD",
+      costStatus: "billed",
+      billedCostDollars,
+      sourcePeriodStart: `${day}T08:00:00.000Z`,
+      sourcePeriodEnd: `${day}T08:00:00.000Z`,
+      sourceChargeCount: 1,
+    });
+
+    it("keeps an unpublished latest day out of the replacement", () => {
+      expect(
+        selectVercelReplacement(
+          [row("2026-11-24", 3), row("2026-11-25", 2)],
+          window,
+        ),
+      ).toMatchObject({ startDay: "2026-10-23", endDay: "2026-11-25" });
+    });
+
+    it("replaces a latest day published with only zero-cost charges", () => {
+      expect(
+        selectVercelReplacement(
+          [row("2026-11-25", 2), row("2026-11-26", 0)],
+          window,
+        ),
+      ).toMatchObject({ endDay: "2026-11-26" });
+    });
+
+    it("rejects an export with no charges in the window", () => {
+      expect(() =>
+        selectVercelReplacement([row("2026-10-22", 1)], window),
+      ).toThrow("no charges in the reconciliation window");
     });
   });
 

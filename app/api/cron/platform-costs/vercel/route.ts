@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
-  completedUtcDayWindow,
-  filterRowsToDayWindow,
+  completedVercelBillingDayWindow,
   parseVercelFocusStream,
+  selectVercelReplacement,
 } from "@/lib/billing/platform-costs";
 import {
   fetchWithRetry,
@@ -34,7 +34,10 @@ export async function GET(request: Request) {
   try {
     const token = requireEnvironment("VERCEL_BILLING_READ_TOKEN");
     const teamId = requireEnvironment("VERCEL_BILLING_TEAM_ID");
-    const window = completedUtcDayWindow(startedAt, RECONCILIATION_DAYS);
+    const window = completedVercelBillingDayWindow(
+      startedAt,
+      RECONCILIATION_DAYS,
+    );
     const url = new URL("https://api.vercel.com/v1/billing/charges");
     url.searchParams.set("from", window.from);
     url.searchParams.set("to", window.to);
@@ -57,15 +60,14 @@ export async function GET(request: Request) {
         return await parseVercelFocusStream(response.body);
       },
     );
-    const rows = filterRowsToDayWindow(
+    const { rows, startDay, endDay } = selectVercelReplacement(
       fetchedRows,
-      window.startDay,
-      window.endDay,
+      window,
     );
     const result = await replaceCostWindow({
       vendor: "vercel",
-      startDay: window.startDay,
-      endDay: window.endDay,
+      startDay,
+      endDay,
       observedAt: startedAt,
       rows,
     });
@@ -76,8 +78,9 @@ export async function GET(request: Request) {
       duration_ms: Date.now() - startedAt,
       row_count: rows.length,
       excluded_row_count: fetchedRows.length - rows.length,
-      start_day: window.startDay,
-      end_day: window.endDay,
+      start_day: startDay,
+      end_day: endDay,
+      requested_end_day: window.endDay,
       ...result,
     });
     return NextResponse.json({ ok: true, rowCount: rows.length, ...result });

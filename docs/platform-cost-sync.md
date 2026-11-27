@@ -8,17 +8,24 @@ replace prior values.
 ## Data flow
 
 1. Vercel Cron calls the authenticated platform-cost routes.
-2. Vercel FOCUS charges are streamed and aggregated by UTC day, service,
-   service category, charge category, currency, and consumed unit.
+2. Vercel FOCUS charges are streamed and aggregated by billing day, service,
+   service category, charge category, currency, and consumed unit. The day
+   label is the UTC date of `ChargePeriodStart`.
 3. Convex deployment usage is read from the same endpoint used by the official
    `convex deployment usage` command and normalized by metric and UTC day.
 4. A service-keyed Convex mutation replaces the bounded vendor/day window.
 5. The PostHog Convex warehouse source syncs the rows from
    `convex_platform_costs_daily`.
 
-The Vercel job runs daily and re-reads the previous 35 complete UTC days because
-billing data can be corrected after first publication. The Convex job runs at
-minute 59 each hour. Both jobs are idempotent; unchanged rows are not patched,
+The Vercel job runs daily and re-reads the previous 35 complete billing days
+because billing data can be corrected after first publication. Vercel billing
+days close at midnight `America/Los_Angeles`, and the charges API returns whole
+Pacific days for the requested range, so the request bounds are Pacific
+midnights (07:00 or 08:00 UTC, depending on DST). The replacement ends at the
+latest day present in the export: if the newest day is not yet published, rows
+an earlier run stored for it are kept. An export with no charges in the window
+fails the run instead of deleting recorded costs. The Convex job runs at minute
+59 each hour and keeps UTC days. Both jobs are idempotent; unchanged rows are not patched,
 which avoids unnecessary warehouse sync churn.
 
 ## Cost semantics

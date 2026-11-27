@@ -314,23 +314,97 @@ export function mapConvexUsageToRows(
     .sort((a, b) => a.serviceName.localeCompare(b.serviceName));
 }
 
-export function completedUtcDayWindow(
+/** Vercel closes billing days at local midnight in this time zone. */
+const VERCEL_BILLING_TIME_ZONE = "America/Los_Angeles";
+
+const vercelBillingClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: VERCEL_BILLING_TIME_ZONE,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+/** Billing-zone wall-clock time of an instant, encoded as UTC milliseconds. */
+function vercelBillingWallClock(instant: number): number {
+  const parts = Object.fromEntries(
+    vercelBillingClock
+      .formatToParts(new Date(instant))
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+}
+
+/**
+ * UTC instant of 00:00 in the billing zone on a calendar day given as UTC
+ * midnight. UTC midnight is the previous local afternoon, and US DST changes
+ * at 02:00 local time, so that offset still applies at local midnight.
+ */
+function vercelBillingMidnight(calendarDay: number): number {
+  return calendarDay - (vercelBillingWallClock(calendarDay) - calendarDay);
+}
+
+/**
+ * Returns the last `days` complete Vercel billing days. `from` and `to` are
+ * billing-zone midnights, so the export contains whole provider days; day
+ * labels are the billing-zone dates, which match the UTC date of each
+ * charge's `ChargePeriodStart`.
+ */
+export function completedVercelBillingDayWindow(
   now: number,
   days: number,
 ): { from: string; to: string; startDay: string; endDay: string } {
   if (!Number.isInteger(days) || days < 1) {
     throw new Error("days must be a positive integer");
   }
-  const end = new Date(now);
-  end.setUTCHours(0, 0, 0, 0);
-  const start = new Date(end.getTime() - days * DAY_MS);
-  const lastCompleteDay = new Date(end.getTime() - DAY_MS);
+  if (!Number.isFinite(now)) throw new Error("now must be finite");
+  const today = Math.floor(vercelBillingWallClock(now) / DAY_MS) * DAY_MS;
+  const firstDay = today - days * DAY_MS;
   return {
-    from: start.toISOString(),
-    to: end.toISOString(),
-    startDay: start.toISOString().slice(0, 10),
-    endDay: lastCompleteDay.toISOString().slice(0, 10),
+    from: new Date(vercelBillingMidnight(firstDay)).toISOString(),
+    to: new Date(vercelBillingMidnight(today)).toISOString(),
+    startDay: new Date(firstDay).toISOString().slice(0, 10),
+    endDay: new Date(today - DAY_MS).toISOString().slice(0, 10),
   };
+}
+
+/**
+ * Chooses the rows and replacement bounds for a Vercel sync. The replacement
+ * ends at the latest day present in the export, so a feed that has not yet
+ * published the newest requested day keeps rows an earlier run recorded for
+ * it. Earlier days are still fully replaced, including corrections and
+ * zero-cost charges. An export with no charges in the window is rejected
+ * rather than treated as a request to delete every recorded day.
+ */
+export function selectVercelReplacement(
+  fetchedRows: PlatformCostRow[],
+  window: { startDay: string; endDay: string },
+): { rows: PlatformCostRow[]; startDay: string; endDay: string } {
+  const rows = filterRowsToDayWindow(
+    fetchedRows,
+    window.startDay,
+    window.endDay,
+  );
+  if (rows.length === 0) {
+    throw new Error(
+      "Vercel billing response has no charges in the reconciliation window",
+    );
+  }
+  const endDay = rows.reduce(
+    (latest, row) => (row.day > latest ? row.day : latest),
+    window.startDay,
+  );
+  return { rows, startDay: window.startDay, endDay };
 }
 
 export function convexUsageBaseUrl(configuredUrl: string): string {
