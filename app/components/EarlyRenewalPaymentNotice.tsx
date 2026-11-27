@@ -24,9 +24,10 @@ function isHidden(key: string) {
 }
 
 /**
- * Compact, non-blocking notice above the composer for a personal subscriber
- * whose automatic renewal failed but who can still chat. It reuses the shared
- * recovery panel; it never disables send and never resends anything.
+ * Compact, non-blocking notice above the composer for a personal subscriber,
+ * or a Team admin or owner, whose automatic renewal failed but who can still
+ * chat. It reuses the shared recovery panel; it never disables send and never
+ * resends anything.
  */
 export function EarlyRenewalPaymentNotice({
   actionDisabled,
@@ -38,18 +39,23 @@ export function EarlyRenewalPaymentNotice({
   suppressed: boolean;
 }) {
   const { subscription, chatModeAccessResolved } = useGlobalState();
-  const { entitlements } = useAuth();
-  // Team billing has its own administrators. The plan starts as "free" until
-  // entitlements resolve, so wait for them before any billing lookup. Free is
-  // not excluded: a past-due subscriber's entitlement can already be free.
-  // The current token is checked too: global state copies a team entitlement
-  // into `subscription` one render after it reports access as resolved.
-  // The shared hook adds the signed-in user and organization scope.
-  const personal =
+  const { entitlements, organizationId, role } = useAuth();
+  // The plan starts as "free" until entitlements resolve, so wait for them
+  // before any billing lookup. Free is not excluded: a past-due subscriber's
+  // entitlement can already be free. The current token is checked too: global
+  // state copies a team entitlement into `subscription` one render after it
+  // reports access as resolved.
+  const team =
+    subscription === "team" ||
+    resolveSubscriptionTier(parseEntitlements(entitlements)) === "team";
+  // Team billing belongs to the current organization's admins and owners; other
+  // members make no billing request. The session role is only a pre-check: the
+  // status lookup re-verifies an active admin or owner membership on the server.
+  const eligible =
     chatModeAccessResolved &&
-    subscription !== "team" &&
-    resolveSubscriptionTier(parseEntitlements(entitlements)) !== "team";
-  const { data, mutate, scopeKey } = useChatBillingRecoveryStatus(personal, {
+    (!team || (!!organizationId && (role === "admin" || role === "owner")));
+  // The shared hook adds the signed-in user and organization scope.
+  const { data, mutate, scopeKey } = useChatBillingRecoveryStatus(eligible, {
     minIntervalMs: STATUS_MIN_INTERVAL_MS,
   });
   // Hidden in memory even when session storage is unavailable or throws.
@@ -57,7 +63,7 @@ export function EarlyRenewalPaymentNotice({
     () => new Set(),
   );
 
-  const notice = personal ? getEarlyRenewalNotice(data) : null;
+  const notice = eligible ? getEarlyRenewalNotice(data) : null;
   if (!notice || !data || !scopeKey || suppressed) return null;
   const hiddenKey = `${HIDDEN_KEY_PREFIX}${scopeKey}:${notice.invoiceId}`;
   if (hiddenKeys.has(hiddenKey) || isHidden(hiddenKey)) return null;
@@ -70,7 +76,9 @@ export function EarlyRenewalPaymentNotice({
       status={data}
       subscription={subscription}
       surface="chat_notice"
+      // Named from the live Stripe price, which can differ from the token.
       planName={notice.planName}
+      planTier={notice.tier}
       actionDisabled={actionDisabled}
       scopeKey={scopeKey}
       onCheck={() => mutate()}

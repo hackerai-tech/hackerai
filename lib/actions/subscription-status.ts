@@ -159,7 +159,10 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
         const paymentIntent =
           await stripe.paymentIntents.retrieve(paymentIntentId);
         const paymentError = paymentIntent.last_payment_error;
-        if (paymentError) {
+        // An attempt awaiting bank verification may have no recorded error.
+        if (paymentIntent.status === "requires_action") {
+          renewalPaymentFailure = "authentication_required";
+        } else if (paymentError) {
           const group = paymentFailureGroup({
             failureCode: paymentError.code,
             declineCode: paymentError.decline_code,
@@ -183,6 +186,16 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       }
     }
   }
+  // Stripe's scheduled automatic retry, only while it is still in the future.
+  const nextPaymentAttemptMs =
+    renewalPaymentRequired &&
+    typeof invoice === "object" &&
+    invoice &&
+    typeof invoice.next_payment_attempt === "number" &&
+    Number.isFinite(invoice.next_payment_attempt) &&
+    invoice.next_payment_attempt * 1000 > Date.now()
+      ? invoice.next_payment_attempt * 1000
+      : undefined;
   const item = currentSubscription.items?.data[0];
   const price = item?.price;
   const renewalAmountDollars =
@@ -243,6 +256,9 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       invoice?.billing_reason === "subscription_cycle" &&
       invoice.status === "paid" && { renewalInvoicePaid: true }),
     ...(renewalPaymentFailure && { renewalPaymentFailure }),
+    ...(nextPaymentAttemptMs && {
+      renewalNextPaymentAttempt: nextPaymentAttemptMs,
+    }),
     ...(price?.id && { stripePriceId: price.id }),
     ...(subscriptionPlanFromPrice(price) && {
       stripePriceLookupKey: subscriptionPlanFromPrice(price),

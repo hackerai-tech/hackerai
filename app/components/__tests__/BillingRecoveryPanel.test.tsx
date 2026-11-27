@@ -538,6 +538,127 @@ describe("BillingRecoveryPanel", () => {
       expect(mockPortal).not.toHaveBeenCalled();
     });
 
+    const retryInThreeDays = () => Date.now() + 3 * 86_400_000;
+    const shortDate = (ms: number) =>
+      new Date(ms).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      });
+
+    it("names insufficient funds with the future retry and offers card update or the verified invoice", async () => {
+      const retryAt = retryInThreeDays();
+      mockPortal.mockResolvedValue("#card");
+      mockInvoice.mockResolvedValue("#invoice");
+      const view = render(
+        compact({
+          status: {
+            ...overdue,
+            renewalPaymentFailure: "insufficient_funds",
+            renewalNextPaymentAttempt: retryAt,
+          },
+        }),
+      );
+      expect(
+        screen.getByText(
+          "Your Pro renewal was declined for insufficient funds.",
+        ),
+      ).toBeInTheDocument();
+      const retry = screen.getByText(
+        `We’ll retry on ${shortDate(retryAt)}. Add funds or update your card.`,
+      );
+      // The retry date is the one detail narrow layouts must not hide.
+      expect(retry).not.toHaveClass("hidden");
+
+      await userEvent.click(
+        screen.getByRole("button", { name: "Pay invoice" }),
+      );
+      await waitFor(() => expect(window.location.hash).toBe("#invoice"));
+      expect(mockInvoice).toHaveBeenCalledWith();
+      expect(mockPortal).not.toHaveBeenCalled();
+
+      // A fresh visit: a started handoff keeps its panel busy until navigation.
+      view.unmount();
+      render(
+        compact({
+          status: {
+            ...overdue,
+            renewalPaymentFailure: "insufficient_funds",
+            renewalNextPaymentAttempt: retryAt,
+          },
+        }),
+      );
+      await userEvent.click(
+        screen.getByRole("button", { name: "Update payment" }),
+      );
+      await waitFor(() => expect(window.location.hash).toBe("#card"));
+      expect(mockPortal).toHaveBeenCalledWith("payment_method", {
+        surface: "chat_notice",
+        returnPath: "/c/test",
+      });
+    });
+
+    it("never presents a retry date that has already passed", () => {
+      render(
+        compact({
+          status: {
+            ...overdue,
+            renewalPaymentFailure: "insufficient_funds",
+            renewalNextPaymentAttempt: Date.now() - 60_000,
+          },
+        }),
+      );
+      expect(screen.queryByText(/retry/i)).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Add funds or update your card to keep Pro."),
+      ).toBeInTheDocument();
+    });
+
+    it("offers a card change for a generic decline without an invoice shortcut", () => {
+      render(
+        compact({ status: { ...overdue, renewalPaymentFailure: "declined" } }),
+      );
+      expect(
+        screen.getByText("Your Pro renewal payment was declined."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Update payment" }),
+      ).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: "Pay invoice" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("stays neutral when Stripe provided no attempt detail", () => {
+      render(compact());
+      expect(
+        screen.getByText("Your Pro renewal payment failed."),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/insufficient|declined|verification|retry/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it("records the safe reason and displayed plan on the one exposure", () => {
+      identifyAnalyticsOwner("user-a");
+      render(
+        compact({
+          subscription: "team",
+          planName: "Team",
+          planTier: "team",
+          status: { ...overdue, renewalPaymentFailure: "insufficient_funds" },
+        }),
+      );
+      expect(captured("recovery_prompt_impressed")).toEqual([
+        expect.objectContaining({
+          surface: "chat_notice",
+          subscription_tier: "team",
+          recovery_reason: "insufficient_funds",
+          notice_plan_tier: "team",
+          stripe_invoice_id: "in_renewal",
+        }),
+      ]);
+    });
+
     it("reports a failed handoff without raw errors and lets the user try again", async () => {
       identifyAnalyticsOwner("user-a");
       const { BillingRequestError } = jest.requireActual<

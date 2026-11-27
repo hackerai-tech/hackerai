@@ -16,6 +16,8 @@ describe("getEarlyRenewalNotice", () => {
     ["pro-monthly-plan", "Pro"],
     ["pro-plus-yearly-plan", "Pro+"],
     ["ultra-monthly-plan", "Ultra"],
+    // Reaches the client only after the server verified an admin or owner.
+    ["team-monthly-plan", "Team"],
   ])("names the live %s plan", (stripePriceLookupKey, planName) => {
     expect(
       getEarlyRenewalNotice({ ...failedRenewal, stripePriceLookupKey }),
@@ -53,10 +55,6 @@ describe("getEarlyRenewalNotice", () => {
       { ...failedRenewal, pause: { months: 1, resumeAt: 1_800_000_000_000 } },
     ],
     ["missing invoice", { ...failedRenewal, latestInvoiceId: undefined }],
-    [
-      "team plan",
-      { ...failedRenewal, stripePriceLookupKey: "team-monthly-plan" },
-    ],
     [
       "unrecognized plan",
       { ...failedRenewal, stripePriceLookupKey: undefined },

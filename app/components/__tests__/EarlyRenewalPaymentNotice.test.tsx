@@ -19,6 +19,7 @@ jest.mock("posthog-js", () => ({ __esModule: true, default: mockPostHog }));
 let mockAuth: {
   user: { id: string } | null;
   organizationId?: string;
+  role?: string;
   loading: boolean;
   entitlements?: string[];
 } = { user: { id: "user_a" }, organizationId: "org_a", loading: false };
@@ -159,7 +160,21 @@ it("starts the billing lookup once the personal plan finishes resolving", async 
 });
 
 it.each<[string, () => void]>([
-  ["team accounts", () => (mockSubscription = "team")],
+  ["team members", () => (mockSubscription = "team")],
+  [
+    "team members with a member role",
+    () => {
+      mockSubscription = "team";
+      mockAuth = { ...mockAuth, role: "member" };
+    },
+  ],
+  [
+    "a team admin without a current organization",
+    () => {
+      mockSubscription = "team";
+      mockAuth = { ...mockAuth, organizationId: undefined, role: "admin" };
+    },
+  ],
   [
     // Access is resolved, but the team token has not reached `subscription`.
     "a team token before the plan state catches up",
@@ -214,12 +229,42 @@ it.each<[string, SubscriptionCancellationStatus]>([
       checkoutRequiresReview: true,
     },
   ],
-  [
-    "team plan",
-    { ...failedRenewal, stripePriceLookupKey: "team-monthly-plan" },
-  ],
 ])("does not claim an overdue renewal for a %s status", async (_, status) => {
   statusMock.mockResolvedValue(status);
+  setup();
+  await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1));
+  await act(async () => {});
+  expect(
+    screen.queryByTestId("renewal-payment-notice"),
+  ).not.toBeInTheDocument();
+});
+
+it.each(["admin", "owner"])(
+  "shows a Team %s the renewal named from the live Stripe plan",
+  async (role) => {
+    mockSubscription = "team";
+    mockAuth = { ...mockAuth, role };
+    statusMock.mockResolvedValue({
+      ...failedRenewal,
+      stripePriceLookupKey: "team-monthly-plan",
+    });
+    setup();
+    expect(
+      await screen.findByText("Your Team renewal payment failed."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Update payment" }),
+    ).toBeEnabled();
+  },
+);
+
+it("shows a Team admin nothing when the server rejects the billing membership", async () => {
+  // A session role can be stale; the status lookup re-checks membership.
+  mockSubscription = "team";
+  mockAuth = { ...mockAuth, role: "admin" };
+  statusMock.mockRejectedValue(
+    new Error("Only admins or owners can manage billing"),
+  );
   setup();
   await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1));
   await act(async () => {});

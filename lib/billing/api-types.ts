@@ -42,6 +42,8 @@ export type SubscriptionCancellationStatus = {
   /** Safe summary of the latest attempt on the open renewal invoice. */
   renewalPaymentFailure?:
     "insufficient_funds" | "authentication_required" | "declined";
+  /** Stripe's next automatic retry of the open renewal (ms), only when in the future. */
+  renewalNextPaymentAttempt?: number;
   stripePriceId?: string;
   stripePriceLookupKey?: string;
   renewalAmountDollars?: number;

@@ -49,6 +49,8 @@ type Props = {
   variant?: "full" | "compact";
   /** Plan named in the compact notice, from the live subscription price. */
   planName?: string;
+  /** Tier behind `planName`, recorded on the impression; not the session tier. */
+  planTier?: string;
   /** Blocks navigation away while chat work is in flight; never blocks send. */
   actionDisabled?: boolean;
   onDismiss?: () => void;
@@ -95,11 +97,16 @@ export function BillingRecoveryPanel({
   onCheck,
   variant = "full",
   planName,
+  planTier,
   actionDisabled = false,
   onDismiss,
   scopeKey,
 }: Props) {
   const [opening, setOpening] = useState<"invoice" | "card" | null>(null);
+  // The handoff that failed, so "Try again" repeats that action.
+  const [failedAction, setFailedAction] = useState<"invoice" | "card" | null>(
+    null,
+  );
   const [checking, setChecking] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [message, setMessage] = useState("");
@@ -159,6 +166,12 @@ export function BillingRecoveryPanel({
         subscription_tier: subscription,
         subscription_status: status.subscriptionStatus,
         recovery_state: recoveryState,
+        // Safe category only; Stripe codes and messages never leave the server.
+        ...(recoveryState === "renewal" &&
+          status.renewalPaymentRequired && {
+            recovery_reason: status.renewalPaymentFailure ?? "unknown",
+          }),
+        ...(planTier && { notice_plan_tier: planTier }),
         ...(status.latestInvoiceId && {
           stripe_invoice_id: status.latestInvoiceId,
         }),
@@ -170,7 +183,10 @@ export function BillingRecoveryPanel({
     scopeKey,
     visible,
     review,
+    planTier,
     status.latestInvoiceId,
+    status.renewalPaymentFailure,
+    status.renewalPaymentRequired,
     status.subscriptionStatus,
     subscription,
     surface,
@@ -182,6 +198,18 @@ export function BillingRecoveryPanel({
   if (!visible) return null;
   const authentication =
     status.renewalPaymentFailure === "authentication_required";
+  const insufficientFunds =
+    recovery && status.renewalPaymentFailure === "insufficient_funds";
+  // Only a retry still ahead is worth waiting for; cached status can be stale.
+  const retryDate =
+    insufficientFunds &&
+    status.renewalNextPaymentAttempt !== undefined &&
+    status.renewalNextPaymentAttempt > Date.now()
+      ? new Intl.DateTimeFormat(undefined, {
+          month: "short",
+          day: "numeric",
+        }).format(status.renewalNextPaymentAttempt)
+      : null;
   const amount =
     recovery &&
     status.renewalInvoiceAmountRemaining !== undefined &&
@@ -204,6 +232,7 @@ export function BillingRecoveryPanel({
   const open = async (action: "invoice" | "card") => {
     if (opening || checking || recovering || actionDisabled) return;
     setOpening(action);
+    setFailedAction(null);
     setMessage("");
     const startedScope = currentScope.current;
     const attemptId = uuidv4();
@@ -292,6 +321,7 @@ export function BillingRecoveryPanel({
             ? error.message
             : "Could not open billing. Please try again.",
       );
+      setFailedAction(action);
       setOpening(null);
     }
   };
@@ -391,12 +421,54 @@ export function BillingRecoveryPanel({
     // satisfy it. Every other failure updates the payment method.
     const action =
       authentication && status.renewalInvoicePayable ? "invoice" : "card";
+    // A funded card can pay the same invoice now instead of waiting for retry.
+    const alternative =
+      action === "card" && insufficientFunds && status.renewalInvoicePayable
+        ? "invoice"
+        : null;
     const plan = planName ? `${planName} ` : "";
-    const title =
+    const keep = planName ?? "your plan";
+    // Name a reason only when Stripe reported one; otherwise stay neutral.
+    const [title, detail] =
       action === "invoice"
-        ? `Your ${plan}renewal needs bank verification.`
-        : `Your ${plan}renewal payment failed.`;
-    const detail = `${action === "invoice" ? "Confirm" : "Update"} it to keep ${planName ?? "your plan"}.`;
+        ? [
+            `Your ${plan}renewal needs bank verification.`,
+            `Confirm it to keep ${keep}.`,
+          ]
+        : insufficientFunds
+          ? [
+              `Your ${plan}renewal was declined for insufficient funds.`,
+              retryDate
+                ? `We’ll retry on ${retryDate}. Add funds or update your card.`
+                : `Add funds or update your card to keep ${keep}.`,
+            ]
+          : status.renewalPaymentFailure === "declined"
+            ? [
+                `Your ${plan}renewal payment was declined.`,
+                `Update your card to keep ${keep}.`,
+              ]
+            : [
+                `Your ${plan}renewal payment failed.`,
+                `Update it to keep ${keep}.`,
+              ];
+    const label = (target: "invoice" | "card") =>
+      opening === target ? (
+        <>
+          <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+          Opening…
+        </>
+      ) : message && failedAction === target ? (
+        "Try again"
+      ) : target === "card" ? (
+        "Update payment"
+      ) : action === "invoice" ? (
+        "Complete payment"
+      ) : (
+        "Pay invoice"
+      );
+    const busyTitle = actionDisabled
+      ? "Available when the response finishes"
+      : undefined;
     return (
       <section
         aria-label="Renewal payment"
@@ -415,35 +487,42 @@ export function BillingRecoveryPanel({
                 {message}
               </span>
             ) : (
-              <span className="hidden text-muted-foreground sm:inline">
+              <span
+                // A known retry date matters on every width; the generic
+                // prompt repeats the button and stays hidden on phones.
+                className={
+                  retryDate
+                    ? "text-muted-foreground"
+                    : "hidden text-muted-foreground sm:inline"
+                }
+              >
                 {detail}
               </span>
             )}
           </p>
-          <Button
-            size="sm"
-            className="h-8 shrink-0 px-3.5 text-[13px] sm:h-7 sm:px-3 sm:text-xs"
-            disabled={!!opening || actionDisabled}
-            title={
-              actionDisabled
-                ? "Available when the response finishes"
-                : undefined
-            }
-            onClick={() => void open(action)}
-          >
-            {opening ? (
-              <>
-                <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                Opening…
-              </>
-            ) : message ? (
-              "Try again"
-            ) : action === "invoice" ? (
-              "Complete payment"
-            ) : (
-              "Update payment"
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              className="h-8 shrink-0 px-3.5 text-[13px] sm:h-7 sm:px-3 sm:text-xs"
+              disabled={!!opening || actionDisabled}
+              title={busyTitle}
+              onClick={() => void open(action)}
+            >
+              {label(action)}
+            </Button>
+            {alternative && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 shrink-0 px-3 text-[13px] sm:h-7 sm:px-2.5 sm:text-xs"
+                disabled={!!opening || actionDisabled}
+                title={busyTitle}
+                onClick={() => void open(alternative)}
+              >
+                {label(alternative)}
+              </Button>
             )}
-          </Button>
+          </div>
         </div>
         {onDismiss && (
           <button
@@ -489,8 +568,8 @@ export function BillingRecoveryPanel({
               : authentication
                 ? "Your bank needs you to confirm this payment. Complete verification securely with Stripe."
                 : recovery
-                  ? status.renewalPaymentFailure === "insufficient_funds"
-                    ? "Your bank declined the renewal for insufficient funds. Pay the invoice after adding funds, or update your card."
+                  ? insufficientFunds
+                    ? `Your bank declined the renewal for insufficient funds. Pay the invoice after adding funds, or update your card.${retryDate ? ` We’ll retry automatically on ${retryDate}.` : ""}`
                     : "Pay your outstanding renewal or update your card to continue your subscription."
                   : "Review your payment status in billing before changing plans."}
           </p>
