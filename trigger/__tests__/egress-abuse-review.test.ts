@@ -1797,7 +1797,7 @@ describe("on-demand reassessment of a retained candidate", () => {
       },
       model: {
         key: "model-grok-4.6",
-        promptVersion: "egress-retained-candidate-review-v2",
+        promptVersion: "egress-retained-candidate-review-v3",
       },
     });
     // One scrubbed, tool-less, ZDR classification of the candidate only:
@@ -1851,6 +1851,21 @@ describe("on-demand reassessment of a retained candidate", () => {
     expect(prompt).toContain("Find open ports");
     expect(prompt).not.toContain("UNRELATED");
     expect(runs.list).not.toHaveBeenCalled();
+    expectAdvisoryOnly(result, saved);
+  });
+
+  it("reassesses a long retained command that fits the complete advisory prompt", async () => {
+    const command = `npm test # ${"inert fixture ".repeat(180)}end of test note`;
+    const saved = await overlapCase({ command });
+    classifyAs(legitimate);
+
+    const result = await reassess();
+
+    expect(result).toMatchObject({ coverage: "complete", advisory: "neutral" });
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(generateText).mock.calls[0][0].prompt).toContain(
+      "end of test note",
+    );
     expectAdvisoryOnly(result, saved);
   });
 

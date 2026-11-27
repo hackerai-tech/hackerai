@@ -65,6 +65,20 @@ const decide = (e: ReviewEvidence, c: ClassificationInput) =>
   decideReview(classify(c), e, prepareReview(e, BURST));
 
 describe("evidence preparation", () => {
+  it("gives fewer advisory commands more room without raising the automated or full-prompt limits", () => {
+    const command = `npm test # ${"inert fixture ".repeat(180)}done`;
+    const selected = evidence(["Run the tests."], [command]);
+    expect(prepareReview(selected, BURST).itemsTruncated).toBe(true);
+    const advisory = prepareReview(selected, BURST, "retained_candidate");
+    expect(advisory.itemsTruncated).toBe(false);
+    expect(advisory.commands[0].text).toBe(command);
+
+    const full = evidence(["Run the tests."], Array(60).fill(command));
+    expect(
+      prepareReview(full, BURST, "retained_candidate").itemsTruncated,
+    ).toBe(true);
+  });
+
   it("keeps target correspondence and command flags while removing targets and secrets", () => {
     const e = evidence(
       ["I own shop.acme-store.com and 203.0.113.9; contact me at me@corp.io"],
