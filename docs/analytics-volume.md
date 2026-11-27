@@ -116,6 +116,18 @@ Keep full refresh until an incremental replacement accounts for mutable rows,
 backdated adjustments and deletions. Sync schedules are managed in PostHog,
 independently of Vercel, Trigger and Convex deployments.
 
+Team Extra Usage top-ups are recorded only at organization grain, so user-grain
+`unit_economics_daily` excludes them. Add `team_extra_usage_revenue_daily`
+`net_revenue_dollars` to user-grain net revenue once per UTC day; do not add
+organization-grain `unit_economics_daily` rows, which also hold team
+subscription revenue and mirrored costs. Each row is recomputed from every
+canonical organization-grain `team_extra_usage` receipt for its day on each
+top-up and by `teamExtraUsageRevenue:backfillDaily`. A missing day is unknown,
+not zero; treat contribution for that day as incomplete. The backfill writes
+explicit zeros for swept days, accepts only completed UTC days from
+`2026-06-01` (receipts began mid-day on 2026-05-31) and is safe to repeat. The
+current UTC day is provisional, as in the other daily tables.
+
 ## Desktop acknowledged output
 
 `desktop_ack_command_started` and `desktop_ack_command_settled` measure the

@@ -194,6 +194,7 @@ function makeMockCtx(opts?: {
   const webhooks: WebhookRow[] = [...(opts?.webhooks ?? [])];
   const revenue: RevenueRow[] = [...(opts?.revenue ?? [])];
   const rollups: UnitEconomicsDailyRow[] = [...(opts?.rollups ?? [])];
+  const teamRevenueDays: Array<{ _id: string; day: string }> = [];
 
   let nextId = 1;
   const mintId = () => `id-${nextId++}`;
@@ -202,11 +203,21 @@ function makeMockCtx(opts?: {
     return {
       withIndex: jest.fn((_indexName: string, predicate: any) => {
         const captured: Record<string, string> = {};
+        const lowerBounds: Record<string, number> = {};
+        const upperBounds: Record<string, number> = {};
         let depth = 0;
         const captureProxy = {
           eq: (field: string, value: string) => {
             captured[field] = value;
             depth++;
+            return captureProxy;
+          },
+          gte: (field: string, value: number) => {
+            lowerBounds[field] = value;
+            return captureProxy;
+          },
+          lt: (field: string, value: number) => {
+            upperBounds[field] = value;
             return captureProxy;
           },
         };
@@ -230,9 +241,20 @@ function makeMockCtx(opts?: {
             return webhooks.filter((r) => r.event_id === captured.event_id);
           }
           if (table === "revenue_events") {
+            if (captured.source) {
+              return revenue.filter(
+                (r: any) =>
+                  r.source === captured.source &&
+                  r.occurred_at >= lowerBounds.occurred_at &&
+                  r.occurred_at < upperBounds.occurred_at,
+              );
+            }
             return revenue.filter(
               (r) => r.idempotency_key === captured.idempotency_key,
             );
+          }
+          if (table === "team_extra_usage_revenue_daily") {
+            return teamRevenueDays.filter((r) => r.day === captured.day);
           }
           if (table === "unit_economics_daily") {
             return rollups.filter(
@@ -248,6 +270,7 @@ function makeMockCtx(opts?: {
 
         return {
           first: async () => matches[0] ?? null,
+          take: async (limit: number) => matches.slice(0, limit),
           unique: async () => {
             if (matches.length === 0) return null;
             if (matches.length > 1) {
@@ -274,11 +297,19 @@ function makeMockCtx(opts?: {
         else if (table === "processed_webhooks") webhooks.push(row);
         else if (table === "revenue_events") revenue.push(row);
         else if (table === "unit_economics_daily") rollups.push(row);
-        else throw new Error(`unexpected table: ${table}`);
+        else if (table === "team_extra_usage_revenue_daily") {
+          teamRevenueDays.push(row);
+        } else throw new Error(`unexpected table: ${table}`);
         return id;
       }),
       patch: jest.fn(async (id: string, patch: any) => {
-        const all: any[] = [...team, ...members, ...webhooks, ...rollups];
+        const all: any[] = [
+          ...team,
+          ...members,
+          ...webhooks,
+          ...rollups,
+          ...teamRevenueDays,
+        ];
         const row = all.find((r) => r._id === id);
         if (!row) throw new Error(`row ${id} not found`);
         Object.assign(row, patch);
@@ -290,7 +321,7 @@ function makeMockCtx(opts?: {
     },
   };
 
-  return { ctx, team, members, webhooks, revenue, rollups };
+  return { ctx, team, members, webhooks, revenue, rollups, teamRevenueDays };
 }
 
 async function callDeduct(

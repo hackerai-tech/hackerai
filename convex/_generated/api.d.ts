@@ -118,6 +118,7 @@ import type * as taskOutcomeSurveys from "../taskOutcomeSurveys.js";
 import type * as taskOutcomeValidators from "../taskOutcomeValidators.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
+import type * as teamExtraUsageRevenue from "../teamExtraUsageRevenue.js";
 import type * as unitEconomics from "../unitEconomics.js";
 import type * as unitEconomicsLib from "../unitEconomicsLib.js";
 import type * as usageLogs from "../usageLogs.js";
@@ -244,6 +245,7 @@ declare const fullApi: ApiFromModules<{
   taskOutcomeValidators: typeof taskOutcomeValidators;
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;
+  teamExtraUsageRevenue: typeof teamExtraUsageRevenue;
   unitEconomics: typeof unitEconomics;
   unitEconomicsLib: typeof unitEconomicsLib;
   usageLogs: typeof usageLogs;

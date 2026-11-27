@@ -1919,7 +1919,8 @@ export default defineSchema({
     .index("by_entity_occurred", ["entity_type", "entity_id", "occurred_at"])
     .index("by_user_occurred", ["user_id", "occurred_at"])
     .index("by_org_occurred", ["organization_id", "occurred_at"])
-    .index("by_source_event", ["source", "source_event_id"]),
+    .index("by_source_event", ["source", "source_event_id"])
+    .index("by_source_and_occurred_at", ["source", "occurred_at"]),
 
   // Append-only paid-start ledger for funnel health. One row is recorded per
   // new paid account/subscription; user and seat counts are separate fields so
@@ -2039,6 +2040,18 @@ export default defineSchema({
     .index("by_type_day", ["entity_type", "day"])
     .index("by_user_day", ["user_id", "day"])
     .index("by_org_day", ["organization_id", "day"]),
+
+  // Day-grain Team Extra Usage revenue for PostHog warehouse sync. Team
+  // top-ups are recorded only at organization grain, so user-grain
+  // unit_economics_daily excludes them. Each row is recomputed from every
+  // canonical revenue_events receipt for its UTC day; a missing day is unknown,
+  // not zero. No account or payment identifiers are stored here.
+  team_extra_usage_revenue_daily: defineTable({
+    day: v.string(),
+    net_revenue_dollars: v.number(),
+    revenue_event_count: v.number(),
+    updated_at: v.number(),
+  }).index("by_day", ["day"]),
 
   // Shared infrastructure charges and provider usage. This remains separate
   // from user economics so platform overhead is never allocated or counted

@@ -817,6 +817,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     paid_start_mix_daily: [
       { _id: "paid-mix", day: "2026-06-21", tier: "pro", plan: "pro" },
     ],
+    team_extra_usage_revenue_daily: [
+      {
+        _id: "team-revenue-day",
+        day: "2026-06-21",
+        net_revenue_dollars: 50,
+        revenue_event_count: 1,
+      },
+    ],
     billing_operations: [
       {
         _id: "billing-owner",
