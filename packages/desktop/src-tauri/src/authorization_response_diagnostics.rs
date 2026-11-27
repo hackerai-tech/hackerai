@@ -15,6 +15,14 @@
 //! is compared against exact literals and never copied; a matching literal is
 //! an observed marker, not an authenticated provider decision.
 //!
+//! A separate challenge candidate, never serialized with the receipt, exists
+//! only for an exact 403 with a single exact `challenge` marker answering the
+//! canonical production origin or an isolated localhost origin. It holds the
+//! native UTC time the headers were observed, the response's complete
+//! `x-vercel-id` bytes when they are one bounded value of ordinary ID bytes,
+//! and a closed form of `Retry-After`. Its fixed context (status, method,
+//! host, path, marker) is implied by its existence and never copied.
+//!
 //! A separate read snapshot, only for its own observer, holds a closed kind of
 //! the existing JSON read's error and the extent of one bounded typed walk of
 //! that error's sources. The kind needs positive typed evidence; it never
@@ -43,6 +51,11 @@ const REQUEST_ID_HEADER: &str = "x-vercel-id";
 const MAX_REQUEST_ID_LEN: usize = 96;
 const MAX_REQUEST_ID_REGIONS: usize = 3;
 const MITIGATION_HEADER: &str = "x-vercel-mitigated";
+const RETRY_AFTER_HEADER: &str = "retry-after";
+/// Generous for any routed or edge-only ID; a longer value is never truncated.
+const MAX_CHALLENGE_REQUEST_ID_LEN: usize = 256;
+/// Nine digits keep every accepted delay a safe integer on every consumer.
+const MAX_RETRY_AFTER_DIGITS: usize = 9;
 
 /// Why an answered POST was not approved. An approved response has no class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -104,6 +117,64 @@ pub struct ResponseRejectionReceipt {
     request_id_shape: RequestIdShape,
     /// Null unless `request_id_shape` is valid.
     request_id: Option<String>,
+    /// Never part of this frozen v1 wire; only its own channel may take it.
+    #[serde(skip)]
+    challenge: Option<ChallengeCandidate>,
+}
+
+impl ResponseRejectionReceipt {
+    /// Moves the challenge candidate out, so the receipt sent afterwards can
+    /// never carry it and nothing is cloned.
+    pub fn take_challenge(&mut self) -> Option<ChallengeCandidate> {
+        self.challenge.take()
+    }
+}
+
+/// The response's `x-vercel-id`, either complete or not at all.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChallengeRequestId {
+    Present {
+        value: String,
+    },
+    Absent,
+    /// Repeated, empty, too long, or any byte outside the ID alphabet.
+    Invalid,
+}
+
+/// The response's `Retry-After`, never as its header string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChallengeRetryAfter {
+    Absent,
+    /// Delay-seconds: one to nine ASCII digits.
+    Seconds {
+        seconds: u32,
+    },
+    /// A strictly valid IMF-fixdate, as UTC milliseconds since the epoch.
+    HttpDate {
+        #[serde(rename = "unixMs")]
+        unix_ms: u64,
+    },
+    /// Repeated, or neither form exactly.
+    Malformed,
+}
+
+/// Sent on its own optional channel. Its `Debug` never prints the request ID,
+/// so no accidental log line can carry it.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChallengeCandidate {
+    version: u8,
+    captured_at_ms: u64,
+    request_id: ChallengeRequestId,
+    retry_after: ChallengeRetryAfter,
+}
+
+impl std::fmt::Debug for ChallengeCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ChallengeCandidate { .. }")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -316,6 +387,99 @@ fn read_mitigation(headers: &reqwest::header::HeaderMap) -> Mitigation {
     }
 }
 
+fn is_challenge_request_id_byte(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+}
+
+/// One complete value of ordinary ID bytes, preserving case; never parsed by
+/// its routed-region shape.
+fn read_challenge_request_id(headers: &reqwest::header::HeaderMap) -> ChallengeRequestId {
+    let mut values = headers.get_all(REQUEST_ID_HEADER).iter();
+    let Some(value) = values.next() else {
+        return ChallengeRequestId::Absent;
+    };
+    let bytes = value.as_bytes();
+    if values.next().is_some()
+        || bytes.is_empty()
+        || bytes.len() > MAX_CHALLENGE_REQUEST_ID_LEN
+        || !bytes.iter().all(is_challenge_request_id_byte)
+    {
+        return ChallengeRequestId::Invalid;
+    }
+    // Every accepted byte is ASCII, so this cannot fail.
+    match std::str::from_utf8(bytes) {
+        Ok(text) => ChallengeRequestId::Present {
+            value: text.to_owned(),
+        },
+        Err(_) => ChallengeRequestId::Invalid,
+    }
+}
+
+/// Strict IMF-fixdate only, without retaining the header string. Round-trip to
+/// reject obsolete or noncanonical forms accepted by the date parser.
+fn imf_fixdate_unix_ms(bytes: &[u8]) -> Option<u64> {
+    const FORMAT: &str = "%a, %d %b %Y %H:%M:%S GMT";
+    if bytes.len() != 29 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let parsed = chrono::NaiveDateTime::parse_from_str(text, FORMAT).ok()?;
+    let utc = parsed.and_utc();
+    if utc.timestamp_subsec_nanos() != 0 || parsed.format(FORMAT).to_string() != text {
+        return None;
+    }
+    u64::try_from(utc.timestamp_millis()).ok()
+}
+
+fn read_challenge_retry_after(headers: &reqwest::header::HeaderMap) -> ChallengeRetryAfter {
+    let mut values = headers.get_all(RETRY_AFTER_HEADER).iter();
+    let Some(value) = values.next() else {
+        return ChallengeRetryAfter::Absent;
+    };
+    if values.next().is_some() {
+        return ChallengeRetryAfter::Malformed;
+    }
+    let bytes = value.as_bytes();
+    if (1..=MAX_RETRY_AFTER_DIGITS).contains(&bytes.len()) && bytes.iter().all(u8::is_ascii_digit) {
+        let seconds = bytes
+            .iter()
+            .fold(0u32, |seconds, byte| seconds * 10 + u32::from(byte - b'0'));
+        return ChallengeRetryAfter::Seconds { seconds };
+    }
+    imf_fixdate_unix_ms(bytes).map_or(ChallengeRetryAfter::Malformed, |unix_ms| {
+        ChallengeRetryAfter::HttpDate { unix_ms }
+    })
+}
+
+/// Only Vercel's exact pre-routing challenge of the canonical production
+/// origin, or of an isolated localhost origin that never reaches Production.
+fn read_challenge(
+    status: reqwest::StatusCode,
+    origin_class: OriginClass,
+    mitigation: Mitigation,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<ChallengeCandidate> {
+    if status != reqwest::StatusCode::FORBIDDEN
+        || mitigation != Mitigation::Challenge
+        || !matches!(
+            origin_class,
+            OriginClass::CanonicalProduction | OriginClass::Localhost
+        )
+    {
+        return None;
+    }
+    let captured_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())?;
+    Some(ChallengeCandidate {
+        version: 1,
+        captured_at_ms,
+        request_id: read_challenge_request_id(headers),
+        retry_after: read_challenge_retry_after(headers),
+    })
+}
+
 fn is_region(region: &[u8]) -> bool {
     matches!(region, [a, b, c, digit]
         if [a, b, c].iter().all(|letter| letter.is_ascii_lowercase())
@@ -400,9 +564,11 @@ where
     let status = response.status();
     // Read before the body consumes the response, and only for an observer.
     let headers = observer.as_ref().map(|_| {
+        let mitigation = read_mitigation(response.headers());
         (
             read_request_id(response.headers()),
-            read_mitigation(response.headers()),
+            mitigation,
+            read_challenge(status, origin_class, mitigation, response.headers()),
         )
     });
     let mut read = None;
@@ -429,7 +595,7 @@ where
     };
     let http_status = status.as_u16();
     let mut receipt_reported = false;
-    if let (Some(observer), Some(((request_id_shape, request_id), mitigation))) =
+    if let (Some(observer), Some(((request_id_shape, request_id), mitigation, challenge))) =
         (observer, headers)
     {
         // The receipt's status class is closed; an extension status sends none.
@@ -443,6 +609,7 @@ where
                 platform: Platform::from_target_os(std::env::consts::OS),
                 request_id_shape,
                 request_id,
+                challenge,
             };
             let mitigation = ResponseMitigationReceipt {
                 version: 1,
@@ -1842,6 +2009,357 @@ mod tests {
             ("", Platform::Unknown),
         ] {
             assert_eq!(Platform::from_target_os(os), platform, "{os}");
+        }
+    }
+
+    /// One check of an actual loopback response with the response observer
+    /// only, for `origin_class`; each receipt keeps its candidate, untaken.
+    async fn check_challenge(
+        response: Vec<u8>,
+        origin_class: OriginClass,
+    ) -> (Result<(), String>, Vec<ResponseRejectionReceipt>, usize) {
+        let (url, posts) = serve(response, true).await;
+        let (receipts, observer) = recorder();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            observed_approval(
+                answered(&url).await,
+                origin_class,
+                Some(observer),
+                NO_READ,
+                NO_TIMING,
+            )
+            .await
+        })
+        .await
+        .expect("the approval check never waits for an unread body");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let receipts = receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(receipt, _)| receipt.clone())
+            .collect();
+        (result, receipts, posts.load(Ordering::SeqCst))
+    }
+
+    fn candidate_wire(receipt: &mut ResponseRejectionReceipt) -> Option<serde_json::Value> {
+        receipt
+            .take_challenge()
+            .map(|candidate| serde_json::to_value(candidate).unwrap())
+    }
+
+    fn unix_ms_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    #[tokio::test]
+    async fn an_exact_challenge_carries_its_complete_short_edge_id_and_retry_after() {
+        // An edge-only ID outside the strict legacy subset, with a held body
+        // that would otherwise have approved.
+        let edge_id = "cle1::Xy7.k_9:z-1";
+        for origin_class in [OriginClass::CanonicalProduction, OriginClass::Localhost] {
+            let before = unix_ms_now();
+            let (result, mut receipts, posts) = check_challenge(
+                held_forbidden(&[
+                    &format!("x-vercel-id: {edge_id}"),
+                    "x-vercel-mitigated: challenge",
+                    "retry-after: 30",
+                    &format!("set-cookie: _vcrcs={PRIVATE}"),
+                    &format!("x-vercel-challenge-token: {PRIVATE}"),
+                ]),
+                origin_class,
+            )
+            .await;
+            let after = unix_ms_now();
+            // One POST, never retried or followed, with the original result.
+            assert_eq!(result, Err(NOT_AUTHORIZED.to_string()));
+            assert_eq!(posts, 1);
+            assert_eq!(receipts.len(), 1);
+            let receipt = &mut receipts[0];
+            // The frozen v1 receipt is unchanged: the strict legacy parser
+            // still declines the edge ID, and the candidate never serializes.
+            let legacy = serde_json::to_value(&*receipt).unwrap();
+            assert_eq!(legacy["requestIdShape"], "unrecognized");
+            assert_eq!(legacy["requestId"], serde_json::Value::Null);
+            assert_eq!(legacy.as_object().unwrap().len(), 7);
+            assert!(!format!("{receipt:?}").contains(edge_id));
+            let wire = candidate_wire(receipt).expect("an exact challenge");
+            let captured = wire["capturedAtMs"].as_u64().unwrap();
+            assert!((before..=after).contains(&captured), "{captured}");
+            assert_eq!(
+                wire,
+                serde_json::json!({
+                    "version": 1,
+                    "capturedAtMs": captured,
+                    "requestId": { "kind": "present", "value": edge_id },
+                    "retryAfter": { "kind": "seconds", "seconds": 30 },
+                })
+            );
+            assert!(!wire.to_string().contains(PRIVATE));
+            assert!(!wire.to_string().contains("127.0.0.1"));
+            assert!(!wire.to_string().contains("synthetic"));
+            // Taken once: the receipt sent afterwards cannot carry it.
+            assert!(receipt.take_challenge().is_none());
+        }
+
+        // The routed legacy shape is also kept complete, beside an HTTP-date.
+        let (_, mut receipts, _) = check_challenge(
+            held_forbidden(&[
+                &format!("x-vercel-id: {VALID_ID}"),
+                "x-vercel-mitigated: challenge",
+                "retry-after: Sun, 06 Nov 1994 08:49:37 GMT",
+            ]),
+            OriginClass::CanonicalProduction,
+        )
+        .await;
+        assert_eq!(receipts[0].request_id.as_deref(), Some(VALID_ID));
+        let wire = candidate_wire(&mut receipts[0]).unwrap();
+        assert_eq!(
+            wire["requestId"],
+            serde_json::json!({ "kind": "present", "value": VALID_ID })
+        );
+        assert_eq!(
+            wire["retryAfter"],
+            serde_json::json!({ "kind": "http_date", "unixMs": 784_111_777_000u64 })
+        );
+    }
+
+    #[tokio::test]
+    async fn only_an_exact_403_challenge_of_an_eligible_origin_is_a_candidate() {
+        let id = "x-vercel-id: cle1::abc";
+        let challenge = "x-vercel-mitigated: challenge";
+        let cases: Vec<(Vec<u8>, OriginClass)> = vec![
+            (held_forbidden(&[id]), OriginClass::CanonicalProduction),
+            (
+                held_forbidden(&[id, "x-vercel-mitigated: deny"]),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                held_forbidden(&[id, "x-vercel-mitigated: Challenge"]),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                held_forbidden(&[id, "x-vercel-mitigated: challenge, challenge"]),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                held_forbidden(&[id, challenge, challenge]),
+                OriginClass::CanonicalProduction,
+            ),
+            (held_forbidden(&[id, challenge]), OriginClass::OtherAllowed),
+            (held_forbidden(&[id, challenge]), OriginClass::Unknown),
+            (
+                json("401 Unauthorized", &[id, challenge], "{}"),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                json("429 Too Many Requests", &[id, challenge], "{}"),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                json(
+                    "307 Temporary Redirect",
+                    &[id, challenge, "location: /challenge"],
+                    "{}",
+                ),
+                OriginClass::CanonicalProduction,
+            ),
+            (
+                json("200 OK", &[id, challenge], r#"{"approved":false}"#),
+                OriginClass::CanonicalProduction,
+            ),
+        ];
+        for (response, origin_class) in cases {
+            let (result, mut receipts, posts) = check_challenge(response, origin_class).await;
+            assert_eq!(result, Err(NOT_AUTHORIZED.to_string()));
+            assert_eq!(posts, 1);
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(candidate_wire(&mut receipts[0]), None, "{origin_class:?}");
+        }
+        // An approval has no receipt, so no candidate, whatever its headers.
+        let (url, posts) = serve(
+            json("200 OK", &[id, challenge], r#"{"approved":true}"#),
+            false,
+        )
+        .await;
+        let (receipts, observer) = recorder();
+        let approved = observed_approval(
+            answered(&url).await,
+            OriginClass::CanonicalProduction,
+            Some(observer),
+            NO_READ,
+            NO_TIMING,
+        )
+        .await;
+        assert_eq!(approved, Ok(()));
+        assert!(receipts.lock().unwrap().is_empty());
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_challenge_keeps_only_a_single_complete_bounded_request_id() {
+        let longest = format!("cle1::{}", "A".repeat(MAX_CHALLENGE_REQUEST_ID_LEN - 6));
+        let too_long = format!("{longest}a");
+        let cases: Vec<(Vec<String>, serde_json::Value)> = vec![
+            (vec![], serde_json::json!({ "kind": "absent" })),
+            (
+                vec!["IAD1::fra1::AbC.d_e:F-9".into()],
+                serde_json::json!({ "kind": "present", "value": "IAD1::fra1::AbC.d_e:F-9" }),
+            ),
+            (
+                vec![longest.clone()],
+                serde_json::json!({ "kind": "present", "value": longest }),
+            ),
+            (vec![too_long], serde_json::json!({ "kind": "invalid" })),
+            (
+                vec!["cle1::abc".into(), "cle1::abc".into()],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+            (
+                vec!["cle1::a b".into()],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+            (
+                vec!["cle1::a/b".into()],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+            (
+                vec![format!("cle1::abc?token={PRIVATE}")],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+            (
+                vec![format!("cle1::abc,{PRIVATE}")],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+            (
+                vec!["\"cle1::abc\"".into()],
+                serde_json::json!({ "kind": "invalid" }),
+            ),
+        ];
+        for (values, expected) in cases {
+            let mut headers: Vec<String> = values
+                .iter()
+                .map(|value| format!("x-vercel-id: {value}"))
+                .collect();
+            headers.push("x-vercel-mitigated: challenge".into());
+            let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+            let (_, mut receipts, _) =
+                check_challenge(held_forbidden(&headers), OriginClass::CanonicalProduction).await;
+            let wire = candidate_wire(&mut receipts[0]).expect("an exact challenge");
+            assert_eq!(wire["requestId"], expected, "{values:?}");
+            assert_eq!(wire["retryAfter"], serde_json::json!({ "kind": "absent" }));
+            assert!(!wire.to_string().contains(PRIVATE), "{values:?}");
+        }
+        // Bytes outside visible ASCII, including obs-text and invalid UTF-8.
+        let mut obs_text = b"HTTP/1.1 403 Forbidden\r\nconnection: close\r\nx-vercel-mitigated: challenge\r\nx-vercel-id: cle1::".to_vec();
+        obs_text.extend_from_slice(&[0xff, 0xfe]);
+        obs_text.extend_from_slice(b"\r\ncontent-length: 0\r\n\r\n");
+        let (_, mut receipts, _) =
+            check_challenge(obs_text, OriginClass::CanonicalProduction).await;
+        assert_eq!(
+            candidate_wire(&mut receipts[0]).unwrap()["requestId"],
+            serde_json::json!({ "kind": "invalid" })
+        );
+    }
+
+    #[test]
+    fn retry_after_is_bounded_seconds_a_strict_http_date_or_malformed() {
+        use ChallengeRetryAfter::*;
+        let date = |unix_ms| HttpDate { unix_ms };
+        let cases: Vec<(Vec<&[u8]>, ChallengeRetryAfter)> = vec![
+            (vec![], Absent),
+            (vec![b"0"], Seconds { seconds: 0 }),
+            (vec![b"120"], Seconds { seconds: 120 }),
+            (vec![b"000000030"], Seconds { seconds: 30 }),
+            (
+                vec![b"999999999"],
+                Seconds {
+                    seconds: 999_999_999,
+                },
+            ),
+            (vec![b"1000000000"], Malformed),
+            (vec![b"-1"], Malformed),
+            (vec![b"+1"], Malformed),
+            (vec![b"1.5"], Malformed),
+            (vec![b"30 "], Malformed),
+            (vec![b"30, 30"], Malformed),
+            (vec![b"30", b"30"], Malformed),
+            (vec![b""], Malformed),
+            (vec![PRIVATE.as_bytes()], Malformed),
+            (
+                vec![b"Sun, 06 Nov 1994 08:49:37 GMT"],
+                date(784_111_777_000),
+            ),
+            (vec![b"Thu, 01 Jan 1970 00:00:00 GMT"], date(0)),
+            (
+                vec![b"Thu, 29 Feb 2024 23:59:59 GMT"],
+                date(1_709_251_199_000),
+            ),
+            (
+                vec![b"Fri, 31 Dec 9999 23:59:59 GMT"],
+                date(253_402_300_799_000),
+            ),
+            // The weekday must match the date.
+            (vec![b"Mon, 06 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Wed, 29 Feb 2023 00:00:00 GMT"], Malformed),
+            (vec![b"Wed, 31 Dec 1969 23:59:59 GMT"], Malformed),
+            (vec![b"Sun, 06 Nov 1994 24:00:00 GMT"], Malformed),
+            (vec![b"Sun, 06 Nov 1994 08:60:00 GMT"], Malformed),
+            (vec![b"Sun, 06 Nov 1994 08:49:60 GMT"], Malformed),
+            (vec![b"Sun, 31 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Sun, 00 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"sun, 06 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Sun, 06 nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Sun, 6 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Sun, 06 Nov 1994 08:49:37 UTC"], Malformed),
+            (vec![b"Sun, 06 Nov 1994 08:49:37 GMT "], Malformed),
+            (vec![b" Sun, 06 Nov 1994 08:49:37 GMT"], Malformed),
+            (vec![b"Sun,  06 Nov 1994 08:49:37 GMT"], Malformed),
+            // The obsolete forms are not accepted.
+            (vec![b"Sunday, 06-Nov-94 08:49:37 GMT"], Malformed),
+            (vec![b"Sun Nov  6 08:49:37 1994"], Malformed),
+            (
+                vec![
+                    b"Sun, 06 Nov 1994 08:49:37 GMT",
+                    b"Sun, 06 Nov 1994 08:49:37 GMT",
+                ],
+                Malformed,
+            ),
+        ];
+        for (values, expected) in cases {
+            let mut headers = reqwest::header::HeaderMap::new();
+            for value in &values {
+                headers.append(
+                    RETRY_AFTER_HEADER,
+                    reqwest::header::HeaderValue::from_bytes(value).unwrap(),
+                );
+            }
+            assert_eq!(read_challenge_retry_after(&headers), expected, "{values:?}");
+        }
+        // Obs-text is never a date or a delay.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER_HEADER,
+            reqwest::header::HeaderValue::from_bytes(&[b'3', 0xff]).unwrap(),
+        );
+        assert_eq!(read_challenge_retry_after(&headers), Malformed);
+        // The closed wire of each form.
+        for (value, wire) in [
+            (Absent, serde_json::json!({ "kind": "absent" })),
+            (Malformed, serde_json::json!({ "kind": "malformed" })),
+            (
+                Seconds { seconds: 5 },
+                serde_json::json!({ "kind": "seconds", "seconds": 5 }),
+            ),
+            (
+                date(1_000),
+                serde_json::json!({ "kind": "http_date", "unixMs": 1_000 }),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(value).unwrap(), wire);
         }
     }
 }

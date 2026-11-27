@@ -1439,6 +1439,9 @@ struct AuthorizedStreamRequest<R: tauri::Runtime> {
     // The same response's mitigation marker, on its own channel so the v1
     // response receipt shape is frozen.
     on_authorization_mitigation_diagnostic: Option<serde_json::Value>,
+    // Only an exact Vercel challenge of that response, on its own channel:
+    // independent of the response and mitigation channels and their shapes.
+    on_authorization_challenge_diagnostic: Option<serde_json::Value>,
     // The send error's unfolded IO kind and typed TLS presence, on its own
     // channel so the cause receipt's buckets are frozen.
     on_authorization_transport_diagnostic: Option<serde_json::Value>,
@@ -1523,6 +1526,9 @@ impl<R: tauri::Runtime> AuthorizedStreamRequest<R> {
             ))?,
             on_authorization_mitigation_diagnostic: CommandArg::from_command(item(
                 "onAuthorizationMitigationDiagnostic",
+            ))?,
+            on_authorization_challenge_diagnostic: CommandArg::from_command(item(
+                "onAuthorizationChallengeDiagnostic",
             ))?,
             on_authorization_transport_diagnostic: CommandArg::from_command(item(
                 "onAuthorizationTransportDiagnostic",
@@ -1714,7 +1720,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
 ) -> Result<(), tauri::ipc::InvokeError> {
     use authorization_connector_diagnostics::ConnectorPhaseSnapshot;
     use authorization_response_diagnostics::{
-        ResponseMitigationReceipt, ResponseReadSnapshot, ResponseReadTiming,
+        ChallengeCandidate, ResponseMitigationReceipt, ResponseReadSnapshot, ResponseReadTiming,
         ResponseRejectionReceipt,
     };
     use authorization_send_diagnostics::{
@@ -1731,6 +1737,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         on_authorization_cause_diagnostic,
         on_authorization_response_diagnostic,
         on_authorization_mitigation_diagnostic,
+        on_authorization_challenge_diagnostic,
         on_authorization_transport_diagnostic,
         on_authorization_io_diagnostic,
         on_authorization_connector_diagnostic,
@@ -1756,18 +1763,29 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     // The read timing joins the response receipt itself, never a
     // mitigation marker alone.
     let has_response_channel = response_channel.is_some();
-    // Either channel alone is enough; each send fails on its own.
-    let response_rejection_observer = (response_channel.is_some() || mitigation_channel.is_some())
-        .then(|| {
-            move |receipt: ResponseRejectionReceipt, mitigation: ResponseMitigationReceipt| {
-                if let Some(channel) = &response_channel {
-                    let _ = channel.send(receipt);
-                }
-                if let Some(channel) = &mitigation_channel {
-                    let _ = channel.send(mitigation);
-                }
+    let challenge_channel =
+        authorization_diagnostic_channel_id(on_authorization_challenge_diagnostic)
+            .map(|id| id.channel_on::<R, ChallengeCandidate>(webview()));
+    // Any one channel alone is enough; each send fails on its own. The
+    // challenge candidate is moved out first, never serialized with the
+    // receipt, and dropped unsent without its own channel.
+    let response_rejection_observer = (response_channel.is_some()
+        || mitigation_channel.is_some()
+        || challenge_channel.is_some())
+    .then(|| {
+        move |mut receipt: ResponseRejectionReceipt, mitigation: ResponseMitigationReceipt| {
+            let challenge = receipt.take_challenge();
+            if let Some(channel) = &response_channel {
+                let _ = channel.send(receipt);
             }
-        });
+            if let Some(channel) = &mitigation_channel {
+                let _ = channel.send(mitigation);
+            }
+            if let (Some(channel), Some(challenge)) = (&challenge_channel, challenge) {
+                let _ = channel.send(challenge);
+            }
+        }
+    });
     let receipt_channel = authorization_diagnostic_channel_id(on_authorization_diagnostic)
         .map(|id| id.channel_on::<R, SendFailureReceipt>(webview()));
     let cause_channel = authorization_diagnostic_channel_id(on_authorization_cause_diagnostic)
@@ -3054,7 +3072,7 @@ mod tests {
             ] {
                 // The origin opt-in alone, and beside the cleanup, Windows
                 // taskkill, root report, owner phase, stop request source and
-                // read timing connector opt-ins and all nine current channels.
+                // read timing connector opt-ins and all ten current channels.
                 for with_others in [false, true] {
                     for fence in &optional {
                         let mut body = serde_json::json!({
@@ -3073,6 +3091,8 @@ mod tests {
                                 "onAuthorizationConnectorDiagnostic",
                                 "onAuthorizationResponseReadDiagnostic",
                                 "onAuthorizationResponseReadTimingDiagnostic",
+                                // An older ABI ignores the challenge channel.
+                                "onAuthorizationChallengeDiagnostic",
                             ]
                             .into_iter()
                             .enumerate()

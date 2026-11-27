@@ -96,6 +96,11 @@ import {
 } from "@/lib/analytics/desktop-invocation-rejection-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
+import {
+  isAuthorizationChallengeOrigin,
+  parseNativeAuthorizationChallenge,
+  uploadNativeAuthorizationChallenge,
+} from "@/lib/desktop/authorization-challenge-diagnostic";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   readClosedConvexAuthProviderState,
@@ -1983,6 +1988,13 @@ export class DesktopSandboxBridge {
     let mitigationOpen = true;
     let responseReadOpen = true;
     let responseReadTimingOpen = true;
+    // The challenge record has its own latch and fence, independent of the
+    // analytics identity: it is uploaded once and never joins any final.
+    let challengeOpen = true;
+    const challengeFenced = () =>
+      this.isStoppingOrStopped ||
+      this.operationRouter !== router ||
+      this.connectionId !== connectionId;
     let streamFenceOrigin: DesktopStreamFenceOrigin | null = null;
     let streamFenceCleanupFailure: DesktopStreamFenceCleanupFailure | null =
       null;
@@ -2050,6 +2062,7 @@ export class DesktopSandboxBridge {
         mitigationOpen = false;
         responseReadOpen = false;
         responseReadTimingOpen = false;
+        challengeOpen = false;
         terminalLatched = true;
         if (cancelAttempts) cancelAttempts.open = false;
         const streamFence =
@@ -2172,6 +2185,7 @@ export class DesktopSandboxBridge {
     let connectorChannel: object | undefined;
     let responseReadChannel: object | undefined;
     let responseReadTimingChannel: object | undefined;
+    let challengeChannel: object | undefined;
     // Set before the invocation, once both channels it joins exist.
     let readTimingConnectorOffered = false;
     try {
@@ -2325,6 +2339,29 @@ export class DesktopSandboxBridge {
           responseReadTimingChannel && connectorChannel,
         );
       }
+      // Created after every optional receipt channel, so none of their
+      // construction changes. Offered to any authorized-capable native app on
+      // the canonical or a localhost page, whatever the analytics identity; an
+      // older native app ignores it. A record goes only to this origin's own
+      // endpoint.
+      if (
+        !usesPublishedLegacyDesktopCommands(nativeAppVersion) &&
+        isAuthorizationChallengeOrigin(globalThis.location?.origin)
+      ) {
+        try {
+          const challenge = new Channel<unknown>();
+          challenge.onmessage = (value) => {
+            if (!challengeOpen) return;
+            challengeOpen = false;
+            if (challengeFenced()) return;
+            const record = parseNativeAuthorizationChallenge(value);
+            if (record) uploadNativeAuthorizationChallenge(record);
+          };
+          challengeChannel = challenge;
+        } catch {
+          challengeChannel = undefined;
+        }
+      }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
         if (chunk.type === "exit") {
@@ -2369,6 +2406,9 @@ export class DesktopSandboxBridge {
               }),
               ...(mitigationChannel && {
                 onAuthorizationMitigationDiagnostic: mitigationChannel,
+              }),
+              ...(challengeChannel && {
+                onAuthorizationChallengeDiagnostic: challengeChannel,
               }),
               ...(transportChannel && {
                 onAuthorizationTransportDiagnostic: transportChannel,
@@ -2516,6 +2556,7 @@ export class DesktopSandboxBridge {
         connectorChannel,
         responseReadChannel,
         responseReadTimingChannel,
+        challengeChannel,
       ]) {
         try {
           (
