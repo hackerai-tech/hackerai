@@ -120,8 +120,9 @@ const getRunningResearchMember = async (
 };
 
 /**
- * The audited [start, end] update_time window of a pre-event member, or
- * undefined when the run samples representative lifetime history.
+ * The audited inclusive time bounds of a pre-event member, or undefined when
+ * the run samples representative lifetime history. Messages must be created
+ * inside these bounds; update_time is an additional exclusion guard for edits.
  */
 const getEvidenceWindow = (
   run: Doc<"research_runs">,
@@ -528,9 +529,10 @@ export const getMessageExcerpt = query({
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
     // Convex appends _creationTime to every index, so the existing chat index
-    // can seek directly to the audited window without another large-table
-    // backfill. The update_time check below also excludes messages whose
-    // content was edited outside that window.
+    // can seek directly to messages created in the audited window without
+    // another large-table backfill. Messages created earlier are intentionally
+    // excluded even if later edited inside the window; the update_time check
+    // below also excludes content edited after the audited event.
     const queryMessages = () =>
       ctx.db.query("messages").withIndex("by_chat_id", (q) => {
         const chatRange = q.eq("chat_id", args.chatId);
