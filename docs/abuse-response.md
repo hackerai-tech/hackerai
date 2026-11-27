@@ -752,6 +752,18 @@ days, notice counts, and action items with only a reference:
 `review_block` (no operator note since the block), `review_pending_enforcement`,
 `notice_backlog`, `notice_failed` and `reconcile_uncertain_notice`.
 
+**Digest dispositions.** `scripts/egress-review-dispositions.ts
+--expect-convex-url <deployment URL>` uses the same environment and key
+as `summary` but sends nothing. It reads a JSON array of 1–100 unique
+case digests on stdin. It prints one disposition per digest, in input order.
+`blocked` requires an applied-block receipt. `confirmed_abuse_pending` requires
+an `enforcement_pending` receipt with an intent kind.
+`confirmed_legitimate` requires a corroborated `keep_active` receipt. Both
+confirmed states also require complete exact-run coverage. Any other receipt
+is `undetermined`. `missing` means no receipt was found or it passed
+its 30-day retention. The output never includes references or other
+identifiers.
+
 **Recovery.**
 
 - Restore access: resolve the case with `abuseCases.resolve` as for any
