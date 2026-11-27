@@ -29,9 +29,6 @@ jest.mock("@/lib/suspensions", () => ({
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   assertFreeAgentGates: jest.fn(),
 }));
-jest.mock("@/lib/experiments/agent-steering.server", () => ({
-  isAgentSteeringEnabled: () => mockFlag(),
-}));
 jest.mock("@/lib/analytics/agent-follow-up", () => ({
   captureAgentFollowUp: (...args: unknown[]) => mockCapture(...args),
 }));
@@ -66,7 +63,6 @@ const mockMutation = jest.fn(),
   mockEntitlement = jest.fn(),
   mockSaveMessage = jest.fn(),
   mockFinalize = jest.fn(),
-  mockFlag = jest.fn(),
   mockCapture = jest.fn();
 
 const finishedRun = {
@@ -100,7 +96,6 @@ describe("server dispatch of queued follow-ups", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.CONVEX_SERVICE_ROLE_KEY = "service";
-    mockFlag.mockResolvedValue(true);
     mockMutation.mockResolvedValue(null);
     mockQuery.mockResolvedValue({
       id: "queued-1",
@@ -348,7 +343,7 @@ describe("server dispatch of queued follow-ups", () => {
   });
 
   describe("after a run finishes", () => {
-    it("claims and dispatches only for unattended, flagged, non-goal runs", async () => {
+    it("claims and dispatches only for unattended, non-goal runs", async () => {
       mockMutation.mockResolvedValue({ id: "queued-1", text: "x", sentAt: 1 });
       await scheduleQueuedMessageDispatch(finishedRun, "run-done");
       expect(tasks.trigger).toHaveBeenCalledWith(
@@ -364,8 +359,6 @@ describe("server dispatch of queued follow-ups", () => {
         { ...finishedRun, agentPermissionMode: "ask_approval" },
       ] as AgentLongPayload[])
         await scheduleQueuedMessageDispatch(run, "run-done");
-      mockFlag.mockResolvedValue(false);
-      await scheduleQueuedMessageDispatch(finishedRun, "run-done");
       expect(mockMutation).not.toHaveBeenCalled();
       expect(tasks.trigger).not.toHaveBeenCalled();
     });

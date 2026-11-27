@@ -9,7 +9,6 @@ import {
 } from "@/lib/db/actions";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { assertFreeAgentGates } from "@/lib/api/chat-stream-helpers";
-import { isAgentSteeringEnabled } from "@/lib/experiments/agent-steering.server";
 import { AGENT_TRIGGER_TASK_ID } from "@/lib/api/agent-endpoints";
 import {
   buildAgentRunDedupeKeyParts,
@@ -321,7 +320,6 @@ export async function scheduleQueuedMessageDispatch(
   if (payload.convexUrl) setConvexUrl(payload.convexUrl);
   let claimedId: string | undefined;
   try {
-    if (!(await isAgentSteeringEnabled(payload.userId))) return;
     const claimed = await getConvexClient().mutation(
       api.queuedMessages.claimNextForDispatch,
       {

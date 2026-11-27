@@ -1,18 +1,14 @@
 import type { PostHog } from "posthog-node";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
-import {
-  AGENT_CONTEXT_FEEDBACK_FLAG,
-  AGENT_CONTEXT_FEEDBACK_PHASE,
-} from "./agent-context";
+import { AGENT_CONTEXT_FEEDBACK_PHASE } from "./agent-context";
 
 /** Called before variant-dependent history loading or any generation outcome.
  * Never reevaluate context assignment here or at answer time.
  */
 export async function selectContextTaskOutcomeSurvey(args: {
-  posthog: Pick<PostHog, "getFeatureFlagResult" | "capture"> | null;
+  posthog: Pick<PostHog, "capture"> | null;
   userId: string;
   chatId: string;
   messageId: string;
@@ -26,7 +22,6 @@ export async function selectContextTaskOutcomeSurvey(args: {
   const { posthog, variant, selectedModelOverride: selector } = args;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   if (
-    !posthog ||
     !serviceKey ||
     args.mode !== "agent" ||
     !variant ||
@@ -42,19 +37,6 @@ export async function selectContextTaskOutcomeSurvey(args: {
       }),
     );
   try {
-    if (
-      (await getPostHogFlagWithoutExposure(
-        posthog,
-        AGENT_CONTEXT_FEEDBACK_FLAG,
-        args.userId,
-        {
-          subscription_tier: args.subscription,
-          mode: "agent",
-          selected_model: selector,
-        },
-      )) !== true
-    )
-      return;
     const row = await getConvexClient().mutation(
       api.taskOutcomeSurveys.reserveContext,
       {
@@ -79,7 +61,7 @@ export async function selectContextTaskOutcomeSurvey(args: {
     );
     if (!row) return;
     try {
-      posthog.capture({
+      posthog?.capture({
         distinctId: args.userId,
         event: "task_outcome_survey_selected",
         properties: {
