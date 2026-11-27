@@ -424,22 +424,26 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(reads.messageIds).toHaveLength(8);
   });
 
-  it("returns only messages updated inside a pre-event evidence window", async () => {
+  it("uses the creation-time window and excludes messages edited after the event", async () => {
     const { getMessageExcerpt } = await import("../userResearch");
     const anchorAt = Date.UTC(2026, 7, 25);
     const day = 24 * 60 * 60 * 1_000;
     const { ctx, userId, chatId, tables, reads } = createCtx({
-      messageCount: 4,
+      messageCount: 5,
       samplingMode: "pre_event",
       evidenceWindowDays: 60,
       evidenceAnchorAt: anchorAt,
     });
-    // Before the window, at both bounds, and after the audited event.
-    [anchorAt - 61 * day, anchorAt - 60 * day, anchorAt, anchorAt + 1].forEach(
-      (updateTime, index) => {
-        tables.messages[index].update_time = updateTime;
+    const startAt = anchorAt - 60 * day;
+    // Outside creation bounds, both inclusive bounds, and a message created
+    // inside the window but edited after the audited event.
+    [startAt - 1, startAt, startAt + day, anchorAt, anchorAt + 1].forEach(
+      (creationTime, index) => {
+        tables.messages[index]._creationTime = creationTime;
+        tables.messages[index].update_time = creationTime;
       },
     );
+    tables.messages[2].update_time = anchorAt + 1;
 
     const result = await getMessageExcerpt.handler(ctx as never, {
       serviceKey: "service-key",
@@ -452,13 +456,14 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(result).toEqual({
       messages: [
         { role: "assistant", text: "message 2" },
-        { role: "user", text: "message 3" },
+        { role: "assistant", text: "message 4" },
       ],
       truncated: false,
     });
-    // The staged by_chat_id_and_update_time index cannot be queried until it
-    // is enabled, so the window is applied as a filter over by_chat_id.
     expect(new Set(reads.messageIndexes)).toEqual(new Set(["by_chat_id"]));
+    expect(new Set(reads.messageIds)).toEqual(
+      new Set(["message-2", "message-3", "message-4"]),
+    );
   });
 
   it("bounds reads of out-of-window pre-event messages", async () => {
@@ -471,7 +476,8 @@ describe("userResearch.getMessageExcerpt", () => {
       evidenceWindowDays: 60,
       evidenceAnchorAt: anchorAt,
     });
-    for (const message of tables.messages) {
+    for (const [index, message] of tables.messages.entries()) {
+      message._creationTime = anchorAt - 30 * day + index;
       message.update_time = anchorAt - 61 * day;
       message.parts = [{ type: "reasoning", text: "x".repeat(900_000) }];
     }
