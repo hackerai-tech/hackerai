@@ -70,9 +70,12 @@ describe("POST /api/desktop/authorization-challenge-diagnostic", () => {
 
     expect(mockEval).toHaveBeenCalledTimes(1);
     const [script, keys, args] = mockEval.mock.calls[0];
-    expect(keys).toEqual(["support:desktop-authorization-challenge:v1:user-1"]);
-    // At most 16 records, expiring at most 24 hours after the first write.
-    expect(args.slice(1)).toEqual(["16", "86400"]);
+    expect(keys).toEqual([
+      "support:desktop-authorization-challenge:v1:user-1",
+      "support:desktop-authorization-challenge-rate:v1:user-1",
+    ]);
+    // At most 16 retained records and 16 uploads per 60-second window.
+    expect(args.slice(1)).toEqual(["16", "86400", "16", "60"]);
     expect(script).toContain("LPUSH");
     expect(script).toContain("LTRIM");
     expect(JSON.parse(args[0])).toEqual({
@@ -222,5 +225,12 @@ describe("POST /api/desktop/authorization-challenge-diagnostic", () => {
     mockRedis.available = true;
     mockEval.mockRejectedValue(new Error(PRIVATE));
     await expectStatus(await POST(post(record)), 503);
+  });
+
+  it("returns an empty 429 when the authenticated account budget is exhausted", async () => {
+    mockEval.mockResolvedValue(0);
+
+    await expectStatus(await POST(post(record)), 429);
+    expect(mockEval).toHaveBeenCalledTimes(1);
   });
 });

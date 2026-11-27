@@ -11,17 +11,25 @@ export const runtime = "nodejs";
 
 /** Support-only, private; never read by any route. */
 const KEY_PREFIX = "support:desktop-authorization-challenge:v1:";
+const RATE_KEY_PREFIX = "support:desktop-authorization-challenge-rate:v1:";
 const MAX_RECORDS = 16;
 const RETENTION_SECONDS = 24 * 60 * 60;
+const MAX_UPLOADS_PER_WINDOW = 16;
+const UPLOAD_WINDOW_SECONDS = 60;
 /** Native and server clocks may disagree; a record is uploaded at once. */
 const MAX_CLOCK_SKEW_MS = 10 * 60 * 1000;
 
 /**
- * Newest first, capped, and expiring at most 24 hours after the first write:
- * a later write never extends an existing expiry. `TTL` < 0 only for a list
- * this script just created, so this needs no `EXPIRE ... NX` support.
+ * Enforce the per-account upload budget and append in one Redis round trip.
+ * Rejected uploads leave both the counter and the private receipt list alone.
+ * Later writes never extend the list's initial expiry.
  */
-const APPEND_SCRIPT = `redis.call('LPUSH', KEYS[1], ARGV[1])
+const APPEND_SCRIPT = `local uploads = tonumber(redis.call('GET', KEYS[2]) or '0')
+if uploads >= tonumber(ARGV[4]) then return 0 end
+if redis.call('INCR', KEYS[2]) == 1 then
+  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
+end
+redis.call('LPUSH', KEYS[1], ARGV[1])
 redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[2]) - 1)
 if redis.call('TTL', KEYS[1]) < 0 then
   redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
@@ -122,9 +130,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   const redis = createRedisClient();
   if (!redis) return status(503);
   try {
-    await redis.eval(
+    const result = await redis.eval<string[], 0 | 1>(
       APPEND_SCRIPT,
-      [`${KEY_PREFIX}${userId}`],
+      [`${KEY_PREFIX}${userId}`, `${RATE_KEY_PREFIX}${userId}`],
       [
         JSON.stringify({
           version: 1,
@@ -140,10 +148,12 @@ export async function POST(request: NextRequest): Promise<Response> {
         }),
         String(MAX_RECORDS),
         String(RETENTION_SECONDS),
+        String(MAX_UPLOADS_PER_WINDOW),
+        String(UPLOAD_WINDOW_SECONDS),
       ],
     );
+    return status(result === 0 ? 429 : 204);
   } catch {
     return status(503);
   }
-  return status(204);
 }
