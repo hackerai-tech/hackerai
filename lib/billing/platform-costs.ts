@@ -333,6 +333,103 @@ export function completedUtcDayWindow(
   };
 }
 
+/** Vercel closes billing days at local midnight in this time zone. */
+const VERCEL_BILLING_TIME_ZONE = "America/Los_Angeles";
+
+const vercelBillingClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: VERCEL_BILLING_TIME_ZONE,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+/** Billing-zone wall-clock time of an instant, encoded as UTC milliseconds. */
+function vercelBillingWallClock(instant: number): number {
+  const parts = Object.fromEntries(
+    vercelBillingClock
+      .formatToParts(new Date(instant))
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+}
+
+/**
+ * UTC instant of 00:00 in the billing zone on a calendar day given as UTC
+ * midnight. UTC midnight is the previous local afternoon, and US DST changes
+ * at 02:00 local time, so that offset still applies at local midnight.
+ */
+function vercelBillingMidnight(calendarDay: number): number {
+  return calendarDay - (vercelBillingWallClock(calendarDay) - calendarDay);
+}
+
+/**
+ * Returns the last `days` complete Vercel billing days. `from` and `to` are
+ * billing-zone midnights, so the export contains whole provider days; day
+ * labels are the billing-zone dates, which match the UTC date of each
+ * charge's `ChargePeriodStart`.
+ */
+export function completedVercelBillingDayWindow(
+  now: number,
+  days: number,
+): { from: string; to: string; startDay: string; endDay: string } {
+  if (!Number.isInteger(days) || days < 1) {
+    throw new Error("days must be a positive integer");
+  }
+  if (!Number.isFinite(now)) throw new Error("now must be finite");
+  const today = Math.floor(vercelBillingWallClock(now) / DAY_MS) * DAY_MS;
+  const firstDay = today - days * DAY_MS;
+  return {
+    from: new Date(vercelBillingMidnight(firstDay)).toISOString(),
+    to: new Date(vercelBillingMidnight(today)).toISOString(),
+    startDay: new Date(firstDay).toISOString().slice(0, 10),
+    endDay: new Date(today - DAY_MS).toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * Replace only the observed range of complete billing days. A missing day
+ * can represent an incomplete export, so keep existing costs outside this
+ * range and reject an export with missing days within it.
+ */
+export function selectVercelReplacement(
+  fetchedRows: PlatformCostRow[],
+  window: { startDay: string; endDay: string },
+): { rows: PlatformCostRow[]; startDay: string; endDay: string } {
+  const rows = filterRowsToDayWindow(
+    fetchedRows,
+    window.startDay,
+    window.endDay,
+  );
+  if (rows.length === 0) {
+    throw new Error(
+      "Vercel billing response has no charges in the reconciliation window",
+    );
+  }
+  const days = [...new Set(rows.map((row) => row.day))].sort();
+  const startDay = days[0];
+  const endDay = days[days.length - 1];
+  if (
+    Date.parse(endDay) - Date.parse(startDay) !==
+    (days.length - 1) * DAY_MS
+  ) {
+    throw new Error(
+      "Vercel billing response has missing days within its range",
+    );
+  }
+  return { rows, startDay, endDay };
+}
+
 export function convexUsageBaseUrl(configuredUrl: string): string {
   const url = new URL(configuredUrl);
   if (
