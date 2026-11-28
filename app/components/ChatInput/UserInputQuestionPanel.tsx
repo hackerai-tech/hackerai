@@ -236,17 +236,16 @@ export function UserInputQuestionPanel({
                       </span>
                     )}
                   </span>
-                  {question.multiSelect || selected ? (
+                  <kbd className="mt-0.5 hidden shrink-0 rounded border px-1 text-[10px] text-muted-foreground sm:block">
+                    {optionIndex + 1}
+                  </kbd>
+                  {(question.multiSelect || selected) && (
                     <span
                       aria-hidden="true"
                       className={`mt-0.5 flex size-5 shrink-0 items-center justify-center border ${question.multiSelect ? "rounded-md" : "rounded-full"} ${selected ? "border-foreground bg-foreground text-background" : "border-muted-foreground/60"}`}
                     >
                       {selected && <Check className="size-3.5" />}
                     </span>
-                  ) : (
-                    <kbd className="mt-0.5 hidden shrink-0 rounded border px-1 text-[10px] text-muted-foreground sm:block">
-                      {optionIndex + 1}
-                    </kbd>
                   )}
                 </button>
               );
