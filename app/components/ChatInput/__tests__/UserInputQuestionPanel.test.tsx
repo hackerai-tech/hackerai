@@ -51,6 +51,18 @@ it("selects by shortcut without adding a second submit action", () => {
   ).not.toBeInTheDocument();
 });
 
+it("shows each option's shortcut number alongside selection indicators", () => {
+  render(
+    <UserInputQuestionPanel
+      {...props}
+      question={{ ...question, multiSelect: true }}
+      answer={{ selectedValues: ["a"], customAnswer: "" }}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /Alpha/ })).toHaveTextContent(/1$/);
+  expect(screen.getByRole("button", { name: /Beta/ })).toHaveTextContent(/2$/);
+});
+
 it("keeps claimed choices fixed", () => {
   render(
     <UserInputQuestionPanel
