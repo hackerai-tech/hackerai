@@ -98,6 +98,7 @@ import {
 import type { AnySandbox } from "@/types";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { phLogger } from "@/lib/posthog/server";
+import { recordVerifiedTerminalStart } from "@/lib/abuse/egress-terminal-starts";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -1488,6 +1489,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 execution = started;
                 processId = started.pid;
                 commandHandle?.setPid(started.pid);
+                // Diagnostic only: the SDK accepted this process. Never
+                // awaited, and skipped unless this object was verified.
+                recordVerifiedTerminalStart(sandboxInstance, {
+                  pid: started.pid,
+                  userId: context.userID,
+                  chatId: context.chatId,
+                  runId: context.triggerRunId,
+                });
                 const result = await measureTerminalWait(() => started.wait());
                 return { ...result, pid: started.pid };
               }

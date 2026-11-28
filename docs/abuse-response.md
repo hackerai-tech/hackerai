@@ -613,6 +613,60 @@ shadow line with `selectedRun: "listed"`. To stop it, unset the shadow toggle in
 both processes; its keys (`egress-review:timeline:v1:*`) expire on their own
 and nothing else reads them.
 
+### Terminal start shadow
+
+`E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED=true`, together with the review
+toggle, records which runs began a verified terminal command on a workspace in
+each minute. Set it in the web app and the Agent worker; it is off by default,
+independent of the run timeline shadow, and needs no Convex change. It answers
+only whether verified commands began near a burst. It never feeds a decision,
+case, receipt, cooldown, attribution, notice or restriction, never calls the
+model, and never shows that a command opened a connection.
+
+- **What it records.** A non-interactive foreground `run_terminal_cmd` command
+  that the E2B SDK accepted with a valid process ID, recorded after the start
+  returns and before the tool waits for exit. The run is the server chat and
+  Trigger run of the tool call, with its parent or subagent kind from the
+  acquisition. The workspace, owner and E2B cluster are those that the
+  acquisition verified for that exact client object (ownership and network
+  checks), held in process memory; commands on any other client are skipped.
+  Each workspace and minute keeps at most 8 runs as pseudonymous hashes, and
+  past that sets a capped marker. Each client normally writes once per run
+  and minute. The set deduplicates writes across clients. Each verified
+  acquisition writes a marker that recording has been seen. Keys
+  (`egress-review:starts:v1:*`) expire 2.5 hours after their last write.
+  Writes are best effort and never delay or fail a command.
+- **What it reads.** After workspace attribution, for each verified workspace
+  of the burst (at most four), the burst minute and one minute on each side,
+  matching the review's one-minute clock-skew margin. The assessment is
+  `unobserved` (no recorded start, and recording was not seen active before
+  the window), `no_observed_starts`, `one_run`, `several_runs`, `partial` or
+  `unavailable`. `partial` carries closed limitations (`capped`,
+  `invalid_record`, `workspaces_capped`, `workspace_unavailable`,
+  `workspace_unobserved`). Counts of observed starts are lower bounds.
+  `burstMinuteRuns` counts runs recorded during the burst minute.
+  `marginOnlyRuns` counts runs recorded in the margin without a recording
+  during the burst minute. Some of those runs may also have started commands
+  during the burst. The line also reports how many plausible parent runs
+  (`candidates`) had a recorded start and whether the selected run did.
+- **What it cannot see.** Commands that started before the window and were
+  still running, detached or background commands, interactive sessions,
+  other tools and E2B paths, local and Desktop sandboxes, workers with the
+  toggle off, and lost writes. A zero is never evidence of no activity. A
+  start near a burst is correlation only: proving that a run caused a burst
+  would still need per-process or per-connection attribution from the proxy,
+  which reports only the workspace.
+- **Where to view it.** Each settled review attempt that read it writes one
+  `Egress terminal start shadow` log in the Agent worker with the summary, the
+  review's status, reason and `detail`, and the candidate counts. It holds no
+  identifiers, commands, arguments, targets or output.
+
+To validate in Preview, enable both toggles in the Preview web app and worker,
+run a short foreground command from a pilot Agent run, and follow the burst
+procedure above. Confirm the receipt is unchanged and the shadow line shows
+`selectedRun: "started"`. To stop it, unset the toggle in both processes; its
+keys expire on their own and nothing else reads them.
+
 ### Reassessing a retained candidate
 
 A `multiple_runs` or `account_runs_unverified` case can record the one linked

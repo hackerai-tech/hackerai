@@ -48,11 +48,23 @@ jest.mock("@/lib/posthog/server", () => ({
   },
 }));
 
+// Off unless the terminal start tests opt in with their own store.
+let mockTerminalStartStore: { eval: jest.Mock } | null = null;
+jest.mock("@/lib/rate-limit/redis", () => {
+  const actual = jest.requireActual("@/lib/rate-limit/redis");
+  return {
+    ...actual,
+    createRedisClient: () =>
+      mockTerminalStartStore ?? actual.createRedisClient(),
+  };
+});
+
 jest.mock("../utils/sandbox-file-uploader", () => ({
   uploadSandboxFileToConvex: jest.fn(),
 }));
 
 import { phLogger } from "@/lib/posthog/server";
+import { bindVerifiedTerminalWorkspace } from "@/lib/abuse/egress-terminal-starts";
 import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
@@ -3580,5 +3592,156 @@ exit 7
 
     expect(result.result.error).toMatch(/spawn failed/);
     expect(ptySessionManager.list("chat-1")).toEqual([]);
+  });
+});
+
+describe("verified terminal start shadow", () => {
+  const originalEnv = process.env;
+  const waitFor = async (condition: () => boolean) => {
+    for (let turn = 0; turn < 200 && !condition(); turn++)
+      await new Promise((resolve) => setImmediate(resolve));
+    expect(condition()).toBe(true);
+  };
+  let store: { eval: jest.Mock };
+  /** Start writes carry a minute key; binding writes only the since key. */
+  const startWrites = () =>
+    store.eval.mock.calls.filter(([, keys]) => keys.length === 2);
+  const makeE2B = (start: () => Promise<unknown>) => ({
+    jupyterUrl: "http://fake",
+    sandboxId: "sandbox-start",
+    setTimeout: jest.fn(async () => undefined),
+    isRunning: jest.fn(async () => true),
+    commands: {
+      run: jest.fn(async (command: string) =>
+        command === "echo ready"
+          ? { stdout: "ready\n", stderr: "", exitCode: 0 }
+          : start(),
+      ),
+    },
+  });
+  /** As a verified acquisition binds the exact client object it returned. */
+  const verify = (sandbox: object, userId = "u1") =>
+    bindVerifiedTerminalWorkspace(sandbox, {
+      region: "us",
+      userId,
+      sandboxId: "sandbox-start",
+      chatId: "chat-1",
+      runId: "run-test",
+    });
+  const exec = (sandbox: unknown, input: Record<string, unknown> = {}) =>
+    runTool(createRunTerminalCmd(makeContext({ sandbox }).context), {
+      command: "curl -sI https://example.test",
+      brief: "check headers",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+      ...input,
+    });
+
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      E2B_EGRESS_ABUSE_REVIEW_ENABLED: "true",
+      E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED: "true",
+    };
+    store = { eval: jest.fn(async () => 1) };
+    mockTerminalStartStore = store;
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+    mockTerminalStartStore = null;
+    jest.restoreAllMocks();
+  });
+
+  test("records an accepted foreground start before waiting for it", async () => {
+    let finish!: (value: unknown) => void;
+    const handle = {
+      pid: 4321,
+      stdout: "",
+      stderr: "",
+      wait: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      ),
+      kill: jest.fn(async () => true),
+    };
+    const sandbox = makeE2B(async () => handle);
+    verify(sandbox);
+    const result = exec(sandbox);
+    await waitFor(() => handle.wait.mock.calls.length > 0);
+    expect(startWrites()).toHaveLength(1);
+    finish({ stdout: "ok\n", stderr: "", exitCode: 0 });
+    await expect(result).resolves.toMatchObject({
+      result: { exitCode: 0, processStarted: true },
+    });
+  });
+
+  test("finishes the command when recording its start fails", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    const sandbox = makeE2B(async () => ({
+      pid: 4321,
+      wait: async () => ({ stdout: "ok\n", stderr: "", exitCode: 0 }),
+      kill: async () => true,
+    }));
+    verify(sandbox);
+    store.eval.mockRejectedValueOnce(new Error("store down"));
+    await expect(exec(sandbox)).resolves.toMatchObject({
+      result: { exitCode: 0, processStarted: true },
+    });
+    expect(startWrites()).toHaveLength(1);
+  });
+
+  test.each([
+    [
+      "the SDK never accepts the command",
+      () => {
+        const sandbox = makeE2B(async () => {
+          throw Object.assign(new Error("Sandbox not found"), {
+            name: "NotFoundError",
+          });
+        });
+        verify(sandbox);
+        return sandbox;
+      },
+    ],
+    [
+      "the client was not verified for this account",
+      () => {
+        const sandbox = makeE2B(async () => ({
+          pid: 7,
+          wait: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          kill: async () => true,
+        }));
+        verify(sandbox, "another-user");
+        return sandbox;
+      },
+    ],
+    [
+      "the sandbox is not E2B",
+      () => {
+        const sandbox = {
+          sandboxKind: "centrifugo",
+          sandboxId: "sandbox-start",
+          isWindows: () => false,
+          getWorkingDirectory: () => "/tmp/fixture",
+          commands: {
+            run: jest.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+          },
+        };
+        verify(sandbox);
+        return sandbox;
+      },
+    ],
+  ])("writes no start when %s", async (_label, arrange) => {
+    const sandbox = arrange();
+    await exec(sandbox).catch(() => undefined);
+    // The command reached the sandbox's own run call.
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("curl -sI https://example.test"),
+      expect.anything(),
+    );
+    expect(startWrites()).toHaveLength(0);
   });
 });

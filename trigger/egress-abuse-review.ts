@@ -21,6 +21,10 @@ import {
   type RunTimelineRead,
 } from "@/lib/abuse/egress-run-timeline";
 import {
+  readTerminalStarts,
+  type TerminalStartRead,
+} from "@/lib/abuse/egress-terminal-starts";
+import {
   cooldownSuppresses,
   grantReviewCooldown,
   readReviewCooldowns,
@@ -644,6 +648,7 @@ export async function runEgressAbuseReview(
   const shadow: TimelineShadow = {};
   const result = await reviewBurst(payload, attempt, diagnostic, true, shadow);
   await logTimelineShadow(shadow, result, diagnostic);
+  await logTerminalStartShadow(shadow, result, diagnostic);
   // Explains an abstention or a clearance; other outcomes keep their output.
   return result.status === "completed" &&
     result.outcome !== "authorization_request" &&
@@ -659,6 +664,10 @@ export async function runEgressAbuseReview(
 type TimelineShadow = {
   read?: Promise<RunTimelineRead>;
   selected?: AcquisitionLink;
+  /** Verified terminal starts near the burst; a separate signal. */
+  starts?: Promise<TerminalStartRead>;
+  /** The review's plausible parent links, when it got that far. */
+  candidates?: AcquisitionLink[];
 };
 
 /**
@@ -695,6 +704,58 @@ async function logTimelineShadow(
           ? "listed"
           : "not_listed"
         : "none",
+    });
+  } catch {
+    /* The shadow comparison never affects the review. */
+  }
+}
+
+/**
+ * One aggregate line on verified terminal starts near the burst: closed enums
+ * and small counts, never identifiers. A start near a burst is correlation
+ * only; it never shows that the command opened the burst's connections. It
+ * never throws, and its read is bounded and cannot reject.
+ */
+async function logTerminalStartShadow(
+  shadow: TimelineShadow,
+  result: EgressAbuseReviewResult,
+  diagnostic: ReviewDiagnostic,
+) {
+  try {
+    if (!shadow.starts) return;
+    const starts = await shadow.starts;
+    if (starts.summary.status === "disabled") return;
+    const read = starts.summary.status === "read";
+    logger.info("Egress terminal start shadow", {
+      starts: starts.summary,
+      review: {
+        status: result.status,
+        ...(result.status === "completed"
+          ? { outcome: result.outcome, reason: result.reason }
+          : result.status === "skipped"
+            ? { reason: result.reason }
+            : {}),
+        ...(diagnostic.detail ? { detail: diagnostic.detail } : {}),
+      },
+      ...(read
+        ? {
+            // How many of the review's plausible runs began a verified
+            // command near the burst; a lower bound.
+            candidates: shadow.candidates
+              ? {
+                  plausible: shadow.candidates.length,
+                  started: shadow.candidates.filter((link) =>
+                    starts.started(link),
+                  ).length,
+                }
+              : "not_reached",
+            selectedRun: shadow.selected
+              ? starts.started(shadow.selected)
+                ? "started"
+                : "not_observed"
+              : "none",
+          }
+        : {}),
     });
   } catch {
     /* The shadow comparison never affects the review. */
@@ -747,6 +808,8 @@ async function reviewBurst(
   // An escalated review describes its own burst.
   delete shadow.read;
   delete shadow.selected;
+  delete shadow.starts;
+  delete shadow.candidates;
   const threshold = egressBurstThreshold();
   if (threshold === null)
     throw new Error("Egress review threshold is unavailable");
@@ -912,6 +975,7 @@ async function reviewBurst(
   diagnostic.sandboxes = sandboxIds.length;
   // Started alongside the review and awaited only after it settles.
   shadow.read = readRunTimeline({ region, userId, sandboxIds, ...burst });
+  shadow.starts = readTerminalStarts({ region, userId, sandboxIds, ...burst });
 
   // A recent exact-run clearance suppresses routine bursts before any
   // evidence or model call. Any failure to read or compare reviews in full.
@@ -1121,6 +1185,7 @@ async function reviewBurst(
     ({ link, status }) => link.kind === "parent" && status !== "disjoint",
   );
   diagnostic.plausibleRuns = plausible.length;
+  shadow.candidates = plausible.map((match) => match.link);
   if (!plausible.length) return manual("no_matching_run");
 
   let selected = plausible[0];
