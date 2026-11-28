@@ -2141,3 +2141,121 @@ it("retains the client-error group through later route and boundary records but 
   recordAttachmentDownloadFailure(error, input);
   expect(clientErrorFields(error)).toEqual({});
 });
+
+describe("attachment command terminal source", () => {
+  const terminalFields = (error: unknown) =>
+    Object.fromEntries(
+      Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+        ([key]) => /_terminal_|runner_spawn_error/.test(key),
+      ),
+    );
+  const runner = { type: "error", runnerSpawnError: "spawn_enoent" } as const;
+
+  it("keeps a download terminal only for the result's own -1", () => {
+    const minusOne = recordAttachmentDownloadFailure(new Error("x"), {
+      ...input,
+      exitCode: -1,
+      terminal: runner,
+    });
+    expect(terminalFields(minusOne)).toEqual({
+      attachment_download_terminal_version: 1,
+      attachment_download_terminal_type: "error",
+      attachment_download_runner_spawn_error: "spawn_enoent",
+    });
+    const other = recordAttachmentDownloadFailure(new Error("x"), {
+      ...input,
+      exitCode: 22,
+      terminal: runner,
+    });
+    expect(terminalFields(other)).toEqual({});
+    // A runner category never accompanies an exit frame.
+    const exit = recordAttachmentDownloadFailure(new Error("x"), {
+      ...input,
+      exitCode: -1,
+      terminal: { type: "exit", runnerSpawnError: "spawn_enoent" },
+    });
+    expect(terminalFields(exit)).toEqual({
+      attachment_download_terminal_version: 1,
+      attachment_download_terminal_type: "exit",
+    });
+  });
+
+  it("never invokes getters or keeps values outside the closed sets", () => {
+    const getter = jest.fn(() => "error");
+    const cases: unknown[] = [
+      Object.defineProperty({}, "type", { get: getter, enumerable: true }),
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error("PRIVATE_TRAP");
+          },
+        },
+      ),
+      Object.create({ type: "error" }),
+      { type: "PRIVATE_TYPE" },
+    ];
+    for (const terminal of cases) {
+      const error = new Error("x");
+      recordAttachmentDownloadFailure(error, {
+        ...input,
+        exitCode: -1,
+        terminal: terminal as never,
+      });
+      expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+        attachment_download_exit_code: -1,
+      });
+      expect(terminalFields(error)).toEqual({});
+    }
+    const spawn = new Error("x");
+    recordAttachmentDownloadFailure(spawn, {
+      ...input,
+      exitCode: -1,
+      terminal: {
+        type: "error",
+        runnerSpawnError: "PRIVATE spawn /bin/bash" as never,
+      },
+    });
+    expect(terminalFields(spawn)).toEqual({
+      attachment_download_terminal_version: 1,
+      attachment_download_terminal_type: "error",
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("keeps a probe terminal only with its -1 and drops it on reuse", () => {
+    const reused = new Error("x");
+    const boundary = {
+      phase: "shell_context",
+      attempt: 0,
+      resultState: "not_observed",
+      shellContextStage: "detect_shell",
+      shellContextDetectTerminal: runner,
+    } as const;
+    recordAttachmentDownloadBoundary(reused, {
+      ...boundary,
+      shellContextDetectResult: "nonzero_exit_minus_one",
+    });
+    expect(terminalFields(reused)).toEqual({
+      attachment_download_shell_context_detect_terminal_version: 1,
+      attachment_download_shell_context_detect_terminal_type: "error",
+      attachment_download_shell_context_detect_runner_spawn_error:
+        "spawn_enoent",
+    });
+    recordAttachmentDownloadBoundary(reused, {
+      ...boundary,
+      shellContextDetectResult: "nonzero_exit_other",
+    });
+    expect(terminalFields(reused)).toEqual({});
+    recordAttachmentDownloadBoundary(reused, {
+      ...boundary,
+      shellContextDetectResult: "nonzero_exit_minus_one",
+    });
+    recordAttachmentDownloadBoundary(reused, {
+      ...boundary,
+      phase: "download_command",
+      shellContextDetectResult: "nonzero_exit_minus_one",
+    });
+    expect(terminalFields(reused)).toEqual({});
+  });
+});

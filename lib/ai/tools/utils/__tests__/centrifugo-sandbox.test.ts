@@ -7698,6 +7698,231 @@ describe("CentrifugoSandbox", () => {
     );
   });
 
+  describe("attachment command terminal source diagnostics", () => {
+    const URL = "https://private.example/object?X-Amz-Signature=PRIVATE_TOKEN";
+    const DEST = "/tmp/hackerai-upload/PRIVATE_DEST.pdf";
+    const SHELL_PROBE = "echo $BASH_VERSION";
+    const terminalFields = (context: object | undefined) =>
+      Object.fromEntries(
+        Object.entries(context ?? {}).filter(([key]) =>
+          /_terminal_|runner_spawn_error/.test(key),
+        ),
+      );
+    const download = (type: string, spawn?: string) => ({
+      attachment_download_terminal_version: 1,
+      attachment_download_terminal_type: type,
+      ...(spawn && { attachment_download_runner_spawn_error: spawn }),
+    });
+    const probe = (type: string, spawn?: string) => ({
+      attachment_download_shell_context_detect_terminal_version: 1,
+      attachment_download_shell_context_detect_terminal_type: type,
+      ...(spawn && {
+        attachment_download_shell_context_detect_runner_spawn_error: spawn,
+      }),
+    });
+    /** Only `relayed` commands reach the real receiver and its receipts. */
+    function sandboxFor(
+      isDesktop: boolean | undefined,
+      platform: string,
+      relayed: (command: string) => boolean,
+    ) {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          ...(isDesktop !== undefined && { isDesktop }),
+          osInfo: {
+            platform,
+            arch: "x64",
+            release: "PRIVATE_RELEASE",
+            hostname: "PRIVATE_HOST",
+          },
+        },
+        defaultConfig,
+      );
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).httpClientProbePositive = true;
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      const relay = sandbox.commands.run;
+      const commands: string[] = [];
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command, opts) => {
+          commands.push(command);
+          if (relayed(command)) return relay(command, opts);
+          const mount = gitBashMountResult(command);
+          return (
+            mount ?? {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            }
+          );
+        });
+      return { sandbox, commands };
+    }
+    async function sendTerminal(frame: Record<string, unknown>) {
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions.at(-1)!;
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", { data: { commandId: FIXED_UUID, ...frame } });
+    }
+    const errorFrame = (message: string) => ({ type: "error", message });
+    let warn: jest.SpyInstance;
+    beforeEach(() => {
+      warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => warn.mockRestore());
+
+    it.each([
+      [
+        false,
+        errorFrame("spawn /bin/bash ENOENT"),
+        download("error", "spawn_enoent"),
+      ],
+      [
+        false,
+        errorFrame("spawn C:\\Program Files\\Git\\bin\\bash.exe EACCES"),
+        download("error", "spawn_eacces"),
+      ],
+      [false, errorFrame("spawn EPERM"), download("error", "spawn_eperm")],
+      [false, errorFrame("spawn /bin/bash EAGAIN"), download("error", "other")],
+      [
+        false,
+        errorFrame("PRIVATE spawn /bin/bash ENOENT"),
+        download("error", "other"),
+      ],
+      [
+        false,
+        errorFrame("spawn /bin/bash ENOENT\nPRIVATE"),
+        download("error", "other"),
+      ],
+      // Desktop and an unknown host never receive a runner category.
+      [true, errorFrame("spawn /bin/bash ENOENT"), download("error")],
+      [undefined, errorFrame("spawn /bin/bash ENOENT"), download("error")],
+      [true, { type: "exit", exitCode: -1 }, download("exit")],
+      [false, { type: "exit", exitCode: -1 }, download("exit")],
+      // Another exit status never reads a terminal.
+      [false, { type: "exit", exitCode: 22 }, {}],
+    ] as const)(
+      "records the download result's own terminal (isDesktop=%s, %j)",
+      async (isDesktop, frame, expected) => {
+        const { sandbox, commands } = sandboxFor(isDesktop, "linux", (c) =>
+          c.includes("curl -fsSL"),
+        );
+        const pending = sandbox.files
+          .downloadFromUrl(URL, DEST)
+          .catch((error: unknown) => error);
+        await sendTerminal(frame);
+        const failure = await pending;
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_result_state: "nonzero",
+          attachment_download_exit_code:
+            "exitCode" in frame ? frame.exitCode : -1,
+        });
+        expect(terminalFields(context)).toEqual(expected);
+        expect(JSON.stringify(context)).not.toMatch(
+          /PRIVATE|private\.example|spawn |bin\/bash|Program Files|cmd-test-uuid/,
+        );
+        // One download attempt and its existing directory probe only.
+        expect(commands.filter((c) => c.includes("curl -fsSL"))).toHaveLength(
+          1,
+        );
+      },
+    );
+
+    it.each([
+      [true, errorFrame("spawn bash.exe ENOENT"), probe("error")],
+      [
+        false,
+        errorFrame("spawn bash.exe ENOENT"),
+        probe("error", "spawn_enoent"),
+      ],
+      [true, { type: "exit", exitCode: -1 }, probe("exit")],
+      [false, { type: "exit", exitCode: 1 }, {}],
+    ] as const)(
+      "records the shell probe's own -1 terminal (isDesktop=%s, %j)",
+      async (isDesktop, frame, expected) => {
+        const { sandbox, commands } = sandboxFor(
+          isDesktop,
+          "win32",
+          (c) => c === SHELL_PROBE,
+        );
+        const pending = sandbox.files
+          .downloadFromUrl(URL, DEST)
+          .catch((error: unknown) => error);
+        await sendTerminal(frame);
+        const failure = await pending;
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_phase: "shell_context",
+          attachment_download_shell_context_stage: "detect_shell",
+          attachment_download_shell_context_detect_result:
+            "exitCode" in frame && frame.exitCode === 1
+              ? "nonzero_exit_other"
+              : "nonzero_exit_minus_one",
+        });
+        expect(terminalFields(context)).toEqual(expected);
+        expect(JSON.stringify(context)).not.toMatch(
+          /PRIVATE|private\.example|spawn |bash\.exe|cmd-test-uuid/,
+        );
+        expect(commands).toEqual([SHELL_PROBE]);
+      },
+    );
+
+    it("forwards a runner download terminal to the existing staging sinks", async () => {
+      const { sandbox } = sandboxFor(false, "linux", (c) =>
+        c.includes("curl -fsSL"),
+      );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const pending = uploadSandboxFiles(
+          [{ kind: "url", url: URL, localPath: DEST }],
+          async () => sandbox,
+          {
+            logContext: {
+              service: "agent-long",
+              requestId: "run-terminal-source",
+              userId: "user-1",
+              chatId: "chat-terminal-source",
+            },
+          },
+        );
+        for (let i = 0; i < 20 && mockSubscriptions.length === 0; i++)
+          await jest.advanceTimersByTimeAsync(0);
+        await sendTerminal(errorFrame("spawn /bin/bash ENOENT"));
+        const result = await pending;
+        expect(result.failedCount).toBe(1);
+        const sinks = [
+          ...event.mock.calls
+            .filter(([name]) => name === "sandbox_attachment_staging_failed")
+            .map(([, fields]) => fields),
+          getSandboxUploadFailureMetadata(result),
+        ];
+        expect(sinks).toHaveLength(2);
+        for (const sink of sinks) {
+          expect(terminalFields(sink)).toEqual(
+            download("error", "spawn_enoent"),
+          );
+          expect(JSON.stringify(terminalFields(sink))).not.toMatch(
+            /PRIVATE|bin\/bash/,
+          );
+        }
+      } finally {
+        event.mockRestore();
+        error.mockRestore();
+      }
+    });
+  });
+
   describe("command receiver rejection diagnostics", () => {
     const receiverFields = (error: unknown) =>
       Object.fromEntries(

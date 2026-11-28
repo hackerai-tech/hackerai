@@ -6,7 +6,9 @@ import {
   recordAttachmentCommandReceiver,
   recordAttachmentCommandSetupAttempt,
   readAttachmentCommandReceiverClientError,
+  classifyRunnerSpawnError,
   type AttachmentClientSelection,
+  type AttachmentCommandTerminal,
   type AttachmentCommandReceiverClientError,
   type AttachmentDownloadBoundary,
   type AttachmentDownloadShellContextObservation,
@@ -625,6 +627,8 @@ export class CentrifugoSandbox extends EventEmitter {
       acknowledgedOutput: boolean;
       terminalAckPublished: boolean;
       lastReceivedSequence: number;
+      /** The received frame type that settled this result. */
+      terminal: AttachmentCommandTerminal;
     }
   >();
   private readonly reportedNativePathFailures =
@@ -1943,6 +1947,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   acknowledgedOutput,
                   terminalAckPublished: terminalCursorPublished,
                   lastReceivedSequence: lastStreamSequence,
+                  terminal: { type: "exit" },
                 });
                 resolve(completed);
               };
@@ -2028,6 +2033,16 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   acknowledgedOutput,
                   terminalAckPublished: terminalCursorPublished,
                   lastReceivedSequence: lastStreamSequence,
+                  terminal: {
+                    type: "error",
+                    // Only this frame's own message from a non-Desktop
+                    // runner; Desktop and unknown hosts stay unclassified.
+                    ...(this.connectionInfo.isDesktop === false && {
+                      runnerSpawnError: classifyRunnerSpawnError(
+                        message.message,
+                      ),
+                    }),
+                  },
                 });
                 resolve(completed);
               };
@@ -2602,15 +2617,25 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         copyOwnerStage: copyRole && "shell_detection",
       });
     } catch (error) {
-      if (observation) observation.detectShellResult = "rejected";
+      if (observation) {
+        observation.detectShellResult = "rejected";
+        delete observation.detectShellTerminal;
+      }
       throw error;
     }
     if (probe.exitCode !== 0) {
-      if (observation)
+      if (observation) {
         observation.detectShellResult =
           probe.exitCode === -1
             ? "nonzero_exit_minus_one"
             : "nonzero_exit_other";
+        const terminal =
+          probe.exitCode === -1
+            ? this.commandReceipts.get(probe)?.terminal
+            : undefined;
+        if (terminal) observation.detectShellTerminal = { ...terminal };
+        else delete observation.detectShellTerminal;
+      }
       throw persistenceCommandError("Failed to detect local shell", probe);
     }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
@@ -3884,6 +3909,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 directoryProbe,
                 clientSelection,
                 ...(curlProgress && { curlProgressStdout: result.stdout }),
+                // Only this relay's returned result has a receipt.
+                terminal: this.commandReceipts.get(result)?.terminal,
               },
             );
           }
@@ -3897,6 +3924,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           resultState,
           shellContextStage: shellContextObservation.stage,
           shellContextDetectResult: shellContextObservation.detectShellResult,
+          shellContextDetectTerminal:
+            shellContextObservation.detectShellTerminal,
         });
         throw error;
       }
