@@ -127,8 +127,8 @@ export const BROWSER_WRAPPER_RESULT_ELAPSED = [
   "older",
 ] as const;
 
-// Wire code cp1 is the index. Only an opted-in recognize_closed status without
-// owned_port whose selected socket lstat found no entry (exit2 socket_stat
+// Wire code cp1 is the index. Only an opted-in recognize_closed status, with or
+// without owned_port, whose selected socket lstat found no entry (exit2 socket_stat
 // missing): the first check of the existing close-proof verification that
 // refused it, in that one call. Absent proof includes older wrappers and closes
 // that earned none; superseded means the selection is no longer the proof's
@@ -956,11 +956,8 @@ try {
         code === 'EACCES' || code === 'EPERM' ? 'permission' :
         code === 'ENOTDIR' ? 'not_directory' : 'other';
     }
-    // That same refused close-proof check, for an opted-in status without owned_port only.
-    try {
-      if (statusSocketMissing && closeProofFailure !== undefined &&
-          JSON.parse(payload)?.owned_port === undefined) value.cp1 = closeProofFailure;
-    } catch {}
+    // That same refused close-proof check, for an opted-in status (with or without owned_port) only.
+    if (statusSocketMissing && closeProofFailure !== undefined) value.cp1 = closeProofFailure;
     finish(2, value);
   }
 }

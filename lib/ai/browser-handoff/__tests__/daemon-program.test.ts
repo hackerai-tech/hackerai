@@ -4710,11 +4710,28 @@ it.each<[string, Parameters<typeof closedDaemon>[0], number | undefined]>([
     { request: { ...closedRequest, recognize_closed: 1 } },
     undefined,
   ],
-  // The owned-port lookup's same verification never exports its reason.
+  // The cached GET's owned-port lookup exports its same verification's reason.
   [
     "the owned-port lookup has no proof",
     {
       request: { ...closedRequest, owned_port: true },
+      files: { [proofPath]: undefined },
+    },
+    0,
+  ],
+  [
+    "the owned-port lookup sees a later selection",
+    {
+      request: { ...closedRequest, owned_port: true },
+      files: { [activePath]: { ...selection, ino: "1152921504606846978" } },
+    },
+    5,
+  ],
+  // Without the opt-in an owned-port lookup checks no proof and exports nothing.
+  [
+    "the owned-port lookup never opted in",
+    {
+      request: { action: "stream_status", owned_port: true },
       files: { [proofPath]: undefined },
     },
     undefined,
