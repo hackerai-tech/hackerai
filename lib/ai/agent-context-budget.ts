@@ -87,6 +87,14 @@ function getVerifiedRouteCapacity(
   return Math.min(...capacities);
 }
 
+/** Verified window minus the output reserve, or undefined if unverified. */
+export function getVerifiedModelInputCapacity(
+  modelId: string,
+): number | undefined {
+  const capacity = getVerifiedRouteCapacity(modelId, []);
+  return capacity === undefined ? undefined : capacity - MAX_OUTPUT_TOKENS;
+}
+
 const appliesToRun = (
   policy: AgentContextPolicy,
   mode: ChatMode | undefined,

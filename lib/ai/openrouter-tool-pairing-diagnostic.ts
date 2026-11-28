@@ -282,6 +282,25 @@ function describeBedrockRawReason(
   return { rawFormat: "object", marker: bedrockRejectionMarker(message) };
 }
 
+// The complete normalized Bedrock template for a Grok 4.6 prompt over its
+// context window. Anything else, including a generic context message, a
+// different model, or extra text, is not this rejection.
+const GROK_PROMPT_CONTEXT_LIMIT =
+  /^prompt tokens \((\d{1,9})\) exceed model maximum \((\d{1,9})\) for xai[./]grok-4\.6$/;
+
+/** Only token counts are kept; they are consistent or not evidence at all. */
+function grokPromptContextLimit(
+  message: string | undefined,
+): BedrockStreamRejection["promptContextLimit"] {
+  const match = message?.match(GROK_PROMPT_CONTEXT_LIMIT);
+  if (!match) return undefined;
+  const promptTokens = Number(match[1]);
+  const maxTokens = Number(match[2]);
+  return maxTokens > 0 && promptTokens > maxTokens
+    ? Object.freeze({ promptTokens, maxTokens })
+    : undefined;
+}
+
 /** The SDK delivers the inner error directly on an SSE error part. */
 export function describeBedrockStreamRejection(
   error: unknown,
@@ -294,7 +313,14 @@ export function describeBedrockStreamRejection(
     const parameter = bedrockRejectionParameter(ownValue(error, "param"));
     const metadata = ownValue(error, "metadata");
     const raw = isObject(metadata) ? ownValue(metadata, "raw") : undefined;
-    return Object.freeze({ parameter, ...describeBedrockRawReason(raw) });
+    const promptContextLimit = grokPromptContextLimit(
+      boundedOwnText(error, "message"),
+    );
+    return Object.freeze({
+      parameter,
+      ...describeBedrockRawReason(raw),
+      ...(promptContextLimit && { promptContextLimit }),
+    });
   } catch {
     return undefined;
   }

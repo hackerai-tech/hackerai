@@ -101,6 +101,8 @@ import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import { getSameCallGrokBedrockPromptContextLimit } from "@/lib/utils/openrouter-stream-error-context";
 import {
   AGENT_PROVIDER_IDLE_TIMEOUT_MS,
   AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
@@ -348,6 +350,7 @@ import {
   prepareAgentFinishContinuation,
   getMaxAgentFirstRecoveryModel,
   getNextProviderDisconnectRetryModel,
+  prepareGrokBedrockContextRecovery,
   prepareProviderDisconnectContinuation,
   type ProviderDisconnectContinuationRejection,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
@@ -4600,6 +4603,52 @@ export const agentLongTask = task({
               }
             };
 
+            // The transcript a checkpoint continuation actually sends.
+            const withProviderDisconnectContinuationPrompt = (
+              continuationMessages: UIMessage[],
+            ): UIMessage[] => [
+              ...state.finalMessages,
+              ...continuationMessages,
+              {
+                id: generateId(),
+                role: "user",
+                parts: [
+                  {
+                    type: "text",
+                    text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                  },
+                ],
+              },
+            ];
+
+            // Size a recovery input as its stream will serialize and restore
+            // it. A conversion failure leaves the size unknown, which no
+            // context-checked recovery admits.
+            const estimateRecoveryContextTokens = async (
+              messages: UIMessage[],
+              tools: typeof streamCtx.tools,
+            ): Promise<number | undefined> => {
+              try {
+                const raw = await convertToModelMessagesWithSteers(messages, {
+                  tools: createPromptSerializationTools(tools),
+                });
+                const projected =
+                  restoreProviderRecoveryContext(
+                    state.providerRecoveryContext,
+                    raw,
+                  ) ?? raw;
+                return (
+                  estimateSummaryInputTokens(projected) +
+                  streamCtx.systemPromptTokens +
+                  safeCountTokens(
+                    (await streamCtx.cloudNetworkPrompt?.()) ?? "",
+                  )
+                );
+              } catch {
+                return undefined;
+              }
+            };
+
             const recordProviderDisconnectRecoveryAttempt = ({
               failedModel,
               retryModel,
@@ -5264,8 +5313,56 @@ export const agentLongTask = task({
                       let continuationRejection:
                         | ProviderDisconnectContinuationRejection
                         | "not_evaluated" = "not_evaluated";
+                      // Grok 4.6 on Bedrock rejected this step's prompt as
+                      // over its window after the stream opened. One
+                      // context-checked DeepSeek continuation may follow;
+                      // other rejections keep the existing handling.
+                      const grokContextRecovery =
+                        await prepareGrokBedrockContextRecovery({
+                          rejection: getSameCallGrokBedrockPromptContextLimit(
+                            state.providerError,
+                          ),
+                          mode,
+                          selectedModelOverride,
+                          activeModelName,
+                          cancelled: isAborted || userStopSignal.signal.aborted,
+                          alreadyRetried: isRetryWithFallback,
+                          competingRecovery:
+                            uncertainToolOutcome ||
+                            providerContentBlocked ||
+                            loopTriggeredRetry ||
+                            confirmedFailureLoop ||
+                            terminalEmptyResponse ||
+                            shouldRecoverAbliterationStreamError ||
+                            shouldRetryWithVisionSummary ||
+                            shouldRetryWithoutImageToolResults ||
+                            state.providerRejectedMultimodalToolResults ||
+                            Boolean(finishContinuation) ||
+                            isTrustedBrowserHandoffReadFailure(
+                              streamError,
+                              state.providerError,
+                            ),
+                          messages: normalizedFinishedMessages,
+                          buildRecoveryMessages:
+                            withProviderDisconnectContinuationPrompt,
+                          // Serialize with the failed step's tools, as the
+                          // existing DeepSeek recovery sizing does: rebuilding
+                          // the fallback's tools here would switch the run's
+                          // tool model before any retry is decided. Tool
+                          // schemas sit within the compaction reserve.
+                          estimateRequiredContextTokens: (messages) =>
+                            estimateRecoveryContextTokens(
+                              messages,
+                              streamCtx.tools,
+                            ),
+                          agentModelContextEnabled,
+                          subscription,
+                        });
+                      const grokContextContinuation =
+                        grokContextRecovery?.continuation;
                       const providerDisconnectContinuation =
-                        !uncertainToolOutcome &&
+                        grokContextContinuation ??
+                        (!uncertainToolOutcome &&
                         (hasTerminalProviderStreamError ||
                           terminalEmptyResponse) &&
                         (terminalEmptyResponse ||
@@ -5284,7 +5381,7 @@ export const agentLongTask = task({
                                 },
                               },
                             )
-                          : undefined;
+                          : undefined);
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
@@ -5446,6 +5543,10 @@ export const agentLongTask = task({
                             providerDisconnectContinuation
                               ? "prepared"
                               : continuationRejection,
+                          ...(grokContextRecovery && {
+                            grok_bedrock_context_recovery:
+                              grokContextRecovery.reason,
+                          }),
                           ...getProviderOutputDiagnostics(
                             lastAssistantMessageParts,
                           ),
@@ -5479,48 +5580,52 @@ export const agentLongTask = task({
                                 ? "vision_summary_recovery"
                                 : shouldRetryWithoutImageToolResults
                                   ? "image_tool_result_rejection"
-                                  : shouldContinueAfterProviderDisconnect
-                                    ? "provider_disconnect_continuation"
-                                    : providerContentBlocked
-                                      ? "content_filter"
-                                      : stoppedDueToAssistantContentLoop
-                                        ? "assistant_content_loop"
-                                        : state.stoppedDueToDoomLoop
-                                          ? "doom_loop"
-                                          : shouldRetryInterruptedToolInput
-                                            ? "interrupted_tool_input"
-                                            : shouldRetryNonDurableOutputLimit
-                                              ? "non_durable_output_limit"
-                                              : shouldRetryReasoningOnlyProviderError
-                                                ? "reasoning_only_provider_error"
-                                                : "incomplete_stream";
+                                  : grokContextContinuation
+                                    ? "grok_bedrock_context_continuation"
+                                    : shouldContinueAfterProviderDisconnect
+                                      ? "provider_disconnect_continuation"
+                                      : providerContentBlocked
+                                        ? "content_filter"
+                                        : stoppedDueToAssistantContentLoop
+                                          ? "assistant_content_loop"
+                                          : state.stoppedDueToDoomLoop
+                                            ? "doom_loop"
+                                            : shouldRetryInterruptedToolInput
+                                              ? "interrupted_tool_input"
+                                              : shouldRetryNonDurableOutputLimit
+                                                ? "non_durable_output_limit"
+                                                : shouldRetryReasoningOnlyProviderError
+                                                  ? "reasoning_only_provider_error"
+                                                  : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
-                        const retryModel = shouldRecoverAbliterationStreamError
-                          ? fallbackModel
-                          : finishContinuation
-                            ? selectedModel
-                            : shouldRetryWithVisionSummary
-                              ? selectModel(
-                                  mode,
-                                  subscription,
-                                  selectedModelOverride,
-                                  false,
-                                  false,
-                                  { extraUsageAvailable },
-                                )
-                              : shouldRetryWithoutImageToolResults
-                                ? selectedModel
-                                : providerContentBlocked &&
-                                    selectedModelOverride !== "hackerai-max"
-                                  ? getContentFilterRetryModel(
-                                      selectedModel,
-                                      mode,
-                                      blockedProviderModel,
-                                      fallbackModel,
-                                    )
-                                  : fallbackModel;
+                        const retryModel = grokContextContinuation
+                          ? DEEPSEEK_1017_MODEL_KEY
+                          : shouldRecoverAbliterationStreamError
+                            ? fallbackModel
+                            : finishContinuation
+                              ? selectedModel
+                              : shouldRetryWithVisionSummary
+                                ? selectModel(
+                                    mode,
+                                    subscription,
+                                    selectedModelOverride,
+                                    false,
+                                    false,
+                                    { extraUsageAvailable },
+                                  )
+                                : shouldRetryWithoutImageToolResults
+                                  ? selectedModel
+                                  : providerContentBlocked &&
+                                      selectedModelOverride !== "hackerai-max"
+                                    ? getContentFilterRetryModel(
+                                        selectedModel,
+                                        mode,
+                                        blockedProviderModel,
+                                        fallbackModel,
+                                      )
+                                    : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
                         streamCtx.ignoredProviderSlugs =
@@ -5574,7 +5679,10 @@ export const agentLongTask = task({
                           !shouldRetryWithVisionSummary
                         ) {
                           recordProviderDisconnectRecoveryAttempt({
-                            failedModel: selectedModel,
+                            // The rejection is attributed to its own step.
+                            failedModel: grokContextContinuation
+                              ? activeModelName
+                              : selectedModel,
                             retryModel,
                             continuation: providerDisconnectContinuation,
                           });
@@ -5638,20 +5746,10 @@ export const agentLongTask = task({
                             }),
                           );
                         } else if (providerDisconnectContinuation) {
-                          state.finalMessages = [
-                            ...state.finalMessages,
-                            ...providerDisconnectContinuation.messages,
-                            {
-                              id: generateId(),
-                              role: "user",
-                              parts: [
-                                {
-                                  type: "text",
-                                  text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
-                                },
-                              ],
-                            },
-                          ];
+                          state.finalMessages =
+                            withProviderDisconnectContinuationPrompt(
+                              providerDisconnectContinuation.messages,
+                            );
                         } else if (refusalContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -5858,53 +5956,19 @@ export const agentLongTask = task({
                                       : undefined;
                                   const nextRecoveryMessages:
                                     UIMessage[] | undefined = nextContinuation
-                                    ? [
-                                        ...state.finalMessages,
-                                        ...nextContinuation.messages,
-                                        {
-                                          id: generateId(),
-                                          role: "user",
-                                          parts: [
-                                            {
-                                              type: "text",
-                                              text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
-                                            },
-                                          ],
-                                        },
-                                      ]
+                                    ? withProviderDisconnectContinuationPrompt(
+                                        nextContinuation.messages,
+                                      )
                                     : undefined;
-                                  let requiredContextTokens: number | undefined;
-                                  if (
+                                  const requiredContextTokens =
                                     selectedModelOverride === "hackerai-max" &&
-                                    nextRecoveryMessages
-                                  ) {
-                                    try {
-                                      const raw =
-                                        await convertToModelMessagesWithSteers(
+                                    nextRecoveryMessages &&
+                                    !grokContextContinuation
+                                      ? await estimateRecoveryContextTokens(
                                           nextRecoveryMessages,
-                                          {
-                                            tools:
-                                              createPromptSerializationTools(
-                                                streamCtx.tools,
-                                              ),
-                                          },
-                                        );
-                                      const projected =
-                                        restoreProviderRecoveryContext(
-                                          state.providerRecoveryContext,
-                                          raw,
-                                        ) ?? raw;
-                                      requiredContextTokens =
-                                        estimateSummaryInputTokens(projected) +
-                                        streamCtx.systemPromptTokens +
-                                        safeCountTokens(
-                                          (await streamCtx.cloudNetworkPrompt?.()) ??
-                                            "",
-                                        );
-                                    } catch {
-                                      // Unknown input size cannot admit the smaller fallback.
-                                    }
-                                  }
+                                          streamCtx.tools,
+                                        )
+                                      : undefined;
                                   const finalRetryModel = nextContinuation
                                     ? getNextProviderDisconnectRetryModel({
                                         originalModel:
@@ -5916,6 +5980,9 @@ export const agentLongTask = task({
                                         agentModelContextEnabled,
                                         subscription,
                                         requiredContextTokens,
+                                        afterPromptContextRecovery: Boolean(
+                                          grokContextContinuation,
+                                        ),
                                       })
                                     : undefined;
 
