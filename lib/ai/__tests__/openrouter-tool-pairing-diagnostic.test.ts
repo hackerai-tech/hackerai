@@ -235,8 +235,10 @@ it("opts in only the Bedrock route in the provider map", async () => {
   process.env.OPENROUTER_API_KEY = "synthetic-unused";
   try {
     let providers!: typeof import("../providers");
+    let extractErrorDetails!: typeof import("@/lib/utils/error-utils").extractErrorDetails;
     jest.isolateModules(() => {
       providers = require("../providers");
+      ({ extractErrorDetails } = require("@/lib/utils/error-utils"));
     });
     const { GROK_4_6_BEDROCK_MODEL_KEY } = require("../grok-bedrock");
     await runStream(providers.myProvider.languageModel("model-grok-4.6"));
@@ -247,7 +249,25 @@ it("opts in only the Bedrock route in the provider map", async () => {
     expect(diagnostics()).toEqual([
       expect.objectContaining({ source: "sdk_http_rejection" }),
     ]);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    fetch.mockImplementation(inBandRejection());
+    const direct = await runStream(
+      providers.myProvider.languageModel("model-grok-4.6"),
+    );
+    const bedrock = await runStream(
+      providers.myProvider.languageModel(GROK_4_6_BEDROCK_MODEL_KEY),
+    );
+    expect(extractErrorDetails(direct.error)).not.toHaveProperty(
+      "openrouterBedrockStreamRejectionVersion",
+    );
+    expect(extractErrorDetails(bedrock.error)).toMatchObject({
+      openrouterBedrockStreamRejectionVersion: 1,
+      openrouterBedrockStreamRejectionRawFormat: "absent",
+    });
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({ source: "sdk_http_rejection" }),
+      expect.objectContaining({ source: "sdk_error_part" }),
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expectNoPrivateValues();
   } finally {
     globalThis.fetch = originalFetch;

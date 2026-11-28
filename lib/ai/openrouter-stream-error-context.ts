@@ -14,6 +14,7 @@ import {
   isOpenRouterJsonEscapeRejection,
 } from "./openrouter-request-json-escape";
 import {
+  describeBedrockStreamRejection,
   ownRequestBodyValues,
   ownStreamRequestBody,
   reportBedrockToolPairingRejection,
@@ -75,6 +76,7 @@ export function withOpenRouterStreamErrorContext(
   options: {
     /** Opt in only for a route that OpenRouter pins to Amazon Bedrock. */
     bedrockToolPairingDiagnostic?: boolean;
+    bedrockStreamRejectionDiagnostic?: boolean;
   } = {},
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -119,10 +121,16 @@ export function withOpenRouterStreamErrorContext(
               transform(part, controller) {
                 try {
                   if (part.type === "error") {
+                    const bedrockRejection =
+                      options.bedrockStreamRejectionDiagnostic
+                        ? describeBedrockStreamRejection(part.error)
+                        : undefined;
                     recordOpenRouterStreamErrorContext(
                       part.error,
                       call,
-                      context,
+                      bedrockRejection
+                        ? { ...context, bedrockRejection }
+                        : context,
                     );
                     if (
                       inspectJsonEscape &&
