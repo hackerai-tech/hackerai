@@ -429,6 +429,9 @@ are separate from attribution credentials.
 `E2B_EGRESS_RUN_TIMELINE_SHADOW_ENABLED=true` adds a diagnostic-only run
 timeline at the same boundary; see
 [Run timeline shadow](abuse-response.md#run-timeline-shadow).
+`E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED=true` separately records verified
+foreground terminal starts on that client; see
+[Terminal start shadow](abuse-response.md#terminal-start-shadow).
 
 ### Coverage and delivery
 

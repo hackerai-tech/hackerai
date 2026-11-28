@@ -42,6 +42,10 @@ import {
   encryptAbuseEvidence,
 } from "@/lib/abuse/evidence-crypto";
 import { recordEgressReviewAcquisition } from "@/lib/abuse/egress-review-context";
+import {
+  bindVerifiedTerminalWorkspace,
+  recordVerifiedTerminalStart,
+} from "@/lib/abuse/egress-terminal-starts";
 import { reviewCooldownKey } from "@/lib/abuse/egress-review-cooldown";
 import {
   buildCaseRecord,
@@ -1845,6 +1849,145 @@ describe("run timeline shadow", () => {
       ),
     ).toBe(false);
     expect(shadowLog()).toBeUndefined();
+  });
+});
+
+describe("terminal start shadow", () => {
+  const legitimate = {
+    verdict: "clearly_legitimate",
+    activity: "ordinary_development",
+    authorization: "not_stated",
+    commandIndices: [1],
+    messageIndices: [1],
+  };
+  const cleared = {
+    status: "completed",
+    outcome: "no_case",
+    reason: "legitimate_corroborated",
+    case: "none",
+    enforcement: "keep_active",
+    enforcementReason: "legitimate_corroborated",
+    diagnostic: expect.objectContaining({ cooldownGrant: "granted" }),
+  };
+  /** The stored member for a run, as the application recorder writes it. */
+  const startMember = (chatId: string, runId: string) => {
+    const redis = createRedisClient();
+    const capture = { eval: jest.fn(async () => 1) };
+    jest.mocked(createRedisClient).mockReturnValue(capture as never);
+    const sandbox = { sandboxId: first.sandboxId };
+    const identity = { userId: first.userId, chatId, runId };
+    bindVerifiedTerminalWorkspace(sandbox, {
+      ...identity,
+      region: "us",
+      sandboxId: first.sandboxId,
+    });
+    recordVerifiedTerminalStart(sandbox, { ...identity, pid: 1 });
+    jest.mocked(createRedisClient).mockReturnValue(redis as never);
+    const [, , [, , member]] = capture.eval.mock.calls.find(
+      ([, keys]: any) => keys.length === 2,
+    ) as any;
+    return member as string;
+  };
+  /** Routes terminal start scripts to `reply`; acquisition links keep the fake. */
+  const startStore = (reply: () => Promise<unknown>) => {
+    const redis = createRedisClient() as any;
+    const links = redis.eval.getMockImplementation();
+    redis.eval.mockImplementation(
+      (script: string, keys: string[], args: string[]) =>
+        keys[0].startsWith("egress-review:starts:")
+          ? reply()
+          : links(script, keys, args),
+    );
+    return redis;
+  };
+  /** Recording active well before the window, then the three read minutes. */
+  const observed = (burstMinute: string[]) => async () => [
+    String(BURST_START - 60 * MINUTE_MS),
+    [],
+    burstMinute,
+    [],
+  ];
+  const shadowLog = () =>
+    jest
+      .mocked(logger.info)
+      .mock.calls.find(
+        ([message]) => message === "Egress terminal start shadow",
+      );
+
+  beforeEach(async () => {
+    process.env.E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED = "true";
+  });
+
+  describe("for one linked run", () => {
+    beforeEach(async () => {
+      await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+      await link();
+      classifyAs(legitimate);
+    });
+
+    it("cannot change the review when its read fails", async () => {
+      startStore(() => Promise.reject(new Error("store down")));
+      await expect(run()).resolves.toEqual(cleared);
+      expect(shadowLog()?.[1]).toEqual({
+        starts: { status: "unavailable" },
+        review: {
+          status: "completed",
+          outcome: "no_case",
+          reason: "legitimate_corroborated",
+        },
+      });
+    });
+
+    it("logs aggregate counts without identifiers", async () => {
+      startStore(observed([startMember(CHAT, RUN)]));
+      await expect(run()).resolves.toEqual(cleared);
+      const [, fields] = shadowLog()!;
+      expect(fields).toMatchObject({
+        starts: {
+          status: "read",
+          assessment: "one_run",
+          burstMinuteRuns: 1,
+          marginOnlyRuns: 0,
+          limitations: [],
+        },
+        candidates: { plausible: 1, started: 1 },
+        selectedRun: "started",
+      });
+      const exposed = JSON.stringify(fields);
+      for (const raw of [CHAT, RUN, first.userId, first.sandboxId, first.owner])
+        expect(exposed).not.toContain(raw);
+    });
+
+    it("is not read or logged while switched off", async () => {
+      delete process.env.E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED;
+      const redis = startStore(observed([]));
+      await expect(run()).resolves.toEqual(cleared);
+      expect(
+        redis.eval.mock.calls.some(([, [key]]: [string, string[]]) =>
+          key.startsWith("egress-review:starts:"),
+        ),
+      ).toBe(false);
+      expect(shadowLog()).toBeUndefined();
+    });
+  });
+
+  it("counts which competing candidates began a verified command", async () => {
+    await seedRun();
+    await seedRun("run_parent2", "chat_two");
+    await link();
+    await link("run_parent2", "parent", "chat_two");
+    startStore(observed([startMember(CHAT, RUN)]));
+    await expect(run()).resolves.toMatchObject({
+      reason: "multiple_runs",
+      diagnostic: { detail: "competing_links" },
+    });
+    expect(shadowLog()?.[1]).toMatchObject({
+      review: { detail: "competing_links" },
+      candidates: { plausible: 2, started: 1 },
+      selectedRun: "none",
+    });
+    // A recorded start never lets the review read or classify evidence.
+    expect(generateText).not.toHaveBeenCalled();
   });
 });
 

@@ -24,6 +24,7 @@ import { isE2BSandbox } from "./sandbox-types";
 import { phLogger } from "@/lib/posthog/server";
 import { recordEgressReviewAcquisition } from "@/lib/abuse/egress-review-context";
 import { recordRunTimelineAcquisition } from "@/lib/abuse/egress-run-timeline";
+import { bindVerifiedTerminalWorkspace } from "@/lib/abuse/egress-terminal-starts";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import {
   getConfiguredE2BClustersForCleanup,
@@ -272,6 +273,8 @@ export async function ensureCloudSandboxConnection(options: {
     };
     recordEgressReviewAcquisition(acquisition);
     recordRunTimelineAcquisition(acquisition);
+    // Binds this exact client object to the workspace verified above.
+    bindVerifiedTerminalWorkspace(result.sandbox, acquisition);
     options.setSandbox(result.sandbox);
     recordOutcome("success");
     return { ...result, provider: "e2b" };

@@ -25,6 +25,10 @@ import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
+import {
+  readTerminalStarts,
+  recordVerifiedTerminalStart,
+} from "@/lib/abuse/egress-terminal-starts";
 import { ensureSandboxConnection, E2BAcquisitionError } from "../sandbox";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -285,6 +289,80 @@ describe("E2B cloud acquisition", () => {
       ensureCloudSandboxConnection({ userId: "user-1", setSandbox }),
     ).rejects.toThrow("network unavailable");
     expect(setSandbox).not.toHaveBeenCalled();
+  });
+
+  it("binds terminal starts only to a client verified for its owner and cluster", async () => {
+    process.env.E2B_EGRESS_ABUSE_REVIEW_ENABLED = "true";
+    process.env.E2B_EGRESS_TERMINAL_START_SHADOW_ENABLED = "true";
+    process.env.E2B_EU_API_KEY = "test-eu-key";
+    read.mockResolvedValue({
+      version: 1,
+      phase: "provisioning",
+      step: "reserved",
+      token: "creation",
+      region: "eu-central-1",
+    });
+    const store = { eval: jest.fn(async () => [] as unknown) };
+    mockFailingStore = store;
+    const context = {
+      chatId: "chat-1",
+      triggerRunId: "run-1",
+      triggerRegion: "eu-central-1" as const,
+    };
+    const start = {
+      pid: 7,
+      userId: "user-1",
+      chatId: "chat-1",
+      runId: "run-1",
+      now: 1_800_000_000_000,
+    };
+    const startKeys = () =>
+      store.eval.mock.calls
+        .map(([, keys]) => keys as string[])
+        .filter((keys) => keys.length === 2)
+        .map(([, minute]) => minute);
+    try {
+      // A client whose network check failed is never bound.
+      const unverified = { sandboxId: "new-e2b" } as Sandbox;
+      ensure.mockResolvedValueOnce({ sandbox: unverified });
+      network.mockRejectedValueOnce(new Error("network unavailable"));
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox: jest.fn(),
+          context,
+        }),
+      ).rejects.toThrow("network unavailable");
+      recordVerifiedTerminalStart(unverified, start);
+      expect(startKeys()).toEqual([]);
+
+      const { sandbox } = await ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+        context,
+      });
+      recordVerifiedTerminalStart(sandbox, { ...start, userId: "user-2" });
+      recordVerifiedTerminalStart(sandbox, start);
+      const [written] = startKeys();
+      expect(startKeys()).toHaveLength(1);
+      // The review finds it only under the verified cluster and owner.
+      const readKeys = async (region: "us" | "eu", userId: string) => {
+        store.eval.mockClear();
+        await readTerminalStarts({
+          region,
+          userId,
+          sandboxIds: ["new-e2b"],
+          burstStart: start.now,
+          burstEnd: start.now + 60_000,
+        });
+        return store.eval.mock.calls[0]?.[1] as string[];
+      };
+      expect(await readKeys("eu", "user-1")).toContain(written);
+      expect(await readKeys("us", "user-1")).not.toContain(written);
+      expect(await readKeys("eu", "user-2")).not.toContain(written);
+    } finally {
+      mockFailingStore = null;
+    }
   });
 
   it("reconnects the exact recovered destination rather than discovering its stale source", async () => {
