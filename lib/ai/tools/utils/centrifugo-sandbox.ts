@@ -2629,12 +2629,27 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           probe.exitCode === -1
             ? "nonzero_exit_minus_one"
             : "nonzero_exit_other";
-        const terminal =
-          probe.exitCode === -1
-            ? this.commandReceipts.get(probe)?.terminal
-            : undefined;
-        if (terminal) observation.detectShellTerminal = { ...terminal };
+        const receipt =
+          probe.exitCode === -1 ? this.commandReceipts.get(probe) : undefined;
+        if (receipt) observation.detectShellTerminal = { ...receipt.terminal };
         else delete observation.detectShellTerminal;
+        if (
+          this.connectionInfo.isDesktop === true &&
+          receipt?.terminal.type === "error"
+        ) {
+          try {
+            // Join only the exact probe receipt to existing native ACKs.
+            // Keep the identifier out of the attachment error and its metadata.
+            phLogger.info("attachment_download_desktop_shell_probe_error", {
+              diagnostic_version: 1,
+              service: this.getRelayTrafficSource(),
+              trigger_run_id: this.triggerRunId,
+              command_id: receipt.commandId,
+            });
+          } catch {
+            // Correlation logging must not change the attachment failure.
+          }
+        }
       }
       throw persistenceCommandError("Failed to detect local shell", probe);
     }
