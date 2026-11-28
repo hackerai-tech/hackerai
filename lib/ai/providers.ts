@@ -1468,6 +1468,7 @@ const baseProviders: ReturnType<typeof buildProviderMap> &
   ...buildProviderMap(openrouter),
   [GROK_4_6_BEDROCK_MODEL_KEY]: withOpenRouterStreamErrorContext(
     openrouterUs(GROK_4_6_SLUG),
+    { bedrockToolPairingDiagnostic: true },
   ),
 };
 
