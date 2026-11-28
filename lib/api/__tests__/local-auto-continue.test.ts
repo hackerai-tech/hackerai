@@ -9,6 +9,7 @@ import {
 } from "@jest/globals";
 import { getFunctionName } from "convex/server";
 import { NextRequest, NextResponse } from "next/server";
+import { api } from "@/convex/_generated/api";
 
 /**
  * HAC-275 end to end on the server: the worker records a lost-connection
@@ -158,7 +159,11 @@ let transaction: Promise<unknown> = Promise.resolve();
 const failures: Record<string, number> = {};
 /** Responses from an older Convex deployment, by function name. */
 const legacyResponses: Record<string, unknown> = {};
-async function call(reference: unknown, args: Record<string, unknown>) {
+async function call(
+  reference: unknown,
+  args: Record<string, unknown>,
+  subject?: string,
+) {
   const [moduleName, name] = getFunctionName(reference as never).split(":");
   if (moduleName !== "agentLocalAutoContinues")
     throw new Error(`unexpected Convex call ${moduleName}`);
@@ -172,7 +177,13 @@ async function call(reference: unknown, args: Record<string, unknown>) {
     { handler: (ctx: unknown, args: unknown) => Promise<unknown> }
   >;
   const run = transaction.then(() =>
-    handlers[name].handler({ db, auth: {} }, args),
+    handlers[name].handler(
+      {
+        db,
+        auth: { getUserIdentity: async () => (subject ? { subject } : null) },
+      },
+      args,
+    ),
   );
   transaction = run.catch(() => undefined);
   return run;
@@ -449,6 +460,55 @@ describe("automatic continuation after a Desktop comes back", () => {
       expect.objectContaining({ outcome: "manual", reason: "control" }),
     ]);
     // The chat shows today's manual Resume prompt, nothing new.
+    expect(await chatNotice()).toBeNull();
+  });
+
+  it("honors an account's manual Resume preference before exposing or starting a continuation", async () => {
+    const preference = api.agentLocalAutoContinues;
+    await recordStop();
+    await call(
+      preference.setManualResumePreference,
+      { required: true },
+      "owner",
+    );
+    expect(await call(preference.getManualResumePreference, {}, "owner")).toBe(
+      true,
+    );
+    expect(await call(preference.getManualResumePreference, {}, "other")).toBe(
+      false,
+    );
+
+    await report();
+
+    expect(startAgent).not.toHaveBeenCalled();
+    expect(events("agent_local_auto_continue_exposed")).toEqual([]);
+    expect(events("agent_local_auto_continue_outcome")).toEqual([
+      expect.objectContaining({ outcome: "manual", reason: "user_opt_out" }),
+    ]);
+    expect(await chatNotice()).toBeNull();
+  });
+
+  it("refuses a claimed start when the user requires manual Resume before admission", async () => {
+    const continuation = api.agentLocalAutoContinues;
+    const claim = { serviceKey: "service-key", stoppedRunId: "run_stopped" };
+    await recordStop();
+    await call(continuation.claimReturn, {
+      ...claim,
+      userId: "owner",
+      connectionId: "returned-connection",
+      variant: "test",
+    });
+    expect(await call(continuation.getClaim, claim)).toMatchObject({
+      userId: "owner",
+    });
+
+    await call(
+      continuation.setManualResumePreference,
+      { required: true },
+      "owner",
+    );
+
+    expect(await call(continuation.getClaim, claim)).toBeNull();
     expect(await chatNotice()).toBeNull();
   });
 

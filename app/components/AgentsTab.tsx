@@ -15,6 +15,7 @@ import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { AgentPermissionSelector } from "@/app/components/AgentPermissionSelector";
 import { AgentInputNotificationSetting } from "@/app/components/AgentInputNotificationSetting";
 import { KeepAwakeSetting } from "@/app/components/KeepAwakeSetting";
+import { DesktopManualResumeSetting } from "@/app/components/DesktopManualResumeSetting";
 
 const AgentsTab = () => {
   const {
@@ -82,6 +83,8 @@ const AgentsTab = () => {
       <AgentInputNotificationSetting />
 
       <KeepAwakeSetting />
+
+      <DesktopManualResumeSetting />
 
       {subscription !== "free" && <CloudNetworkSettings />}
 
