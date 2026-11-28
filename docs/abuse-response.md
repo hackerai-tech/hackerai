@@ -404,7 +404,7 @@ and its cases follow the review, hold and erasure rules in this runbook.
   no account activity; rerunning a review for them does not add it.
 - **Bounded account history.** Truncated chat history leaves overlap
   uncertain. The worker allows 20 minutes for Trigger run history to settle,
-  then reads up to four pages of 50 account-tagged `agent-long` runs in its own
+  then reads up to four pages of 100 account-tagged `agent-long` runs in its own
   environment. It checks run IDs, tags, status and timing with one minute of
   clock skew. If one linked run overlaps and another has unknown timing, the
   worker can rule the other run out when Trigger confirms the same run and
