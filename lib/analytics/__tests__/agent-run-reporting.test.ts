@@ -814,7 +814,16 @@ describe("run-scoped model recovery history", () => {
         statusCode: 502,
       },
     });
-    for (let i = 0; i < 4; i++)
+    reporter.recordModelRecovery({
+      reason: "grok_bedrock_context_continuation",
+      retryModel: DEEPSEEK,
+      failure: {
+        category: "provider_4xx",
+        model: "x-ai/grok-4.6",
+        statusCode: 400,
+      },
+    });
+    for (let i = 0; i < 3; i++)
       reporter.recordModelRecovery({ ...refusal, failure: undefined });
     reporter.finalize({ canceled: false });
     expect(run().properties).toMatchObject({
@@ -824,7 +833,7 @@ describe("run-scoped model recovery history", () => {
       model_recovery_reasons: [
         "content_filter",
         "provider_disconnect_continuation",
-        "content_filter",
+        "grok_bedrock_context_continuation",
         "content_filter",
       ],
       model_recovery_succeeded: false,

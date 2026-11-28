@@ -153,6 +153,7 @@ const MODEL_RECOVERY_REASONS = [
   "abliteration_api_error",
   "content_filter",
   "provider_disconnect_continuation",
+  "grok_bedrock_context_continuation",
   "empty_answer",
   "empty_answer_continuation",
   "vision_summary_recovery",

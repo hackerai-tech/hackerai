@@ -204,14 +204,6 @@ export const getMaxAgentFirstRecoveryModel = ({
     : undefined;
 
 /**
- * Return the next bounded app-side recovery after a failed recovery attempt.
- * Max Grok recovers on Bedrock first; when that attempt also fails, a
- * context-checked DeepSeek 1017 attempt follows. A first DeepSeek recovery
- * may likewise be followed by one more DeepSeek attempt, so recovery never
- * returns to a model that refused or dropped the response. Existing Pro
- * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
- */
-/**
  * Admit a DeepSeek 1017 recovery input only within the compaction threshold
  * its own Agent budget would enforce. An unknown size cannot be admitted.
  */
@@ -239,6 +231,11 @@ export const fitsDeepSeek1017RecoveryContext = ({
   return requiredContextTokens <= getSummarizationThresholdTokens(budget);
 };
 
+/**
+ * Return the next bounded app-side recovery after a failed recovery attempt.
+ * A Max Bedrock recovery can continue on DeepSeek when its context fits.
+ * Existing Pro recovery remains DeepSeek Pro -> GLM -> Kimi.
+ */
 export const getNextProviderDisconnectRetryModel = ({
   originalModel,
   failedModel,
@@ -488,14 +485,18 @@ export const prepareGrokBedrockContextRecovery = async ({
   agentModelContextEnabled?: boolean;
   subscription?: SubscriptionTier;
 }): Promise<
+  | { reason: Exclude<GrokBedrockContextRecoveryReason, "eligible"> }
   | {
-      reason: GrokBedrockContextRecoveryReason;
-      continuation?: ProviderDisconnectContinuation;
+      reason: "eligible";
+      continuation: ProviderDisconnectContinuation;
+      messages: UIMessage[];
     }
   | undefined
 > => {
   if (!rejection) return undefined;
-  const decline = (reason: GrokBedrockContextRecoveryReason) => ({ reason });
+  const decline = (
+    reason: Exclude<GrokBedrockContextRecoveryReason, "eligible">,
+  ) => ({ reason });
   if (
     mode !== "agent" ||
     selectedModelOverride !== "hackerai-max" ||
@@ -510,13 +511,14 @@ export const prepareGrokBedrockContextRecovery = async ({
   const inputCapacity = getVerifiedModelInputCapacity(DEEPSEEK_1017_SLUG);
   if (inputCapacity === undefined || rejection.promptTokens > inputCapacity)
     return decline("reported_oversize");
+  let recoveryMessages: UIMessage[];
   let requiredContextTokens: number | undefined;
   try {
-    requiredContextTokens = await estimateRequiredContextTokens(
-      buildRecoveryMessages(continuation.messages),
-    );
+    recoveryMessages = buildRecoveryMessages(continuation.messages);
+    requiredContextTokens =
+      await estimateRequiredContextTokens(recoveryMessages);
   } catch {
-    requiredContextTokens = undefined;
+    return decline("size_unknown");
   }
   if (requiredContextTokens === undefined) return decline("size_unknown");
   if (
@@ -527,7 +529,7 @@ export const prepareGrokBedrockContextRecovery = async ({
     })
   )
     return decline("oversize");
-  return { reason: "eligible", continuation };
+  return { reason: "eligible", continuation, messages: recoveryMessages };
 };
 
 export const AGENT_LOOP_CONTINUATION_PROMPT =

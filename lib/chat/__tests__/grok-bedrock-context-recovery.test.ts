@@ -200,8 +200,9 @@ it("continues a Grok Bedrock prompt rejection once on DeepSeek from the saved to
     agentModelContextEnabled: true,
     subscription: "ultra",
   });
-  expect(recovery?.reason).toBe("eligible");
-  const checkpoint = recovery!.continuation!;
+  if (recovery?.reason !== "eligible")
+    throw new Error("Expected the Grok context recovery to be eligible");
+  const checkpoint = recovery.continuation;
   expect(checkpoint.preservedCompletedToolCount).toBe(1);
   const saved = checkpoint.messages
     .at(-1)!
@@ -213,7 +214,8 @@ it("continues a Grok Bedrock prompt rejection once on DeepSeek from the saved to
   });
   // The size gate saw the continuation exactly as it will be sent.
   expect(sized).toHaveLength(1);
-  expect(sized[0].at(-1)?.parts).toEqual([
+  expect(recovery.messages).toBe(sized[0]);
+  expect(recovery.messages.at(-1)?.parts).toEqual([
     { type: "text", text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT },
   ]);
 
@@ -247,7 +249,9 @@ it("continues a Grok Bedrock prompt rejection once on DeepSeek from the saved to
         fetch: deepseekFetch,
       }).chat(DEEPSEEK_1017_SLUG),
     ),
-    messages: await convertToModelMessages(sized[0], { tools: leg.tools }),
+    messages: await convertToModelMessages(recovery.messages, {
+      tools: leg.tools,
+    }),
     tools: leg.tools,
     stopWhen: stepCountIs(5),
     maxRetries: 0,

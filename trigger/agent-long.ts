@@ -27,6 +27,8 @@ import { trace } from "@opentelemetry/api";
 import { getAgentRunClockContext } from "@/lib/chat/agent-run-clock";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
+import { estimateToolSchemaTokens } from "@/lib/chat/summarization/rolling-context";
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import {
@@ -4627,6 +4629,7 @@ export const agentLongTask = task({
             const estimateRecoveryContextTokens = async (
               messages: UIMessage[],
               tools: typeof streamCtx.tools,
+              includeCurrentToolOverhead = false,
             ): Promise<number | undefined> => {
               try {
                 const raw = await convertToModelMessagesWithSteers(messages, {
@@ -4637,12 +4640,21 @@ export const agentLongTask = task({
                     state.providerRecoveryContext,
                     raw,
                   ) ?? raw;
+                const networkPrompt =
+                  (await streamCtx.cloudNetworkPrompt?.()) ?? "";
+                const runtimePrompt = includeCurrentToolOverhead
+                  ? networkPrompt +
+                    getSandboxBrowserGuidance(
+                      streamCtx.sandboxManager.getSandboxInfo?.(),
+                    )
+                  : networkPrompt;
                 return (
                   estimateSummaryInputTokens(projected) +
                   streamCtx.systemPromptTokens +
-                  safeCountTokens(
-                    (await streamCtx.cloudNetworkPrompt?.()) ?? "",
-                  )
+                  safeCountTokens(runtimePrompt) +
+                  (includeCurrentToolOverhead
+                    ? await estimateToolSchemaTokens(tools)
+                    : 0)
                 );
               } catch {
                 return undefined;
@@ -5317,49 +5329,61 @@ export const agentLongTask = task({
                       // over its window after the stream opened. One
                       // context-checked DeepSeek continuation may follow;
                       // other rejections keep the existing handling.
-                      const grokContextRecovery =
-                        await prepareGrokBedrockContextRecovery({
-                          rejection: getSameCallGrokBedrockPromptContextLimit(
-                            state.providerError,
-                          ),
-                          mode,
-                          selectedModelOverride,
-                          activeModelName,
-                          cancelled: isAborted || userStopSignal.signal.aborted,
-                          alreadyRetried: isRetryWithFallback,
-                          competingRecovery:
-                            uncertainToolOutcome ||
-                            providerContentBlocked ||
-                            loopTriggeredRetry ||
-                            confirmedFailureLoop ||
-                            terminalEmptyResponse ||
-                            shouldRecoverAbliterationStreamError ||
-                            shouldRetryWithVisionSummary ||
-                            shouldRetryWithoutImageToolResults ||
-                            state.providerRejectedMultimodalToolResults ||
-                            Boolean(finishContinuation) ||
-                            isTrustedBrowserHandoffReadFailure(
-                              streamError,
-                              state.providerError,
-                            ),
-                          messages: normalizedFinishedMessages,
-                          buildRecoveryMessages:
-                            withProviderDisconnectContinuationPrompt,
-                          // Serialize with the failed step's tools, as the
-                          // existing DeepSeek recovery sizing does: rebuilding
-                          // the fallback's tools here would switch the run's
-                          // tool model before any retry is decided. Tool
-                          // schemas sit within the compaction reserve.
-                          estimateRequiredContextTokens: (messages) =>
-                            estimateRecoveryContextTokens(
-                              messages,
-                              streamCtx.tools,
-                            ),
-                          agentModelContextEnabled,
-                          subscription,
-                        });
+                      const grokContextRejection =
+                        getSameCallGrokBedrockPromptContextLimit(
+                          state.providerError,
+                        );
+                      const plannedGrokContextRecovery = grokContextRejection
+                        ? await prepareGrokBedrockContextRecovery({
+                            rejection: grokContextRejection,
+                            mode,
+                            selectedModelOverride,
+                            activeModelName,
+                            cancelled:
+                              isAborted || userStopSignal.signal.aborted,
+                            alreadyRetried: isRetryWithFallback,
+                            competingRecovery:
+                              uncertainToolOutcome ||
+                              agentLongDurationExceeded ||
+                              state.stoppedDueToStepLimit ||
+                              state.stoppedDueToElapsedTimeout ||
+                              state.stoppedDueToBudgetExhaustion ||
+                              state.stoppedDueToAgentRunSpendCap ||
+                              state.stoppedDueToPostSummarizationIncomplete ||
+                              providerContentBlocked ||
+                              loopTriggeredRetry ||
+                              confirmedFailureLoop ||
+                              terminalEmptyResponse ||
+                              shouldRecoverAbliterationStreamError ||
+                              shouldRetryWithVisionSummary ||
+                              shouldRetryWithoutImageToolResults ||
+                              state.providerRejectedMultimodalToolResults ||
+                              Boolean(finishContinuation) ||
+                              isTrustedBrowserHandoffReadFailure(
+                                streamError,
+                                state.providerError,
+                              ),
+                            messages: normalizedFinishedMessages,
+                            buildRecoveryMessages:
+                              withProviderDisconnectContinuationPrompt,
+                            // Keep sizing side-effect free. The stream's final
+                            // send guard checks the actual DeepSeek tool schemas.
+                            estimateRequiredContextTokens: (messages) =>
+                              estimateRecoveryContextTokens(
+                                messages,
+                                streamCtx.tools,
+                                true,
+                              ),
+                            agentModelContextEnabled,
+                            subscription,
+                          })
+                        : undefined;
+                      const grokContextPlan =
+                        plannedGrokContextRecovery?.reason === "eligible"
+                          ? plannedGrokContextRecovery
+                          : undefined;
                       const grokContextContinuation =
-                        grokContextRecovery?.continuation;
+                        grokContextPlan?.continuation;
                       const providerDisconnectContinuation =
                         grokContextContinuation ??
                         (!uncertainToolOutcome &&
@@ -5414,6 +5438,12 @@ export const agentLongTask = task({
                         // Provider recovery cannot repair a failed local
                         // browser safety read, whichever error recorded it.
                         hasCandidate:
+                          // A rejected context plan cannot fall through to the
+                          // ordinary replay path for an empty provider response.
+                          (!plannedGrokContextRecovery ||
+                            plannedGrokContextRecovery.reason ===
+                              "not_max_bedrock_step" ||
+                            Boolean(grokContextPlan)) &&
                           !isTrustedBrowserHandoffReadFailure(
                             streamError,
                             state.providerError,
@@ -5543,9 +5573,9 @@ export const agentLongTask = task({
                             providerDisconnectContinuation
                               ? "prepared"
                               : continuationRejection,
-                          ...(grokContextRecovery && {
+                          ...(plannedGrokContextRecovery && {
                             grok_bedrock_context_recovery:
-                              grokContextRecovery.reason,
+                              plannedGrokContextRecovery.reason,
                           }),
                           ...getProviderOutputDiagnostics(
                             lastAssistantMessageParts,
@@ -5747,6 +5777,7 @@ export const agentLongTask = task({
                           );
                         } else if (providerDisconnectContinuation) {
                           state.finalMessages =
+                            grokContextPlan?.messages ??
                             withProviderDisconnectContinuationPrompt(
                               providerDisconnectContinuation.messages,
                             );
