@@ -466,8 +466,8 @@ and its cases follow the review, hold and erasure rules in this runbook.
   every linked run, `linksFinishedBeforeBurst` counts the links set aside,
   and `finishedRunLookup: failed` reports a failed lookup. These diagnostics
   contain closed values and counts.
-- **Account cooldown.** A `no_case` decision, which requires complete
-  exact-run evidence and corroborated legitimate work, stores a 24-hour
+- **Account cooldown.** After Convex confirms the stored receipt, a `no_case`
+  decision backed by complete exact-run evidence stores a 24-hour
   cooldown for the verified account with the cleared minute's connection
   count. Owner references differ per region, so the cooldown is keyed by a
   hash of the verified account and applies in every region. While it lasts, a
@@ -543,8 +543,12 @@ any charge reported by OpenRouter, including responses later rejected by
 structured output validation. An invocation with no reported charge leaves
 spend coverage incomplete. The classifier keeps full AI telemetry disabled.
 
-New cases and their sanitized `egress_review_receipts` commit together. A
-completed review with no case writes its receipt on a best-effort basis.
+New cases and their sanitized `egress_review_receipts` commit together. For
+legitimate work without a case, the worker retries a failed receipt write
+once with the same decision. This adds no model call. If Convex cannot
+confirm a stored clearance, the review reports `receipt_unconfirmed` in
+`cooldownGrant` and creates no cooldown. Deploy the Convex receipt change
+before the worker so it can confirm clearances on mixed versions.
 Retries preserve existing cases and receipts, and cases created by older
 workers can lack a receipt. Receipts last 30 days and store the enforcement
 decision (`keep_active`, `block_applied` or `enforcement_pending`), a closed

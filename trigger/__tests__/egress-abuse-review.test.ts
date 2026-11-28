@@ -2127,6 +2127,68 @@ describe("account cooldown after a corroborated legitimate review", () => {
     });
   });
 
+  it.each(["lost reply", "unavailable"])(
+    "requires a durable receipt before granting a cooldown when the write is %s",
+    async (failure) => {
+      await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+      await link();
+      classifyAs(legitimate);
+      const client = createServiceConvexClient("https://fixture.convex.cloud");
+      const mutate = jest.mocked(client.mutation).getMockImplementation()!;
+      let writes = 0;
+      jest.mocked(client.mutation).mockImplementation(async (fn, args) => {
+        if (getFunctionName(fn) !== "egressAbuseReview:recordReceipt")
+          return mutate(fn, args);
+        writes++;
+        if (failure === "unavailable") throw new Error("receipt store down");
+        const result = await mutate(fn, args);
+        if (writes === 1) throw new Error("receipt response lost");
+        return result;
+      });
+      await expect(run()).resolves.toMatchObject({
+        outcome: "no_case",
+        diagnostic: {
+          cooldownGrant:
+            failure === "lost reply" ? "granted" : "receipt_unconfirmed",
+        },
+      });
+      expect(writes).toBe(2);
+      expect(generateText).toHaveBeenCalledTimes(1);
+      expect(convex.tables.egress_review_receipts ?? []).toHaveLength(
+        failure === "lost reply" ? 1 : 0,
+      );
+      if (failure === "unavailable") {
+        await nextWindow({ [NEXT]: 900 });
+        await expect(run(NEXT)).resolves.toMatchObject({ status: "completed" });
+      }
+    },
+  );
+
+  it("does not grant a cooldown when an earlier case receipt is preserved", async () => {
+    await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+    await link();
+    classifyAs(legitimate);
+    await convex.db.insert("egress_review_receipts", {
+      digest: reviewDigest(
+        reviewCaseKey("us", first.owner, reviewWindowStart(MINUTE)),
+      ),
+      decision: "keep_active",
+      reason: "coverage_incomplete",
+      reviewReason: "observation_incomplete",
+      evidenceMode: "exact_run",
+      coverage: "incomplete",
+      caseOutcome: "created",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + MINUTE_MS,
+    });
+    await expect(run()).resolves.toMatchObject({
+      diagnostic: { cooldownGrant: "receipt_unconfirmed" },
+    });
+    expect(convex.tables.egress_review_receipts).toEqual([
+      expect.objectContaining({ reason: "coverage_incomplete" }),
+    ]);
+  });
+
   it("reviews in full when the cooldown cannot be read", async () => {
     await clear();
     await nextWindow({ [NEXT]: 900 });
