@@ -19,6 +19,7 @@ import {
   parseBurstActivityCase,
   parseRetainedCandidateCase,
   REASSESSMENT_CLOSED_REASONS,
+  selectedMinuteStart,
   type BurstActivityClosedReason,
   type ReassessmentClosedReason,
 } from "../lib/abuse/egress-reassessment";
@@ -106,6 +107,13 @@ export const readCaseEvidence = action({
  * persisted timing overlaps the burst, with placeholder locators. The trusted
  * worker gets the candidate run ID only to verify its completion. No case,
  * account or enforcement state changes.
+ *
+ * `activityMinuteUtc` reads one complete UTC minute an operator selected
+ * inside the record's 30-minute window instead of its saved burst minute,
+ * such as the minute of an archived alert verified out of band. It is
+ * checked before the audited read for its format and completion, and after
+ * decryption against the window; the account still comes only from the
+ * record, and the selection proves nothing about that minute's telemetry.
  */
 const burstEvidence = v.union(
   v.object({
@@ -116,20 +124,33 @@ const burstEvidence = v.union(
     status: v.literal("read"),
     burstStart: v.number(),
     burstEnd: v.number(),
+    minuteBasis: v.union(
+      v.literal("saved_case"),
+      v.literal("operator_selected"),
+    ),
     evidence: burstActivityEvidence,
   }),
 );
 
 export const readBurstActivityEvidence = action({
-  args: { serviceKey: v.string(), reference: v.string() },
+  args: {
+    serviceKey: v.string(),
+    reference: v.string(),
+    activityMinuteUtc: v.optional(v.string()),
+  },
   returns: burstEvidence,
   handler: async (
     ctx,
-    { serviceKey, reference },
+    { serviceKey, reference, activityMinuteUtc },
   ): Promise<Infer<typeof burstEvidence>> => {
     authorizeEgressReview(serviceKey);
     if (!CASE_REFERENCE.test(reference))
       throw new Error("Invalid review case identity");
+    const selectedMinute =
+      activityMinuteUtc === undefined
+        ? undefined
+        : selectedMinuteStart(activityMinuteUtc, Date.now());
+    if (selectedMinute === null) throw new Error("Invalid activity minute");
     const closed = (reason: BurstActivityClosedReason) => ({
       status: "closed" as const,
       reason,
@@ -145,11 +166,15 @@ export const readBurstActivityEvidence = action({
     } catch {
       return closed("record_invalid");
     }
-    const parsed = parseBurstActivityCase(record, {
-      reference,
-      digest: opened.digest,
-      createdAt: opened.createdAt,
-    });
+    const parsed = parseBurstActivityCase(
+      record,
+      {
+        reference,
+        digest: opened.digest,
+        createdAt: opened.createdAt,
+      },
+      selectedMinute,
+    );
     if (!parsed.ok) return closed(parsed.reason);
     const evidence: Infer<typeof burstActivityRead> = await ctx.runQuery(
       internal.egressAbuseReassessment.readBurstActivity,
@@ -165,6 +190,7 @@ export const readBurstActivityEvidence = action({
       status: "read" as const,
       burstStart: parsed.scope.burstStart,
       burstEnd: parsed.scope.burstEnd,
+      minuteBasis: parsed.minuteBasis,
       evidence,
     };
   },

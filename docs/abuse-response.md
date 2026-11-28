@@ -414,8 +414,24 @@ and its cases follow the review, hold and erasure rules in this runbook.
   case, even if its workspace link is missing. A missing selected run, exceeded
   page limit, or unreliable result keeps the case in manual review.
 - **Acquisition links.** Each workspace keeps at most 48 link records across
-  runs; the review still abstains with `too_many_runs` when more than 16
-  distinct runs fall inside its window. Past 48 the oldest records are
+  runs. The per-link Convex checks stay capped at 16 links. For complete
+  single-workspace history with more than 16 links, non-final attempts defer
+  until the 20-minute settling period ends. The final attempt can proceed
+  during that period. The lookup uses one TRQL query for the linked run IDs
+  and reads only lifecycle fields and tags. It sets aside a parent link only
+  when its run ID is unique among the links and Trigger shows an `agent-long`
+  run with the account and chat tags, a finished terminal status, an execution
+  start no later than completion, the acquisition inside that execution, and
+  completion before the burst. TRQL times use whole seconds, so each bound is
+  checked at its least favorable value with one minute of clock skew. The
+  worker keeps subagent links, shared run IDs, links with missing, duplicate
+  or malformed rows, and all other links. A failed lookup sets nothing aside.
+  If more than 16 links remain, the review abstains with `too_many_runs`
+  and calls no model. If none remain, it records `no_matching_run` without
+  reading unlinked account
+  activity. The remaining links go through the unchanged per-link, account
+  root, subagent and evidence checks, so setting links aside never clears or
+  blocks by itself. Past 48 the oldest records are
   evicted, and the store keeps one metadata member with the newest evicted
   time. A review whose six-hour look-back starts at or before that time reads
   the history as incomplete (`link_history_trimmed`); a later window is
@@ -446,7 +462,10 @@ and its cases follow the review, hold and erasure rules in this runbook.
   `evidence_gaps` with its `gaps` list), alongside counts of verified
   sandboxes, stored link records, linked runs and plausible runs.
   `competingLinksRuledOut` counts unplaced links the Trigger check ruled out
-  before the evidence read. These diagnostics contain closed values and counts.
+  before the evidence read. Above the per-link cap, `runLinks` still counts
+  every linked run, `linksFinishedBeforeBurst` counts the links set aside,
+  and `finishedRunLookup: failed` reports a failed lookup. These diagnostics
+  contain closed values and counts.
 - **Account cooldown.** A `no_case` decision, which requires complete
   exact-run evidence and corroborated legitimate work, stores a 24-hour
   cooldown for the verified account with the cleared minute's connection
@@ -671,6 +690,30 @@ activity around the burst:
 It uses the same task, switch, credentials, single attempt and audit `read`
 event as the retained-candidate reassessment. Without `scope`, the task is
 unchanged.
+
+A case's saved burst minute is the minute its review verified, which may not
+be the minute an alert named. To assess another minute of the same case
+window, such as the minute of an archived alert you verified out of band,
+add the canonical UTC minute start:
+
+```json
+{
+  "reference": "AB-…",
+  "scope": "burst_activity",
+  "activityMinuteUtc": "2026-11-28T00:05:00.000Z"
+}
+```
+
+This is an operator selection, not historical telemetry proof: the task does
+not re-verify connections for that minute, and the selection adds no
+enforcement capability. The server still opens, audits, decrypts and binds
+the case as below and takes the account, region and window from it alone.
+It rejects a malformed minute, or one that has not fully ended, before the
+audited read, and returns `closed` / `minute_outside_case` for a minute
+outside the case's fixed 30-minute window. Every read, limit and check below
+then uses that minute in place of the saved one, and the result adds
+`minuteBasis: operator_selected`. Without `activityMinuteUtc`, the result
+and its saved-minute basis are unchanged.
 
 - **Which cases.** The same open, uncontained, unerased, seven-day-old
   automated review cases. The decrypted record must be version 3,

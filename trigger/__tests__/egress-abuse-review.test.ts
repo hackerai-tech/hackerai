@@ -26,6 +26,7 @@ jest.mock("@/convex/lib/serviceFunctions", () => ({
 }));
 
 import { getFunctionName } from "convex/server";
+import { api } from "@/convex/_generated/api";
 import { generateText } from "ai";
 import { logger, query as triggerQuery, runs } from "@trigger.dev/sdk";
 import fixture from "@/scripts/egress/tests/credentials.json";
@@ -503,6 +504,8 @@ it("saves one encrypted case with an unsent draft for cited concerning activity"
     to: BURST_START + 2 * MINUTE_MS,
     limit: 50,
   });
+  // Within the per-link cap, no run lifecycle lookup is made.
+  expect(triggerQuery.execute).not.toHaveBeenCalled();
 });
 
 describe("other root runs of the account", () => {
@@ -1469,6 +1472,293 @@ describe("closed diagnostics for abstentions", () => {
   });
 });
 
+describe("more linked runs than the per-link cap", () => {
+  const OLD = Array.from({ length: 22 }, (_, index) => `run_old${index}`);
+  const executed = BURST_START - 3 * 60 * MINUTE_MS;
+  const completed = BURST_START - 2 * 60 * MINUTE_MS;
+  const legitimate = {
+    verdict: "clearly_legitimate",
+    activity: "ordinary_development",
+    authorization: "not_stated",
+    commandIndices: [1],
+    messageIndices: [1],
+  };
+  /** Lifecycle metadata of a run that finished two hours before the burst. */
+  const oldRow = (runId: string, fields: Record<string, unknown> = {}) => ({
+    run_id: runId,
+    task_identifier: "agent-long",
+    status: "Completed",
+    is_finished: true,
+    tags: [`user_${first.userId}`, `chat_${CHAT}`],
+    executed_at_s: executed / 1_000,
+    completed_at_s: completed / 1_000,
+    ...fields,
+  });
+  const lookup = (rows: unknown[]) =>
+    jest
+      .mocked(triggerQuery.execute)
+      .mockResolvedValue({ format: "json", results: rows } as never);
+  /** Links acquired during each old run, in complete expanded history. */
+  async function linkOldRuns(ids = OLD) {
+    for (const id of ids)
+      await link(id, "parent", CHAT, executed + 5 * MINUTE_MS);
+    const [key] = [...sets.keys()].filter((name) =>
+      name.startsWith("egress-review:v2:"),
+    );
+    sets.get(key)!.set("m|0", 0);
+  }
+  const reviewQueries = () =>
+    jest
+      .mocked(createServiceConvexClient)
+      .mock.results.flatMap(({ value }) => value.query.mock.calls)
+      .map(([fn]: any) => getFunctionName(fn));
+  const matchRuns = () =>
+    reviewQueries().filter((name) => name === "egressAbuseReview:matchRun");
+  const lookupSql = () =>
+    String(jest.mocked(triggerQuery.execute).mock.calls[0]?.[0]);
+
+  it("reviews the one overlapping run once after Trigger proves the other linked runs finished", async () => {
+    await seedRun(RUN, CHAT, { command: "npm install && npm test" });
+    await link();
+    await linkOldRuns();
+    lookup(OLD.map((id) => oldRow(id)));
+    listRootRuns([
+      selectedRun,
+      ...OLD.map((id) =>
+        rootRun(id, { started: executed, finished: completed }),
+      ),
+    ]);
+    classifyAs(legitimate);
+
+    await expect(run()).resolves.toEqual({
+      status: "completed",
+      outcome: "no_case",
+      reason: "legitimate_corroborated",
+      case: "none",
+      enforcement: "keep_active",
+      enforcementReason: "legitimate_corroborated",
+      diagnostic: expect.objectContaining({
+        runLinks: 23,
+        linksFinishedBeforeBurst: 22,
+        plausibleRuns: 1,
+      }),
+    });
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(matchRuns()).toHaveLength(1);
+    // The account-wide root check still runs on the remaining candidate.
+    expect(runs.list).toHaveBeenCalledTimes(1);
+    // One exact-ID lookup of lifecycle metadata only, never payloads or output.
+    expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
+    expect(lookupSql()).toMatch(
+      /^SELECT run_id, task_identifier, status, is_finished, tags, toUnixTimestamp\(executed_at\) AS executed_at_s, toUnixTimestamp\(completed_at\) AS completed_at_s FROM runs WHERE run_id IN \(/,
+    );
+    for (const id of [RUN, ...OLD]) expect(lookupSql()).toContain(`'${id}'`);
+    expect(jest.mocked(triggerQuery.execute).mock.calls[0][1]).toEqual({
+      scope: "environment",
+      from: 1,
+      to: BURST_START + 2 * MINUTE_MS,
+    });
+  });
+
+  it.each<[string, (id: string) => unknown]>([
+    ["is missing", () => undefined],
+    [
+      "belongs to another account",
+      (id) => oldRow(id, { tags: ["user_other", `chat_${CHAT}`] }),
+    ],
+    [
+      "belongs to another chat",
+      (id) => oldRow(id, { tags: [`user_${first.userId}`, "chat_other"] }),
+    ],
+    ["is another task", (id) => oldRow(id, { task_identifier: "agent-short" })],
+    [
+      "is still executing",
+      (id) =>
+        oldRow(id, {
+          status: "Executing",
+          is_finished: false,
+          completed_at_s: null,
+        }),
+    ],
+    ["is not marked finished", (id) => oldRow(id, { is_finished: false })],
+    [
+      "finished within the clock skew of the burst",
+      (id) => oldRow(id, { completed_at_s: (BURST_START - MINUTE_MS) / 1_000 }),
+    ],
+    [
+      "started after the link's acquisition",
+      (id) =>
+        oldRow(id, { executed_at_s: (executed + 10 * MINUTE_MS) / 1_000 }),
+    ],
+    [
+      "completed before it executed",
+      (id) => oldRow(id, { executed_at_s: completed / 1_000 + 1 }),
+    ],
+    ["has no execution time", (id) => oldRow(id, { executed_at_s: null })],
+    [
+      "has a malformed completion time",
+      (id) => oldRow(id, { completed_at_s: String(completed / 1_000) }),
+    ],
+  ])(
+    "keeps every link whose run row %s, and still calls no model above the cap",
+    async (_label, row) => {
+      await seedRun();
+      await link();
+      await linkOldRuns();
+      lookup(OLD.map(row).filter(Boolean));
+      classifyAs(concerning);
+
+      await expect(run()).resolves.toMatchObject({
+        outcome: "manual_review",
+        reason: "acquisition_incomplete",
+        diagnostic: {
+          detail: "too_many_runs",
+          runLinks: 23,
+          linksFinishedBeforeBurst: 0,
+        },
+      });
+      expect(matchRuns()).toHaveLength(0);
+      expect(generateText).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each<[string, () => void]>([
+    [
+      "fails",
+      () =>
+        jest.mocked(triggerQuery.execute).mockRejectedValue(new Error("400")),
+    ],
+    [
+      "returns a run it was not asked for",
+      () => lookup([...OLD.map((id) => oldRow(id)), oldRow("run_unlinked")]),
+    ],
+    [
+      "returns more rows than run IDs",
+      () => lookup(OLD.flatMap((id) => [oldRow(id), oldRow(id)])),
+    ],
+  ])("sets nothing aside when the lookup %s", async (_label, arrange) => {
+    await seedRun();
+    await link();
+    await linkOldRuns();
+    arrange();
+
+    const result = await run();
+    expect(result).toMatchObject({
+      reason: "acquisition_incomplete",
+      diagnostic: { detail: "too_many_runs", finishedRunLookup: "failed" },
+    });
+    expect((result as any).diagnostic.linksFinishedBeforeBurst).toBeUndefined();
+    expect(matchRuns()).toHaveLength(0);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("keeps a run ID returned twice", async () => {
+    await linkOldRuns();
+    // Two rows for one ID, even agreeing ones, prove neither; one ID has none.
+    lookup([
+      oldRow(OLD[0]),
+      oldRow(OLD[0]),
+      ...OLD.slice(2).map((id) => oldRow(id)),
+    ]);
+
+    await expect(run()).resolves.toMatchObject({
+      diagnostic: { runLinks: 22, linksFinishedBeforeBurst: 20 },
+    });
+    // The kept links went through the unchanged per-link checks.
+    expect(matchRuns()).toHaveLength(2);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("never sets aside a subagent link or a run ID linked from two chats", async () => {
+    await seedRun();
+    await link();
+    await linkOldRuns();
+    await link("run_child", "subagent", CHAT, BURST_START - 10 * MINUTE_MS);
+    await link(OLD[0], "parent", "chat_other", executed + 5 * MINUTE_MS);
+    lookup(OLD.slice(1).map((id) => oldRow(id)));
+    classifyAs(concerning);
+
+    await expect(run()).resolves.toMatchObject({
+      outcome: "manual_review",
+      diagnostic: { runLinks: 25, linksFinishedBeforeBurst: 21 },
+    });
+    expect(lookupSql()).not.toContain("'run_child'");
+    expect(lookupSql()).not.toContain(`'${OLD[0]}'`);
+    // RUN, the subagent and both links of the shared run ID.
+    expect(matchRuns()).toHaveLength(4);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("abstains on concurrent linked work that Trigger does not show finished", async () => {
+    await seedRun();
+    await seedRun("run_busy", "chat_busy");
+    await link();
+    await link("run_busy", "parent", "chat_busy");
+    await linkOldRuns(OLD.slice(0, 21));
+    lookup([
+      ...OLD.slice(0, 21).map((id) => oldRow(id)),
+      oldRow("run_busy", {
+        status: "Executing",
+        is_finished: false,
+        completed_at_s: null,
+        tags: [`user_${first.userId}`, "chat_chat_busy"],
+      }),
+    ]);
+    classifyAs(concerning);
+
+    await expect(run()).resolves.toMatchObject({
+      outcome: "manual_review",
+      reason: "multiple_runs",
+      diagnostic: {
+        detail: "competing_links",
+        runLinks: 23,
+        linksFinishedBeforeBurst: 21,
+      },
+    });
+    expect(matchRuns()).toHaveLength(2);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("records no matching run, without reading unlinked activity, when every linked run finished", async () => {
+    await linkOldRuns();
+    lookup(OLD.map((id) => oldRow(id)));
+
+    await expect(run()).resolves.toMatchObject({
+      outcome: "manual_review",
+      reason: "no_matching_run",
+      case: "created",
+      enforcement: "keep_active",
+      diagnostic: { runLinks: 22, linksFinishedBeforeBurst: 22 },
+    });
+    expect(reviewQueries()).toEqual([]);
+    expect(caseRecord()).toMatchObject({
+      evidenceMode: "none",
+      accountActivity: null,
+      run: null,
+    });
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("waits for Trigger's run history to settle before the lookup", async () => {
+    await seedRun();
+    await link();
+    await linkOldRuns();
+    lookup(OLD.map((id) => oldRow(id)));
+    const clock = jest
+      .spyOn(Date, "now")
+      .mockReturnValue(BURST_START + 10 * MINUTE_MS);
+    try {
+      await expect(run(MINUTE, { number: 1, max: 4 })).rejects.toThrow(
+        "still being recorded",
+      );
+      expect(triggerQuery.execute).not.toHaveBeenCalled();
+      expect(convex.tables.abuse_cases ?? []).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
 describe("run timeline shadow", () => {
   const legitimate = {
     verdict: "clearly_legitimate",
@@ -2397,13 +2687,13 @@ describe("on-demand burst-activity assessment of a historical case", () => {
   };
 
   /** An unlinked review case, stored half an hour after the burst. */
-  async function burstCase() {
+  async function burstCase(savedMinute = 7) {
     const record = buildCaseRecord({
       reference: burstReference,
       observation: {
         region: "us",
         ownerRef: first.owner,
-        burstMinute: window + 7,
+        burstMinute: window + savedMinute,
         windowStart: window,
         connections: 900,
         workspaces: 1,
@@ -2502,14 +2792,17 @@ describe("on-demand burst-activity assessment of a historical case", () => {
     } as never);
   }
 
-  /** Nothing outside the audit read changed, and nothing identifying left. */
-  function expectAdvisoryOnly(result: unknown, saved: unknown) {
+  /** Nothing outside the audit reads changed, and nothing identifying left. */
+  function expectAdvisoryOnly(result: unknown, saved: unknown, reads = 1) {
     expect(convex.tables.abuse_cases).toEqual([saved]);
     expect(
       convex.tables.abuse_events.map(({ actor, kind }: any) => [actor, kind]),
     ).toEqual([
       ["egress_abuse_review", "received"],
-      ["egress_abuse_reassessment", "read"],
+      ...Array.from({ length: reads }, () => [
+        "egress_abuse_reassessment",
+        "read",
+      ]),
     ]);
     expect(mutationCalls()).toHaveLength(0);
     expect(kv.has(reviewCooldownKey(first.userId))).toBe(false);
@@ -2547,6 +2840,13 @@ describe("on-demand burst-activity assessment of a historical case", () => {
       schema.safeParse({ reference: burstReference, scope: "burst_activity" })
         .success,
     ).toBe(true);
+    expect(
+      schema.safeParse({
+        reference: burstReference,
+        scope: "burst_activity",
+        activityMinuteUtc: "2026-11-28T00:05:00.000Z",
+      }).success,
+    ).toBe(true);
     for (const payload of [
       { reference: burstReference, scope: "retained_candidate" },
       { reference: burstReference, scope: "account" },
@@ -2556,6 +2856,22 @@ describe("on-demand burst-activity assessment of a historical case", () => {
         scope: "burst_activity",
         burstStart,
       },
+      // A minute only selects within the burst-activity scope.
+      {
+        reference: burstReference,
+        activityMinuteUtc: "2026-11-28T00:05:00.000Z",
+      },
+      ...[
+        "2026-11-28T00:05:30.000Z",
+        "2026-11-28T00:05:00Z",
+        "2026-11-28T00:05:00.000+00:00",
+        "2026-11-28 00:05",
+        String(burstStart),
+      ].map((activityMinuteUtc) => ({
+        reference: burstReference,
+        scope: "burst_activity",
+        activityMinuteUtc,
+      })),
     ])
       expect(schema.safeParse(payload).success).toBe(false);
   });
@@ -2672,6 +2988,203 @@ describe("on-demand burst-activity assessment of a historical case", () => {
     expect(triggerQuery.execute).not.toHaveBeenCalled();
     expect(generateText).not.toHaveBeenCalled();
     expectAdvisoryOnly(result, saved);
+  });
+
+  describe("at an operator-selected minute", () => {
+    // The case saved the window's first minute; an archived alert verified
+    // out of band names its sixth.
+    const minute = (offset: number) => (window + offset) * MINUTE_MS;
+    const utc = (offset: number) => new Date(minute(offset)).toISOString();
+    const assessAt = (activityMinuteUtc: string) =>
+      runEgressAbuseReassessment({
+        reference: burstReference,
+        scope: "burst_activity",
+        activityMinuteUtc,
+      });
+    const audits = () =>
+      convex.tables.abuse_events.filter(
+        ({ actor }: any) => actor === "egress_abuse_reassessment",
+      ).length;
+
+    /** Earlier work, a run spanning the selected minute, then later work. */
+    async function seedPeakActivity() {
+      await convex.db.insert("chats", {
+        id: CHAT,
+        user_id: first.userId,
+        update_time: Date.now() - MINUTE_MS,
+        _creationTime: minute(-120),
+      });
+      await message(
+        {
+          id: "earlier-user",
+          role: "user",
+          parts: [{ type: "text", text: "UNRELATED EARLIER TEXT" }],
+        },
+        minute(-12),
+      );
+      await runMessage(
+        "earlier-run",
+        "run_earlier",
+        minute(-10),
+        minute(-8),
+        "printf EARLIER_COMMAND",
+      );
+      await message(
+        {
+          id: `${CHAT}-user`,
+          role: "user",
+          parts: [{ type: "text", text: "Find open ports for me." }],
+        },
+        minute(3),
+      );
+      await runMessage(`${CHAT}-assistant`, RUN, minute(4), minute(12), SCAN);
+      await message(
+        {
+          id: "later-user",
+          role: "user",
+          parts: [{ type: "text", text: "UNRELATED LATER TEXT" }],
+        },
+        minute(14),
+      );
+      await runMessage(
+        "later-run",
+        "run_later",
+        minute(15),
+        minute(17),
+        "LATER CMD",
+      );
+      jest.mocked(triggerQuery.execute).mockResolvedValue({
+        format: "json",
+        results: [
+          {
+            run_id: RUN,
+            task_identifier: "agent-long",
+            status: "Completed",
+            completed_at_s: minute(12) / 1_000,
+          },
+        ],
+      } as never);
+    }
+
+    it("moves the assessed interval from the saved minute to the selected one", async () => {
+      await seedPeakActivity();
+      const saved = await burstCase(0);
+      classifyAs(concerning);
+
+      // The saved minute precedes the run and follows the earlier work.
+      const atSaved = await assess();
+      expect(atSaved).toEqual({
+        ...base,
+        selection: "complete",
+        otherOverlappingRuns: 0,
+        coverage: "unavailable",
+        advisory: "inconclusive",
+        reason: "no_overlapping_run",
+      });
+      expect(triggerQuery.execute).not.toHaveBeenCalled();
+
+      const atPeak = await assessAt(utc(5));
+      expect(atPeak).toEqual({
+        ...base,
+        minuteBasis: "operator_selected",
+        selection: "complete",
+        otherOverlappingRuns: 0,
+        coverage: "complete",
+        advisory: "concern",
+        reason: "concerning_corroborated",
+        classification: {
+          activity: "network_scanning",
+          authorization: "not_stated",
+        },
+        model: {
+          key: "model-grok-4.6",
+          promptVersion: "egress-burst-activity-review-v1",
+        },
+      });
+      expect(triggerQuery.execute).toHaveBeenCalledTimes(1);
+      expect(generateText).toHaveBeenCalledTimes(1);
+      const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+      expect(prompt).toContain("Find open ports");
+      // Earlier commands and post-peak activity stay out of the prompt.
+      for (const excluded of [
+        "EARLIER_COMMAND",
+        "UNRELATED LATER",
+        "LATER CMD",
+        "203.0.113",
+      ])
+        expect(prompt).not.toContain(excluded);
+      expectAdvisoryOnly([atSaved, atPeak], saved, 2);
+    });
+
+    it("assesses the window's first and last minutes", async () => {
+      await seedPeakActivity();
+      const saved = await burstCase(0);
+      for (const offset of [0, 29])
+        await expect(assessAt(utc(offset))).resolves.toMatchObject({
+          minuteBasis: "operator_selected",
+          reason: "no_overlapping_run",
+        });
+      expect(generateText).not.toHaveBeenCalled();
+      expectAdvisoryOnly([], saved, 2);
+    });
+
+    it.each([
+      ["before the case window", -1],
+      ["after the case window", 30],
+    ])(
+      "closes, after the audited read, for a minute %s",
+      async (_label, offset) => {
+        await seedPeakActivity();
+        const saved = await burstCase(0);
+
+        const result = await assessAt(utc(offset));
+
+        expect(result).toEqual({
+          status: "closed",
+          reason: "minute_outside_case",
+        });
+        expect(triggerQuery.execute).not.toHaveBeenCalled();
+        expect(generateText).not.toHaveBeenCalled();
+        expectAdvisoryOnly(result, saved);
+      },
+    );
+
+    const currentMinute = 60;
+    it.each([
+      ["the current, unfinished minute", utc(currentMinute)],
+      ["a future minute", utc(currentMinute + 5)],
+      ["an impossible date", "2026-02-30T00:05:00.000Z"],
+      ["a minute with seconds", "2026-11-28T00:05:30.000Z"],
+    ])(
+      "rejects %s before reading the case",
+      async (_label, activityMinuteUtc) => {
+        await seedPeakActivity();
+        const saved = await burstCase(0);
+
+        const clock = jest
+          .spyOn(Date, "now")
+          .mockReturnValue(minute(currentMinute) + MINUTE_MS / 2);
+        try {
+          await expect(
+            jest
+              .mocked(createServiceConvexClient)("fixture" as never)
+              .action(
+                api.egressAbuseReassessmentActions.readBurstActivityEvidence,
+                {
+                  serviceKey: REVIEW_KEY,
+                  reference: burstReference,
+                  activityMinuteUtc,
+                },
+              ),
+          ).rejects.toThrow("Invalid activity minute");
+        } finally {
+          clock.mockRestore();
+        }
+        expect(audits()).toBe(0);
+        expect(convex.tables.abuse_cases).toEqual([saved]);
+        expect(generateText).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("leaves the default retained-candidate scope unchanged", async () => {

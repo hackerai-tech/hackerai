@@ -294,6 +294,7 @@ it("reads only the overlapping run of a historical burst, not later activity", a
     status: "read",
     burstStart: BURST_START,
     burstEnd: BURST_START + MINUTE_MS,
+    minuteBasis: "saved_case",
     evidence: {
       status: "ok",
       selection: completeSelection,
