@@ -415,19 +415,20 @@ and its cases follow the review, hold and erasure rules in this runbook.
   page limit, or unreliable result keeps the case in manual review.
 - **Acquisition links.** Each workspace keeps at most 48 link records across
   runs. The per-link Convex checks stay capped at 16 links. For complete
-  single-workspace history with more than 16 links, the worker first waits
-  for the same 20-minute settling period, then makes one metadata-only TRQL
-  lookup of the linked run IDs (lifecycle fields and tags; never payloads or
-  output). It sets aside a parent link only when its run ID is unique among
-  the links and Trigger shows an `agent-long` run with the account and chat
-  tags, a finished terminal status, an execution start no later than its
-  completion, the acquisition inside that execution, and completion before
-  the burst. TRQL times are whole seconds, so each bound is checked at its
-  least favorable value with one minute of clock skew. Subagent links, shared
-  run IDs, missing, duplicate or malformed rows, and every other link are
-  kept; a failed lookup sets nothing aside. If more than 16 links remain the
-  review still abstains with `too_many_runs` and calls no model. If none
-  remain it records `no_matching_run` without reading unlinked account
+  single-workspace history with more than 16 links, non-final attempts defer
+  until the 20-minute settling period ends. The final attempt can proceed
+  during that period. The lookup uses one TRQL query for the linked run IDs
+  and reads only lifecycle fields and tags. It sets aside a parent link only
+  when its run ID is unique among the links and Trigger shows an `agent-long`
+  run with the account and chat tags, a finished terminal status, an execution
+  start no later than completion, the acquisition inside that execution, and
+  completion before the burst. TRQL times use whole seconds, so each bound is
+  checked at its least favorable value with one minute of clock skew. The
+  worker keeps subagent links, shared run IDs, links with missing, duplicate
+  or malformed rows, and all other links. A failed lookup sets nothing aside.
+  If more than 16 links remain, the review abstains with `too_many_runs`
+  and calls no model. If none remain, it records `no_matching_run` without
+  reading unlinked account
   activity. The remaining links go through the unchanged per-link, account
   root, subagent and evidence checks, so setting links aside never clears or
   blocks by itself. Past 48 the oldest records are

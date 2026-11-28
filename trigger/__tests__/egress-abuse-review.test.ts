@@ -3149,41 +3149,37 @@ describe("on-demand burst-activity assessment of a historical case", () => {
       },
     );
 
-    it.each<[string, () => string]>([
-      [
-        "the current, unfinished minute",
-        () =>
-          new Date(
-            Math.floor(Date.now() / MINUTE_MS) * MINUTE_MS,
-          ).toISOString(),
-      ],
-      [
-        "a future minute",
-        () =>
-          new Date(
-            (Math.floor(Date.now() / MINUTE_MS) + 5) * MINUTE_MS,
-          ).toISOString(),
-      ],
-      ["an impossible date", () => "2026-02-30T00:05:00.000Z"],
-      ["a minute with seconds", () => "2026-11-28T00:05:30.000Z"],
+    const currentMinute = 60;
+    it.each([
+      ["the current, unfinished minute", utc(currentMinute)],
+      ["a future minute", utc(currentMinute + 5)],
+      ["an impossible date", "2026-02-30T00:05:00.000Z"],
+      ["a minute with seconds", "2026-11-28T00:05:30.000Z"],
     ])(
       "rejects %s before reading the case",
       async (_label, activityMinuteUtc) => {
         await seedPeakActivity();
         const saved = await burstCase(0);
 
-        await expect(
-          jest
-            .mocked(createServiceConvexClient)("fixture" as never)
-            .action(
-              api.egressAbuseReassessmentActions.readBurstActivityEvidence,
-              {
-                serviceKey: REVIEW_KEY,
-                reference: burstReference,
-                activityMinuteUtc: activityMinuteUtc(),
-              },
-            ),
-        ).rejects.toThrow("Invalid activity minute");
+        const clock = jest
+          .spyOn(Date, "now")
+          .mockReturnValue(minute(currentMinute) + MINUTE_MS / 2);
+        try {
+          await expect(
+            jest
+              .mocked(createServiceConvexClient)("fixture" as never)
+              .action(
+                api.egressAbuseReassessmentActions.readBurstActivityEvidence,
+                {
+                  serviceKey: REVIEW_KEY,
+                  reference: burstReference,
+                  activityMinuteUtc,
+                },
+              ),
+          ).rejects.toThrow("Invalid activity minute");
+        } finally {
+          clock.mockRestore();
+        }
         expect(audits()).toBe(0);
         expect(convex.tables.abuse_cases).toEqual([saved]);
         expect(generateText).not.toHaveBeenCalled();
