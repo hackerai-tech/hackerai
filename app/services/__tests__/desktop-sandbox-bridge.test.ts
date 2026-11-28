@@ -7820,7 +7820,7 @@ describe("native authorization send receipt", () => {
     }
   });
 
-  it("creates no optional channel without an identified analytics owner", async () => {
+  it("creates no analytics channel without an identified analytics owner", async () => {
     const identity = jest.mocked(getIdentifiedAnalyticsUserId);
     const { Channel } = await import("@tauri-apps/api/core");
     identity.mockReturnValue(null);
@@ -7830,7 +7830,13 @@ describe("native authorization send receipt", () => {
       expect(calls[0]).toHaveProperty("onEvent");
       expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
       expect(calls[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
-      expect(jest.mocked(Channel)).toHaveBeenCalledTimes(1);
+      // Only the challenge channel, which never joins analytics, is offered.
+      expect(jest.mocked(Channel)).toHaveBeenCalledTimes(2);
+      expect(
+        Object.keys(calls[0]).filter((key) =>
+          key.startsWith("onAuthorization"),
+        ),
+      ).toEqual(["onAuthorizationChallengeDiagnostic"]);
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: unavailable }),
       ]);
@@ -9945,6 +9951,216 @@ describe("native authorization send receipt", () => {
           ...mitigationGroup,
         });
         expect(mitigationKeys(byCommand["send-failure"])).toEqual([]);
+      });
+    });
+
+    describe("challenge record", () => {
+      const edgeId = "cle1::Xy7.k_9:z-1";
+      const challenge = {
+        version: 1,
+        capturedAtMs: 1_800_000_000_000,
+        requestId: { kind: "present", value: edgeId },
+        retryAfter: { kind: "seconds", seconds: 30 },
+      };
+      const challengeChannel = (call: NativeCall) =>
+        call.onAuthorizationChallengeDiagnostic as MockChannel;
+      const uploads = () =>
+        jest
+          .mocked(global.fetch)
+          .mock.calls.filter(
+            ([url]) =>
+              url === "/api/desktop/authorization-challenge-diagnostic",
+          );
+
+      beforeEach(() => {
+        global.fetch = jest.fn().mockResolvedValue({ status: 204 });
+      });
+
+      it("uploads one exact record once to its own endpoint, outside every analytics event", async () => {
+        const { calls, replies } = await run(async (call) => {
+          challengeChannel(call).onmessage!(challenge);
+          // A duplicate cannot cause a second upload.
+          challengeChannel(call).onmessage!({
+            ...challenge,
+            requestId: { kind: "absent" },
+          });
+          responseChannel(call).onmessage!(rejection);
+          (call.onAuthorizationMitigationDiagnostic as MockChannel).onmessage!({
+            version: 1,
+            mitigation: "challenge",
+          });
+          return Promise.reject(notAuthorized);
+        });
+
+        expect(calls).toHaveLength(1);
+        const channel = challengeChannel(calls[0]);
+        expect(channel).toBeDefined();
+        for (const other of [
+          calls[0].onEvent,
+          calls[0].onAuthorizationResponseDiagnostic,
+          calls[0].onAuthorizationMitigationDiagnostic,
+        ])
+          expect(channel).not.toBe(other);
+        expect(Object.keys(calls[0].message as object)).not.toContain(
+          "onAuthorizationChallengeDiagnostic",
+        );
+        expect(channel.cleanupCallback).toHaveBeenCalledTimes(1);
+        // One same-origin POST of the complete record, with the session.
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        const [url, init] = uploads()[0];
+        expect(url).toBe("/api/desktop/authorization-challenge-diagnostic");
+        expect(init).toMatchObject({
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+        });
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+        expect(JSON.parse(init.body)).toEqual(challenge);
+        // The product error is the identical single terminal frame.
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({
+            type: "error",
+            message: notAuthorized,
+            sequence: 0,
+          }),
+        ]);
+        // The existing response groups are unchanged, and no event, relay
+        // frame or log carries any part of the record.
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject(responseGroup);
+        const elsewhere = JSON.stringify([
+          captures(),
+          replies.map((reply) => reply.publish.mock.calls),
+        ]);
+        expect(elsewhere).not.toContain(edgeId);
+        expect(elsewhere).not.toContain("retryAfter");
+        expect(elsewhere).not.toContain("capturedAtMs");
+      });
+
+      it("is offered and uploaded without an identified analytics owner", async () => {
+        const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+        identity.mockReturnValue(null);
+        try {
+          const { calls, replies } = await run((call) => {
+            challengeChannel(call).onmessage!(challenge);
+            return reject(notAuthorized);
+          });
+          // Only the command channel and this one; no analytics receipt.
+          expect(calls[0]).toHaveProperty("onAuthorizationChallengeDiagnostic");
+          expect(calls[0]).not.toHaveProperty(
+            "onAuthorizationResponseDiagnostic",
+          );
+          expect(uploads()).toHaveLength(1);
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({ type: "error", message: notAuthorized }),
+          ]);
+          expect(finals()).toHaveLength(0);
+        } finally {
+          identity.mockReturnValue("user-456");
+        }
+      });
+
+      it("never uploads an invalid record", async () => {
+        const invalid: unknown[] = [
+          { ...challenge, version: 2 },
+          { ...challenge, userId: "PRIVATE" },
+          { ...challenge, requestId: { kind: "present", value: "a b" } },
+          { ...challenge, requestId: { kind: "present", value: "" } },
+          { ...challenge, retryAfter: { kind: "seconds", seconds: 1.5 } },
+          {
+            ...challenge,
+            retryAfter: { kind: "malformed", value: "PRIVATE" },
+          },
+          "PRIVATE",
+          null,
+        ];
+        const commandIds = invalid.map((_, index) => `invalid-${index}`);
+        const { replies } = await run(
+          (call) => {
+            const { commandId } = call.message as { commandId: string };
+            challengeChannel(call).onmessage!(
+              invalid[commandIds.indexOf(commandId)],
+            );
+            // The first callback attempt closed the latch.
+            challengeChannel(call).onmessage!(challenge);
+            return reject(notAuthorized);
+          },
+          { commandIds },
+        );
+        expect(replies).toHaveLength(invalid.length);
+        for (const reply of replies)
+          expect(sequencedFrames(reply)).toEqual([
+            expect.objectContaining({ type: "error", message: notAuthorized }),
+          ]);
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it("drops a record after settlement and releases its callback", async () => {
+        let call!: NativeCall;
+        await run((native) => {
+          call = native;
+          return reject(notAuthorized);
+        });
+        expect(challengeChannel(call).cleanupCallback).toHaveBeenCalledTimes(1);
+        challengeChannel(call).onmessage!(challenge);
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it("drops a record that arrives after the connection is stopped", async () => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (native) => {
+            await pending;
+            challengeChannel(native).onmessage!(challenge);
+            return reject(notAuthorized);
+          },
+          {
+            beforeAck: async (bridge) => {
+              await bridge.stop();
+              release();
+            },
+          },
+        );
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it("keeps the command result when the upload fails or never settles", async () => {
+        const failed = Promise.reject(new TypeError("Load failed"));
+        failed.catch(() => {});
+        jest
+          .mocked(global.fetch)
+          .mockReturnValueOnce(failed)
+          .mockReturnValueOnce(new Promise(() => {}));
+        const { replies } = await run(
+          (call) => {
+            challengeChannel(call).onmessage!(challenge);
+            responseChannel(call).onmessage!(rejection);
+            return reject(notAuthorized);
+          },
+          { commandIds: ["upload-failed", "upload-pending"] },
+        );
+        expect(uploads()).toHaveLength(2);
+        expect(replies).toHaveLength(2);
+        for (const reply of replies)
+          expect(sequencedFrames(reply)).toEqual([
+            expect.objectContaining({ type: "error", message: notAuthorized }),
+          ]);
+        expect(finals()).toHaveLength(2);
+        for (const final of finals())
+          expect(final.properties).toMatchObject(responseGroup);
+      });
+
+      it("is never sent to a published legacy command", async () => {
+        const { calls } = await run(() => reject(notAuthorized), {
+          version: "0.0.72",
+        });
+        expect(calls[0].cmd).toBe("execute_stream_command");
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationChallengeDiagnostic",
+        );
       });
     });
 
@@ -14315,10 +14531,10 @@ describe("native authorization send receipt", () => {
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
       // optional receipt, cause, response, mitigation, transport, IO,
-      // connector, response-read and read timing channels besides the output
-      // one, or offers the stream fence opt-in.
+      // connector, response-read, read timing and challenge channels besides
+      // the output one, or offers the stream fence opt-in.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 10,
+        options?.version || options?.acknowledged === false ? 1 : 11,
       );
       const optional = [
         "onAuthorizationDiagnostic",
@@ -14330,6 +14546,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationConnectorDiagnostic",
         "onAuthorizationResponseReadDiagnostic",
         "onAuthorizationResponseReadTimingDiagnostic",
+        "onAuthorizationChallengeDiagnostic",
         "includeStreamFenceOrigin",
         "includeStreamFenceCleanup",
         "includeStreamFenceWindowsTaskkill",

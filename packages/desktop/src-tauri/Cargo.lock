@@ -1739,6 +1739,7 @@ dependencies = [
  "block2 0.6.2",
  "cap-fs-ext",
  "cap-std",
+ "chrono",
  "env_logger",
  "gethostname",
  "libc",
