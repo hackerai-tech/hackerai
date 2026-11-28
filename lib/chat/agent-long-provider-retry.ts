@@ -4,7 +4,10 @@ import {
   DEEPSEEK_1017_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
-import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import {
+  getAgentContextBudget,
+  getVerifiedModelInputCapacity,
+} from "@/lib/ai/agent-context-budget";
 import { GROK_4_6_BEDROCK_MODEL_KEY } from "@/lib/ai/grok-bedrock";
 import type { ToolResultCycle } from "@/lib/chat/tool-loop-observer";
 import type { SubscriptionTier } from "@/types";
@@ -201,12 +204,37 @@ export const getMaxAgentFirstRecoveryModel = ({
     : undefined;
 
 /**
+ * Admit a DeepSeek 1017 recovery input only within the compaction threshold
+ * its own Agent budget would enforce. An unknown size cannot be admitted.
+ */
+export const fitsDeepSeek1017RecoveryContext = ({
+  requiredContextTokens,
+  agentModelContextEnabled,
+  subscription,
+}: {
+  requiredContextTokens?: number;
+  agentModelContextEnabled?: boolean;
+  subscription?: SubscriptionTier;
+}): boolean => {
+  if (
+    requiredContextTokens === undefined ||
+    !Number.isFinite(requiredContextTokens) ||
+    requiredContextTokens < 0
+  )
+    return false;
+  const budget = getAgentContextBudget({
+    enabled: agentModelContextEnabled,
+    mode: "agent",
+    subscription,
+    modelId: DEEPSEEK_1017_SLUG,
+  });
+  return requiredContextTokens <= getSummarizationThresholdTokens(budget);
+};
+
+/**
  * Return the next bounded app-side recovery after a failed recovery attempt.
- * Max Grok recovers on Bedrock first; when that attempt also fails, a
- * context-checked DeepSeek 1017 attempt follows. A first DeepSeek recovery
- * may likewise be followed by one more DeepSeek attempt, so recovery never
- * returns to a model that refused or dropped the response. Existing Pro
- * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
+ * A Max Bedrock recovery can continue on DeepSeek when its context fits.
+ * Existing Pro recovery remains DeepSeek Pro -> GLM -> Kimi.
  */
 export const getNextProviderDisconnectRetryModel = ({
   originalModel,
@@ -216,6 +244,7 @@ export const getNextProviderDisconnectRetryModel = ({
   agentModelContextEnabled,
   subscription,
   requiredContextTokens,
+  afterPromptContextRecovery = false,
 }: {
   originalModel: string;
   failedModel: string;
@@ -224,32 +253,28 @@ export const getNextProviderDisconnectRetryModel = ({
   agentModelContextEnabled?: boolean;
   subscription?: SubscriptionTier;
   requiredContextTokens?: number;
+  /** The failed attempt was the single Grok prompt-context recovery. */
+  afterPromptContextRecovery?: boolean;
 }):
   | (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number]
   | typeof DEEPSEEK_1017_MODEL_KEY
   | undefined => {
+  // That recovery already used the run's one DeepSeek attempt; a failure
+  // there is terminal rather than the first of a disconnect chain.
+  if (afterPromptContextRecovery) return undefined;
   if (selectedModelOverride === "hackerai-max") {
     // Only the first Bedrock or DeepSeek recovery may be followed by one more
     // attempt. Bedrock is never a later attempt, so its failure needs no count
-    // (a content-filter retry records no disconnect attempt). An unknown
-    // continuation size cannot be admitted.
+    // (a content-filter retry records no disconnect attempt).
     const isFirstRecovery =
       failedModel === GROK_4_6_BEDROCK_MODEL_KEY ||
       (completedRetryCount === 1 && failedModel === DEEPSEEK_1017_MODEL_KEY);
-    if (
-      !isFirstRecovery ||
-      requiredContextTokens === undefined ||
-      !Number.isFinite(requiredContextTokens) ||
-      requiredContextTokens < 0
-    )
-      return;
-    const budget = getAgentContextBudget({
-      enabled: agentModelContextEnabled,
-      mode: "agent",
-      subscription,
-      modelId: DEEPSEEK_1017_SLUG,
-    });
-    return requiredContextTokens <= getSummarizationThresholdTokens(budget)
+    return isFirstRecovery &&
+      fitsDeepSeek1017RecoveryContext({
+        requiredContextTokens,
+        agentModelContextEnabled,
+        subscription,
+      })
       ? DEEPSEEK_1017_MODEL_KEY
       : undefined;
   }
@@ -368,6 +393,143 @@ export const prepareProviderDisconnectContinuation = (
         getPartType(part) === "text" && Boolean(getPartText(part)?.trim()),
     ).length,
   };
+};
+
+/**
+ * Checkpoint for a provider that rejected the next request's prompt before
+ * generating anything. Unlike a disconnect, the rejected step must be empty:
+ * text or tool input in it means the failure is not a clean prompt rejection.
+ * Every tool already in the response must be settled with a known outcome;
+ * an unpaired, approval-pending or unknown call declines rather than becoming
+ * an unknown-outcome record. A response with no assistant message proves no
+ * tool started in this leg.
+ */
+export const prepareProviderPromptRejectionContinuation = (
+  messages: UIMessage[],
+): ProviderDisconnectContinuation | undefined => {
+  if (
+    messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        (message.parts ?? []).some(
+          (part) =>
+            getPartType(part) === "dynamic-tool" ||
+            (isToolPart(part) &&
+              (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part))),
+        ),
+    )
+  )
+    return undefined;
+  const continuation = prepareProviderDisconnectContinuation(messages, {
+    allowEmptyResponse: true,
+  });
+  if (!continuation || continuation.preservedUnknownToolCount > 0) return;
+  const parts =
+    messages.findLast((message) => message.role === "assistant")?.parts ?? [];
+  const rejectedStep = parts.slice(
+    parts.length - continuation.removedPartCount,
+  );
+  return rejectedStep.every(isFallbackSafeProviderPart)
+    ? continuation
+    : undefined;
+};
+
+export type GrokBedrockContextRecoveryReason =
+  | "eligible"
+  | "not_max_bedrock_step"
+  | "cancelled"
+  | "already_retried"
+  | "competing_recovery"
+  | "unsafe_checkpoint"
+  | "reported_oversize"
+  | "size_unknown"
+  | "oversize";
+
+/**
+ * One DeepSeek 1017 continuation after Grok 4.6 on Bedrock rejected a Max
+ * Agent step's prompt as over its window. DeepSeek 1017 has a larger window,
+ * but the rejected prompt is replayed, not shrunk, so admission depends on
+ * the actual continuation's size under DeepSeek's own compaction threshold.
+ * A reported Grok count beyond DeepSeek's whole input capacity cannot fit
+ * whatever the local estimate says, so it declines first.
+ * Returns undefined when the error is not this rejection.
+ */
+export const prepareGrokBedrockContextRecovery = async ({
+  rejection,
+  mode,
+  selectedModelOverride,
+  activeModelName,
+  cancelled,
+  alreadyRetried,
+  competingRecovery,
+  messages,
+  buildRecoveryMessages,
+  estimateRequiredContextTokens,
+  agentModelContextEnabled,
+  subscription,
+}: {
+  rejection: { promptTokens: number; maxTokens: number } | undefined;
+  mode: string;
+  selectedModelOverride?: string;
+  /** The model of the step that failed, not the run's initial model. */
+  activeModelName: string;
+  cancelled: boolean;
+  alreadyRetried: boolean;
+  /** Content filter, loop, image or vision recovery owns this failure. */
+  competingRecovery: boolean;
+  messages: UIMessage[];
+  buildRecoveryMessages: (continuation: UIMessage[]) => UIMessage[];
+  estimateRequiredContextTokens: (
+    messages: UIMessage[],
+  ) => Promise<number | undefined>;
+  agentModelContextEnabled?: boolean;
+  subscription?: SubscriptionTier;
+}): Promise<
+  | { reason: Exclude<GrokBedrockContextRecoveryReason, "eligible"> }
+  | {
+      reason: "eligible";
+      continuation: ProviderDisconnectContinuation;
+      messages: UIMessage[];
+    }
+  | undefined
+> => {
+  if (!rejection) return undefined;
+  const decline = (
+    reason: Exclude<GrokBedrockContextRecoveryReason, "eligible">,
+  ) => ({ reason });
+  if (
+    mode !== "agent" ||
+    selectedModelOverride !== "hackerai-max" ||
+    activeModelName !== GROK_4_6_BEDROCK_MODEL_KEY
+  )
+    return decline("not_max_bedrock_step");
+  if (cancelled) return decline("cancelled");
+  if (alreadyRetried) return decline("already_retried");
+  if (competingRecovery) return decline("competing_recovery");
+  const continuation = prepareProviderPromptRejectionContinuation(messages);
+  if (!continuation) return decline("unsafe_checkpoint");
+  const inputCapacity = getVerifiedModelInputCapacity(DEEPSEEK_1017_SLUG);
+  if (inputCapacity === undefined || rejection.promptTokens > inputCapacity)
+    return decline("reported_oversize");
+  let recoveryMessages: UIMessage[];
+  let requiredContextTokens: number | undefined;
+  try {
+    recoveryMessages = buildRecoveryMessages(continuation.messages);
+    requiredContextTokens =
+      await estimateRequiredContextTokens(recoveryMessages);
+  } catch {
+    return decline("size_unknown");
+  }
+  if (requiredContextTokens === undefined) return decline("size_unknown");
+  if (
+    !fitsDeepSeek1017RecoveryContext({
+      requiredContextTokens,
+      agentModelContextEnabled,
+      subscription,
+    })
+  )
+    return decline("oversize");
+  return { reason: "eligible", continuation, messages: recoveryMessages };
 };
 
 export const AGENT_LOOP_CONTINUATION_PROMPT =

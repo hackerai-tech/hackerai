@@ -183,6 +183,10 @@ const agentDecision = compile(
     "Agent recovery decision",
   ),
 );
+const agentRetryModel = compile(
+  agent,
+  declaration(agent, "retryModel").initializer!,
+);
 const agentFinalContinuation = compile(
   agent,
   declaration(agent, "nextContinuation").initializer!,
@@ -534,6 +538,8 @@ describe("Agent onFinish provider recovery admission", () => {
     stoppedDueToAssistantContentLoop: false,
     confirmedFailureLoop: false,
     uncertainToolOutcome: false,
+    plannedGrokContextRecovery: undefined,
+    grokContextPlan: undefined,
     loopTriggeredRetry: false,
     loopContinuation: undefined,
     shouldRetryWithFallback: false,
@@ -568,6 +574,38 @@ describe("Agent onFinish provider recovery admission", () => {
         attempt: false,
         reason: "no_safe_recovery",
       });
+  });
+
+  it("uses DeepSeek for an admitted Grok context checkpoint and blocks a declined checkpoint from the generic retry", () => {
+    const errors = {
+      providerError: {
+        code: 400,
+        message:
+          "prompt tokens (600000) exceed model maximum (524288) for xai.grok-4.6",
+      },
+    };
+    const genericRetry = { shouldRetryWithFallback: true, isAutoModel: true };
+    expect(
+      decide(errors, {
+        ...genericRetry,
+        plannedGrokContextRecovery: { reason: "oversize" },
+      }),
+    ).toEqual({ attempt: false, reason: "no_safe_recovery" });
+
+    const eligible = { reason: "eligible", continuation: {} };
+    expect(
+      decide(errors, {
+        plannedGrokContextRecovery: eligible,
+        grokContextPlan: eligible,
+        shouldContinueAfterProviderDisconnect: true,
+      }),
+    ).toEqual({ attempt: true, reason: "eligible" });
+    expect(
+      agentRetryModel({
+        grokContextContinuation: eligible.continuation,
+        DEEPSEEK_1017_MODEL_KEY: "deepseek-1017",
+      }),
+    ).toBe("deepseek-1017");
   });
 
   it("checks the outer stream error and stream state independently", () => {

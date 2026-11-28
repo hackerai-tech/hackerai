@@ -2,6 +2,8 @@ export type BedrockStreamRejection = Readonly<{
   parameter: "absent" | "image" | "tool_pairing" | "context_limit" | "other";
   rawFormat: "absent" | "text" | "object" | "unsupported";
   marker: "unavailable" | "tool_pairing" | "media" | "context_limit" | "other";
+  /** Exact Grok 4.6 prompt-over-window rejection; counts only. */
+  promptContextLimit?: Readonly<{ promptTokens: number; maxTokens: number }>;
 }>;
 
 export type OpenRouterStreamErrorContext = Readonly<{
@@ -21,6 +23,18 @@ const contexts = new WeakMap<
     context: OpenRouterStreamErrorContext;
   }
 >();
+
+/**
+ * A Grok 4.6 prompt-context rejection recorded by the Bedrock-only wrapper for
+ * this exact error object and call. Reuse across calls is ambiguous and
+ * declines, as does any error the wrapper did not observe.
+ */
+export function getSameCallGrokBedrockPromptContextLimit(error: unknown) {
+  const context = getOpenRouterStreamErrorContext(error);
+  return context?.association === "same_call"
+    ? context.bedrockRejection?.promptContextLimit
+    : undefined;
+}
 
 /** Read only context associated with this exact emitted error object. */
 export function getOpenRouterStreamErrorContext(

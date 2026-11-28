@@ -1802,10 +1802,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
     );
     expect(taskSrc).toMatch(
-      /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
+      /const providerDisconnectContinuation\s*=\s*grokContextContinuation\s*\?\?\s*\(!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
-      /hasCandidate:\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
+      /hasCandidate:[\s\S]{0,550}Boolean\(grokContextPlan\)\) &&\s*!isTrustedBrowserHandoffReadFailure\(\s*streamError,\s*state\.providerError,\s*\) &&\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
     );
     expect(taskSrc).toMatch(
       /const retryAssistantParts\s*=\s*normalizedRetryMessages\.findLast\(/,
@@ -1829,7 +1829,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,
     );
     expect(taskSrc).toMatch(
-      /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
+      /state\.finalMessages\s*=\s*grokContextPlan\?\.messages\s*\?\?\s*withProviderDisconnectContinuationPrompt\(\s*providerDisconnectContinuation\.messages/,
     );
     expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
@@ -1970,7 +1970,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = taskSrc.indexOf(
-      "const retryModel = shouldRecoverAbliterationStreamError",
+      "const retryModel = grokContextContinuation",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
