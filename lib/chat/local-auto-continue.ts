@@ -27,7 +27,7 @@ export const LOCAL_AUTO_CONTINUE_STATES = [
   "awaiting_return",
   /** Never continues automatically; see the reason. */
   "ineligible",
-  /** Came back in the control arm: the manual prompt stays. */
+  /** The computer came back and the manual prompt stays. */
   "manual",
   /** Came back in the test arm after the chat's cap was reached. */
   "suppressed",
@@ -55,6 +55,7 @@ export const LOCAL_AUTO_CONTINUE_REASONS = [
   "account_deleting",
   // manual / suppressed
   "control",
+  "user_opt_out",
   "cap",
   // cancelled
   "user_stop",

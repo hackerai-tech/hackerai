@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   mutation,
   query,
@@ -53,6 +53,62 @@ const rowFor = (ctx: Ctx, stoppedRunId: string) =>
     .query("agent_local_auto_continues")
     .withIndex("by_stopped_run_id", (q) => q.eq("stopped_run_id", stoppedRunId))
     .unique();
+
+const customizationFor = (ctx: Ctx, userId: string) =>
+  ctx.db
+    .query("user_customization")
+    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+    .first();
+
+async function requiresManualResume(ctx: Ctx, userId: string) {
+  return (
+    (await customizationFor(ctx, userId))?.require_manual_desktop_resume ??
+    false
+  );
+}
+
+export const getManualResumePreference = query({
+  args: {},
+  returns: v.union(v.boolean(), v.null()),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || (await isUserDeletionFenced(ctx.db, identity.subject)))
+      return null;
+    return requiresManualResume(ctx, identity.subject);
+  },
+});
+
+export const setManualResumePreference = mutation({
+  args: { required: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { required }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity)
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Sign in to update this preference.",
+      });
+    if (await isUserDeletionFenced(ctx.db, identity.subject))
+      throw new ConvexError({
+        code: "ACCOUNT_DELETING",
+        message: "This account is being deleted.",
+      });
+    const existing = await customizationFor(ctx, identity.subject);
+    if ((existing?.require_manual_desktop_resume ?? false) === required)
+      return null;
+    const patch = {
+      require_manual_desktop_resume: required,
+      updated_at: Date.now(),
+    };
+    if (existing) await ctx.db.patch(existing._id, patch);
+    else
+      await ctx.db.insert("user_customization", {
+        user_id: identity.subject,
+        ...patch,
+      });
+    return null;
+  },
+});
 
 const recentRowsForChat = (ctx: Ctx, chatId: string, now: number) =>
   ctx.db
@@ -510,6 +566,8 @@ export const claimReturn = mutation({
     // The user's own message wins, even if cancelling this stop failed.
     if (await userMessagedSince(ctx, row))
       return settle("cancelled", "user_message", false);
+    if (await requiresManualResume(ctx, args.userId))
+      return settle("manual", "user_opt_out", false, { returned_at: now });
     const returned = {
       returned_at: now,
       ...(args.variant ? { variant: args.variant } : {}),
@@ -698,6 +756,7 @@ export const getClaim = query({
       Date.now() - row.claimed_at > LOCAL_AUTO_CONTINUE_START_LEASE_MS
     )
       return null;
+    if (await requiresManualResume(ctx, row.user_id)) return null;
     return {
       chatId: row.chat_id,
       userId: row.user_id,
@@ -750,8 +809,11 @@ export const getForChat = query({
         row.claimed_at !== undefined &&
         now - row.claimed_at <= LOCAL_AUTO_CONTINUE_START_LEASE_MS,
     );
-    return starting
-      ? { state: "starting" as const, stoppedRunId: starting.stopped_run_id }
-      : null;
+    if (!starting || (await requiresManualResume(ctx, identity.subject)))
+      return null;
+    return {
+      state: "starting" as const,
+      stoppedRunId: starting.stopped_run_id,
+    };
   },
 });
