@@ -3,7 +3,9 @@ export async function extractDocxPreview(buffer: ArrayBuffer): Promise<string> {
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(buffer);
   const entries = Object.values(zip.files).filter((entry) => !entry.dir);
-  if (entries.length > 512 || !zip.file("word/document.xml")) {
+  // Mammoth resolves the main part through _rels/.rels (Word for the web saves
+  // word/document2.xml) and rejects archives without one, so only bound size here.
+  if (entries.length > 512) {
     throw new Error("Invalid or oversized document");
   }
 

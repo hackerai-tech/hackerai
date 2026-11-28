@@ -23,8 +23,29 @@ it("extracts real DOCX paragraphs, Unicode and table cells as text", async () =>
   expect(text).toContain("<script>not executable</script>");
 });
 
+it("extracts a DOCX whose package relationship names another main part", async () => {
+  // Word for the web saves the main part as word/document2.xml.
+  const zip = new JSZip();
+  zip.file(
+    "_rels/.rels",
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document2.xml"/></Relationships>`,
+  );
+  zip.file("word/document2.xml", documentXml);
+  const bytes = await zip.generateAsync({ type: "arraybuffer" });
+  await expect(extractDocxPreview(bytes)).resolves.toContain(
+    "Local café 日本語",
+  );
+});
+
 it("rejects malformed documents", async () => {
   await expect(extractDocxPreview(new ArrayBuffer(10))).rejects.toThrow();
+});
+
+it("rejects an archive without a main document part", async () => {
+  const zip = new JSZip();
+  zip.file("word/styles.xml", "<w:styles/>");
+  const bytes = await zip.generateAsync({ type: "arraybuffer" });
+  await expect(extractDocxPreview(bytes)).rejects.toThrow();
 });
 
 it("rejects a small compressed archive that expands beyond the preview budget", async () => {
