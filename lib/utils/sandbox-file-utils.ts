@@ -338,6 +338,32 @@ const classifySandboxUploadReadinessProbeFailure = (
     : "unknown";
 };
 
+/** E2B maps envd RPC errors to these own names before rejecting the command. */
+function classifyE2BReadinessStartError(error: unknown) {
+  if (typeof error !== "object" || error === null) return "other_error";
+  try {
+    switch (Object.getOwnPropertyDescriptor(error, "name")?.value) {
+      case "AuthenticationError":
+        return "authentication";
+      case "InvalidArgumentError":
+        return "invalid_argument";
+      case "NotFoundError":
+      case "SandboxNotFoundError":
+        return "not_found";
+      case "RateLimitError":
+        return "rate_limit";
+      case "NotEnoughSpaceError":
+        return "disk_space";
+      case "SandboxError":
+        return "sandbox";
+      default:
+        return "other_error";
+    }
+  } catch {
+    return "unreadable";
+  }
+}
+
 const classifySandboxUploadFailureReason = (
   file: SandboxFile,
   error: unknown,
@@ -1749,6 +1775,17 @@ const uploadSandboxFilesOnce = async (
 
   if (failureDetails.length > 0) {
     const primaryFailure = failureDetails[0];
+    const commandFailure = primaryFailure.commandFailureContext;
+    const readinessStartDiagnostics =
+      primaryFailure.readinessProbeReason === "unknown" &&
+      primaryFailure.sandboxProvider === "e2b" &&
+      commandFailure?.attachment_command_stage === "start" &&
+      commandFailure.attachment_command_error_kind === "other"
+        ? {
+            e2b_readiness_start_error_kind:
+              classifyE2BReadinessStartError(readinessFailure),
+          }
+        : {};
     logSandboxUploadEvent(
       "sandbox_attachment_failure_diagnostics",
       sandbox,
@@ -1762,6 +1799,7 @@ const uploadSandboxFilesOnce = async (
         local_copy_failure_reason:
           primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...readinessStartDiagnostics,
         ...primaryFailure.commandFailureContext,
         ...primaryFailure.downloadFailureContext,
         ...primaryFailure.localCopyFailureContext,
@@ -1805,6 +1843,7 @@ const uploadSandboxFilesOnce = async (
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...readinessStartDiagnostics,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         ...primaryFailure.commandFailureContext,
         ...primaryFailure.downloadFailureContext,
@@ -1847,6 +1886,7 @@ const uploadSandboxFilesOnce = async (
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...readinessStartDiagnostics,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         ...primaryFailure.commandFailureContext,

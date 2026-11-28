@@ -213,6 +213,93 @@ it.each([
   },
 );
 
+it.each([
+  ["AuthenticationError", "authentication"],
+  ["InvalidArgumentError", "invalid_argument"],
+  ["Error", "other_error"],
+])(
+  "records only the bounded SDK class for an unknown E2B readiness start rejection",
+  async (name, errorKind) => {
+    const error = Object.assign(new Error("private-sdk-canary"), { name });
+    const run = jest.fn().mockRejectedValue(error);
+    const ensure = jest.fn(async () => ({ commands: { run } }));
+    const { signal } = new AbortController();
+    const result = await uploadSandboxFiles(files, ensure, {
+      signal,
+      logContext: context,
+      retryAfterReconnectOnTransientFailure: true,
+    });
+
+    expect(result.failedCount).toBe(files.length);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0]).toBe("true");
+    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_phase: "readiness",
+      upload_failure_readiness_probe_reason: "unknown",
+      attachment_command_stage: "start",
+      attachment_command_error_kind: "other",
+    });
+
+    for (const event of [
+      "sandbox_attachment_failure_diagnostics",
+      "sandbox_attachment_staging_failed",
+    ]) {
+      expect(phLogger.event).toHaveBeenCalledWith(
+        event,
+        expect.objectContaining({
+          e2b_readiness_start_error_kind: errorKind,
+        }),
+      );
+    }
+    const consoleDiagnostics = [console.warn, console.error]
+      .flatMap((logger) => jest.mocked(logger).mock.calls)
+      .map(([payload]) => JSON.parse(payload));
+    expect(consoleDiagnostics).toHaveLength(2);
+    expect(consoleDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "sandbox_attachment_failure_diagnostics",
+          e2b_readiness_start_error_kind: errorKind,
+        }),
+        expect.objectContaining({
+          event: "sandbox_attachment_staging_failed",
+          e2b_readiness_start_error_kind: errorKind,
+        }),
+      ]),
+    );
+    expect(
+      JSON.stringify([
+        consoleDiagnostics,
+        jest.mocked(phLogger.event).mock.calls,
+      ]),
+    ).not.toMatch(/private-sdk-|private-[0-9]|token=secret/);
+  },
+);
+
+it("omits the E2B start class for a foreground readiness rejection", async () => {
+  const error = Object.assign(new Error("fixture"), {
+    name: "InvalidArgumentError",
+  });
+  const run = jest.fn().mockRejectedValue(error);
+  const result = await uploadSandboxFiles(
+    files,
+    async () => ({ commands: { run } }),
+    {
+      logContext: context,
+    },
+  );
+
+  expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+    upload_failure_phase: "readiness",
+    attachment_command_stage: "foreground",
+  });
+  const [, failed] = jest
+    .mocked(phLogger.event)
+    .mock.calls.find(([name]) => name === "sandbox_attachment_staging_failed")!;
+  expect(failed).not.toHaveProperty("e2b_readiness_start_error_kind");
+});
+
 it("does not grant an extra reconnect after acquisition consumed the batch budget", async () => {
   const run = jest.fn().mockRejectedValue(new Error("operation timed out"));
   const ensure = jest
