@@ -5,10 +5,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { GET, POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById, getProjectById } from "@/lib/db/actions";
-import {
-  getPostHogBooleanFlagDecisionForUser,
-  phLogger,
-} from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
   assertUserCanAccessChatHistory,
@@ -39,7 +36,6 @@ jest.mock("@/lib/db/actions", () => ({
 }));
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({
-  getPostHogBooleanFlagDecisionForUser: jest.fn(),
   phLogger: { event: jest.fn() },
 }));
 jest.mock("@/lib/sandbox/cloud-workspace-files", () => ({
@@ -100,7 +96,6 @@ beforeEach(() => {
   jest
     .mocked(getChatById)
     .mockResolvedValue({ user_id: "owner", sandbox_type: "e2b" } as any);
-  jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(true);
   jest
     .mocked(accessCloudWorkspaceFiles)
     .mockResolvedValue({ state: "missing" });
@@ -129,13 +124,11 @@ it("preserves history-access denials without exposing internal details", async (
   expect(getChatById).not.toHaveBeenCalled();
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
 });
-it("rejects another user's chat and disabled flags before sandbox access", async () => {
+it("rejects another user's chat before sandbox access", async () => {
   jest.mocked(getChatById).mockResolvedValue({ user_id: "other" } as any);
   expect((await POST(request())).status).toBe(404);
-  jest.mocked(getChatById).mockResolvedValue({ user_id: "owner" } as any);
-  jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(null);
-  expect((await POST(request())).status).toBe(404);
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+  expect(accessLocalWorkspaceFiles).not.toHaveBeenCalled();
 });
 it("preserves subscription and suspension gates", async () => {
   jest.mocked(getUserIDAndPro).mockResolvedValue({
@@ -328,14 +321,6 @@ describe("POST rejection diagnostics", () => {
     await expectRejection(POST(sensitive()), 404, "not_found", {
       reason: "chat_not_owned",
       stage: "chat",
-      action: "list",
-    });
-    jest
-      .mocked(getPostHogBooleanFlagDecisionForUser)
-      .mockResolvedValueOnce(false);
-    await expectRejection(POST(sensitive()), 404, "unavailable", {
-      reason: "flag_unavailable",
-      stage: "feature_flag",
       action: "list",
     });
     jest
@@ -697,7 +682,6 @@ describe("history guard transport failures", () => {
     );
   const expectNoDownstreamAccess = () => {
     expect(getChatById).not.toHaveBeenCalled();
-    expect(getPostHogBooleanFlagDecisionForUser).not.toHaveBeenCalled();
     expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
     expect(accessLocalWorkspaceFiles).not.toHaveBeenCalled();
   };
@@ -727,10 +711,6 @@ describe("history guard transport failures", () => {
     const retryOrder = query.mock.invocationCallOrder[1];
     expect(
       jest.mocked(getChatById).mock.invocationCallOrder[0],
-    ).toBeGreaterThan(retryOrder);
-    expect(
-      jest.mocked(getPostHogBooleanFlagDecisionForUser).mock
-        .invocationCallOrder[0],
     ).toBeGreaterThan(retryOrder);
   });
 
