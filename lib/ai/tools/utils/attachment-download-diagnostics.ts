@@ -19,6 +19,56 @@ const CLIENT_SELECTIONS = new Set<unknown>([
   "cached_unverified_default",
 ] satisfies AttachmentClientSelection[]);
 
+/** Which received relay frame settled a -1 result: a numeric `exit` frame
+ * (such as a native wrapper's missing status) or an `error` frame the server
+ * maps to -1. A frame type, not the failure cause. */
+export type AttachmentCommandTerminalType = "exit" | "error";
+/** Node's spawn failure wording on a non-Desktop runner's error frame,
+ * reduced to its code; any other wording is `other`. Not cause proof. */
+export type AttachmentRunnerSpawnError =
+  "spawn_enoent" | "spawn_eacces" | "spawn_eperm" | "other";
+/** Closed values from the exact result's own command receipt. */
+export type AttachmentCommandTerminal = {
+  type: AttachmentCommandTerminalType;
+  /** Set by the receiver only for a non-Desktop runner's error frame. */
+  runnerSpawnError?: AttachmentRunnerSpawnError;
+};
+const RUNNER_SPAWN_ERRORS = new Set<unknown>([
+  "spawn_enoent",
+  "spawn_eacces",
+  "spawn_eperm",
+  "other",
+] satisfies AttachmentRunnerSpawnError[]);
+
+// Node child_process wording, `spawn ${file} ${code}`. The file is never kept.
+const NODE_SPAWN_ERROR = /^spawn (?:[^\r\n]{1,4096} )?(ENOENT|EACCES|EPERM)$/;
+
+/** Classify only an error frame's own complete message; never output. */
+export function classifyRunnerSpawnError(
+  message: string,
+): AttachmentRunnerSpawnError {
+  const code =
+    message.length <= 4200 ? NODE_SPAWN_ERROR.exec(message)?.[1] : undefined;
+  return code === "ENOENT"
+    ? "spawn_enoent"
+    : code === "EACCES"
+      ? "spawn_eacces"
+      : code === "EPERM"
+        ? "spawn_eperm"
+        : "other";
+}
+
+/** Own data fields only; any invalid type omits the whole terminal. */
+function readTerminal(input: unknown): AttachmentCommandTerminal | undefined {
+  const type = ownDataValue(input, "type");
+  if (type !== "exit" && type !== "error") return undefined;
+  const spawn =
+    type === "error" ? ownDataValue(input, "runnerSpawnError") : undefined;
+  return RUNNER_SPAWN_ERRORS.has(spawn)
+    ? { type, runnerSpawnError: spawn as AttachmentRunnerSpawnError }
+    : { type };
+}
+
 type DownloadInput = {
   platform: "windows" | "posix" | "unknown";
   shell: "bash" | "cmd";
@@ -41,6 +91,8 @@ type DownloadInput = {
    * command carried CURL_PROGRESS_WRITE_OUT. Read only for exit 28 or 35 on
    * the cloud's unknown-platform Bash shape. Never kept. */
   cloudCurlProgressStdout?: string;
+  /** The selected result's own relay terminal. Read only for exit -1. */
+  terminal?: AttachmentCommandTerminal;
 };
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
@@ -351,6 +403,22 @@ function directoryProbeContext(
   };
 }
 
+/** Only for the selected result's own -1; other exits never read a terminal. */
+function downloadTerminalContext(input: DownloadInput) {
+  const terminal =
+    input.exitCode === -1
+      ? readTerminal(ownDataValue(input, "terminal"))
+      : undefined;
+  if (!terminal) return {};
+  return {
+    attachment_download_terminal_version: 1 as const,
+    attachment_download_terminal_type: terminal.type,
+    ...(terminal.runnerSpawnError && {
+      attachment_download_runner_spawn_error: terminal.runnerSpawnError,
+    }),
+  };
+}
+
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
 function summarize(input: DownloadInput) {
@@ -444,6 +512,7 @@ function summarize(input: DownloadInput) {
     ...(input.directoryProbe
       ? directoryProbeContext(input.directoryProbe)
       : {}),
+    ...downloadTerminalContext(input),
     // The wording gates only whether to keep the caller's closed value.
     ...(input.httpClient === "curl" &&
     input.exitCode === 127 &&
@@ -477,6 +546,8 @@ export type AttachmentDownloadBoundary = {
   shellContextStage?: AttachmentDownloadShellContextStage;
   /** This call's own shell probe outcome; kept only with the detect_shell stage. */
   shellContextDetectResult?: AttachmentDownloadShellDetectResult;
+  /** That probe's own relay terminal; kept only with its -1 result. */
+  shellContextDetectTerminal?: AttachmentCommandTerminal;
 };
 
 /** The awaited call last entered inside the shared shell context, not the
@@ -492,12 +563,17 @@ export type AttachmentDownloadShellDetectResult =
 export type AttachmentDownloadShellContextObservation = {
   stage?: AttachmentDownloadShellContextStage;
   detectShellResult?: AttachmentDownloadShellDetectResult;
+  /** Set only with `nonzero_exit_minus_one`, from that probe's own receipt. */
+  detectShellTerminal?: AttachmentCommandTerminal;
 };
 type ShellContextStageContext = {
   attachment_download_shell_context_diagnostic_version: 1;
   attachment_download_shell_context_stage: AttachmentDownloadShellContextStage;
   attachment_download_shell_context_detect_version: 1;
   attachment_download_shell_context_detect_result: AttachmentDownloadShellDetectResult;
+  attachment_download_shell_context_detect_terminal_version: 1;
+  attachment_download_shell_context_detect_terminal_type: AttachmentCommandTerminalType;
+  attachment_download_shell_context_detect_runner_spawn_error: AttachmentRunnerSpawnError;
 };
 
 type BoundaryContext = {
@@ -797,8 +873,18 @@ export function recordAttachmentDownloadBoundary(
     delete previous.attachment_download_shell_context_stage;
     delete previous.attachment_download_shell_context_detect_version;
     delete previous.attachment_download_shell_context_detect_result;
+    delete previous.attachment_download_shell_context_detect_terminal_version;
+    delete previous.attachment_download_shell_context_detect_terminal_type;
+    delete previous.attachment_download_shell_context_detect_runner_spawn_error;
     const stage = input.shellContextStage;
     const detect = input.shellContextDetectResult;
+    // Only the probe's own -1 reads its terminal.
+    const terminal =
+      input.phase === "shell_context" &&
+      stage === "detect_shell" &&
+      detect === "nonzero_exit_minus_one"
+        ? readTerminal(ownDataValue(input, "shellContextDetectTerminal"))
+        : undefined;
     contexts.set(error, {
       ...previous,
       attachment_download_boundary_version: 1,
@@ -827,6 +913,14 @@ export function recordAttachmentDownloadBoundary(
             attachment_download_shell_context_detect_result: detect,
           }
         : {}),
+      ...(terminal && {
+        attachment_download_shell_context_detect_terminal_version: 1 as const,
+        attachment_download_shell_context_detect_terminal_type: terminal.type,
+        ...(terminal.runnerSpawnError && {
+          attachment_download_shell_context_detect_runner_spawn_error:
+            terminal.runnerSpawnError,
+        }),
+      }),
     });
   } catch {
     // Optional diagnostics must preserve the original rejection.
