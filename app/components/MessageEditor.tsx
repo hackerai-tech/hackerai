@@ -84,6 +84,8 @@ export const MessageEditor = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Keys that confirm or dismiss an IME candidate must not cancel the edit.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "Escape") {
       e.preventDefault();
       onCancel();

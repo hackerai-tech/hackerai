@@ -31,6 +31,8 @@ export const FeedbackInput = ({ onSend, onCancel }: FeedbackInputProps) => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Enter that confirms an IME candidate must not send partial feedback.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
