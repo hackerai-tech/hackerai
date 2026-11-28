@@ -394,6 +394,221 @@ it("keeps discovered evidence when later chats could exhaust the byte budget", a
   });
 });
 
+/** Chats created before the burst that the account kept using afterwards. */
+async function busierChats(count: number) {
+  for (let index = 0; index < count; index++)
+    await chat(`chat-busy-${index}`, at(-240), {
+      update_time: Date.now() - 1_000 - index,
+    });
+}
+
+it("finds a run saved near the burst behind more recently updated chats", async () => {
+  await seedBurst();
+  await busierChats(25);
+  await recordCase();
+
+  const { evidence } = await reassess();
+
+  expect(evidence.candidate).toMatchObject({
+    status: "found",
+    runId: RUN,
+    commands: [{ text: COMMAND }],
+  });
+  // The update-order scan still could not reach every chat.
+  expect(evidence.selection).toMatchObject({
+    chatsScanned: 20,
+    scanTruncated: true,
+    otherOverlappingRuns: 0,
+  });
+  expect(exposes(evidence)).toEqual([RUN]);
+});
+
+it("never prioritizes a foreign, later or unplaced run over a verified overlap", async () => {
+  await seedBurst();
+  // This account's row in another account's chat, saved during the burst.
+  await convex.db.insert("messages", {
+    id: "msg-foreign-owned-row",
+    chat_id: "chat_foreign",
+    user_id: USER,
+    role: "assistant",
+    trigger_run_id: "run_foreign_row",
+    generation_started_at: at(-1),
+    generation_time_ms: 2 * MINUTE_MS,
+    update_time: at(2),
+    _creationTime: at(2),
+    parts: [terminal("call-foreign-row", "FOREIGN ROW COMMAND")],
+  });
+  // These chats were saved before the candidate. Their runs either began
+  // after the burst or lack an end time. They cannot take the priority slots.
+  for (let index = 0; index < 40; index++) {
+    await chat(`chat-later-run-${index}`, at(-240), { update_time: at(20) });
+    await runRow(
+      `msg-later-run-${index}`,
+      `chat-later-run-${index}`,
+      `run_later_${index}`,
+      {
+        start: at(index % 2 ? 3 : -1),
+        minutes: index % 2 ? 1 : undefined,
+        saved: at(4) + index,
+      },
+      "POST LATER COMMAND",
+    );
+  }
+  await busierChats(25);
+  await recordCase();
+
+  const { evidence } = await reassess();
+
+  expect(evidence.candidate).toMatchObject({ status: "found", runId: RUN });
+  expect(evidence.selection).toMatchObject({
+    chatsScanned: 20,
+    scanTruncated: true,
+  });
+  expect(exposes(evidence)).toEqual([RUN]);
+});
+
+it("falls back to update order for a run whose row was created before the burst", async () => {
+  await seedBurst();
+  // An intermediate save created the row before the burst; its timing
+  // still spans it.
+  find("msg-assistant")._creationTime = at(-4);
+  find("msg-assistant").update_time = at(11);
+  await recordCase();
+
+  const { evidence } = await reassess();
+
+  expect(evidence.candidate).toMatchObject({
+    status: "found",
+    runId: RUN,
+    commands: [{ text: COMMAND }],
+  });
+  expect(evidence.selection).toEqual(completeSelection);
+});
+
+it("reports a truncated scan when bounded discovery and fallback both run out", async () => {
+  await seedBurst();
+  // More rows in the burst's save range than discovery reads, saved before
+  // the candidate's row, in a chat created after the burst.
+  for (let index = 0; index < 200; index++)
+    await userRow(`msg-noise-${index}`, "chat_after", at(0) + index, "NOISE");
+  await busierChats(25);
+  await recordCase();
+
+  const { evidence } = await reassess();
+
+  expect(evidence).toEqual({
+    status: "ok",
+    selection: {
+      ...completeSelection,
+      chatsScanned: 20,
+      chatsAfterBurst: 0,
+      scanTruncated: true,
+    },
+    candidate: { status: "none" },
+  });
+});
+
+describe("older chat history", () => {
+  const LOOKBACK = 24 * 60;
+  /** A chat turn older than the 24-hour lookback. */
+  const olderTurn = () =>
+    userRow("msg-older", CHAT, at(-LOOKBACK - 60), "OLDER SCOPE TEXT");
+  /** The previous run's reply, which bounds the current request. */
+  const previousReply = () =>
+    runRow(
+      "msg-previous",
+      CHAT,
+      "run_previous",
+      { start: at(-40), minutes: 2, saved: at(-38) },
+      "PREVIOUS COMMAND",
+    );
+
+  it("is marked as before the lookback when the window and request boundary were read", async () => {
+    await seedBurst();
+    await olderTurn();
+    await previousReply();
+    await recordCase();
+
+    const { evidence } = await reassess();
+
+    expect(evidence.selection).toEqual(completeSelection);
+    expect(evidence.candidate).toMatchObject({
+      status: "found",
+      runId: RUN,
+      userMessages: [{ text: USER_TEXT }],
+      commands: [{ text: COMMAND }],
+      coverage: { historyTruncated: true, commandsOmitted: 0 },
+      historyGap: "before_lookback",
+    });
+    expect(JSON.stringify(evidence)).not.toMatch(/OLDER|PREVIOUS/);
+  });
+
+  it("is not marked without a boundary for the current request", async () => {
+    await seedBurst();
+    await olderTurn();
+    await recordCase();
+
+    const { evidence } = await reassess();
+
+    expect(evidence.candidate.coverage.historyTruncated).toBe(true);
+    expect(evidence.candidate).not.toHaveProperty("historyGap");
+  });
+
+  it("counts a saved row of the same run before the lookback as omitted commands", async () => {
+    await seedBurst();
+    await previousReply();
+    await runRow(
+      "msg-older-run-row",
+      CHAT,
+      RUN,
+      {
+        start: at(-LOOKBACK - 2),
+        minutes: 1,
+        saved: at(-LOOKBACK - 1),
+      },
+      "OLDER COMMAND",
+    );
+    await recordCase();
+
+    const { evidence } = await reassess();
+
+    expect(evidence.candidate).toMatchObject({
+      status: "found",
+      coverage: { historyTruncated: true, commandsOmitted: 1 },
+    });
+    expect(evidence.candidate).not.toHaveProperty("historyGap");
+    expect(JSON.stringify(evidence)).not.toContain("OLDER COMMAND");
+  });
+
+  it("is not marked when the row limit clipped the window", async () => {
+    await seedBurst();
+    await olderTurn();
+    await previousReply();
+    // Hidden turns between the boundary and the window start fill the read.
+    for (let index = 0; index < 90; index++)
+      await convex.db.insert("messages", {
+        id: `msg-hidden-${index}`,
+        chat_id: CHAT,
+        user_id: USER,
+        role: "user",
+        is_hidden: true,
+        update_time: at(-600) + index,
+        _creationTime: at(-600) + index,
+        parts: [{ type: "text", text: "HIDDEN TEXT" }],
+      });
+    await recordCase();
+
+    const { evidence } = await reassess();
+
+    expect(evidence.selection).toMatchObject({ scanTruncated: true });
+    expect(evidence.candidate).toMatchObject({
+      status: "found",
+      coverage: { historyTruncated: true, rawReads: 80 },
+    });
+    expect(evidence.candidate).not.toHaveProperty("historyGap");
+  });
+});
+
 it("reports a run that saved after the read range instead of no activity", async () => {
   await seedBurst({ saved: at(45) });
   await recordCase();

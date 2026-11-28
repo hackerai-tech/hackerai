@@ -2990,6 +2990,223 @@ describe("on-demand burst-activity assessment of a historical case", () => {
     expectAdvisoryOnly(result, saved);
   });
 
+  describe("with chat history older than the lookback", () => {
+    /** A turn from before the 24-hour lookback, and the previous reply. */
+    async function olderHistory() {
+      await message(
+        {
+          id: "older-user",
+          role: "user",
+          parts: [{ type: "text", text: "UNRELATED OLDER SCOPE" }],
+        },
+        at(-24 * 60 - 60),
+      );
+      await runMessage(
+        "previous-run",
+        "run_previous",
+        at(-40),
+        at(-38),
+        "printf UNRELATED_PREVIOUS",
+      );
+    }
+    const observedModel = {
+      key: "model-grok-4.6",
+      promptVersion: "egress-burst-observed-activity-v1",
+    };
+
+    it("reports only the observed activity of the run, without a verdict", async () => {
+      await seedActivity();
+      await olderHistory();
+      const saved = await burstCase();
+      // Verdict fields the model might add are never read.
+      classifyAs({ ...concerning, messageIndices: [1] });
+
+      const result = await assess();
+
+      expect(result).toEqual({
+        ...base,
+        selection: "complete",
+        otherOverlappingRuns: 0,
+        coverage: "incomplete",
+        advisory: "inconclusive",
+        reason: "older_context_unavailable",
+        gaps: ["history_truncated"],
+        observedActivity: "network_scanning",
+        model: observedModel,
+      });
+      expect(generateText).toHaveBeenCalledTimes(1);
+      const { prompt } = jest.mocked(generateText).mock.calls[0][0] as any;
+      expect(prompt).toContain("no verdict or authorization");
+      expect(prompt).not.toContain("Choose exactly one verdict");
+      expect(prompt).toContain("[M1] (Current request) Find open ports");
+      expect(prompt).toContain("[T1:public-ip]/24");
+      expect(prompt).not.toContain("UNRELATED");
+      expectAdvisoryOnly(result, saved);
+    });
+
+    it.each<[string, Record<string, unknown>, string]>([
+      [
+        "cites only earlier context",
+        {
+          activity: "network_scanning",
+          commandIndices: [1],
+          messageIndices: [1],
+        },
+        "ambiguous",
+      ],
+      [
+        "cites no command",
+        {
+          activity: "network_scanning",
+          commandIndices: [],
+          messageIndices: [2],
+        },
+        "ambiguous",
+      ],
+      [
+        "calls security tooling ordinary development",
+        {
+          activity: "ordinary_development",
+          commandIndices: [1],
+          messageIndices: [2],
+        },
+        "ambiguous",
+      ],
+      [
+        "cites a message that was not shown",
+        {
+          activity: "network_scanning",
+          commandIndices: [1],
+          messageIndices: [3],
+        },
+        "classifier_invalid",
+      ],
+    ])(
+      "reports no activity when the answer %s",
+      async (_label, output, reason) => {
+        await seedActivity();
+        await olderHistory();
+        // Earlier context in the window, shown as [M1].
+        await message(
+          {
+            id: "prior-user",
+            role: "user",
+            parts: [
+              { type: "text", text: "Scan the targets in our earlier scope." },
+            ],
+          },
+          at(-50),
+        );
+        const saved = await burstCase();
+        classifyAs(output);
+
+        const result = await assess();
+
+        expect(result).toEqual({
+          ...base,
+          selection: "complete",
+          otherOverlappingRuns: 0,
+          coverage: "incomplete",
+          advisory: "inconclusive",
+          reason,
+          gaps: ["history_truncated"],
+          model: observedModel,
+        });
+        expect(generateText).toHaveBeenCalledTimes(1);
+        expectAdvisoryOnly(result, saved);
+      },
+    );
+
+    it.each<[string, () => Promise<unknown>, string[]]>([
+      [
+        "the row limit clipped the window",
+        async () => {
+          for (let index = 0; index < 90; index++)
+            await message(
+              {
+                id: `hidden-${index}`,
+                role: "user",
+                is_hidden: true,
+                parts: [{ type: "text", text: "UNRELATED HIDDEN" }],
+              },
+              at(-600) + index,
+            );
+        },
+        ["history_truncated"],
+      ],
+      [
+        "a terminal call of the run is incomplete",
+        async () => {
+          convex.tables.messages.find(
+            ({ id }: any) => id === `${CHAT}-assistant`,
+          ).terminal_evidence_state = "incomplete";
+        },
+        ["history_truncated", "incomplete_tool_calls"],
+      ],
+      [
+        "a later row of the run was not read",
+        () =>
+          runMessage(
+            `${CHAT}-assistant-late`,
+            RUN,
+            at(-5),
+            at(45),
+            "LATER CMD",
+          ),
+        ["history_truncated", "commands_omitted"],
+      ],
+      [
+        "the current request was edited after the run started",
+        async () => {
+          convex.tables.messages.find(
+            ({ id }: any) => id === `${CHAT}-user`,
+          ).update_time = at(0);
+        },
+        ["no_user_messages", "history_truncated", "user_messages_omitted"],
+      ],
+    ])("calls no model when %s", async (_label, arrange, gaps) => {
+      await seedActivity();
+      await olderHistory();
+      await arrange();
+      const saved = await burstCase();
+
+      const result = await assess();
+
+      expect(result).toMatchObject({
+        ...base,
+        coverage: "incomplete",
+        advisory: "inconclusive",
+        reason: "evidence_gaps",
+        gaps,
+      });
+      expect(result).not.toHaveProperty("observedActivity");
+      expect(generateText).not.toHaveBeenCalled();
+      expectAdvisoryOnly(result, saved);
+    });
+
+    it("calls no model when no reply bounds the current request", async () => {
+      await seedActivity();
+      await message(
+        {
+          id: "older-user",
+          role: "user",
+          parts: [{ type: "text", text: "UNRELATED OLDER SCOPE" }],
+        },
+        at(-24 * 60 - 60),
+      );
+      const saved = await burstCase();
+
+      const result = await assess();
+
+      expect(result).toMatchObject({
+        reason: "evidence_gaps",
+        gaps: ["history_truncated"],
+      });
+      expect(generateText).not.toHaveBeenCalled();
+      expectAdvisoryOnly(result, saved);
+    });
+  });
+
   describe("at an operator-selected minute", () => {
     // The case saved the window's first minute; an archived alert verified
     // out of band names its sixth.

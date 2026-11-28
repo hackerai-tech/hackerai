@@ -5,12 +5,16 @@ import { z } from "zod";
 import { api } from "@/convex/_generated/api";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
 import {
+  decideObservedActivity,
   decideRetainedCandidate,
   EGRESS_BURST_ACTIVITY_PROMPT_VERSION,
+  EGRESS_BURST_OBSERVED_ACTIVITY_PROMPT_VERSION,
   EGRESS_RETAINED_CANDIDATE_PROMPT_VERSION,
+  observedActivitySchema,
   prepareReview,
   retainedCandidateClassificationSchema,
   type EgressReviewClassification,
+  type ObservedActivity,
 } from "@/lib/abuse/egress-review";
 import {
   ACTIVITY_MINUTE_UTC,
@@ -46,6 +50,11 @@ import {
 // account and window from the case and rejects any other minute; the
 // selection proves nothing about that minute's telemetry and adds no
 // enforcement capability.
+//
+// A burst-activity run whose evidence is complete except for chat history
+// older than the 24-hour lookback can still report the activity its cited
+// commands and current request show, as `observedActivity`. That result
+// stays incomplete and inconclusive, with no verdict or authorization.
 
 const reference = z.string().regex(CASE_REFERENCE);
 export const egressAbuseReassessPayloadSchema = z.union([
@@ -127,7 +136,9 @@ export type BurstActivityReason =
   | "classifier_unavailable"
   | "classifier_invalid"
   // Classified complete evidence.
-  | ReturnType<typeof decideRetainedCandidate>["reason"];
+  | ReturnType<typeof decideRetainedCandidate>["reason"]
+  // Older chat context was unavailable; only observed activity is reported.
+  | "older_context_unavailable";
 
 /** Why another run might have been the better candidate. */
 export type BurstSelectionGap =
@@ -157,6 +168,11 @@ export type BurstActivityResult = {
     EgressReviewClassification,
     "activity" | "authorization"
   >;
+  /**
+   * With `older_context_unavailable` only: what the cited commands of the
+   * run did, as the current request asked. Never a verdict or authorization.
+   */
+  observedActivity?: ObservedActivity;
   model?: { key: string; promptVersion: string };
 };
 
@@ -275,7 +291,8 @@ export async function runEgressAbuseReassessment(
     { start: read.burstStart, end: read.burstEnd },
     "retained_candidate",
   );
-  // Partial evidence is never classified, so it cannot become a finding.
+  // A verdict needs complete evidence. A gap confined to older context can
+  // still support a description of the recorded activity.
   const gaps = observationGaps(evidence, prepared);
   if (gaps.length)
     return completed({
@@ -417,13 +434,50 @@ async function runBurstActivityAssessment(
   );
   // Partial evidence is never classified, so it cannot become a finding.
   const gaps = observationGaps(candidate, prepared);
-  if (gaps.length)
-    return done({
+  if (gaps.length) {
+    // The saved request and command evidence has no recorded gaps apart
+    // from older context, so it can support an activity description.
+    const olderContextOnly =
+      candidate.historyGap === "before_lookback" &&
+      gaps.length === 1 &&
+      gaps[0] === "history_truncated" &&
+      candidate.userMessages.some((message) => !message.priorTurn);
+    if (!olderContextOnly)
+      return done({
+        coverage: "incomplete",
+        advisory: "inconclusive",
+        reason: "evidence_gaps",
+        gaps,
+      });
+    const observed = prepareReview(
+      candidate,
+      { start: read.burstStart, end: read.burstEnd },
+      "burst_activity",
+      { observedActivityOnly: true },
+    );
+    const incomplete = {
       coverage: "incomplete",
       advisory: "inconclusive",
-      reason: "evidence_gaps",
       gaps,
+    } as const;
+    if (!passesPrivacyGuard(observed.prompt))
+      return done({ ...incomplete, reason: "privacy_guard" });
+    const model = {
+      key: USER_RESEARCH_MODEL_KEY,
+      promptVersion: EGRESS_BURST_OBSERVED_ACTIVITY_PROMPT_VERSION,
+    };
+    const answer = await classifyEvidence(
+      observed.prompt,
+      observedActivitySchema(observed),
+    );
+    if (typeof answer === "string")
+      return done({ ...incomplete, reason: answer, model });
+    return done({
+      ...incomplete,
+      ...decideObservedActivity(answer, observed),
+      model,
     });
+  }
   if (!passesPrivacyGuard(prepared.prompt))
     return done({
       coverage: "complete",
