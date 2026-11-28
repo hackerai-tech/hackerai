@@ -1222,6 +1222,7 @@ export const recordReceipt = mutation({
   args: { serviceKey: v.string(), ...receiptArgs },
   returns: v.object({
     outcome: v.union(v.literal("created"), v.literal("existing")),
+    confirmedLegitimate: v.optional(v.literal(true)),
   }),
   handler: async (ctx, { serviceKey, ...receipt }) => {
     authorizeEgressReview(serviceKey);
@@ -1233,6 +1234,6 @@ export const recordReceipt = mutation({
           receipt.decision !== "enforcement_pending"))
     )
       throw new Error("Invalid review receipt");
-    return { outcome: await insertReceipt(ctx, receipt) };
+    return await insertReceipt(ctx, receipt);
   },
 });

@@ -13,6 +13,7 @@ import {
   noticeResult,
 } from "./lib/abuseValidators";
 import { lateRestrictionSource } from "./lib/abuseResponse";
+import { isCorroboratedLegitimateReceipt } from "./lib/egressReceipts";
 import { enforcementEnabled } from "./egressAbuseEnforcement";
 import {
   ENFORCEMENT_REASONS,
@@ -527,13 +528,7 @@ function disposition(
       receipt.reason === "enforcement_unavailable")
   )
     return "confirmed_abuse_pending";
-  if (
-    receipt.decision === "keep_active" &&
-    exactRun &&
-    receipt.reason === "legitimate_corroborated" &&
-    receipt.reviewReason === "legitimate_corroborated"
-  )
-    return "confirmed_legitimate";
+  if (isCorroboratedLegitimateReceipt(receipt)) return "confirmed_legitimate";
   return "undetermined";
 }
 

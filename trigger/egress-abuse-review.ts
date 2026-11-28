@@ -206,7 +206,7 @@ export type ReviewDiagnostic = {
   /** An active cooldown was bypassed, or could not be checked. */
   cooldown?: "bypassed" | "unavailable" | "window_unsettled";
   /** What a corroborated legitimate decision did to the cooldown. */
-  cooldownGrant?: "granted" | "kept" | "failed";
+  cooldownGrant?: "granted" | "kept" | "failed" | "receipt_unconfirmed";
 };
 
 export type EgressAbuseReviewResult =
@@ -1314,8 +1314,8 @@ async function reviewBurst(
 
   const decision = decideReview(classification, evidence, prepared);
   if (decision.outcome === "no_case") {
-    try {
-      await client.mutation(api.egressAbuseReview.recordReceipt, {
+    const saveClearance = () =>
+      client.mutation(api.egressAbuseReview.recordReceipt, {
         serviceKey,
         digest,
         ...buildReceipt(decision, base, {
@@ -1324,19 +1324,29 @@ async function reviewBurst(
         }),
         caseOutcome: "none",
       });
+    let confirmedLegitimate = false;
+    try {
+      // The digest makes a retry after a lost reply idempotent. Reuse the
+      // classification already in memory rather than running the task again.
+      confirmedLegitimate =
+        (await saveClearance().catch(saveClearance)).confirmedLegitimate ===
+        true;
     } catch {
-      logger.warn("Egress abuse review receipt was not recorded", {
+      logger.warn("Egress abuse review receipt could not be confirmed", {
         decision: "keep_active",
       });
     }
-    // Only this complete, corroborated exact-run decision grants a cooldown.
-    try {
-      diagnostic.cooldownGrant = await grantReviewCooldown(redis, userId, {
-        peak: observation.connections,
-        digest,
-      });
-    } catch {
-      diagnostic.cooldownGrant = "failed";
+    if (confirmedLegitimate) {
+      try {
+        diagnostic.cooldownGrant = await grantReviewCooldown(redis, userId, {
+          peak: observation.connections,
+          digest,
+        });
+      } catch {
+        diagnostic.cooldownGrant = "failed";
+      }
+    } else {
+      diagnostic.cooldownGrant = "receipt_unconfirmed";
     }
     return {
       status: "completed",
