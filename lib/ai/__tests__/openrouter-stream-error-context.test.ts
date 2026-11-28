@@ -4,8 +4,11 @@ import { TextDecoderStream, WritableStream } from "node:stream/web";
 import { withProviderStreamTimeout } from "../provider-stream-timeout";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
 import {
+  classifyProviderOverflowError,
   extractErrorDetails,
+  getProviderErrorCategory,
   getProviderStatusCode,
+  isInvalidImageInputError,
 } from "@/lib/utils/error-utils";
 import { getOpenRouterStreamErrorContext } from "@/lib/utils/openrouter-stream-error-context";
 import { DEEPSEEK_1017_SLUG } from "@/lib/experiments/paid-deepseek-1017";
@@ -53,7 +56,13 @@ function jsonEscapeDiagnosticCalls(warn: jest.SpyInstance) {
 async function streamOpenRouterError(input: {
   modelId?: string;
   messages: ModelMessage[];
-  error?: { code: number; message: string };
+  error?: {
+    code: number | string;
+    message: string;
+    param?: unknown;
+    metadata?: unknown;
+  };
+  bedrock?: boolean;
 }) {
   const error = input.error ?? { code: 400, message: ESCAPE_ERROR };
   const fetch = jest.fn().mockResolvedValue(
@@ -65,6 +74,7 @@ async function streamOpenRouterError(input: {
     createOpenRouter({ apiKey: "synthetic-unused", fetch }).chat(
       input.modelId ?? DEEPSEEK_1017_SLUG,
     ),
+    { bedrockStreamRejectionDiagnostic: input.bedrock },
   );
   const observed: unknown[] = [];
   const stream = streamText({
@@ -81,7 +91,69 @@ async function streamOpenRouterError(input: {
   expect(observed).toHaveLength(1);
   expect(observed[0]).toMatchObject(error);
   expect(parts.find((part) => part.type === "error")?.error).toBe(observed[0]);
+  return observed[0];
 }
+
+it("projects a flat Bedrock SDK error into closed diagnostics without changing the operational error", async () => {
+  const error = await streamOpenRouterError({
+    modelId: "x-ai/grok-4.6",
+    bedrock: true,
+    messages: [{ role: "user", content: "synthetic" }],
+    error: {
+      code: 400,
+      message: "invalid_request",
+      param: "messages[19].content[1].image_url",
+      metadata: {
+        provider_name: "PRIVATE_PROVIDER_CANARY",
+        raw: {
+          error: {
+            message:
+              "Image in a tool result is unsupported. PRIVATE_RAW_CANARY",
+          },
+        },
+      },
+    },
+  });
+  const details = extractErrorDetails(error);
+  expect(details).toMatchObject({
+    openrouterBedrockStreamRejectionVersion: 1,
+    openrouterBedrockStreamRejectionParameter: "image",
+    openrouterBedrockStreamRejectionRawFormat: "object",
+    openrouterBedrockStreamRejectionMarker: "media",
+  });
+  expect(JSON.stringify(getOpenRouterStreamErrorContext(error))).not.toMatch(
+    /PRIVATE_|messages\[19\]|unsupported/,
+  );
+  expect(getProviderStatusCode(details)).toBe(400);
+  expect(getProviderErrorCategory(details)).toBe("provider_4xx");
+  expect(classifyProviderOverflowError(error)).toBeNull();
+  expect(isInvalidImageInputError(error)).toBe(false);
+  expect(details.providerRawError).toBeUndefined();
+  expect(details.providerErrorParam).toBeUndefined();
+  expect(extractOpenRouterMetadataFromError(error)).toEqual({});
+});
+
+it.each([
+  { bedrock: false, code: 400 },
+  { bedrock: true, code: 502 },
+])(
+  "does not project a Bedrock diagnostic for $bedrock / $code",
+  async ({ bedrock, code }) => {
+    const error = await streamOpenRouterError({
+      modelId: "x-ai/grok-4.6",
+      bedrock,
+      messages: [{ role: "user", content: "synthetic" }],
+      error: {
+        code,
+        message: "invalid_request",
+        param: "messages[0].tool_call_id",
+      },
+    });
+    expect(extractErrorDetails(error)).not.toHaveProperty(
+      "openrouterBedrockStreamRejectionVersion",
+    );
+  },
+);
 
 it("distinguishes an outer bad surrogate from nested tool JSON through the SDK", async () => {
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -324,7 +396,12 @@ it("associates a frozen error without mutating its shape or replacing the emitte
 });
 
 /** Exercise middleware forwarding with an owned SDK-shaped result. */
-const open = async (parts: unknown[], headers: unknown, cancel = jest.fn()) => {
+const open = async (
+  parts: unknown[],
+  headers: unknown,
+  cancel = jest.fn(),
+  bedrock = false,
+) => {
   const model: LanguageModel = {
     specificationVersion: "v3",
     provider: "openrouter",
@@ -342,7 +419,9 @@ const open = async (parts: unknown[], headers: unknown, cancel = jest.fn()) => {
       response: { headers },
     }),
   };
-  const wrapped = withOpenRouterStreamErrorContext(model);
+  const wrapped = withOpenRouterStreamErrorContext(model, {
+    bedrockStreamRejectionDiagnostic: bedrock,
+  });
   if (typeof wrapped === "string") throw new Error("Expected model");
   return { result: await wrapped.doStream({ prompt: [] }), model, wrapped };
 };
@@ -395,6 +474,50 @@ it("declines reused error identity across calls instead of assigning a preceding
     association: "ambiguous",
   });
   expect(extractOpenRouterMetadataFromError(error)).toEqual({});
+});
+
+it("drops only the closed diagnostics when a Bedrock error is reused or accessor-backed", async () => {
+  const error = Object.freeze({
+    code: "400",
+    param: "messages[3].tool_call_id",
+    metadata: { raw: "unmatched invalid_tool_result" },
+  });
+  const part = { type: "error", error };
+  for (const requestId of ["req-bedrock-first", "req-bedrock-second"]) {
+    const { result } = await open(
+      [part],
+      { "x-request-id": requestId },
+      undefined,
+      true,
+    );
+    expect((await result.stream.getReader().read()).value).toBe(part);
+    if (requestId === "req-bedrock-first") {
+      expect(extractErrorDetails(error)).toMatchObject({
+        openrouterBedrockStreamRejectionParameter: "tool_pairing",
+        openrouterBedrockStreamRejectionRawFormat: "text",
+        openrouterBedrockStreamRejectionMarker: "tool_pairing",
+      });
+    }
+  }
+  expect(extractErrorDetails(error)).not.toHaveProperty(
+    "openrouterBedrockStreamRejectionVersion",
+  );
+
+  const getter = jest.fn(() => {
+    throw new Error("must not run");
+  });
+  const unreadable = { code: 400, message: "invalid_request", metadata: {} };
+  Object.defineProperty(unreadable.metadata, "raw", { get: getter });
+  const unreadablePart = { type: "error", error: unreadable };
+  const { result } = await open([unreadablePart], undefined, undefined, true);
+  expect((await result.stream.getReader().read()).value).toBe(unreadablePart);
+  expect(getter).not.toHaveBeenCalled();
+  expect(getOpenRouterStreamErrorContext(unreadable)?.association).toBe(
+    "same_call",
+  );
+  expect(extractErrorDetails(unreadable)).not.toHaveProperty(
+    "openrouterBedrockStreamRejectionVersion",
+  );
 });
 
 const unreadableHeaderGetter = jest.fn(() => {

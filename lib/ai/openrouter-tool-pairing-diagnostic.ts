@@ -5,6 +5,8 @@
  * memory for comparison only; they, their hashes, and message content are
  * never reported.
  */
+import type { BedrockStreamRejection } from "@/lib/utils/openrouter-stream-error-context";
+
 const BEDROCK_TOOL_ID_ALPHABET = /^[A-Za-z0-9_.:-]+$/;
 const BEDROCK_TOOL_ID_MAX_LENGTH = 64;
 const BEDROCK_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -216,6 +218,86 @@ function hasToolPairingMarker(text: string): boolean {
   return (
     /\bunmatched\b/.test(text) && /\binvalid_tool_(?:result|call)\b/.test(text)
   );
+}
+
+function bedrockRejectionParameter(
+  parameter: unknown,
+): BedrockStreamRejection["parameter"] {
+  if (parameter == null) return "absent";
+  if (typeof parameter !== "string" || parameter.length > 256) return "other";
+  if (/^(?:max_tokens|max_completion_tokens|context_length)$/.test(parameter)) {
+    return "context_limit";
+  }
+  const path = parameter.replace(/\[\d+\]/g, "[]");
+  if (!/^messages(?:\[\])?(?:\.[a-z_]+(?:\[\])?)+$/.test(path)) return "other";
+  if (/\.(?:image_url|image)(?:\b|$)/.test(path)) return "image";
+  if (/\.(?:tool_call_id|tool_calls|tool_use_id)(?:\b|$)/.test(path)) {
+    return "tool_pairing";
+  }
+  return "other";
+}
+
+function bedrockRejectionMarker(
+  message: string | undefined,
+): BedrockStreamRejection["marker"] {
+  if (!message) return "unavailable";
+  if (hasToolPairingMarker(message)) return "tool_pairing";
+  if (
+    /\b(?:context_length_exceeded|maximum context length|context window exceeded)\b/i.test(
+      message,
+    )
+  ) {
+    return "context_limit";
+  }
+  if (
+    /\b(?:image|multimodal)\b.{0,64}\b(?:unsupported|not supported|not allowed)\b|\b(?:unsupported|not supported|not allowed|failed to fetch)\b.{0,64}\bimage\b/i.test(
+      message,
+    )
+  ) {
+    return "media";
+  }
+  return "other";
+}
+
+function describeBedrockRawReason(
+  raw: unknown,
+): Pick<BedrockStreamRejection, "rawFormat" | "marker"> {
+  if (raw == null) return { rawFormat: "absent", marker: "unavailable" };
+  if (typeof raw === "string") {
+    return {
+      rawFormat: "text",
+      marker: bedrockRejectionMarker(
+        raw.length <= MAX_ERROR_TEXT_LENGTH ? raw : undefined,
+      ),
+    };
+  }
+  if (!isObject(raw) || Array.isArray(raw)) {
+    return { rawFormat: "unsupported", marker: "unavailable" };
+  }
+  let message = boundedOwnText(raw, "message");
+  if (message === undefined) {
+    const nested = ownValue(raw, "error");
+    if (isObject(nested)) message = boundedOwnText(nested, "message");
+  }
+  return { rawFormat: "object", marker: bedrockRejectionMarker(message) };
+}
+
+/** The SDK delivers the inner error directly on an SSE error part. */
+export function describeBedrockStreamRejection(
+  error: unknown,
+): BedrockStreamRejection | undefined {
+  if (!isObject(error)) return undefined;
+  try {
+    const code = ownValue(error, "code");
+    if (code !== 400 && code !== "400") return undefined;
+    if (isObject(ownValue(error, "error"))) return undefined;
+    const parameter = bedrockRejectionParameter(ownValue(error, "param"));
+    const metadata = ownValue(error, "metadata");
+    const raw = isObject(metadata) ? ownValue(metadata, "raw") : undefined;
+    return Object.freeze({ parameter, ...describeBedrockRawReason(raw) });
+  } catch {
+    return undefined;
+  }
 }
 
 export function isBedrockToolPairingRejection(error: unknown): boolean {

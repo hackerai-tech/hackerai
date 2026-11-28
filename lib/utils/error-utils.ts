@@ -420,6 +420,18 @@ export const extractErrorDetails = (
       openrouterStreamErrorGenerationId: streamContext.generationId,
       openrouterStreamErrorRequestId: streamContext.requestId,
     });
+    if (
+      streamContext.association === "same_call" &&
+      streamContext.bedrockRejection
+    ) {
+      const { parameter, rawFormat, marker } = streamContext.bedrockRejection;
+      Object.assign(details, {
+        openrouterBedrockStreamRejectionVersion: 1,
+        openrouterBedrockStreamRejectionParameter: parameter,
+        openrouterBedrockStreamRejectionRawFormat: rawFormat,
+        openrouterBedrockStreamRejectionMarker: marker,
+      });
+    }
   }
 
   const bodyContexts = new Set(

@@ -1,3 +1,9 @@
+export type BedrockStreamRejection = Readonly<{
+  parameter: "absent" | "image" | "tool_pairing" | "context_limit" | "other";
+  rawFormat: "absent" | "text" | "object" | "unsupported";
+  marker: "unavailable" | "tool_pairing" | "media" | "context_limit" | "other";
+}>;
+
 export type OpenRouterStreamErrorContext = Readonly<{
   version: 1;
   source: "sdk_error_part";
@@ -5,6 +11,7 @@ export type OpenRouterStreamErrorContext = Readonly<{
   association: "same_call" | "ambiguous";
   generationId?: string;
   requestId?: string;
+  bedrockRejection?: BedrockStreamRejection;
 }>;
 
 const contexts = new WeakMap<
