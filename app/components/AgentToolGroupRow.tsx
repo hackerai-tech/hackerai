@@ -228,7 +228,7 @@ export const AgentToolGroupRow = memo(function AgentToolGroupRow({
             />
             <span className="min-w-0 truncate">{summary}</span>
             <ChevronIcon
-              className="size-4 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 touch-device:!opacity-100"
+              className="size-4 shrink-0 opacity-0 transition-opacity max-md:ml-auto group-hover:opacity-100 group-focus-visible:opacity-100 touch-device:!opacity-100"
               aria-hidden="true"
               data-testid="agent-tool-group-chevron"
             />

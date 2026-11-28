@@ -252,24 +252,28 @@ export function AgentApprovalPrompt({
         }}
         data-testid="agent-approval-prompt"
       >
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Hand className="size-4" aria-hidden="true" />
-          <span>{getApprovalCategory(request)}</span>
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <Hand className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate">
+            {getApprovalCategory(request)}
+          </span>
         </div>
 
-        <div className="min-w-0 space-y-1.5">
-          <div className="text-[15px] font-medium leading-5 text-foreground sm:text-base">
+        <div className="-mt-1.5 min-w-0 space-y-1.5">
+          <div className="text-base font-semibold leading-6 text-foreground sm:text-[17px]">
             {request.title}
           </div>
           {purpose ? (
-            <p className="text-sm leading-5 text-muted-foreground">{purpose}</p>
+            <p className="text-[15px] leading-6 text-foreground/80">
+              {purpose}
+            </p>
           ) : null}
         </div>
 
         {approvalTarget ? (
           <pre
             aria-label="Exact action"
-            className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
+            className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-black/5 px-4 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
             data-testid="agent-approval-target"
           >
             <code translate="no">
@@ -280,7 +284,7 @@ export function AgentApprovalPrompt({
 
         {request.autoReview?.rolloutPhase === "enforce" ? (
           <div
-            className="rounded-lg border border-black/8 bg-black/[0.025] px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
+            className="rounded-2xl border border-black/8 bg-black/[0.025] px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]"
             data-testid="agent-auto-review-summary"
           >
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -350,28 +354,26 @@ export function AgentApprovalPrompt({
           </div>
         ) : (
           <div
-            className="flex items-center justify-end gap-2"
+            className="grid grid-cols-2 items-center gap-2 sm:flex sm:justify-end"
             data-testid="agent-approval-actions"
           >
             <Button
               type="button"
               variant="outline"
               disabled={!canSubmit}
-              className="rounded-full bg-transparent shadow-none"
+              className="h-11 rounded-full bg-transparent shadow-none sm:h-9"
               onClick={() => void denyApproval()}
             >
               Deny
             </Button>
 
-            <div className="flex items-center">
+            <div className="flex min-w-0 items-center">
               <Button
                 type="submit"
                 disabled={!canSubmit}
-                className={
-                  targetGrant
-                    ? "rounded-l-full rounded-r-none px-4"
-                    : "rounded-full px-4"
-                }
+                className={`h-11 min-w-0 flex-1 px-4 sm:h-9 sm:flex-none ${
+                  targetGrant ? "rounded-l-full rounded-r-none" : "rounded-full"
+                }`}
               >
                 {allowLabel}
               </Button>
@@ -383,7 +385,7 @@ export function AgentApprovalPrompt({
                       ref={optionsRef}
                       type="button"
                       disabled={!canSubmit}
-                      className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
+                      className="h-11 rounded-l-none rounded-r-full border-l border-primary/15 px-3 sm:h-9 sm:px-2"
                       aria-label="More approval options"
                     >
                       <ChevronDown aria-hidden="true" />

@@ -229,8 +229,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           existingShareId={chatData?.share_id}
         />
         <div className="px-4 bg-background flex-shrink-0">
-          <div className="flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
-            <div className="flex items-center gap-2 min-w-0">
+          <div className="flex flex-row items-center justify-between pt-3 pb-1 gap-1 max-md:gap-2 max-md:pt-2 sticky top-0 z-10 bg-background flex-shrink-0">
+            <div className="flex items-center gap-2 max-md:gap-3 min-w-0">
               {/* Only show sidebar toggle on mobile - desktop uses collapsed sidebar logo */}
               {showSidebarToggle && !chatSidebarOpen && (
                 <Button
@@ -238,12 +238,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   size="icon"
                   aria-label="Open sidebar"
                   onClick={toggleChatSidebar}
-                  className="h-7 w-7 flex-shrink-0 md:hidden"
+                  className="size-11 flex-shrink-0 rounded-full border border-border bg-muted/60 md:hidden"
                 >
                   <PanelLeft className="size-5" />
                 </Button>
               )}
-              <div className="flex flex-row items-center gap-[6px] min-w-0 text-foreground text-lg font-medium">
+              <div className="flex flex-row items-center gap-[6px] min-w-0 text-foreground text-lg font-medium max-md:text-[17px] max-md:font-semibold">
                 <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2 min-w-0">
                   {isChatNotFound ? (
                     ""
@@ -272,14 +272,14 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 max-md:gap-0 max-md:rounded-full max-md:border max-md:border-border max-md:bg-muted/60 max-md:[&:not(:has(>:not([data-desktop-only])))]:hidden">
               {isMobile && isInChat && showSidebarToggle && (
                 <Button
                   variant="ghost"
                   size="icon"
                   aria-label="Start new task"
                   onClick={handleNewChat}
-                  className="h-7 w-7"
+                  className="size-11 rounded-full"
                 >
                   <SquarePen className="size-5" />
                 </Button>
@@ -291,6 +291,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               <button
                 aria-label="Share"
                 data-testid="share-chat-button"
+                data-desktop-only
                 onClick={() => setShowShareDialog(true)}
                 className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
                   isExistingChat && id && taskTitle

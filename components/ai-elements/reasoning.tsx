@@ -117,7 +117,7 @@ export function ReasoningTrigger({
         <span className="min-w-0 truncate text-left">{thinkingMessage}</span>
       )}
       <ChevronIcon
-        className="size-4 shrink-0 opacity-100 transition-opacity desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100"
+        className="size-4 shrink-0 opacity-100 transition-opacity max-md:ml-auto desktop:opacity-0 desktop:group-hover:opacity-100 desktop:group-focus-visible:opacity-100 touch-device:!opacity-100"
         data-testid="reasoning-chevron"
       />
     </CollapsibleTrigger>
