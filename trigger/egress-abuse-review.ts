@@ -231,7 +231,8 @@ export type EgressAbuseReviewResult =
 
 /** Matches the `user_` tag both Agent entry points put on root runs. */
 const AGENT_TASK = "agent-long";
-const ROOT_RUN_PAGE = 50;
+// Use Trigger's full page size while keeping the request count bounded.
+const ROOT_RUN_PAGE = 100;
 const MAX_ROOT_PAGES = 4;
 /** Allow time for Trigger's run history to catch up before evaluating overlap. */
 const ROOT_HISTORY_SETTLE_MS = 20 * 60_000;

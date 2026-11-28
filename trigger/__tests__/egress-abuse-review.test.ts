@@ -506,7 +506,7 @@ it("saves one encrypted case with an unsent draft for cited concerning activity"
     tag: `user_${first.userId}`,
     from: 1,
     to: BURST_START + 2 * MINUTE_MS,
-    limit: 50,
+    limit: 100,
   });
   // Within the per-link cap, no run lifecycle lookup is made.
   expect(triggerQuery.execute).not.toHaveBeenCalled();
@@ -516,20 +516,28 @@ describe("other root runs of the account", () => {
   const competing = (timing: Parameters<typeof rootRun>[1]) =>
     rootRun("run_unlinked", timing);
 
-  it("checks older disjoint rows on a second page before evaluating the selected run", async () => {
+  it("reviews a sole overlapping run after verifying more than 200 history rows", async () => {
     await seedRun();
     await link();
-    const getNextPage = jest.fn().mockResolvedValue({
-      data: [
-        competing({
-          started: BURST_START - 120_000,
-          finished: BURST_START - 90_000,
-        }),
-      ],
-      hasNextPage: () => false,
-    });
+    const olderRuns = Array.from({ length: 200 }, (_, i) =>
+      rootRun(`run_older${i}`, {
+        started: BURST_START - 120_000,
+        finished: BURST_START - 90_000,
+      }),
+    );
+    const getNextPage = jest
+      .fn()
+      .mockResolvedValueOnce({
+        data: olderRuns.slice(99, 199),
+        hasNextPage: () => true,
+        getNextPage: () => getNextPage(),
+      })
+      .mockResolvedValueOnce({
+        data: olderRuns.slice(199),
+        hasNextPage: () => false,
+      });
     jest.mocked(runs.list).mockReturnValue({
-      data: [selectedRun],
+      data: [selectedRun, ...olderRuns.slice(0, 99)],
       hasNextPage: () => true,
       getNextPage,
     } as never);
@@ -537,7 +545,7 @@ describe("other root runs of the account", () => {
     await expect(run()).resolves.toMatchObject({
       outcome: "authorization_request",
     });
-    expect(getNextPage).toHaveBeenCalledTimes(1);
+    expect(getNextPage).toHaveBeenCalledTimes(2);
   });
 
   it("waits for recent Trigger history to settle before interpreting an apparent single run", async () => {
