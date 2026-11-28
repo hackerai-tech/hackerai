@@ -724,10 +724,17 @@ and its saved-minute basis are unchanged.
   without a verified account returns `account_unverified`. Nothing else in
   the record is read.
 - **What it reads.** The account-activity read from the verified account
-  only, with the same chat discovery, deletion fence, content exclusions and
-  chat, row and byte limits. It reads messages created from 24 hours before
-  the burst minute to 31 minutes after it ends, so later conversation cannot
-  use up the limits. It skips chats created after the burst without reading them.
+  only, with the same deletion fence, content exclusions and chat, row and
+  byte limits. It first reads the account's own messages saved from one
+  minute before the burst minute to 31 minutes after it ends, and reads the
+  owned chats of assistant rows whose persisted run timing does not place
+  them apart from the burst. Chat discovery in update order then fills the
+  remaining chat reads, so chats the account used after the burst cannot hide
+  a run saved near it. That fallback still finds a run whose rows were saved
+  earlier, such as a long run's intermediate save. In each chat it reads
+  messages created from 24 hours before the burst minute to 31 minutes after
+  it ends, so later conversation cannot use up the limits. It skips chats
+  created after the burst without reading them.
   It keeps one candidate: the most recently started run that started a
   terminal command, has complete persisted timing that overlaps the burst,
   and is not marked active. It returns that run's commands and the pre-start
@@ -748,12 +755,25 @@ advisory_only`, and `otherOverlappingRuns` (runs that also overlap but were
   row of the candidate itself counts as an omitted command. Coverage,
   `advisory`, `classification` and the model follow the retained-candidate
   rules. Edits after the run started, truncation and other evidence gaps
-  make the evidence `incomplete`. The model is never called on
-  incomplete evidence, and at most once per task.
-- **Limits.** Chat discovery checks up to 80 chat records in update order.
-  It skips chats created after the burst and reads messages in up to 20
-  remaining chats. A run beyond those limits may be missed, which the
-  result reports as `chat_scan_truncated`. The late-save check looks at
+  make the evidence `incomplete`. Each task calls the model at most once.
+  A finding about authorization or legitimacy requires complete evidence.
+- **Older chat history.** A chat with rows from before the 24-hour lookback
+  reports `history_truncated`. When that is the only gap, the read reached
+  the start of the lookback without a row or byte limit, another run's reply
+  in it bounds the current request, and there are no other recorded gaps in
+  that request or the finished run's command evidence, one model call
+  reports `observedActivity`: what the cited commands did, as the current
+  request asked. The answer must cite a recorded command and a current
+  request message. The result keeps `coverage:
+incomplete`, `advisory: inconclusive` and `gaps: ["history_truncated"]`,
+  with reason `older_context_unavailable`. It never states a verdict or
+  authorization. A clipped read, an omitted or incomplete command, an edited
+  or missing current request, or truncated prompt items call no model.
+- **Limits.** The saved-near-the-burst read inspects up to 160 rows and
+  1.5 MiB. Chat discovery then checks up to 80 chat records in update order.
+  Messages are read in up to 20 chats in all, prioritized chats first. A run
+  beyond any of these limits may be missed, which the result reports as
+  `chat_scan_truncated`. The late-save check looks at
   one row, so it can miss a run that saved behind a
   queued user message. The finding describes one run and never establishes
   which activity caused the burst; it does not change the case, the account,

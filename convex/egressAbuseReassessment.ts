@@ -213,6 +213,12 @@ export const burstActivityEvidence = v.union(
         userMessages: v.array(userMessageValidator),
         commands: v.array(commandValidator),
         coverage: coverageValidator,
+        /**
+         * `historyTruncated` is due only to chat rows older than the
+         * lookback: the window was read without a row or byte limit and the
+         * current request's boundary is in it. Absent otherwise.
+         */
+        historyGap: v.optional(v.literal("before_lookback")),
       }),
     ),
     selection: burstSelectionValidator,
@@ -267,6 +273,9 @@ export const readBurstActivity = internalQuery({
               runId: candidate.runId,
               ...withPlaceholders(candidate),
               coverage: candidate.coverage,
+              ...(candidate.historyGap
+                ? { historyGap: candidate.historyGap }
+                : {}),
             }
           : candidate,
     };
