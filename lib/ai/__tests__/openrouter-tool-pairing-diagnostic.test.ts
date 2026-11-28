@@ -201,6 +201,14 @@ it("reports a returned in-band 400 error part once per call without altering str
 
 it.each([
   ["400 without a tool pairing marker", { code: 400, message: "Bad request" }],
+  [
+    "an unmatched message without an invalid tool marker",
+    { code: 400, message: "unmatched tool history" },
+  ],
+  [
+    "an invalid tool marker without an unmatched message",
+    { code: 400, message: "invalid_tool_call" },
+  ],
   ["a marker without status 400", { ...REJECTION, code: 502 }],
 ])("does not report %s", async (_label, error) => {
   await runStream(sdkModel(inBandRejection([error]), true).model);
@@ -335,7 +343,7 @@ describe("describeBedrockToolPairing", () => {
             tool_calls: [
               call("a"),
               call("a"),
-              call("b", "bad name"),
+              call("b", "a".repeat(65)),
               call("c", "other_tool"),
             ],
           },

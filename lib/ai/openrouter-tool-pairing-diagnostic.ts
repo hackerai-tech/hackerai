@@ -7,7 +7,7 @@
  */
 const BEDROCK_TOOL_ID_ALPHABET = /^[A-Za-z0-9_.:-]+$/;
 const BEDROCK_TOOL_ID_MAX_LENGTH = 64;
-const BEDROCK_TOOL_NAME_ALPHABET = /^[A-Za-z0-9_-]+$/;
+const BEDROCK_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 /** Longer values are counted as over-length without scanning their alphabet. */
 const MAX_INSPECTED_STRING_LENGTH = 1024;
 const MAX_NODES = 16_384;
@@ -60,8 +60,8 @@ function ownArray(value: object, key: string): unknown[] | undefined {
 function isValidName(name: unknown): name is string {
   return (
     typeof name === "string" &&
-    name.length <= MAX_INSPECTED_STRING_LENGTH &&
-    BEDROCK_TOOL_NAME_ALPHABET.test(name)
+    name.length <= 64 &&
+    BEDROCK_TOOL_NAME_PATTERN.test(name)
   );
 }
 
@@ -113,7 +113,9 @@ export function describeBedrockToolPairing(
     if (id.length > BEDROCK_TOOL_ID_MAX_LENGTH) counts.tool_id_over_64_count++;
     if (id.length > MAX_INSPECTED_STRING_LENGTH) {
       counts.evidence = "limited";
-    } else if (!BEDROCK_TOOL_ID_ALPHABET.test(id)) {
+      return undefined;
+    }
+    if (!BEDROCK_TOOL_ID_ALPHABET.test(id)) {
       counts.tool_id_invalid_alphabet_count++;
     }
     return id;
@@ -212,9 +214,7 @@ function boundedOwnText(value: object, key: string): string | undefined {
 /** Recognize the SDK's HTTP 400 error or a returned stream error part. */
 function hasToolPairingMarker(text: string): boolean {
   return (
-    text.includes("invalid_tool_result") ||
-    text.includes("invalid_tool_call") ||
-    (text.includes("unmatched") && text.includes("tool"))
+    /\bunmatched\b/.test(text) && /\binvalid_tool_(?:result|call)\b/.test(text)
   );
 }
 
