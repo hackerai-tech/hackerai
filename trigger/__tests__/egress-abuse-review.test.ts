@@ -1488,7 +1488,7 @@ describe("more linked runs than the per-link cap", () => {
     run_id: runId,
     task_identifier: "agent-long",
     status: "Completed",
-    is_finished: 1,
+    is_finished: true,
     tags: [`user_${first.userId}`, `chat_${CHAT}`],
     executed_at_s: executed / 1_000,
     completed_at_s: completed / 1_000,
@@ -1576,11 +1576,11 @@ describe("more linked runs than the per-link cap", () => {
       (id) =>
         oldRow(id, {
           status: "Executing",
-          is_finished: 0,
+          is_finished: false,
           completed_at_s: null,
         }),
     ],
-    ["is not marked finished", (id) => oldRow(id, { is_finished: 0 })],
+    ["is not marked finished", (id) => oldRow(id, { is_finished: false })],
     [
       "finished within the clock skew of the burst",
       (id) => oldRow(id, { completed_at_s: (BURST_START - MINUTE_MS) / 1_000 }),
@@ -1699,7 +1699,7 @@ describe("more linked runs than the per-link cap", () => {
       ...OLD.slice(0, 21).map((id) => oldRow(id)),
       oldRow("run_busy", {
         status: "Executing",
-        is_finished: 0,
+        is_finished: false,
         completed_at_s: null,
         tags: [`user_${first.userId}`, "chat_chat_busy"],
       }),

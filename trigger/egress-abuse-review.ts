@@ -461,7 +461,7 @@ async function linksFinishedBeforeBurst(
       row.task_identifier === AGENT_TASK &&
       typeof row.status === "string" &&
       TRQL_TERMINAL_STATUSES.has(row.status) &&
-      row.is_finished === 1 &&
+      row.is_finished === true &&
       Array.isArray(row.tags) &&
       row.tags.includes(`user_${userId}`) &&
       row.tags.includes(`chat_${link.chatId}`) &&
