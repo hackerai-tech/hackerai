@@ -166,7 +166,6 @@ import {
   replaceUsageSettlementState,
   shouldSettleUsageMidRun,
   reservePaidDailyFreeAllowanceRequest,
-  verifyPaidDailyFreeAllowanceReservationOwnership,
   type PaidDailyFreeAllowanceReservation,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
@@ -323,6 +322,7 @@ import {
   type ActiveRuntimeBudget,
   type RuntimeSettlementWatchdog,
 } from "@/lib/chat/active-runtime-budget";
+import { assertResumedAgentRunCapacity } from "@/lib/chat/agent-resume-capacity";
 import {
   AgentApprovalAuthorizationError,
   verifyAgentToolApprovalInputAuthorization,
@@ -2906,6 +2906,20 @@ export const agentLongTask = task({
                 );
               });
             };
+            const logAllowanceLostAfterWait =
+              (stage: "approval" | "auto_review" | "user_wait") =>
+              (reason: string) => {
+                triggerLogger.warn(
+                  "[agent-long] daily allowance lease unavailable after wait",
+                  {
+                    chatId,
+                    userId,
+                    runId: ctx.run.id,
+                    stage,
+                    reason,
+                  },
+                );
+              };
             const revalidateAfterApprovalSuspend = async (
               input: AgentToolApprovalInputRecord,
             ) => {
@@ -2978,15 +2992,21 @@ export const agentLongTask = task({
                   authorization.subscription,
                 );
 
-              await checkRateLimitCapacity(
+              await assertResumedAgentRunCapacity({
                 userId,
-                mode,
-                authorization.subscription,
-                currentModelExtraUsageConfig,
-                selectedModel,
-                authorization.organizationId,
-                freeQuotaSubject,
-              );
+                admittedAllowanceReservation: paidDailyFreeAllowanceReservation,
+                checkCapacity: () =>
+                  checkRateLimitCapacity(
+                    userId,
+                    mode,
+                    authorization.subscription,
+                    currentModelExtraUsageConfig,
+                    selectedModel,
+                    authorization.organizationId,
+                    freeQuotaSubject,
+                  ),
+                onAllowanceLost: logAllowanceLostAfterWait("approval"),
+              });
               if (authorization.subscription === "free") {
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
@@ -3052,42 +3072,21 @@ export const agentLongTask = task({
                   currentlyAllowedModel,
                   currentEntitlement.subscription,
                 );
-              const admittedAllowanceReservation =
-                paidDailyFreeAllowanceReservation;
-              if (admittedAllowanceReservation) {
-                // Included capacity was already exhausted when this run was
-                // admitted; it continues only on its original lease and cap.
-                const ownership =
-                  await verifyPaidDailyFreeAllowanceReservationOwnership(
+              await assertResumedAgentRunCapacity({
+                userId,
+                admittedAllowanceReservation: paidDailyFreeAllowanceReservation,
+                checkCapacity: () =>
+                  checkRateLimitCapacity(
                     userId,
-                    admittedAllowanceReservation,
-                  );
-                if (!ownership.owned) {
-                  triggerLogger.warn(
-                    "[agent-long] daily allowance lease unavailable after user wait",
-                    {
-                      chatId,
-                      userId,
-                      runId: ctx.run.id,
-                      reason: ownership.reason,
-                    },
-                  );
-                  throw new AgentApprovalAuthorizationError(
-                    "authorization_mismatch",
-                    "The daily allowance for this run is no longer available.",
-                  );
-                }
-              } else {
-                await checkRateLimitCapacity(
-                  userId,
-                  mode,
-                  currentEntitlement.subscription,
-                  currentModelExtraUsageConfig,
-                  selectedModel,
-                  currentEntitlement.organizationId,
-                  freeQuotaSubject,
-                );
-              }
+                    mode,
+                    currentEntitlement.subscription,
+                    currentModelExtraUsageConfig,
+                    selectedModel,
+                    currentEntitlement.organizationId,
+                    freeQuotaSubject,
+                  ),
+                onAllowanceLost: logAllowanceLostAfterWait("user_wait"),
+              });
               if (currentEntitlement.subscription === "free") {
                 await checkFreeMonthlyCostLimit(freeUsageSubject);
                 const lock = await acquireFreeRunConcurrencyLock(
@@ -3166,15 +3165,21 @@ export const agentLongTask = task({
                   currentlyAllowedModel,
                   currentEntitlement.subscription,
                 );
-              await checkRateLimitCapacity(
+              await assertResumedAgentRunCapacity({
                 userId,
-                mode,
-                currentEntitlement.subscription,
-                currentModelExtraUsageConfig,
-                selectedModel,
-                currentEntitlement.organizationId,
-                freeQuotaSubject,
-              );
+                admittedAllowanceReservation: paidDailyFreeAllowanceReservation,
+                checkCapacity: () =>
+                  checkRateLimitCapacity(
+                    userId,
+                    mode,
+                    currentEntitlement.subscription,
+                    currentModelExtraUsageConfig,
+                    selectedModel,
+                    currentEntitlement.organizationId,
+                    freeQuotaSubject,
+                  ),
+                onAllowanceLost: logAllowanceLostAfterWait("auto_review"),
+              });
               if (currentEntitlement.subscription === "free") {
                 await checkFreeMonthlyCostLimit(freeUsageSubject);
               }
