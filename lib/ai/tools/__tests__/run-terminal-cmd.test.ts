@@ -3676,13 +3676,21 @@ describe("verified terminal start shadow", () => {
     await expect(result).resolves.toMatchObject({
       result: { exitCode: 0, processStarted: true },
     });
-    // Tool behavior is unchanged when the store fails.
-    store.eval.mockRejectedValue(new Error("store down"));
+  });
+
+  test("finishes the command when recording its start fails", async () => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
-    handle.wait.mockResolvedValue({ stdout: "ok\n", stderr: "", exitCode: 0 });
+    const sandbox = makeE2B(async () => ({
+      pid: 4321,
+      wait: async () => ({ stdout: "ok\n", stderr: "", exitCode: 0 }),
+      kill: async () => true,
+    }));
+    verify(sandbox);
+    store.eval.mockRejectedValueOnce(new Error("store down"));
     await expect(exec(sandbox)).resolves.toMatchObject({
       result: { exitCode: 0, processStarted: true },
     });
+    expect(startWrites()).toHaveLength(1);
   });
 
   test.each([

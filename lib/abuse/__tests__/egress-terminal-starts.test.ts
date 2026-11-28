@@ -155,12 +155,15 @@ it("lets a later command retry a failed write in the same minute", async () => {
   );
 });
 
-it("never throws into the command path when the store fails synchronously", () => {
+it("allows a retry without throwing into the command path after a synchronous store failure", async () => {
   const sandbox = bound();
-  redis.eval.mockImplementation(() => {
+  redis.eval.mockImplementationOnce(() => {
     throw new Error("store down");
   });
   expect(() => recordVerifiedTerminalStart(sandbox, start())).not.toThrow();
+  await flush();
+  recordVerifiedTerminalStart(sandbox, start({ now: T + 1 }));
+  expect(startWrites()).toHaveLength(2);
 });
 
 it.each([

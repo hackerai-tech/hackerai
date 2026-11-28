@@ -19,7 +19,8 @@ import { createRedisClient } from "@/lib/rate-limit/redis";
 // verified for ownership and network. Not observed: detached/background and
 // interactive commands, other tools and SDK paths, local and Desktop
 // sandboxes, processes started before recording or on another worker, and
-// lost writes. Counts are lower bounds; zero never means no activity.
+// lost writes. Counts of observed starts are lower bounds, and absence of a
+// recording does not establish inactivity.
 
 /** Exactly "true" enables; unset, empty or "false" is off; anything else is invalid. */
 export function terminalStartShadowGate(
@@ -148,7 +149,7 @@ type Binding = Workspace & {
  */
 const bindings = new WeakMap<object, Binding>();
 
-function write(redis: Redis, keys: string[], args: string[]) {
+async function write(redis: Redis, keys: string[], args: string[]) {
   return withinBudget(redis.eval(RECORD, keys, args));
 }
 
@@ -285,7 +286,7 @@ export type TerminalStartLimitation =
  *   the window, so the absence says nothing.
  * - `no_observed_starts`: recording had been seen, and no start was recorded.
  *   Commands already running, other paths and lost writes remain possible.
- * - `partial`: a limitation applies; counts are lower bounds.
+ * - `partial`: a limitation applies to the counts of recorded starts.
  */
 export type TerminalStartSummary =
   | { status: "disabled" }
@@ -300,7 +301,7 @@ export type TerminalStartSummary =
         | "partial";
       /** Runs with a recorded start in the burst minute. */
       burstMinuteRuns: number;
-      /** Runs recorded only in the adjacent margin minutes. */
+      /** Runs recorded in the margin without a recorded start in the burst minute. */
       marginOnlyRuns: number;
       parents: number;
       subagents: number;

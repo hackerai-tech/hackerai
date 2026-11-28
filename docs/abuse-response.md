@@ -643,10 +643,12 @@ model, and never shows that a command opened a connection.
   the window), `no_observed_starts`, `one_run`, `several_runs`, `partial` or
   `unavailable`. `partial` carries closed limitations (`capped`,
   `invalid_record`, `workspaces_capped`, `workspace_unavailable`,
-  `workspace_unobserved`), and its counts are lower bounds. The line also
-  reports `burstMinuteRuns` and `marginOnlyRuns`, and how many of the review's
-  plausible parent runs (`candidates`) and whether its selected run began a
-  recorded command.
+  `workspace_unobserved`). Counts of observed starts are lower bounds.
+  `burstMinuteRuns` counts runs recorded during the burst minute.
+  `marginOnlyRuns` counts runs recorded in the margin without a recording
+  during the burst minute. Some of those runs may also have started commands
+  during the burst. The line also reports how many plausible parent runs
+  (`candidates`) had a recorded start and whether the selected run did.
 - **What it cannot see.** Commands that started before the window and were
   still running, detached or background commands, interactive sessions,
   other tools and E2B paths, local and Desktop sandboxes, workers with the
