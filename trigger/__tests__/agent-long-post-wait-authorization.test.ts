@@ -165,6 +165,23 @@ describe("agent-long post-wait authorization contract", () => {
     );
   });
 
+  it("rechecks capacity through the allowance-aware check after every kind of wait", () => {
+    for (const name of [
+      "revalidateAfterApprovalSuspend",
+      "revalidateAfterUserWait",
+      "revalidateAfterAutoReview",
+    ]) {
+      const start = findRequiredSource(`const ${name} = async (`);
+      const end = taskSource.indexOf("\n            };\n", start);
+      const body = taskSource.slice(start, end);
+      expect(body).toContain("await assertResumedAgentRunCapacity({");
+      expect(body).toContain(
+        "admittedAllowanceReservation: paidDailyFreeAllowanceReservation",
+      );
+      expect(body).not.toMatch(/^\s{14}await checkRateLimitCapacity\(/m);
+    }
+  });
+
   it("excludes suspension time and rechecks cost capacity under reacquired free concurrency", () => {
     const beforeSuspend = taskSource.indexOf("await beforeSuspend()");
     const claimSlot = taskSource.indexOf(
