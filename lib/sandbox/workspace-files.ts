@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-export const WORKSPACE_FILES_FLAG = "sandbox-workspace-files";
 export const WORKSPACE_DOWNLOAD_LIMIT = 50 * 1024 * 1024;
 export const WORKSPACE_PREVIEW_LIMIT = 256 * 1024;
 
