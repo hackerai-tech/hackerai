@@ -7739,6 +7739,8 @@ describe("CentrifugoSandbox", () => {
           },
         },
         defaultConfig,
+        undefined,
+        "run-probe-test",
       );
       (sandbox as any).httpClient = "curl";
       (sandbox as any).httpClientProbePositive = true;
@@ -7774,10 +7776,19 @@ describe("CentrifugoSandbox", () => {
     }
     const errorFrame = (message: string) => ({ type: "error", message });
     let warn: jest.SpyInstance;
+    let info: jest.SpyInstance;
+    const shellProbeReceipts = () =>
+      info.mock.calls.filter(
+        ([name]) => name === "attachment_download_desktop_shell_probe_error",
+      );
     beforeEach(() => {
       warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      info = jest.spyOn(phLogger, "info").mockImplementation(() => {});
     });
-    afterEach(() => warn.mockRestore());
+    afterEach(() => {
+      warn.mockRestore();
+      info.mockRestore();
+    });
 
     it.each([
       [
@@ -7831,6 +7842,7 @@ describe("CentrifugoSandbox", () => {
         expect(JSON.stringify(context)).not.toMatch(
           /PRIVATE|private\.example|spawn |bin\/bash|Program Files|cmd-test-uuid/,
         );
+        expect(shellProbeReceipts()).toEqual([]);
         // One download attempt and its existing directory probe only.
         expect(commands.filter((c) => c.includes("curl -fsSL"))).toHaveLength(
           1,
@@ -7874,6 +7886,21 @@ describe("CentrifugoSandbox", () => {
           /PRIVATE|private\.example|spawn |bash\.exe|cmd-test-uuid/,
         );
         expect(commands).toEqual([SHELL_PROBE]);
+        expect(shellProbeReceipts()).toEqual(
+          isDesktop && frame.type === "error"
+            ? [
+                [
+                  "attachment_download_desktop_shell_probe_error",
+                  {
+                    diagnostic_version: 1,
+                    service: "agent-long",
+                    trigger_run_id: "run-probe-test",
+                    command_id: FIXED_UUID,
+                  },
+                ],
+              ]
+            : [],
+        );
       },
     );
 
