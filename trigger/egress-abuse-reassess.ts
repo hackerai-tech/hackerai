@@ -13,6 +13,7 @@ import {
   type EgressReviewClassification,
 } from "@/lib/abuse/egress-review";
 import {
+  ACTIVITY_MINUTE_UTC,
   CASE_REFERENCE,
   type BurstActivityClosedReason,
   type ReassessmentClosedReason,
@@ -39,14 +40,30 @@ import {
 // activity around the burst of any v3 manual or authorization-request case
 // without a recorded enforcement decision, and assesses at most one finished
 // run whose persisted timing overlaps the burst, under the same guarantees.
+// `activityMinuteUtc` assesses one complete UTC minute an operator selected
+// inside the case's 30-minute window instead of its saved burst minute, such
+// as the minute of an archived alert verified out of band. Convex derives the
+// account and window from the case and rejects any other minute; the
+// selection proves nothing about that minute's telemetry and adds no
+// enforcement capability.
 
-export const egressAbuseReassessPayloadSchema = z
-  .object({
-    reference: z.string().regex(CASE_REFERENCE),
-    // Omitted: the retained candidate, unchanged.
-    scope: z.literal("burst_activity").optional(),
-  })
-  .strict();
+const reference = z.string().regex(CASE_REFERENCE);
+export const egressAbuseReassessPayloadSchema = z.union([
+  z
+    .object({
+      reference,
+      // Omitted: the retained candidate, unchanged.
+      scope: z.literal("burst_activity").optional(),
+    })
+    .strict(),
+  z
+    .object({
+      reference,
+      scope: z.literal("burst_activity"),
+      activityMinuteUtc: z.string().regex(ACTIVITY_MINUTE_UTC),
+    })
+    .strict(),
+]);
 export type EgressAbuseReassessPayload = z.infer<
   typeof egressAbuseReassessPayloadSchema
 >;
@@ -124,6 +141,8 @@ export type BurstActivityResult = {
   attribution: "unverified";
   /** Never a verdict on the burst, and never acted on. */
   determination: "advisory_only";
+  /** Set only for an operator-selected minute, not the case's saved one. */
+  minuteBasis?: "operator_selected";
   /** Whether every chat and run the bounded read could reach was placed. */
   selection: "complete" | "incomplete" | "unavailable";
   selectionGaps?: BurstSelectionGap[];
@@ -206,8 +225,13 @@ export async function runEgressAbuseReassessment(
   payload: EgressAbuseReassessPayload,
 ): Promise<EgressAbuseReassessResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
-  const { reference, scope } = egressAbuseReassessPayloadSchema.parse(payload);
-  if (scope === "burst_activity") return runBurstActivityAssessment(reference);
+  const parsed = egressAbuseReassessPayloadSchema.parse(payload);
+  const { reference, scope } = parsed;
+  if (scope === "burst_activity")
+    return runBurstActivityAssessment(
+      reference,
+      "activityMinuteUtc" in parsed ? parsed.activityMinuteUtc : undefined,
+    );
   const { client, serviceKey } = reviewClient();
   const readStartedAt = Date.now();
   const read = await client.action(
@@ -309,12 +333,17 @@ export async function runEgressAbuseReassessment(
  */
 async function runBurstActivityAssessment(
   reference: string,
+  activityMinuteUtc: string | undefined,
 ): Promise<EgressAbuseReassessResult> {
   const { client, serviceKey } = reviewClient();
   const readStartedAt = Date.now();
   const read = await client.action(
     api.egressAbuseReassessmentActions.readBurstActivityEvidence,
-    { serviceKey, reference },
+    {
+      serviceKey,
+      reference,
+      ...(activityMinuteUtc === undefined ? {} : { activityMinuteUtc }),
+    },
   );
   if (read.status === "closed")
     return { status: "closed", reason: read.reason };
@@ -323,6 +352,9 @@ async function runBurstActivityAssessment(
     scope: "burst_activity",
     attribution: "unverified",
     determination: "advisory_only",
+    ...(read.minuteBasis === "operator_selected"
+      ? { minuteBasis: "operator_selected" as const }
+      : {}),
   } as const;
   const { evidence } = read;
   if (evidence.status === "unavailable")

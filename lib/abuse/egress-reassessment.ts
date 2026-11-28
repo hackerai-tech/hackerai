@@ -10,8 +10,9 @@ import { REVIEW_REASONS } from "./egress-outcomes";
 // Validation for the on-demand, advisory reassessments of one existing egress
 // review case: its retained candidate run, or the account's activity around
 // its burst. The stored record is the only source of the evidence scope:
-// nothing here accepts a user, chat, run or window from the caller. Relative
-// imports only: the Convex action bundles this module.
+// nothing here accepts a user, chat, run or window from the caller; an
+// operator can only move the burst-activity minute within the record's window.
+// Relative imports only: the Convex action bundles this module.
 
 /** The automated review that must have created the case. */
 const EGRESS_REVIEW_SOURCE = "egress_abuse_review";
@@ -156,7 +157,7 @@ function bindObservation(
     reviewReference(caseKey) !== stored.reference ||
     reviewDigest(caseKey) !== stored.digest
     ? null
-    : { burstStart, burstEnd };
+    : { burstStart, burstEnd, windowStart };
 }
 
 type Parsed =
@@ -205,7 +206,8 @@ export function parseRetainedCandidateCase(
       userId: account.verifiedUserId,
       chatId: run.chatId,
       runId: run.runId,
-      ...burst,
+      burstStart: burst.burstStart,
+      burstEnd: burst.burstEnd,
     },
   };
 }
@@ -223,6 +225,8 @@ export const BURST_ACTIVITY_CLOSED_REASONS = [
   "enforcement_recorded",
   /** The review verified no account for the burst. */
   "account_unverified",
+  /** The selected minute is outside the case's 30-minute window. */
+  "minute_outside_case",
   /** The case changed between the audited read and the evidence read. */
   "case_changed",
 ] as const;
@@ -234,6 +238,27 @@ export type BurstActivityScope = {
   burstStart: number;
   burstEnd: number;
 };
+
+/** Where the assessed minute came from. */
+export type BurstMinuteBasis = "saved_case" | "operator_selected";
+
+/** A canonical UTC minute start, such as `2026-11-28T00:05:00.000Z`. */
+export const ACTIVITY_MINUTE_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/;
+
+/**
+ * The start of an operator-selected UTC minute that is canonical and has
+ * fully ended by `now`, or null. Whether it lies in a case's window is
+ * checked against the decrypted record.
+ */
+export function selectedMinuteStart(value: string, now: number) {
+  if (!ACTIVITY_MINUTE_UTC.test(value)) return null;
+  const start = Date.parse(value);
+  return Number.isFinite(start) &&
+    new Date(start).toISOString() === value &&
+    start + MINUTE_MS <= now
+    ? start
+    : null;
+}
 
 /** Reasons a v3 case can record for each outcome that stores a case. */
 const MANUAL_REASONS = REVIEW_REASONS.filter(
@@ -271,12 +296,19 @@ const burstCaseSchema = z.object({
  * verified account and the bound burst minute. It refuses a record from
  * another source or version, an unbound or inconsistent observation, a
  * recorded enforcement decision, and a case without a verified account.
+ *
+ * `selectedMinute`, from `selectedMinuteStart`, replaces the record's burst
+ * minute with an operator-selected minute of the same case window, such as
+ * the minute of an archived alert verified out of band. The account, region
+ * and window still come only from the record; the selection proves nothing
+ * about that minute's telemetry.
  */
 export function parseBurstActivityCase(
   record: unknown,
   stored: StoredCase,
+  selectedMinute?: number,
 ):
-  | { ok: true; scope: BurstActivityScope }
+  | { ok: true; scope: BurstActivityScope; minuteBasis: BurstMinuteBasis }
   | {
       ok: false;
       reason: Extract<
@@ -285,6 +317,7 @@ export function parseBurstActivityCase(
         | "record_invalid"
         | "enforcement_recorded"
         | "account_unverified"
+        | "minute_outside_case"
       >;
     } {
   const head = record as Record<string, unknown> | null;
@@ -304,5 +337,30 @@ export function parseBurstActivityCase(
     return { ok: false, reason: "enforcement_recorded" };
   if (account.verifiedUserId === null)
     return { ok: false, reason: "account_unverified" };
-  return { ok: true, scope: { userId: account.verifiedUserId, ...burst } };
+  const userId = account.verifiedUserId;
+  if (selectedMinute === undefined)
+    return {
+      ok: true,
+      scope: {
+        userId,
+        burstStart: burst.burstStart,
+        burstEnd: burst.burstEnd,
+      },
+      minuteBasis: "saved_case",
+    };
+  if (
+    selectedMinute % MINUTE_MS !== 0 ||
+    selectedMinute < burst.windowStart ||
+    selectedMinute + MINUTE_MS > burst.windowStart + WINDOW_MS
+  )
+    return { ok: false, reason: "minute_outside_case" };
+  return {
+    ok: true,
+    scope: {
+      userId,
+      burstStart: selectedMinute,
+      burstEnd: selectedMinute + MINUTE_MS,
+    },
+    minuteBasis: "operator_selected",
+  };
 }

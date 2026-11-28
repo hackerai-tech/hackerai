@@ -1,6 +1,6 @@
 import { context } from "@opentelemetry/api";
 import { suppressTracing } from "@opentelemetry/core";
-import { logger, runs, schemaTask } from "@trigger.dev/sdk";
+import { logger, query, runs, schemaTask } from "@trigger.dev/sdk";
 import { generateText, Output } from "ai";
 import { ConvexError } from "convex/values";
 import { z } from "zod";
@@ -11,6 +11,7 @@ import { signServiceArgs } from "@/lib/db/service-proof";
 import { encryptAbuseEvidence } from "@/lib/abuse/evidence-crypto";
 import {
   ACQUISITION_LINK_TTL_S,
+  MAX_ACQUISITION_RECORDS,
   egressAbuseReviewGate,
   readAcquisitionLinks,
   type AcquisitionLink,
@@ -190,6 +191,13 @@ export type ReviewDiagnostic = {
   competingLinksRuledOut?: number;
   /** Linked runs whose chat was unavailable. */
   unavailableLinks?: number;
+  /**
+   * Above the per-link cap: links whose exact run Trigger proved finished
+   * before the burst, set aside before the per-link checks.
+   */
+  linksFinishedBeforeBurst?: number;
+  /** Above the per-link cap: the finished-run lookup failed; none set aside. */
+  finishedRunLookup?: "failed";
   gaps?: ObservationGap[];
   /** An active cooldown was bypassed, or could not be checked. */
   cooldown?: "bypassed" | "unavailable" | "window_unsettled";
@@ -361,6 +369,115 @@ async function checkAccountRootRuns(
   if (ruledOut.size !== unplacedLinks.length)
     return unverified("competing_links");
   return { status: "sole" };
+}
+
+/** Only provider-issued run IDs can enter the metadata query. */
+const TRIGGER_RUN_ID = /^run_[a-z0-9]+$/;
+/** Friendly TRQL statuses of a run that can no longer execute. */
+const TRQL_TERMINAL_STATUSES = new Set([
+  "Completed",
+  "Canceled",
+  "Failed",
+  "System failure",
+  "Crashed",
+  "Timed out",
+]);
+const unixSeconds = (value: unknown) =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
+
+/**
+ * The parent links whose exact run Trigger proves finished before the burst,
+ * from one metadata-only lookup of their run IDs: never payloads or outputs.
+ * A link is set aside only when its run ID is unique among the links, and
+ * the run is an `agent-long` run tagged with the account and the link's chat,
+ * finished in a terminal status, executed no later than it completed, and
+ * its acquisition falls inside that execution. TRQL rounds times down to
+ * whole seconds, so each bound is checked at its least favorable value.
+ * Every other link, including every subagent link, is kept. Null when the
+ * lookup fails or returns a row it was not asked for, so nothing is set aside.
+ */
+async function linksFinishedBeforeBurst(
+  links: readonly AcquisitionLink[],
+  userId: string,
+  burst: { burstStart: number; burstEnd: number },
+): Promise<Set<AcquisitionLink> | null> {
+  const linksByRun = new Map<string, AcquisitionLink[]>();
+  for (const link of links)
+    linksByRun.set(link.runId, [...(linksByRun.get(link.runId) ?? []), link]);
+  const queried = [...linksByRun.entries()]
+    .filter(
+      ([runId, [only, ...rest]]) =>
+        !rest.length && only.kind === "parent" && TRIGGER_RUN_ID.test(runId),
+    )
+    .map(([runId]) => runId);
+  const proven = new Set<AcquisitionLink>();
+  if (!queried.length) return proven;
+  type Row = {
+    run_id: unknown;
+    task_identifier: unknown;
+    status: unknown;
+    is_finished: unknown;
+    tags: unknown;
+    executed_at_s: unknown;
+    completed_at_s: unknown;
+  };
+  let rows: Row[];
+  try {
+    // Suppress tracing of the account's exact run IDs.
+    ({ results: rows } = await context.with(
+      suppressTracing(context.active()),
+      () =>
+        query.execute<Row>(
+          `SELECT run_id, task_identifier, status, is_finished, tags, toUnixTimestamp(executed_at) AS executed_at_s, toUnixTimestamp(completed_at) AS completed_at_s FROM runs WHERE run_id IN (${queried
+            .map((runId) => `'${runId}'`)
+            .join(", ")}) LIMIT ${queried.length + 1}`,
+          // A run created after the burst cannot have finished before it.
+          { scope: "environment", from: 1, to: burst.burstEnd + CLOCK_SKEW_MS },
+          { retry: { maxAttempts: 1 } },
+        ),
+    ));
+  } catch {
+    // The error can echo the query; only the closed fallback is kept.
+    return null;
+  }
+  if (!Array.isArray(rows) || rows.length > queried.length) return null;
+  const asked = new Set(queried);
+  const rowsByRun = new Map<string, Row[]>();
+  for (const row of rows) {
+    const runId = (row as Partial<Row> | null)?.run_id;
+    if (typeof runId !== "string" || !asked.has(runId)) return null;
+    rowsByRun.set(runId, [...(rowsByRun.get(runId) ?? []), row]);
+  }
+  const earliest = burst.burstStart - CLOCK_SKEW_MS;
+  for (const runId of queried) {
+    const [row, duplicate] = rowsByRun.get(runId) ?? [];
+    if (!row || duplicate) continue;
+    const [link] = linksByRun.get(runId)!;
+    const executedAt = unixSeconds(row.executed_at_s);
+    const completedAt = unixSeconds(row.completed_at_s);
+    if (
+      row.task_identifier === AGENT_TASK &&
+      typeof row.status === "string" &&
+      TRQL_TERMINAL_STATUSES.has(row.status) &&
+      row.is_finished === 1 &&
+      Array.isArray(row.tags) &&
+      row.tags.includes(`user_${userId}`) &&
+      row.tags.includes(`chat_${link.chatId}`) &&
+      executedAt !== undefined &&
+      completedAt !== undefined &&
+      executedAt <= completedAt &&
+      // The workspace was acquired while this run executed: after the
+      // latest start and before the earliest completion the times represent.
+      link.acquiredAt >= (executedAt + 1) * 1_000 - CLOCK_SKEW_MS &&
+      link.acquiredAt <= completedAt * 1_000 + CLOCK_SKEW_MS &&
+      // The latest completion the rounded time can represent.
+      (completedAt + 1) * 1_000 <= earliest
+    )
+      proven.add(link);
+  }
+  return proven;
 }
 
 /** Retried by Trigger while a still-active run's evidence may grow. */
@@ -943,13 +1060,34 @@ async function reviewBurst(
     });
   }
   diagnostic.runLinks = links.size;
-  if (links.size > MAX_LINKS) {
-    diagnostic.detail = "too_many_runs";
-    return manual("acquisition_incomplete");
+  let candidates = [...links.values()];
+  if (candidates.length > MAX_LINKS) {
+    // Complete single-workspace history only, which bounds the links to the
+    // stored records. Set aside the parent links whose run Trigger proves
+    // finished before the burst; every other link is kept for the same
+    // per-link checks, which stay capped. If every link is set aside, no
+    // linked run explains the burst (`no_matching_run`); unlinked account
+    // activity is never read for a workspace that has links. Wait for
+    // Trigger's history to settle first, so a late completion can be seen.
+    if (candidates.length > MAX_ACQUISITION_RECORDS) {
+      diagnostic.detail = "too_many_runs";
+      return manual("acquisition_incomplete");
+    }
+    if (now - burst.burstEnd < ROOT_HISTORY_SETTLE_MS && !finalAttempt)
+      throw new EgressReviewPendingError();
+    const finished = await linksFinishedBeforeBurst(candidates, userId, burst);
+    if (finished) {
+      diagnostic.linksFinishedBeforeBurst = finished.size;
+      candidates = candidates.filter((link) => !finished.has(link));
+    } else diagnostic.finishedRunLookup = "failed";
+    if (candidates.length > MAX_LINKS) {
+      diagnostic.detail = "too_many_runs";
+      return manual("acquisition_incomplete");
+    }
   }
 
   const matches = await Promise.all(
-    [...links.values()].map(async (link) => ({
+    candidates.map(async (link) => ({
       link,
       status: (
         await client.query(api.egressAbuseReview.matchRun, {
