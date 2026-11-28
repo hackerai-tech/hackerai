@@ -358,6 +358,13 @@ separately switched [automatic enforcement](#automatic-enforcement) can
 restrict an account. The review never contains a run or contacts a sandbox,
 and its cases follow the review, hold and erasure rules in this runbook.
 
+The monitor logs warnings as soon as it sees a threshold crossing. It
+dispatches one review per owner, region and 30-minute window. The review
+starts after the window is scheduled to settle and at least ten minutes
+after dispatch. It rechecks the triggering minute, then uses the strongest
+complete minute available in that same window. Incomplete minutes cannot
+provide a verified peak.
+
 - **What it reads.** With a recorded acquisition, only the one chat and
   Trigger run that acquired the burst's verified workspace and whose
   persisted generation time overlaps the burst: the account's stored user

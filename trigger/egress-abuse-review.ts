@@ -143,6 +143,7 @@ export type ReviewDiagnosticDetail =
   | "selected_run_not_started"
   | "selected_run_outside_burst"
   // observation_incomplete
+  | "window_telemetry_unavailable"
   | "run_overlap_unknown"
   | "evidence_run_mismatch"
   | "evidence_incomplete"
@@ -200,6 +201,8 @@ export type ReviewDiagnostic = {
    * before the burst, set aside before the per-link checks.
    */
   linksFinishedBeforeBurst?: number;
+  /** Another complete minute in this window had more verified connections. */
+  windowPeakSelected?: true;
   /** Above the per-link cap: the finished-run lookup failed; none set aside. */
   finishedRunLookup?: "failed";
   gaps?: ObservationGap[];
@@ -647,7 +650,7 @@ export async function runEgressAbuseReview(
 ): Promise<EgressAbuseReviewResult> {
   const diagnostic: ReviewDiagnostic = {};
   const shadow: TimelineShadow = {};
-  const result = await reviewBurst(payload, attempt, diagnostic, true, shadow);
+  const result = await reviewBurst(payload, attempt, diagnostic, shadow);
   await logTimelineShadow(shadow, result, diagnostic);
   await logTerminalStartShadow(shadow, result, diagnostic);
   // Explains an abstention or a clearance; other outcomes keep their output.
@@ -777,8 +780,10 @@ async function windowPeak(
     (_, index) => windowStart + index,
   );
   const records = await readTelemetryMinutes(redis, region, minutes);
+  if (records.length !== minutes.length)
+    throw new Error("Incomplete telemetry window read");
   let peak = { minute: windowStart, connections: 0 };
-  let complete = records.length === minutes.length;
+  let complete = true;
   for (const [index, record] of records.entries()) {
     if (
       !record ||
@@ -802,15 +807,10 @@ async function reviewBurst(
   payload: EgressAbuseReviewPayload,
   attempt: { number: number; max: number },
   diagnostic: ReviewDiagnostic,
-  followEscalation = true,
   shadow: TimelineShadow = {},
+  checkedWindow?: Awaited<ReturnType<typeof windowPeak>>,
 ): Promise<EgressAbuseReviewResult> {
   if (egressAbuseReviewGate() !== "on") return { status: "disabled" };
-  // An escalated review describes its own burst.
-  delete shadow.read;
-  delete shadow.selected;
-  delete shadow.starts;
-  delete shadow.candidates;
   const threshold = egressBurstThreshold();
   if (threshold === null)
     throw new Error("Egress review threshold is unavailable");
@@ -820,8 +820,8 @@ async function reviewBurst(
   if (!redis) throw new Error("Egress review store is unavailable");
   const { client, serviceKey, convexUrl } = reviewClient();
   const now = Date.now();
-  if (minute > Math.floor(now / 60_000) - SETTLE_MINUTES)
-    throw new EgressReviewPendingError();
+  const latestSettled = Math.floor(now / 60_000) - SETTLE_MINUTES;
+  if (minute > latestSettled) throw new EgressReviewPendingError();
   const finalAttempt = attempt.number >= attempt.max;
 
   const windowStart = reviewWindowStart(minute);
@@ -962,6 +962,28 @@ async function reviewBurst(
   )
     return { status: "skipped", reason: "burst_not_verified" };
 
+  // Keep the dispatch's verified alert as the entry point, then select the
+  // strongest complete minute in its same region, owner and case window.
+  const window =
+    checkedWindow ??
+    (await windowPeak(redis, region, owner, windowStart, latestSettled).catch(
+      () => null,
+    ));
+  if (
+    !checkedWindow &&
+    window &&
+    window.peak.connections > observation.connections
+  ) {
+    diagnostic.windowPeakSelected = true;
+    return reviewBurst(
+      { ...payload, minute: window.peak.minute },
+      attempt,
+      diagnostic,
+      shadow,
+      window,
+    );
+  }
+
   // The owner and every counted workspace must be verified.
   const resolved = await resolveAttribution(
     redis,
@@ -974,6 +996,10 @@ async function reviewBurst(
   if (!userId || resolved.unverifiedWorkspaces > 0 || !sandboxIds.length)
     return manual("attribution_unverified");
   diagnostic.sandboxes = sandboxIds.length;
+  if (!window) {
+    diagnostic.detail = "window_telemetry_unavailable";
+    return pending("observation_incomplete");
+  }
   // Started alongside the review and awaited only after it settles.
   shadow.read = readRunTimeline({ region, userId, sandboxIds, ...burst });
   shadow.starts = readTerminalStarts({ region, userId, sandboxIds, ...burst });
@@ -981,24 +1007,13 @@ async function reviewBurst(
   // A recent exact-run clearance suppresses routine bursts before any
   // evidence or model call. Any failure to read or compare reviews in full.
   let cooldown: ReviewCooldown | null = null;
-  if (followEscalation) {
-    try {
-      [cooldown] = await readReviewCooldowns(redis, [userId]);
-    } catch {
-      diagnostic.cooldown = "unavailable";
-    }
+  try {
+    [cooldown] = await readReviewCooldowns(redis, [userId]);
+  } catch {
+    diagnostic.cooldown = "unavailable";
   }
   if (cooldown && cooldown.digest !== digest) {
-    const latestSettled = Math.floor(now / 60_000) - SETTLE_MINUTES;
-    const window = await windowPeak(
-      redis,
-      region,
-      owner,
-      windowStart,
-      latestSettled,
-    ).catch(() => null);
     if (
-      window &&
       !cooldownSuppresses(
         cooldown,
         Math.max(window.peak.connections, observation.connections),
@@ -1006,19 +1021,7 @@ async function reviewBurst(
       )
     ) {
       diagnostic.cooldown = "bypassed";
-      const { peak } = window;
-      if (peak.connections > observation.connections) {
-        // Start from the settled minute that escalated. Its telemetry and
-        // attribution are verified independently, and the case key is the same.
-        return reviewBurst(
-          { ...payload, minute: peak.minute },
-          attempt,
-          diagnostic,
-          false,
-          shadow,
-        );
-      }
-    } else if (!window?.complete) {
+    } else if (!window.complete) {
       // A missing or lossy minute could hide an escalation.
       diagnostic.cooldown = "unavailable";
     } else {

@@ -1,7 +1,11 @@
 import { idempotencyKeys, logger, schedules, tasks } from "@trigger.dev/sdk";
 import type { E2BCluster } from "@/lib/ai/tools/utils/e2b-cluster";
 import { egressAbuseReviewGate } from "@/lib/abuse/egress-review-context";
-import { reviewCaseKey, reviewWindowStart } from "@/lib/abuse/egress-review";
+import {
+  REVIEW_WINDOW_MINUTES,
+  reviewCaseKey,
+  reviewWindowStart,
+} from "@/lib/abuse/egress-review";
 import {
   ATTRIBUTION_REF,
   resolveAttribution,
@@ -35,7 +39,7 @@ const WARNING_TITLE = "High connection volume";
 const MAX_REVIEWS = 10;
 const REVIEW_MARK_TTL_S = 2 * 60 * 60;
 /** Lets most active runs persist their messages before review. */
-const REVIEW_DELAY = "10m";
+const MIN_REVIEW_DELAY_MINUTES = 10;
 /** Reviews not yet dispatched, one per case, scored by burst minute. */
 const REVIEW_QUEUE_KEY = "egress-abuse-review:v1:dispatch-queue";
 /** Oldest entries read per run; at most MAX_REVIEWS of them are dispatched. */
@@ -43,9 +47,9 @@ const REVIEW_QUEUE_READ = 250;
 const REVIEW_QUEUE_CAPACITY = 2_000;
 /**
  * The review rereads its minute's telemetry, kept for TELEMETRY_RETENTION_S
- * (two hours). It starts REVIEW_DELAY after dispatch and its retries can add
- * about 45 minutes more, so a queued minute older than this is reported and
- * removed rather than dispatched to a review that could no longer verify it.
+ * (two hours). It waits at least ten minutes and until the window settles.
+ * Retries can add about 45 minutes more, so an older queued minute is reported
+ * and removed rather than dispatched to a review that could no longer verify it.
  */
 const REVIEW_QUEUE_RETENTION_MINUTES = 30;
 
@@ -500,6 +504,8 @@ async function dispatchReviews(
     .map(({ entry }) => entry);
   for (const { key, region, owner, minute } of pending.slice(0, MAX_REVIEWS)) {
     try {
+      const last = reviewWindowStart(minute) + REVIEW_WINDOW_MINUTES - 1;
+      const delay = Math.max(MIN_REVIEW_DELAY_MINUTES, last - latest);
       await tasks.trigger<typeof egressAbuseReviewTask>(
         "egress-abuse-review",
         { region, owner, minute },
@@ -508,7 +514,7 @@ async function dispatchReviews(
             scope: "global",
           }),
           idempotencyKeyTTL: "1d",
-          delay: REVIEW_DELAY,
+          delay: `${delay}m`,
         },
       );
       await redis.set(reviewMarkKey(key), "1", { ex: REVIEW_MARK_TTL_S });

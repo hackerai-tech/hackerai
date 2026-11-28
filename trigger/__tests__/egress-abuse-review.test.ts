@@ -723,6 +723,27 @@ it("finds a run by its pre-burst acquisition after it re-acquired the workspace"
   });
 });
 
+it("reviews the strongest verified minute of the window without an existing cooldown", async () => {
+  await seedRun();
+  await link();
+  const peakMinute = MINUTE + 3;
+  await upload([[first, 2_000]], peakMinute);
+  await upload([[first, 3_000]], peakMinute + 1, "us", 1);
+  classifyAs(concerning);
+  await expect(run()).resolves.toMatchObject({
+    outcome: "authorization_request",
+    case: "created",
+  });
+  expect(caseRecord()).toMatchObject({
+    observation: {
+      burstMinuteUtc: new Date(peakMinute * MINUTE_MS).toISOString(),
+      connections: 2_000,
+    },
+  });
+  // The usual classification and intent confirmation, for the chosen minute.
+  expect(generateText).toHaveBeenCalledTimes(2);
+});
+
 it("skips clearly corroborated legitimate work without creating a case", async () => {
   await seedRun(RUN, CHAT, { command: "npm install && npm test" });
   await link();
