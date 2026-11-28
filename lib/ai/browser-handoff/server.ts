@@ -1076,8 +1076,8 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_close_scope?: "selected_session" | "other_session" | "all_sessions";
   capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
-  // Status exit2 socket_stat missing only, for the Browser Preview GET's own fresh
-  // recognizeClosed lookup: the first check of the existing close-proof verification
+  // Status exit2 socket_stat missing only, for the Browser Preview GET's own (fresh or
+  // owned-port) recognizeClosed lookup: the first check of the existing close-proof verification
   // that refused it. Proves neither that a close ran nor its absence, and is no cause.
   // Absent is unmeasured (older helper, budget or an unclassified error).
   capture_close_proof_failure_v1?: (typeof BROWSER_CLOSE_PROOF_FAILURES)[number];
@@ -1222,11 +1222,10 @@ export async function captureBrowserFrame(
     requireFresh &&
     streamPort === undefined &&
     options?.deferDuringOpen === true;
-  // Also exactly the own status lookup that opts in without owned_port.
-  const screenshotRecognizesClosed =
-    requireFresh &&
-    streamPort === undefined &&
-    options?.recognizeClosed === true;
+  // This request's own status lookup that opts in, with or without owned_port.
+  const statusRecognizesClosed =
+    streamPort === undefined && options?.recognizeClosed === true;
+  const screenshotRecognizesClosed = requireFresh && statusRecognizesClosed;
   try {
     const port =
       streamPort ??
@@ -1772,13 +1771,13 @@ export async function captureBrowserFrame(
               )
                 precondition.capture_open_socket_directory_v1 =
                   BROWSER_OPEN_SOCKET_DIRECTORY_DECLARATIONS[socketDirectory];
-              // Only this request's own fresh recognizeClosed lookup, which never
-              // sends owned_port; the fresh screenshot and timeouts never parse it.
+              // Only this request's own recognizeClosed status lookup; the fresh
+              // screenshot and timeouts never parse it.
               const closeProof = parsed?.cp1;
               if (
                 stage === "stream_status" &&
                 code === 2 &&
-                screenshotRecognizesClosed &&
+                statusRecognizesClosed &&
                 precondition.capture_precondition_reason === "socket_stat" &&
                 precondition.capture_precondition_error === "missing" &&
                 Number.isInteger(closeProof) &&

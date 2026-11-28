@@ -2983,19 +2983,31 @@ async function observeStatusExit(
   return observe.mock.calls[0][0] as BrowserCaptureFailureContext;
 }
 
+// A cached GET looks up its own port with owned_port; that same opted-in status
+// lookup projects its code exactly as the fresh one does.
 it.each([
-  [0, "proof_absent"],
-  [5, "selection_superseded"],
-  [8, "selection_invalid"],
+  [0, "proof_absent", true],
+  [5, "selection_superseded", true],
+  [8, "selection_invalid", true],
+  [0, "proof_absent", false],
+  [5, "selection_superseded", false],
 ])(
-  "projects the GET's own missing-socket close-proof code %j as one versioned field",
-  async (cp1, failure) => {
-    const context = await observeStatusExit(2, closeProofPacket({ cp1 }));
+  "projects the GET's own missing-socket close-proof code %j (%s, fresh: %s) as one versioned field",
+  async (cp1, failure, requireFresh) => {
+    const context = await observeStatusExit(
+      2,
+      closeProofPacket({ cp1 }),
+      requireFresh,
+    );
     const { capture_close_proof_failure_v1: projected, ...existing } = context;
     expect(projected).toBe(failure);
     // Every existing field is unchanged beside the one new field.
     expect(existing).toEqual(
-      await observeStatusExit(2, closeProofPacket({ cp1: undefined })),
+      await observeStatusExit(
+        2,
+        closeProofPacket({ cp1: undefined }),
+        requireFresh,
+      ),
     );
     expect(existing).toMatchObject({
       capture_stage: "stream_status",
@@ -3033,8 +3045,8 @@ it.each<[string, Record<string, unknown>, number?]>([
 );
 
 it.each<[string, boolean, Parameters<typeof captureBrowserFrame>[6]]>([
-  ["a cached owned-port lookup", false, getOptions],
   ["a fresh lookup without the closed opt-in", true, {}],
+  ["a cached lookup without the closed opt-in", false, {}],
 ])(
   "never projects a close-proof code for %s",
   async (_case, requireFresh, options) => {
