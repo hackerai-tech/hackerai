@@ -13,6 +13,11 @@ import {
   describeOpenRouterRequestJsonEscape,
   isOpenRouterJsonEscapeRejection,
 } from "./openrouter-request-json-escape";
+import {
+  ownRequestBodyValues,
+  ownStreamRequestBody,
+  reportBedrockToolPairingRejection,
+} from "./openrouter-tool-pairing-diagnostic";
 
 type StreamResult = Awaited<
   ReturnType<
@@ -67,6 +72,10 @@ function headerContext(headers: unknown): OpenRouterStreamErrorContext {
 /** Observe same-call SDK error parts without replacing errors or stream values. */
 export function withOpenRouterStreamErrorContext(
   model: LanguageModel,
+  options: {
+    /** Opt in only for a route that OpenRouter pins to Amazon Bedrock. */
+    bedrockToolPairingDiagnostic?: boolean;
+  } = {},
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
     return model;
@@ -77,9 +86,21 @@ export function withOpenRouterStreamErrorContext(
       specificationVersion: "v3",
       /** Keep response ownership local to this invocation, including overlapping streams. */
       wrapStream: async ({ doStream }) => {
-        const result = await doStream();
+        const inspectToolPairing =
+          options.bedrockToolPairingDiagnostic === true;
+        let result: StreamResult;
+        try {
+          result = await doStream();
+        } catch (error) {
+          if (inspectToolPairing)
+            reportBedrockToolPairingRejection(error, "sdk_http_rejection", () =>
+              ownRequestBodyValues(error),
+            );
+          throw error;
+        }
         const call = {};
         let jsonEscapeReported = false;
+        let toolPairingReported = false;
         let context: OpenRouterStreamErrorContext;
         try {
           context = headerContext(result.response?.headers);
@@ -120,6 +141,16 @@ export function withOpenRouterStreamErrorContext(
                         }),
                       );
                     }
+                    if (
+                      inspectToolPairing &&
+                      !toolPairingReported &&
+                      reportBedrockToolPairingRejection(
+                        part.error,
+                        "sdk_error_part",
+                        () => ownStreamRequestBody(result),
+                      )
+                    )
+                      toolPairingReported = true;
                   }
                 } catch {
                   // Diagnostics must not interfere with forwarding the original part.
