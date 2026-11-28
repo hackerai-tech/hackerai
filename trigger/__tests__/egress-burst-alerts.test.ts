@@ -465,6 +465,7 @@ describe("abuse review dispatch", () => {
   it("dispatches one delayed review per owner window with opaque references only", async () => {
     await upload("us", MINUTE, [count(first, 9)]);
     await ok(runEgressBurstAlerts(at()));
+    expect(volumeWarnings()).toHaveLength(1);
     expect(trigger()).toHaveBeenCalledTimes(1);
     const [id, payload, options] = trigger().mock.calls[0] as unknown as [
       string,
@@ -482,7 +483,7 @@ describe("abuse review dispatch", () => {
       idempotencyKey: expect.stringMatching(
         /^global:egress-abuse-review:v1:us:/,
       ),
-      delay: "10m",
+      delay: "29m",
     });
     expect(JSON.stringify(trigger().mock.calls)).not.toContain(first.userId);
 
@@ -505,6 +506,18 @@ describe("abuse review dispatch", () => {
     expect(error.failures.map(({ kind }) => kind)).toEqual(["loss"]);
     expect(volumeWarnings()).toHaveLength(2);
     expect(trigger()).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ten-minute minimum delay for an alert at the end of a window", async () => {
+    const minute = MINUTE + 29;
+    await upload("us", minute, [count(first, 9)]);
+    await upload("eu", minute);
+    await ok(runEgressBurstAlerts(at(minute)));
+    expect(trigger()).toHaveBeenCalledWith(
+      "egress-abuse-review",
+      { region: "us", owner: first.owner, minute },
+      expect.objectContaining({ delay: "10m" }),
+    );
   });
 
   it("dispatches the review even when warning logging fails", async () => {
